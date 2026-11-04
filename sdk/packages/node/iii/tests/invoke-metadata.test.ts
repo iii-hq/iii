@@ -16,7 +16,7 @@ type InternalSdk = {
     handler: RemoteFunctionHandler,
     options?: Record<string, unknown>,
   ) => { id: string; unregister: () => void }
-  trigger: (request: Record<string, unknown>) => Promise<unknown>
+  call: (request: Record<string, unknown>) => Promise<unknown>
   onInvokeFunction: (
     invocation_id: string | undefined,
     function_id: string,
@@ -144,7 +144,7 @@ describe('invocation metadata — inbound (handler receives metadata)', () => {
   })
 })
 
-describe('invocation metadata — outbound (trigger serializes metadata)', () => {
+describe('invocation metadata — outbound (call serializes metadata)', () => {
   let sdk: InternalSdk
 
   afterEach(async () => {
@@ -155,12 +155,10 @@ describe('invocation metadata — outbound (trigger serializes metadata)', () =>
     sdk = makeSdk()
     sdk.sendMessage = vi.fn()
 
-    // Non-void trigger returns a never-resolving promise here (no engine to
+    // Non-void call returns a never-resolving promise here (no engine to
     // respond); we only assert the synchronous send. Swallow the eventual
     // shutdown rejection so it does not surface as an unhandled rejection.
-    void sdk
-      .trigger({ function_id: 'fn', payload: { x: 1 }, metadata: { tenant: 't1' } })
-      .catch(() => {})
+    void sdk.call({ function_id: 'fn', payload: { x: 1 }, metadata: { tenant: 't1' } }).catch(() => {})
 
     const invoke = sdk.sendMessage.mock.calls.find(([type]) => type === MessageType.InvokeFunction)
     expect(invoke).toBeDefined()
@@ -171,7 +169,7 @@ describe('invocation metadata — outbound (trigger serializes metadata)', () =>
     sdk = makeSdk()
     sdk.sendMessage = vi.fn()
 
-    await sdk.trigger({
+    await sdk.call({
       function_id: 'fn',
       payload: { x: 1 },
       action: { type: 'void' },
@@ -187,7 +185,7 @@ describe('invocation metadata — outbound (trigger serializes metadata)', () =>
     sdk = makeSdk()
     sdk.sendMessage = vi.fn()
 
-    await sdk.trigger({ function_id: 'fn', payload: { x: 1 }, action: { type: 'void' } })
+    await sdk.call({ function_id: 'fn', payload: { x: 1 }, action: { type: 'void' } })
 
     const invoke = sdk.sendMessage.mock.calls.find(([type]) => type === MessageType.InvokeFunction)
     expect(invoke).toBeDefined()

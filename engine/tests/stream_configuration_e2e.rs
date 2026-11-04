@@ -49,7 +49,7 @@ async fn build_harness(dir: &std::path::Path) -> Harness {
     ) as Arc<dyn ConfigurationAdapter>;
     let engine = Arc::new(Engine::new());
 
-    let configuration = ConfigurationWorker::for_test(engine.clone(), adapter, 0);
+    let configuration = ConfigurationWorker::for_test(engine.clone(), adapter);
     configuration
         .initialize()
         .await
@@ -117,14 +117,11 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
     }
 }
 
-/// Invoke the config-change handler synchronously so assertions can't pass
-/// vacuously before the (also async) trigger fan-out applies the change.
-async fn drive_apply(harness: &Harness) {
-    harness
-        .engine
-        .call("iii-stream::on-config-change", json!({}))
-        .await
-        .expect("config-change handler is invocable");
+/// Apply the stored entry synchronously, as a change of it does, so
+/// assertions can't pass vacuously before the (also async) configuration
+/// listener applies the change.
+async fn drive_apply(worker: &StreamWorker) {
+    worker.on_configuration_change().await;
 }
 
 async fn stored_value(harness: &Harness, raw: bool) -> Value {
@@ -136,8 +133,8 @@ async fn stored_value(harness: &Harness, raw: bool) -> Value {
         .expect("get returns a body")
 }
 
-/// Poll until `predicate` returns true or the deadline elapses. Trigger
-/// fan-out is spawned, so observable effects are eventually consistent.
+/// Poll until `predicate` returns true or the deadline elapses. The listener
+/// spawns its apply, so observable effects are eventually consistent.
 async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
@@ -249,7 +246,7 @@ async fn runtime_edits_survive_worker_restart() {
         json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "kv", "config": { "channel_size": 128 } } }),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
     wait_for(
         || {
             worker
@@ -408,7 +405,7 @@ async fn adapter_hot_swap_rebuilds_backend() {
         json!({ "host": "127.0.0.1", "port": 0, "adapter": { "name": "kv", "config": { "channel_size": 64 } } }),
     )
     .await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     let after = worker.adapter_snapshot();
     assert!(
@@ -523,7 +520,7 @@ async fn failed_rebind_keeps_previous_server() {
     let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
 
     set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     // Old server still serving on port_a; the live config was not mutated.
     tokio::net::TcpStream::connect(("127.0.0.1", port_a))
@@ -549,7 +546,7 @@ async fn restart_falls_back_to_seed_when_stored_address_unbindable() {
     // The hot rebind fails (all-or-nothing), but the bad value is now stored.
     let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
     set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     // Restart (ReloadManager semantics). The boot fetch returns the stored
     // unbindable address; the worker must fall back to the seed instead of
@@ -588,7 +585,7 @@ async fn restart_refuses_seed_fallback_that_widens_loopback() {
 
     let _blocker = std::net::TcpListener::bind(("127.0.0.1", port_b)).expect("occupy port_b");
     set_value(&harness, json!({ "host": "127.0.0.1", "port": port_b })).await;
-    drive_apply(&harness).await;
+    drive_apply(&worker).await;
 
     worker.destroy().await.expect("destroy");
     wait_for_async(

@@ -5,7 +5,7 @@ export const COMMAND_CHAR_MS = 14
 
 type Segment = { text: string; tone: 'binary' | 'muted' | 'value' }
 
-/** `iii trigger compose::add worker=x` → coloured segments: the binary and function bright, flags muted, values warm. */
+/** `iii call compose::add worker=x` → coloured segments: the binary and function bright, flags muted, values warm. */
 function segments(command: string): Segment[] {
   const [binary, subcommand, fn, ...args] = command.split(' ')
   const out: Segment[] = [

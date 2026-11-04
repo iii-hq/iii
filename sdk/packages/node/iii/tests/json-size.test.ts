@@ -14,7 +14,7 @@ type Internal = {
   prepareJson: (message: Record<string, unknown>) => string
   sendMessage: (type: MessageType, message: Record<string, unknown>) => void
   sendMessageRaw: (data: string) => void
-  trigger: (request: Record<string, unknown>) => Promise<unknown>
+  call: (request: Record<string, unknown>) => Promise<unknown>
   registerFunction: (id: string, handler: (input: unknown) => Promise<unknown>) => void
   onMessage: (data: string) => void
   shutdown: () => Promise<void>
@@ -23,6 +23,7 @@ type Internal = {
   onSocketOpen: () => void
   registerWorkerMetadata: () => void
   ws: unknown
+  engineFeatures: ReadonlySet<string>
 }
 let sdk: Internal
 function makeSdk() {
@@ -32,7 +33,9 @@ function makeSdk() {
   }) as unknown as Internal
   return sdk
 }
-afterEach(async () => { await sdk.shutdown() })
+afterEach(async () => {
+  await sdk.shutdown()
+})
 
 function envelopeAtSize(size: number) {
   const message = { type: MessageType.InvokeFunction, data: '' }
@@ -115,7 +118,9 @@ describe('JSON frame size', () => {
 
   it('substitutes queued results and rejects queued arguments without pending entries', async () => {
     makeSdk()
-    await expect(sdk.trigger({ function_id: 'f', payload: 'x'.repeat(LIMIT) })).rejects.toMatchObject({ code: 'payload_too_large' })
+    await expect(sdk.call({ function_id: 'f', payload: 'x'.repeat(LIMIT) })).rejects.toMatchObject({
+      code: 'payload_too_large',
+    })
     expect(sdk.invocations.size).toBe(0)
     expect(sdk.messagesToSend).toHaveLength(0)
     sdk.sendMessage(MessageType.InvocationResult, { invocation_id: 'i', function_id: 'f', result: 'x'.repeat(LIMIT) })
@@ -123,28 +128,70 @@ describe('JSON frame size', () => {
     expect(sdk.messagesToSend[0]).not.toHaveProperty('result')
   })
 
+  it('replaces an answer too large to send with an error that activates no observer on an observe.v2 engine', () => {
+    makeSdk()
+    const answer = (fields: Record<string, unknown>) =>
+      JSON.parse(
+        sdk.prepareJson({
+          type: MessageType.InvocationResult,
+          invocation_id: 'i',
+          function_id: 'f',
+          result: 'x'.repeat(LIMIT),
+          ...fields,
+        }),
+      ) as Record<string, unknown>
+    const fields = (frame: Record<string, unknown>) => ({ matched: frame.matched, delivered: frame.delivered })
+    sdk.engineFeatures = new Set(['observe.v1', 'observe.v2'])
+    for (const [sent, expected] of [
+      // no hooks: the engine would evaluate every observer against the error
+      [{}, { matched: [], delivered: undefined }],
+      // the observers a match hook matched, or none
+      [{ matched: ['o'] }, { matched: [], delivered: undefined }],
+      [{ matched: [] }, { matched: [], delivered: undefined }],
+      // the deliver hook delivered the call
+      [{ delivered: true }, { matched: undefined, delivered: true }],
+    ] as const) {
+      const frame = answer(sent)
+      expect(frame).toMatchObject({ invocation_id: 'i', error: { code: 'payload_too_large' } })
+      expect(frame).not.toHaveProperty('result')
+      expect(fields(frame), JSON.stringify(sent)).toEqual(expected)
+    }
+    sdk.engineFeatures = new Set(['observe.v1'])
+    expect(fields(answer({}))).toEqual({ matched: undefined, delivered: undefined })
+  })
+
   it('sends an oversized result as a bare error message, so the caller sees the code prefix once', async () => {
     makeSdk()
     sdk.registerFunction('size::big', async () => 'x'.repeat(LIMIT))
-    sdk.onMessage(JSON.stringify({ type: MessageType.InvokeFunction, invocation_id: 'target', function_id: 'size::big', data: null }))
+    sdk.onMessage(
+      JSON.stringify({
+        type: MessageType.InvokeFunction,
+        invocation_id: 'target',
+        function_id: 'size::big',
+        data: null,
+      }),
+    )
     const frame = await vi.waitFor(() => {
-      const sent = sdk.messagesToSend.find(message => message.invocation_id === 'target')
+      const sent = sdk.messagesToSend.find((message) => message.invocation_id === 'target')
       if (!sent) throw new Error('result not sent yet')
       return sent as { type: string; function_id: string; error: { code: string; message: string } }
     })
     expect(frame).toMatchObject({ type: MessageType.InvocationResult, function_id: 'size::big' })
     expect(frame).not.toHaveProperty('result')
     expect(frame.error.code).toBe('payload_too_large')
-    const match = /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(frame.error.message)
+    const match =
+      /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(
+        frame.error.message,
+      )
     expect(match, frame.error.message).not.toBeNull()
     expect(Number(match?.[1])).toBeGreaterThan(LIMIT)
 
     // The engine relays the target's error body to the caller unchanged.
-    const call = sdk.trigger({ function_id: 'size::remote', payload: null })
-    const invocation = sdk.messagesToSend.find(message => message.function_id === 'size::remote')
+    const call = sdk.call({ function_id: 'size::remote', payload: null })
+    const invocation = sdk.messagesToSend.find((message) => message.function_id === 'size::remote')
     expect(invocation?.invocation_id).toEqual(expect.any(String))
     sdk.onMessage(JSON.stringify({ ...frame, invocation_id: invocation?.invocation_id, function_id: 'size::remote' }))
-    const rejection = (await call.catch(error => error)) as Error & { code?: string }
+    const rejection = (await call.catch((error) => error)) as Error & { code?: string }
     expect(rejection.code).toBe('payload_too_large')
     expect(rejection.message).toBe(`payload_too_large: ${frame.error.message}`)
     expect(rejection.message.match(/payload_too_large: /g)).toHaveLength(1)
@@ -154,16 +201,20 @@ describe('JSON frame size', () => {
     const httpServer = createServer()
     const webSocketServer = new WebSocketServer({ noServer: true })
     httpServer.on('upgrade', (request, socket, head) => {
-      webSocketServer.handleUpgrade(request, socket, head, client => {
+      webSocketServer.handleUpgrade(request, socket, head, (client) => {
         webSocketServer.emit('connection', client, request)
       })
     })
     const received: Array<{ data: Buffer; isBinary: boolean }> = []
     let resolveConnected: (() => void) | undefined
     let resolveMessages: (() => void) | undefined
-    const serverSawMetadata = new Promise<void>(resolve => { resolveConnected = resolve })
-    const allMessages = new Promise<void>(resolve => { resolveMessages = resolve })
-    webSocketServer.on('connection', client => {
+    const serverSawMetadata = new Promise<void>((resolve) => {
+      resolveConnected = resolve
+    })
+    const allMessages = new Promise<void>((resolve) => {
+      resolveMessages = resolve
+    })
+    webSocketServer.on('connection', (client) => {
       client.on('message', (data, isBinary) => {
         const bytes = Buffer.from(data as Buffer)
         if (received.length === 0) resolveConnected?.()
@@ -171,7 +222,7 @@ describe('JSON frame size', () => {
         if (received.length === 3) resolveMessages?.()
       })
     })
-    await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve))
+    await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve))
     const port = (httpServer.address() as AddressInfo).port
     sdk = registerWorker(`ws://127.0.0.1:${port}`, {
       enableMetricsReporting: false,
@@ -204,7 +255,9 @@ describe('JSON frame size', () => {
       const largeEnvelope = JSON.stringify(fragmented)
       expect(Buffer.byteLength(largeEnvelope)).toBe(targetSize)
       sdk.sendMessageRaw(largeEnvelope)
-      sdk.sendMessageRaw(JSON.stringify({ type: MessageType.InvocationResult, invocation_id: 'after', function_id: 'f', result: 'ok' }))
+      sdk.sendMessageRaw(
+        JSON.stringify({ type: MessageType.InvocationResult, invocation_id: 'after', function_id: 'f', result: 'ok' }),
+      )
       await allMessages
 
       const frames = parseClientFrames(Buffer.concat(wireWrites))
@@ -214,10 +267,10 @@ describe('JSON frame size', () => {
       const fragmentStart = 1
       const fragments = frames.slice(fragmentStart, fragmentStart + fragmentCount)
       expect(fragments).toHaveLength(fragmentCount)
-      expect(fragments.map(frame => frame.opcode)).toEqual([1, ...Array(fragmentCount - 1).fill(0)])
-      expect(fragments.slice(0, -1).every(frame => !frame.fin)).toBe(true)
+      expect(fragments.map((frame) => frame.opcode)).toEqual([1, ...Array(fragmentCount - 1).fill(0)])
+      expect(fragments.slice(0, -1).every((frame) => !frame.fin)).toBe(true)
       expect(fragments[fragmentCount - 1].fin).toBe(true)
-      expect(fragments.every(frame => frame.masked && frame.payload.length <= FRAGMENT_BYTES)).toBe(true)
+      expect(fragments.every((frame) => frame.masked && frame.payload.length <= FRAGMENT_BYTES)).toBe(true)
       expect(frames[fragmentStart + fragmentCount]).toMatchObject({ opcode: 1, fin: true, masked: true })
       expect(JSON.parse(received[0].data.toString('utf8'))).toEqual(singleFrame)
       expect(received[0].isBinary).toBe(false)
@@ -227,14 +280,18 @@ describe('JSON frame size', () => {
       expect(received[2].isBinary).toBe(false)
     } finally {
       await sdk.shutdown()
-      await new Promise<void>(resolve => webSocketServer.close(() => resolve()))
-      await new Promise<void>(resolve => httpServer.close(() => resolve()))
+      await new Promise<void>((resolve) => webSocketServer.close(() => resolve()))
+      await new Promise<void>((resolve) => httpServer.close(() => resolve()))
     }
   })
 
   it('terminates the socket when a synchronous fragment send throws after the first frame', () => {
     makeSdk()
-    const original = sdk.ws as { removeAllListeners: () => void; on: (event: string, handler: () => void) => void; terminate: () => void }
+    const original = sdk.ws as {
+      removeAllListeners: () => void
+      on: (event: string, handler: () => void) => void
+      terminate: () => void
+    }
     original.removeAllListeners()
     original.on('error', () => {})
     original.terminate()
@@ -261,11 +318,23 @@ describe('JSON frame size', () => {
   it('guards direct raw sends and keeps the same socket for a subsequent small result', () => {
     makeSdk()
     const send = vi.fn((_data, callback) => callback?.())
-    const original = sdk.ws as { removeAllListeners: () => void; on: (event: string, handler: () => void) => void; terminate: () => void }
+    const original = sdk.ws as {
+      removeAllListeners: () => void
+      on: (event: string, handler: () => void) => void
+      terminate: () => void
+    }
     original.removeAllListeners()
     original.on('error', () => {})
     original.terminate()
-    const socket = { readyState: 1, send, close: vi.fn(), removeAllListeners: vi.fn(), on: vi.fn(), terminate: vi.fn(), ping: vi.fn() }
+    const socket = {
+      readyState: 1,
+      send,
+      close: vi.fn(),
+      removeAllListeners: vi.fn(),
+      on: vi.fn(),
+      terminate: vi.fn(),
+      ping: vi.fn(),
+    }
     sdk.ws = socket
     sdk.registerWorkerMetadata = vi.fn()
     sdk.messagesToSend = [
@@ -274,10 +343,23 @@ describe('JSON frame size', () => {
     ]
     sdk.onSocketOpen()
     expect(sdk.messagesToSend).toHaveLength(0)
-    expect(JSON.parse(send.mock.calls[0][0])).toMatchObject({ invocation_id: 'queued', error: { code: 'payload_too_large' } })
+    expect(JSON.parse(send.mock.calls[0][0])).toMatchObject({
+      invocation_id: 'queued',
+      error: { code: 'payload_too_large' },
+    })
     send.mockClear()
-    sdk.sendMessageRaw(JSON.stringify({ type: MessageType.InvocationResult, invocation_id: 'i', function_id: 'f', result: 'x'.repeat(LIMIT) }))
-    expect(JSON.parse(send.mock.calls[0][0])).toMatchObject({ invocation_id: 'i', error: { code: 'payload_too_large' } })
+    sdk.sendMessageRaw(
+      JSON.stringify({
+        type: MessageType.InvocationResult,
+        invocation_id: 'i',
+        function_id: 'f',
+        result: 'x'.repeat(LIMIT),
+      }),
+    )
+    expect(JSON.parse(send.mock.calls[0][0])).toMatchObject({
+      invocation_id: 'i',
+      error: { code: 'payload_too_large' },
+    })
     sdk.sendMessage(MessageType.InvocationResult, { invocation_id: 'j', function_id: 'f', result: 1 })
     expect(sdk.ws).toBe(socket)
     expect(send).toHaveBeenCalledTimes(2)

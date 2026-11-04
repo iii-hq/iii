@@ -24,10 +24,10 @@ use crate::manifest::StartSpec;
 /// Environment variables the daemon owns for every child.
 ///
 /// Not because static configuration outranks an environment variable, which
-/// would be the wrong way round for most settings. Because each of these seven
-/// is already declared in the compose file, and a second declaration of the
-/// same thing is a disagreement nobody resolves. Each earns its place
-/// separately, so adding an eighth is a decision, not a habit:
+/// would be the wrong way round for most settings. Because each of the first
+/// seven is already declared in the compose file, and a second declaration of
+/// the same thing is a disagreement nobody resolves. Each earns its place
+/// separately, so adding a tenth is a decision, not a habit:
 ///
 /// - `III_URL` is the daemon's own connection. Readiness is observed over it,
 ///   so a container pointed at another engine is invisible to the daemon that
@@ -46,7 +46,14 @@ use crate::manifest::StartSpec;
 ///   canonical parent of that file.
 /// - `III_CONFIG_NAME` identifies the configuration service entry. Compose
 ///   injects the merged execution value there without persisting overrides.
-pub const RESERVED_ENV: [&str; 7] = [
+/// - `III_SANDBOX_WORKER_TOKEN` and `III_SANDBOX_HOST_ROOTS` are not declared
+///   in the compose file at all: `sandbox::adapter_env` sets them on
+///   the sandbox adapter container and nowhere else. The token authenticates
+///   the engine to the adapter's `worker::*` functions and the roots bound the
+///   host directories a VM may mount. A value from the machine or from
+///   `environment` would put the token in another container, or in a VM guest
+///   whose environment starts from the host's, or widen the roots.
+pub const RESERVED_ENV: [&str; 9] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -54,6 +61,8 @@ pub const RESERVED_ENV: [&str; 7] = [
     "III_COMPOSE_DIR",
     "III_CONFIG_NAME",
     "III_WORKER_NAME",
+    "III_SANDBOX_WORKER_TOKEN",
+    "III_SANDBOX_HOST_ROOTS",
 ];
 
 /// Whether a key claims a daemon-owned variable under the host OS's rules.
@@ -196,12 +205,14 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     // Telemetry identity belongs to this project, not the daemon's parent.
     // Explicit container values are applied below and may still override it.
     env.retain(|name, _| !is_host_user_id(name));
+    // The machine never supplies a reserved name. The sandbox guards reach a
+    // container only through its own `user_env` (the adapter's), so a host that
+    // exports one cannot hand it to another container or to a VM guest.
+    env.retain(|name, _| !is_reserved_env(name));
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
-    env.retain(|name, _| {
-        !is_reserved_env(name) && !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key))
-    });
+    env.retain(|name, _| !ctx.user_env.keys().any(|key| windows_env_key_eq(name, key)));
 
     env.extend(ctx.user_env.clone());
 
@@ -289,8 +300,7 @@ impl SpawnPlan {
     ///
     /// `None` when the container runs in a VM. There is no host program then,
     /// and `env` is not this command's environment either: it belongs to the
-    /// guest, and reaches it as boot arguments rather than through the boot
-    /// process, which keeps the daemon's own environment to find its firmware.
+    /// guest, and goes to the sandbox adapter in the `worker::start` request.
     pub fn command(&self) -> Option<tokio::process::Command> {
         if self.program.is_empty() {
             return None;
@@ -320,6 +330,7 @@ pub fn resolve_working_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::VmSpec;
 
     fn ctx<'a>(
         start: &'a StartSpec,
@@ -565,6 +576,46 @@ mod tests {
         assert_eq!(plan.env, expected.env);
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert!(!plan.env.contains_key("III_CONFIG_NAME"));
+    }
+
+    /// The worker token reaches the adapter container and nothing else, not
+    /// even a VM guest, whose environment starts from the host's.
+    #[test]
+    fn sandbox_guards_reach_only_the_adapter() {
+        assert!(
+            is_reserved_env("III_SANDBOX_WORKER_TOKEN")
+                && is_reserved_env("III_SANDBOX_HOST_ROOTS")
+        );
+        let host = env_of(&[
+            ("III_SANDBOX_WORKER_TOKEN", "leak"),
+            ("III_SANDBOX_HOST_ROOTS", "/"),
+        ]);
+        let no_env = BTreeMap::new();
+        for start in [
+            StartSpec::Shell("cargo run".to_string()),
+            StartSpec::Vm(VmSpec::Bundle {
+                package: "bundle".to_string(),
+                install_dir: PathBuf::from("/srv/app/bundle"),
+            }),
+        ] {
+            let plan = spawn_plan_with_env(&ctx(&start, None, &no_env), host.clone());
+            assert!(!plan.env.contains_key("III_SANDBOX_WORKER_TOKEN"));
+            assert!(!plan.env.contains_key("III_SANDBOX_HOST_ROOTS"));
+        }
+
+        let start = StartSpec::Shell("./adapter".to_string());
+        let adapter = crate::sandbox::adapter_env(
+            "t0k",
+            Path::new("/srv/app/worker-compose.yaml"),
+            Path::new("/home/u/.iii/compose/packages"),
+            &[],
+        );
+        let plan = spawn_plan_with_env(&ctx(&start, None, &adapter), host);
+        assert_eq!(plan.env["III_SANDBOX_WORKER_TOKEN"], "t0k");
+        assert_eq!(
+            plan.env["III_SANDBOX_HOST_ROOTS"],
+            adapter["III_SANDBOX_HOST_ROOTS"]
+        );
     }
 
     #[cfg(windows)]

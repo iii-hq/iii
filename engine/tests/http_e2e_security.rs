@@ -34,7 +34,7 @@ async fn private_ip_blocked_rejects_rfc1918_class_a() {
     let method = HttpMethod::Post;
     let headers = HashMap::new();
     let no_auth: Option<HttpAuth> = None;
-    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+    let endpoint = make_endpoint(url, &timeout_ms, &method, &headers, &no_auth);
 
     let result = invoker
         .invoke_http(
@@ -60,7 +60,7 @@ async fn private_ip_blocked_rejects_rfc1918_class_b() {
     let method = HttpMethod::Post;
     let headers = HashMap::new();
     let no_auth: Option<HttpAuth> = None;
-    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+    let endpoint = make_endpoint(url, &timeout_ms, &method, &headers, &no_auth);
 
     let result = invoker
         .invoke_http(
@@ -86,7 +86,7 @@ async fn private_ip_blocked_rejects_rfc1918_class_c() {
     let method = HttpMethod::Post;
     let headers = HashMap::new();
     let no_auth: Option<HttpAuth> = None;
-    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+    let endpoint = make_endpoint(url, &timeout_ms, &method, &headers, &no_auth);
 
     let result = invoker
         .invoke_http(
@@ -112,7 +112,7 @@ async fn https_enforcement_rejects_http_url() {
     let method = HttpMethod::Post;
     let headers = HashMap::new();
     let no_auth: Option<HttpAuth> = None;
-    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+    let endpoint = make_endpoint(url, &timeout_ms, &method, &headers, &no_auth);
 
     let result = invoker
         .invoke_http(
@@ -138,7 +138,7 @@ async fn dns_lookup_failed_returns_security_error() {
     let method = HttpMethod::Post;
     let headers = HashMap::new();
     let no_auth: Option<HttpAuth> = None;
-    let endpoint = make_endpoint(&url, &timeout_ms, &method, &headers, &no_auth);
+    let endpoint = make_endpoint(url, &timeout_ms, &method, &headers, &no_auth);
 
     let result = invoker
         .invoke_http(

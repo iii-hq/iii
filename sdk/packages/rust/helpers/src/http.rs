@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// HTTP method accepted by [`HttpInvocationConfig`]. Distinct from the core
-/// `builtin_triggers` HTTP method enum, which also covers HEAD/OPTIONS.
+/// HTTP method accepted by [`HttpInvocationConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum HttpMethod {

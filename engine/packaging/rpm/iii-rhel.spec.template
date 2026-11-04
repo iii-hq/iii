@@ -12,7 +12,7 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
 
 %description
 III is a WebSocket-based process communication engine. Workers connect over WS,
-register functions and triggers, and the engine routes invocations between
+register functions and observers, and the engine routes invocations between
 workers and core modules. Core modules add HTTP APIs, event streaming, cron
 scheduling, and logging.
 

@@ -9,12 +9,9 @@ import { MockEngine } from './mock-websocket'
  * Wire-level: each assertion is the frame the SDK actually emits, so these hold
  * without an engine.
  *
- * The browser SDK was left behind when the other SDKs adopted the rule. Its
- * typed helper inherited, so the shape looked right; the low-level
- * `registerTrigger` and `trigger` did not, and those are the paths a worker
- * uses. A browser worker in `orders` therefore called into `default` and
- * registered triggers that fired and resolved nothing -- registration
- * succeeded, the trigger existed, it fired on time, and nothing happened.
+ * Without the rule, a browser worker in `orders` would call into `default`
+ * and create observers that name functions it never registered there: the
+ * observer would exist and stay pending, and nothing would happen.
  */
 describe('namespace inheritance', () => {
   let engine: MockEngine
@@ -33,51 +30,59 @@ describe('namespace inheritance', () => {
   const connect = async (namespace?: string): Promise<void> => {
     sdk = registerWorker('ws://test:49135', namespace ? { namespace } : {})
     await engine.waitForOpen()
+    engine.sendWorkerRegistered('worker-1', ['observe.v1', 'observe.v2', 'local-dispatch.v1'])
   }
 
-  it('registers a trigger in the worker declared namespace', async () => {
+  it('observes in the worker declared namespace', async () => {
     await connect('orders')
-    sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {} })
+    sdk.observe('api::process', 'api::on-process')
 
-    expect(engine.findSent('registertrigger')).toMatchObject({ namespace: 'orders' })
+    expect(engine.findSent('observe')).toMatchObject({
+      source: { function_id: 'api::process', namespace: 'orders' },
+      target: { function_id: 'api::on-process', namespace: 'orders' },
+    })
   })
 
   it('lets an explicit namespace win', async () => {
     // Naming another namespace, `default` included, is how a worker inside one
     // reaches an engine builtin.
     await connect('orders')
-    sdk.registerTrigger({
-      type: 'cron',
-      function_id: 'state::sweep',
-      config: {},
-      namespace: 'default',
-    })
+    sdk.observe(
+      { function_id: 'state::sweep', namespace: 'default' },
+      { function_id: 'api::on-sweep', namespace: 'ops' },
+    )
 
-    expect(engine.findSent('registertrigger')).toMatchObject({ namespace: 'default' })
+    expect(engine.findSent('observe')).toMatchObject({
+      source: { function_id: 'state::sweep', namespace: 'default' },
+      target: { function_id: 'api::on-sweep', namespace: 'ops' },
+    })
   })
 
   it('leaves a worker without a namespace unchanged', async () => {
     await connect()
-    sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {} })
+    sdk.observe('api::process', 'api::on-process')
 
-    expect(engine.findSent('registertrigger')).not.toHaveProperty('namespace')
+    expect(engine.findSent('observe')).toEqual({
+      type: 'observe',
+      id: expect.any(String),
+      source: { function_id: 'api::process' },
+      target: { function_id: 'api::on-process' },
+    })
   })
 
   it('keeps an invocation in the caller namespace', async () => {
     await connect('orders')
-    void sdk.trigger({ function_id: 'api::ping', payload: {}, action: { type: 'void' } })
+    void sdk.call({ function_id: 'api::ping', payload: {}, action: { type: 'void' } })
 
-    const call = engine
-      .findAllSent('invokefunction')
-      .find((f) => f.function_id === 'api::ping')
+    const call = engine.findAllSent('invokefunction').find((f) => f.function_id === 'api::ping')
     expect(call).toMatchObject({ namespace: 'orders' })
   })
 
   it('keeps a non-void invocation in the caller namespace too', async () => {
-    // The two branches of `trigger` send separately, so both are asserted: the
+    // The two branches of `call` send separately, so both are asserted: the
     // void one returns immediately, this one waits on a reply.
     await connect('orders')
-    void sdk.trigger({ function_id: 'api::ask', payload: {} }).catch(() => {})
+    void sdk.call({ function_id: 'api::ask', payload: {} }).catch(() => {})
 
     const call = engine.findAllSent('invokefunction').find((f) => f.function_id === 'api::ask')
     expect(call).toMatchObject({ namespace: 'orders' })
@@ -85,7 +90,7 @@ describe('namespace inheritance', () => {
 
   it('keeps an implicit engine invocation in default', async () => {
     await connect('orders')
-    void sdk.trigger({
+    void sdk.call({
       function_id: 'engine::channels::create',
       payload: {},
       action: { type: 'void' },
@@ -97,7 +102,7 @@ describe('namespace inheritance', () => {
 
   it('lets an explicit namespace win for an engine invocation', async () => {
     await connect('orders')
-    void sdk.trigger({
+    void sdk.call({
       function_id: 'engine::channels::create',
       payload: {},
       action: { type: 'void' },
@@ -110,7 +115,7 @@ describe('namespace inheritance', () => {
 
   it('keeps an implicit configuration invocation in default', async () => {
     await connect('orders')
-    void sdk.trigger({ function_id: 'configuration::get', payload: {}, action: { type: 'void' } })
+    void sdk.call({ function_id: 'configuration::get', payload: {}, action: { type: 'void' } })
 
     const call = engine.findAllSent('invokefunction').find((f) => f.function_id === 'configuration::get')
     expect(call).toMatchObject({ namespace: 'default' })
@@ -118,7 +123,7 @@ describe('namespace inheritance', () => {
 
   it('lets an explicit namespace win for a configuration invocation', async () => {
     await connect('orders')
-    void sdk.trigger({
+    void sdk.call({
       function_id: 'configuration::get',
       payload: {},
       action: { type: 'void' },
@@ -141,9 +146,7 @@ describe('namespace inheritance', () => {
   it('never redirects the workers own registration', async () => {
     await connect('orders')
 
-    const announce = engine
-      .findAllSent('invokefunction')
-      .find((f) => f.function_id === 'engine::workers::register')
+    const announce = engine.findAllSent('invokefunction').find((f) => f.function_id === 'engine::workers::register')
     expect(announce, 'the worker announces itself').toBeDefined()
     expect(announce).not.toHaveProperty('namespace')
     // The namespace still travels, as data the engine files the worker under.
@@ -171,12 +174,12 @@ describe('a blank namespace is refused', () => {
     engine.uninstall()
   })
 
-  it.each([['', 'empty'], ['   ', 'whitespace-only']])(
-    'refuses a %s namespace',
-    (namespace) => {
-      expect(() => registerWorker('ws://test:49135', { namespace })).toThrow(/namespace is empty/)
-    },
-  )
+  it.each([
+    ['', 'empty'],
+    ['   ', 'whitespace-only'],
+  ])('refuses a %s namespace', (namespace) => {
+    expect(() => registerWorker('ws://test:49135', { namespace })).toThrow(/namespace is empty/)
+  })
 
   it('says what to do instead', () => {
     expect(() => registerWorker('ws://test:49135', { namespace: '' })).toThrow(
@@ -213,21 +216,22 @@ describe('a blank namespace on one call is refused', () => {
     engine.uninstall()
   })
 
-  it('refuses it on registerTrigger', () => {
-    expect(() =>
-      sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {}, namespace: '' }),
-    ).toThrow(/namespace is empty/)
+  it('refuses it on observe', () => {
+    expect(() => sdk.observe({ function_id: 'api::process', namespace: '' }, 'api::on-process')).toThrow(
+      /namespace is empty/,
+    )
   })
 
-  it('refuses it on trigger', async () => {
-    await expect(
-      sdk.trigger({ function_id: 'api::ping', payload: {}, namespace: '   ' }),
-    ).rejects.toThrow(/namespace is empty/)
+  it('refuses it on call', async () => {
+    await expect(sdk.call({ function_id: 'api::ping', payload: {}, namespace: '   ' })).rejects.toThrow(
+      /namespace is empty/,
+    )
   })
 
   it('still inherits when absent', () => {
     // The control: absent is not blank, and still means this worker's.
-    sdk.registerTrigger({ type: 'cron', function_id: 'api::process', config: {} })
-    expect(engine.findSent('registertrigger')).toMatchObject({ namespace: 'orders' })
+    engine.sendWorkerRegistered('worker-1', ['observe.v1', 'observe.v2', 'local-dispatch.v1'])
+    sdk.observe('api::process', 'api::on-process')
+    expect(engine.findSent('observe')).toMatchObject({ source: { namespace: 'orders' } })
   })
 })

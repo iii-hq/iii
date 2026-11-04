@@ -1,0 +1,7 @@
+name: sandbox-vm-worker
+runtime:
+  kind: javascript
+  base_image: docker.io/iiidev/node:latest
+scripts:
+  install: npm install
+  start: node index.js

@@ -129,7 +129,8 @@ pub enum ExporterType {
     Otlp,
     /// Store traces in memory (queryable via API)
     Memory,
-    /// Export traces via OTLP and store in memory (enables triggers with OTLP export)
+    /// Export traces via OTLP and store in memory (`observability::on-span` and the API
+    /// alongside OTLP export)
     Both,
 }
 
@@ -797,6 +798,7 @@ impl HotCache {
     /// same trace, so neither index moves. `Err` hands the span back when no
     /// snapshot is tracked (never pending, or its slot already left the cache)
     /// and the caller appends it as a fresh span.
+    #[allow(clippy::result_large_err)]
     fn replace_pending(&mut self, bytes: u64, span: StoredSpan) -> Result<(), StoredSpan> {
         if self.pending.is_empty() {
             return Err(span);
@@ -929,8 +931,8 @@ pub struct InMemorySpanStorage {
     low_watermark_ratio: AtomicU64,
     /// Cap on a single attribute value at ingest; zero = uncapped.
     max_attribute_bytes: AtomicU64,
-    /// Broadcast of every span as it lands, driving the `trace` trigger
-    /// fan-out. Mirrors `InMemoryLogStorage`'s log broadcast.
+    /// Broadcast of every span as it lands, driving
+    /// `observability::on-span`. Mirrors `InMemoryLogStorage`'s log broadcast.
     tx: broadcast::Sender<StoredSpan>,
     #[cfg(test)]
     full_payload_snapshot_reads: AtomicUsize,
@@ -1239,7 +1241,7 @@ impl InMemorySpanStorage {
     }
 
     /// Subscribe to a broadcast of every span as it lands in storage. Drives
-    /// the `trace` trigger fan-out (mirrors `InMemoryLogStorage::subscribe`).
+    /// `observability::on-span` (mirrors `InMemoryLogStorage::subscribe`).
     pub fn subscribe(&self) -> broadcast::Receiver<StoredSpan> {
         self.tx.subscribe()
     }
@@ -2446,7 +2448,7 @@ impl SpanExporter for InMemorySpanExporter {
 
 /// Mirrors spans into the in-memory store at START (as `pending` snapshots) so
 /// live trace views can render in-progress work — most importantly the
-/// engine-side parent spans (`trigger <fn>`, `enqueue`, `call <fn>`) that
+/// engine-side parent spans (`enqueue`, `call <fn>`) that
 /// otherwise only land after everything under them has finished.
 ///
 /// The final span still arrives exclusively via the exporter path on close and
@@ -2507,7 +2509,8 @@ impl SpanProcessor for LiveSpanProcessor {
 }
 
 /// Tee span exporter that sends spans to both OTLP collector and in-memory storage.
-/// This enables span triggers to work while still exporting to an external collector.
+/// This feeds `observability::on-span` and the trace API while still exporting to an
+/// external collector.
 #[derive(Debug)]
 pub struct TeeSpanExporter {
     otlp_exporter: opentelemetry_otlp::SpanExporter,
@@ -2534,7 +2537,7 @@ impl SpanExporter for TeeSpanExporter {
         &self,
         batch: Vec<SpanData>,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
-        // Store in memory first (for triggers and API access).
+        // Store in memory first (for `observability::on-span` and API access).
         let stored: Vec<StoredSpan> = batch
             .iter()
             .map(|s| StoredSpan::from_span_data(s, &self.service_name))
@@ -6849,12 +6852,12 @@ mod tests {
             Ok(()) => {
                 // Either early-returned due to disabled config, or successfully ingested.
                 // If storage exists and config doesn't disable it, verify the log was stored.
-                if let Some(config) = get_otel_config() {
-                    if !config.enabled.unwrap_or(true) {
-                        // Config says disabled - verify nothing was stored
-                        if let Some(storage) = get_log_storage() {
-                            assert_eq!(storage.get_logs().len(), 0);
-                        }
+                if let Some(config) = get_otel_config()
+                    && !config.enabled.unwrap_or(true)
+                {
+                    // Config says disabled - verify nothing was stored
+                    if let Some(storage) = get_log_storage() {
+                        assert_eq!(storage.get_logs().len(), 0);
                     }
                 }
             }
@@ -7599,7 +7602,7 @@ mod tests {
         let storage = Arc::new(InMemorySpanStorage::new(100));
         let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider = SdkTracerProvider::builder()
-            .with_span_processor(iii_helpers::observability::BaggageSpanProcessor::default())
+            .with_span_processor(iii_helpers::observability::BaggageSpanProcessor)
             .with_span_processor(LiveSpanProcessor::new(storage.clone(), "test-svc".into()))
             // Memory side (final replaces pending) + wire stand-in (OTLP path).
             .with_simple_exporter(InMemorySpanExporter::with_storage(
@@ -8256,7 +8259,7 @@ mod tests {
                     }]
                 },
                 "scopeSpans": [{
-                    "scope": {"name": "iii-worker", "version": "1.0.0"},
+                    "scope": {"name": "app-worker", "version": "1.0.0"},
                     "spans": [{
                         "traceId": "abcdef1234567890abcdef1234567890",
                         "spanId": "1234567890abcdef",
@@ -10120,9 +10123,7 @@ mod tests {
     #[test]
     fn extract_context_with_no_headers_returns_empty_context() {
         let cx = extract_context(None, None);
-        let span_ref = cx.span();
-        assert!(!span_ref.span_context().is_valid());
-        drop(span_ref);
+        assert!(!cx.span().span_context().is_valid());
         assert!(inject_traceparent_from_context(&cx).is_none());
         assert!(inject_baggage_from_context(&cx).is_none());
     }
@@ -10189,9 +10190,7 @@ mod tests {
     #[test]
     fn invalid_traceparent_extracts_to_invalid_context() {
         let cx = extract_context(Some("not-a-valid-traceparent"), None);
-        let span_ref = cx.span();
-        assert!(!span_ref.span_context().is_valid());
-        drop(span_ref);
+        assert!(!cx.span().span_context().is_valid());
         assert!(inject_traceparent_from_context(&cx).is_none());
     }
 

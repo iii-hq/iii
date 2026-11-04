@@ -2,9 +2,6 @@
 //!
 //! Requires a running III engine. Set III_URL and III_HTTP_URL, or use localhost defaults.
 
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
-
 mod common;
 
 use std::sync::Arc;
@@ -15,7 +12,6 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 
 use iii_sdk::RegisterFunction;
-use iii_sdk::protocol::RegisterTriggerInput;
 
 #[tokio::test]
 async fn middleware_continue_to_handler() {
@@ -44,16 +40,16 @@ async fn middleware_continue_to_handler() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        "test::mw::continue::handler::rs".to_string(),
+    common::route_with(
+        iii,
         json!({
-            "api_path": "test/rs/mw/continue",
-            "http_method": "GET",
+            "method": "GET",
+            "path": "/test/rs/mw/continue",
             "middleware_function_ids": ["test::mw::continue::rs"],
         }),
-    ))
-    .expect("register trigger");
+        "test::mw::continue::handler::rs",
+    )
+    .await;
 
     common::settle().await;
     sleep(Duration::from_millis(200)).await;
@@ -103,16 +99,16 @@ async fn middleware_short_circuit() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        "test::mw::block::handler::rs".to_string(),
+    common::route_with(
+        iii,
         json!({
-            "api_path": "test/rs/mw/block",
-            "http_method": "GET",
+            "method": "GET",
+            "path": "/test/rs/mw/block",
             "middleware_function_ids": ["test::mw::block::rs"],
         }),
-    ))
-    .expect("register trigger");
+        "test::mw::block::handler::rs",
+    )
+    .await;
 
     common::settle().await;
     sleep(Duration::from_millis(200)).await;
@@ -173,19 +169,16 @@ async fn multiple_middleware_ordering() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        "test::mw::order::handler::rs".to_string(),
+    common::route_with(
+        iii,
         json!({
-            "api_path": "test/rs/mw/order",
-            "http_method": "GET",
-            "middleware_function_ids": [
-                "test::mw::order::first::rs",
-                "test::mw::order::second::rs",
-            ],
+            "method": "GET",
+            "path": "/test/rs/mw/order",
+            "middleware_function_ids": ["test::mw::order::first::rs", "test::mw::order::second::rs"],
         }),
-    ))
-    .expect("register trigger");
+        "test::mw::order::handler::rs",
+    )
+    .await;
 
     common::settle().await;
     sleep(Duration::from_millis(200)).await;
@@ -215,15 +208,7 @@ async fn no_middleware_regression() {
         }),
     );
 
-    iii.register_trigger(RegisterTriggerInput::new(
-        "http".to_string(),
-        "test::mw::none::rs".to_string(),
-        json!({
-            "api_path": "test/rs/mw/none",
-            "http_method": "GET",
-        }),
-    ))
-    .expect("register trigger");
+    common::route(iii, "GET", "/test/rs/mw/none", "test::mw::none::rs").await;
 
     common::settle().await;
     sleep(Duration::from_millis(200)).await;

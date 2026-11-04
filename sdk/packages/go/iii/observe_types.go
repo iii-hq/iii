@@ -1,15 +1,14 @@
 package iii
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 )
 
-// This file holds the public types of observe (tech-specs/2026-10-13-observe/sdk.md):
-// the observing side ([Source], [ObserverOptions], [ObserverHandle]) and the owner side
-// ([ObserveHooks], [Observer]). The wire shapes are in protocol.go.
+// This file holds the public types of observe: the observing side ([Source],
+// [ObserverOptions], [ObserverHandle]) and the hosting side ([Observer], [Call] and the
+// hook types). The wire shapes are in protocol.go.
 
 // Capture names a part of an observed invocation shipped to an observer's target.
 // The default is input, output and caller.
@@ -23,8 +22,8 @@ const (
 	CaptureMetadata Capture = "metadata"
 )
 
-// On selects which invocations of an auto function reach an observer. The default is
-// [OnSuccess].
+// On selects which calls of a function reach an observer, by their status. The default
+// is [OnSuccess].
 type On string
 
 const (
@@ -43,19 +42,8 @@ const (
 	DeliverOutput   Deliver = "output"
 )
 
-// Delivery is how a function's observers are delivered.
-type Delivery string
-
-const (
-	// DeliveryAuto (the default): every invocation is offered to every observer.
-	DeliveryAuto Delivery = "auto"
-	// DeliveryOwner: the function's handler hands each event to the observers it
-	// belongs to, with [Observer.Emit] or [Observer.Call].
-	DeliveryOwner Delivery = "owner"
-)
-
-// ObserverState is an observer's lifecycle: pending (no owner yet, waiting for the
-// owner's ack, or no target yet) -> active or error; suspended while its worker or
+// ObserverState is an observer's lifecycle: pending (no host yet, waiting for the
+// host's ack, or no target yet) -> active or error; suspended while its worker or
 // target is away; disposed at the end.
 type ObserverState string
 
@@ -67,7 +55,7 @@ const (
 	ObserverDisposed  ObserverState = "disposed"
 )
 
-// Dispatch selects how [Client.Trigger] reaches a function this worker hosts.
+// Dispatch selects how [Client.Call] reaches a function this worker hosts.
 type Dispatch string
 
 const (
@@ -78,14 +66,22 @@ const (
 	DispatchRemote Dispatch = "remote"
 )
 
-// Args are an observer's arguments, for the observed function's owner (owner-delivered
-// functions only; validated against its args_format by the engine).
+// Args are an observer's arguments, for the worker that hosts the observed function:
+// validated against the function's args_format by the engine, and read by its hooks.
 type Args map[string]any
 
 // Filters is a declarative filter over input, output, error, caller and metadata, with
 // explicit operators only (the language of the filter subpackage):
 //
 //	iii.Filters{"input.amount": iii.Op{"$gte": 500}}
+//
+// The engine evaluates them for the calls it routes, and the worker that hosts the
+// function for the calls it makes to it in-process. Both match through an index of the
+// observers' equality conditions: each observer is filed under one $eq of a scalar, or
+// one $in of scalars, on a path of its filter's top-level $and, and costs a call nothing
+// when the call's value at that path is none of that condition's values. A call
+// evaluates the whole filter of the observers filed under its value and of those with
+// no such condition.
 type Filters map[string]any
 
 // Op is the operator object of one filter path: iii.Op{"$eq": "insert"}.
@@ -98,16 +94,18 @@ type Source struct {
 	// Namespace defaults to this worker's (engine::* and configuration::* resolve to
 	// the engine's default namespace).
 	Namespace string
-	// Args go to the owner of an owner-delivered function.
+	// Args go to the worker that hosts the function, which reads them in its hooks
+	// (a cron expression, a route, a table). A function without args_format takes none.
 	Args Args
-	// Filters decide which events reach the target; nil matches every event.
+	// Filters decide which calls reach the target; nil matches every call.
 	Filters Filters
-	// On is for auto functions only; empty means [OnSuccess].
+	// On selects calls by status; empty means [OnSuccess].
 	On On
-	// Capture is for auto functions and obs.Emit. nil means the default (input,
-	// output, caller); an empty, non-nil slice captures nothing.
+	// Capture is what the envelope carries. nil means the default (input, output,
+	// caller); an empty, non-nil slice captures nothing.
 	Capture []Capture
-	// Deliver is for auto functions and obs.Emit; empty means [DeliverEnvelope].
+	// Deliver is what the target receives when iii delivers; empty means
+	// [DeliverEnvelope].
 	Deliver Deliver
 }
 
@@ -138,9 +136,11 @@ type ObserveReason struct {
 }
 
 // ObserveRejectionError is an observe error carrying its code: what
-// [ObserverHandle.Ready] returns when the observer turns error or disposed, and what an
-// [ObserveHooks.OnObserverAdded] hook returns (built with [ObserveRejection]) to reject
-// an observer with a code of its own. Recover it with errors.As.
+// [ObserverHandle.Ready] returns when the observer turns error or disposed, what
+// [Client.Observe] returns for an id a handle of the client holds
+// (OBSERVER_ID_CONFLICT), and what an [AddedHook] returns (built with
+// [ObserveRejection]) to reject an observer with a code of its own. Recover it with
+// errors.As.
 type ObserveRejectionError struct {
 	Code    string
 	Message string
@@ -150,58 +150,18 @@ func (e *ObserveRejectionError) Error() string {
 	return fmt.Sprintf("iii: observe rejected: %s: %s", e.Code, e.Message)
 }
 
-// ObserveRejection builds the error an OnObserverAdded hook returns to reject an
-// observer with code (any other error rejects it with OBSERVE_REJECTED).
+// ObserveRejection builds the error an [AddedHook] returns to reject an observer with
+// code (any other error rejects it with OBSERVE_REJECTED).
 func ObserveRejection(code, message string) error {
 	return &ObserveRejectionError{Code: code, Message: message}
-}
-
-// ObserveHooks is the Observe option of [RegisterFunctionOptions]: how the function's
-// observers are delivered, and the callbacks that run when one is added or removed.
-// Only Delivery, ArgsFormat, LegacyTriggerType and Allow travel to the engine.
-//
-// The callbacks of one function run one at a time, in revision order. A callback still
-// running after the 30 s timeout no longer holds the queue (its observer is rejected
-// with OWNER_TIMEOUT and its ctx cancelled), so a hung callback cannot stall the
-// function forever: if it ignores ctx, it may overlap with the next callbacks.
-type ObserveHooks struct {
-	// Delivery is [DeliveryAuto] (empty) or [DeliveryOwner].
-	Delivery Delivery
-	// ArgsFormat is the JSON Schema of the observers' args (owner delivery only: the
-	// engine answers INVALID_ARGS). With auto delivery, RegisterFunction fails with
-	// INVALID_OBSERVE_DESCRIPTOR.
-	ArgsFormat json.RawMessage
-	// LegacyTriggerType accepts old RegisterTrigger calls of this trigger type
-	// through the engine's legacy shim.
-	LegacyTriggerType string
-	// Allow false refuses every observer (NOT_OBSERVABLE); nil means true.
-	Allow *bool
-	// OnObserverAdded runs once per added observer, before the SDK acks it, one at a
-	// time per function. Returning an error rejects the observer (an error built with
-	// [ObserveRejection] sets the code, any other error is OBSERVE_REJECTED); after
-	// 30 s it is rejected with OWNER_TIMEOUT and ctx is cancelled.
-	OnObserverAdded func(ctx context.Context, obs *Observer) error
-	// OnObserverRemoved runs once per removed observer (unobserve, dispose, the
-	// observing worker gone for good, a reconnect diff). It cannot fail.
-	OnObserverRemoved func(ctx context.Context, obs *Observer)
 }
 
 // FunctionOptions is another name for [RegisterFunctionOptions], the one the cross-SDK
 // specification uses.
 type FunctionOptions = RegisterFunctionOptions
 
-// ObserveDoc is the document an observer's filters read ([Observer.Matches]). A nil
-// field is absent; use json.RawMessage(`null`) for a JSON null.
-type ObserveDoc struct {
-	Input    any
-	Output   any
-	Error    any
-	Caller   *Caller
-	Metadata any
-}
-
-// Observed is what the target of an auto observer, or of obs.Emit, receives with
-// [DeliverEnvelope] (the default). Fields not in the observer's capture are absent.
+// Observed is what an observer's target receives with [DeliverEnvelope] (the default)
+// when iii delivers. Fields not in the observer's capture are absent.
 // Decode a target's payload into it:
 //
 //	var ev iii.Observed

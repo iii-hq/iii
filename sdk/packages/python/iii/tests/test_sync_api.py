@@ -9,11 +9,9 @@ from typing import Any
 import pytest
 
 import iii.iii as iii_module
-from iii import InitOptions
-from iii.protocol import RegisterTriggerTypeInput
+from iii import CallAction, InitOptions
 from iii.helpers import create_channel
 from iii.iii import III
-from iii.triggers import TriggerConfig, TriggerHandler
 
 
 class FakeWebSocket:
@@ -36,14 +34,6 @@ class FakeWebSocket:
         # Like a real socket: iteration blocks while open and ends on close.
         await self._closed.wait()
         raise StopAsyncIteration
-
-
-class DummyTriggerHandler(TriggerHandler[Any]):
-    async def register_trigger(self, config: TriggerConfig[Any]) -> None:
-        return None
-
-    async def unregister_trigger(self, config: TriggerConfig[Any]) -> None:
-        return None
 
 
 def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
@@ -105,8 +95,8 @@ def test_background_thread_stops_on_shutdown(monkeypatch: pytest.MonkeyPatch) ->
     assert not thread.is_alive()
 
 
-def test_trigger_is_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """trigger() should be synchronous and return the result directly."""
+def test_call_is_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """call() should be synchronous and return the result directly."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
@@ -117,13 +107,11 @@ def test_trigger_is_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     client.register_function("test.echo", echo_handler)
     time.sleep(0.05)
 
-    from iii import TriggerAction
-
-    result = client.trigger(
+    result = client.call(
         {
             "function_id": "test.echo",
             "payload": {"hello": "world"},
-            "action": TriggerAction.Void(),
+            "action": CallAction.Void(),
         }
     )
     assert result is None
@@ -165,35 +153,17 @@ def test_register_function_accepts_async_handler(monkeypatch: pytest.MonkeyPatch
     client.shutdown()
 
 
-
-def test_register_and_unregister_trigger_type_accept_input_object(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Trigger type registration should accept input objects symmetrically."""
-    _patch_ws(monkeypatch)
-    client = III("ws://fake", InitOptions())
-    time.sleep(0.05)
-    trigger_type = RegisterTriggerTypeInput(id="trigger.test", description="Trigger description")
-
-    client.register_trigger_type(trigger_type, DummyTriggerHandler())
-
-    assert "trigger.test" in client._trigger_types
-    assert client._trigger_types["trigger.test"].message.description == "Trigger description"
-
-    client.unregister_trigger_type(trigger_type)
-
-    assert "trigger.test" not in client._trigger_types
-
-    client.shutdown()
-
-
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """trigger and the helpers.create_channel free function should be sync."""
+    """call (and its alias trigger) and the helpers.create_channel free function should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
 
     import inspect
 
+    assert not inspect.iscoroutinefunction(client.call)
     assert not inspect.iscoroutinefunction(client.trigger)
+    assert inspect.iscoroutinefunction(client.call_async)
     assert not inspect.iscoroutinefunction(create_channel)
 
     client.shutdown()

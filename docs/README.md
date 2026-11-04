@@ -1,6 +1,7 @@
 ---
 title: "iii Docs"
-description: "A high-level overview of iii and how to work with the documentation in this directory."
+description:
+  "A high-level overview of iii and how to work with the documentation in this directory."
 owner: "devrel"
 type: "explanation"
 ---
@@ -8,7 +9,7 @@ type: "explanation"
 # iii Docs
 
 iii is a software system that eliminates integration complexity. It organizes software into three
-primitives (Worker, Trigger, Function), so every capability (queues, cron, streaming, sandboxing,
+primitives (Worker, Function, Observer), so every capability (queues, cron, streaming, sandboxing,
 observability, agents, frontend UIs) can be built and composed from the same set of pieces. The
 rendered documentation site is the canonical reference; this directory holds the Mintlify source.
 
@@ -38,6 +39,6 @@ pnpm generate:api-docs
 
 ## Releasing
 
-The docs are versioned with a Next / Latest / archive scheme. To author upcoming docs in `docs/next/`
-and understand how a release promotes them into the published Latest, see
+The docs are versioned with a Next / Latest / archive scheme. To author upcoming docs in
+`docs/next/` and understand how a release promotes them into the published Latest, see
 [RELEASING.md](./RELEASING.md).

@@ -21,7 +21,7 @@ worker.registerFunction("user::confirm_destructive_op", async () => ({ confirmed
 
 await new Promise((resolve) => setTimeout(resolve, 3000));
 
-const result = await worker.trigger({
+const result = await worker.call({
   function_id: "link::request_delete",
   namespace: PROJECT_NAMESPACE,
   payload: { code: CODE, session: SESSION },

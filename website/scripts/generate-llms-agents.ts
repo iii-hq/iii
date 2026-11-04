@@ -16,7 +16,7 @@ const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, "scripts", "agents-appendix
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */
 const LLMS_TAGLINE =
-  "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Functions, Triggers, and Workers. The result is coordinated execution that behaves as if it were a single runtime."
+  "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Workers, Functions, and Observers. The result is coordinated execution that behaves as if it were a single runtime."
 
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10)

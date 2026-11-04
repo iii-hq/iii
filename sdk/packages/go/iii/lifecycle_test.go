@@ -12,13 +12,13 @@ import (
 	"github.com/coder/websocket"
 )
 
-// A5: WithInvocationTimeout bounds a Trigger whose request has no Timeout.
-func TestWithInvocationTimeoutBoundsTrigger(t *testing.T) {
+// A5: WithInvocationTimeout bounds a Call whose request has no Timeout.
+func TestWithInvocationTimeoutBoundsCall(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithInvocationTimeout(150*time.Millisecond)) // the engine never replies
 
 	start := time.Now()
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::silent"})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::silent"})
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
@@ -28,13 +28,13 @@ func TestWithInvocationTimeoutBoundsTrigger(t *testing.T) {
 	}
 }
 
-// A5: an explicit TriggerRequest.Timeout wins over WithInvocationTimeout.
-func TestTriggerTimeoutOverridesInvocationTimeout(t *testing.T) {
+// A5: an explicit CallRequest.Timeout wins over WithInvocationTimeout.
+func TestCallTimeoutOverridesInvocationTimeout(t *testing.T) {
 	m := newMockEngine(t)
 	c := connectClient(t, m, WithInvocationTimeout(time.Minute))
 
 	start := time.Now()
-	_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "svc::silent", Timeout: 100 * time.Millisecond})
+	_, err := c.Call(context.Background(), CallRequest{FunctionID: "svc::silent", Timeout: 100 * time.Millisecond})
 	if !errors.Is(err, ErrTimeout) {
 		t.Fatalf("error = %v, want ErrTimeout", err)
 	}
@@ -51,15 +51,15 @@ func TestInvocationTimeoutDefault(t *testing.T) {
 		"negative": {WithInvocationTimeout(-time.Second)},
 	} {
 		c := New("ws://127.0.0.1:0", opts...)
-		if got := c.triggerTimeout(0); got != DefaultInvocationTimeout {
+		if got := c.callTimeout(0); got != DefaultInvocationTimeout {
 			t.Errorf("%s: timeout = %v, want %v", name, got, DefaultInvocationTimeout)
 		}
 	}
 	c := New("ws://127.0.0.1:0", WithInvocationTimeout(2*time.Second))
-	if got := c.triggerTimeout(0); got != 2*time.Second {
+	if got := c.callTimeout(0); got != 2*time.Second {
 		t.Errorf("timeout = %v, want 2s", got)
 	}
-	if got := c.triggerTimeout(time.Second); got != time.Second {
+	if got := c.callTimeout(time.Second); got != time.Second {
 		t.Errorf("explicit timeout = %v, want 1s", got)
 	}
 }
@@ -107,14 +107,14 @@ func (r *stateRecorder) waitFor(t *testing.T, want []ConnectionState) []Connecti
 
 // A6: listeners get the current state, then every change in order, across a reconnect;
 // a listener may call the client; unsubscribe stops the delivery.
-func TestOnConnectionStateChangeOrderAndUnsubscribe(t *testing.T) {
+func TestAddConnectionStateListenerOrderAndUnsubscribe(t *testing.T) {
 	m := newMockEngine(t)
 	c := New(m.url, fastReconnect())
 	t.Cleanup(func() { _ = c.Close() })
 
 	first := newStateRecorder()
 	var calledState atomic.Bool
-	unsubscribeFirst := c.OnConnectionStateChange(func(s ConnectionState) {
+	unsubscribeFirst := c.AddConnectionStateListener(func(s ConnectionState) {
 		_ = c.State() // must not deadlock: listeners run outside the client's locks
 		calledState.Store(true)
 		first.record(s)
@@ -130,7 +130,7 @@ func TestOnConnectionStateChangeOrderAndUnsubscribe(t *testing.T) {
 
 	// A listener added later starts from the current state.
 	second := newStateRecorder()
-	unsubscribeSecond := c.OnConnectionStateChange(second.record)
+	unsubscribeSecond := c.AddConnectionStateListener(second.record)
 	second.waitFor(t, []ConnectionState{StateConnected})
 
 	m.closeActiveConnection()
@@ -160,14 +160,14 @@ func TestOnConnectionStateChangeOrderAndUnsubscribe(t *testing.T) {
 }
 
 // A6: a panicking listener is contained and the others keep receiving.
-func TestOnConnectionStateChangeContainsPanics(t *testing.T) {
+func TestAddConnectionStateListenerContainsPanics(t *testing.T) {
 	logs := captureLog(t)
 	c := New("ws://127.0.0.1:0")
 	t.Cleanup(func() { _ = c.Close() })
-	unsubscribe := c.OnConnectionStateChange(func(ConnectionState) { panic("boom") })
+	unsubscribe := c.AddConnectionStateListener(func(ConnectionState) { panic("boom") })
 	defer unsubscribe()
 	r := newStateRecorder()
-	c.OnConnectionStateChange(r.record)
+	c.AddConnectionStateListener(r.record)
 	r.waitFor(t, []ConnectionState{StateDisconnected})
 	c.setState(StateConnecting)
 	r.waitFor(t, []ConnectionState{StateDisconnected, StateConnecting})

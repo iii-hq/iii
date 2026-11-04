@@ -3,9 +3,9 @@ import type { ActivationWire, CallerWire } from './iii-types'
 import type { InvocationContext } from './observe-types'
 
 /**
- * The invocation a handler runs in. Set around every handler, remote
- * (`InvokeFunction`) and local (in-process dispatch), and read by outgoing
- * calls (`caller`, `observe_depth`) and by `obs.emit` / `obs.call`.
+ * The invocation a handler runs in. Set around every handler and its
+ * function's deliver hook, remote (`InvokeFunction`) and local (in-process
+ * dispatch), and read by outgoing calls (`caller`, `observe_depth`).
  */
 export type ActiveInvocation = {
   function_id: string
@@ -13,11 +13,6 @@ export type ActiveInvocation = {
   caller?: CallerWire
   activation?: ActivationWire
   observe_depth: number
-  /** The invocation's metadata sidecar: what an emitted event's filters see as `metadata`. */
-  metadata?: unknown
-  /** The trace context the invocation arrived with: what an event emitted from it carries. */
-  traceparent?: string
-  baggage?: string
   /** How many local calls deep this invocation is (0 for one that came over the wire). */
   localDepth?: number
 }
@@ -35,7 +30,7 @@ export function runInContext<T>(ctx: ActiveInvocation, fn: () => T): T {
   return storage.run(ctx, fn)
 }
 
-/** The public view of the current invocation (without the metadata sidecar). */
+/** The public view of the current invocation. */
 export function publicContext(ctx: ActiveInvocation | undefined): InvocationContext | undefined {
   if (!ctx) return undefined
   const view: InvocationContext = {

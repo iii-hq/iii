@@ -1,4 +1,5 @@
-"""Integration tests for PubSub operations."""
+"""Integration tests for PubSub: subscribers observe ``publish`` with a
+filter on ``input.topic`` and receive the published input."""
 
 import asyncio
 import random
@@ -6,11 +7,24 @@ import time
 
 import pytest
 
+from iii import ObserverHandle
 from iii.iii import III
+
+# An observer of a function nobody hosts stays pending; bound the wait so a
+# missing pubsub worker fails the test instead of hanging it.
+READY_TIMEOUT_S = 10.0
 
 
 def unique_topic(prefix: str) -> str:
     return f"{prefix}.{int(time.time())}.{random.random():.10f}".replace(".", "_")
+
+
+def subscribe(iii_client: III, topic: str, function_id: str) -> ObserverHandle:
+    """A subscriber: every publish to ``topic`` calls ``function_id`` with the published input."""
+    return iii_client.observe(
+        {"function_id": "publish", "filters": {"input.topic": {"$eq": topic}}, "deliver": "input"},
+        function_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -20,18 +34,17 @@ async def test_subscribe_and_receive_published_messages(iii_client: III):
     received_messages = []
     received_event = asyncio.Event()
 
-    async def subscriber_handler(data):
-        received_messages.append(data)
+    async def subscriber_handler(published):
+        received_messages.append(published["data"])
         received_event.set()
         return {}
 
     fn = iii_client.register_function(f"test.pubsub.py.subscriber.{topic}", subscriber_handler)
-    trigger = iii_client.register_trigger({"type": "subscribe", "function_id": fn.id, "config": {"topic": topic}})
-
-    await asyncio.sleep(0.3)
+    subscription = subscribe(iii_client, topic, fn.id)
+    await asyncio.wait_for(subscription.ready_async(), timeout=READY_TIMEOUT_S)
 
     try:
-        iii_client.trigger(
+        iii_client.call(
             {
                 "function_id": "publish",
                 "payload": {"topic": topic, "data": {"message": "Hello PubSub!"}},
@@ -44,7 +57,7 @@ async def test_subscribe_and_receive_published_messages(iii_client: III):
         assert received_messages[0]["message"] == "Hello PubSub!"
     finally:
         fn.unregister()
-        trigger.unregister()
+        subscription.dispose()
 
 
 @pytest.mark.asyncio
@@ -57,24 +70,24 @@ async def test_topic_isolation(iii_client: III):
     received_b = []
     received_a_event = asyncio.Event()
 
-    async def handler_a(data):
-        received_a.append(data)
+    async def handler_a(published):
+        received_a.append(published["data"])
         received_a_event.set()
         return {}
 
-    async def handler_b(data):
-        received_b.append(data)
+    async def handler_b(published):
+        received_b.append(published["data"])
         return {}
 
     fn_a = iii_client.register_function(f"test.pubsub.py.topic_a.{topic_a}", handler_a)
     fn_b = iii_client.register_function(f"test.pubsub.py.topic_b.{topic_b}", handler_b)
-    trigger_a = iii_client.register_trigger({"type": "subscribe", "function_id": fn_a.id, "config": {"topic": topic_a}})
-    trigger_b = iii_client.register_trigger({"type": "subscribe", "function_id": fn_b.id, "config": {"topic": topic_b}})
-
-    await asyncio.sleep(0.3)
+    subscription_a = subscribe(iii_client, topic_a, fn_a.id)
+    subscription_b = subscribe(iii_client, topic_b, fn_b.id)
+    await asyncio.wait_for(subscription_a.ready_async(), timeout=READY_TIMEOUT_S)
+    await asyncio.wait_for(subscription_b.ready_async(), timeout=READY_TIMEOUT_S)
 
     try:
-        iii_client.trigger(
+        iii_client.call(
             {
                 "function_id": "publish",
                 "payload": {"topic": topic_a, "data": {"for": "a"}},
@@ -89,5 +102,5 @@ async def test_topic_isolation(iii_client: III):
     finally:
         fn_a.unregister()
         fn_b.unregister()
-        trigger_a.unregister()
-        trigger_b.unregister()
+        subscription_a.dispose()
+        subscription_b.dispose()

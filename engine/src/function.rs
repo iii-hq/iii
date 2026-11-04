@@ -28,9 +28,9 @@ pub enum FunctionResult<T, E> {
 }
 type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 /// Handler arguments: `(invocation_id, data, session, metadata)`. `metadata` is
-/// the per-invocation sidecar carried alongside the payload (set at fire time
-/// from a trigger's `metadata`, or by an invocation-time caller) — it travels
-/// as a distinct channel rather than being folded into `data`.
+/// the per-invocation sidecar carried alongside the payload (set by the caller
+/// or by the observer that activated the call) — it travels as a distinct
+/// channel rather than being folded into `data`.
 pub type HandlerFn =
     dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Value>) -> HandlerFuture + Send + Sync;
 
@@ -140,7 +140,7 @@ pub struct FunctionsRegistry {
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
     change_listener: Arc<RwLock<Option<Arc<FunctionChangeListener>>>>,
     /// The observer registry's listener, kept apart from `change_listener`,
-    /// which `engine::functions-available` replaces on every reload.
+    /// which `engine::on-functions-changed` replaces on every reload.
     observer_listener: Arc<RwLock<Option<Arc<FunctionChangeListener>>>>,
 }
 
@@ -170,7 +170,7 @@ impl FunctionsRegistry {
     }
 
     /// Installs the listener told about every register/remove (replacing any
-    /// previous one). The engine uses it to fire `engine::functions-available`.
+    /// previous one). The engine uses it to call `engine::on-functions-changed`.
     pub fn set_change_listener(&self, listener: Arc<FunctionChangeListener>) {
         if let Ok(mut slot) = self.change_listener.write() {
             *slot = Some(listener);

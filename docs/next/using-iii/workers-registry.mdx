@@ -8,9 +8,9 @@ type: "how-to"
 ## Browsing the registry
 
 The iii Worker Registry at [workers.iii.dev](https://workers.iii.dev/) is the index of installable
-workers. Each worker page lists the functions and trigger types it provides, its configuration
-schema, supported platforms, and agent skills. Use that information to locate a worker that fulfills
-a capability your project needs.
+workers. Each worker page lists the functions it provides, including the ones you observe, its
+configuration schema, supported platforms, and agent skills. Use that information to locate a worker
+that fulfills a capability your project needs.
 
 {/* TODO: Add a llm-only note here on how an llm can browse the registry once that surface is stable in the skills worker */}
 
@@ -23,9 +23,9 @@ It writes the resolved worker and dependency graph to `worker-compose.yaml`, the
 project. Its settings are managed through the [configuration worker](./configuration).
 
 ```bash
-iii trigger -n dev compose::add worker=state
-iii trigger -n dev compose::add worker=state@0.22.2
-iii trigger -n dev compose::add worker=./workers/my_worker
+iii call -n dev compose::add worker=state
+iii call -n dev compose::add worker=state@0.22.2
+iii call -n dev compose::add worker=./workers/my_worker
 ```
 
 <Note>

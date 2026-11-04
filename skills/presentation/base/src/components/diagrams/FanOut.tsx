@@ -3,9 +3,9 @@ import { useMemo } from 'react'
 
 /**
  * archetype A7 — one event fans out to many handlers.
- * use when the spec has a reactive/event model: one write/emit triggers
- * N bound handlers. ambient (always-on), no stepper: a source box emits a
- * trigger that ripples out and fans to every bound handler at once.
+ * use when the spec has a reactive/event model: one write runs N observers.
+ * ambient (always-on), no stepper: a source box calls a function, which
+ * ripples out and fans to every observer at once.
  */
 
 export interface FanHandler {
@@ -16,7 +16,7 @@ export interface FanHandler {
 
 interface FanOutProps {
   source: { label: string; sub?: string } // the write/source box on the left
-  trigger: string // the event/trigger type emitted (keeps its casing)
+  fn: string // the observed function the source calls (keeps its casing)
   handlers: FanHandler[] // 2-5 handlers it fans to, stacked on the right
   title?: string
   className?: string
@@ -26,29 +26,29 @@ interface FanOutProps {
 const SOURCE_X = 24
 const SOURCE_W = 230
 const SOURCE_H = 64
-const TRIGGER_X = 368
-const TRIGGER_W = 212
-const TRIGGER_H = 52
+const FN_X = 368
+const FN_W = 212
+const FN_H = 52
 const HANDLER_X = 732
 const HANDLER_W = 228
 const HANDLER_H = 46
 const ROW_GAP = 26 // vertical gap between handler boxes
 const TOP = 30 // top padding above the first handler
 
-export function FanOut({ source, trigger, handlers, title = 'one write, every handler', className }: FanOutProps) {
+export function FanOut({ source, fn, handlers, title = 'one write, every handler', className }: FanOutProps) {
   const reducedMotion = useMemo(
     () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches,
     [],
   )
 
-  // total drawing height grows with the handler count; the source + trigger
+  // total drawing height grows with the handler count; the source + function
   // nodes center on the vertical midpoint of the stacked handlers.
   const stackH = handlers.length * HANDLER_H + (handlers.length - 1) * ROW_GAP
   const height = TOP + stackH + TOP
   const midY = TOP + stackH / 2
 
-  // emit point: the right edge of the trigger node, on the centerline
-  const emitX = TRIGGER_X + TRIGGER_W
+  // emit point: the right edge of the function node, on the centerline
+  const emitX = FN_X + FN_W
   const emitY = midY
 
   return (
@@ -65,7 +65,7 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
           viewBox={`0 0 980 ${height}`}
           className="w-full h-auto min-w-[720px] font-mono select-none"
           role="group"
-          aria-label={`${source.label} emits ${trigger}, fanning out to ${handlers.length} bound handlers`}
+          aria-label={`${source.label} calls ${fn}, fanning out to ${handlers.length} observers`}
         >
           <defs>
             <marker
@@ -124,16 +124,16 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
             </text>
           ) : null}
 
-          {/* source → trigger node */}
+          {/* source → observed function node */}
           <path
-            d={`M ${SOURCE_X + SOURCE_W} ${midY} L ${TRIGGER_X - 4} ${midY}`}
+            d={`M ${SOURCE_X + SOURCE_W} ${midY} L ${FN_X - 4} ${midY}`}
             fill="none"
             strokeWidth={1}
             className="stroke-ink-ghost"
             markerEnd="url(#fan-arr-ink)"
           />
           <text
-            x={(SOURCE_X + SOURCE_W + TRIGGER_X) / 2}
+            x={(SOURCE_X + SOURCE_W + FN_X) / 2}
             y={midY - 10}
             textAnchor="middle"
             fontSize="9"
@@ -141,37 +141,37 @@ export function FanOut({ source, trigger, handlers, title = 'one write, every ha
             className="fill-ink-ghost"
             style={{ paintOrder: 'stroke', stroke: 'var(--color-bg)', strokeWidth: 3.5 }}
           >
-            emits
+            calls
           </text>
 
-          {/* the trigger type node */}
+          {/* the observed function node */}
           <rect
-            x={TRIGGER_X}
-            y={midY - TRIGGER_H / 2}
-            width={TRIGGER_W}
-            height={TRIGGER_H}
+            x={FN_X}
+            y={midY - FN_H / 2}
+            width={FN_W}
+            height={FN_H}
             strokeWidth={1.4}
             className="fill-panel stroke-accent"
           />
           <text
-            x={TRIGGER_X + TRIGGER_W / 2}
+            x={FN_X + FN_W / 2}
             y={midY - 3}
             textAnchor="middle"
             fontSize="12"
             fontWeight={600}
             className="fill-ink"
           >
-            {trigger}
+            {fn}
           </text>
           <text
-            x={TRIGGER_X + TRIGGER_W / 2}
+            x={FN_X + FN_W / 2}
             y={midY + 14}
             textAnchor="middle"
             fontSize="9"
             letterSpacing="0.06em"
             className="fill-ink-faint uppercase"
           >
-            trigger type
+            observed function
           </text>
 
           {/* ambient ripple emanating from the emit point */}

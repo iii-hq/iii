@@ -3,8 +3,8 @@
  *
  * stream::* is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  *
- * For replacements built on SDK primitives (owned trigger type, stored records with
- * get/list + change trigger, channels), see ./streams-migration/README.md.
+ * For replacements built on SDK primitives (owned observable source, stored records with
+ * get/list + change notifications, channels), see ./streams-migration/README.md.
  */
 import { createStream } from 'iii-sdk/helpers'
 import { iii } from './iii'
@@ -16,23 +16,23 @@ export const streams = {
     group_id: string,
     item_id: string,
   ): Promise<T | null> =>
-    iii.trigger({ function_id: 'stream::get', payload: { stream_name, group_id, item_id } }),
+    iii.call({ function_id: 'stream::get', payload: { stream_name, group_id, item_id } }),
   set: async <T = unknown>(
     stream_name: string,
     group_id: string,
     item_id: string,
     data: T,
   ): Promise<T> =>
-    iii.trigger({ function_id: 'stream::set', payload: { stream_name, group_id, item_id, data } }),
+    iii.call({ function_id: 'stream::set', payload: { stream_name, group_id, item_id, data } }),
   delete: async (stream_name: string, group_id: string, item_id: string): Promise<void> =>
-    iii.trigger({
+    iii.call({
       function_id: 'stream::delete',
       payload: { stream_name, group_id, item_id },
     }),
   list: async <T = unknown>(stream_name: string, group_id: string): Promise<T[]> =>
-    iii.trigger({ function_id: 'stream::list', payload: { stream_name, group_id } }),
+    iii.call({ function_id: 'stream::list', payload: { stream_name, group_id } }),
   listGroups: async (stream_name: string): Promise<string[]> =>
-    iii.trigger({ function_id: 'stream::list_groups', payload: { stream_name } }),
+    iii.call({ function_id: 'stream::list_groups', payload: { stream_name } }),
 }
 
 let todoState: Todo[] = []

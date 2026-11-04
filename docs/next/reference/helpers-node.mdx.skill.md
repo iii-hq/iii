@@ -100,8 +100,8 @@ Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
 ### HttpMethod
 
-HTTP method accepted by HttpInvocationConfig. Distinct from the core
-`builtin_triggers` HTTP method enum, which also covers HEAD/OPTIONS.
+HTTP method accepted by HttpInvocationConfig. Distinct from the
+methods an `http::on-request` route takes, which also cover HEAD/OPTIONS.
 
 ```typescript
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
@@ -792,7 +792,7 @@ import { ... } from '@iii-dev/helpers/queue'
 
 ### EnqueueResult
 
-Result returned when a function is invoked with `TriggerAction.Enqueue`.
+Result returned when a function is called with `CallAction.Enqueue`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -800,7 +800,7 @@ Result returned when a function is invoked with `TriggerAction.Enqueue`.
 
 ## stream
 
-Stream trigger configs, change events, IO inputs, and update operations.
+Stream change events, IO inputs, and update operations.
 
 **Import**
 
@@ -810,7 +810,7 @@ import { ... } from '@iii-dev/helpers/stream'
 
 ### Types
 
-[`MergePath`](#mergepath) · [`StreamAuthInput`](#streamauthinput) · [`StreamAuthResult`](#streamauthresult) · [`StreamChangeEvent`](#streamchangeevent) · [`StreamChangeEventDetail`](#streamchangeeventdetail) · [`StreamContext`](#streamcontext) · [`StreamDeleteInput`](#streamdeleteinput) · [`StreamDeleteResult`](#streamdeleteresult) · [`StreamGetInput`](#streamgetinput) · [`StreamJoinLeaveEvent`](#streamjoinleaveevent) · [`StreamJoinLeaveTriggerConfig`](#streamjoinleavetriggerconfig) · [`StreamJoinResult`](#streamjoinresult) · [`StreamListGroupsInput`](#streamlistgroupsinput) · [`StreamListInput`](#streamlistinput) · [`StreamSetInput`](#streamsetinput) · [`StreamSetResult`](#streamsetresult) · [`StreamTriggerConfig`](#streamtriggerconfig) · [`StreamUpdateInput`](#streamupdateinput) · [`StreamUpdateResult`](#streamupdateresult) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
+[`MergePath`](#mergepath) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
 
 ### MergePath
 
@@ -824,216 +824,6 @@ Omit `path`, pass `""`, or pass `[]` to target the root value.
 ```typescript
 type MergePath = string | string[]
 ```
-
----
-
-### StreamAuthInput
-
-Input for stream authentication.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `addr` | `string` | Yes | Client address. |
-| `headers` | `Record<string, string>` | Yes | Request headers. |
-| `path` | `string` | Yes | Request path. |
-| `query_params` | `Record<string, string[]>` | Yes | Query parameters. |
-
----
-
-### StreamAuthResult
-
-Result of stream authentication.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `context` | `any` | No | Arbitrary context passed to stream handlers after authentication. |
-
----
-
-### StreamChangeEvent
-
-Handler input for `stream` triggers, fired when an item changes via `stream::set`, `stream::update`, or `stream::delete`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `event` | [`StreamChangeEventDetail`](#streamchangeeventdetail) | Yes | The event detail containing mutation type and data. |
-| `groupId` | `string` | Yes | The group where the change occurred. |
-| `id` | `string` | No | The item ID that changed. |
-| `streamName` | `string` | Yes | The stream where the change occurred. |
-| `timestamp` | `number` | Yes | Unix timestamp of the event. |
-| `type` | `"stream"` | Yes | The event type. |
-
----
-
-### StreamChangeEventDetail
-
-Detail of a stream change event containing the mutation type and data.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `data` | `any` | Yes | The data associated with the event. |
-| `type` | `"create" \| "update" \| "delete"` | Yes | The kind of mutation (create, update, or delete). |
-
----
-
-### StreamContext
-
-Context type extracted from StreamAuthResult.
-
-```typescript
-type StreamContext = StreamAuthResult["context"]
-```
-
----
-
-### StreamDeleteInput
-
-Input for deleting a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `group_id` | `string` | Yes | Group identifier. |
-| `item_id` | `string` | Yes | Item identifier. |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamDeleteResult
-
-Result of a stream delete operation.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `old_value` | `any` | No | Previous value (if it existed). |
-
----
-
-### StreamGetInput
-
-Input for retrieving a single stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `group_id` | `string` | Yes | Group identifier. |
-| `item_id` | `string` | Yes | Item identifier. |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamJoinLeaveEvent
-
-Event payload for stream join/leave events.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `context` | `any` | No | Auth context from StreamAuthResult. |
-| `group_id` | `string` | Yes | Group identifier. |
-| `id` | `string` | No | Item identifier (if applicable). |
-| `stream_name` | `string` | Yes | Name of the stream. |
-| `subscription_id` | `string` | Yes | Unique subscription identifier. |
-
----
-
-### StreamJoinLeaveTriggerConfig
-
-Trigger config for `stream:join` and `stream:leave` triggers.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `condition_function_id` | `string` | No | Function ID for conditional execution. If it returns `false`, the handler is skipped. |
-
----
-
-### StreamJoinResult
-
-Result of a stream join request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `unauthorized` | `boolean` | Yes | Whether the join was unauthorized. |
-
----
-
-### StreamListGroupsInput
-
-Input for listing all groups in a stream.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamListInput
-
-Input for listing all items in a stream group.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `group_id` | `string` | Yes | Group identifier. |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamSetInput
-
-Input for setting a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `data` | `any` | Yes | Data to store. |
-| `group_id` | `string` | Yes | Group identifier. |
-| `item_id` | `string` | Yes | Item identifier. |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamSetResult
-
-Result of a stream set operation.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `new_value` | `TData` | Yes | New value that was stored. |
-| `old_value` | `TData` | No | Previous value (if it existed). |
-
----
-
-### StreamTriggerConfig
-
-Trigger config for `stream` triggers. Filters which item changes fire the handler.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `condition_function_id` | `string` | No | Function ID for conditional execution. If it returns `false`, the handler is skipped. |
-| `group_id` | `string` | No | If set, only changes within this group fire the handler. |
-| `item_id` | `string` | No | If set, only changes to this specific item fire the handler. |
-| `stream_name` | `string` | Yes | Stream name to watch. Only changes on this stream fire the handler. |
-
----
-
-### StreamUpdateInput
-
-Input for atomically updating a stream item.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `group_id` | `string` | Yes | Group identifier. |
-| `item_id` | `string` | Yes | Item identifier. |
-| `ops` | [`UpdateOp`](#updateop)[] | Yes | Ordered list of update operations to apply atomically. |
-| `stream_name` | `string` | Yes | Name of the stream. |
-
----
-
-### StreamUpdateResult
-
-Result of a stream update operation.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `errors` | [`UpdateOpError`](#updateoperror)[] | No | Per-op errors. Emitted by `merge` and `append` for validation<br />rejections (path depth/size, value depth, or a<br />`__proto__`/`constructor`/`prototype` segment or top-level key)<br />and by `append` for the case-2 `append.type_mismatch` and<br />`append.target_not_object` surfaces. Successfully applied ops are<br />still reflected in `new_value`. The field is omitted from the<br />JSON wire when empty. |
-| `new_value` | `TData` | Yes | New value after the update. |
-| `old_value` | `TData` | No | Previous value (if it existed). |
 
 ---
 
@@ -1183,7 +973,7 @@ import { ... } from '@iii-dev/helpers/worker-connection-manager'
 
 ### Types
 
-[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OnTriggerRegistrationInput`](#ontriggerregistrationinput) · [`OnTriggerRegistrationResult`](#ontriggerregistrationresult) · [`OnTriggerTypeRegistrationInput`](#ontriggertyperegistrationinput) · [`OnTriggerTypeRegistrationResult`](#ontriggertyperegistrationresult)
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult)
 
 ### AuthInput
 
@@ -1208,9 +998,7 @@ middleware.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `allow_function_registration` | `boolean` | No | Whether the worker may register new functions. Defaults to `true` if omitted. |
-| `allow_trigger_type_registration` | `boolean` | No | Whether the worker may register new trigger types. Defaults to `false` if omitted. |
 | `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. |
-| `allowed_trigger_types` | `string[]` | No | Trigger type IDs the worker may register triggers for. When omitted, all types are allowed. |
 | `context` | `Record<string, unknown>` | No | Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. |
 | `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
 | `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
@@ -1227,11 +1015,14 @@ fields, or throw to deny the registration.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `args_format` | `Record<string, unknown>` | No | JSON Schema of the args its observers pass; sent when the registration sets it. |
 | `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
 | `description` | `string` | No | Human-readable description of the function. |
 | `function_id` | `string` | Yes | ID of the function being registered. |
 | `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
 | `namespace` | `string` | No | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
+| `observable` | `boolean` | Yes | `false`: nobody may observe the function; always sent. |
+| `private` | `boolean` | Yes | Only the registering worker may call the function; always sent. |
 
 ---
 
@@ -1243,68 +1034,9 @@ registration request.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
+| `args_format` | `Record<string, unknown>` | No | Replaces the registration's `args_format`. |
 | `description` | `string` | No | Mapped description. |
 | `function_id` | `string` | No | Mapped function ID. |
 | `metadata` | `Record<string, unknown>` | No | Mapped metadata. |
-
----
-
-### OnTriggerRegistrationInput
-
-Input passed to the `on_trigger_registration_function_id` hook
-when a worker attempts to register a trigger through the RBAC port.
-Return an OnTriggerRegistrationResult with the (possibly mapped)
-fields, or throw to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `unknown` | Yes | Trigger-specific configuration. |
-| `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
-| `function_id` | `string` | Yes | ID of the function this trigger is bound to. |
-| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the trigger. |
-| `namespace` | `string` | No | Namespace the trigger's target resolves in (explicit, or `default` when<br />absent). The same function id can exist in several namespaces, so the hook<br />needs this to authorize per target namespace. |
-| `trigger_id` | `string` | Yes | ID of the trigger being registered. |
-| `trigger_type` | `string` | Yes | Trigger type identifier. |
-
----
-
-### OnTriggerRegistrationResult
-
-Result returned from the `on_trigger_registration_function_id` hook.
-All fields are optional; omitted fields keep the original value from the
-registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `config` | `unknown` | No | Mapped trigger configuration. |
-| `function_id` | `string` | No | Mapped function ID. |
-| `trigger_id` | `string` | No | Mapped trigger ID. |
-| `trigger_type` | `string` | No | Mapped trigger type. |
-
----
-
-### OnTriggerTypeRegistrationInput
-
-Input passed to the `on_trigger_type_registration_function_id` hook
-when a worker attempts to register a new trigger type through the RBAC port.
-Return an OnTriggerTypeRegistrationResult with the (possibly mapped)
-fields, or throw to deny the registration.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
-| `description` | `string` | Yes | Human-readable description of the trigger type. |
-| `trigger_type_id` | `string` | Yes | ID of the trigger type being registered. |
-
----
-
-### OnTriggerTypeRegistrationResult
-
-Result returned from the `on_trigger_type_registration_function_id` hook.
-All fields are optional; omitted fields keep the original value from the
-registration request.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `description` | `string` | No | Mapped description. |
-| `trigger_type_id` | `string` | No | Mapped trigger type ID. |
+| `observable` | `boolean` | No | Replaces the registration's `observable`. |
+| `private` | `boolean` | No | Replaces the registration's `private`. |

@@ -1,23 +1,33 @@
 //! Observing: `iii.observe(source, target)`.
 //!
-//! The first argument is the left side, what is observed: a function, the
-//! `args` its owner needs and the `filters` that pick which of its events
-//! reach the target. The second is the right side: a function registered by
-//! any worker, invoked once per matching event. The optional third
-//! ([`ObserverOptions`]) is the observer's policy and metadata.
+//! When the source function runs, the target runs. The first argument is the
+//! left side, what is observed: a function, the `args` the worker that hosts
+//! it reads and the `filters` that pick which of its calls reach the target.
+//! The second is the right side: a function registered by any worker, called
+//! once per matching call. The optional third ([`ObserverOptions`]) is the
+//! observer's policy and metadata.
 //!
 //! ```rust,no_run
 //! use iii_sdk::{Capture, IIIClient, ObserverOptions, Source};
 //! use serde_json::json;
 //!
 //! # async fn demo(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
-//! // a regular function: large orders reach alerts::big-order
+//! // every successful call of orders::create runs alerts::new-order
+//! iii.observe("orders::create", "alerts::new-order");
+//!
+//! // large orders only
 //! let big_orders = iii.observe(
 //!     Source::function("orders::create")
 //!         .filters(json!({ "input.total": { "$gte": 500 } })),
 //!     "alerts::big-order",
 //! );
 //! big_orders.ready().await?;
+//!
+//! // a source with args for the worker that hosts it
+//! iii.observe(
+//!     Source::function("cron::on-tick").args(json!({ "expression": "0 0 9 * * * *" })),
+//!     "reports::daily-summary",
+//! );
 //!
 //! // failed charges above 500, with a policy
 //! iii.observe_with(
@@ -85,23 +95,25 @@ impl Source {
     }
 
     /// The namespace the function is in. Unset, it resolves like a
-    /// [`trigger`](crate::IIIClient::trigger): this worker's namespace
-    /// (`default` for `engine::*`).
+    /// [`call`](crate::IIIClient::call): this worker's namespace (`default`
+    /// for `engine::*`).
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
         self
     }
 
-    /// Args for the function's owner (owner-delivered functions only): what
-    /// to set up for this observer, validated against its `args_format`.
+    /// Args for the worker that hosts the function: what to set up for this
+    /// observer and which calls it wants, validated against the function's
+    /// `args_format` (`INVALID_ARGS`). The function's description says what
+    /// they mean.
     pub fn args(mut self, args: Value) -> Self {
         self.args = Some(args);
         self
     }
 
-    /// Which events reach the target: a filter over `input`, `output`,
+    /// Which calls reach the target: a filter over `input`, `output`,
     /// `error`, `caller` and `metadata`, with explicit operators
-    /// (`{ "input.amount": { "$gte": 500 } }`). Unset matches every event.
+    /// (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
     pub fn filters(mut self, filters: Value) -> Self {
         self.filters = Some(filters);
         self
@@ -113,15 +125,15 @@ impl Source {
         self
     }
 
-    /// Which outcomes activate the observer (auto functions only). Default
-    /// [`On::Success`].
+    /// Which outcomes reach the target. Default [`On::Success`].
     pub fn on(mut self, on: On) -> Self {
         self.on = Some(on);
         self
     }
 
-    /// What the target receives: the [`Observed`] envelope (default), or the
-    /// observed input or output alone.
+    /// What the target receives when iii delivers: the [`Observed`] envelope
+    /// (default), or the observed input or output alone. A function whose
+    /// deliver hook calls targets itself documents what they receive.
     pub fn deliver(mut self, deliver: Deliver) -> Self {
         self.deliver = Some(deliver);
         self
@@ -130,6 +142,26 @@ impl Source {
     /// The observed function id.
     pub fn function_id(&self) -> &str {
         &self.function_id
+    }
+}
+
+/// `iii.observe("orders::create", target)`: every successful call of the
+/// function, with the defaults.
+impl From<&str> for Source {
+    fn from(function_id: &str) -> Self {
+        Source::function(function_id)
+    }
+}
+
+impl From<String> for Source {
+    fn from(function_id: String) -> Self {
+        Source::function(function_id)
+    }
+}
+
+impl From<&String> for Source {
+    fn from(function_id: &String) -> Self {
+        Source::function(function_id.clone())
     }
 }
 
@@ -149,7 +181,7 @@ impl Target {
     }
 
     /// The target's namespace. Unset, it resolves like a
-    /// [`trigger`](crate::IIIClient::trigger).
+    /// [`call`](crate::IIIClient::call).
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
         self
@@ -186,6 +218,14 @@ pub struct ObserverOptions {
 
 impl ObserverOptions {
     /// The observer's id. Default: a random UUID v4, kept across replays.
+    ///
+    /// The handle [`observe_with`](IIIClient::observe_with) returns holds
+    /// the id until its [`dispose`](ObserverHandle::dispose) is called or the
+    /// engine disposes the observer, and the id is free again at once: a
+    /// queue consumer observes again under its stable id as soon as it
+    /// disposes the observer before. While a handle of this client holds the
+    /// id, in any state, another `observe_with` under it is refused with
+    /// nothing sent (see [`observe_with`](IIIClient::observe_with)).
     pub fn id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
         self
@@ -204,14 +244,14 @@ impl ObserverOptions {
     }
 
     /// At most this many activations running at once; more queue in the
-    /// engine (or fail an owner's `call` with `OVERFLOW`).
+    /// engine, and a call through the observer fails with `OVERFLOW`.
     pub fn max_in_flight(mut self, max_in_flight: u32) -> Self {
         self.max_in_flight = Some(max_in_flight);
         self
     }
 
-    /// Delivered as the metadata sidecar of every activation. The function's
-    /// owner never sees it.
+    /// Delivered as the metadata sidecar of every activation. The worker that
+    /// hosts the function never sees it.
     pub fn metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self
@@ -269,6 +309,10 @@ pub(crate) fn deliver(job: Delivery) {
 /// The observing worker's record of one observer, replayed on reconnect.
 pub(crate) struct ObserverEntry {
     pub(crate) id: String,
+    /// When it was created, among this process's observers: replays send
+    /// observers in this order, so the engine announces them to their
+    /// functions' hosts in the order the worker created them.
+    pub(crate) seq: u64,
     /// The `observe` message, sent as is on every replay.
     pub(crate) message: Message,
     status: watch::Sender<ObserverStatus>,
@@ -277,12 +321,27 @@ pub(crate) struct ObserverEntry {
     next_listener: AtomicU64,
     /// Sent to an engine at least once: `dispose` must tell it.
     pub(crate) sent: AtomicBool,
+    /// The connection epoch its `observe` last went out on
+    /// ([`NOT_SENT`] before that): sent once per connection.
+    pub(crate) sent_epoch: AtomicU64,
     /// `dispose` was called: never replayed again.
     pub(crate) disposing: AtomicBool,
+    /// The engine refused its `observe` (an `observeresult` in `error`, to
+    /// a first `observe` or a replay): that is its final answer. The engine
+    /// holds no observer for it, so it is never sent again and `dispose`
+    /// sends no `unobserve`. Set under the listeners lock, with the
+    /// transition to `error`.
+    refused: AtomicBool,
     /// Orders a replayed `observe` against `dispose`'s `unobserve`: whichever
     /// takes it first, the other sees its outcome.
     pub(crate) send_lock: Mutex<()>,
 }
+
+/// The next [`ObserverEntry::seq`].
+static NEXT_OBSERVER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// [`ObserverEntry::sent_epoch`] of an observer not sent yet.
+pub(crate) const NOT_SENT: u64 = u64::MAX;
 
 impl ObserverEntry {
     pub(crate) fn new(id: String, message: Message) -> Self {
@@ -293,13 +352,16 @@ impl ObserverEntry {
         });
         Self {
             id,
+            seq: NEXT_OBSERVER_SEQ.fetch_add(1, Ordering::Relaxed),
             message,
             status,
             warnings: Mutex::new(Vec::new()),
             listeners: Mutex::new(Vec::new()),
             next_listener: AtomicU64::new(0),
             sent: AtomicBool::new(false),
+            sent_epoch: AtomicU64::new(NOT_SENT),
             disposing: AtomicBool::new(false),
+            refused: AtomicBool::new(false),
             send_lock: Mutex::new(()),
         }
     }
@@ -308,18 +370,46 @@ impl ObserverEntry {
         self.status.borrow().state.clone()
     }
 
-    /// Records a transition and tells the listeners.
+    /// The engine refused its `observe` ([`refuse`](Self::refuse)).
+    pub(crate) fn is_refused(&self) -> bool {
+        self.refused.load(Ordering::Acquire)
+    }
+
+    /// Records a transition and tells the listeners. `disposed` is final: a
+    /// later transition to another state changes nothing.
     pub(crate) fn set(
         &self,
         state: ObserverState,
         reason: Option<ObserverReason>,
         fires: Option<u64>,
     ) {
+        self.transition(state, reason, fires, false);
+    }
+
+    /// The engine refused its `observe`: `error` with the engine's reason,
+    /// the handle's final answer.
+    pub(crate) fn refuse(&self, reason: Option<ObserverReason>) {
+        self.transition(ObserverState::Error, reason, None, true);
+    }
+
+    fn transition(
+        &self,
+        state: ObserverState,
+        reason: Option<ObserverReason>,
+        fires: Option<u64>,
+        refused: bool,
+    ) {
         // Held across the status write and the enqueue: two transitions from
         // different threads reach the listeners in the order they took effect.
         let listeners = self.listeners.lock().unwrap_or_else(|e| e.into_inner());
+        if refused {
+            self.refused.store(true, Ordering::Release);
+        }
         let mut changed = false;
         self.status.send_modify(|status| {
+            if status.state == ObserverState::Disposed && state != ObserverState::Disposed {
+                return;
+            }
             changed = status.state != state || status.reason != reason;
             status.state = state.clone();
             status.reason = reason.clone();
@@ -408,8 +498,8 @@ impl ObserverHandle {
     }
 
     /// Why it is in `error` (or `suspended`, `disposed`): an engine code such
-    /// as `INVALID_ARGS`, `FORBIDDEN`, `UNSUPPORTED`, or the owner's own
-    /// rejection code.
+    /// as `INVALID_ARGS`, `FORBIDDEN`, `UNSUPPORTED`, or the rejection code of
+    /// an added hook of the worker that hosts the function.
     pub fn reason(&self) -> Option<ObserverReason> {
         self.entry.status.borrow().reason.clone()
     }
@@ -478,12 +568,24 @@ impl ObserverHandle {
         }
     }
 
-    /// Removes the observer. Once it resolves (the engine confirmed it, or
-    /// after 5 s without an answer), no new activation starts and the owner's
-    /// `call` for it fails with `OBSERVER_NOT_ACTIVE`.
+    /// Removes the observer, and frees its id at once: an
+    /// [`observe_with`](IIIClient::observe_with) under the same id makes a
+    /// new observer while this one is still being disposed, and each handle
+    /// hears the engine's answers to its own messages only. Once it resolves
+    /// (the engine confirmed it, or after 5 s without an answer), no new
+    /// activation starts and a call through it fails with
+    /// `OBSERVER_NOT_ACTIVE`. A handle `observe_with` refused (state
+    /// `error`, with no observer of its own) sends nothing and leaves the
+    /// handle that holds the id alone. The engine's refusal of an `observe`
+    /// (its answer in state `error`, to the first `observe` or to a replay)
+    /// is the handle's final answer: the engine holds no observer for it and
+    /// the handle is not sent again, so `dispose()` sends nothing and
+    /// resolves at once, or, called before the refusal arrives, when it
+    /// arrives. An observer that reaches `error` by a state change stays
+    /// held, and `dispose()` sends `unobserve`.
     pub async fn dispose(&self) -> Result<(), Error> {
         let mut rx = self.entry.status.subscribe();
-        let unobserved = {
+        let answered_here = {
             let _order = self
                 .entry
                 .send_lock
@@ -494,9 +596,11 @@ impl ObserverHandle {
             {
                 return Ok(());
             }
-            // Only an observer some engine heard of needs an `unobserve`; one
-            // never sent stays unsent (`send_observe` checks `disposing`).
-            self.entry.sent.load(Ordering::Acquire)
+            // Only an observer some engine holds needs an `unobserve`: one
+            // never sent stays unsent (`send_observe` checks `disposing`),
+            // and the engine keeps nothing for an `observe` it refused.
+            let unobserved = self.entry.sent.load(Ordering::Acquire)
+                && !self.entry.is_refused()
                 && match self.iii.send_message(Message::Unobserve {
                     id: self.entry.id.clone(),
                 }) {
@@ -505,12 +609,25 @@ impl ObserverHandle {
                         tracing::debug!(observer_id = %self.entry.id, error = %error, "unobserve not sent");
                         false
                     }
-                }
+                };
+            // The id is free once the `unobserve` is queued: a new observer's
+            // `observe` goes out after it, and the engine reads them in order.
+            self.iii.forget_observer(&self.entry);
+            // The engine's `disposed` reaches this handle when its `observe`
+            // went out on this connection; an earlier connection's is not
+            // routed to it.
+            unobserved
+                && self.iii.engine_observes()
+                && self.entry.sent_epoch.load(Ordering::Acquire) == self.iii.connection_epoch()
         };
-        if unobserved && self.iii.engine_observes() {
+        if answered_here {
+            // Its `disposed`, or the refusal of its `observe`: the engine
+            // ignores the `unobserve` of an observer it refused.
             let _ = tokio::time::timeout(DISPOSE_WAIT, async {
                 loop {
-                    if rx.borrow_and_update().state == ObserverState::Disposed {
+                    if rx.borrow_and_update().state == ObserverState::Disposed
+                        || self.entry.is_refused()
+                    {
                         return;
                     }
                     if rx.changed().await.is_err() {
@@ -520,7 +637,6 @@ impl ObserverHandle {
             })
             .await;
         }
-        self.iii.forget_observer(&self.entry.id);
         if self.entry.state() != ObserverState::Disposed {
             self.entry.set(
                 ObserverState::Disposed,
@@ -536,8 +652,7 @@ impl ObserverHandle {
 }
 
 /// What an observer's target receives with the default `deliver: envelope`:
-/// the observed invocation (auto) or emitted event (owner `emit`), per the
-/// observer's `capture`.
+/// the observed call, per the observer's `capture`.
 ///
 /// ```rust,no_run
 /// # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction};
@@ -575,7 +690,7 @@ pub struct Observed<I = Value, O = Value> {
     pub duration_ms: f64,
 }
 
-/// [`Observed::error`].
+/// What a call failed with: [`Observed::error`], [`Call::error`](crate::Call::error).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ObservedError {
     pub code: String,
@@ -583,25 +698,42 @@ pub struct ObservedError {
 }
 
 impl IIIClient {
-    /// Observes `source` and invokes `target` once per matching event.
+    /// Observes `source` and calls `target` once per matching call.
     ///
-    /// Returns at once, before the engine answered: the handle starts
-    /// `pending`; [`ObserverHandle::ready`] resolves on `active` and fails on
-    /// `error` (`INVALID_ARGS`, `INVALID_FILTER`, `FORBIDDEN`, an owner
-    /// rejection, `UNSUPPORTED` against an engine without observe). There is
-    /// no inline handler: `target` is a registered function, and the observer
-    /// stays `pending` until it is registered.
-    pub fn observe(&self, source: Source, target: impl Into<Target>) -> ObserverHandle {
+    /// `source` is a [`Source`], or a function id for every successful call
+    /// with the defaults. Returns at once, before the engine answered: the
+    /// handle starts `pending`; [`ObserverHandle::ready`] resolves on
+    /// `active` and fails on `error` (`INVALID_ARGS`, `INVALID_FILTER`,
+    /// `FORBIDDEN`, `NOT_OBSERVABLE`, an added hook's rejection,
+    /// `UNSUPPORTED` against an engine without observe). There is no inline
+    /// handler: `target` is a registered function, and the observer stays
+    /// `pending` until it is registered.
+    pub fn observe(&self, source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle {
         self.observe_with(source, target, ObserverOptions::default())
     }
 
     /// [`observe`](Self::observe) with the observer's id, policy and metadata.
+    ///
+    /// An id ([`ObserverOptions::id`]) that a handle of this client holds,
+    /// in any state, is refused at the call: nothing is sent, the holding
+    /// handle and its observer are untouched, and the handle returned is in
+    /// state `error` with the reason `OBSERVER_ID_CONFLICT`,
+    /// `observer id already in use: <id>`. Its [`ready`](ObserverHandle::ready)
+    /// fails with that code, and its [`dispose`](ObserverHandle::dispose)
+    /// sends nothing.
+    ///
+    /// The id is free again as soon as `dispose()` is called on the handle
+    /// that held it, before the engine confirms the disposal. The engine answers a connection's
+    /// observes in the order it reads them, so each handle of the id gets the
+    /// answers to its own `observe` and `unobserve`: a late `disposed` for
+    /// the earlier observer never disposes the new one.
     pub fn observe_with(
         &self,
-        source: Source,
+        source: impl Into<Source>,
         target: impl Into<Target>,
         options: ObserverOptions,
     ) -> ObserverHandle {
+        let source = source.into();
         let target = target.into();
         let id = options
             .id
@@ -622,7 +754,13 @@ impl IIIClient {
             entry.set(ObserverState::Error, Some(reason), None);
             return handle;
         }
-        self.track_observer(entry);
+        if !self.track_observer(entry.clone()) {
+            let reason = ObserverReason {
+                code: observe_codes::OBSERVER_ID_CONFLICT.to_string(),
+                message: format!("observer id already in use: {}", entry.id),
+            };
+            entry.set(ObserverState::Error, Some(reason), None);
+        }
         handle
     }
 
@@ -711,6 +849,25 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(serde_json::to_value(&message).unwrap(), fixture);
+    }
+
+    #[test]
+    fn a_function_id_is_the_minimal_source() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let message = iii
+            .build_observe(
+                "d94f3a5b-6c7d-4e8f-a01b-2c3d4e5f6a7b",
+                "orders::archive".into(),
+                "search::reindex-order".into(),
+                ObserverOptions::default(),
+            )
+            .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/protocol/observe/observe-minimal.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::to_value(&message).unwrap(), fixture);
+        assert_eq!(Source::from(String::from("a::b")), Source::function("a::b"));
     }
 
     #[test]

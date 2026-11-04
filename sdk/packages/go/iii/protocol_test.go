@@ -102,16 +102,54 @@ func TestGoldenFrames(t *testing.T) {
 			want: `{"type":"invokefunction","function_id":"test.fn","data":{}}`,
 		},
 		{
-			// RegisterTrigger uses the wire field "trigger_type", NOT "type"
-			// (engine/src/protocol.rs:53). This is the rename we must replicate.
-			name: "register trigger uses trigger_type field",
-			msg: &RegisterTriggerMessage{
-				ID:          "my-trigger-1",
-				TriggerType: "http",
-				FunctionID:  "my::handler",
-				Config:      json.RawMessage(`{"api_path":"/webhooks/data","http_method":"POST"}`),
+			// args_format, private and observable are top-level; private: false and
+			// observable: true are the defaults and are omitted.
+			name: "register function with the observe v2 fields",
+			msg: &RegisterFunctionMessage{
+				ID:         "cron::on-tick",
+				ArgsFormat: json.RawMessage(`{"type":"object"}`),
+				Private:    true,
+				Observable: func() *bool { b := false; return &b }(),
 			},
-			want: `{"type":"registertrigger","id":"my-trigger-1","trigger_type":"http","function_id":"my::handler","config":{"api_path":"/webhooks/data","http_method":"POST"}}`,
+			want: `{"type":"registerfunction","id":"cron::on-tick","args_format":{"type":"object"},"private":true,"observable":false}`,
+		},
+		{
+			name: "register function omits the defaults",
+			msg:  &RegisterFunctionMessage{ID: "orders::archive"},
+			want: `{"type":"registerfunction","id":"orders::archive"}`,
+		},
+		{
+			// matched rides a routed answer from an observe.v2 host whose function has
+			// a match hook (decision 55)
+			name: "invocation result lists matched ids",
+			msg: &InvocationResultMessage{
+				InvocationID: id,
+				FunctionID:   "orders::create",
+				Result:       json.RawMessage(`{"ok":true}`),
+				Matched:      []string{"o1", "o2"},
+			},
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"orders::create","result":{"ok":true},"matched":["o1","o2"]}`,
+		},
+		{
+			// a match hook that matched none sends [], which an absent matched is not
+			name: "invocation result sends an empty matched",
+			msg: &InvocationResultMessage{
+				InvocationID: id,
+				FunctionID:   "orders::create",
+				Result:       json.RawMessage(`{"ok":true}`),
+				Matched:      []string{},
+			},
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"orders::create","result":{"ok":true},"matched":[]}`,
+		},
+		{
+			name: "invocation result says delivered",
+			msg: &InvocationResultMessage{
+				InvocationID: id,
+				FunctionID:   "approvals::request",
+				Result:       json.RawMessage(`{"ok":true}`),
+				Delivered:    true,
+			},
+			want: `{"type":"invocationresult","invocation_id":"11111111-1111-1111-1111-111111111111","function_id":"approvals::request","result":{"ok":true},"delivered":true}`,
 		},
 		{
 			// InvocationResult.invocation_id is required, not omitempty
@@ -212,18 +250,12 @@ func TestUnmarshalRoundtrip(t *testing.T) {
 		jsonEqual(t, dec.InvokeFunction.Metadata, `{"tenant":"acme"}`)
 	})
 
-	t.Run("unregister trigger without trigger_type", func(t *testing.T) {
-		// engine/src/protocol.rs:221-233.
-		frame := `{"type":"unregistertrigger","id":"abc"}`
-		dec, err := UnmarshalMessage([]byte(frame))
-		if err != nil {
-			t.Fatalf("UnmarshalMessage: %v", err)
-		}
-		if dec.UnregisterTrigger == nil || dec.UnregisterTrigger.ID != "abc" {
-			t.Fatalf("unexpected decode: %+v", dec)
-		}
-		if dec.UnregisterTrigger.TriggerType != nil {
-			t.Errorf("trigger_type should be nil when absent, got %v", *dec.UnregisterTrigger.TriggerType)
+	t.Run("0.25 registration frames are not part of the protocol", func(t *testing.T) {
+		// the read loop ignores a frame it cannot decode
+		for _, msgType := range []string{"registertriggertype", "unregistertriggertype", "registertrigger", "unregistertrigger", "triggerregistrationresult"} {
+			if _, err := UnmarshalMessage([]byte(`{"type":"` + msgType + `","id":"abc"}`)); err == nil {
+				t.Errorf("%s decoded", msgType)
+			}
 		}
 	})
 

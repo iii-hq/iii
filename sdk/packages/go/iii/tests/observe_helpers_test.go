@@ -152,13 +152,13 @@ func exactly(t *testing.T, col *collected, n int, what string, timeout time.Dura
 	return got
 }
 
-func call(t *testing.T, c *iii.Client, req iii.TriggerRequest) json.RawMessage {
+func call(t *testing.T, c *iii.Client, req iii.CallRequest) json.RawMessage {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := c.Trigger(ctx, req)
+	out, err := c.Call(ctx, req)
 	if err != nil {
-		t.Fatalf("Trigger(%s): %v", req.FunctionID, err)
+		t.Fatalf("Call(%s): %v", req.FunctionID, err)
 	}
 	return out
 }

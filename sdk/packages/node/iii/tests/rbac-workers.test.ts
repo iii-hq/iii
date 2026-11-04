@@ -3,15 +3,11 @@ import type {
   AuthResult,
   OnFunctionRegistrationInput,
   OnFunctionRegistrationResult,
-  OnTriggerRegistrationInput,
-  OnTriggerRegistrationResult,
-  OnTriggerTypeRegistrationInput,
-  OnTriggerTypeRegistrationResult,
 } from '@iii-dev/helpers/worker-connection-manager'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { EngineFunctions } from '../src/iii-constants'
 import type { MiddlewareFunctionInput } from '../src/index'
 import { InvocationError, registerWorker } from '../src/index'
-import { EngineFunctions } from '../src/iii-constants'
 import { iii, sleep, uniqueWorkerName } from './utils'
 
 type FunctionRow = { function_id: string }
@@ -27,8 +23,7 @@ const EW_URL = process.env.III_RBAC_WORKER_URL ?? 'ws://localhost:49135'
 const ewWorkerName = () => uniqueWorkerName('rbac')
 
 let authCalls: AuthInput[] = []
-let triggerTypeRegCalls: OnTriggerTypeRegistrationInput[] = []
-let triggerRegCalls: OnTriggerRegistrationInput[] = []
+let functionRegCalls: OnFunctionRegistrationInput[] = []
 
 beforeAll(async () => {
   iii.registerFunction('test::rbac-worker::auth', async (input: AuthInput): Promise<AuthResult> => {
@@ -39,7 +34,6 @@ beforeAll(async () => {
       return {
         allowed_functions: [],
         forbidden_functions: [],
-        allow_trigger_type_registration: false,
         context: { role: 'anonymous', user_id: 'anonymous' },
       }
     }
@@ -48,7 +42,6 @@ beforeAll(async () => {
       return {
         allowed_functions: ['test::ew::valid-token-echo'],
         forbidden_functions: [],
-        allow_trigger_type_registration: true,
         context: { role: 'admin', user_id: 'user-1' },
       }
     }
@@ -57,7 +50,6 @@ beforeAll(async () => {
       return {
         allowed_functions: [],
         forbidden_functions: ['test::ew::echo'],
-        allow_trigger_type_registration: false,
         context: { role: 'restricted', user_id: 'user-2' },
       }
     }
@@ -66,7 +58,6 @@ beforeAll(async () => {
       return {
         allowed_functions: [],
         forbidden_functions: [],
-        allow_trigger_type_registration: true,
         context: { role: 'prefixed', user_id: 'user-prefix' },
         function_registration_prefix: 'test-prefix',
       }
@@ -77,46 +68,17 @@ beforeAll(async () => {
 
   iii.registerFunction('test::rbac-worker::middleware', async (input: MiddlewareFunctionInput) => {
     const enrichedPayload = { ...input.payload, _intercepted: true, _caller: input.context.user_id }
-    return iii.trigger({ function_id: input.function_id, payload: enrichedPayload })
+    return iii.call({ function_id: input.function_id, payload: enrichedPayload })
   })
 
   iii.registerFunction(
     'test::rbac-worker::on-function-reg',
     async (input: OnFunctionRegistrationInput): Promise<OnFunctionRegistrationResult> => {
+      functionRegCalls.push(input)
       if (input.function_id.startsWith('denied::')) {
         throw new Error('denied function registration')
       }
       return { function_id: input.function_id }
-    },
-  )
-
-  iii.registerFunction(
-    'test::rbac-worker::on-trigger-type-reg',
-    async (input: OnTriggerTypeRegistrationInput): Promise<OnTriggerTypeRegistrationResult> => {
-      triggerTypeRegCalls.push(input)
-      if (input.trigger_type_id.startsWith('denied-tt::')) {
-        throw new Error('denied trigger type registration')
-      }
-      return {}
-    },
-  )
-
-  iii.registerFunction(
-    'test::rbac-worker::on-trigger-reg',
-    async (input: OnTriggerRegistrationInput): Promise<OnTriggerRegistrationResult> => {
-      triggerRegCalls.push(input)
-      if (input.function_id.startsWith('denied-trig::')) {
-        throw new Error('denied trigger registration')
-      }
-      return {}
-    },
-  )
-
-  iii.registerTriggerType(
-    { id: 'test-rbac-trigger', description: 'Trigger type for RBAC tests' },
-    {
-      async registerTrigger() {},
-      async unregisterTrigger() {},
     },
   )
 
@@ -148,21 +110,20 @@ beforeAll(async () => {
 
 beforeEach(() => {
   authCalls = []
-  triggerTypeRegCalls = []
-  triggerRegCalls = []
+  functionRegCalls = []
 })
 
 describe('RBAC Workers', () => {
   it('should return auth result for valid token', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
       // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-      const result = await iiiClient.trigger<any, any>({
+      const result = await iiiClient.call<any, any>({
         function_id: 'test::ew::valid-token-echo',
         payload: { msg: 'hello' },
       })
@@ -181,14 +142,14 @@ describe('RBAC Workers', () => {
   it('should return error for private function', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
       await expect(
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        iiiClient.trigger<any, any>({
+        iiiClient.call<any, any>({
           function_id: 'test::ew::private',
           payload: { msg: 'hello' },
         }),
@@ -201,14 +162,14 @@ describe('RBAC Workers', () => {
   it('should return forbidden_functions for restricted token', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'restricted-token' },
+      headers: { 'x-test-token': 'restricted-token' },
       otel: { enabled: false },
     })
 
     try {
       await expect(
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        iiiClient.trigger<any, any>({
+        iiiClient.call<any, any>({
           function_id: 'test::ew::echo',
           payload: { msg: 'hello' },
         }),
@@ -218,53 +179,30 @@ describe('RBAC Workers', () => {
     }
   })
 
-  it('should deny trigger type registration via on_trigger_type_registration hook', async () => {
+  it('passes private, observable and args_format to the on_function_registration hook', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
-      iiiClient.registerTriggerType(
-        { id: 'denied-tt::test', description: 'Should be denied' },
-        {
-          async registerTrigger() {},
-          async unregisterTrigger() {},
-        },
-      )
-
-      await sleep(1000)
-
-      expect(triggerTypeRegCalls).toHaveLength(1)
-      expect(triggerTypeRegCalls[0].trigger_type_id).toBe('denied-tt::test')
-      expect(triggerTypeRegCalls[0].description).toBe('Should be denied')
-      expect(triggerTypeRegCalls[0].context.user_id).toBe('user-1')
-    } finally {
-      await iiiClient.shutdown()
-    }
-  })
-
-  it('should deny trigger registration via on_trigger_registration hook', async () => {
-    const iiiClient = registerWorker(EW_URL, {
-      workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
-      otel: { enabled: false },
-    })
-
-    try {
-      iiiClient.registerTrigger({
-        type: 'test-rbac-trigger',
-        function_id: 'denied-trig::my-fn',
-        config: { key: 'value' },
+      iiiClient.registerFunction('test::ew::plain-source', async () => null)
+      iiiClient.registerFunction('test::ew::private-source', (event: unknown) => event, {
+        private: true,
+        args_format: { type: 'object', properties: { tag: { type: 'string' } } },
       })
 
       await sleep(1000)
 
-      expect(triggerRegCalls).toHaveLength(1)
-      expect(triggerRegCalls[0].trigger_type).toBe('test-rbac-trigger')
-      expect(triggerRegCalls[0].function_id).toBe('denied-trig::my-fn')
-      expect(triggerRegCalls[0].context.user_id).toBe('user-1')
+      const byId = new Map(functionRegCalls.map((call) => [call.function_id, call]))
+      expect(byId.get('test::ew::plain-source')).toMatchObject({ private: false, observable: true })
+      expect(byId.get('test::ew::plain-source')).not.toHaveProperty('args_format')
+      expect(byId.get('test::ew::private-source')).toMatchObject({
+        private: true,
+        observable: true,
+        args_format: { type: 'object', properties: { tag: { type: 'string' } } },
+      })
     } finally {
       await iiiClient.shutdown()
     }
@@ -273,7 +211,7 @@ describe('RBAC Workers', () => {
   it('should deny function registration via on_function_registration hook', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -286,7 +224,7 @@ describe('RBAC Workers', () => {
 
       await expect(
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        iiiClient.trigger<any, any>({
+        iiiClient.call<any, any>({
           function_id: 'denied::blocked-fn',
           payload: {},
         }),
@@ -299,14 +237,14 @@ describe('RBAC Workers', () => {
   it('should only list allowed functions for valid-token worker', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
       await sleep(1000)
 
-      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      const result = await iiiClient.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       })
@@ -326,14 +264,14 @@ describe('RBAC Workers', () => {
   it('should only list exposed functions for restricted-token worker', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'restricted-token' },
+      headers: { 'x-test-token': 'restricted-token' },
       otel: { enabled: false },
     })
 
     try {
       await sleep(1000)
 
-      const result = await iiiClient.trigger<Record<string, never>, { functions: FunctionRow[] }>({
+      const result = await iiiClient.call<Record<string, never>, { functions: FunctionRow[] }>({
         function_id: EngineFunctions.LIST_FUNCTIONS,
         payload: {},
       })
@@ -359,17 +297,17 @@ describe('RBAC Workers', () => {
   it('infrastructure calls (logger, worker::register) succeed under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
       // If the carve-out ever regressed, the startup `engine::workers::register`
-      // trigger would FORBIDDEN-reject and connection setup would hang or fail.
+      // call would FORBIDDEN-reject and connection setup would hang or fail.
       // A successful invocation of the exposed handler proves the worker
       // completed the handshake without tripping RBAC on infra IDs.
       // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-      const result = await iiiClient.trigger<any, any>({
+      const result = await iiiClient.call<any, any>({
         function_id: 'test::ew::valid-token-echo',
         payload: { msg: 'hello' },
       })
@@ -382,7 +320,7 @@ describe('RBAC Workers', () => {
   it('wraps FORBIDDEN rejection in InvocationError with function_id', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -390,7 +328,7 @@ describe('RBAC Workers', () => {
       let caught: unknown
       try {
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        await iiiClient.trigger<any, any>({
+        await iiiClient.call<any, any>({
           function_id: 'test::ew::private',
           payload: {},
         })
@@ -429,7 +367,7 @@ describe('RBAC Workers', () => {
   it('allows engine::log::info from a user handler under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
@@ -438,26 +376,23 @@ describe('RBAC Workers', () => {
       // registrations — a worker-client registration supersedes the shared
       // one, and the implicit unregister when the worker shuts down would
       // break every subsequent test that expects the shared function to exist.
-      iiiClient.registerFunction(
-        'test::ew::carveout-logger-handler',
-        async (data: Record<string, unknown>) => {
-          // If the carve-out regresses, this inner trigger returns FORBIDDEN
-          // and the handler throws instead of returning { logged: true }.
-          await iiiClient.trigger({
-            function_id: 'engine::log::info',
-            payload: {
-              message: 'carve-out regression guard: handler reached logger',
-              data: { input: data },
-            },
-          })
-          return { logged: true, echoed: data }
-        },
-      )
+      iiiClient.registerFunction('test::ew::carveout-logger-handler', async (data: Record<string, unknown>) => {
+        // If the carve-out regresses, this inner call returns FORBIDDEN
+        // and the handler throws instead of returning { logged: true }.
+        await iiiClient.call({
+          function_id: 'engine::log::info',
+          payload: {
+            message: 'carve-out regression guard: handler reached logger',
+            data: { input: data },
+          },
+        })
+        return { logged: true, echoed: data }
+      })
 
       await sleep(500)
 
       // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-      const result = await iii.trigger<any, any>({
+      const result = await iii.call<any, any>({
         function_id: 'test::ew::carveout-logger-handler',
         payload: { msg: 'real-usage-case' },
       })
@@ -474,14 +409,14 @@ describe('RBAC Workers', () => {
   it('allows direct engine::log::info invocation under restricted expose', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'valid-token' },
+      headers: { 'x-test-token': 'valid-token' },
       otel: { enabled: false },
     })
 
     try {
       await expect(
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        iiiClient.trigger<any, any>({
+        iiiClient.call<any, any>({
           function_id: 'engine::log::info',
           payload: { message: 'carve-out direct invocation' },
         }),
@@ -494,22 +429,19 @@ describe('RBAC Workers', () => {
   it('should apply function_registration_prefix and strip on invocation', async () => {
     const iiiClient = registerWorker(EW_URL, {
       workerName: ewWorkerName(),
-      headers:{ 'x-test-token': 'prefix-token' },
+      headers: { 'x-test-token': 'prefix-token' },
       otel: { enabled: false },
     })
 
     try {
-      const handle = iiiClient.registerFunction(
-        'prefixed-echo',
-        async (data: Record<string, unknown>) => {
-          return { echoed: data }
-        },
-      )
+      const handle = iiiClient.registerFunction('prefixed-echo', async (data: Record<string, unknown>) => {
+        return { echoed: data }
+      })
 
       await sleep(1000)
 
       // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-      const result = await iii.trigger<any, any>({
+      const result = await iii.call<any, any>({
         function_id: 'test-prefix::prefixed-echo',
         payload: { msg: 'prefix-test' },
       })
@@ -525,7 +457,7 @@ describe('RBAC Workers', () => {
 
       await expect(
         // biome-ignore lint/suspicious/noExplicitAny: any is fine here
-        iii.trigger<any, any>({
+        iii.call<any, any>({
           function_id: 'test-prefix::prefixed-echo',
           payload: { msg: 'should-fail' },
         }),

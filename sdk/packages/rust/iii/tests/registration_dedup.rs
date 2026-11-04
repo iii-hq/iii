@@ -11,9 +11,6 @@
 //! connection loop replayed the in-memory map (frame #1) and then the
 //! select! loop drained the leftover queued copies (frame #2 — duplicate).
 
-// These tests cover the trigger APIs deprecated in 0.25.0, which keep working.
-#![allow(deprecated)]
-
 mod common;
 
 use std::time::Duration;
@@ -22,12 +19,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use iii_sdk::protocol::RegisterTriggerInput;
 use iii_sdk::runtime::IIIConnectionState;
-use iii_sdk::trigger::{TriggerConfig, TriggerHandler};
-use iii_sdk::{
-    Error, IIIClient, InitOptions, RegisterFunction, RegisterTriggerType, register_worker,
-};
+use iii_sdk::{Error, IIIClient, InitOptions, RegisterFunction, Source, register_worker};
 
 use common::mock_engine::{MockEngine, count_register, count_type};
 
@@ -49,16 +42,17 @@ fn echo(input: EchoInput) -> Result<Value, Error> {
     Ok(input.payload)
 }
 
-struct NoopHandler;
+/// The engine's hello, advertising `observe.v2`.
+fn hello(mock: &MockEngine) {
+    mock.send_to_client(json!({
+        "type": "workerregistered", "worker_id": "w-1",
+        "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
+    }));
+}
 
-#[async_trait::async_trait]
-impl TriggerHandler for NoopHandler {
-    async fn register_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> {
-        Ok(())
-    }
-    async fn unregister_trigger(&self, _: TriggerConfig) -> Result<(), iii_sdk::Error> {
-        Ok(())
-    }
+fn workers_register_at(msgs: &[Value]) -> Option<usize> {
+    msgs.iter()
+        .position(|m| m["function_id"] == "engine::workers::register")
 }
 
 /// Wait until `predicate` is satisfied, then sleep briefly and confirm it
@@ -145,47 +139,50 @@ async fn mixed_registration_types_each_sent_once() {
     let iii = register_worker(mock.url(), InitOptions::default());
 
     iii.register_function("dedup::mixed::fn", RegisterFunction::new(greet));
-    let trigger_type = iii.register_trigger_type(RegisterTriggerType::new(
-        "dedup::mixed::tt",
-        "noop",
-        NoopHandler,
-    ));
-    drop(trigger_type);
-    let trigger = iii
-        .register_trigger(RegisterTriggerInput::new(
-            "dedup::mixed::tt".to_string(),
-            "dedup::mixed::fn".to_string(),
-            json!({"foo": "bar"}),
-        ))
-        .expect("register trigger");
-    drop(trigger);
+    iii.register_function(
+        "dedup::mixed::private",
+        RegisterFunction::new(echo).private(),
+    );
+    let observer = iii.observe(Source::function("dedup::mixed::fn"), "dedup::mixed::target");
+
+    let _ = mock
+        .wait_for(
+            |msgs| workers_register_at(msgs).is_some(),
+            Duration::from_secs(5),
+        )
+        .await;
+    hello(&mock);
 
     let msgs = assert_stable(
         &mock,
         |msgs| {
             count_register(msgs, "registerfunction", "dedup::mixed::fn") >= 1
-                && count_register(msgs, "registertriggertype", "dedup::mixed::tt") >= 1
-                && count_type(msgs, "registertrigger") >= 1
+                && count_register(msgs, "registerfunction", "dedup::mixed::private") >= 1
+                && count_register(msgs, "observe", observer.id()) >= 1
         },
         Duration::from_millis(400),
         Duration::from_secs(5),
     )
     .await;
 
-    assert_eq!(
-        count_register(&msgs, "registerfunction", "dedup::mixed::fn"),
-        1,
-        "RegisterFunction sent multiple times: {msgs:#?}"
-    );
-    assert_eq!(
-        count_register(&msgs, "registertriggertype", "dedup::mixed::tt"),
-        1,
-        "RegisterTriggerType sent multiple times: {msgs:#?}"
-    );
-    assert_eq!(
-        count_type(&msgs, "registertrigger"),
-        1,
-        "RegisterTrigger sent multiple times: {msgs:#?}"
+    for (ty, id) in [
+        ("registerfunction", "dedup::mixed::fn"),
+        ("registerfunction", "dedup::mixed::private"),
+        ("observe", observer.id()),
+    ] {
+        assert_eq!(
+            count_register(&msgs, ty, id),
+            1,
+            "{ty} {id} sent more than once: {msgs:#?}"
+        );
+    }
+    let private_at = msgs
+        .iter()
+        .position(|m| m["type"] == "registerfunction" && m["id"] == "dedup::mixed::private")
+        .unwrap();
+    assert!(
+        workers_register_at(&msgs).unwrap() < private_at,
+        "a registration that needs observe.v2 waits for the engine's hello: {msgs:#?}"
     );
 
     shutdown(&iii).await;
@@ -237,13 +234,30 @@ async fn reconnect_resends_each_registration_once() {
 
     iii.register_function("dedup::reconnect::a", RegisterFunction::new(greet));
     iii.register_function("dedup::reconnect::b", RegisterFunction::new(echo));
+    iii.register_function(
+        "dedup::reconnect::v2",
+        RegisterFunction::new(echo).observable(false),
+    );
+    let all = |msgs: &[Value]| {
+        [
+            "dedup::reconnect::a",
+            "dedup::reconnect::b",
+            "dedup::reconnect::v2",
+        ]
+        .iter()
+        .all(|id| count_register(msgs, "registerfunction", id) >= 1)
+    };
 
+    let _ = mock
+        .wait_for(
+            |msgs| workers_register_at(msgs).is_some(),
+            Duration::from_secs(5),
+        )
+        .await;
+    hello(&mock);
     let _ = assert_stable(
         &mock,
-        |msgs| {
-            count_register(msgs, "registerfunction", "dedup::reconnect::a") >= 1
-                && count_register(msgs, "registerfunction", "dedup::reconnect::b") >= 1
-        },
+        all,
         Duration::from_millis(400),
         Duration::from_secs(5),
     )
@@ -252,18 +266,36 @@ async fn reconnect_resends_each_registration_once() {
     mock.clear();
     mock.close_active_connection();
 
+    let _ = mock
+        .wait_for(
+            |msgs| workers_register_at(msgs).is_some(),
+            Duration::from_secs(10),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        count_register(
+            &mock.received_messages(),
+            "registerfunction",
+            "dedup::reconnect::v2"
+        ),
+        0,
+        "replayed only after the new connection's hello"
+    );
+    hello(&mock);
     let msgs = assert_stable(
         &mock,
-        |msgs| {
-            count_register(msgs, "registerfunction", "dedup::reconnect::a") >= 1
-                && count_register(msgs, "registerfunction", "dedup::reconnect::b") >= 1
-        },
+        all,
         Duration::from_millis(500),
         Duration::from_secs(10),
     )
     .await;
 
-    for id in ["dedup::reconnect::a", "dedup::reconnect::b"] {
+    for id in [
+        "dedup::reconnect::a",
+        "dedup::reconnect::b",
+        "dedup::reconnect::v2",
+    ] {
         let count = count_register(&msgs, "registerfunction", id);
         assert_eq!(
             count, 1,

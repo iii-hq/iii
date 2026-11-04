@@ -16,6 +16,11 @@ status: live
 > three worked examples: [`database.md`](database.md)
 > (`database::on-row-changed`), [`http.md`](http.md) (`http::on-request`),
 > [`cron.md`](cron.md) (`cron::on-tick`).
+>
+> **0.26:** owner delivery (`delivery: owner`, `obs.emit`, `obs.call`) and
+> the trigger compatibility shim are replaced by
+> [observe v2](../2026-10-29-observe-v2/README.md). The rest of this design
+> still applies where observe v2 says nothing.
 
 A trigger type is a function whose owner wants to know who observes it. A
 trigger is an observer.

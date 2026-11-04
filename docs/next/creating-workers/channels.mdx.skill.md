@@ -4,7 +4,7 @@
 Channels move large or binary payloads between iii workers without putting the data in a JSON
 function payload. Use one for files, images, datasets, payloads above the JSON message limit, audio
 or video streams, or incremental progress updates during long-running work. For small JSON, use a
-regular `worker.trigger(...)` call.
+regular `worker.call(...)`.
 
 <Note>
   For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
@@ -13,30 +13,29 @@ regular `worker.trigger(...)` call.
 
 ## Payload size
 
-The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust,
-Node, Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB**
-outbound limit and does not fragment messages because browser WebSocket APIs do not expose frame
-control. Browser workers also have a **16 MiB** receive limit.
+The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust, Node,
+Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB** outbound
+limit and does not fragment messages because browser WebSocket APIs do not expose frame control.
+Browser workers also have a **16 MiB** receive limit.
 
 For Rust, Node, Python, and Go, messages up to **16 MiB** are sent as one text frame. Larger
 messages, up to and including 64 MiB, are sent as one fragmented WebSocket text message using
 multiple frames. The engine sends every message larger than **1 MiB** to a worker as one fragmented
-text message of 1 MiB frames, so no frame it sends exceeds a worker's frame size limit.
-Applications send and receive these messages through the usual function APIs.
+text message of 1 MiB frames, so no frame it sends exceeds a worker's frame size limit. Applications
+send and receive these messages through the usual function APIs.
 
-The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than
-16 MiB. An updated engine checks the serialized envelope against the target worker's receive limit
-and returns `payload_too_large` to the caller when the target cannot accept it. The engine sets
-that limit when the worker registers:
+The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than 16 MiB.
+An updated engine checks the serialized envelope against the target worker's receive limit and
+returns `payload_too_large` to the caller when the target cannot accept it. The engine sets that
+limit when the worker registers:
 
 - A browser worker gets **16 MiB**.
-- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**, whatever
-  version it reports. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser SDK
-  does not.
-- Any other worker gets **64 MiB** when the version it reports is an SDK version of 0.24.5 or
-  later, written as semver (`0.24.6`, `0.25.0-rc.5`) or PEP 440 (`0.25.0rc5`, `0.24.5.post1`). It
-  gets **16 MiB** when the version is missing, cannot be parsed, or is older, including
-  pre-releases of 0.24.5. Other features, such as `observe.v1`, do not count.
+- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**, whatever version
+  it reports. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser SDK does not.
+- Any other worker gets **64 MiB** when the version it reports is an SDK version of 0.24.5 or later,
+  written as semver (`0.24.6`, `0.25.0-rc.5`) or PEP 440 (`0.25.0rc5`, `0.24.5.post1`). It gets **16
+  MiB** when the version is missing, cannot be parsed, or is older, including pre-releases of
+  0.24.5. Other features, such as `observe.v1`, do not count.
 
 SDK 0.24.5 through 0.25.0-rc.5 do not declare `large-messages.v1`, so the engine relies on the
 version they report. A Rust worker on one of them that sets `WorkerMetadata.version` to its own
@@ -58,7 +57,7 @@ the engine cannot answer, such as a call that expects no result, is dropped and 
 Observer activations follow the same limits, and the engine keeps at most **64 MiB** of one observed
 event (every field its observers capture, input and output counted separately). An event over either
 limit is not delivered: the observer counts a `TOO_LARGE` drop and the engine logs a warning. See
-[Observers / Event size](../using-iii/observers#event-size).
+[Observers / Observed call size](../using-iii/observers#observed-call-size).
 
 Use a channel for payloads above **64 MiB**. Channels stream payload bytes separately from the JSON
 function envelope. See [Using channels](#using-channels).
@@ -247,7 +246,7 @@ writer aborts.
 A channel only becomes useful once both ends are owned by different code paths. Typically one
 function that holds the local `writer` / `reader` and another that receives the matching ref in its
 payload. The two subsections below cover that handoff: first how to send a ref alongside a normal
-trigger call, then how the receiving function turns it back into a live stream to read or write.
+call, then how the receiving function turns it back into a live stream to read or write.
 
 ### Pass a channel ref to another function
 
@@ -257,7 +256,7 @@ function uses the ref to read from (or write to) the channel.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const result = await worker.trigger({
+    const result = await worker.call({
       function_id: "files::process",
       payload: {
         filename: "report.csv",
@@ -268,7 +267,7 @@ function uses the ref to read from (or write to) the channel.
   </Tab>
   <Tab title="Python">
     ```python
-    result = await iii_client.trigger_async({
+    result = await iii_client.call_async({
         "function_id": "files::process",
         "payload": {
             "filename": "report.csv",
@@ -279,19 +278,17 @@ function uses the ref to read from (or write to) the channel.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerRequest;
+    use iii_sdk::protocol::CallRequest;
     use serde_json::json;
 
     let result = worker
-        .trigger(TriggerRequest {
-            function_id: "files::process".to_string(),
-            payload: json!({
+        .call(CallRequest::new(
+            "files::process",
+            json!({
                 "filename": "report.csv",
                 "reader": channel.reader_ref,
             }),
-            action: None,
-            timeout_ms: None,
-        })
+        ))
         .await?;
     ```
 
@@ -306,7 +303,7 @@ function uses the ref to read from (or write to) the channel.
         log.Fatal(err)
     }
 
-    result, err := client.Trigger(ctx, iii.TriggerRequest{
+    result, err := client.Call(ctx, iii.CallRequest{
         FunctionID: "files::process",
         Payload:    payload,
     })
@@ -491,7 +488,6 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
 </Tabs>
 
 <Note>
-  For the per-language channel API surface, see the SDK reference:
-  [Node](../reference/sdk-node), [Python](../reference/sdk-python), [Rust](../reference/sdk-rust),
-  and [Go](../reference/sdk-go).
+  For the per-language channel API surface, see the SDK reference: [Node](../reference/sdk-node),
+  [Python](../reference/sdk-python), [Rust](../reference/sdk-rust), and [Go](../reference/sdk-go).
 </Note>

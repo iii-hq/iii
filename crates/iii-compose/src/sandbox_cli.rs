@@ -1,0 +1,1261 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! `iii sandbox`: one Compose container's VM, run through its sandbox adapter.
+//!
+//! Compose starts `iii sandbox run` as the `scripts.run` of a container that lists the adapter in
+//! `start_after`, and hands it what it needs in the environment ([`Context`]). The command boots
+//! the VM through the adapter's `worker::*` functions, prints the guest's output as its own, stops
+//! the VM when it is asked to stop, and exits with the VM's code. Compose supervises it like any
+//! other process and knows nothing about VMs.
+
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    process::ExitStatus,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use iii_sandbox_contract::{
+    self as contract, ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR,
+    FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
+    SandboxErrorCode, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STOP,
+    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
+    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
+    WorkerStartResponse, WorkerStatus, WorkerStopRequest,
+};
+use iii_sdk::{IIIClient, InitOptions, WorkerIdentityMode, iii::WorkerMetadata, register_worker};
+use tokio::{sync::watch, task::JoinHandle, time::Instant};
+
+use crate::{
+    process::{DEFAULT_STOP_GRACE, Outcome},
+    sandbox,
+    state::VmRecord,
+};
+
+/// The scoped `worker::*` token of the container's own VM.
+pub const TOKEN_ENV: &str = "III_SANDBOX_TOKEN";
+/// The VM's state key: the same key boots the same persistent state.
+pub const STATE_KEY_ENV: &str = "III_SANDBOX_STATE_KEY";
+/// The adapter's name, e.g. `sandbox-libkrun`.
+pub const ADAPTER_ENV: &str = "III_SANDBOX_ADAPTER";
+/// The namespace the adapter's functions are registered in.
+pub const ADAPTER_NAMESPACE_ENV: &str = "III_SANDBOX_NAMESPACE";
+/// A `path://` worker's directory, synced into the VM.
+pub const WORKER_DIR_ENV: &str = "III_WORKER_DIR";
+/// A registry bundle's install directory in the package cache.
+pub const PACKAGE_DIR_ENV: &str = "III_PACKAGE_DIR";
+/// A registry bundle's manifest name, which for an alias is the package it stands for.
+pub const PACKAGE_NAME_ENV: &str = "III_PACKAGE_NAME";
+/// Comma-separated names of the variables that belong to the worker and reach the guest.
+pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
+/// How long Compose waits after its SIGTERM before it kills this command.
+pub const STOP_TIMEOUT_ENV: &str = "III_STOP_TIMEOUT_MS";
+/// Exit code of a failure of this command itself, apart from the codes the guest exits with;
+/// `docker run` uses the same.
+pub const RUNNER_FAILED: i32 = 125;
+
+const URL_ENV: &str = "III_URL";
+const WORKER_NAME_ENV: &str = "III_WORKER_NAME";
+/// The project token Compose gives the adapter, never a container.
+const PROJECT_TOKEN_ENV: &str = "III_SANDBOX_WORKER_TOKEN";
+
+/// Never forwarded into the guest, even when listed: this command's own inputs, the host's
+/// engine URL (the adapter gives the guest its own) and the project token.
+const NEVER_FORWARDED: [&str; 11] = [
+    TOKEN_ENV,
+    STATE_KEY_ENV,
+    ADAPTER_ENV,
+    ADAPTER_NAMESPACE_ENV,
+    WORKER_DIR_ENV,
+    PACKAGE_DIR_ENV,
+    PACKAGE_NAME_ENV,
+    WORKER_ENV_KEYS_ENV,
+    STOP_TIMEOUT_ENV,
+    URL_ENV,
+    PROJECT_TOKEN_ENV,
+];
+
+/// What this command needs from the adapter beyond contract 1.1: its own VM's token, a VM that
+/// stops once this command is gone, and a reattach that does not replay the log.
+const REQUIRED_FEATURES: [&str; 3] = [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
+
+/// The connection's own name: never the container's, which belongs to the guest.
+const CLIENT_NAME: &str = "iii-sandbox";
+/// How long the adapter may take to register `adapter::info` after it connects.
+const INFO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+/// `worker::prepare` pulls the image: room for a large one.
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// `worker::start` boots the VM; Compose's startup timeout bounds the guest's registration.
+const START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Every other call's budget.
+const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// `worker::status` cadence.
+const POLL_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
+/// How long `worker::status` may go unanswered before this command gives the VM up: the
+/// adapter's reattach grace, after which its lease has stopped a VM no client follows.
+const LOST_AFTER: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
+
+/// `iii sandbox`: run a Compose container's VM through its sandbox adapter.
+#[derive(Debug, Clone, clap::Args)]
+pub struct SandboxCli {
+    #[command(subcommand)]
+    pub command: SandboxCommand,
+}
+
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum SandboxCommand {
+    /// Boot this container's VM, or reattach to it, and stay with it until it exits. Stopping
+    /// this command stops the VM. Exits with the VM's code, 128+N when the VM ended on signal
+    /// N, or 125 when `iii sandbox` itself failed.
+    Run(RunArgs),
+    /// Remove this container's VM state: its disk, installed dependencies included.
+    Destroy,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct RunArgs {
+    /// Command to start in the guest instead of the manifest's `scripts.start`. Only for a
+    /// `path://` worker: a registry bundle runs its own.
+    #[arg(long, value_name = "COMMAND")]
+    pub command: Option<String>,
+}
+
+/// The VM `iii sandbox` acts on, and the adapter that runs it.
+#[derive(Debug, Clone)]
+pub(crate) struct Target {
+    engine_url: String,
+    adapter: String,
+    adapter_namespace: String,
+    token: String,
+    state_key: String,
+}
+
+impl Target {
+    fn from_vars(vars: &BTreeMap<String, String>) -> Result<Self, String> {
+        Ok(Self {
+            engine_url: required(vars, URL_ENV)?,
+            adapter: required(vars, ADAPTER_ENV)?,
+            adapter_namespace: required(vars, ADAPTER_NAMESPACE_ENV)?,
+            token: required(vars, TOKEN_ENV)?,
+            state_key: required(vars, STATE_KEY_ENV)?,
+        })
+    }
+}
+
+/// Everything `iii sandbox run` needs, as Compose hands it over.
+#[derive(Debug, Clone)]
+pub(crate) struct Context {
+    target: Target,
+    worker_name: String,
+    source: WorkerSource,
+    /// Only the worker's own variables: the host's environment never reaches the guest.
+    env: BTreeMap<String, String>,
+    /// Compose's stop timeout: its SIGKILL follows its SIGTERM after this long.
+    stop_timeout: Duration,
+}
+
+impl Context {
+    pub(crate) fn from_vars(
+        vars: &BTreeMap<String, String>,
+        command: Option<String>,
+    ) -> Result<Self, String> {
+        let target = Target::from_vars(vars)?;
+        let source = match (
+            present(vars, WORKER_DIR_ENV),
+            present(vars, PACKAGE_DIR_ENV),
+        ) {
+            (Some(dir), _) => WorkerSource::Local {
+                host_path: dir.to_string(),
+                run_override: command,
+            },
+            (None, Some(dir)) => {
+                if command.is_some() {
+                    return Err(
+                        "--command applies to a path:// worker only: a registry bundle runs the \
+                         start command it was published with"
+                            .to_string(),
+                    );
+                }
+                WorkerSource::Bundle {
+                    package: required(vars, PACKAGE_NAME_ENV)?,
+                    host_path: dir.to_string(),
+                }
+            }
+            (None, None) => {
+                return Err(format!(
+                    "neither {WORKER_DIR_ENV} nor {PACKAGE_DIR_ENV} is set, so there is no worker \
+                     to boot; {STARTED_BY_COMPOSE}"
+                ));
+            }
+        };
+        let stop_timeout = match present(vars, STOP_TIMEOUT_ENV) {
+            Some(ms) => Duration::from_millis(ms.parse().map_err(|_| {
+                format!("{STOP_TIMEOUT_ENV} must be a number of milliseconds, not {ms:?}")
+            })?),
+            None => DEFAULT_STOP_GRACE,
+        };
+        Ok(Self {
+            target,
+            worker_name: required(vars, WORKER_NAME_ENV)?,
+            source,
+            env: worker_env(vars),
+            stop_timeout,
+        })
+    }
+
+    /// When everything a stop does must be over: nine tenths into Compose's stop timeout,
+    /// leaving the rest for this command to exit before Compose kills it.
+    fn stop_deadline(&self, signalled_at: Instant) -> Instant {
+        let budget = self.stop_timeout * 9 / 10;
+        signalled_at
+            .checked_add(budget)
+            .unwrap_or_else(|| signalled_at + Duration::from_secs(365 * 24 * 60 * 60))
+    }
+}
+
+const STARTED_BY_COMPOSE: &str = "`iii sandbox` runs as the `scripts.run` of a Compose container \
+                                  that lists its sandbox adapter in `start_after`";
+
+fn present<'a>(vars: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    vars.get(name)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+}
+
+fn required(vars: &BTreeMap<String, String>, name: &str) -> Result<String, String> {
+    present(vars, name)
+        .map(str::to_string)
+        .ok_or_else(|| format!("{name} is not set; {STARTED_BY_COMPOSE}"))
+}
+
+/// The variables `III_WORKER_ENV_KEYS` names, without [`NEVER_FORWARDED`].
+fn worker_env(vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    present(vars, WORKER_ENV_KEYS_ENV)
+        .into_iter()
+        .flat_map(|keys| keys.split(','))
+        .map(str::trim)
+        .filter(|key| !key.is_empty() && !NEVER_FORWARDED.contains(key))
+        .filter_map(|key| Some((key.to_string(), vars.get(key)?.clone())))
+        .collect()
+}
+
+/// Entry point behind `iii sandbox`. Returns the process exit code.
+pub async fn run(cli: SandboxCli) -> i32 {
+    let vars = process_vars();
+    let result = match cli.command {
+        SandboxCommand::Run(args) => run_command(&vars, args.command).await,
+        SandboxCommand::Destroy => destroy_command(&vars).await,
+    };
+    result.unwrap_or_else(|message| {
+        eprintln!("iii sandbox: {message}");
+        RUNNER_FAILED
+    })
+}
+
+/// The process environment; a variable that is not UTF-8 cannot be the guest's anyway.
+fn process_vars() -> BTreeMap<String, String> {
+    std::env::vars_os()
+        .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+        .collect()
+}
+
+async fn run_command(
+    vars: &BTreeMap<String, String>,
+    command: Option<String>,
+) -> Result<i32, String> {
+    let ctx = Context::from_vars(vars, command)?;
+    // Before anything can boot: from here on neither signal ends this command by its default
+    // action, whatever phase it comes in.
+    let shutdown = Shutdown::signals()
+        .map_err(|error| format!("cannot handle SIGTERM and SIGINT: {error}"))?;
+    let client = connect(&ctx.target.engine_url);
+    let result = run_vm(&ctx, &client, &shutdown, Printer::stdio()).await;
+    client.shutdown_async().await;
+    result.map(exit_code)
+}
+
+async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, String> {
+    let target = Target::from_vars(vars)?;
+    let client = connect(&target.engine_url);
+    let request = WorkerDestroyRequest {
+        auth: target.token.clone(),
+        state_key: target.state_key.clone(),
+    };
+    let reply = sandbox::call::<WorkerDestroyResponse>(
+        &client,
+        &target.adapter,
+        &target.adapter_namespace,
+        WORKER_DESTROY,
+        &request,
+        Duration::from_secs(60),
+    )
+    .await;
+    client.shutdown_async().await;
+    match reply {
+        Ok(WorkerDestroyResponse { destroyed: true }) => {
+            println!("removed the VM state of {}", target.state_key);
+            Ok(0)
+        }
+        Ok(WorkerDestroyResponse { destroyed: false }) => {
+            println!("no VM state for {}", target.state_key);
+            Ok(0)
+        }
+        Err(error) => Err(unreachable_or("worker::destroy", &error, &target)),
+    }
+}
+
+fn connect(engine_url: &str) -> IIIClient {
+    register_worker(
+        engine_url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: CLIENT_NAME.to_string(),
+                ..Default::default()
+            }),
+            // Compose hands this process the container's identity for the guest. Taking it
+            // would register this client under the container's name, and the engine would
+            // report the container ready before its guest has booted.
+            identity: WorkerIdentityMode::Explicit,
+            ..Default::default()
+        },
+    )
+}
+
+/// SIGTERM (Compose's stop) or SIGINT (an operator's Ctrl-C): the signal's number and when it
+/// came, once one did.
+#[derive(Clone)]
+pub(crate) struct Shutdown(watch::Receiver<Option<(i32, Instant)>>);
+
+impl Shutdown {
+    /// Installs both handlers now, so a signal that comes while the adapter is still answering,
+    /// preparing or booting is handled like any other, never by its default action. Later
+    /// signals are absorbed: they cannot cut the stop the first one began.
+    fn signals() -> std::io::Result<Self> {
+        let (sender, requested) = watch::channel(None);
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut terminate = signal(SignalKind::terminate())?;
+            let mut interrupt = signal(SignalKind::interrupt())?;
+            tokio::spawn(async move {
+                let first = tokio::select! {
+                    received = terminate.recv() => received.map(|()| 15),
+                    received = interrupt.recv() => received.map(|()| 2),
+                };
+                let Some(number) = first else {
+                    return;
+                };
+                sender.send_replace(Some((number, Instant::now())));
+                loop {
+                    let received = tokio::select! {
+                        received = terminate.recv() => received,
+                        received = interrupt.recv() => received,
+                    };
+                    if received.is_none() {
+                        return;
+                    }
+                }
+            });
+        }
+        #[cfg(windows)]
+        {
+            let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+            tokio::spawn(async move {
+                if ctrl_c.recv().await.is_some() {
+                    sender.send_replace(Some((2, Instant::now())));
+                }
+                while ctrl_c.recv().await.is_some() {}
+            });
+        }
+        Ok(Self(requested))
+    }
+
+    #[cfg(test)]
+    fn manual() -> (watch::Sender<Option<(i32, Instant)>>, Self) {
+        let (sender, requested) = watch::channel(None);
+        (sender, Self(requested))
+    }
+
+    /// Resolves once a signal came, to its number and when it came; never without one.
+    async fn requested(&self) -> (i32, Instant) {
+        let mut requested = self.0.clone();
+        let signal = match requested.wait_for(Option::is_some).await {
+            Ok(signal) => *signal,
+            Err(_) => None,
+        };
+        match signal {
+            Some(signal) => signal,
+            None => std::future::pending().await,
+        }
+    }
+}
+
+/// Where the guest's records go: stdout and stderr, or a test's buffer.
+#[derive(Clone)]
+pub(crate) struct Printer(Arc<dyn Fn(&LogRecord) + Send + Sync>);
+
+impl Printer {
+    fn stdio() -> Self {
+        Self(Arc::new(print_record))
+    }
+}
+
+fn print_record(record: &LogRecord) {
+    // Output nobody reads any more (a closed pipe) is not this command's failure.
+    let _ = match record.stream {
+        LogStream::Stdout => writeln!(std::io::stdout().lock(), "{}", record.line),
+        LogStream::Stderr => writeln!(std::io::stderr().lock(), "{}", record.line),
+    };
+}
+
+/// A VM's end as this command's exit code, as a shell reports a child's.
+fn exit_code(status: ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
+/// This command's end when a signal came before there was a VM to stop.
+fn signalled(number: i32) -> ExitStatus {
+    sandbox::vm_exit(None, Some(number))
+}
+
+/// Boots `ctx`'s VM, or reattaches to its live boot, and stays with it until it exits or
+/// `shutdown` resolves, which stops it. Resolves to the VM's end as a process status.
+pub(crate) async fn run_vm(
+    ctx: &Context,
+    client: &IIIClient,
+    shutdown: &Shutdown,
+    printer: Printer,
+) -> Result<ExitStatus, String> {
+    let target = &ctx.target;
+    let info = tokio::select! {
+        biased;
+        (number, _) = shutdown.requested() => return Ok(signalled(number)),
+        info = adapter_info(target, client) => info?,
+    };
+    check_adapter(&info, &target.adapter)?;
+
+    let prepare = WorkerPrepareRequest {
+        auth: target.token.clone(),
+        source: ctx.source.clone(),
+        state_key: Some(target.state_key.clone()),
+    };
+    let prepared = tokio::select! {
+        biased;
+        (number, _) = shutdown.requested() => return Ok(signalled(number)),
+        prepared = sandbox::call::<WorkerPrepareResponse>(
+            client,
+            &target.adapter,
+            &target.adapter_namespace,
+            WORKER_PREPARE,
+            &prepare,
+            PREPARE_TIMEOUT,
+        ) => prepared,
+    };
+    prepared.map_err(|error| unreachable_or("worker::prepare", &error, target))?;
+
+    let start = WorkerStartRequest {
+        auth: target.token.clone(),
+        state_key: target.state_key.clone(),
+        worker_name: ctx.worker_name.clone(),
+        source: ctx.source.clone(),
+        env: ctx.env.clone(),
+        engine_url: target.engine_url.clone(),
+    };
+    // A signal does not abandon the start: its reply names the instance to stop. One that does
+    // not come before the stop deadline leaves the VM to the adapter's lease.
+    let started = tokio::select! {
+        started = sandbox::call::<WorkerStartResponse>(
+            client,
+            &target.adapter,
+            &target.adapter_namespace,
+            WORKER_START,
+            &start,
+            START_TIMEOUT,
+        ) => started,
+        number = async {
+            let (number, at) = shutdown.requested().await;
+            tokio::time::sleep_until(ctx.stop_deadline(at)).await;
+            number
+        } => {
+            eprintln!(
+                "iii sandbox: worker::start did not answer before the stop timeout; {} stops \
+                 the VM once no client follows it",
+                target.adapter
+            );
+            return Ok(signalled(number));
+        }
+    };
+    // S502 names a boot of this state that is still live: the VM outlived the command that
+    // ran it (a SIGKILL, a daemon restart). Reattaching keeps the guest as it is.
+    let (started, reattached) = match started {
+        Ok(started) => (started, false),
+        Err(error) => match (
+            sandbox::sandbox_code(&error),
+            sandbox::live_instance(&error),
+        ) {
+            (Some(SandboxErrorCode::S502), Some(live)) => (live, true),
+            _ => return Err(unreachable_or("worker::start", &error, target)),
+        },
+    };
+    let vm = VmRecord {
+        adapter: target.adapter.clone(),
+        namespace: target.adapter_namespace.clone(),
+        vm_id: started.vm_id,
+        instance: started.instance,
+    };
+    if reattached {
+        eprintln!(
+            "iii sandbox: reattached to VM {} instance {}",
+            vm.vm_id, vm.instance
+        );
+    }
+    let mut logs = Logs::new(reattached, printer);
+    supervise(ctx, client, &vm, shutdown, &mut logs).await
+}
+
+/// `adapter::info`, asked again while the adapter has not registered it yet: the adapter starts
+/// before this container (`start_after`), but registers its functions a moment after it connects.
+async fn adapter_info(target: &Target, client: &IIIClient) -> Result<AdapterInfo, String> {
+    let deadline = Instant::now() + INFO_WAIT;
+    loop {
+        let reply = sandbox::call::<AdapterInfo>(
+            client,
+            &target.adapter,
+            &target.adapter_namespace,
+            ADAPTER_INFO_SUFFIX,
+            &AdapterInfoRequest {},
+            CALL_TIMEOUT,
+        )
+        .await;
+        match reply {
+            Err(iii_sdk::Error::Remote { code, .. })
+                if code == "function_not_found" && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            reply => return reply.map_err(|error| unreachable_or("adapter::info", &error, target)),
+        }
+    }
+}
+
+/// Refuses an adapter this command cannot drive: another contract major, or one without the
+/// contract 1.2 features a container's own VM depends on.
+fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), String> {
+    let version = &info.adapter_version;
+    if info.contract.major != CONTRACT_MAJOR {
+        return Err(format!(
+            "{adapter} {version} implements sandbox contract {}.{}, but this iii needs \
+             {CONTRACT_MAJOR}.x",
+            info.contract.major, info.contract.minor
+        ));
+    }
+    let missing: Vec<&str> = REQUIRED_FEATURES
+        .into_iter()
+        .filter(|feature| !info.supports(feature))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{adapter} {version} does not support {}; this iii needs a newer {adapter}, \
+             which the project's `update` installs",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+/// A failed call, naming where the engine was looked for when it was not reached at all.
+fn unreachable_or(function: &str, error: &iii_sdk::Error, target: &Target) -> String {
+    let message = format!("{function}: {}", sandbox::spawn_failed_message(error));
+    match error {
+        iii_sdk::Error::Timeout | iii_sdk::Error::NotConnected => format!(
+            "{message}; is the engine at {} ({URL_ENV}) running, with {} connected?",
+            target.engine_url, target.adapter
+        ),
+        _ => message,
+    }
+}
+
+enum Tick {
+    Stop(Instant),
+    Polled(Outcome),
+}
+
+/// Polls `vm` until it exits, printing its output, or stops it once `shutdown` resolves. The
+/// whole tick races the signal, so a slow or restarting engine never delays a stop.
+async fn supervise(
+    ctx: &Context,
+    client: &IIIClient,
+    vm: &VmRecord,
+    shutdown: &Shutdown,
+    logs: &mut Logs,
+) -> Result<ExitStatus, String> {
+    let token = &ctx.target.token;
+    let mut unanswered_since: Option<Instant> = None;
+    loop {
+        let tick = tokio::select! {
+            biased;
+            (_, at) = shutdown.requested() => Tick::Stop(at),
+            outcome = poll(client, vm, token, logs) => Tick::Polled(outcome),
+        };
+        match tick {
+            Tick::Stop(at) => {
+                return Ok(stop(client, vm, token, ctx.stop_deadline(at), logs).await);
+            }
+            Tick::Polled(Outcome::Exited(status)) => {
+                // The VM is gone: its last lines are read, unless a stop request cuts that short.
+                tokio::select! {
+                    biased;
+                    _ = shutdown.requested() => {}
+                    () = logs.finish(client, vm, token) => {}
+                }
+                return Ok(status);
+            }
+            Tick::Polled(Outcome::Running) => unanswered_since = None,
+            Tick::Polled(Outcome::Unknown) => {
+                let since = *unanswered_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= LOST_AFTER {
+                    return Err(format!(
+                        "{} has not answered about VM {} instance {} for {}s; giving it up, as \
+                         the adapter's lease does",
+                        vm.adapter,
+                        vm.vm_id,
+                        vm.instance,
+                        LOST_AFTER.as_secs()
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// One tick: keeps the log stream open, waits a poll interval, then asks how the VM is.
+async fn poll(client: &IIIClient, vm: &VmRecord, token: &str, logs: &mut Logs) -> Outcome {
+    logs.follow(client, vm, token).await;
+    tokio::time::sleep(POLL_INTERVAL).await;
+    sandbox::outcome_of(sandbox::worker_status(client, vm, token).await)
+}
+
+/// `worker::stop`, asked again until the adapter confirms the VM ended or `deadline` passes;
+/// every call and its grace fit in what is left. A stop never confirmed leaves the VM to the
+/// adapter's lease, which stops it once this command is gone.
+async fn stop(
+    client: &IIIClient,
+    vm: &VmRecord,
+    token: &str,
+    deadline: Instant,
+    logs: &mut Logs,
+) -> ExitStatus {
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            eprintln!(
+                "iii sandbox: VM {} instance {} did not confirm its stop in time; {} stops it \
+                 once this command is gone",
+                vm.vm_id, vm.instance, vm.adapter
+            );
+            return sandbox::vm_exit(None, None);
+        }
+        let request = WorkerStopRequest {
+            auth: token.to_string(),
+            vm_id: vm.vm_id.clone(),
+            instance: vm.instance,
+            // The rest of what is left is for the reply.
+            grace_ms: (left * 8 / 9).as_millis() as u64,
+        };
+        let reply = sandbox::call::<WorkerStatus>(
+            client,
+            &vm.adapter,
+            &vm.namespace,
+            WORKER_STOP,
+            &request,
+            left,
+        )
+        .await;
+        if let Outcome::Exited(status) = sandbox::outcome_of(reply) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let _ = tokio::time::timeout(left, logs.finish(client, vm, token)).await;
+            return status;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(POLL_INTERVAL.min(left)).await;
+    }
+}
+
+/// The guest's output, printed as this command's own: its stdout to stdout, its stderr to
+/// stderr, where Compose captures them.
+struct Logs {
+    /// Reattached and no stream opened yet: the first starts at the end, after what the command
+    /// that ran the VM before already printed.
+    from_end: bool,
+    /// Where a reopened stream continues: the last record printed, or where a `from_end`
+    /// stream started.
+    cursor: Option<u64>,
+    capture: Option<JoinHandle<Option<u64>>>,
+    printer: Printer,
+}
+
+impl Logs {
+    fn new(from_end: bool, printer: Printer) -> Self {
+        Self {
+            from_end,
+            cursor: None,
+            capture: None,
+            printer,
+        }
+    }
+
+    /// Keeps one `worker::logs` stream open. One that closed while the VM runs (an engine
+    /// restart, a dropped bus) is asked for again from [`Logs::cursor`].
+    async fn follow(&mut self, client: &IIIClient, vm: &VmRecord, token: &str) {
+        match self.capture.take() {
+            Some(live) if !live.is_finished() => {
+                self.capture = Some(live);
+                return;
+            }
+            Some(done) => {
+                if let Ok(Some(last)) = done.await {
+                    self.cursor = Some(last);
+                }
+            }
+            None => {}
+        }
+        let created =
+            tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
+                .await;
+        let Ok(Ok(channel)) = created else {
+            return;
+        };
+        let request = WorkerLogsRequest {
+            auth: token.to_string(),
+            vm_id: vm.vm_id.clone(),
+            cursor: self.cursor,
+            follow: true,
+            channel: contract::StreamChannelRef {
+                channel_id: channel.writer_ref.channel_id,
+                access_key: channel.writer_ref.access_key,
+                direction: contract::ChannelDirection::Write,
+            },
+            from_end: self.from_end,
+        };
+        let reply = sandbox::call::<WorkerLogsResponse>(
+            client,
+            &vm.adapter,
+            &vm.namespace,
+            WORKER_LOGS,
+            &request,
+            CALL_TIMEOUT,
+        )
+        .await;
+        if let Ok(started) = reply {
+            if self.from_end {
+                // Later streams resume where this one started, not at a later end.
+                self.from_end = false;
+                self.cursor = started.cursor;
+            }
+            self.capture = Some(print_records(channel.reader, self.printer.clone()));
+        }
+    }
+
+    /// After the VM exited: reads what its stream still holds, so its last lines are printed.
+    async fn finish(&mut self, client: &IIIClient, vm: &VmRecord, token: &str) {
+        self.follow(client, vm, token).await;
+        if let Some(draining) = self.capture.take() {
+            let _ = tokio::time::timeout(CALL_TIMEOUT, draining).await;
+        }
+    }
+}
+
+/// Prints every `LogRecord` frame on `reader` until the channel closes, then resolves to the
+/// cursor of the last one.
+fn print_records(
+    reader: iii_sdk::channel::ChannelReader,
+    printer: Printer,
+) -> JoinHandle<Option<u64>> {
+    tokio::spawn(async move {
+        let last = Arc::new(Mutex::new(None));
+        let seen = last.clone();
+        reader
+            .on_message(move |frame| {
+                let Ok(record) = serde_json::from_str::<LogRecord>(&frame) else {
+                    return;
+                };
+                (printer.0)(&record);
+                if let Ok(mut seen) = seen.lock() {
+                    *seen = Some(record.cursor);
+                }
+            })
+            .await;
+        while let Ok(Some(_)) = reader.next_binary().await {}
+        last.lock().ok().and_then(|last| *last)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::tests::{answered, fake_engine, refused};
+    use iii_sandbox_contract::{ContractVersion, State};
+    use serde_json::{Value, json};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn compose_vars() -> BTreeMap<String, String> {
+        [
+            (URL_ENV, "ws://127.0.0.1:49134"),
+            (ADAPTER_ENV, "sandbox-libkrun"),
+            (ADAPTER_NAMESPACE_ENV, "orders"),
+            (TOKEN_ENV, "scoped"),
+            (STATE_KEY_ENV, "9f2c1e"),
+            (WORKER_NAME_ENV, "api"),
+            (WORKER_DIR_ENV, "/work/api"),
+            (
+                WORKER_ENV_KEYS_ENV,
+                "III_WORKER_NAME, API_KEY,III_SANDBOX_TOKEN,III_URL,III_SANDBOX_WORKER_TOKEN,UNSET",
+            ),
+            ("API_KEY", "k"),
+            (PROJECT_TOKEN_ENV, "project"),
+            ("HOME", "/home/operator"),
+            (STOP_TIMEOUT_ENV, "10000"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+    }
+
+    fn context() -> Context {
+        Context::from_vars(&compose_vars(), None).unwrap()
+    }
+
+    fn context_stopping_within(ms: &str) -> Context {
+        let mut vars = compose_vars();
+        vars.insert(STOP_TIMEOUT_ENV.into(), ms.into());
+        Context::from_vars(&vars, None).unwrap()
+    }
+
+    /// A shutdown that never comes.
+    fn never() -> Shutdown {
+        Shutdown::manual().1
+    }
+
+    fn signal_after(delay: Duration, number: i32) -> Shutdown {
+        let (sender, shutdown) = Shutdown::manual();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            sender.send_replace(Some((number, Instant::now())));
+        });
+        shutdown
+    }
+
+    /// A printer into a buffer, as `stream: line`.
+    fn captured() -> (Printer, Arc<Mutex<Vec<String>>>) {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let sink = lines.clone();
+        let printer = Printer(Arc::new(move |record: &LogRecord| {
+            let stream = match record.stream {
+                LogStream::Stdout => "stdout",
+                LogStream::Stderr => "stderr",
+            };
+            sink.lock()
+                .unwrap()
+                .push(format!("{stream}: {}", record.line));
+        }));
+        (printer, lines)
+    }
+
+    fn info(features: &[&str]) -> AdapterInfo {
+        AdapterInfo {
+            adapter: "sandbox-libkrun".into(),
+            adapter_version: "0.3.0".into(),
+            contract: ContractVersion::CURRENT,
+            features: features.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
+    fn status(state: State, exit_code: Option<i32>, signal: Option<i32>) -> Value {
+        answered(WorkerStatus {
+            vm_id: "v".into(),
+            instance: 1,
+            state,
+            exit_code,
+            signal,
+            started_at_ms: 0,
+            ended_at_ms: None,
+        })
+    }
+
+    /// An adapter that boots instance 1 of VM `v`, keeps it running and stops it on SIGTERM,
+    /// except where `overrides` answers a call (by function suffix) itself. An override of
+    /// `true` leaves the call unanswered.
+    fn adapter(
+        overrides: impl Fn(&str, &Value) -> Option<Value> + Send + Sync + 'static,
+    ) -> impl Fn(&str, &Value) -> Value + Send + Sync + 'static {
+        move |function, payload| {
+            let suffix = function.trim_start_matches("sandbox-libkrun::");
+            overrides(suffix, payload).unwrap_or_else(|| match suffix {
+                "adapter::info" => answered(info(&REQUIRED_FEATURES)),
+                "worker::start" => answered(json!({"vm_id": "v", "instance": 1})),
+                "worker::status" => status(State::Running, None, None),
+                "worker::stop" => status(State::Stopped, None, Some(15)),
+                _ => answered(json!({})),
+            })
+        }
+    }
+
+    fn calls(
+        called: &mut tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+    ) -> Vec<(String, Value)> {
+        let mut calls = Vec::new();
+        while let Ok((function, payload)) = called.try_recv() {
+            calls.push((
+                function.trim_start_matches("sandbox-libkrun::").into(),
+                payload,
+            ));
+        }
+        calls
+    }
+
+    fn payloads<'a>(calls: &'a [(String, Value)], function: &str) -> Vec<&'a Value> {
+        calls
+            .iter()
+            .filter(|(called, _)| called == function)
+            .map(|(_, payload)| payload)
+            .collect()
+    }
+
+    fn payload<'a>(calls: &'a [(String, Value)], function: &str) -> &'a Value {
+        payloads(calls, function)
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("{function} was not called: {calls:?}"))
+    }
+
+    #[test]
+    fn a_container_without_the_adapter_grant_is_refused() {
+        let mut vars = compose_vars();
+        vars.remove(TOKEN_ENV);
+        let error = Context::from_vars(&vars, None).unwrap_err();
+        assert!(
+            error.contains(TOKEN_ENV) && error.contains("start_after"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn only_the_listed_worker_variables_reach_the_guest() {
+        let expected: BTreeMap<String, String> = [("API_KEY", "k"), ("III_WORKER_NAME", "api")]
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        assert_eq!(context().env, expected);
+    }
+
+    #[test]
+    fn a_path_worker_may_replace_its_start_command_and_a_bundle_may_not() {
+        let ctx = Context::from_vars(&compose_vars(), Some("python main.py".into())).unwrap();
+        assert!(matches!(
+            ctx.source,
+            WorkerSource::Local { run_override: Some(ref command), .. } if command == "python main.py"
+        ));
+
+        let mut bundle = compose_vars();
+        bundle.remove(WORKER_DIR_ENV);
+        bundle.insert(PACKAGE_DIR_ENV.into(), "/cache/onboarding".into());
+        bundle.insert(PACKAGE_NAME_ENV.into(), "onboarding".into());
+        assert!(matches!(
+            Context::from_vars(&bundle, None).unwrap().source,
+            WorkerSource::Bundle { ref package, .. } if package == "onboarding"
+        ));
+        assert!(Context::from_vars(&bundle, Some("x".into())).is_err());
+    }
+
+    #[test]
+    fn a_stop_ends_inside_the_stop_timeout() {
+        let at = Instant::now();
+        assert_eq!(context().stop_deadline(at) - at, Duration::from_secs(9));
+        // An absurd timeout is a far deadline, not a panic.
+        let far = context_stopping_within(&u64::MAX.to_string()).stop_deadline(at);
+        assert!(far > at + Duration::from_secs(24 * 60 * 60));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_codes_read_like_a_shell_child() {
+        assert_eq!(exit_code(sandbox::vm_exit(Some(3), None)), 3);
+        assert_eq!(exit_code(sandbox::vm_exit(None, Some(15))), 143);
+        assert_eq!(exit_code(sandbox::vm_exit(None, None)), 137);
+        assert_eq!(exit_code(signalled(2)), 130);
+    }
+
+    #[test]
+    fn an_adapter_without_the_1_2_features_is_refused() {
+        let mut adapter = info(&[]);
+        let error = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        assert!(error.contains(FEATURE_SCOPED_AUTH), "{error}");
+        adapter.features = REQUIRED_FEATURES.iter().map(|f| f.to_string()).collect();
+        assert!(check_adapter(&adapter, "sandbox-libkrun").is_ok());
+    }
+
+    /// The real handlers, in a subprocess so the test runner never handles a signal: a SIGTERM
+    /// right after they are installed is a stop request, and a second one cannot cut it short.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_signal_is_handled_from_the_moment_the_handlers_are_installed() {
+        use nix::{
+            sys::signal::{Signal, kill},
+            unistd::Pid,
+        };
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, BufReader, Lines};
+        use tokio::process::ChildStdout;
+
+        async fn wait_for(lines: &mut Lines<BufReader<ChildStdout>>, wanted: &str) {
+            let seen = tokio::time::timeout(Duration::from_secs(10), async {
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    // Single-threaded, libtest prints the test's name before its output on
+                    // the same line.
+                    if line.ends_with(wanted) {
+                        return;
+                    }
+                }
+                panic!("the fixture exited before printing {wanted:?}");
+            })
+            .await;
+            assert!(seen.is_ok(), "no {wanted:?} from the fixture");
+        }
+
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sandbox_cli::tests::signal_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = Pid::from_raw(child.id().unwrap() as i32);
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        wait_for(&mut lines, "signals-ready").await;
+        kill(pid, Signal::SIGTERM).unwrap();
+        wait_for(&mut lines, "stop-requested 15").await;
+        kill(pid, Signal::SIGTERM).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "a second SIGTERM ended the command during its stop"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "subprocess fixture for process-wide signal handling"]
+    async fn signal_fixture() {
+        let shutdown = Shutdown::signals().unwrap();
+        println!("signals-ready");
+        std::io::stdout().flush().unwrap();
+        // Run on its own (`--include-ignored`), nothing signals it: it ends instead of hanging.
+        let Ok((number, _)) =
+            tokio::time::timeout(Duration::from_secs(10), shutdown.requested()).await
+        else {
+            return;
+        };
+        println!("stop-requested {number}");
+        std::io::stdout().flush().unwrap();
+        // Alive long enough for the test to see a second signal absorbed.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn run_boots_the_vm_prints_its_output_once_and_exits_with_its_code() {
+        let (client, mut called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "worker::status").then(|| status(State::Exited, Some(3), None))
+        }))
+        .await;
+        let (printer, printed) = captured();
+        let status = run_vm(&context(), &client, &never(), printer)
+            .await
+            .unwrap();
+        assert_eq!(status.code(), Some(3));
+        // The fake stream holds one stderr record at cursor 12; the stream reopened after the
+        // exit asks from there, so the record is printed once.
+        assert_eq!(*printed.lock().unwrap(), ["stderr: no /dev/kvm"]);
+
+        let calls = calls(&mut called);
+        assert_eq!(payload(&calls, "worker::prepare")["state_key"], "9f2c1e");
+        let start = payload(&calls, "worker::start");
+        assert_eq!(start["auth"], "scoped");
+        assert_eq!(start["worker_name"], "api");
+        assert_eq!(
+            start["env"],
+            json!({"API_KEY": "k", "III_WORKER_NAME": "api"})
+        );
+        let logs = payloads(&calls, "worker::logs");
+        assert!(logs[0].get("from_end").is_none() && logs[0]["cursor"].is_null());
+        assert!(
+            logs[1..].iter().all(|reopened| reopened["cursor"] == 12),
+            "{logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_boot_is_reattached_to_without_replaying_or_losing_logs() {
+        let statuses = AtomicUsize::new(0);
+        let (client, mut called) = fake_engine(adapter(move |suffix, payload| match suffix {
+            "worker::start" => Some(refused(SandboxErrorCode::S502, 4)),
+            // The log's last record is 12 when the reattach asks from the end.
+            "worker::logs" if payload["from_end"] == true => Some(answered(json!({"cursor": 12}))),
+            "worker::status" if statuses.fetch_add(1, Ordering::SeqCst) >= 3 => {
+                Some(status(State::Exited, Some(0), None))
+            }
+            _ => None,
+        }))
+        .await;
+        let (printer, printed) = captured();
+        let status = run_vm(&context(), &client, &never(), printer)
+            .await
+            .unwrap();
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            printed.lock().unwrap().is_empty(),
+            "the old record was replayed"
+        );
+
+        let calls = calls(&mut called);
+        assert_eq!(
+            payloads(&calls, "worker::start").len(),
+            1,
+            "a reattach boots nothing"
+        );
+        assert_eq!(payload(&calls, "worker::status")["instance"], 4);
+        // The from_end stream closes empty while the VM runs; the reopened one resumes where it
+        // started, not at a later end that would skip what the guest printed in between.
+        let logs = payloads(&calls, "worker::logs");
+        assert_eq!(logs[0]["from_end"], true);
+        assert!(logs.len() >= 2, "{logs:?}");
+        for reopened in &logs[1..] {
+            assert!(reopened.get("from_end").is_none(), "{reopened}");
+            assert_eq!(reopened["cursor"], 12);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_signal_while_running_stops_the_vm_within_the_grace() {
+        let (client, mut called) = fake_engine(adapter(|_, _| None)).await;
+        let shutdown = signal_after(Duration::from_millis(300), 15);
+        let (printer, _) = captured();
+        let status = run_vm(&context(), &client, &shutdown, printer)
+            .await
+            .unwrap();
+        assert_eq!(exit_code(status), 128 + 15);
+        let grace = payload(&calls(&mut called), "worker::stop")["grace_ms"]
+            .as_u64()
+            .unwrap();
+        assert!((7_800..=8_000).contains(&grace), "grace {grace}");
+    }
+
+    #[tokio::test]
+    async fn a_signal_during_prepare_boots_nothing() {
+        let (sender, shutdown) = Shutdown::manual();
+        let (client, mut called) = fake_engine(adapter(move |suffix, _| {
+            (suffix == "worker::prepare").then(|| {
+                sender.send_replace(Some((15, Instant::now())));
+                json!(true)
+            })
+        }))
+        .await;
+        let (printer, _) = captured();
+        let begun = Instant::now();
+        let status = run_vm(&context(), &client, &shutdown, printer)
+            .await
+            .unwrap();
+        assert_eq!(exit_code(status), 128 + 15);
+        assert!(begun.elapsed() < Duration::from_secs(2));
+        let calls = calls(&mut called);
+        assert!(payloads(&calls, "worker::start").is_empty(), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn a_signal_during_start_stops_the_instance_it_boots() {
+        let (sender, shutdown) = Shutdown::manual();
+        let (client, mut called) = fake_engine(adapter(move |suffix, _| {
+            (suffix == "worker::start").then(|| {
+                sender.send_replace(Some((15, Instant::now())));
+                answered(json!({"vm_id": "v", "instance": 7}))
+            })
+        }))
+        .await;
+        let (printer, _) = captured();
+        let status = run_vm(&context(), &client, &shutdown, printer)
+            .await
+            .unwrap();
+        assert_eq!(exit_code(status), 128 + 15);
+        assert_eq!(payload(&calls(&mut called), "worker::stop")["instance"], 7);
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_stop_ends_inside_the_stop_timeout() {
+        let (client, _called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "worker::stop").then_some(json!(true))
+        }))
+        .await;
+        let shutdown = signal_after(Duration::from_millis(200), 15);
+        let (printer, _) = captured();
+        let ctx = context_stopping_within("2000");
+        let status = run_vm(&ctx, &client, &shutdown, printer).await.unwrap();
+        let (_, signalled_at) = shutdown.requested().await;
+        let took = signalled_at.elapsed();
+        // The deadline is at 1800 ms: 200 ms of slack for the return path on a loaded runner.
+        assert!(took < Duration::from_millis(2000), "the stop took {took:?}");
+        assert!(
+            took >= Duration::from_millis(1750),
+            "gave up early: {took:?}"
+        );
+        assert_eq!(exit_code(status), 128 + 9);
+    }
+
+    #[tokio::test]
+    async fn a_lost_adapter_ends_the_run() {
+        let (client, _called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "worker::status")
+                .then(|| json!({"error": {"code": "function_not_found", "message": "gone"}}))
+        }))
+        .await;
+        let (printer, _) = captured();
+        let begun = Instant::now();
+        let error = run_vm(&context(), &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert!(error.contains("has not answered"), "{error}");
+        assert!(begun.elapsed() < LOST_AFTER + Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn an_adapter_without_scoped_tokens_never_boots_anything() {
+        let (client, mut called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "adapter::info").then(|| answered(info(&[])))
+        }))
+        .await;
+        let (printer, _) = captured();
+        let error = run_vm(&context(), &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not support"), "{error}");
+        assert!(
+            calls(&mut called).iter().all(|(f, _)| f == "adapter::info"),
+            "nothing but adapter::info may be called"
+        );
+    }
+}

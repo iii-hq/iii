@@ -1,5 +1,5 @@
-"""The observing side of observe (sdk.md §2): the handle ``iii.observe``
-returns, kept for replay until it is disposed."""
+"""The observing side of observe: the handle ``iii.observe`` returns, kept for
+replay until it is disposed."""
 
 from __future__ import annotations
 
@@ -30,9 +30,11 @@ class ObserverHandle:
     """What ``iii.observe`` returns, synchronously.
 
     The observer is replayed with the same id on every reconnect until it is
-    disposed. State listeners are called in order, on a callback thread of the
-    SDK (never on the event loop that reads the engine's frames), so they may
-    call the sync API.
+    disposed. An ``error`` answer to its ``observe`` or to a replay is the
+    engine's refusal and is final: the engine holds nothing for it, and it is
+    not replayed. State listeners are called in order, on a callback thread of
+    the SDK (never on the event loop that reads the engine's frames), so they
+    may call the sync API.
 
     Attributes:
         id: The observer's id (stable across replays).
@@ -60,6 +62,18 @@ class ObserverHandle:
         self._changed = threading.Condition()
         #: Sent on some connection: the engine may hold it, so disposing it needs an ``unobserve``.
         self._sent = False
+        #: The connection (``III._connection_epoch``) it was last sent on, and
+        #: whether that connection's ``observeresult`` for it arrived.
+        self._sent_epoch = -1
+        self._answered = False
+        #: The engine answered its ``observe`` or a replay with ``error``: it
+        #: holds no observer for it, so the answer is final, it is not
+        #: replayed, and its dispose() sends nothing.
+        self._refused = False
+        #: The engine's ``disposed`` for it arrived: it holds nothing there.
+        self._engine_disposed = False
+        #: Its ``dispose()`` released the id (once, whichever thread called it).
+        self._disposed_by_worker = False
 
     @property
     def state(self) -> ObserverState:
@@ -93,7 +107,7 @@ class ObserverHandle:
         Raises:
             ObserveRejection: The observer turned ``error`` or ``disposed``
                 first; ``code`` is the engine's (``INVALID_ARGS``, ``FORBIDDEN``,
-                an owner's rejection, ``UNSUPPORTED``, ...).
+                the rejection of the observed function's worker, ``UNSUPPORTED``, ...).
             TimeoutError: ``timeout`` elapsed first.
             RuntimeError: Called from the SDK's event-loop thread.
         """
@@ -151,7 +165,10 @@ class ObserverHandle:
         return off
 
     def dispose(self) -> None:
-        """Removes the observer (``unobserve``). It is not replayed on reconnect."""
+        """Removes the observer (``unobserve``). It is not replayed on reconnect.
+
+        Returns at once. A handle the engine refused (an ``error`` answer to
+        its ``observe`` or a replay) or disposed sends nothing."""
         if self._state == "disposed":
             return
         self._on_dispose(self)

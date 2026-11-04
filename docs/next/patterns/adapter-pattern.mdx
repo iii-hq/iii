@@ -24,5 +24,9 @@ A thin iii worker that:
 2. Registers one function per operation you want to expose.
 3. Inside each handler, calls the existing service and returns the result as the function's
    response.
+4. For each kind of event the service produces (a webhook, a change feed, a notification), registers
+   a function whose handler returns the event, and calls that function each time the event happens.
+   Other workers observe it like any other function. See
+   [Observable functions](../creating-workers/observable-functions).
 
 {/* TODO: full worked example wrapping a real third-party API (e.g. Stripe, OpenAI, internal REST service) as an iii worker. Include the function ID conventions, error mapping from the wrapped service to iii function errors, and how to handle authentication / secrets. */}

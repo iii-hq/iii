@@ -393,6 +393,32 @@ jobs:
             '{event_type: "iii-release", client_payload: {version: $v}}' \
             | gh api repos/iii-hq/templates/dispatches --input -
 
+      # Run the load benchmarks on this release, prereleases included:
+      # iii-hq/workers' loadtest.yml builds tag iii/v<version> and publishes to
+      # gh-pages. The app must be installed on iii-hq/workers with
+      # Contents: write; without it only the benchmark run is skipped.
+      - name: Generate workers token
+        id: workers_token
+        if: inputs.target == 'iii' && inputs.dry_run != true
+        continue-on-error: true
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.III_CI_APP_ID }}
+          private-key: ${{ secrets.III_CI_APP_PRIVATE_KEY }}
+          owner: iii-hq
+          repositories: workers
+
+      - name: Dispatch release load benchmarks
+        if: steps.workers_token.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.workers_token.outputs.token }}
+          VERSION: ${{ steps.versions.outputs.version }}
+        run: |
+          jq -nc --arg v "$VERSION" \
+            '{event_type: "iii-release", client_payload: {version: $v}}' \
+            | gh api repos/iii-hq/workers/dispatches --input -
+
       - name: Notify Slack
         continue-on-error: true
         uses: slackapi/slack-github-action@v2.0.0
