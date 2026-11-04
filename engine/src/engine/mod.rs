@@ -1145,17 +1145,18 @@ impl Engine {
 
     /// What the debug log shows of a call's input or result: `observability::on-log`
     /// hands that log to any observer in any namespace, so a function that refuses
-    /// observers is not shown to them through it.
-    // shortcut: a function with no registration has no flag, so a call that lands
-    // while its worker is restarting is logged; keep the flag past unregistration
-    // if debug logs must hold no such input at all.
+    /// observers is not shown to them through it. Nor is one with no registration,
+    /// which has no flag to read: its worker may be restarting, with callers still
+    /// sending what it would refuse to show.
     fn loggable<'a>(
         &self,
         namespace: &str,
         function_id: &str,
         value: &'a dyn std::fmt::Debug,
     ) -> &'a dyn std::fmt::Debug {
-        if self.observers.options(namespace, function_id).observable {
+        if self.functions.get(namespace, function_id).is_some()
+            && self.observers.options(namespace, function_id).observable
+        {
             value
         } else {
             &"<not observable>"
@@ -9124,7 +9125,8 @@ mod tests {
         for (function_id, shown) in [
             ("vault::read-secret", false),
             ("orders::echo", true),
-            ("orders::never-registered", true),
+            // No registration, no flag: this may be a worker that is restarting.
+            ("orders::never-registered", false),
         ] {
             let input = format!("input-of-{function_id}");
             let output = format!("output-of-{function_id}");
