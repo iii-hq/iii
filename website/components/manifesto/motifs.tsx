@@ -31,9 +31,13 @@ const meshLines: Stroke[] = mesh5.flatMap((a, i) =>
 const MOTIFS: { strokes: Stroke[]; dots?: [number, number][] }[] = [
   // 01 systems engineering is integrations: every service wired to every other
   { strokes: meshLines, dots: mesh5.map(([x, y]) => [x, y]) },
-  // 02 three primitives: a circle, a triangle, a square
+  // 02 one primitive: a single function, called from the left, observed on the right
   {
-    strokes: [{ circle: [20, 48, 12] }, { d: 'M 48 36 L 60 60 L 36 60 Z' }, { rect: [64, 36, 24, 24] }],
+    strokes: [
+      { circle: [48, 48, 14] },
+      { d: 'M 12 48 H 30 M 25 43 L 30 48 L 25 53' },
+      { d: 'M 66 48 H 84 M 79 43 L 84 48 L 79 53' },
+    ],
   },
   // 03 paradigms collapse categories: six boxes become one
   {

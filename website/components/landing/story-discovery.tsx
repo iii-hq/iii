@@ -24,9 +24,9 @@ const SYSTEM: Row[] = [
   { id: 'directory::search_functions', detail: 'Search registered functions', owner: 'iii-directory' },
 ]
 const REGISTRY: Row[] = [
-  { id: 'document', detail: 'Read and write documents', owner: 'workers.iii.dev' },
-  { id: 'storage', detail: 'Store and archive objects', owner: 'workers.iii.dev' },
-  { id: 'browser', detail: 'Drive a real browser', owner: 'workers.iii.dev' },
+  { id: 'document', detail: 'Read and write documents', owner: 'iii.dev/registry' },
+  { id: 'storage', detail: 'Store and archive objects', owner: 'iii.dev/registry' },
+  { id: 'browser', detail: 'Drive a real browser', owner: 'iii.dev/registry' },
 ]
 const NEEDS = ['Save an order', 'Archive a receipt', 'Apply loyalty discount'] as const
 const OUTCOMES = [

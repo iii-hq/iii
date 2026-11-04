@@ -1,21 +1,14 @@
 import { ArrowUpRightIcon } from 'lucide-react'
 import type { ComponentType } from 'react'
 
-import { HauntedLink } from '@/components/halloween/haunted-link'
-import { IconChatGpt, IconClaude, IconGrok, IconPerplexity } from '@/components/icons/assistants'
+import { assistantIcons } from '@/components/icons/assistants'
 import { IconDiscord, IconGitHub, IconLinkedIn, IconX } from '@/components/icons/iconly'
 import { askAbout, links } from '@/lib/site'
 import { cn } from '@/lib/utils'
+import { Logo } from './logo'
 
 type Icon = ComponentType<{ className?: string }>
 type Item = { label: string; href: string; icon?: Icon; external?: boolean }
-
-const assistantIcons: Record<(typeof askAbout)[number]['id'], Icon> = {
-  chatgpt: IconChatGpt,
-  claude: IconClaude,
-  perplexity: IconPerplexity,
-  grok: IconGrok,
-}
 
 const rowClass =
   'group/link flex min-h-9 items-center gap-2.5 rounded-md text-[14px] text-foreground/75 outline-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-4'
@@ -32,7 +25,7 @@ export function Footer({ container }: { container?: string } = {}) {
       items: [
         { label: 'Docs', href: links.docs },
         { label: 'Quickstart', href: links.quickstart },
-        { label: 'Worker registry', href: links.registry, external: true },
+        { label: 'Worker registry', href: links.registry },
         { label: 'Roadmap', href: links.roadmap },
         { label: 'Benchmarks', href: links.benchmarks },
         { label: 'Manifesto', href: links.manifesto },
@@ -59,14 +52,13 @@ export function Footer({ container }: { container?: string } = {}) {
       <div className={cn(container ?? 'mx-auto max-w-[1240px] px-5 sm:px-6 md:px-5', 'pt-14 md:pt-16')}>
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] lg:gap-20">
           <div className="flex flex-col">
-            {/* Halloween: the haunted mark. Swap back to <Logo className="h-7 text-foreground" /> in a plain link to
-                retire it. */}
-            <HauntedLink
+            <a
               href="#hero"
-              label="iii, back to top"
-              size="32px"
+              aria-label="iii, back to top"
               className="inline-flex w-fit items-center rounded-sm outline-none focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-4"
-            />
+            >
+              <Logo className="h-7 text-foreground" />
+            </a>
             <p className="mt-4 max-w-[320px] text-pretty text-[15px] text-muted-foreground leading-relaxed">
               A next-generation software system. Workers. Functions. Observers.
             </p>

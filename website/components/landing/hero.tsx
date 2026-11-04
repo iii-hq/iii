@@ -27,24 +27,11 @@ export async function Hero() {
     // biome-ignore lint/correctness/useUniqueElementIds: The page has one hero and this is its public anchor.
     <section id="hero" aria-labelledby="hero-title" className="relative overflow-hidden">
       <div className="mx-auto flex w-full max-w-[1240px] flex-col items-center px-5 pt-32 pb-14 sm:px-6 sm:pt-36 sm:pb-16 md:px-5 lg:pt-44 lg:pb-24">
-        {/* A 680px column centred on the page (840px on desktop, room for the headline): eyebrow, headline,
+        {/* A 680px column centred on the page (840px on desktop, room for the headline): headline,
             paragraph and install card all share one centre line. The install card and the email row stay 680px
             everywhere (2026-10-09: narrower on desktop); the `ci` command wraps onto a second line there. */}
         <div className="flex w-full max-w-[680px] flex-col items-center text-center lg:max-w-[840px]">
-          <Reveal className="flex w-full min-w-0 justify-center">
-            <span className="inline-flex h-7 items-center gap-2 rounded-full border px-3 font-sans text-[13px] text-foreground/80 leading-none sm:h-8 sm:text-[13px]">
-              <span aria-hidden className="flex items-end gap-px">
-                {[0, 1, 2].map((i) => (
-                  <span key={i} className="flex flex-col items-center gap-px">
-                    <span className="size-[3px] bg-foreground" />
-                    <span className="h-2 w-[3px] bg-foreground" />
-                  </span>
-                ))}
-              </span>
-              {hero.eyebrow}
-            </span>
-          </Reveal>
-          <Reveal delay={0.05} className="mt-5 w-full sm:mt-6">
+          <Reveal className="w-full">
             {/* biome-ignore lint/correctness/useUniqueElementIds: The page has one primary heading. */}
             <PixelHeading
               as="h1"

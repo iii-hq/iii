@@ -5,7 +5,7 @@ import { site } from '@/lib/seo'
 export const dynamic = 'force-static'
 
 const TITLE = 'iii blog'
-const DESCRIPTION = 'Notes from the team building iii — three primitives, zero integration cost.'
+const DESCRIPTION = 'Notes from the team building iii — one primitive, zero integration cost.'
 
 const xmlText = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
