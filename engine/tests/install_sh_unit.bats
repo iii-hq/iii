@@ -321,3 +321,44 @@ EOF
   [ "$status" -eq 0 ]
   [ ! -d "$tmpdir" ]
 }
+
+# ─────────────────────────────────────────────────────────────
+# note_missing_vm_binaries: releases that still need what this script skips
+# ─────────────────────────────────────────────────────────────
+
+RELEASE_WITH_WORKER='{"html_url":"https://example.test/iii/v0.25.0","assets":[{"name":"iii-aarch64-apple-darwin.tar.gz"},{"name":"iii-worker-aarch64-apple-darwin.tar.gz"}]}'
+RELEASE_WITHOUT_WORKER='{"html_url":"https://example.test/iii/v0.26.0","assets":[{"name":"iii-aarch64-apple-darwin.tar.gz"}]}'
+
+@test "note_missing_vm_binaries names both binaries and where to get them" {
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iii-worker"* ]]
+  [[ "$output" == *"iii-init"* ]]
+  [[ "$output" == *"$BATS_TEST_TMPDIR"* ]]
+  [[ "$output" == *"https://example.test/iii/v0.25.0"* ]]
+}
+
+@test "note_missing_vm_binaries is silent for a release that needs neither" {
+  run note_missing_vm_binaries "$RELEASE_WITHOUT_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "note_missing_vm_binaries is silent once both are next to iii" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-worker"
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-init"
+  chmod +x "$BATS_TEST_TMPDIR/iii-worker" "$BATS_TEST_TMPDIR/iii-init"
+
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "note_missing_vm_binaries speaks when only one is next to iii" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-worker"
+  chmod +x "$BATS_TEST_TMPDIR/iii-worker"
+
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iii-init"* ]]
+}
