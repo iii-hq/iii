@@ -288,10 +288,12 @@ containers:
 The first replacement is immediate. If it fails, later attempts use exponential backoff from
 `delay` up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a
 run-time exit, only the named worker bounces: workers that name it in `start_after` keep running and
-see their connection drop and reconnect. `compose::status` reports the worker as `restarting` while
-it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
-startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
-`last_error` says the supervisor gave up.
+see their connection drop and reconnect. VM workers cannot outlive the sandbox adapter: when it
+crashes and its own policy restarts it, they exit with it and each one follows its own policy, so a
+VM worker with no policy ends `failed` and one with `restart: always` spends an attempt.
+`compose::status` reports the worker as `restarting` while it waits for a run-time replacement. Once
+`max_attempts` is spent, `required` controls whether the startup operation fails. At run time, the
+worker is marked `failed`, its dependents are stopped, and `last_error` says the supervisor gave up.
 
 ### Stopping a project
 
@@ -794,8 +796,8 @@ A path worker normally runs as a host process. A non-empty `runtime.base_image` 
 run inside that image, and compose keeps the VM state inside the project. An invalid image reference
 fails the start instead of falling back to the host or to another image.
 
-A `path://` worker can opt in to running its own VM through the CLI instead. Set `scripts.run` to
-`iii sandbox run` and list the adapter's container in `start_after`:
+A `path://` worker whose `iii.worker.yaml` sets `runtime.base_image` can run that VM through the CLI
+rather than have Compose boot it. Set `scripts.run` to `iii sandbox run`:
 
 ```yaml worker-compose.yaml
 containers:
@@ -809,20 +811,30 @@ containers:
       run: iii sandbox run
 ```
 
+`runtime.base_image` is required. With it, Compose starts the worker after the adapter and gives the
+command its token, whether or not `start_after` lists the adapter. Without it, the command boots no
+VM: a worker that lists the adapter fails with `S501`, and one that does not gets no token.
+
 Compose runs that command as a host process and supervises it like any other, with the directory of
 the `iii` binary running Compose first on its `PATH`. The command boots the VM from the worker's
-directory, prints the guest's output as its own, stops the VM when it is asked to stop, and exits
-with the VM's code. Listing the adapter is what grants access: the container gets a token that opens
-only its own VM, never the project's token, and its directory becomes one the adapter may mount. The
-guest receives the container's `environment` and `env_file` variables and the reserved `III_*`
-variables, not the host's environment. Compose pulls the VM's image before it starts the command, so
-the pull does not count against `startup_timeout`. Removing the container still removes the VM's
-state.
+directory, prints the guest's stdout and stderr on its own stderr, stops the VM when it is asked to
+stop, and exits with the VM's code. The container gets a token that opens only its own VM, never the
+project's token, and its directory becomes one the adapter may mount. The guest receives the
+container's `environment` and `env_file` variables and the reserved `III_*` variables, not the host's
+environment. Compose pulls the VM's image before it starts the command, so the pull does not count
+against `startup_timeout`. Removing the container still removes the VM's state.
 
-A VM gets a copy of its worker's directory without the `.iii` directory, which holds Compose's state
-and the project's token. `sandbox-libkrun` before 0.3.1 copies `.iii` too, so on those versions a VM
-worker whose directory contains the compose file, such as `path://.`, can read that token. Keep the
-compose file outside the worker's directory, or set `III_COMPOSE_STATE_DIR` to move the state.
+`sandbox-libkrun` 0.3.1 and later hide the `.iii` directory, which holds Compose's state and the
+project's token, from a VM, both in its copy of the worker's directory and in the source share that
+copy is made from. Earlier versions do not, so there a VM worker whose directory contains the compose
+file, such as `path://.`, can read that token.
+
+A managed engine also writes `data/` and `config/` in the directory `iii compose --up` runs from, and
+`data/` holds the payloads of traced function calls. A VM worker whose directory contains them can
+read them on any version. So keep the compose file and the directory you start Compose from outside
+the worker's directory, as in `path://./api`. `III_COMPOSE_STATE_DIR` moves Compose's state and the
+token, but not `data/` or `config/`. Point it outside the worker's directory, because only the name
+`.iii` is hidden.
 
 The adapter must support sandbox contract 1.2. `iii sandbox run` exits with code 125 and names what
 is missing otherwise. `iii call compose::update worker=<container key>@latest` moves a `package://`
@@ -1037,7 +1049,7 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | It registered in `default` instead of the project's namespace. | `WORKER_IGNORED_NAMESPACE`         |
 | It registered under a different name in the right namespace.   | `WORKER_NAME_MISMATCH`             |
 | Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
-| A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
+| Another worker already held that name in the namespace.        | `CONTAINER_NAME_TAKEN`             |
 
 After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
 happens after it exits. An eligible retry keeps its dependents running and reports `restarting`

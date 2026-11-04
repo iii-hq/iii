@@ -42,12 +42,16 @@ containers:
       - node
 ```
 
-Delete the `iii-sandbox` entry, add that container, and keep the keys you had (`image_allowlist`,
-`custom_images`, the `default_*` limits, and the rest): they are the same under
+Delete the `iii-sandbox` entry. If it was the only entry, delete the `workers:` key too: an empty
+key fails with `INVALID_COMPOSE_FILE`. Add that container and keep the keys you had
+(`image_allowlist`, `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
-A file that already declares the adapter at `version: '^0.2'` stays on 0.2, because Compose does not
-change a range you wrote. Change it to `'^0.3'`. On 0.2, observers can read the project's token, and
+A file that already declares the adapter at `version: '^0.2'` stays on 0.2 across `compose::up`,
+`compose::restart`, and `compose::update worker=sandbox-libkrun`. To move it, stop Compose, change
+the range to `'^0.3'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
+which rewrites the range to `^0.3` and [updates every other package
+worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token, and
 `iii sandbox run` refuses to start.
 
 `engine.sandbox.adapter` names the adapter's function prefix and defaults to `sandbox-libkrun`, so you
