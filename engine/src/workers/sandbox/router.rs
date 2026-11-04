@@ -35,6 +35,10 @@ use crate::{
 /// `on_function_registration` hook, say) still gets S304, and every call to an
 /// op the adapter truly lacks waits this long; watch registrations if that bites.
 const MISSING_OP_GRACE: Duration = Duration::from_millis(250);
+/// How long [`ROUTER_INFO_ID`] waits for the adapter's own info. The binding is the
+/// router's to give, and a harness applies its denies from this reply within a 3 s
+/// read, so an adapter that hangs must not hold it back.
+const ADAPTER_INFO_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct SandboxRouter {
@@ -73,7 +77,10 @@ impl SandboxRouter {
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         if function_id == ROUTER_INFO_ID {
             let info = match &self.binding {
-                Some(b) => self.adapter_info(b).await.ok(),
+                Some(b) => tokio::time::timeout(ADAPTER_INFO_WAIT, self.adapter_info(b))
+                    .await
+                    .ok()
+                    .and_then(Result::ok),
                 None => None,
             };
             let reply = RouterInfo {
