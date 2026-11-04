@@ -5,10 +5,13 @@ import { useEffect, useRef, useState } from 'react'
 
 import { IDEAS } from './ideas'
 
-/** Autoplay, like the Halloween mark: the first play this long after the mark comes on screen... */
-const FIRST_MS = 2500
-/** ...then a pause this long after each play before the next one. */
-const REST_MS = 6000
+/** Autoplay: the first play this long after the mark comes on screen... */
+const FIRST_MS = 1750
+/**
+ * ...then a pause this long after each play before the next one. With a ~2.6s play that is a new idea about every
+ * 6s, 30% quicker than the Halloween mark's 8.6s.
+ */
+const REST_MS = 3400
 
 /**
  * A link wearing the iii mark for Thanksgiving week. It plays on hover or keyboard focus and, with `autoplay`, on its
