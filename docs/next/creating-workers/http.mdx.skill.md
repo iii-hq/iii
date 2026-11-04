@@ -28,23 +28,18 @@ iii call -n dev compose::add worker=http
 ```
 
 <Note>
-  This page covers the basic endpoint flow. For path patterns, methods, headers, and response
-  handling, see the [http worker docs](https://workers.iii.dev/workers/http). The worker's server
-  settings (port, host, CORS, timeouts) are managed at runtime through the [configuration
-  worker](../using-iii/configuration).
+  The http worker's server settings (port, host, CORS, timeouts) are managed at runtime through the
+  [configuration worker](../using-iii/configuration).
 </Note>
 
 ## Create endpoints
 
-`worker.observe({ function_id: "http::on-request", args: { method, path } }, target)` means: when a
-request arrives on that route, `target` runs, and its return value is the response. The http worker
-hosts `http::on-request` and adds the route when the observer is added. Here is the full path from a
-running engine to a live endpoint.
+An observer of `http::on-request` with `method` and `path` args is a route. The http worker adds the
+route when the observer is added, and the target's return value is the response.
 
-1. In a worker, register the function you want to expose and observe `http::on-request` with its
+1. In a worker, register the function you want to expose, then observe `http::on-request` with its
    route. If you do not have a worker yet, follow
-   [Create a new worker](./workers#create-a-new-worker), then edit its source. The handler receives
-   the request (`body`, `headers`, `method`, and more) and its return value becomes the response:
+   [Create a new worker](./workers#create-a-new-worker), then edit its source:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -58,133 +53,186 @@ running engine to a live endpoint.
       namespace: "orders",
     });
 
-    worker.registerFunction("math::add", async (req: { body: { a: number; b: number } }) => ({
+    worker.registerFunction("orders::get", async (req: { path_params: { id: string } }) => ({
       status_code: 200,
-      body: { c: req.body.a + req.body.b },
+      body: { id: req.path_params.id, status: "shipped" },
       headers: { "Content-Type": "application/json" },
     }));
 
-    worker.observe(
-      { function_id: "http::on-request", args: { method: "POST", path: "/math/add" } },
-      "math::add",
+    // a request without the tenant header gets 422, and orders::get does not run
+    const observer = worker.observe(
+      {
+        function_id: "http::on-request",
+        args: { method: "GET", path: "/orders/:id" },
+        filters: { "input.headers.x-tenant": { $exists: true } },
+      },
+      "orders::get",
     );
+
+    await observer.ready();
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
     import os
-    from iii import register_worker, InitOptions
+
+    from iii import InitOptions, register_worker
 
     worker = register_worker(
         os.environ["III_URL"],
         InitOptions(worker_name="my-worker", namespace="orders"),
     )
 
-    def add(req: dict) -> dict:
-        body = req["body"]
+
+    def get_order(req: dict) -> dict:
         return {
             "status_code": 200,
-            "body": {"c": body["a"] + body["b"]},
+            "body": {"id": req["path_params"]["id"], "status": "shipped"},
             "headers": {"Content-Type": "application/json"},
         }
 
-    worker.register_function("math::add", add)
 
-    worker.observe(
-        {"function_id": "http::on-request", "args": {"method": "POST", "path": "/math/add"}},
-        "math::add",
+    worker.register_function("orders::get", get_order)
+
+    # a request without the tenant header gets 422, and orders::get does not run
+    observer = worker.observe(
+        {
+            "function_id": "http::on-request",
+            "args": {"method": "GET", "path": "/orders/:id"},
+            "filters": {"input.headers.x-tenant": {"$exists": True}},
+        },
+        "orders::get",
     )
+
+    observer.ready()
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
     use iii_sdk::runtime::WorkerMetadata;
-    use iii_sdk::{InitOptions, RegisterFunction, Source, register_worker};
+    use iii_sdk::{Error, InitOptions, RegisterFunction, Source, register_worker};
     use schemars::JsonSchema;
     use serde::Deserialize;
     use serde_json::json;
 
     #[derive(Deserialize, JsonSchema)]
-    struct AddRequest {
-        body: AddBody,
+    struct GetOrderRequest {
+        path_params: PathParams,
     }
+
     #[derive(Deserialize, JsonSchema)]
-    struct AddBody {
-        a: i64,
-        b: i64,
+    struct PathParams {
+        id: String,
     }
 
-    let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(
-        &url,
-        InitOptions {
-            metadata: Some(WorkerMetadata {
-                name: "my-worker".into(),
+    #[tokio::main]
+    async fn main() -> Result<(), Error> {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                metadata: Some(WorkerMetadata {
+                    name: "my-worker".into(),
+                    ..Default::default()
+                }),
+                namespace: Some("orders".into()),
                 ..Default::default()
+            },
+        );
+
+        worker.register_function(
+            "orders::get",
+            RegisterFunction::new(|request: GetOrderRequest| {
+                Ok::<_, Error>(json!({
+                    "status_code": 200,
+                    "body": { "id": request.path_params.id, "status": "shipped" },
+                    "headers": { "Content-Type": "application/json" }
+                }))
             }),
-            namespace: Some("orders".into()),
-            ..Default::default()
-        },
-    );
+        );
 
-    worker.register_function(
-        "math::add",
-        RegisterFunction::new(|req: AddRequest| {
-            Ok(json!({
-                "status_code": 200,
-                "body": { "c": req.body.a + req.body.b },
-                "headers": { "Content-Type": "application/json" }
-            }))
-        }),
-    );
+        // a request without the tenant header gets 422, and orders::get does not run
+        let observer = worker.observe(
+            Source::function("http::on-request")
+                .args(json!({ "method": "GET", "path": "/orders/:id" }))
+                .filters(json!({ "input.headers.x-tenant": { "$exists": true } })),
+            "orders::get",
+        );
+        observer.ready().await?;
 
-    worker.observe(
-        Source::function("http::on-request").args(json!({ "method": "POST", "path": "/math/add" })),
-        "math::add",
-    );
+        // the connection runs on a thread of its own: park so the process stays up
+        loop {
+            std::thread::park();
+        }
+    }
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    client := iii.RegisterWorker(os.Getenv("III_URL"),
-        iii.WithName("my-worker"),
-        iii.WithNamespace("orders"),
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
     )
 
-    client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var req struct {
-            Body struct {
-                A float64 `json:"a"`
-                B float64 `json:"b"`
-            } `json:"body"`
-        }
-        if err := json.Unmarshal(data, &req); err != nil {
-            return nil, err
-        }
-        return map[string]any{
-            "status_code": 200,
-            "body":        map[string]float64{"c": req.Body.A + req.Body.B},
-            "headers":     map[string]string{"Content-Type": "application/json"},
-        }, nil
-    })
+    func getOrder(ctx context.Context, data json.RawMessage) (any, error) {
+    	var req struct {
+    		PathParams struct {
+    			ID string `json:"id"`
+    		} `json:"path_params"`
+    	}
+    	if err := json.Unmarshal(data, &req); err != nil {
+    		return nil, err
+    	}
+    	return map[string]any{
+    		"status_code": 200,
+    		"body":        map[string]string{"id": req.PathParams.ID, "status": "shipped"},
+    		"headers":     map[string]string{"Content-Type": "application/json"},
+    	}, nil
+    }
 
-    if _, err := client.Observe(iii.Source{
-        FunctionID: "http::on-request",
-        Args:       iii.Args{"method": "POST", "path": "/math/add"},
-    }, "math::add"); err != nil {
-        log.Fatal(err)
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"),
+    		iii.WithName("my-worker"),
+    		iii.WithNamespace("orders"),
+    	)
+
+    	if _, err := client.RegisterFunction("orders::get", getOrder); err != nil {
+    		log.Fatal(err)
+    	}
+
+    	// a request without the tenant header gets 422, and orders::get does not run
+    	observer, err := client.Observe(iii.Source{
+    		FunctionID: "http::on-request",
+    		Args:       iii.Args{"method": "GET", "path": "/orders/:id"},
+    		Filters:    iii.Filters{"input.headers.x-tenant": iii.Op{"$exists": true}},
+    	}, "orders::get")
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+
+    	if err := client.Connect(context.Background()); err != nil {
+    		log.Fatal(err)
+    	}
+    	if err := observer.Ready(context.Background()); err != nil {
+    		log.Fatal(err)
+    	}
+
+    	// the client runs the connection on goroutines of its own: block
+    	select {}
     }
     ```
 
   </Tab>
 </Tabs>
-
-The Rust SDK sets the worker name through `InitOptions.metadata.name`; Node uses `workerName`,
-Python uses `worker_name`, and Go uses `iii.WithName`. All four examples register the name
-`my-worker`.
 
 2. Add the worker to Compose, pointing at its directory:
 
@@ -194,12 +242,12 @@ iii call -n dev compose::add worker=./my-worker
 
 The route is set by the observer's `args`:
 
-| Arg                       | Required | Meaning                                                                       |
-| ------------------------- | -------- | ----------------------------------------------------------------------------- |
-| `method`                  | yes      | The HTTP method to match, for example `POST`.                                 |
-| `path`                    | yes      | The route path with a leading slash. `/users/:id` puts `id` in `path_params`. |
-| `middleware_function_ids` | no       | Functions that run before the target, in order.                               |
-| `public_webhook`          | no       | `true` also serves the route on the restricted webhook listener.              |
+| Arg                       | Required | Meaning                                                                        |
+| ------------------------- | -------- | ------------------------------------------------------------------------------ |
+| `method`                  | yes      | The HTTP method to match, for example `GET`.                                   |
+| `path`                    | yes      | The route path with a leading slash. `/orders/:id` puts `id` in `path_params`. |
+| `middleware_function_ids` | no       | Functions that run before the target, in order.                                |
+| `public_webhook`          | no       | `true` also serves the route on the restricted webhook listener.               |
 
 The target receives the request as `{ method, path, path_params, query_params, headers, body }`, and
 returns `{ status_code, headers, body }`. A second observer of the same method and path shape is
@@ -207,18 +255,7 @@ rejected with `HTTP_ROUTE_CONFLICT`; `await observer.ready()` reports it. Dispos
 removes the route.
 
 Observer `filters` select requests by anything in them. A request on the route that the filters
-reject gets a `422` response, and the target does not run:
-
-```typescript
-worker.observe(
-  {
-    function_id: "http::on-request",
-    args: { method: "POST", path: "/webhooks/stripe", public_webhook: true },
-    filters: { "input.headers.stripe-signature": { $exists: true } },
-  },
-  "billing::handle-stripe-event",
-);
-```
+reject gets a `422` response, and the target does not run.
 
 For streaming responses and the other configuration options, see the
 [http worker docs](https://workers.iii.dev/workers/http).
@@ -230,197 +267,5 @@ call the endpoint:
 
 ```bash
 # call the exposed function
-curl -X POST "$HTTP_WORKER_URL/math/add" -H 'content-type: application/json' -d '{"a":2,"b":3}'
-```
-
-## How the worker hosts requests
-
-The handler returns the request it is called with, the function is private, and the
-[hooks](./observable-functions#hooks) do the rest.
-
-`http::on-request` adds a route in `onObserverAdded`, and its `onObservationDeliver` routes each
-request to one observer. That target's result is the response, and the observers observe the
-request. Its args are `{ method, path, middleware_function_ids?, public_webhook? }`.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    const routes = new RouteTable();
-
-    worker
-      .registerFunction("http::on-request", (request: HttpRequest) => request, {
-        request_format: HttpRequestSchema,
-        response_format: HttpRequestSchema,
-        args_format: HttpRouteArgsSchema,
-        private: true,
-      })
-      .onObserverAdded((obs) => routes.add(obs)) // throws HTTP_ROUTE_CONFLICT
-      .onObserverRemoved((obs) => routes.remove(obs.id))
-      .onObservationDeliver<HttpResponse>(async (call) => {
-        const match = routes.match(call.input.method, call.input.path); // /users/:id → path_params
-        if (!match) return { status_code: 404 };
-        if (!match.obs.matches(call)) return { status_code: 422 };
-        await runMiddleware(match, call.input);
-        return worker.call({
-          observer: match.obs,
-          payload: { ...call.input, path_params: match.params },
-        });
-      });
-
-    // each request is a call of http::on-request, and its result is the response
-    server.on("request", async (req, res) =>
-      send(res, await worker.call({ function_id: "http::on-request", payload: toHttpRequest(req) })),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    routes = RouteTable()
-
-    # by id, before registering, so the hooks see every observer
-    @worker.on_observer_added("http::on-request")
-    def add_route(obs):
-        routes.add(obs)  # raises HTTP_ROUTE_CONFLICT
-
-    @worker.on_observer_removed("http::on-request")
-    def remove_route(obs):
-        routes.remove(obs.id)
-
-    @worker.on_observation_deliver("http::on-request")
-    async def route(call, observers):
-        match = routes.match(call.input["method"], call.input["path"])  # /users/:id → path_params
-        if match is None:
-            return {"status_code": 404}
-        if not match.obs.matches(call):
-            return {"status_code": 422}
-        await run_middleware(match, call.input)
-        payload = {**call.input, "path_params": match.params}
-        return await worker.call_async({"observer": match.obs, "payload": payload})
-
-    worker.register_function(
-        "http::on-request",
-        lambda request: request,
-        request_format=HTTP_REQUEST_SCHEMA,
-        response_format=HTTP_REQUEST_SCHEMA,
-        args_format=HTTP_ROUTE_ARGS_SCHEMA,
-        private=True,
-    )
-
-    # each request is a call of http::on-request, and its result is the response
-    async def handle(req):
-        request = to_http_request(req)
-        return await worker.call_async({"function_id": "http::on-request", "payload": request})
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{
-        AddedHook, Call, DeliverHook, Error, ObserveRejection, Observer, RegisterFunction,
-        RemovedHook,
-    };
-    use serde_json::{json, Value};
-
-    /// The route table, shared by its hooks, and the client to call targets with.
-    #[derive(Clone)]
-    struct Routes { /* table, worker: IIIClient */ }
-
-    #[async_trait::async_trait]
-    impl AddedHook for Routes {
-        async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
-            self.add(obs) // HTTP_ROUTE_CONFLICT
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl RemovedHook for Routes {
-        async fn on_removed(&self, obs: Observer) {
-            self.remove(obs.id());
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl DeliverHook for Routes {
-        async fn on_deliver(&self, call: Call, _observers: Vec<Observer>) -> Result<Value, Error> {
-            let request: HttpRequest = serde_json::from_value(call.input.clone())
-                .map_err(|e| Error::Handler(e.to_string()))?;
-            let Some(route) = self.matches(&request.method, &request.path) else {
-                return Ok(json!({ "status_code": 404 }));
-            };
-            if !route.obs.matches(&call) {
-                return Ok(json!({ "status_code": 422 }));
-            }
-            run_middleware(&route, &request).await?;
-            let payload = json!(HttpRequest { path_params: route.params.clone(), ..request });
-            self.worker.call(CallRequest::observer(&route.obs, payload)).await
-        }
-    }
-
-    // by id, before registering, so the hooks see every observer
-    worker.on_observer_added_for("http::on-request", routes.clone());
-    worker.on_observer_removed_for("http::on-request", routes.clone());
-    worker.on_observation_deliver_for("http::on-request", routes.clone());
-
-    worker.register_function(
-        "http::on-request",
-        RegisterFunction::new(|request: HttpRequest| Ok::<_, Error>(request))
-            .args_format::<HttpRouteArgs>()
-            .private(),
-    );
-
-    // each request is a call of http::on-request, and its result is the response
-    let request = json!(to_http_request(req));
-    let response = worker.call(CallRequest::new("http::on-request", request)).await?;
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    // by id, before registering, so the hooks see every observer
-    worker.OnObserverAddedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) error {
-        return routes.Add(obs) // HTTP_ROUTE_CONFLICT
-    })
-    worker.OnObserverRemovedFor("http::on-request", func(ctx context.Context, obs *iii.Observer) {
-        routes.Remove(obs.ID)
-    })
-    worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-        var req httpRequest
-        if err := json.Unmarshal(call.Input, &req); err != nil {
-            return nil, err
-        }
-        match := routes.Match(req.Method, req.Path) // /users/:id → path_params
-        if match == nil {
-            return map[string]int{"status_code": 404}, nil
-        }
-        if !match.Obs.Matches(call) {
-            return map[string]int{"status_code": 422}, nil
-        }
-        if err := runMiddleware(ctx, match, req); err != nil {
-            return nil, err
-        }
-        req.PathParams = match.Params
-        payload, _ := json.Marshal(req)
-        return worker.Call(ctx, iii.CallRequest{Observer: match.Obs, Payload: payload})
-    })
-
-    worker.RegisterFunction("http::on-request", iii.Identity,
-        iii.FunctionOptions{ArgsFormat: httpRouteArgsSchema, Private: true})
-
-    // each request is a call of http::on-request, and its result is the response
-    response, err := worker.Call(ctx, iii.CallRequest{FunctionID: "http::on-request", Payload: toHTTPRequest(r)})
-    ```
-
-  </Tab>
-</Tabs>
-
-The request and the response pass by reference between the server and the hook, since the function
-is private. Every request is a call of `http::on-request` in traces. A consumer adds a route:
-
-```typescript
-worker.observe(
-  { function_id: "http::on-request", args: { method: "GET", path: "/orders/:id" } },
-  "orders::get",
-);
+curl "$HTTP_WORKER_URL/orders/order-123" -H 'x-tenant: acme'
 ```

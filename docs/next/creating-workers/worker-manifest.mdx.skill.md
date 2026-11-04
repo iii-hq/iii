@@ -2,9 +2,12 @@
 
 
 This page covers `iii.worker.yaml` configuration options. `iii.worker.yaml` exists at a worker's
-root and tells iii how to provision the worker's runtime, install its dependencies, start its
-process, and pass through configuration. Compose reads it when preparing a `path://` worker or a
-registry package. Project workers are declared and operated through
+root and gives iii what it needs to provision the worker's runtime, install its dependencies, start
+its process, and pass through configuration. At add time the schema is strict: an unknown key is an
+error, and the error lists the supported fields.
+
+Compose reads two fields from it: `scripts.start` and `runtime.base_image`. The worker provisioning
+path reads the other fields. Project workers are declared and operated through
 [`worker-compose.yaml`](../using-iii/compose), not the engine's `config.yaml`.
 
 For how to connect a worker into a project once its manifest exists, see
@@ -13,19 +16,23 @@ For how to connect a worker into a project once its manifest exists, see
 <Note>
   `iii.worker.yaml` only matters when iii provisions and runs the worker in its built-in
   virtualization. If you run the worker process yourself, for example `node ./myworker/src/index.js`
-  on your own machine, container, or server, you do not need the manifest at all. Any process that
-  uses a iii SDK, calls `registerWorker()`, and connects to a iii instance is a worker, and behaves
-  identically whether iii started it or not.
+  on your own host, you do not need the manifest at all. Any process that uses an iii SDK, calls
+  `registerWorker()`, and connects to an iii instance is a worker, and behaves identically whether
+  iii started it or not.
 </Note>
 
 ## `name`
 
-Required. Must satisfy the registry's worker-name rules (the same validation the registry applies to
-published names). A worker cannot list itself in `dependencies`.
+Required. One path segment: ASCII alphanumerics, `-`, `_` and `.`. A leading `.` and a `..` sequence
+are both errors.
+
+## `description`
+
+Optional. One-line summary of the worker. iii prints it when it installs a worker from an image.
 
 ## `runtime`
 
-Declares details about the worker's environment.
+Declares details about the worker's environment. `base_image` is the only supported field.
 
 ### `base_image`
 
@@ -47,109 +54,61 @@ The images that ship with iii come in two variants:
 | `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.              |
 | `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution. |
 
-Select the builder variant when an install fails because a compiler is absent:
-
-```yaml
-runtime:
-  base_image: docker.io/iiidev/node:builder
-```
-
 ## `scripts`
 
-Explicit lifecycle scripts. These define how to initialize a worker's base environment (`setup`),
-install a worker's dependencies (`install`), and run a worker whenever it is started or restarted
-(`start`).
-
-```yaml
-scripts:
-  setup: "apt-get update && apt-get install -y build-essential"
-  install: "npm install"
-  start: "npx tsx src/index.ts"
-```
-
-When `scripts` is omitted, the engine infers `install` and `start` from `runtime.kind` and
-`runtime.package_manager`. The per-field examples below show common values for each language.
-
-{/* <Note> */}
-{/* There is a special setup required for bundling workers for distribution in the iii registry at */}
-{/* [workers.iii.dev](https://workers.iii.dev). See [Registry / Bundle */}
-{/* workers](./workers-registry#bundle-workers-targz-archives). */} {/* </Note> */}
-
-### `setup`
-
-Runs once when the sandbox is provisioned. Use it for system-level packages your dependencies need
-to build.
+Lifecycle commands. `setup` runs once when the sandbox is provisioned, for the system packages a
+dependency needs to build. `install` installs dependencies. `start` runs the worker process, and it
+is required.
 
 <CodeGroup>
 
 ```yaml Node
 scripts:
   setup: "apt-get update && apt-get install -y build-essential"
-```
-
-```yaml Python
-scripts:
-  setup: "apt-get update && apt-get install -y libpq-dev"
-```
-
-```yaml Rust
-scripts:
-  setup: "apt-get update && apt-get install -y pkg-config libssl-dev"
-```
-
-</CodeGroup>
-
-### `install`
-
-Installs dependencies.
-
-<CodeGroup>
-
-```yaml Node
-scripts:
   install: "npm install"
-```
-
-```yaml Python
-scripts:
-  install: "pip install watchfiles && pip install -e ."
-```
-
-```yaml Rust
-scripts:
-  install: "cargo install cargo-watch && cargo build"
-```
-
-</CodeGroup>
-
-### `start`
-
-Starts the worker process.
-
-<CodeGroup>
-
-```yaml Node
-scripts:
   start: "npx tsx watch src/index.ts"
 ```
 
 ```yaml Python
 scripts:
+  setup: "apt-get update && apt-get install -y libpq-dev"
+  install: "pip install watchfiles && pip install -e ."
   start: "watchfiles 'python main.py'"
 ```
 
 ```yaml Rust
 scripts:
+  setup: "apt-get update && apt-get install -y pkg-config libssl-dev"
+  install: "cargo install cargo-watch && cargo build"
   start: "cargo watch -x run"
+```
+
+```yaml Go
+scripts:
+  setup: "apt-get update && apt-get install -y golang-go"
+  install: "go mod download && go build -o worker ./cmd/worker"
+  start: "./worker"
 ```
 
 </CodeGroup>
 
+Declare `setup`, `install` and `start` explicitly. The keys that fed the old inference path
+(`runtime.kind`, `runtime.package_manager`, `runtime.entry`, `runtime.language`) are deprecated and
+will be removed in a later version.
+
+An omitted `install` skips the dependency install and prints a warning. `install: ""` skips it
+without a warning.
+
+<Note>
+  A registry bundle manifest rejects `scripts.setup` with `W180 BundleManifestRejected`. It accepts
+  `scripts.install` and `runtime.base_image`, and it rejects a base image that is not a plausible
+  OCI reference. See [Registry / Bundling workers](./workers-registry#bundle-archives).
+</Note>
+
 ## `env`
 
 Map of environment variables injected into the worker process. Keys and values must be strings. The
-keys `III_URL` and `III_ENGINE_URL` are silently filtered out; the engine sets the connection URL
-itself.
+keys `III_URL` and `III_ENGINE_URL` are filtered out; the engine sets the connection URL itself.
 
 ```yaml
 env:
@@ -157,14 +116,8 @@ env:
   MY_API_KEY: replace-me
 ```
 
-For managed and reusable workers, configure the namespace in the compose file that deploys the
-worker rather than baking it into the shipped worker. Set `III_NAMESPACE` in the worker service's
-environment; the SDK reads it when no explicit `namespace` option is passed. `config.yaml` does not
-support a per-worker `namespace:` key.
-
-When registering a worker programmatically, you may instead pass `namespace` directly to
-`registerWorker` / `register_worker`. The explicit option takes precedence over `III_NAMESPACE`.
-When neither is set, the worker registers in the `default` namespace.
+The manifest does not set the namespace a worker registers in. The worker environment
+(`III_NAMESPACE`) or the registration call sets it. See [Namespaces](../using-iii/namespaces).
 
 ## `dependencies`
 
@@ -179,7 +132,7 @@ dependencies:
 
 Rules:
 
-- Each name must satisfy the registry's worker-name validation.
+- Each name must satisfy the same rules as [`name`](#name).
 - Each range must be a valid semver version requirement (for example `^1.2`, `~0.5.0`, `>=2 <3`).
 - Duplicate keys are an error.
 - A worker cannot depend on itself.
@@ -219,11 +172,11 @@ tags: # search aliases sent to the workers registry
   - http
   - rest
   - api
-license: Apache-2.0 # SPDX id the registry publishes the worker under
+license: Apache-2.0
 ```
 
 `iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of strings used for agent
-and user discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone
-would search for rather than repeating the worker description. `license` is an
+and user discovery in the workers registry. Keep tags short, lowercase, and focused on search terms
+rather than repeating the worker description. `license` is an
 [SPDX license id](https://spdx.org/licenses/), for example `Apache-2.0`. The release pipeline of the
 workers repository requires it.

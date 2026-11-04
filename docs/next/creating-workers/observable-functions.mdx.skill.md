@@ -3,8 +3,8 @@
 
 <Info title="Coming from trigger types">
   In 0.26, a trigger type is an observable function: `registerTriggerType` becomes
-  `registerFunction` with the hooks on this page, and a consumer's `registerTrigger` becomes
-  `observe`. To move a 0.25 worker, see [Upgrading from 0.25.x to 0.26.x](../upgrading/from-0-25-x).
+  `registerFunction` with the hooks on this page. To move a 0.25 worker, see [Upgrading from 0.25.x
+  to 0.26.x](../upgrading/from-0-25-x).
 </Info>
 
 Every function your worker registers can be observed unless you specify otherwise (see
@@ -117,6 +117,7 @@ instead.
   <Tab title="Go">
     ```go
     import (
+        "context"
         "database/sql"
         "fmt"
         "os"
@@ -157,6 +158,10 @@ your own teardown. An error it throws is logged, and the observer is still remov
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { Pool } from "pg";
+
+    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
+
     worker.onObserverRemoved("database::on-row-changed", async (obs) => {
       const { db, table } = obs.args as { db: string; table: string };
       await pools.get(db)?.query(`DROP TRIGGER IF EXISTS iii_${table}_changed ON ${table}`);
@@ -166,6 +171,12 @@ your own teardown. An error it throws is logged, and the observer is still remov
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+
+    from psycopg_pool import ConnectionPool
+
+    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
+
     @worker.on_observer_removed("database::on-row-changed")
     def drop_trigger(obs):
         db, table = obs.args["db"], obs.args["table"]
@@ -179,11 +190,30 @@ your own teardown. An error it throws is logged, and the observer is still remov
   </Tab>
   <Tab title="Rust">
     ```rust
-    let pools = pools.clone();
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use iii_sdk::Observer;
+    use serde::Deserialize;
+    use sqlx::PgPool;
+
+    #[derive(Deserialize)]
+    struct RowChangedArgs {
+        db: String,
+        table: String,
+    }
+
+    let pools: Arc<HashMap<String, PgPool>> = Arc::new(HashMap::from([(
+        "primary".to_string(),
+        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+    )]));
+
     worker.on_observer_removed_for("database::on-row-changed", move |obs: Observer| {
         let pools = pools.clone();
         async move {
-            let Ok(args) = obs.args::<RowChangedArgs>() else { return };
+            let Ok(args) = obs.args::<RowChangedArgs>() else {
+                return;
+            };
             if let Some(pool) = pools.get(&args.db) {
                 let _ = sqlx::query(&format!("DROP TRIGGER IF EXISTS iii_{0}_changed ON {0}", args.table))
                     .execute(pool)
@@ -196,6 +226,21 @@ your own teardown. An error it throws is logged, and the observer is still remov
   </Tab>
   <Tab title="Go">
     ```go
+    import (
+        "context"
+        "database/sql"
+        "fmt"
+        "os"
+    )
+
+    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
+    pools := map[string]*sql.DB{"primary": primary}
+
+    type rowChangedArgs struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+    }
+
     worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
         var args rowChangedArgs
         if obs.DecodeArgs(&args) != nil {
@@ -220,55 +265,7 @@ for, one observer.
 By default, every call is observed by every observer. Override it to select, for one call, which
 observers get it, from their args: a predicate, or keys that iii indexes.
 
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.onObservationMatch(
-      "database::on-row-changed",
-      (obs, call) => obs.args.db === call.input.db && obs.args.table === call.input.table,
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    worker.on_observation_match(
-        "database::on-row-changed",
-        lambda obs, call: obs.args["db"] == call.input["db"] and obs.args["table"] == call.input["table"],
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::Match;
-
-    worker.on_observation_match_for(
-        "database::on-row-changed",
-        Match::predicate(|obs, call| {
-            let args = obs.args_value();
-            args["db"] == call.input["db"] && args["table"] == call.input["table"]
-        }),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    type rowChange struct {
-        DB    string `json:"db"`
-        Table string `json:"table"`
-    }
-
-    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-        var change rowChange
-        _ = json.Unmarshal(call.Input, &change)
-        return obs.Args["db"] == change.DB && obs.Args["table"] == change.Table
-    }))
-    ```
-
-  </Tab>
-</Tabs>
+Both forms are in [Match observers to calls](#match-observers-to-calls).
 
 #### `onObservationDeliver(call, observers)`
 
@@ -279,35 +276,37 @@ deliver the call yourself and return what the caller gets back.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    type HttpRequest = { method: string; path: string };
+    type RowChange = {
+      db: string;
+      table: string;
+      op: "insert" | "update" | "delete";
+      row: Record<string, unknown>;
+    };
 
-    worker.onObservationDeliver("http::on-request", async (call, observers) => {
-      const request = call.input as HttpRequest;
-      const route = observers.find(
-        (obs) => obs.args.method === request.method && obs.args.path === request.path,
-      );
-      if (!route) return { status_code: 404 };
-      if (!route.matches(call)) return { status_code: 422 }; // the observer's `on` and filters
-      return worker.call({ observer: route, payload: request });
+    worker.onObservationDeliver("database::on-row-changed", async (call, observers) => {
+      const change = call.input as RowChange;
+      // the observer that names this table, before one that names every table
+      const observer =
+        observers.find((obs) => obs.args.table === change.table) ??
+        observers.find((obs) => obs.args.table === "*");
+      if (!observer || !observer.matches(call)) return { delivered: false };
+      return worker.call({ observer, payload: change }); // the caller gets the target's result
     });
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    @worker.on_observation_deliver("http::on-request")
+    @worker.on_observation_deliver("database::on-row-changed")
     async def deliver(call, observers):
-        request = call.input
-        route = next(
-            (obs for obs in observers
-             if obs.args["method"] == request["method"] and obs.args["path"] == request["path"]),
-            None,
-        )
-        if route is None:
-            return {"status_code": 404}
-        if not route.matches(call):
-            return {"status_code": 422}  # the observer's `on` and filters
-        return await worker.call_async({"observer": route, "payload": request})
+        change = call.input
+        # the observer that names this table, before one that names every table
+        observer = next((obs for obs in observers if obs.args["table"] == change["table"]), None)
+        if observer is None:
+            observer = next((obs for obs in observers if obs.args["table"] == "*"), None)
+        if observer is None or not observer.matches(call):
+            return {"delivered": False}
+        return await worker.call_async({"observer": observer, "payload": change})  # the target's result
     ```
 
   </Tab>
@@ -317,21 +316,23 @@ deliver the call yourself and return what the caller gets back.
     use iii_sdk::{Call, Observer};
     use serde_json::json;
 
-    let client = worker.clone();
-    worker.on_observation_deliver_for("http::on-request", move |call: Call, observers: Vec<Observer>| {
-        let worker = client.clone();
+    let iii = worker.clone();
+    worker.on_observation_deliver_for("database::on-row-changed", move |call: Call, observers: Vec<Observer>| {
+        let iii = iii.clone();
         async move {
-            let route = observers.into_iter().find(|obs| {
-                let args = obs.args_value();
-                args["method"] == call.input["method"] && args["path"] == call.input["path"]
-            });
-            let Some(route) = route else {
-                return Ok(json!({ "status_code": 404 }));
+            let table = call.input["table"].as_str().unwrap_or_default().to_string();
+            // the observer that names this table, before one that names every table
+            let observer = observers
+                .iter()
+                .find(|obs| obs.args_value()["table"] == table)
+                .or_else(|| observers.iter().find(|obs| obs.args_value()["table"] == "*"));
+            let Some(observer) = observer else {
+                return Ok(json!({ "delivered": false }));
             };
-            if !route.matches(&call) {
-                return Ok(json!({ "status_code": 422 })); // the observer's `on` and filters
+            if !observer.matches(&call) {
+                return Ok(json!({ "delivered": false }));
             }
-            worker.call(CallRequest::observer(&route, call.input)).await
+            iii.call(CallRequest::observer(observer, call.input.clone())).await // the target's result
         }
     });
     ```
@@ -339,25 +340,38 @@ deliver the call yourself and return what the caller gets back.
   </Tab>
   <Tab title="Go">
     ```go
-    type httpRequest struct {
-        Method string `json:"method"`
-        Path   string `json:"path"`
+    import (
+        "context"
+        "encoding/json"
+    )
+
+    type rowChange struct {
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
     }
 
-    worker.OnObservationDeliverFor("http::on-request", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-        var request httpRequest
-        if err := json.Unmarshal(call.Input, &request); err != nil {
+    worker.OnObservationDeliverFor("database::on-row-changed", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        var change rowChange
+        if err := json.Unmarshal(call.Input, &change); err != nil {
             return nil, err
         }
+        var observer *iii.Observer
         for _, obs := range observers {
-            if obs.Args["method"] == request.Method && obs.Args["path"] == request.Path {
-                if !obs.Matches(call) {
-                    return map[string]int{"status_code": 422}, nil // the observer's `on` and filters
-                }
-                return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
+            // the observer that names this table, before one that names every table
+            if obs.Args["table"] == change.Table {
+                observer = obs
+                break
+            }
+            if observer == nil && obs.Args["table"] == "*" {
+                observer = obs
             }
         }
-        return map[string]int{"status_code": 404}, nil
+        if observer == nil || !observer.Matches(call) {
+            return map[string]bool{"delivered": false}, nil
+        }
+        return worker.Call(ctx, iii.CallRequest{Observer: observer, Payload: call.Input}) // the target's result
     })
     ```
 
@@ -371,132 +385,84 @@ event happens, and each call runs the function's observers. `private: true` keep
 worker: other workers can observe the function, and only this worker can call it (see
 [Private functions](#private-functions)).
 
+`FunctionRef.isObserved()` returns true when the function has at least 1 active observer. It costs
+one atomic load, so call it before you build the event, and skip the event when the function has no
+observers.
+
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    type FileChanged = { path: string; event: "created" | "modified" | "deleted" };
+    type RowChange = {
+      db: string;
+      table: string;
+      op: "insert" | "update" | "delete";
+      row: Record<string, unknown>;
+    };
 
-    worker.registerFunction("files::on-change", (change: FileChanged) => change, { private: true });
+    const rowChanged = worker.registerFunction(
+      "database::on-row-changed",
+      (change: RowChange) => change,
+      { private: true },
+    );
 
-    // whenever a file changes:
-    await worker.call({ function_id: "files::on-change", payload: change });
+    // called for each NOTIFY on the worker's LISTEN connection
+    async function publishRowChange(db: string, table: string, op: RowChange["op"], row: RowChange["row"]) {
+      if (!rowChanged.isObserved()) return; // no observers: skip the call
+      await worker.call({ function_id: "database::on-row-changed", payload: { db, table, op, row } });
+    }
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    worker.register_function("files::on-change", lambda change: change, private=True)
+    row_changed = worker.register_function("database::on-row-changed", lambda change: change, private=True)
 
-    # whenever a file changes:
-    worker.call({"function_id": "files::on-change", "payload": {"path": path, "event": "modified"}})
+    # called for each NOTIFY on the worker's LISTEN connection
+    def publish_row_change(db, table, op, row):
+        if not row_changed.is_observed():
+            return  # no observers: skip the call
+        worker.call({
+            "function_id": "database::on-row-changed",
+            "payload": {"db": db, "table": table, "op": op, "row": row},
+        })
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
     use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Error, RegisterFunction};
+    use iii_sdk::{Error, FunctionRef, IIIClient, RegisterFunction};
     use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     #[derive(Serialize, Deserialize, JsonSchema)]
-    struct FileChanged {
-        path: String,
-        event: String,
+    struct RowChange {
+        db: String,
+        table: String,
+        op: String,
+        row: Value,
     }
 
-    worker.register_function(
-        "files::on-change",
-        RegisterFunction::new(|change: FileChanged| Ok::<_, Error>(change)).private(),
+    let row_changed = worker.register_function(
+        "database::on-row-changed",
+        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change)).private(),
     );
 
-    // whenever a file changes:
-    let change = json!({ "path": path, "event": "modified" });
-    worker.call(CallRequest::new("files::on-change", change)).await?;
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    // iii.Identity returns the event it is called with.
-    worker.RegisterFunction("files::on-change", iii.Identity, iii.FunctionOptions{Private: true})
-
-    // whenever a file changes:
-    change, _ := json.Marshal(map[string]string{"path": path, "event": "modified"})
-    worker.Call(ctx, iii.CallRequest{FunctionID: "files::on-change", Payload: change})
-    ```
-
-  </Tab>
-</Tabs>
-
-A consumer observes it like any other function:
-
-```typescript
-worker.observe(
-  {
-    function_id: "files::on-change",
-    filters: { "input.path": { $prefix: "/data/" } },
-    deliver: "input",
-  },
-  "csv::process",
-);
-```
-
-## Know when a function is observed
-
-`FunctionRef.isObserved()` returns true when the function has at least 1 active observer. It costs
-one atomic load, so call it before you build an event, and skip the event when the function has no
-observers.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    const prices = worker.registerFunction(
-      "prices::on-change",
-      (change: PriceChange) => change,
-      { private: true },
-    );
-
-    // called for every tick of the price feed
-    async function publishPrice(tick: Tick) {
-      if (!prices.isObserved()) return; // no observers: skip building the event
-
-      const change = toPriceChange(tick);
-      await worker.call({ function_id: "prices::on-change", payload: change });
-    }
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    prices = worker.register_function("prices::on-change", lambda change: change, private=True)
-
-    # called for every tick of the price feed
-    def publish_price(tick):
-        if not prices.is_observed():
-            return  # no observers: skip building the event
-
-        change = to_price_change(tick)
-        worker.call({"function_id": "prices::on-change", "payload": change})
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    let prices = worker.register_function(
-        "prices::on-change",
-        RegisterFunction::new(|change: PriceChange| Ok::<_, Error>(change)).private(),
-    );
-
-    // called for every tick of the price feed
-    async fn publish_price(worker: &IIIClient, prices: &FunctionRef, tick: Tick) -> Result<(), Error> {
-        if !prices.is_observed() {
-            return Ok(()); // no observers: skip building the event
+    // called for each NOTIFY on the worker's LISTEN connection
+    async fn publish_row_change(
+        worker: &IIIClient,
+        row_changed: &FunctionRef,
+        db: &str,
+        table: &str,
+        op: &str,
+        row: Value,
+    ) -> Result<(), Error> {
+        if !row_changed.is_observed() {
+            return Ok(()); // no observers: skip the call
         }
-
-        let change = to_price_change(&tick);
-        worker.call(CallRequest::new("prices::on-change", json!(change))).await?;
+        let change = json!({ "db": db, "table": table, "op": op, "row": row });
+        worker.call(CallRequest::new("database::on-row-changed", change)).await?;
         Ok(())
     }
     ```
@@ -504,16 +470,27 @@ observers.
   </Tab>
   <Tab title="Go">
     ```go
-    prices, _ := worker.RegisterFunction("prices::on-change", iii.Identity, iii.FunctionOptions{Private: true})
+    import (
+        "context"
+        "encoding/json"
+    )
 
-    // called for every tick of the price feed
-    publishPrice := func(ctx context.Context, tick Tick) error {
-        if !prices.IsObserved() {
-            return nil // no observers: skip building the event
+    type rowChange struct {
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
+    }
+
+    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{Private: true})
+
+    // called for each NOTIFY on the worker's LISTEN connection
+    publishRowChange := func(ctx context.Context, change rowChange) error {
+        if !rowChanged.IsObserved() {
+            return nil // no observers: skip the call
         }
-
-        change := toPriceChange(tick)
-        _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "prices::on-change", Payload: change})
+        payload, _ := json.Marshal(change)
+        _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: payload})
         return err
     }
     ```
@@ -523,9 +500,7 @@ observers.
 
 Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
-observer's filters match. On a function whose observers are
-[matched by keys](#match-observers-to-calls), `isObserved(call)` also answers whether one particular
-call would reach an observer.
+observer's filters match.
 
 ## Set up and tear down per observer
 
@@ -637,6 +612,7 @@ worker hosts, and both levels run:
   <Tab title="Go">
     ```go
     import (
+        "context"
         "os"
         "sync"
 
@@ -688,7 +664,7 @@ A hook for one function is set by id (see [Hooks](#hooks)) or chained on the `Fu
 deliver hooks can be sync or async. A match predicate and key functions are sync, since they run on
 every call.
 
-Pass `null` to remove a hook: iii's default behaviour returns (see [Hooks](#hooks)).
+Removing a hook returns the function to its default (see [Hooks](#hooks)).
 
 Hooks are stored by function id. They stay in place across `unregister()` and a later registration
 of the same id, and they can be set before the function is registered. Once the worker's connection
@@ -735,8 +711,7 @@ observer too, since inbound messages run on the event loop.
 
 A hook set once a function already has active observers is caught up: the SDK runs it for each of
 them at once, a throw late-rejects that observer, and the SDK logs one warning naming the function
-and the number of observers that were active without the hook. Replacing a hook while observers are
-active behaves differently across SDKs, so set each hook once.
+and the number of observers that were active without the hook.
 
 ### Reject an observer later
 
@@ -746,13 +721,115 @@ observer immediately, and the SDK runs `onObserverRemoved` next, connected or no
 the observer to `error` with that code. If the connection is lost, the SDK sends the rejection again
 after it reconnects.
 
-```typescript
-for (const obs of feeds.observers()) {
-  if (!config.sources.includes(obs.args.source as string)) {
-    obs.reject("UNKNOWN_SOURCE", `source ${obs.args.source} was removed`);
-  }
-}
-```
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Pool } from "pg";
+
+    type RowChange = { db: string; table: string; op: "insert" | "update" | "delete"; row: unknown };
+
+    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
+    const rowChanged = worker.registerFunction(
+      "database::on-row-changed",
+      (change: RowChange) => change,
+      { private: true },
+    );
+
+    // a configuration reload dropped a database
+    for (const obs of rowChanged.observers()) {
+      if (!pools.has(obs.args.db as string)) {
+        obs.reject("UNKNOWN_DB", `no database '${obs.args.db}'`);
+      }
+    }
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from psycopg_pool import ConnectionPool
+
+    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
+    row_changed = worker.register_function("database::on-row-changed", lambda change: change, private=True)
+
+    # a configuration reload dropped a database
+    for obs in row_changed.observers():
+        db = obs.args["db"]
+        if db not in pools:
+            obs.reject("UNKNOWN_DB", f"no database '{db}'")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+
+    use iii_sdk::{Error, RegisterFunction};
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use sqlx::PgPool;
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct RowChange {
+        db: String,
+        table: String,
+        op: String,
+        row: Value,
+    }
+
+    let pools: HashMap<String, PgPool> = HashMap::from([(
+        "primary".to_string(),
+        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+    )]);
+
+    let row_changed = worker.register_function(
+        "database::on-row-changed",
+        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change)).private(),
+    );
+
+    // a configuration reload dropped a database
+    for obs in row_changed.observers() {
+        let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
+        if !pools.contains_key(&db) {
+            obs.reject("UNKNOWN_DB", format!("no database '{db}'"));
+        }
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "database/sql"
+        "encoding/json"
+        "os"
+    )
+
+    type rowChange struct {
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
+    }
+
+    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
+    pools := map[string]*sql.DB{"primary": primary}
+
+    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{Private: true})
+
+    // a configuration reload dropped a database
+    for _, obs := range rowChanged.Observers() {
+        db, _ := obs.Args["db"].(string)
+        if _, ok := pools[db]; !ok {
+            obs.Reject("UNKNOWN_DB", "no database '"+db+"')
+        }
+    }
+    ```
+
+  </Tab>
+</Tabs>
 
 `FunctionRef.observers()` returns the active observers of the function.
 
@@ -827,6 +904,13 @@ whether it happens.
   </Tab>
   <Tab title="Go">
     ```go
+    import "encoding/json"
+
+    type rowChange struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+    }
+
     worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
         var change rowChange
         _ = json.Unmarshal(call.Input, &change)
@@ -848,19 +932,48 @@ keeps an index from keys to observers, so a call costs one lookup per key.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    worker.onObservationMatch("prices::on-change", {
-      observer: (obs) => obs.args.symbol as string, // the keys this observer listens for
-      call: (call) => call.input.symbol, // the keys this call is
+    type RowChange = {
+      db: string;
+      table: string;
+      op: "insert" | "update" | "delete";
+      row: unknown;
+    };
+
+    const key = (db: string, table: string, op: string) => `${db}|${table}|${op}`;
+
+    worker.onObservationMatch("database::on-row-changed", {
+      // the keys this observer listens for
+      observer: (obs) => key(obs.args.db as string, obs.args.table as string, obs.args.op as string),
+      // the keys this call is
+      call: (call) => {
+        const change = call.input as RowChange;
+        return [
+          key(change.db, change.table, change.op),
+          key(change.db, change.table, "*"),
+          key(change.db, "*", change.op),
+          key(change.db, "*", "*"),
+        ];
+      },
     });
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
+    def key(db, table, op):
+        return f"{db}|{table}|{op}"
+
     worker.on_observation_match(
-        "prices::on-change",
-        observer=lambda obs: obs.args["symbol"],  # the keys this observer listens for
-        call=lambda call: call.input["symbol"],  # the keys this call is
+        "database::on-row-changed",
+        # the keys this observer listens for
+        observer=lambda obs: key(obs.args["db"], obs.args["table"], obs.args["op"]),
+        # the keys this call is
+        call=lambda call: [
+            key(call.input["db"], call.input["table"], call.input["op"]),
+            key(call.input["db"], call.input["table"], "*"),
+            key(call.input["db"], "*", call.input["op"]),
+            key(call.input["db"], "*", "*"),
+        ],
     )
     ```
 
@@ -869,13 +982,36 @@ keeps an index from keys to observers, so a call costs one lookup per key.
     ```rust
     use iii_sdk::{Keys, Match};
 
+    let key = |db: &str, table: &str, op: &str| format!("{db}|{table}|{op}");
+
     worker.on_observation_match_for(
-        "prices::on-change",
+        "database::on-row-changed",
         Match::keys(
             // the keys this observer listens for
-            |obs| Keys::from(obs.args_value()["symbol"].as_str()),
+            move |obs| {
+                let args = obs.args_value();
+                let (db, table, op) = (
+                    args["db"].as_str().unwrap_or_default(),
+                    args["table"].as_str().unwrap_or("*"),
+                    args["op"].as_str().unwrap_or("*"),
+                );
+                Keys::from(key(db, table, op))
+            },
             // the keys this call is
-            |call| Keys::from(call.input["symbol"].as_str()),
+            move |call| {
+                let input = &call.input;
+                let (db, table, op) = (
+                    input["db"].as_str().unwrap_or_default(),
+                    input["table"].as_str().unwrap_or_default(),
+                    input["op"].as_str().unwrap_or_default(),
+                );
+                Keys::from(vec![
+                    key(db, table, op),
+                    key(db, table, "*"),
+                    key(db, "*", op),
+                    key(db, "*", "*"),
+                ])
+            },
         ),
     );
     ```
@@ -883,19 +1019,34 @@ keeps an index from keys to observers, so a call costs one lookup per key.
   </Tab>
   <Tab title="Go">
     ```go
-    worker.OnObservationMatchFor("prices::on-change", iii.MatchKeys(
+    import "encoding/json"
+
+    type rowChange struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+        Op    string `json:"op"`
+    }
+
+    key := func(db, table, op string) string { return db + "|" + table + "|" + op }
+
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchKeys(
         // the keys this observer listens for
         func(obs *iii.Observer) []string {
-            symbol, _ := obs.Args["symbol"].(string)
-            return []string{symbol}
+            db, _ := obs.Args["db"].(string)
+            table, _ := obs.Args["table"].(string)
+            op, _ := obs.Args["op"].(string)
+            return []string{key(db, table, op)}
         },
         // the keys this call is
         func(call *iii.Call) []string {
-            var change struct {
-                Symbol string `json:"symbol"`
-            }
+            var change rowChange
             _ = json.Unmarshal(call.Input, &change)
-            return []string{change.Symbol}
+            return []string{
+                key(change.DB, change.Table, change.Op),
+                key(change.DB, change.Table, "*"),
+                key(change.DB, "*", change.Op),
+                key(change.DB, "*", "*"),
+            }
         },
     ))
     ```
@@ -903,7 +1054,7 @@ keeps an index from keys to observers, so a call costs one lookup per key.
   </Tab>
 </Tabs>
 
-- Each key function returns a string or an array of strings.
+- A key function returns one key or a list of keys.
 - The SDK computes an observer's keys once, when it is accepted, and files the observer under each.
   It unfiles the observer when it is removed. An observer whose key function throws is rejected with
   `OBSERVE_REJECTED`.
@@ -930,17 +1081,16 @@ calls each go to one observer. The hook receives the call and the observers that
 returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
 runs inside the function's invocation, so calls it makes have that invocation as their caller.
 
-Choose observers in `onObservationMatch` when an observer's args and the call settle it. Choose them
-in `onObservationDeliver` when choosing compares observers with each other or produces part of the
-payload. An HTTP request goes to the most specific of the route patterns that fit its path, and that
-route's path parameters go into the request its target receives, so `http::on-request` sets no match
-hook and its deliver hook receives every active observer.
-
 The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
 a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
-receives only the observers the match hook matched:
-[`queue::on-message`](./queues#how-the-worker-hosts-messages) files each message under its
-subscriber's key, so its deliver hook receives that one observer.
+receives only the observers the match hook matched. The queue worker's `queue::on-message` files
+each message under its subscriber's key, so its deliver hook receives that one observer.
+
+<Note>
+  An observer's args and the call settle the choice in
+  [`onObservationMatch`](#match-observers-to-calls). Choose in `onObservationDeliver` when the
+  choice compares observers with each other, or when making it produces part of the payload.
+</Note>
 
 ### Call through an observer
 
@@ -951,6 +1101,10 @@ A call that names an observer runs that observer's target and resolves to the ta
     ```typescript
     import { CallAction } from "iii-sdk";
 
+    const observers = rowChanged.observers();
+    const obs = observers[0]; // an active observer of database::on-row-changed
+    const payload = { db: "primary", table: "orders", op: "insert", row: { id: 1 } };
+
     const result = await worker.call({ observer: obs, payload }); // the target's result
     await worker.call({ observer: obs, payload, action: CallAction.Void() }); // fire-and-forget
     ```
@@ -959,6 +1113,9 @@ A call that names an observer runs that observer's target and resolves to the ta
   <Tab title="Python">
     ```python
     from iii import CallAction
+
+    obs = row_changed.observers()[0]  # an active observer of database::on-row-changed
+    payload = {"db": "primary", "table": "orders", "op": "insert", "row": {"id": 1}}
 
     result = await worker.call_async({"observer": obs, "payload": payload})  # the target's result
     await worker.call_async({"observer": obs, "payload": payload, "action": CallAction.Void()})  # fire-and-forget
@@ -969,13 +1126,25 @@ A call that names an observer runs that observer's target and resolves to the ta
     ```rust
     use iii_sdk::{CallAction, CallRequest};
 
-    let result = worker.call(CallRequest::observer(&obs, payload.clone())).await?; // the target's result
-    worker.call(CallRequest::observer(&obs, payload).action(CallAction::Void)).await?; // fire-and-forget
+    use serde_json::json;
+
+    let observers = row_changed.observers();
+    let obs = &observers[0]; // an active observer of database::on-row-changed
+    let payload = json!({ "db": "primary", "table": "orders", "op": "insert", "row": { "id": 1 } });
+
+    let result = worker.call(CallRequest::observer(obs, payload.clone())).await?; // the target's result
+    worker.call(CallRequest::observer(obs, payload).action(CallAction::Void)).await?; // fire-and-forget
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
+    import "encoding/json"
+
+    observers := rowChanged.Observers()
+    obs := observers[0] // an active observer of database::on-row-changed
+    payload, _ := json.Marshal(map[string]any{"db": "primary", "table": "orders", "op": "insert", "row": map[string]any{"id": 1}})
+
     result, err := worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload}) // the target's result
     worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload, Action: iii.VoidAction()}) // fire-and-forget
     ```
@@ -1033,18 +1202,24 @@ function's targets expect.
   <Tab title="Node / TypeScript">
     ```typescript
     import { CallAction } from "iii-sdk";
+    import { Pool } from "pg";
 
-    worker.onObserverAdded("tmux::on-changed", (obs) => {
-      // send the session's current state once the observer is active
+    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
+
+    worker.onObserverAdded("database::on-row-changed", (obs) => {
+      // send the table's row count once the observer is active
       void obs
         .accepted()
-        .then(() =>
-          worker.call({
+        .then(async () => {
+          const { db, table } = obs.args as { db: string; table: string };
+          const pool = pools.get(db);
+          const counted = pool ? await pool.query(`SELECT count(*)::int AS n FROM ${table}`) : undefined;
+          await worker.call({
             observer: obs,
-            payload: sessions.state(obs.args.session as string),
+            payload: { table, rows: counted ? counted.rows[0].n : 0 },
             action: CallAction.Void(),
-          }),
-        )
+          });
+        })
         .catch(() => {
           // a rejected observer gets nothing
         });
@@ -1055,41 +1230,76 @@ function's targets expect.
   <Tab title="Python">
     ```python
     import asyncio
+    import os
 
     from iii import CallAction, ObserveRejection
+    from psycopg_pool import ConnectionPool
 
-    async def send_state(obs):
+    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
+
+    async def send_row_count(obs):
         try:
             await obs.accepted_async()
         except ObserveRejection:
             return  # a rejected observer gets nothing
+        db, table = obs.args["db"], obs.args["table"]
+        rows = 0
+        pool = pools.get(db)
+        if pool is not None:
+            with pool.connection() as conn:
+                rows = conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
         await worker.call_async({
             "observer": obs,
-            "payload": sessions.state(obs.args["session"]),
+            "payload": {"table": table, "rows": rows},
             "action": CallAction.Void(),
         })
 
-    @worker.on_observer_added("tmux::on-changed")
+    @worker.on_observer_added("database::on-row-changed")
     async def on_added(obs):
-        # send the session's current state once the observer is active
-        asyncio.create_task(send_state(obs))
+        # send the table's row count once the observer is active
+        asyncio.create_task(send_row_count(obs))
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
     use iii_sdk::{CallAction, CallRequest, Observer};
+    use serde_json::json;
+    use sqlx::PgPool;
+
+    let pools: Arc<HashMap<String, PgPool>> = Arc::new(HashMap::from([(
+        "primary".to_string(),
+        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+    )]));
 
     let iii = worker.clone();
-    worker.on_observer_added_for("tmux::on-changed", move |obs: Observer| {
-        let iii = iii.clone();
+    worker.on_observer_added_for("database::on-row-changed", move |obs: Observer| {
+        let (iii, pools) = (iii.clone(), pools.clone());
         async move {
-            // send the session's current state once the observer is active
+            // send the table's row count once the observer is active
             tokio::spawn(async move {
-                if obs.accepted().await.is_ok() {
-                    let request = CallRequest::observer(&obs, session_state(obs.args_value()));
-                    let _ = iii.call(request.action(CallAction::Void)).await;
+                if obs.accepted().await.is_err() {
+                    return; // a rejected observer gets nothing
                 }
+                let args = obs.args_value();
+                let (db, table) = (
+                    args["db"].as_str().unwrap_or_default(),
+                    args["table"].as_str().unwrap_or_default(),
+                );
+                let rows = match pools.get(db) {
+                    Some(pool) => sqlx::query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or(0),
+                    None => 0,
+                };
+                let payload = json!({ "table": table, "rows": rows });
+                let _ = iii
+                    .call(CallRequest::observer(&obs, payload).action(CallAction::Void))
+                    .await;
             });
             Ok(())
         }
@@ -1099,15 +1309,32 @@ function's targets expect.
   </Tab>
   <Tab title="Go">
     ```go
-    worker.OnObserverAddedFor("tmux::on-changed", func(ctx context.Context, obs *iii.Observer) error {
-        // send the session's current state once the observer is active
+    import (
+        "context"
+        "database/sql"
+        "encoding/json"
+        "os"
+    )
+
+    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
+    pools := map[string]*sql.DB{"primary": primary}
+
+    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+        // send the table's row count once the observer is active
         go func() {
             if obs.Accepted(context.Background()) != nil {
-                return
+                return // a rejected observer gets nothing
             }
+            db, _ := obs.Args["db"].(string)
+            table, _ := obs.Args["table"].(string)
+            rows := 0
+            if pool, ok := pools[db]; ok {
+                _ = pool.QueryRowContext(context.Background(), "SELECT count(*) FROM "+table).Scan(&rows)
+            }
+            payload, _ := json.Marshal(map[string]any{"table": table, "rows": rows})
             worker.Call(context.Background(), iii.CallRequest{
                 Observer: obs,
-                Payload:  sessions.State(obs.Args["session"]),
+                Payload:  payload,
                 Action:   iii.VoidAction(),
             })
         }()

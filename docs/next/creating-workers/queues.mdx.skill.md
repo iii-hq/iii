@@ -37,30 +37,27 @@ iii call -n dev compose::add worker=queue
 ## Named Queues
 
 When you need to control function execution for time consuming operations, or guarantee a certain
-number of retries, call the function with the `CallAction.Enqueue` action to place the call into a
-queue.
+number of retries, call the function with the enqueue action. The `queue` field of the action names
+the queue to use, so configure that queue in the queue worker configuration first.
 
-### Creating a Queue
+### Enqueue a function
 
-Create a named queue called `email-jobs` by following the
-[queue worker configuration reference](https://workers.iii.dev/workers/queue), then use that name
-when enqueueing functions below. The worker reference owns the accepted fields, defaults, and FIFO
-options.
-
-### Enqueue functions
-
-An enqueued call is a regular `worker.call` with the `CallAction.Enqueue` action. It returns a
-receipt right away, and the queue runs the function:
+An enqueue call is a function call with the enqueue action. The queue runs the function later, and
+the caller gets a receipt before the function starts:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { CallAction, type EnqueueResult } from "iii-sdk";
+    import { CallAction, registerWorker, type EnqueueResult } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
 
     const { messageReceiptId } = await worker.call<unknown, EnqueueResult>({
       function_id: "email::send",
       payload: { to: "a@b.com", subject: "hi" },
-      action: CallAction.Enqueue({ queue: "email-jobs" }), // "queue" specifies the name of the queue
+      action: CallAction.Enqueue({ queue: "email-jobs" }), // "queue" names the queue
     });
     // messageReceiptId identifies the enqueued job
     ```
@@ -68,28 +65,46 @@ receipt right away, and the queue runs the function:
   </Tab>
   <Tab title="Python">
     ```python
-    from iii import CallAction
+    import os
 
-    receipt = worker.call({
-        "function_id": "email::send",
-        "payload": {"to": "a@b.com", "subject": "hi"},
-        "action": CallAction.Enqueue(queue="email-jobs"), # "queue" specifies the name of the queue
-    })
+    from iii import CallAction, InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="email"),
+    )
+
+    receipt = worker.call(
+        {
+            "function_id": "email::send",
+            "payload": {"to": "a@b.com", "subject": "hi"},
+            "action": CallAction.Enqueue(queue="email-jobs"),  # "queue" names the queue
+        }
+    )
     # receipt["messageReceiptId"] identifies the enqueued job
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::CallAction;
-    use iii_sdk::protocol::CallRequest;
+    use iii_sdk::{register_worker, CallAction, CallRequest, InitOptions};
     use serde_json::json;
+
+    let worker = register_worker(
+        &std::env::var("III_URL").expect("III_URL must be set"),
+        InitOptions {
+            namespace: Some("email".into()),
+            ..Default::default()
+        },
+    );
 
     let receipt = worker
         .call(CallRequest {
             function_id: "email::send".to_string(),
             payload: json!({ "to": "a@b.com", "subject": "hi" }),
-            action: Some(CallAction::Enqueue { queue: "email-jobs".to_string() }), // "queue" specifies the name of the queue
+            action: Some(CallAction::Enqueue {
+                queue: "email-jobs".to_string(),
+            }),
             timeout_ms: None,
         })
         .await?;
@@ -99,12 +114,22 @@ receipt right away, and the queue runs the function:
   </Tab>
   <Tab title="Go">
     ```go
-    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
 
-    res, err := client.Call(ctx, iii.CallRequest{
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    	"github.com/iii-hq/iii/sdk/packages/go/iii/helpers/queue"
+    )
+
+    client := iii.RegisterWorker(iii.EngineURLFromEnv())
+    defer client.Close()
+
+    res, err := client.Call(context.Background(), iii.CallRequest{
         FunctionID: "email::send",
         Payload:    json.RawMessage(`{"to":"a@b.com","subject":"hi"}`),
-        Action:     iii.EnqueueAction("email-jobs"), // "email-jobs" is the name of the queue
+        Action:     iii.EnqueueAction("email-jobs"), // "email-jobs" names the queue
     })
     if err != nil {
         log.Fatal(err)
@@ -125,11 +150,12 @@ receipt right away, and the queue runs the function:
 Queues can also be used in a publish/subscribe form when multiple listeners need to subscribe to the
 same data and it's important that the messages be durable (ie. will succeed).
 
-### Consuming messages
+### Consume messages
 
-`worker.observe({ function_id: "queue::on-message", args: { topic } }, target)` means: when a
-message is published to `topic`, `target` runs with the message's `data`. Returning acknowledges the
-message; throwing retries it, and after the last retry the message moves to the dead-letter queue.
+An observer of `queue::on-message` with a `topic` in its `args` runs the target function for each
+message published to that topic, with the message `data` as the input. A normal return acknowledges
+the message. An error retries it, and the last failed delivery moves the message to the dead-letter
+queue.
 
 In a worker, register the consumer function and observe `queue::on-message` with the topic. If you
 do not have a worker yet, follow [Create a new worker](./workers#create-a-new-worker), then edit its
@@ -142,10 +168,7 @@ source:
 
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
-    const worker = registerWorker(url, {
-      workerName: "email-worker",
-      namespace: "orders",
-    });
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
 
     // receives the `data` from each published message
     worker.registerFunction("email::send", async (msg: { to: string; subject: string }) => {
@@ -160,11 +183,12 @@ source:
   <Tab title="Python">
     ```python
     import os
-    from iii import register_worker, InitOptions
+
+    from iii import InitOptions, register_worker
 
     worker = register_worker(
         os.environ["III_URL"],
-        InitOptions(worker_name="email-worker", namespace="orders"),
+        InitOptions(worker_name="email-worker", namespace="email"),
     )
 
     # receives the `data` from each published message
@@ -180,9 +204,9 @@ source:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{InitOptions, RegisterFunction, Source, register_worker};
-    use serde::Deserialize;
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction, Source};
     use schemars::JsonSchema;
+    use serde::Deserialize;
     use serde_json::json;
 
     #[derive(Deserialize, JsonSchema)]
@@ -191,20 +215,19 @@ source:
         subject: String,
     }
 
-    let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(
-        &url,
+        &std::env::var("III_URL").expect("III_URL must be set"),
         InitOptions {
-            namespace: Some("orders".into()),
+            namespace: Some("email".into()),
             ..Default::default()
         },
     );
 
     // receives the `data` from each published message
-    worker.register_function("email::send", RegisterFunction::new(|_msg: Email| {
-        // do the work here; return an error to nack and let the message retry
-        Ok(json!({ "sent": true }))
-    }));
+    worker.register_function(
+        "email::send",
+        RegisterFunction::new(|_msg: Email| Ok::<_, iii_sdk::Error>(json!({ "sent": true }))),
+    );
 
     worker.observe(
         Source::function("queue::on-message").args(json!({ "topic": "emails" })),
@@ -215,10 +238,20 @@ source:
   </Tab>
   <Tab title="Go">
     ```go
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
     client := iii.RegisterWorker(os.Getenv("III_URL"),
         iii.WithName("email-worker"),
-        iii.WithNamespace("orders"),
+        iii.WithNamespace("email"),
     )
+    defer client.Close()
 
     // receives the `data` from each published message
     client.RegisterFunction("email::send", func(ctx context.Context, data json.RawMessage) (any, error) {
@@ -250,10 +283,12 @@ Add the worker to start it:
 iii call -n dev compose::add worker=./email-worker
 ```
 
-### Publishing a message
+Observer `filters` select messages by their `data` as `input`. A message that the filters reject is
+acknowledged without running the target.
 
-With the consumer running, publish to its topic. The queue worker delivers the `data` to every
-subscriber, so `email::send` runs once per message:
+### Publish a message
+
+With the consumer running, publish to its topic:
 
 ```bash
 # publish a message to the "emails" topic
@@ -265,71 +300,58 @@ iii call iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com",
   from the publish through to `email::send` running.
 </Tip>
 
-### Retries and delivery
+### Subscriber args
 
-Each observer of `queue::on-message` is one subscriber. Its `args` choose what it consumes and how:
+Every observer of `queue::on-message` carries its subscription in `args`. The args fall into three
+classes.
 
-| Arg            | Meaning                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------ |
-| `topic`        | The topic to consume. Required.                                                                        |
-| `max_retries`  | Deliveries of a message, the first one included, before it moves to the dead-letter queue (default 3). |
-| `backoff_ms`   | The first retry delay. Each later retry doubles it.                                                    |
-| `queue_config` | Delivery settings for this subscriber, for example `{ type: "fifo" }`.                                 |
-| `group`        | Subscribers that name the same group share one consumer, which handles each message once.              |
+#### Consumption
 
-Observer `filters` select messages by their `data` as `input`. A message the filters reject is
-acknowledged without running the target. See the
-[queue worker docs](https://workers.iii.dev/workers/queue) for every arg and the adapter-specific
-options.
-
-By default, a message is delivered up to 3 times: a failed delivery is retried after 1 second, a
-second failure after 2 more seconds, and a third failure moves the message to the dead-letter queue.
-
-The engine bounds each delivery to a target by `observers.activation_timeout_ms` (30 seconds by
-default). A target that runs longer fails the delivery with `TIMEOUT`, which is retried like any
-other failure. For longer jobs, raise it in the
-[engine config](../using-iii/configuration#observers).
-
-Each subscriber has its own durable queue, so two observers of the same topic each receive every
-published message. To spread one stream of messages across several consumers, give their observers
-the same `group`.
-
-<Warning>
-  RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
-  0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
-</Warning>
-
-For example, to process messages strictly one at a time instead of concurrently, observe the topic
-with a `fifo` queue:
+`topic` names the topic to consume. It is required.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    worker.observe(
-      {
-        function_id: "queue::on-message",
-        args: { topic: "emails", queue_config: { type: "fifo" } },
-      },
-      "email::send",
-    );
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
+
+    worker.observe({ function_id: "queue::on-message", args: { topic: "emails" } }, "email::send");
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
-    worker.observe(
-        {
-            "function_id": "queue::on-message",
-            "args": {"topic": "emails", "queue_config": {"type": "fifo"}},
-        },
-        "email::send",
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="email"),
     )
+
+    worker.observe({"function_id": "queue::on-message", "args": {"topic": "emails"}}, "email::send")
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
+    use iii_sdk::{register_worker, InitOptions, Source};
+    use serde_json::json;
+
+    let worker = register_worker(
+        &std::env::var("III_URL").expect("III_URL must be set"),
+        InitOptions {
+            namespace: Some("email".into()),
+            ..Default::default()
+        },
+    );
+
     worker.observe(
-        Source::function("queue::on-message")
-            .args(json!({ "topic": "emails", "queue_config": { "type": "fifo" } })),
+        Source::function("queue::on-message").args(json!({ "topic": "emails" })),
         "email::send",
     );
     ```
@@ -337,9 +359,22 @@ with a `fifo` queue:
   </Tab>
   <Tab title="Go">
     ```go
+    import (
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("email-worker"),
+        iii.WithNamespace("email"),
+    )
+    defer client.Close()
+
     if _, err := client.Observe(iii.Source{
         FunctionID: "queue::on-message",
-        Args:       iii.Args{"topic": "emails", "queue_config": iii.Args{"type": "fifo"}},
+        Args:       iii.Args{"topic": "emails"},
     }, "email::send"); err != nil {
         log.Fatal(err)
     }
@@ -348,14 +383,229 @@ with a `fifo` queue:
   </Tab>
 </Tabs>
 
+#### Retries
+
+`max_retries` counts the deliveries of one message, the first one included, before the message moves
+to the dead-letter queue. The default is 3. `backoff_ms` sets the first retry delay, and each later
+retry doubles it, so a message that always fails reaches the dead-letter queue about 3 seconds after
+it is published.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
+
+    worker.observe(
+      {
+        function_id: "queue::on-message",
+        args: { topic: "emails", max_retries: 5, backoff_ms: 500 },
+      },
+      "email::send",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="email"),
+    )
+
+    worker.observe(
+        {
+            "function_id": "queue::on-message",
+            "args": {"topic": "emails", "max_retries": 5, "backoff_ms": 500},
+        },
+        "email::send",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, Source};
+    use serde_json::json;
+
+    let worker = register_worker(
+        &std::env::var("III_URL").expect("III_URL must be set"),
+        InitOptions {
+            namespace: Some("email".into()),
+            ..Default::default()
+        },
+    );
+
+    worker.observe(
+        Source::function("queue::on-message")
+            .args(json!({ "topic": "emails", "max_retries": 5, "backoff_ms": 500 })),
+        "email::send",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("email-worker"),
+        iii.WithNamespace("email"),
+    )
+    defer client.Close()
+
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "queue::on-message",
+        Args:       iii.Args{"topic": "emails", "max_retries": 5, "backoff_ms": 500},
+    }, "email::send"); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+The engine bounds each delivery to a target by `observers.activation_timeout_ms` (30 seconds by
+default). A target that runs longer fails the delivery with `TIMEOUT`, which is retried like any
+other failure. For longer jobs, raise it in the
+[engine config](../using-iii/configuration#observers).
+
+#### Delivery
+
+`queue_config` sets the delivery settings of this subscriber, for example `{ type: "fifo" }` to
+process messages one at a time. `group` names the consumer group: subscribers that name the same
+group share one consumer, which handles each message once.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
+
+    worker.observe(
+      {
+        function_id: "queue::on-message",
+        args: { topic: "emails", queue_config: { type: "fifo" }, group: "email-senders" },
+      },
+      "email::send",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="email"),
+    )
+
+    worker.observe(
+        {
+            "function_id": "queue::on-message",
+            "args": {
+                "topic": "emails",
+                "queue_config": {"type": "fifo"},
+                "group": "email-senders",
+            },
+        },
+        "email::send",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, Source};
+    use serde_json::json;
+
+    let worker = register_worker(
+        &std::env::var("III_URL").expect("III_URL must be set"),
+        InitOptions {
+            namespace: Some("email".into()),
+            ..Default::default()
+        },
+    );
+
+    worker.observe(
+        Source::function("queue::on-message").args(json!({
+            "topic": "emails",
+            "queue_config": { "type": "fifo" },
+            "group": "email-senders",
+        })),
+        "email::send",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("email-worker"),
+        iii.WithNamespace("email"),
+    )
+    defer client.Close()
+
+    if _, err := client.Observe(iii.Source{
+        FunctionID: "queue::on-message",
+        Args: iii.Args{
+            "topic":        "emails",
+            "queue_config": iii.Args{"type": "fifo"},
+            "group":        "email-senders",
+        },
+    }, "email::send"); err != nil {
+        log.Fatal(err)
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+<Note>
+  A subscriber without a `group` has its own durable queue, so two observers of one topic each
+  receive every published message. To spread one stream of messages across several consumers, give
+  their observers the same `group`.
+</Note>
+
+<Warning>
+  RabbitMQ queue names changed in 0.23.x and are not migrated automatically. See [Upgrading from
+  0.22.x](../upgrading/from-0-22-x#step-1-redeclare-rabbitmq-durable-subscriber-queues).
+</Warning>
+
 ## Inspecting Queue Topics
 
-These commands list both kinds of queue. A pub/sub topic appears once an observer subscribes to it,
-and shows `broker_type: "builtin"`. (Publishing to a topic that nothing subscribes to does not
-register it, so there is nothing to inspect.) A configured named queue appears with
-`broker_type: "function_queue"`.
+`engine::queue::list_topics` lists every topic. `engine::queue::topic_stats` reports the counters of
+one topic: `depth` is the messages waiting for the consumer and `dlq_depth` is the dead-lettered
+messages. A topic with no waiting messages reports `depth: 0`. For a named queue, `consumer_count`
+reports its active delivery slots. A topic that no observer subscribes to does not register, so
+there is nothing to inspect.
 
-List every topic (this inspects the `emails` topic from above):
+List every topic:
 
 ```bash
 iii call engine::queue::list_topics
@@ -365,9 +615,7 @@ iii call engine::queue::list_topics
 [{ "name": "emails", "broker_type": "builtin", "subscriber_count": 1 }]
 ```
 
-Get stats for the topic (`depth` is messages waiting for the consumer, `dlq_depth` is
-dead-lettered). A topic whose consumer keeps up sits at `depth: 0`. For a named queue,
-`consumer_count` reports its active delivery slots:
+Get the counters of the `emails` topic:
 
 ```bash
 iii call engine::queue::topic_stats topic=emails
@@ -377,6 +625,11 @@ iii call engine::queue::topic_stats topic=emails
 { "depth": 0, "consumer_count": 1, "dlq_depth": 0, "config": null }
 ```
 
+<Note>
+  The list holds two kinds of queue. A pub/sub topic appears once an observer subscribes to it and
+  shows `broker_type: "builtin"`. A configured named queue shows `broker_type: "function_queue"`.
+</Note>
+
 ## Inspecting Dead Letter Queue Messages
 
 A message reaches the dead-letter queue only once its target exhausts its retries, so the DLQ
@@ -385,11 +638,17 @@ functions return empty until something fails.
 ### Forcing a message into the dead-letter queue
 
 To see the DLQ populated, make `email::send` fail by changing the handler to throw. Each message
-then fails all 3 of its deliveries (about 3 seconds of backoff in between) and dead-letters.
+then fails all of its deliveries and dead-letters.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { workerName: "email-worker", namespace: "email" });
+
     worker.registerFunction("email::send", async () => {
       throw new Error("forced failure");
     });
@@ -400,6 +659,16 @@ then fails all 3 of its deliveries (about 3 seconds of backoff in between) and d
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="email-worker", namespace="email"),
+    )
+
+    # the message is the input; the error below nacks every delivery
     def send(_msg: dict) -> dict:
         raise Exception("forced failure")
 
@@ -411,9 +680,23 @@ then fails all 3 of its deliveries (about 3 seconds of backoff in between) and d
   </Tab>
   <Tab title="Rust">
     ```rust
-    worker.register_function("email::send", RegisterFunction::new(|_msg: serde_json::Value| {
-        Err::<serde_json::Value, _>(iii_sdk::Error::Handler("forced failure".into()))
-    }));
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction, Source};
+    use serde_json::json;
+
+    let worker = register_worker(
+        &std::env::var("III_URL").expect("III_URL must be set"),
+        InitOptions {
+            namespace: Some("email".into()),
+            ..Default::default()
+        },
+    );
+
+    worker.register_function(
+        "email::send",
+        RegisterFunction::new(|_msg: serde_json::Value| {
+            Err::<serde_json::Value, _>(iii_sdk::Error::Handler("forced failure".into()))
+        }),
+    );
 
     worker.observe(
         Source::function("queue::on-message").args(json!({ "topic": "emails" })),
@@ -424,6 +707,22 @@ then fails all 3 of its deliveries (about 3 seconds of backoff in between) and d
   </Tab>
   <Tab title="Go">
     ```go
+    import (
+    	"context"
+    	"encoding/json"
+    	"errors"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    client := iii.RegisterWorker(os.Getenv("III_URL"),
+        iii.WithName("email-worker"),
+        iii.WithNamespace("email"),
+    )
+    defer client.Close()
+
     client.RegisterFunction("email::send", func(ctx context.Context, data json.RawMessage) (any, error) {
         return nil, errors.New("forced failure")
     })
@@ -477,8 +776,8 @@ iii call engine::queue::dlq_messages topic=emails
 
 ### Redriving dead-lettered messages
 
-Fix the code back to what it was originally, then move the topic's dead-lettered messages back to
-the main queue for reprocessing:
+Restore the handler, then move the topic's dead-lettered messages back to the main queue for
+reprocessing:
 
 ```bash
 iii call iii::queue::redrive topic=emails
@@ -515,220 +814,4 @@ iii call iii::queue::discard_message topic=emails message_id=0b9c…
 
 ```json
 { "queue": "emails", "message_id": "0b9c…", "redriven": 1 }
-```
-
-## How the worker hosts messages
-
-The handler returns the message it is called with, the function is private, and the
-[hooks](./observable-functions#hooks) do the rest.
-
-Each observer of `queue::on-message` is a subscriber with its own consumer, retries and group. A
-message is a call of the function with the subscriber's observer id in its metadata. Its
-`onObservationMatch` files each subscriber under its observer id and gives the message that id as
-its key, so the deliver hook receives the subscriber's observer, and the target's result
-acknowledges the message. Its args are
-`{ topic, max_retries?, backoff_ms?, queue_config?, group? }`.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { ObserveRejection } from "iii-sdk";
-
-    worker
-      .registerFunction("queue::on-message", (message: QueueMessage) => message, {
-        request_format: QueueMessageSchema,
-        response_format: QueueMessageSchema,
-        args_format: SubscriberSpecSchema,
-        private: true,
-      })
-      .onObserverAdded((obs) => consumers.start(obs.id, obs.args)) // INVALID_ARGS, OBSERVER_ID_CONFLICT
-      .onObserverRemoved((obs) => consumers.stop(obs.id))
-      .onObservationMatch({
-        observer: (obs) => obs.id, // each subscriber is filed under its observer id
-        call: (call) => (call.metadata?.subscriber as string | undefined) ?? [],
-      })
-      .onObservationDeliver<unknown>(async (call, [obs]) => {
-        // an error retries the message, then dead-letters it
-        if (!obs) throw new ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed");
-        if (!obs.matches(call)) return null; // a filter miss acknowledges the message
-        return worker.call({ observer: obs, payload: call.input });
-      });
-
-    // each consumer calls the function with its subscriber's observer id
-    consumers.onMessage((subscriber, message) =>
-      worker.call({ function_id: "queue::on-message", payload: message, metadata: { subscriber } }),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import ObserveRejection
-
-    # by id, before registering, so the hooks see every observer
-    @worker.on_observer_added("queue::on-message")
-    async def start(obs):
-        await consumers.start(obs.id, obs.args)  # INVALID_ARGS, OBSERVER_ID_CONFLICT
-
-    @worker.on_observer_removed("queue::on-message")
-    async def stop(obs):
-        await consumers.stop(obs.id)
-
-    worker.on_observation_match(
-        "queue::on-message",
-        observer=lambda obs: obs.id,  # each subscriber is filed under its observer id
-        call=lambda call: (call.metadata or {}).get("subscriber", []),
-    )
-
-    @worker.on_observation_deliver("queue::on-message")
-    async def deliver(call, observers):
-        if not observers:
-            # an error retries the message, then dead-letters it
-            raise ObserveRejection("OBSERVER_NOT_ACTIVE", "subscriber removed")
-        obs = observers[0]
-        if not obs.matches(call):
-            return None  # a filter miss acknowledges the message
-        return await worker.call_async({"observer": obs, "payload": call.input})
-
-    worker.register_function(
-        "queue::on-message",
-        lambda message: message,
-        request_format=QUEUE_MESSAGE_SCHEMA,
-        response_format=QUEUE_MESSAGE_SCHEMA,
-        args_format=SUBSCRIBER_SPEC_SCHEMA,
-        private=True,
-    )
-
-    # each consumer calls the function with its subscriber's observer id
-    async def on_queue_message(subscriber, message):
-        await worker.call_async({
-            "function_id": "queue::on-message",
-            "payload": message,
-            "metadata": {"subscriber": subscriber},
-        })
-
-    consumers.on_message(on_queue_message)
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{
-        AddedHook, Call, DeliverHook, Error, Keys, Match, ObserveRejection, Observer,
-        RegisterFunction, RemovedHook,
-    };
-    use serde_json::{json, Value};
-
-    /// One consumer per subscriber, and the client to call targets with.
-    #[derive(Clone)]
-    struct Subscribers { /* consumers, worker: IIIClient */ }
-
-    #[async_trait::async_trait]
-    impl AddedHook for Subscribers {
-        async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
-            self.consumers.start(obs.id(), obs.args()?).await // INVALID_ARGS, OBSERVER_ID_CONFLICT
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl RemovedHook for Subscribers {
-        async fn on_removed(&self, obs: Observer) {
-            self.consumers.stop(obs.id()).await;
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl DeliverHook for Subscribers {
-        async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
-            // the subscriber's observer, matched by its key
-            let Some(obs) = observers.first() else {
-                // an error retries the message, then dead-letters it
-                return Err(ObserveRejection::new("OBSERVER_NOT_ACTIVE", "subscriber removed").into());
-            };
-            if !obs.matches(&call) {
-                return Ok(Value::Null); // a filter miss acknowledges the message
-            }
-            self.worker.call(CallRequest::observer(obs, call.input.clone())).await
-        }
-    }
-
-    // by id, before registering, so the hooks see every observer
-    worker.on_observer_added_for("queue::on-message", subscribers.clone());
-    worker.on_observer_removed_for("queue::on-message", subscribers.clone());
-    worker.on_observation_match_for(
-        "queue::on-message",
-        Match::keys(
-            // each subscriber is filed under its observer id
-            |obs| Keys::from(obs.id()),
-            |call| Keys::from(call.metadata.as_ref().and_then(|m| m["subscriber"].as_str())),
-        ),
-    );
-    worker.on_observation_deliver_for("queue::on-message", subscribers.clone());
-
-    worker.register_function(
-        "queue::on-message",
-        RegisterFunction::new(|message: QueueMessage| Ok::<_, Error>(message))
-            .args_format::<SubscriberSpec>()
-            .private(),
-    );
-
-    // each consumer calls the function with its subscriber's observer id
-    let request = CallRequest::new("queue::on-message", message)
-        .metadata(json!({ "subscriber": subscriber }));
-    let outcome = worker.call(request).await; // Ok acknowledges; Err retries, then dead-letters
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    // by id, before registering, so the hooks see every observer
-    worker.OnObserverAddedFor("queue::on-message", func(ctx context.Context, obs *iii.Observer) error {
-        return consumers.Start(ctx, obs.ID, obs.Args) // INVALID_ARGS, OBSERVER_ID_CONFLICT
-    })
-    worker.OnObserverRemovedFor("queue::on-message", func(ctx context.Context, obs *iii.Observer) {
-        consumers.Stop(ctx, obs.ID)
-    })
-    worker.OnObservationMatchFor("queue::on-message", iii.MatchKeys(
-        // each subscriber is filed under its observer id
-        func(obs *iii.Observer) []string { return []string{obs.ID} },
-        func(call *iii.Call) []string {
-            var meta struct {
-                Subscriber string `json:"subscriber"`
-            }
-            _ = json.Unmarshal(call.Metadata, &meta)
-            return []string{meta.Subscriber}
-        },
-    ))
-    worker.OnObservationDeliverFor("queue::on-message", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-        if len(observers) == 0 {
-            // an error retries the message, then dead-letters it
-            return nil, &iii.InvocationError{Code: "OBSERVER_NOT_ACTIVE", Message: "subscriber removed"}
-        }
-        obs := observers[0]
-        if !obs.Matches(call) {
-            return nil, nil // a filter miss acknowledges the message
-        }
-        return worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: call.Input})
-    })
-
-    worker.RegisterFunction("queue::on-message", iii.Identity,
-        iii.FunctionOptions{ArgsFormat: subscriberSpecSchema, Private: true})
-
-    // each consumer calls the function with its subscriber's observer id
-    meta, _ := json.Marshal(map[string]string{"subscriber": subscriber})
-    _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "queue::on-message", Payload: message, Metadata: meta})
-    // nil acknowledges; an error retries, then dead-letters
-    ```
-
-  </Tab>
-</Tabs>
-
-Filters read the message as `input`. A consumer subscribes to a topic:
-
-```typescript
-worker.observe(
-  { function_id: "queue::on-message", args: { topic: "orders.created", max_retries: 3 } },
-  "orders::process",
-);
 ```

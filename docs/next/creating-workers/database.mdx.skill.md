@@ -6,50 +6,141 @@ and exposes row changes as the observable function `database::on-row-changed`.
 
 ## How the worker hosts row changes
 
-The handler returns the change it is called with, the function is private, and the
-[hooks](./observable-functions#hooks) do the rest.
+An observer passes args `{ db, table?, ops? }`, which the engine validates against the function's
+`args_format`. A missing `table` means every table of the database, and a missing `ops` means every
+operation.
 
-`database::on-row-changed` installs native capture in `onObserverAdded`, and the notifications from
-the database become calls of the function. Its `onObservationMatch` gives each change to the
-observers of its database, table and operation, by keys, and the source skips a change no observer
-is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
+`onObserverAdded` installs the capture for the observer's table before the observer is accepted, so
+the trigger exists before the first change it must receive. A database the worker has no connection
+for is refused with `ObserveRejection` and `UNKNOWN_DB`, and the refused observer receives no call.
+`onObserverRemoved` releases the capture, and the observer is still removed.
+
+`onObservationMatch` files an observer under the keys of its database, table and operation, and
+gives each change the keys it is: `db|table|op`, with `*` in place of a table or an operation the
+observer does not name. It selects the observers of a change; it cannot change the call. Before the
+worker builds a change, `isObserved(call)` answers whether an observer is filed under one of its
+keys.
+
+To observe this function from another worker, see [Observers](../using-iii/observers).
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import { ObserveRejection } from "iii-sdk";
+    import { ObserveRejection, registerWorker } from "iii-sdk";
+    import { Client, Pool } from "pg";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    type RowChangedArgs = {
+      db: string;
+      table?: string;
+      ops?: Array<"insert" | "update" | "delete">;
+    };
+
+    type RowChange = {
+      db: string;
+      table: string;
+      op: "insert" | "update" | "delete";
+      row: Record<string, unknown>;
+    };
+
+    const argsSchema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["db"],
+      properties: {
+        db: { type: "string" },
+        table: { type: "string" },
+        ops: { type: "array", items: { type: "string", enum: ["insert", "update", "delete"] } },
+      },
+    };
+
+    const changeSchema = {
+      type: "object",
+      required: ["db", "table", "op", "row"],
+      properties: {
+        db: { type: "string" },
+        table: { type: "string" },
+        op: { type: "string" },
+        row: { type: "object" },
+      },
+    };
+
+    const pools = new Map([
+      ["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })],
+    ]);
 
     const rowKey = (db: string, table: string, op: string) => `${db}|${table}|${op}`;
 
+    // the tables this worker installed a trigger on, and how many observers want them
+    const holds = new Map<string, number>();
+
+    // the observer's table, or every table of its database
+    async function tablesOf(pool: Pool, table?: string): Promise<string[]> {
+      if (table) return [table];
+      const { rows } = await pool.query<{ tablename: string }>(
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+      );
+      return rows.map((row) => row.tablename);
+    }
+
     const rowChanged = worker
       .registerFunction("database::on-row-changed", (change: RowChange) => change, {
-        request_format: RowChangeSchema,
-        response_format: RowChangeSchema,
-        args_format: RowChangedArgsSchema,
+        request_format: changeSchema,
+        response_format: changeSchema,
+        args_format: argsSchema,
         private: true,
       })
       .onObserverAdded(async (obs) => {
         const { db, table } = obs.args as RowChangedArgs;
-        if (!config.has(db)) throw new ObserveRejection("UNKNOWN_DB", `no database '${db}'`);
-        if (config.native(db)) await capture.install(db, table); // CREATE TRIGGER ... pg_notify(...)
+        const pool = pools.get(db);
+        if (!pool) throw new ObserveRejection("UNKNOWN_DB", `no database '${db}'`);
+        for (const name of await tablesOf(pool, table)) {
+          const key = `${db}|${name}`;
+          const count = (holds.get(key) ?? 0) + 1;
+          holds.set(key, count);
+          if (count > 1) continue;
+          await pool.query(
+            `CREATE OR REPLACE TRIGGER iii_${name}_changed AFTER INSERT OR UPDATE OR DELETE ON ${name}
+             FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()`,
+          );
+        }
       })
       .onObserverRemoved(async (obs) => {
         const { db, table } = obs.args as RowChangedArgs;
-        // releases this worker's hold; the database triggers stay, since other processes may share them
-        await capture.release(db, table);
+        const pool = pools.get(db);
+        if (!pool) return;
+        for (const name of await tablesOf(pool, table)) {
+          const key = `${db}|${name}`;
+          const count = (holds.get(key) ?? 1) - 1;
+          if (count > 0) {
+            holds.set(key, count);
+            continue;
+          }
+          holds.delete(key);
+          await pool.query(`DROP TRIGGER IF EXISTS iii_${name}_changed ON ${name}`);
+        }
       })
+      // an observer gets the changes of its database, table and operation
       .onObservationMatch({
         observer: ({ args }) => {
           const { db, table, ops } = args as RowChangedArgs;
           return (ops ?? ["*"]).map((op) => rowKey(db, table ?? "*", op));
         },
         call: ({ input }) =>
-          [input.table, "*"].flatMap((t) => [input.op, "*"].map((op) => rowKey(input.db, t, op))),
+          [input.table, "*"].flatMap((table) =>
+            [input.op, "*"].map((op) => rowKey(input.db, table, op)),
+          ),
       });
 
-    // a notification from the database becomes a call
-    capture.onNotification(async (n) => {
-      const change = toRowChange(n);
+    // each notification of the database becomes a call, when an observer wants it
+    const listener = new Client({ connectionString: process.env.PRIMARY_DATABASE_URL });
+    await listener.connect();
+    await listener.query("LISTEN iii_row_changed");
+    listener.on("notification", async (notification) => {
+      const change = JSON.parse(notification.payload ?? "{}") as RowChange;
       if (!rowChanged.isObserved({ input: change })) return;
       await worker.call({ function_id: "database::on-row-changed", payload: change });
     });
@@ -58,25 +149,100 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
   </Tab>
   <Tab title="Python">
     ```python
-    from iii import ObserveRejection
+    import json
+    import os
+    import threading
 
-    def row_key(db, table, op):
+    import psycopg
+
+    from iii import InitOptions, ObserveRejection, register_worker
+
+    worker = register_worker(
+        os.environ.get("III_URL"),
+        InitOptions(worker_name="database-worker", namespace="orders"),
+    )
+
+    ROW_CHANGED_ARGS = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["db"],
+        "properties": {
+            "db": {"type": "string"},
+            "table": {"type": "string"},
+            "ops": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["insert", "update", "delete"]},
+            },
+        },
+    }
+
+    ROW_CHANGE = {
+        "type": "object",
+        "required": ["db", "table", "op", "row"],
+        "properties": {
+            "db": {"type": "string"},
+            "table": {"type": "string"},
+            "op": {"type": "string"},
+            "row": {"type": "object"},
+        },
+    }
+
+    pools = {"primary": psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)}
+
+
+    def row_key(db: str, table: str, op: str) -> str:
         return f"{db}|{table}|{op}"
 
-    # by id, before registering, so the hooks see every observer
+
+    # the tables this worker installed a trigger on, and how many observers want them
+    holds: dict[str, int] = {}
+
+
+    # the observer's table, or every table of its database
+    def tables_of(pool: psycopg.Connection, table: str | None) -> list[str]:
+        if table is not None:
+            return [table]
+        rows = pool.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+        ).fetchall()
+        return [row[0] for row in rows]
+
+
+    # set by id, before the function is registered, so the hooks run for every observer
     @worker.on_observer_added("database::on-row-changed")
-    async def install(obs):
+    def install(obs):
         db, table = obs.args["db"], obs.args.get("table")
-        if not config.has(db):
+        pool = pools.get(db)
+        if pool is None:
             raise ObserveRejection("UNKNOWN_DB", f"no database '{db}'")
-        if config.native(db):
-            await capture.install(db, table)  # CREATE TRIGGER ... pg_notify(...)
+        for name in tables_of(pool, table):
+            key = f"{db}|{name}"
+            holds[key] = holds.get(key, 0) + 1
+            if holds[key] > 1:
+                continue
+            pool.execute(
+                f"CREATE OR REPLACE TRIGGER iii_{name}_changed "
+                f"AFTER INSERT OR UPDATE OR DELETE ON {name} "
+                "FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()"
+            )
+
 
     @worker.on_observer_removed("database::on-row-changed")
-    async def release(obs):
-        # releases this worker's hold; the database triggers stay, since other processes may share them
-        await capture.release(obs.args["db"], obs.args.get("table"))
+    def release(obs):
+        db, table = obs.args["db"], obs.args.get("table")
+        pool = pools.get(db)
+        if pool is None:
+            return
+        for name in tables_of(pool, table):
+            key = f"{db}|{name}"
+            holds[key] = holds.get(key, 1) - 1
+            if holds[key] > 0:
+                continue
+            del holds[key]
+            pool.execute(f"DROP TRIGGER IF EXISTS iii_{name}_changed ON {name}")
 
+
+    # an observer gets the changes of its database, table and operation
     worker.on_observation_match(
         "database::on-row-changed",
         observer=lambda obs: [
@@ -93,32 +259,53 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
     row_changed = worker.register_function(
         "database::on-row-changed",
         lambda change: change,
-        request_format=ROW_CHANGE_SCHEMA,
-        response_format=ROW_CHANGE_SCHEMA,
-        args_format=ROW_CHANGED_ARGS_SCHEMA,
+        request_format=ROW_CHANGE,
+        response_format=ROW_CHANGE,
+        args_format=ROW_CHANGED_ARGS,
         private=True,
     )
 
-    # a notification from the database becomes a call
-    async def on_notification(n):
-        change = to_row_change(n)
-        if not row_changed.is_observed({"input": change}):
-            return
-        await worker.call_async({"function_id": "database::on-row-changed", "payload": change})
+    # each notification of the database becomes a call, when an observer wants it
+    listener = psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)
+    listener.execute("LISTEN iii_row_changed")
 
-    capture.on_notification(on_notification)
+
+    def on_notifications() -> None:
+        for notification in listener.notifies():
+            change = json.loads(notification.payload)
+            if not row_changed.is_observed({"input": change}):
+                continue
+            worker.call({"function_id": "database::on-row-changed", "payload": change})
+
+
+    threading.Thread(target=on_notifications, daemon=True).start()
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
     use iii_sdk::protocol::CallRequest;
     use iii_sdk::{
-        AddedHook, Call, Error, Keys, Match, ObserveRejection, Observer, RegisterFunction,
-        RemovedHook,
+        register_worker, AddedHook, Call, Error, InitOptions, Keys, Match, ObserveRejection,
+        Observer, RegisterFunction, RemovedHook,
     };
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use sqlx::postgres::{PgListener, PgPool};
+    use tokio::sync::Mutex;
+
+    let url = std::env::var("III_URL").expect("III_URL must be set");
+    let worker = register_worker(
+        &url,
+        InitOptions {
+            namespace: Some("orders".into()),
+            ..Default::default()
+        },
+    );
 
     #[derive(Deserialize, JsonSchema)]
     struct RowChangedArgs {
@@ -132,22 +319,25 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
         db: String,
         table: String,
         op: String,
-        // ... the row values
+        row: Value,
     }
 
     fn row_key(db: &str, table: &str, op: &str) -> String {
         format!("{db}|{table}|{op}")
     }
 
-    // the keys an observer listens for
+    // the keys of an observer: its database, its table and the operations it names
     fn observer_keys(obs: &Observer) -> Keys<'_> {
         let args: RowChangedArgs = obs.args().expect("validated against args_format");
         let table = args.table.unwrap_or_else(|| "*".into());
         let ops = args.ops.unwrap_or_else(|| vec!["*".into()]);
-        ops.iter().map(|op| row_key(&args.db, &table, op)).collect::<Vec<_>>().into()
+        ops.iter()
+            .map(|op| row_key(&args.db, &table, op))
+            .collect::<Vec<_>>()
+            .into()
     }
 
-    // the keys a call is
+    // the keys of a change
     fn call_keys(call: &Call) -> Keys<'_> {
         let field = |name: &str| call.input[name].as_str().unwrap_or_default().to_owned();
         let (db, table, op) = (field("db"), field("table"), field("op"));
@@ -158,38 +348,107 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
             .into()
     }
 
-    /// The database connections, their config, and the capture installed per table.
+    // the observer's table, or every table of its database
+    async fn tables_of(pool: &PgPool, table: Option<&str>) -> Result<Vec<String>, ObserveRejection> {
+        let Some(table) = table else {
+            let rows: Vec<(String,)> =
+                sqlx::query_as("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                    .fetch_all(pool)
+                    .await
+                    .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            return Ok(rows.into_iter().map(|(name,)| name).collect());
+        };
+        Ok(vec![table.to_string()])
+    }
+
     #[derive(Clone)]
-    struct NativeCapture { /* ... */ }
+    struct Capture {
+        pools: Arc<HashMap<String, PgPool>>,
+        // the tables this worker installed a trigger on, and how many observers want them
+        holds: Arc<Mutex<HashMap<String, usize>>>,
+    }
 
     #[async_trait::async_trait]
-    impl AddedHook for NativeCapture {
+    impl AddedHook for Capture {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let args: RowChangedArgs = obs.args()?;
-            if !self.config.has(&args.db) {
-                let message = format!("no database '{}'", args.db);
-                return Err(ObserveRejection::new("UNKNOWN_DB", message));
-            }
-            if self.config.native(&args.db) {
-                self.install(&args.db, args.table.as_deref()).await; // CREATE TRIGGER ... pg_notify(...)
+            let Some(pool) = self.pools.get(&args.db) else {
+                return Err(ObserveRejection::new(
+                    "UNKNOWN_DB",
+                    format!("no database '{}'", args.db),
+                ));
+            };
+            for name in tables_of(pool, args.table.as_deref()).await? {
+                let key = format!("{}|{}", args.db, name);
+                let first = {
+                    let mut holds = self.holds.lock().await;
+                    let count = holds.entry(key).or_insert(0);
+                    *count += 1;
+                    *count == 1
+                };
+                if !first {
+                    continue;
+                }
+                sqlx::query(&format!(
+                    "CREATE OR REPLACE TRIGGER iii_{name}_changed AFTER INSERT OR UPDATE OR DELETE ON {name} \
+                     FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()"
+                ))
+                .execute(pool)
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
             }
             Ok(())
         }
     }
 
     #[async_trait::async_trait]
-    impl RemovedHook for NativeCapture {
+    impl RemovedHook for Capture {
         async fn on_removed(&self, obs: Observer) {
-            if let Ok(args) = obs.args::<RowChangedArgs>() {
-                // releases this worker's hold; the database triggers stay, since other processes may share them
-                self.release(&args.db, args.table.as_deref()).await;
+            let Ok(args) = obs.args::<RowChangedArgs>() else {
+                return;
+            };
+            let Some(pool) = self.pools.get(&args.db) else {
+                return;
+            };
+            let Ok(tables) = tables_of(pool, args.table.as_deref()).await else {
+                return;
+            };
+            for name in tables {
+                let key = format!("{}|{}", args.db, name);
+                let last = {
+                    let mut holds = self.holds.lock().await;
+                    let count = holds.entry(key.clone()).or_insert(1);
+                    *count -= 1;
+                    if *count > 0 {
+                        return;
+                    }
+                    holds.remove(&key);
+                    true
+                };
+                if !last {
+                    continue;
+                }
+                let _ = sqlx::query(&format!(
+                    "DROP TRIGGER IF EXISTS iii_{name}_changed ON {name}"
+                ))
+                .execute(pool)
+                .await;
             }
         }
     }
 
-    // by id, before registering, so the hooks see every observer
+    let capture = Capture {
+        pools: Arc::new(HashMap::from([(
+            "primary".to_string(),
+            PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+        )])),
+        holds: Arc::new(Mutex::new(HashMap::new())),
+    };
+
+    // set by id, before the function is registered, so the hooks run for every observer
     worker.on_observer_added_for("database::on-row-changed", capture.clone());
     worker.on_observer_removed_for("database::on-row-changed", capture.clone());
+    // an observer gets the changes of its database, table and operation
     worker.on_observation_match_for("database::on-row-changed", Match::keys(observer_keys, call_keys));
 
     let row_changed = worker.register_function(
@@ -199,20 +458,42 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
             .private(),
     );
 
-    // a notification from the database becomes a call
-    while let Some(notification) = notifications.recv().await {
-        let input = serde_json::to_value(to_row_change(notification))?;
-        let call = Call { input, ..Call::default() };
+    // each notification of the database becomes a call, when an observer wants it
+    let mut listener = PgListener::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?;
+    listener.listen("iii_row_changed").await?;
+    loop {
+        let change: RowChange = serde_json::from_str(listener.recv().await?.payload())?;
+        let input = serde_json::to_value(&change)?;
+        let call = Call {
+            input,
+            ..Call::default()
+        };
         if !row_changed.is_observed_for(&call) {
             continue;
         }
-        worker.call(CallRequest::new("database::on-row-changed", call.input)).await?;
+        worker
+            .call(CallRequest::new("database::on-row-changed", call.input))
+            .await?;
     }
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
+    package main
+
+    import (
+        "context"
+        "encoding/json"
+        "fmt"
+        "log"
+        "os"
+        "sync"
+
+        "github.com/jackc/pgx/v5"
+        iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
     type rowChangedArgs struct {
         DB    string   `json:"db"`
         Table string   `json:"table,omitempty"`
@@ -220,94 +501,170 @@ is filed for with `isObserved(call)`. Its args are `{ db, table?, ops? }`.
     }
 
     type rowChange struct {
-        DB    string `json:"db"`
-        Table string `json:"table"`
-        Op    string `json:"op"`
-        // ... the row values
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
     }
+
+    var rowChangedArgsSchema = json.RawMessage(`{
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["db"],
+        "properties": {
+            "db": {"type": "string"},
+            "table": {"type": "string"},
+            "ops": {"type": "array", "items": {"type": "string", "enum": ["insert", "update", "delete"]}}
+        }
+    }`)
 
     func rowKey(db, table, op string) string { return db + "|" + table + "|" + op }
 
-    // by id, before registering, so the hooks see every observer
-    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
-        var args rowChangedArgs
-        if err := obs.DecodeArgs(&args); err != nil {
-            return err
+    // the observer's table, or every table of its database
+    func tablesOf(ctx context.Context, pool *pgx.Conn, table string) ([]string, error) {
+        if table != "" {
+            return []string{table}, nil
         }
-        if !config.Has(args.DB) {
-            return iii.ObserveRejection("UNKNOWN_DB", "no database '"+args.DB+"'")
+        rows, err := pool.Query(ctx, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+        if err != nil {
+            return nil, err
         }
-        if config.Native(args.DB) {
-            return capture.Install(ctx, args.DB, args.Table) // CREATE TRIGGER ... pg_notify(...)
-        }
-        return nil
-    })
-    worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
-        var args rowChangedArgs
-        if obs.DecodeArgs(&args) == nil {
-            // releases this worker's hold; the database triggers stay, since other processes may share them
-            capture.Release(ctx, args.DB, args.Table)
-        }
-    })
-    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchKeys(
-        // the keys an observer listens for
-        func(obs *iii.Observer) []string {
-            var args rowChangedArgs
-            _ = obs.DecodeArgs(&args)
-            table, ops := args.Table, args.Ops
-            if table == "" {
-                table = "*"
-            }
-            if len(ops) == 0 {
-                ops = []string{"*"}
-            }
-            keys := make([]string, 0, len(ops))
-            for _, op := range ops {
-                keys = append(keys, rowKey(args.DB, table, op))
-            }
-            return keys
-        },
-        // the keys a call is
-        func(call *iii.Call) []string {
-            var change rowChange
-            _ = json.Unmarshal(call.Input, &change)
-            var keys []string
-            for _, table := range []string{change.Table, "*"} {
-                for _, op := range []string{change.Op, "*"} {
-                    keys = append(keys, rowKey(change.DB, table, op))
-                }
-            }
-            return keys
-        },
-    ))
-
-    rowChanged, err := worker.RegisterFunction("database::on-row-changed", iii.Identity,
-        iii.FunctionOptions{ArgsFormat: rowChangedArgsSchema, Private: true})
-    if err != nil {
-        log.Fatal(err)
+        return pgx.CollectRows(rows, pgx.RowTo[string])
     }
 
-    // a notification from the database becomes a call
-    for notification := range notifications {
-        change, _ := json.Marshal(toRowChange(notification))
-        if !rowChanged.IsObservedFor(&iii.Call{Input: change}) {
-            continue
+    func main() {
+        ctx := context.Background()
+        worker := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+        primary, err := pgx.Connect(ctx, os.Getenv("PRIMARY_DATABASE_URL"))
+        if err != nil {
+            log.Fatal(err)
         }
-        worker.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: change})
+        pools := map[string]*pgx.Conn{"primary": primary}
+
+        // the tables this worker installed a trigger on, and how many observers want them
+        var mu sync.Mutex
+        holds := map[string]int{}
+
+        // set by id, before the function is registered, so the hooks run for every observer
+        worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+            var args rowChangedArgs
+            if err := obs.DecodeArgs(&args); err != nil {
+                return err
+            }
+            pool, ok := pools[args.DB]
+            if !ok {
+                return iii.ObserveRejection("UNKNOWN_DB", "no database '"+args.DB+"'")
+            }
+            tables, err := tablesOf(ctx, pool, args.Table)
+            if err != nil {
+                return err
+            }
+            for _, name := range tables {
+                key := args.DB + "|" + name
+                mu.Lock()
+                holds[key]++
+                first := holds[key] == 1
+                mu.Unlock()
+                if !first {
+                    continue
+                }
+                if _, err := pool.Exec(ctx, fmt.Sprintf(
+                    "CREATE OR REPLACE TRIGGER iii_%[1]s_changed AFTER INSERT OR UPDATE OR DELETE ON %[1]s "+
+                        "FOR EACH ROW EXECUTE FUNCTION iii_notify_row_changed()", name)); err != nil {
+                    return err
+                }
+            }
+            return nil
+        })
+
+        worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
+            var args rowChangedArgs
+            if obs.DecodeArgs(&args) != nil {
+                return
+            }
+            pool, ok := pools[args.DB]
+            if !ok {
+                return
+            }
+            tables, err := tablesOf(ctx, pool, args.Table)
+            if err != nil {
+                return
+            }
+            for _, name := range tables {
+                key := args.DB + "|" + name
+                mu.Lock()
+                holds[key]--
+                last := holds[key] <= 0
+                if last {
+                    delete(holds, key)
+                }
+                mu.Unlock()
+                if !last {
+                    continue
+                }
+                pool.Exec(ctx, fmt.Sprintf("DROP TRIGGER IF EXISTS iii_%[1]s_changed ON %[1]s", name))
+            }
+        })
+
+        // an observer gets the changes of its database, table and operation
+        worker.OnObservationMatchFor("database::on-row-changed", iii.MatchKeys(
+            func(obs *iii.Observer) []string {
+                var args rowChangedArgs
+                _ = obs.DecodeArgs(&args)
+                table, ops := args.Table, args.Ops
+                if table == "" {
+                    table = "*"
+                }
+                if len(ops) == 0 {
+                    ops = []string{"*"}
+                }
+                keys := make([]string, 0, len(ops))
+                for _, op := range ops {
+                    keys = append(keys, rowKey(args.DB, table, op))
+                }
+                return keys
+            },
+            func(call *iii.Call) []string {
+                var change rowChange
+                _ = json.Unmarshal(call.Input, &change)
+                keys := make([]string, 0, 4)
+                for _, table := range []string{change.Table, "*"} {
+                    for _, op := range []string{change.Op, "*"} {
+                        keys = append(keys, rowKey(change.DB, table, op))
+                    }
+                }
+                return keys
+            },
+        ))
+
+        rowChanged, err := worker.RegisterFunction("database::on-row-changed", iii.Identity,
+            iii.FunctionOptions{ArgsFormat: rowChangedArgsSchema, Private: true})
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        // each notification of the database becomes a call, when an observer wants it
+        if _, err := primary.Exec(ctx, "LISTEN iii_row_changed"); err != nil {
+            log.Fatal(err)
+        }
+        for {
+            notification, err := primary.WaitForNotification(ctx)
+            if err != nil {
+                log.Fatal(err)
+            }
+            var change rowChange
+            if err := json.Unmarshal([]byte(notification.Payload), &change); err != nil {
+                continue
+            }
+            payload, _ := json.Marshal(change)
+            if !rowChanged.IsObservedFor(&iii.Call{Input: payload}) {
+                continue
+            }
+            worker.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: payload})
+        }
     }
     ```
 
   </Tab>
 </Tabs>
-
-A consumer observes the `orders` table:
-
-```typescript
-worker.observe(
-  {
-    function_id: "database::on-row-changed",
-    args: { db: "primary", table: "orders", ops: ["insert", "update"] },
-  },
-  "orders::project",
-);
-```
