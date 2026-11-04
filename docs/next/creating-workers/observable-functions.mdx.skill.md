@@ -9,16 +9,16 @@
 
 Every function your worker registers can be observed unless you specify otherwise (see
 [Registration options](#registration-options)). By default, iii runs each observer's target after
-each call of the function, with the call's input and the handler's return value. This page is how
-your worker changes that: what the observers of its functions receive, which calls reach which
-observer, what each observer sets up, and what the caller gets back. To observe a function, see
+each call of the function, with the call's input and the handler's return value. This page describes
+how to manage this: what the observers of its functions receive, which calls reach which observer,
+what each observer sets up, and what the caller gets back. To observe a function, see
 [Observers](../using-iii/observers).
 
 ## Hooks
 
-Your worker defines what observing a function means with four hooks, in two pairs. The observer
-lifecycle hooks add your own set-up and teardown per observer. The observation lifecycle hooks
-replace how iii matches and delivers calls.
+Your worker defines function observation with four hooks, two are observer specific, and two are
+specific to each individual observation. The observer lifecycle hooks add your own set-up and
+teardown per observer. The observation lifecycle hooks replace how iii matches and delivers calls.
 
 ### Observer lifecycle
 
@@ -153,7 +153,12 @@ instead.
 #### `onObserverRemoved(obs)`
 
 Runs after the engine has removed the observer and delivery to it has stopped. Use it to perform
-your own teardown. An error it throws is logged, and the observer is still removed.
+your own teardown.
+
+<Note>
+  If `onObserverRemoved` throws an error it will cause the error to be logged but it will not
+  prevent observer removal. Observer removal happens at the engine level.
+</Note>
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -265,13 +270,66 @@ for, one observer.
 By default, every call is observed by every observer. Override it to select, for one call, which
 observers get it, from their args: a predicate, or keys that iii indexes.
 
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.onObservationMatch("database::on-row-changed", (obs, call) =>
+      // one observation: this observer, this call
+      obs.args.table === (call.input as { table: string }).table,
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.on_observation_match(
+        "database::on-row-changed",
+        # one observation: this observer, this call
+        lambda obs, call: obs.args["table"] == call.input["table"],
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Match;
+
+    worker.on_observation_match_for(
+        "database::on-row-changed",
+        // one observation: this observer, this call
+        Match::predicate(|obs, call| obs.args_value()["table"] == call.input["table"]),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "encoding/json"
+
+    type rowChange struct {
+        Table string `json:"table"`
+    }
+
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(
+        // one observation: this observer, this call
+        func(obs *iii.Observer, call *iii.Call) bool {
+            var change rowChange
+            _ = json.Unmarshal(call.Input, &change)
+            return obs.Args["table"] == change.Table
+        },
+    ))
+    ```
+
+  </Tab>
+</Tabs>
+
 Both forms are in [Match observers to calls](#match-observers-to-calls).
 
 #### `onObservationDeliver(call, observers)`
 
 By default, iii carries out each observation: it runs the target of every matched observer whose
 `on` and filters match the call, and gives the caller the handler's return value. Override it to
-deliver the call yourself and return what the caller gets back.
+deliver the call yourself and change what is returned to the caller.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -378,16 +436,21 @@ deliver the call yourself and return what the caller gets back.
   </Tab>
 </Tabs>
 
-## Publish events
+## Producing events with observers
 
-An event source is a function whose handler returns the event. The worker calls it each time the
-event happens, and each call runs the function's observers. `private: true` keeps the calls to this
-worker: other workers can observe the function, and only this worker can call it (see
-[Private functions](#private-functions)).
+Function observation is not limited to input/output. Functions can use the same observer pattern to
+produce events during execution. Do it with a second function that this worker hosts, and call it
+with the event as the payload. That second function works as the event source:
 
-`FunctionRef.isObserved()` returns true when the function has at least 1 active observer. It costs
-one atomic load, so call it before you build the event, and skip the event when the function has no
-observers.
+- Its handler returns its input, so one call is one event.
+- Each call runs the observers of the event source.
+- The producing function gets the handler's return value, so it keeps running.
+- `private: true` keeps the calls to this worker: other workers can observe the event source, and
+  only this worker can call it (see [Private functions](#private-functions)).
+
+`FunctionRef.isObserved()` returns true when the event source has at least 1 active observer. It
+costs one atomic load, so call it before you build the event, and skip the event when no worker
+observes it.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -402,7 +465,15 @@ observers.
     const rowChanged = worker.registerFunction(
       "database::on-row-changed",
       (change: RowChange) => change,
-      { private: true },
+      {
+        private: true,
+        // the args an observer of this function passes
+        args_format: {
+          type: "object",
+          properties: { db: { type: "string" }, table: { type: "string" }, op: { type: "string" } },
+          required: ["db", "table", "op"],
+        },
+      },
     );
 
     // called for each NOTIFY on the worker's LISTEN connection
@@ -410,12 +481,24 @@ observers.
       if (!rowChanged.isObserved()) return; // no observers: skip the call
       await worker.call({ function_id: "database::on-row-changed", payload: { db, table, op, row } });
     }
+
+    // from any handler of this worker, for each changed row
+    await publishRowChange("primary", "orders", "update", { id: 42, status: "paid" });
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    row_changed = worker.register_function("database::on-row-changed", lambda change: change, private=True)
+    # the args an observer of this function passes
+    ROW_ARGS = {
+        "type": "object",
+        "properties": {"db": {"type": "string"}, "table": {"type": "string"}, "op": {"type": "string"}},
+        "required": ["db", "table", "op"],
+    }
+
+    row_changed = worker.register_function(
+        "database::on-row-changed", lambda change: change, private=True, args_format=ROW_ARGS
+    )
 
     # called for each NOTIFY on the worker's LISTEN connection
     def publish_row_change(db, table, op, row):
@@ -425,13 +508,16 @@ observers.
             "function_id": "database::on-row-changed",
             "payload": {"db": db, "table": table, "op": op, "row": row},
         })
+
+    # from any handler of this worker, for each changed row
+    publish_row_change("primary", "orders", "update", {"id": 42, "status": "paid"})
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
     use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Error, FunctionRef, IIIClient, RegisterFunction};
+    use iii_sdk::{runtime::FunctionRef, Error, IIIClient, RegisterFunction};
     use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
@@ -444,9 +530,19 @@ observers.
         row: Value,
     }
 
+    #[derive(JsonSchema)]
+    struct RowChangeArgs {
+        db: String,
+        table: String,
+        op: String,
+    }
+
     let row_changed = worker.register_function(
         "database::on-row-changed",
-        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change)).private(),
+        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change))
+            .private()
+            // the args an observer of this function passes
+            .args_format::<RowChangeArgs>(),
     );
 
     // called for each NOTIFY on the worker's LISTEN connection
@@ -465,6 +561,10 @@ observers.
         worker.call(CallRequest::new("database::on-row-changed", change)).await?;
         Ok(())
     }
+
+    // from any handler of this worker, for each changed row
+    publish_row_change(&worker, &row_changed, "primary", "orders", "update", json!({ "id": 42, "status": "paid" }))
+        .await?;
     ```
 
   </Tab>
@@ -482,7 +582,11 @@ observers.
         Row   json.RawMessage `json:"row"`
     }
 
-    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{Private: true})
+    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
+        Private: true,
+        // the args an observer of this function passes
+        ArgsFormat: json.RawMessage(`{"type":"object","properties":{"db":{"type":"string"},"table":{"type":"string"},"op":{"type":"string"}},"required":["db","table","op"]}`),
+    })
 
     // called for each NOTIFY on the worker's LISTEN connection
     publishRowChange := func(ctx context.Context, change rowChange) error {
@@ -493,6 +597,9 @@ observers.
         _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "database::on-row-changed", Payload: payload})
         return err
     }
+
+    // from any handler of this worker, for each changed row
+    _ = publishRowChange(ctx, rowChange{DB: "primary", Table: "orders", Op: "update", Row: json.RawMessage(`{"id":42,"status":"paid"}`)})
     ```
 
   </Tab>
@@ -732,13 +839,22 @@ after it reconnects.
     const rowChanged = worker.registerFunction(
       "database::on-row-changed",
       (change: RowChange) => change,
-      { private: true },
+      {
+        private: true,
+        // the args an observer of this function passes
+        args_format: {
+          type: "object",
+          properties: { db: { type: "string" }, table: { type: "string" }, op: { type: "string" } },
+          required: ["db", "table", "op"],
+        },
+      },
     );
 
-    // a configuration reload dropped a database
-    for (const obs of rowChanged.observers()) {
-      if (!pools.has(obs.args.db as string)) {
-        obs.reject("UNKNOWN_DB", `no database '${obs.args.db}'`);
+    function rejectDroppedDatabases() {
+      for (const obs of rowChanged.observers()) {
+        if (!pools.has(obs.args.db as string)) {
+          obs.reject("UNKNOWN_DB", `no database '${obs.args.db}'`);
+        }
       }
     }
     ```
@@ -751,13 +867,22 @@ after it reconnects.
     from psycopg_pool import ConnectionPool
 
     pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
-    row_changed = worker.register_function("database::on-row-changed", lambda change: change, private=True)
+    # the args an observer of this function passes
+    ROW_ARGS = {
+        "type": "object",
+        "properties": {"db": {"type": "string"}, "table": {"type": "string"}, "op": {"type": "string"}},
+        "required": ["db", "table", "op"],
+    }
 
-    # a configuration reload dropped a database
-    for obs in row_changed.observers():
-        db = obs.args["db"]
-        if db not in pools:
-            obs.reject("UNKNOWN_DB", f"no database '{db}'")
+    row_changed = worker.register_function(
+        "database::on-row-changed", lambda change: change, private=True, args_format=ROW_ARGS
+    )
+
+    def reject_dropped_databases():
+        for obs in row_changed.observers():
+            db = obs.args["db"]
+            if db not in pools:
+                obs.reject("UNKNOWN_DB", f"no database '{db}'")
     ```
 
   </Tab>
@@ -784,16 +909,30 @@ after it reconnects.
         PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
     )]);
 
+    #[derive(JsonSchema)]
+    struct RowChangeArgs {
+        db: String,
+        table: String,
+        op: String,
+    }
+
     let row_changed = worker.register_function(
         "database::on-row-changed",
-        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change)).private(),
+        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change))
+            .private()
+            // the args an observer of this function passes
+            .args_format::<RowChangeArgs>(),
     );
 
-    // a configuration reload dropped a database
-    for obs in row_changed.observers() {
-        let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
-        if !pools.contains_key(&db) {
-            obs.reject("UNKNOWN_DB", format!("no database '{db}'"));
+    fn reject_dropped_databases(
+        row_changed: &iii_sdk::runtime::FunctionRef,
+        pools: &HashMap<String, PgPool>,
+    ) {
+        for obs in row_changed.observers() {
+            let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
+            if !pools.contains_key(&db) {
+                obs.reject("UNKNOWN_DB", format!("no database '{db}'"));
+            }
         }
     }
     ```
@@ -817,13 +956,18 @@ after it reconnects.
     primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
     pools := map[string]*sql.DB{"primary": primary}
 
-    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{Private: true})
+    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
+        Private: true,
+        // the args an observer of this function passes
+        ArgsFormat: json.RawMessage(`{"type":"object","properties":{"db":{"type":"string"},"table":{"type":"string"},"op":{"type":"string"}},"required":["db","table","op"]}`),
+    })
 
-    // a configuration reload dropped a database
-    for _, obs := range rowChanged.Observers() {
-        db, _ := obs.Args["db"].(string)
-        if _, ok := pools[db]; !ok {
-            obs.Reject("UNKNOWN_DB", "no database '"+db+"')
+    rejectDroppedDatabases := func() {
+        for _, obs := range rowChanged.Observers() {
+            db, _ := obs.Args["db"].(string)
+            if _, ok := pools[db]; !ok {
+                obs.Reject("UNKNOWN_DB", "no database '"+db+"'")
+            }
         }
     }
     ```
