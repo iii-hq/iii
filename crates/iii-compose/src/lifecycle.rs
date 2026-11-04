@@ -906,11 +906,22 @@ async fn down_scoped(
     let mut results = Vec::new();
     for key in order {
         if !children.contains_key(&key) {
-            report::unchanged(&key, "not running");
+            // The VM of a killed `iii sandbox run` stays up until its lease ends, and the
+            // next `up` would reattach to it.
+            let changed = crate::sandbox::stop_own_vm(ctx, &key).await;
+            if changed {
+                let _ = await_name_release(ctx, &key).await;
+                if let Some(record) = records.get_mut(&key) {
+                    record.status = ChildStatus::Stopped;
+                }
+                report::stopped(&key);
+            } else {
+                report::unchanged(&key, "not running");
+            }
             results.push(ContainerResult {
                 container: key,
                 state: ChildStatus::Stopped,
-                changed: false,
+                changed,
                 error: None,
             });
             continue;

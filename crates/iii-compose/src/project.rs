@@ -2458,6 +2458,24 @@ mod adapter_restart_tests {
         project.shutdown().await;
     }
 
+    /// Its VM runs on under the name until the lease ends it, so `down` then `up` would
+    /// reattach to the old source and environment.
+    #[tokio::test]
+    async fn a_down_after_a_killed_iii_sandbox_run_stops_its_vm() {
+        let (dir, project, vm) = own_vm_project("").await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        kill_own_vm_command(dir.path(), &project, &vm).await;
+
+        let down = project.down(Some("own"), "down".into()).await;
+
+        assert!(down.changed, "{down:?}");
+        let stops = std::mem::take(&mut vm.lock().unwrap().stops);
+        assert_eq!(stops.len(), 1, "{stops:?}");
+        assert_eq!(own_status(&project).await.state, ChildStatus::Stopped);
+        project.shutdown().await;
+    }
+
     /// A name held with no VM of ours running, or none that could hold it yet, is a stranger's.
     #[tokio::test]
     async fn a_name_held_while_the_vm_does_not_run_is_still_refused() {

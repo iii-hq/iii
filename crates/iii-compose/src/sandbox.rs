@@ -1066,7 +1066,7 @@ fn prepare_failed(
         message.push_str(&format!(
             ". If {} was added after the adapter started, restart the adapter, which \
              restarts the VM workers it was running and ends every sandbox: iii call \
-             compose::restart worker={adapter_key}. It leaves this worker stopped, so then \
+             compose::restart worker={adapter_key}. It leaves this worker failed, so then \
              start it with: iii call compose::up",
             dir.display()
         ));
@@ -1136,7 +1136,7 @@ fn boot_probe(ctx: &LifecycleCtx<'_>, key: &str) -> VmRecord {
 /// outlived the `iii sandbox run` that ran it, and the next one reattaches. Its guest is not a
 /// stranger holding the worker's name. A boot still preparing cannot hold that name yet.
 pub(crate) async fn own_vm_running(ctx: &LifecycleCtx<'_>, key: &str) -> Option<VmRecord> {
-    if !runs_own_vm(ctx.file, key) {
+    if !runs_own_vm(ctx.file, key) || ctx.engine.has_exited() {
         return None;
     }
     let (client, token) = (ctx.engine.client(), ctx.sandbox_token);
@@ -1146,18 +1146,20 @@ pub(crate) async fn own_vm_running(ctx: &LifecycleCtx<'_>, key: &str) -> Option<
     matches!(status.state, State::Running).then_some(latest)
 }
 
-/// Stops what [`own_vm_running`] finds, for a start that must boot the VM anew. One that does not
-/// stop keeps the name, which the start then refuses.
-pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) {
-    if let Some(running) = own_vm_running(ctx, key).await {
-        let _ = worker_stop(
-            ctx.engine.client(),
-            &running,
-            ctx.sandbox_token,
-            ctx.file.stop_timeout,
-        )
-        .await;
-    }
+/// Stops what [`own_vm_running`] finds, for a start that must boot the VM anew or a `down`, and
+/// says whether it found one. One that does not stop keeps the name, which the start then refuses.
+pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> bool {
+    let Some(running) = own_vm_running(ctx, key).await else {
+        return false;
+    };
+    let _ = worker_stop(
+        ctx.engine.client(),
+        &running,
+        ctx.sandbox_token,
+        ctx.file.stop_timeout,
+    )
+    .await;
+    true
 }
 
 /// [`call`] for a step of `container`'s start (or its destroy), which an engine
