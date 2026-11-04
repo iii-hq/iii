@@ -420,8 +420,10 @@ The sandbox adapter is the one exception, because a VM worker ends with the adap
 running, dependencies first, without spending any of their `restart` attempts. The response names
 those workers in `affected_workers`. A VM worker that does not come back fails the operation when it
 is `required`, and is listed in `not_required_failures` when it is not. If the adapter itself does
-not come back, no VM worker is started. A sandbox that was running under the adapter does not come
-back.
+not come back, no VM worker is started and those same rules apply to each one it was running, which
+`compose::status` then reports as `failed`, with a `last_error` that names the adapter. A process
+that runs its own VM with `iii sandbox run` is stopped. Once the adapter is fixed, `compose::up` starts
+them all again. A sandbox that was running under the adapter does not come back.
 
 `compose::restart` without a worker argument restarts the entire compose project. It is
 approximately the equivalent of `compose::down` followed by `compose::up`.

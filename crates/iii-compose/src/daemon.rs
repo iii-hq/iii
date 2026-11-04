@@ -2168,20 +2168,14 @@ struct MutationError {
 
 impl From<&crate::lifecycle::OpError> for MutationError {
     fn from(error: &crate::lifecycle::OpError) -> Self {
-        let message = if error.code == "CHILD_EXITED_BEFORE_REGISTRATION" {
-            "Worker exited before registration".to_string()
-        } else {
-            error
+        Self {
+            code: error.code.clone(),
+            message: error
                 .message
                 .split(". It last said:\n")
                 .next()
                 .unwrap_or(&error.message)
-                .to_string()
-        };
-
-        Self {
-            code: error.code.clone(),
-            message,
+                .to_string(),
         }
     }
 }
@@ -4733,7 +4727,7 @@ mod mutation_outcome_tests {
         assert_eq!(encoded["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
         assert_eq!(
             encoded["error"]["message"],
-            "Worker exited before registration"
+            "container 'tailscale' exited with 1 before it registered"
         );
         assert!(encoded.get("workers").is_none());
         let encoded = encoded.to_string();

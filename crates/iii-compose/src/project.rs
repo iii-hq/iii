@@ -1226,7 +1226,8 @@ impl Project {
     ///
     /// The sandbox adapter is the exception: its VMs end with it, so restarting
     /// it is the operator's act on them too. They follow it under this one lock,
-    /// so the reaper never sees them gone and their restart budget pays nothing.
+    /// so the reaper never sees them gone and their restart budget pays nothing,
+    /// whether the adapter comes back or they fail with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
         let mut inner = self.inner.lock().await;
         let vms = self.vms_hosted_by(&inner, key).await;
@@ -1254,7 +1255,7 @@ impl Project {
                     result.primary_error = result.primary_error.or(bounced.primary_error);
                 }
             }
-        } else if !vms.is_empty() {
+        } else if !vms.is_empty() && !self.shutdown.signal().requested() {
             daemon_line(
                 &self.project_namespace,
                 &format!(
@@ -1263,12 +1264,52 @@ impl Project {
                 ),
                 Tone::Warn,
             );
+            self.fail_vms_of_lost_adapter(&mut inner, key, &vms, &mut result)
+                .await;
         }
 
         let snapshot = inner.state.clone();
         drop(inner);
         let _ = self.store.save(&snapshot);
         result
+    }
+
+    async fn fail_vms_of_lost_adapter(
+        &self,
+        inner: &mut Inner,
+        adapter: &str,
+        vms: &[String],
+        result: &mut OpResult,
+    ) {
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let Inner {
+            children, state, ..
+        } = inner;
+        let file = self.file.read().await;
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+        };
+        lifecycle::fail_vms_of_lost_adapter(
+            &ctx,
+            children,
+            &mut state.containers,
+            adapter,
+            vms,
+            result,
+        )
+        .await;
     }
 
     /// [`Self::vms_hosted_by`] whichever of `keys` is the adapter.
@@ -1734,6 +1775,8 @@ mod adapter_restart_tests {
         live: BTreeMap<String, (u64, u32)>,
         started: Vec<String>,
         refuse_starts: bool,
+        /// This VM exits as it boots, never registering.
+        exits_on_boot: Option<&'static str>,
     }
 
     struct Fixture {
@@ -1833,9 +1876,14 @@ mod adapter_restart_tests {
                     let name = payload["worker_name"].as_str().unwrap().to_string();
                     adapter.boots += 1;
                     let instance = adapter.boots;
-                    adapter.live.insert(name.clone(), (instance, host.unwrap()));
+                    if adapter.exits_on_boot != Some(name.as_str()) {
+                        adapter.live.insert(name.clone(), (instance, host.unwrap()));
+                    }
                     adapter.started.push(name.clone());
                     answered(json!({ "vm_id": name, "instance": instance }))
+                }
+                "sandbox-libkrun::worker::status" if adapter.exits_on_boot == Some(vm_id) => {
+                    answered(status(State::Stopped, Some(1), None))
                 }
                 "sandbox-libkrun::worker::status" if booted => {
                     answered(status(State::Running, None, None))
@@ -1891,6 +1939,21 @@ mod adapter_restart_tests {
                 .find(|status| status.container == key)
                 .unwrap()
                 .state
+        }
+
+        async fn last_error_of(&self, key: &str) -> String {
+            self.project
+                .status()
+                .await
+                .into_iter()
+                .find(|status| status.container == key)
+                .unwrap()
+                .last_error
+                .unwrap_or_default()
+        }
+
+        fn fail_adapter_starts(&self) {
+            std::fs::write(self.dir.path().join("sb").join("fail"), "").unwrap();
         }
 
         async fn spent(&self) -> Vec<String> {
@@ -2001,16 +2064,78 @@ mod adapter_restart_tests {
     }
 
     #[tokio::test]
-    async fn an_adapter_that_does_not_come_back_leaves_its_vms_unattempted() {
+    async fn an_adapter_that_does_not_come_back_fails_its_vms_unattempted() {
         let fixture = fixture("").await;
-        std::fs::write(fixture.dir.path().join("sb").join("fail"), "").unwrap();
+        fixture.fail_adapter_starts();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
 
-        assert_eq!(containers(&result), ["sb"]);
-        assert_eq!(reply(&result, "sb")["not_required_failures"], json!(["sb"]));
+        assert_eq!(containers(&result), ["sb", "vm", "web"]);
+        let reply = reply(&result, "sb");
+        assert_eq!(reply["status"], "ok");
+        assert_eq!(reply["affected_workers"], json!(["vm", "web"]));
+        assert_eq!(reply["not_required_failures"], json!(["sb", "vm", "web"]));
         assert_eq!(fixture.state_of("sb").await, ChildStatus::Failed);
+        for vm in ["vm", "web"] {
+            assert_eq!(fixture.state_of(vm).await, ChildStatus::Failed);
+            assert!(fixture.last_error_of(vm).await.contains("adapter 'sb'"));
+        }
         assert_eq!(fixture.started(), Vec::<String>::new());
+        fixture.project.shutdown().await;
+    }
+
+    /// Left in `children`, they were `already running` to this `up` and a crash
+    /// to the supervision tick after it.
+    #[tokio::test]
+    async fn the_up_after_a_failed_adapter_restart_boots_its_vms_and_spends_no_budget() {
+        for policy in ["", ", restart: always"] {
+            let fixture = fixture(policy).await;
+            fixture.fail_adapter_starts();
+            fixture.project.restart_one("sb", "restart".into()).await;
+            std::fs::remove_file(fixture.dir.path().join("sb").join("fail")).unwrap();
+
+            let up = fixture.project.up(None, "up".into()).await;
+            fixture.supervise().await;
+
+            assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+            assert_eq!(fixture.started(), ["vm", "web"], "dependencies first");
+            assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
+            assert_eq!(fixture.state_of("web").await, ChildStatus::Ready);
+            assert_eq!(fixture.last_error_of("vm").await, "");
+            assert_eq!(fixture.spent().await, Vec::<String>::new());
+            fixture.project.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_required_vm_fails_the_restart_of_an_adapter_that_did_not_come_back() {
+        let fixture = fixture(", required: true").await;
+        fixture.fail_adapter_starts();
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(result.status, OpStatus::Failed, "{result:?}");
+        let reply = reply(&result, "sb");
+        assert_eq!(reply["affected_workers"], json!(["vm", "web"]));
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("'vm'") && message.contains("'sb'"),
+            "{reply}"
+        );
+        fixture.project.shutdown().await;
+    }
+
+    /// The daemon going down is not the adapter failing: its VMs stop with the rest.
+    #[tokio::test]
+    async fn a_restart_cancelled_by_shutdown_does_not_fail_the_vms() {
+        let fixture = fixture("").await;
+        fixture.project.shutdown.cancel();
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(containers(&result), ["*"]);
+        assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
+        assert_eq!(fixture.last_error_of("vm").await, "");
         fixture.project.shutdown().await;
     }
 
@@ -2027,6 +2152,25 @@ mod adapter_restart_tests {
         assert_eq!(reply["error"]["code"], "SPAWN_FAILED");
         assert!(fixture.alive("sb").is_some());
         assert_eq!(fixture.state_of("vm").await, ChildStatus::Failed);
+        fixture.project.shutdown().await;
+    }
+
+    /// The adapter is `worker` and every VM is in `affected_workers`, so only
+    /// the error can say which one this was.
+    #[tokio::test]
+    async fn a_vm_that_exits_before_registering_is_named_by_the_error() {
+        let fixture = fixture(", required: true").await;
+        fixture.adapter.lock().unwrap().exits_on_boot = Some("web");
+
+        let result = fixture.project.restart_one("sb", "restart".into()).await;
+
+        let reply = reply(&result, "sb");
+        assert_eq!(reply["status"], "failed", "{reply}");
+        assert_eq!(reply["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
+        assert_eq!(
+            reply["error"]["message"],
+            "container 'web' exited with 1 before it registered"
+        );
         fixture.project.shutdown().await;
     }
 
@@ -2356,6 +2500,24 @@ mod adapter_restart_tests {
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         assert!(alive(dir.path(), "own").is_some());
         assert_eq!(vm.lock().unwrap().prepares, [false]);
+        project.shutdown().await;
+    }
+
+    /// Its VM ended with the adapter, but its `iii sandbox run` may not have.
+    #[tokio::test]
+    async fn a_process_running_its_own_vm_is_stopped_when_the_adapter_does_not_come_back() {
+        let (dir, project, _) = own_vm_project("").await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        std::fs::write(dir.path().join("sb").join("fail"), "").unwrap();
+
+        let result = project.restart_one("sb", "restart".into()).await;
+
+        assert_eq!(alive(dir.path(), "own"), None);
+        assert_eq!(containers(&result), ["sb", "own"]);
+        let status = project.status().await;
+        let own = status.iter().find(|status| status.container == "own");
+        assert_eq!(own.unwrap().state, ChildStatus::Failed);
         project.shutdown().await;
     }
 

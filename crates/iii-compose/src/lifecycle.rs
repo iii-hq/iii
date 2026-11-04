@@ -1430,6 +1430,43 @@ pub(crate) async fn stop_for_up(
     let _ = await_name_release(ctx, key).await;
 }
 
+/// Settles the VMs of an adapter that did not come back from its restart. They
+/// ended with it, but an absent adapter leaves them `Unknown`, which counts as
+/// running: in `children` they would read `ready`, then be `already running` to
+/// the `up` after the fix and a crash to the tick after that. So they go now and
+/// that `up` boots them.
+pub(crate) async fn fail_vms_of_lost_adapter(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    adapter: &str,
+    vms: &[String],
+    result: &mut OpResult,
+) {
+    for vm in vms.iter().rev() {
+        stop_for_up(ctx, children, records, vm).await;
+    }
+    for vm in vms {
+        let error = ComposeError::SpawnFailed {
+            container: vm.clone(),
+            message: format!("its sandbox adapter '{adapter}' did not come back"),
+        };
+        record_start_failure(records, vm, &error);
+        let error = OpError::from(&error);
+        if is_required(ctx.file, vm) {
+            result.status = OpStatus::Failed;
+            result.primary_error.get_or_insert_with(|| error.clone());
+        }
+        result.containers.push(ContainerResult {
+            container: vm.clone(),
+            state: ChildStatus::Failed,
+            changed: true,
+            error: Some(error),
+        });
+    }
+    result.changed = true;
+}
+
 /// Undoes one failed `up`: stops what this operation started, in reverse.
 async fn rollback(
     ctx: &LifecycleCtx<'_>,
