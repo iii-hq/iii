@@ -26,10 +26,6 @@ export type Idea = {
   id: string
   name: string
   Mark: ComponentType<MarkProps>
-  /** Plays once per trigger instead of holding while `on`. */
-  oneshot?: boolean
-  /** Driven by springs rather than a timeline, so it cannot be slowed down or scrubbed. */
-  springs?: boolean
   /** How long an autoplay holds the mark on. */
   showMs: number
   /** How long one play runs once started, even if `on` drops; only play-once ideas need it. */
@@ -46,7 +42,6 @@ export const IDEAS: readonly Idea[] = [
     id: 'turkey-cube',
     name: 'Turkey cube',
     Mark: TurkeyCubeMark,
-    springs: true,
     showMs: 2600,
     playMs: 0,
     settleMs: 1100,
@@ -55,11 +50,10 @@ export const IDEAS: readonly Idea[] = [
     id: 'lineup',
     name: 'Harvest lineup',
     Mark: LineupCubeMark,
-    springs: true,
     showMs: 2600,
     playMs: 0,
     settleMs: 1100,
   },
-  { id: 'trot', name: 'Turkey trot', Mark: TrotMark, oneshot: true, showMs: 2800, playMs: 2900, settleMs: 200 },
+  { id: 'trot', name: 'Turkey trot', Mark: TrotMark, showMs: 2800, playMs: 2900, settleMs: 200 },
   { id: 'chorus', name: 'Gobble chorus', Mark: ChorusMark, showMs: 3000, playMs: 0, settleMs: 900 },
 ]
