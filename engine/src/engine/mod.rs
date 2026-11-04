@@ -231,7 +231,27 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
 #[allow(clippy::large_enum_variant)]
 pub enum Outbound {
     Protocol(Message),
+    /// An engine-to-worker `invokefunction` frame, already encoded (see
+    /// [`crate::protocol::invoke_frame`]): an observer activation whose
+    /// argument shares the event's encoded payloads with its other
+    /// activations.
+    Invoke {
+        invocation_id: Option<Uuid>,
+        frame: String,
+    },
     Raw(WsMessage),
+}
+
+impl Outbound {
+    /// The protocol message it carries, an encoded `invokefunction` frame
+    /// decoded; `None` for a raw frame.
+    pub fn into_message(self) -> Option<Message> {
+        match self {
+            Outbound::Protocol(message) => Some(message),
+            Outbound::Invoke { frame, .. } => serde_json::from_str(&frame).ok(),
+            Outbound::Raw(_) => None,
+        }
+    }
 }
 
 /// A registration refused because a live worker already holds the same worker
@@ -676,6 +696,85 @@ impl Engine {
         worker.channel.send(Outbound::Protocol(msg)).await.is_ok()
     }
 
+    /// The largest JSON message `worker` receives.
+    fn receive_limit(worker: &WorkerConnection) -> usize {
+        worker
+            .receive_message_limit
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .min(crate::workers::worker::MAX_JSON_MESSAGE_BYTES)
+    }
+
+    /// Warns that a `message_type` message of `size` bytes is larger than
+    /// `worker` receives; returns whether it must upgrade its SDK to receive
+    /// more.
+    fn warn_too_large(
+        worker: &WorkerConnection,
+        size: usize,
+        limit: usize,
+        message_type: &str,
+    ) -> bool {
+        tracing::warn!(
+            worker_id = %worker.id,
+            version = ?worker.receive_sdk_version.read().unwrap_or_else(|error| error.into_inner()).as_ref(),
+            size_bytes = size,
+            limit_bytes = limit,
+            message_type,
+            "Outbound JSON envelope exceeds target worker receive limit"
+        );
+        worker
+            .receive_limit_requires_upgrade
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Ends invocation `invocation_id`, whose `invokefunction` (`size`
+    /// bytes) is larger than `worker` receives (`limit`), without sending it:
+    /// its caller gets `payload_too_large`.
+    async fn refuse_invocation(
+        &self,
+        worker: &WorkerConnection,
+        invocation_id: Uuid,
+        size: usize,
+        limit: usize,
+        upgrade: bool,
+    ) {
+        if let Some(invocation) = self.invocations.remove(&invocation_id) {
+            if let Some(caller_id) = invocation.worker_id
+                && let Some(caller) = self.worker_registry.get_worker(&caller_id)
+            {
+                caller.remove_invocation(&invocation_id).await;
+            }
+            // An observer activation's observer counts a `TOO_LARGE`
+            // drop rather than the target's error.
+            self.observers.refused_send(invocation_id, size, limit);
+            let _ = invocation
+                .sender
+                .send(crate::invocation::Completion::from(Err(
+                    payload_too_large_error(size, limit, upgrade),
+                )));
+        }
+        worker.remove_invocation(&invocation_id).await;
+    }
+
+    /// [`Self::guard_outbound`] for an encoded `invokefunction` frame.
+    async fn guard_invoke_frame(
+        &self,
+        worker: &WorkerConnection,
+        invocation_id: Option<Uuid>,
+        frame: String,
+    ) -> Option<String> {
+        let size = frame.len();
+        let limit = Self::receive_limit(worker);
+        if size <= limit {
+            return Some(frame);
+        }
+        let upgrade = Self::warn_too_large(worker, size, limit, "InvokeFunction");
+        if let Some(invocation_id) = invocation_id {
+            self.refuse_invocation(worker, invocation_id, size, limit, upgrade)
+                .await;
+        }
+        None
+    }
+
     async fn guard_outbound(
         &self,
         worker: &WorkerConnection,
@@ -683,46 +782,19 @@ impl Engine {
         serialized: String,
     ) -> Option<(Message, String)> {
         let size = serialized.len();
-        let limit = worker
-            .receive_message_limit
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .min(crate::workers::worker::MAX_JSON_MESSAGE_BYTES);
+        let limit = Self::receive_limit(worker);
         if size <= limit {
             return Some((msg, serialized));
         }
 
-        let upgrade = worker
-            .receive_limit_requires_upgrade
-            .load(std::sync::atomic::Ordering::Relaxed);
-        tracing::warn!(
-            worker_id = %worker.id,
-            version = ?worker.receive_sdk_version.read().unwrap_or_else(|error| error.into_inner()).as_ref(),
-            size_bytes = size,
-            limit_bytes = limit,
-            message_type = protocol_message_type(&msg),
-            "Outbound JSON envelope exceeds target worker receive limit"
-        );
+        let upgrade = Self::warn_too_large(worker, size, limit, protocol_message_type(&msg));
         match msg {
             Message::InvokeFunction {
                 invocation_id: Some(invocation_id),
                 ..
             } => {
-                if let Some(invocation) = self.invocations.remove(&invocation_id) {
-                    if let Some(caller_id) = invocation.worker_id
-                        && let Some(caller) = self.worker_registry.get_worker(&caller_id)
-                    {
-                        caller.remove_invocation(&invocation_id).await;
-                    }
-                    // An observer activation's observer counts a `TOO_LARGE`
-                    // drop rather than the target's error.
-                    self.observers.refused_send(invocation_id, size, limit);
-                    let _ = invocation
-                        .sender
-                        .send(crate::invocation::Completion::from(Err(
-                            payload_too_large_error(size, limit, upgrade),
-                        )));
-                }
-                worker.remove_invocation(&invocation_id).await;
+                self.refuse_invocation(worker, invocation_id, size, limit, upgrade)
+                    .await;
                 None
             }
             Message::InvocationResult {
@@ -2709,6 +2781,18 @@ impl Engine {
                         };
                         send_json(&mut ws_tx, payload).await
                     }
+                    Outbound::Invoke {
+                        invocation_id,
+                        frame,
+                    } => {
+                        let Some(payload) = writer_engine
+                            .guard_invoke_frame(&writer_worker, invocation_id, frame)
+                            .await
+                        else {
+                            continue;
+                        };
+                        send_json(&mut ws_tx, payload).await
+                    }
                     Outbound::Raw(frame) => ws_tx.send(frame).await,
                 };
 
@@ -3675,6 +3759,23 @@ impl EngineTrait for Engine {
 
         let handler_arc: Arc<dyn FunctionHandler + Send + Sync> = handler.into();
         let handler_function_id = function_id.clone();
+        // A handler that sends its input on as JSON text takes it already
+        // encoded as well: what an observer activation's argument is.
+        let encoded_handler = handler_arc.takes_encoded().then(|| {
+            let handler_arc = handler_arc.clone();
+            let handler_function_id = function_id.clone();
+            let encoded: Arc<crate::function::EncodedHandlerFn> =
+                Arc::new(move |invocation_id, input, _session, metadata| {
+                    let handler = handler_arc.clone();
+                    let path = handler_function_id.clone();
+                    Box::pin(async move {
+                        handler
+                            .handle_encoded(invocation_id, path, input, metadata)
+                            .await
+                    })
+                });
+            encoded
+        });
 
         let function = Function {
             handler: Arc::new(move |invocation_id, input, _session, metadata| {
@@ -3686,6 +3787,7 @@ impl EngineTrait for Engine {
                         .await
                 })
             }),
+            encoded_handler,
             _function_id: function_id.clone(),
             _description: description,
             request_format,
@@ -3714,6 +3816,7 @@ impl EngineTrait for Engine {
                 let handler = handler_arc.clone();
                 Box::pin(async move { handler(input).await })
             }),
+            encoded_handler: None,
             _function_id: request.function_id.clone(),
             _description: request.description,
             request_format: request.request_format,
@@ -3741,6 +3844,7 @@ impl EngineTrait for Engine {
                 let session = session.clone();
                 Box::pin(async move { handler(input, session).await })
             }),
+            encoded_handler: None,
             _function_id: request.function_id.clone(),
             _description: request.description,
             request_format: request.request_format,
@@ -8740,9 +8844,22 @@ mod tests {
                     .await
                     .expect("an activation")
                     .expect("open");
-                if let Outbound::Protocol(msg @ Message::InvokeFunction { .. }) = outbound {
-                    let serialized = serde_json::to_string(&msg).unwrap();
-                    return engine.guard_outbound(target, msg, serialized).await;
+                match outbound {
+                    Outbound::Protocol(msg @ Message::InvokeFunction { .. }) => {
+                        let serialized = serde_json::to_string(&msg).unwrap();
+                        return engine.guard_outbound(target, msg, serialized).await;
+                    }
+                    // An activation for a worker connection comes encoded.
+                    Outbound::Invoke {
+                        invocation_id,
+                        frame,
+                    } => {
+                        return engine
+                            .guard_invoke_frame(target, invocation_id, frame)
+                            .await
+                            .map(|frame| (serde_json::from_str(&frame).unwrap(), frame));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -9106,6 +9223,7 @@ mod tests {
         let engine = Engine::new();
         let function = crate::function::Function {
             handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            encoded_handler: None,
             _function_id: "stream::set".into(),
             _description: None,
             request_format: None,

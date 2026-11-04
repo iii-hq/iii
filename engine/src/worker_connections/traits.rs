@@ -15,10 +15,18 @@ use uuid::Uuid;
 use crate::{
     engine::Outbound,
     function::{FunctionHandler, FunctionResult},
+    invocation::encoded::EncodedJson,
     protocol::{ErrorBody, Message},
     telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
     worker_connections::WorkerConnection,
 };
+
+/// What a worker connection sends as an invocation's `data`.
+enum Input {
+    Value(Value),
+    /// Already encoded: sent as is (see [`crate::protocol::invoke_frame`]).
+    Encoded(EncodedJson),
+}
 
 impl FunctionHandler for WorkerConnection {
     fn handle_function<'a>(
@@ -26,6 +34,33 @@ impl FunctionHandler for WorkerConnection {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
+        metadata: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
+        self.invoke(invocation_id, function_id, Input::Value(input), metadata)
+    }
+
+    fn takes_encoded(&self) -> bool {
+        true
+    }
+
+    fn handle_encoded<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        function_id: String,
+        input: EncodedJson,
+        metadata: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
+        self.invoke(invocation_id, function_id, Input::Encoded(input), metadata)
+    }
+}
+
+impl WorkerConnection {
+    /// Sends the worker an `invokefunction` for the invocation.
+    fn invoke<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        function_id: String,
+        input: Input,
         metadata: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
@@ -130,10 +165,34 @@ impl FunctionHandler for WorkerConnection {
                 ),
                 _ => (None, None, None),
             };
+            let data = match input {
+                Input::Value(data) => data,
+                Input::Encoded(data) => match crate::protocol::invoke_frame(
+                    invocation_id,
+                    &function_id,
+                    &data,
+                    traceparent.as_deref(),
+                    baggage.as_deref(),
+                    metadata.as_ref(),
+                    caller.as_deref(),
+                    observe_depth,
+                    activation.as_ref(),
+                ) {
+                    Ok(frame) => {
+                        permit.send(Outbound::Invoke {
+                            invocation_id,
+                            frame,
+                        });
+                        return FunctionResult::Deferred;
+                    }
+                    // Not expected (every field encodes): sent as a message.
+                    Err(_) => data.to_value(),
+                },
+            };
             permit.send(Outbound::Protocol(Message::InvokeFunction {
                 invocation_id,
                 function_id,
-                data: input,
+                data,
                 traceparent,
                 baggage,
                 action: None,

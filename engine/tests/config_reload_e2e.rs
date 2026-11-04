@@ -79,6 +79,7 @@ fn make_dummy_function(id: &str) -> Function {
         handler: Arc::new(|_invocation_id, _input, _session, _metadata| {
             Box::pin(async { FunctionResult::Success(None) })
         }),
+        encoded_handler: None,
         _function_id: id.to_string(),
         _description: None,
         request_format: None,

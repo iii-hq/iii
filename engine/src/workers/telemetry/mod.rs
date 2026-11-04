@@ -1224,6 +1224,7 @@ mod tests {
             function_id.to_string(),
             Function {
                 handler,
+                encoded_handler: None,
                 _function_id: function_id.to_string(),
                 _description: None,
                 request_format: None,
@@ -2018,6 +2019,7 @@ mod tests {
                 id.to_string(),
                 crate::function::Function {
                     handler: handler.clone(),
+                    encoded_handler: None,
                     _function_id: id.to_string(),
                     _description: None,
                     request_format: None,
@@ -2031,6 +2033,7 @@ mod tests {
             "user::my_function".to_string(),
             crate::function::Function {
                 handler: handler.clone(),
+                encoded_handler: None,
                 _function_id: "user::my_function".to_string(),
                 _description: None,
                 request_format: None,
@@ -2043,6 +2046,7 @@ mod tests {
             "math::add".to_string(),
             crate::function::Function {
                 handler,
+                encoded_handler: None,
                 _function_id: "math::add".to_string(),
                 _description: None,
                 request_format: None,

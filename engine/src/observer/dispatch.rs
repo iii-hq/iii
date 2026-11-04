@@ -47,7 +47,7 @@
 use std::{
     collections::HashSet,
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -68,6 +68,10 @@ use super::{
     owner::{ActiveSet, Needs},
 };
 use crate::{
+    invocation::{
+        Dispatch,
+        encoded::{EncodedJson, ObjectWriter},
+    },
     protocol::{
         Activation, Caller, Deliver, DroppedReportStats, ErrorBody, InvocationStatus,
         LocalFunctionStats, ObservedItem, ObservedItems, On, observe_codes,
@@ -448,9 +452,61 @@ pub(crate) struct Completed {
     /// What it was charged when the first of them took it (or would have
     /// been, when that did not fit).
     charged: AtomicUsize,
+    /// Its payloads as JSON text, for the activations a worker connection
+    /// receives.
+    encoded: EncodedParts,
+}
+
+/// A completion's payloads as JSON text, each encoded the first time an
+/// activation whose target a worker connection hosts needs it, then shared
+/// by all of them: one encoding per event, not one per observer.
+#[derive(Default)]
+pub(crate) struct EncodedParts {
+    input: OnceLock<Option<Arc<str>>>,
+    output: OnceLock<Option<Arc<str>>>,
+    error: OnceLock<Option<Arc<str>>>,
+    caller: OnceLock<Option<Arc<str>>>,
+    metadata: OnceLock<Option<Arc<str>>>,
+}
+
+/// `value`'s JSON text, encoded into `cell` the first time.
+fn encode_once(cell: &OnceLock<Option<Arc<str>>>, value: Option<&Value>) -> Option<Arc<str>> {
+    cell.get_or_init(|| {
+        value
+            .and_then(|value| serde_json::to_string(value).ok())
+            .map(Arc::from)
+    })
+    .clone()
 }
 
 impl Completed {
+    fn encoded_input(&self) -> Option<Arc<str>> {
+        encode_once(&self.encoded.input, self.input.as_deref())
+    }
+
+    fn encoded_output(&self) -> Option<Arc<str>> {
+        // An event source's input and output are the same event: encoded
+        // once.
+        if let (Some(input), Some(output)) = (&self.input, &self.output)
+            && Arc::ptr_eq(input, output)
+        {
+            return self.encoded_input();
+        }
+        encode_once(&self.encoded.output, self.output.as_deref())
+    }
+
+    fn encoded_error(&self) -> Option<Arc<str>> {
+        encode_once(&self.encoded.error, self.error.as_deref())
+    }
+
+    fn encoded_caller(&self) -> Option<Arc<str>> {
+        encode_once(&self.encoded.caller, self.caller.as_deref())
+    }
+
+    fn encoded_metadata(&self) -> Option<Arc<str>> {
+        encode_once(&self.encoded.metadata, self.metadata.as_deref())
+    }
+
     /// Roughly what holding the event costs (see [`QUEUED_BYTES`]).
     fn cost(&self) -> usize {
         let payloads: usize = [
@@ -623,6 +679,7 @@ impl ObserverRegistry {
                 baggage: None,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
+                encoded: EncodedParts::default(),
             },
             set,
             matching: Matching::Filters,
@@ -827,6 +884,7 @@ impl ObserverRegistry {
                 baggage: call.baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
+                encoded: EncodedParts::default(),
             },
             set: call.set,
             matching,
@@ -1189,9 +1247,9 @@ impl ObserverRegistry {
             return;
         };
         let (target_namespace, target_function) = &observer.target;
-        let Some(handler) = deps
+        let Some((handler, encoded_handler)) = deps
             .functions
-            .get_handler(target_namespace, target_function)
+            .get_handlers(target_namespace, target_function)
         else {
             count_failure(observer, failure_reasons::TARGET_UNAVAILABLE);
             return;
@@ -1211,7 +1269,19 @@ impl ObserverRegistry {
         let event = pending.event.clone();
         drop(pending);
         let activation_id = super::new_uuid().to_string();
-        let envelope = project(observer, &event, &activation_id);
+        // A target a worker connection hosts gets the event's payloads as
+        // the JSON text every activation of the event shares; any other gets
+        // its own copy.
+        let dispatch = match encoded_handler {
+            Some(handler) => Dispatch::Encoded {
+                handler,
+                body: project_encoded(observer, &event, &activation_id),
+            },
+            None => Dispatch::Value {
+                handler,
+                body: project(observer, &event, &activation_id),
+            },
+        };
         let ctx = InvocationCtx::activation(
             Caller {
                 worker_name: Some(ENGINE_CALLER_NAME.to_string()),
@@ -1228,13 +1298,11 @@ impl ObserverRegistry {
         let (traceparent, baggage) = (event.traceparent.clone(), event.baggage.clone());
         drop(event);
         let invocation_id = super::new_uuid();
-        let call = invocations.handle_invocation_with_handler(
-            Some(invocation_id),
-            None,
+        let call = invocations.handle_activation(
+            invocation_id,
             target_function.clone(),
             target_namespace,
-            envelope,
-            handler,
+            dispatch,
             traceparent,
             baggage,
             observer.observing_session(),
@@ -1491,6 +1559,7 @@ impl ObserverRegistry {
                 baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
+                encoded: EncodedParts::default(),
             });
             for id in &matched {
                 match self.get(id).filter(|o| o.function == key) {
@@ -2132,6 +2201,66 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
             .unwrap_or(Value::Null),
     );
     Value::Object(envelope)
+}
+
+/// [`project`] as JSON text, for a target a worker connection hosts: the
+/// same value, with the event's payloads encoded once and shared by its
+/// activations instead of copied into each.
+fn project_encoded(observer: &Observer, completed: &Completed, activation_id: &str) -> EncodedJson {
+    let shipped = |text: Option<Arc<str>>| match text {
+        Some(text) => EncodedJson::shared(text),
+        None => EncodedJson::of(&Value::Null),
+    };
+    match &observer.deliver {
+        Deliver::Input => return shipped(completed.encoded_input()),
+        Deliver::Output => return shipped(completed.encoded_output()),
+        Deliver::Envelope | Deliver::Unknown(_) => {}
+    }
+    let capture = observer.capture;
+    let mut envelope = ObjectWriter::new();
+    envelope.field("observer_id", &observer.id);
+    envelope.field("activation_id", &activation_id);
+    envelope.field("function_id", &completed.function_id);
+    envelope.field("namespace", &completed.namespace);
+    envelope.field("invocation_id", &completed.invocation_id);
+    envelope.field(
+        "status",
+        &if completed.success {
+            "success"
+        } else {
+            "error"
+        },
+    );
+    if capture.input
+        && let Some(text) = completed.encoded_input()
+    {
+        envelope.shared_field("input", &text);
+    }
+    if capture.error
+        && let Some(text) = completed.encoded_error()
+    {
+        envelope.shared_field("error", &text);
+    }
+    if capture.caller
+        && let Some(text) = completed.encoded_caller()
+    {
+        envelope.shared_field("caller", &text);
+    }
+    if capture.metadata
+        && let Some(text) = completed.encoded_metadata()
+    {
+        envelope.shared_field("metadata", &text);
+    }
+    if capture.output && completed.success {
+        match completed.encoded_output() {
+            Some(text) => envelope.shared_field("output", &text),
+            None => envelope.field("output", &Value::Null),
+        }
+    }
+    envelope.field("started_at_ms", &completed.started_at_ms);
+    // Not finite: `null`, as `project` writes it.
+    envelope.field("duration_ms", &completed.duration_ms);
+    envelope.finish()
 }
 
 /// Counts one dropped event for `observer` under `reason`: one atomic add.
@@ -2846,6 +2975,7 @@ mod tests {
             baggage: None,
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
+            encoded: super::EncodedParts::default(),
         })
     }
 
@@ -3737,5 +3867,151 @@ mod tests {
         drop(registry.next_queued(&observer));
         waiting.await.unwrap();
         assert_eq!(budget.bytes.load(Ordering::SeqCst), 0);
+    }
+
+    /// For a target a worker connection hosts, the argument is the JSON text
+    /// of the value `project` builds, whatever the observer delivers and
+    /// captures, and the event's payloads are encoded once.
+    #[test]
+    fn an_encoded_projection_is_the_projection() {
+        use super::super::lifecycle::{
+            CaptureSet, Flags, NewObserver, Observer, Observing, Policy,
+        };
+        use crate::protocol::{Deliver, On};
+
+        fn observer(deliver: Deliver, capture: CaptureSet) -> Observer {
+            Observer::new(NewObserver {
+                id: "o-1".to_string(),
+                function: (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+                target: (DEFAULT_NAMESPACE.to_string(), "test::sink".to_string()),
+                spec: None,
+                args: json!({}),
+                filter: iii_filter::Filter::match_all(),
+                capture,
+                on: On::default(),
+                deliver,
+                metadata: None,
+                policy: Policy {
+                    max_fires: None,
+                    expires_in_ms: None,
+                    expires_at: None,
+                    max_in_flight: 1,
+                    max_queue: 1,
+                },
+                warnings: Vec::new(),
+                observing: Observing {
+                    connection: Uuid::nil(),
+                    worker_name: None,
+                    namespace: Arc::from(DEFAULT_NAMESPACE),
+                    session: None,
+                    answered: true,
+                },
+                flags: Flags {
+                    observing_connected: true,
+                    function_available: true,
+                    target_available: true,
+                    owner_acked: true,
+                    returning: false,
+                    announced: None,
+                    rejected_by_owner: false,
+                    activated_once: false,
+                    failed: None,
+                    disposed: None,
+                    tombstone: false,
+                },
+            })
+        }
+
+        fn completed(
+            success: bool,
+            parts: [Option<Arc<Value>>; 5],
+            duration_ms: f64,
+        ) -> super::Completed {
+            let [input, output, error, caller, metadata] = parts;
+            super::Completed {
+                delivery: super::ENGINE_DELIVERY,
+                namespace: DEFAULT_NAMESPACE.to_string(),
+                function_id: "test::src".to_string(),
+                invocation_id: "i-\"1\"".to_string(),
+                success,
+                input,
+                output,
+                error,
+                caller,
+                metadata,
+                started_at_ms: 1_700_000_000_123,
+                duration_ms,
+                depth: 0,
+                traceparent: None,
+                baggage: None,
+                queues: AtomicUsize::new(0),
+                charged: AtomicUsize::new(0),
+                encoded: super::EncodedParts::default(),
+            }
+        }
+
+        let event = Arc::new(json!({ "k": [1, "two \u{e9}", { "x": null, "y": 2.5 }] }));
+        let caller = Arc::new(json!({ "worker_name": "iii-engine" }));
+        let events = [
+            // An event source's: its input and output are one value.
+            completed(
+                true,
+                [
+                    Some(event.clone()),
+                    Some(event.clone()),
+                    None,
+                    Some(caller.clone()),
+                    None,
+                ],
+                0.25,
+            ),
+            // A failed call's, with every part kept.
+            completed(
+                false,
+                [
+                    Some(Arc::new(json!({ "order": 7 }))),
+                    None,
+                    Some(Arc::new(json!({ "code": "E", "message": "m" }))),
+                    Some(caller),
+                    Some(Arc::new(json!({ "tenant": "t" }))),
+                ],
+                f64::NAN,
+            ),
+            // Nothing kept.
+            completed(true, [None, None, None, None, None], 3.0),
+        ];
+        let every = CaptureSet {
+            input: true,
+            output: true,
+            error: true,
+            caller: true,
+            metadata: true,
+        };
+        let none = CaptureSet {
+            input: false,
+            output: false,
+            error: false,
+            caller: false,
+            metadata: false,
+        };
+        for (n, completed) in events.iter().enumerate() {
+            for deliver in [Deliver::Envelope, Deliver::Input, Deliver::Output] {
+                for capture in [CaptureSet::DEFAULT, every, none] {
+                    let observer = observer(deliver.clone(), capture);
+                    let mut text = String::new();
+                    let encoded = super::project_encoded(&observer, completed, "a-1");
+                    encoded.write_to(&mut text);
+                    assert_eq!(text.len(), encoded.len());
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&text).unwrap(),
+                        super::project(&observer, completed, "a-1"),
+                        "event {n}, {deliver:?}, {capture:?}"
+                    );
+                }
+            }
+        }
+        // The event source's value was encoded once, as its input.
+        assert!(events[0].encoded.input.get().is_some_and(Option::is_some));
+        assert!(events[0].encoded.output.get().is_none());
     }
 }

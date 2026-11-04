@@ -20,6 +20,7 @@ fn make_function(id: &str) -> Function {
         handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
             Box::pin(async move { FunctionResult::Success(Some(input)) })
         }),
+        encoded_handler: None,
         _function_id: id.to_string(),
         _description: Some("cleanup benchmark function".to_string()),
         request_format: None,

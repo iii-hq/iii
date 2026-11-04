@@ -1186,6 +1186,67 @@ pub struct StreamChannelRef {
     pub direction: ChannelDirection,
 }
 
+/// The text of an engine-to-worker `invokefunction` whose `data` is already
+/// encoded: the message [`Message::InvokeFunction`] with these fields is,
+/// with `data` written last (and no `action` or `namespace`, which no
+/// invocation the engine sends a worker carries). The activations of one
+/// observed event share its encoded payloads this way instead of each
+/// copying and encoding them.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_frame(
+    invocation_id: Option<Uuid>,
+    function_id: &str,
+    data: &crate::invocation::encoded::EncodedJson,
+    traceparent: Option<&str>,
+    baggage: Option<&str>,
+    metadata: Option<&Value>,
+    caller: Option<&Caller>,
+    observe_depth: Option<u32>,
+    activation: Option<&Activation>,
+) -> Result<String, serde_json::Error> {
+    /// Every field of `Message::InvokeFunction` but `data`, written as it
+    /// writes them.
+    #[derive(Serialize)]
+    struct Head<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invocation_id: Option<Uuid>,
+        function_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        traceparent: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        baggage: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<&'a Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<&'a Caller>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        observe_depth: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activation: Option<&'a Activation>,
+    }
+    let head = serde_json::to_string(&Head {
+        kind: "invokefunction",
+        invocation_id,
+        function_id,
+        traceparent,
+        baggage,
+        metadata,
+        caller,
+        observe_depth,
+        activation,
+    })?;
+    // `head` is an object with at least `type` and `function_id`: `data`
+    // goes before its closing brace.
+    let mut frame = String::with_capacity(head.len() + data.len() + 9);
+    frame.push_str(&head[..head.len() - 1]);
+    frame.push_str(",\"data\":");
+    data.write_to(&mut frame);
+    frame.push('}');
+    Ok(frame)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CallAction, DEFAULT_NAMESPACE, Message, effective_namespace};
@@ -2090,5 +2151,80 @@ mod tests {
         assert!(read(json!({ "features": "observe.v1" })).is_empty());
         assert!(read(json!({ "features": null })).is_empty());
         assert!(read(json!({})).is_empty());
+    }
+
+    /// An encoded `invokefunction` frame is the message the engine would
+    /// write for the same fields.
+    #[test]
+    fn an_invoke_frame_is_the_invokefunction_message() {
+        use super::{Activation, Caller, invoke_frame};
+        use crate::invocation::encoded::EncodedJson;
+        use serde_json::{Value, json};
+
+        let data = json!({ "observer_id": "o-1", "input": { "k": [1, "\"two\""] } });
+        let caller = Caller {
+            worker_name: Some("iii-engine".to_string()),
+            function_id: Some("orders::create".to_string()),
+            ..Caller::default()
+        };
+        let activation = Activation {
+            observer_id: "o-1".to_string(),
+            activation_id: Some("a-1".to_string()),
+        };
+        let invocation_id = uuid::Uuid::new_v4();
+        let metadata = json!({ "tenant": "t" });
+        let message = Message::InvokeFunction {
+            invocation_id: Some(invocation_id),
+            function_id: "audit::record".to_string(),
+            data: data.clone(),
+            traceparent: Some(
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
+            ),
+            baggage: Some("k=v".to_string()),
+            action: None,
+            metadata: Some(metadata.clone()),
+            namespace: None,
+            caller: Some(Box::new(caller.clone())),
+            observe_depth: Some(2),
+            activation: Some(activation.clone()),
+        };
+        let frame = invoke_frame(
+            Some(invocation_id),
+            "audit::record",
+            &EncodedJson::of(&data),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            Some("k=v"),
+            Some(&metadata),
+            Some(&caller),
+            Some(2),
+            Some(&activation),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&frame).unwrap(),
+            serde_json::to_value(&message).unwrap()
+        );
+        assert!(matches!(
+            serde_json::from_str::<Message>(&frame).unwrap(),
+            Message::InvokeFunction { data: decoded, .. } if decoded == data
+        ));
+
+        // The optional fields absent, as on a worker without `observe.v1`.
+        let bare = invoke_frame(
+            None,
+            "f",
+            &EncodedJson::of(&Value::Null),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&bare).unwrap(),
+            json!({ "type": "invokefunction", "function_id": "f", "data": null })
+        );
     }
 }
