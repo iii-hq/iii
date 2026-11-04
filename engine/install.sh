@@ -169,6 +169,24 @@ check_rate_limit_or_continue() {
 # an unset `tmpdir` is a run with nothing to clean, not an error.
 cleanup() { rm -rf "${tmpdir:-}"; }
 
+# 0.25 and older run VM workers and the sandbox through iii-worker and iii-init,
+# which this script no longer installs, so without them those features stay off
+# with no other sign. A release that ships iii-worker is one of those.
+note_missing_vm_binaries() {
+  _release_json="$1"; _dir="$2"
+  printf '%s' "$_release_json" \
+    | jq -e 'any(.assets[]?; .name | startswith("iii-worker-"))' >/dev/null 2>&1 \
+    || return 0
+  if [ -x "$_dir/iii-worker" ] && [ -x "$_dir/iii-init" ]; then
+    return 0
+  fi
+  echo ""
+  echo "note: this release runs VM workers and the sandbox through iii-worker and"
+  echo "      iii-init, which this script no longer installs. To use them, put both"
+  echo "      in $_dir, from:"
+  echo "      $(printf '%s' "$_release_json" | jq -r '.html_url')"
+}
+
 # Test-mode hook: when this var is set, stop here so unit tests can source
 # the helper functions above without running the installer.
 if [ -n "${III_INSTALL_SH_TEST_MODE:-}" ]; then
@@ -664,6 +682,8 @@ fi
 if [ -z "$installed_version" ]; then
   warn "$BIN_NAME installed but 'iii --version' produced no output — the binary may not run on this system (Gatekeeper? libc mismatch? try: $bin_dir/$BIN_NAME --version)"
 fi
+
+note_missing_vm_binaries "$json" "$bin_dir"
 fi
 
 # ---------------------------------------------------------------------------
