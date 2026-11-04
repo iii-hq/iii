@@ -77,6 +77,10 @@ const NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS: &[&str] = &[
     "engine::queue::dlq_messages",
 ];
 
+/// Prefixes owned by an in-process engine worker. A WS worker may not register
+/// them in `default`; other namespaces stay open.
+const ENGINE_RESERVED_PREFIXES: &[&str] = &[iii_sandbox_contract::PUBLIC_PREFIX];
+
 /// Returns whether a function is an official namespace-scoped queue provider.
 fn is_namespace_scoped_queue_function(function_id: &str) -> bool {
     NAMESPACE_SCOPED_QUEUE_FUNCTION_IDS.contains(&function_id)
@@ -454,15 +458,6 @@ pub struct Engine {
     /// rejection and draining a rejected worker's buffered registrations.
     namespace_grace_tasks: Arc<DashMap<Uuid, tokio::task::JoinHandle<()>>>,
     pub(crate) active_scope: Arc<std::sync::Mutex<Option<crate::workers::reload::ScopeBuilder>>>,
-    /// Effective `iii-worker-manager` port, resolved from config at build
-    /// time. Set once by `EngineBuilder::build`; subsequent reads see the
-    /// same value for the engine's lifetime. Engine-owned external workers
-    /// use it to connect back to the actual configured port.
-    worker_manager_port: Arc<std::sync::OnceLock<u16>>,
-    /// Absolute path of the config file this engine was built from, when
-    /// file-backed. Set once by `EngineBuilder::build`. Handed to spawned
-    /// engine-owned child processes as `III_CONFIG_PATH`.
-    config_path: Arc<std::sync::OnceLock<std::path::PathBuf>>,
     /// Registration namespace grace in milliseconds, resolved from the global
     /// engine config by `EngineBuilder::build`. Read through
     /// [`Engine::registration_namespace_grace`], where the `III_NAMESPACE_GRACE_MS`
@@ -526,8 +521,6 @@ impl Engine {
             namespace_states: Arc::new(DashMap::new()),
             namespace_grace_tasks: Arc::new(DashMap::new()),
             active_scope,
-            worker_manager_port: Arc::new(std::sync::OnceLock::new()),
-            config_path: Arc::new(std::sync::OnceLock::new()),
             registration_namespace_grace_ms: Arc::new(std::sync::OnceLock::new()),
         }
     }
@@ -553,38 +546,6 @@ impl Engine {
     /// `EngineBuilder::build`; later calls are ignored (OnceLock semantics).
     pub fn set_registration_namespace_grace_ms(&self, ms: u64) {
         let _ = self.registration_namespace_grace_ms.set(ms);
-    }
-
-    /// Returns the effective `iii-worker-manager` port. Resolved from config
-    /// by `EngineBuilder::build` (see `set_worker_manager_port`); falls back
-    /// to `workers::worker::DEFAULT_PORT` if never set (direct `Engine::new`
-    /// paths used only by tests).
-    pub fn worker_manager_port(&self) -> u16 {
-        self.worker_manager_port
-            .get()
-            .copied()
-            .unwrap_or(crate::workers::worker::DEFAULT_PORT)
-    }
-
-    /// Records the effective port. Called once by `EngineBuilder::build`
-    /// after scanning the worker list for an `iii-worker-manager` entry.
-    /// Subsequent calls are ignored (OnceLock semantics) so the port cannot
-    /// drift mid-lifetime.
-    pub fn set_worker_manager_port(&self, port: u16) {
-        let _ = self.worker_manager_port.set(port);
-    }
-
-    /// Absolute config file path when the engine is file-backed; `None` for
-    /// programmatic/in-memory configs. See the field doc for why spawned
-    /// workers need it.
-    pub fn config_path(&self) -> Option<&std::path::Path> {
-        self.config_path.get().map(|p| p.as_path())
-    }
-
-    /// Records the config file path. Called once by `EngineBuilder::build`;
-    /// later calls are ignored (OnceLock semantics).
-    pub fn set_config_path(&self, path: std::path::PathBuf) {
-        let _ = self.config_path.set(path);
     }
 
     pub fn upsert_runtime_worker(&self, worker: RuntimeWorkerInfo) {
@@ -866,7 +827,7 @@ impl Engine {
 
         let known = self.functions.namespaces_for(function_id);
         let message = if known.is_empty() {
-            crate::legacy_worker_functions::migration_message(function_id).unwrap_or_else(|| {
+            crate::missing_function_hints::migration_message(function_id).unwrap_or_else(|| {
                 format!("Function {function_id} not found in namespace {namespace}.")
             })
         } else {
@@ -1273,6 +1234,16 @@ impl Engine {
             };
             let queue = std::mem::take(queue);
             *state = NamespaceState::Draining(namespace.to_string(), queue);
+        }
+
+        let pending = std::mem::take(
+            &mut *worker
+                .removed_messages_pending
+                .lock()
+                .expect("pending warnings poisoned"),
+        );
+        for (index, peer) in pending {
+            self.warn_removed_frame(worker, peer, index);
         }
 
         tracing::debug!(
@@ -2160,18 +2131,32 @@ impl Engine {
                 // infrastructure RBAC carve-out AND the `engine::*` middleware
                 // bypass (both keyed by bare id) that are meant only for the real
                 // builtins. In `default` the claim below refuses an id the engine
-                // hosts (`claim_in`); outside it there is nothing to conflict
-                // with, so reserve the prefix here.
-                if reg_id.starts_with("engine::")
+                // hosts (`claim_in`), and `ENGINE_RESERVED_PREFIXES` reserves the
+                // whole prefixes the engine serves, hosted ids or not; outside
+                // `default` there is nothing to conflict with, so reserve
+                // `engine::*` here.
+                let reserved_engine_id = reg_id.starts_with("engine::")
                     && namespace != DEFAULT_NAMESPACE
-                    && !is_namespace_scoped_queue_function(&reg_id)
-                {
-                    tracing::warn!(
-                        worker_id = %worker.id,
-                        function_id = %reg_id,
-                        namespace = %namespace,
-                        "refusing a reserved `engine::*` function id outside the `default` namespace"
-                    );
+                    && !is_namespace_scoped_queue_function(&reg_id);
+                let reserved_builtin_prefix = namespace == DEFAULT_NAMESPACE
+                    && ENGINE_RESERVED_PREFIXES
+                        .iter()
+                        .any(|p| reg_id.starts_with(p));
+                if reserved_engine_id || reserved_builtin_prefix {
+                    if reserved_builtin_prefix {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %reg_id,
+                            "sandbox::* is served by the engine's sandbox router; adapters register <adapter>::*"
+                        );
+                    } else {
+                        tracing::warn!(
+                            worker_id = %worker.id,
+                            function_id = %reg_id,
+                            namespace = %namespace,
+                            "refusing a reserved `engine::*` function id outside the `default` namespace"
+                        );
+                    }
                     // Tell the worker (non-fatal, same shape as the conflict path):
                     // otherwise it believes the registration succeeded and only
                     // learns otherwise when invocations return function_not_found.
@@ -2182,10 +2167,10 @@ impl Engine {
                             namespace: namespace.clone(),
                             worker_name: None,
                             function_id: Some(reg_id.clone()),
-                            // Reserved-prefix refusal, not a real conflict: no
-                            // worker owns `engine::*` (the engine reserves it), so
-                            // don't name the rejected worker as its own owner.
-                            owner_worker_id: String::new(),
+                            // Reserved-prefix refusal, not a real conflict: the
+                            // engine owns it, and the SDKs print this field as the
+                            // owner ("already exported by worker <owner>").
+                            owner_worker_id: "engine (reserved prefix)".to_string(),
                         },
                     )
                     .await;
@@ -2612,10 +2597,15 @@ impl Engine {
             .get_handler(namespace, function_id)
             .ok_or_else(|| ErrorBody {
                 code: "function_not_found".into(),
-                message: format!(
-                    "Function {} not found in namespace {}",
-                    function_id, namespace
-                ),
+                message: Some(function_id)
+                    .filter(|id| self.functions.namespaces_for(id).is_empty())
+                    .and_then(crate::missing_function_hints::migration_message)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "Function {} not found in namespace {}",
+                            function_id, namespace
+                        )
+                    }),
                 stacktrace: None,
             })
     }
@@ -2941,6 +2931,31 @@ impl Engine {
         }
     }
 
+    fn warn_removed_frame(&self, worker: &WorkerConnection, peer: SocketAddr, index: usize) {
+        let (removed, replacement) = REMOVED_MESSAGES[index];
+        // The connection's own clone is stale; the registry holds the metadata.
+        let (name, runtime, version) = self
+            .worker_registry
+            .workers
+            .get(&worker.id)
+            .map(|w| (w.name.clone(), w.runtime.clone(), w.version.clone()))
+            .unwrap_or_default();
+        let unknown = || "unknown".to_string();
+        let (name, runtime, version) = (
+            name.unwrap_or_else(unknown),
+            runtime.unwrap_or_else(unknown),
+            version.unwrap_or_else(unknown),
+        );
+        tracing::warn!(
+            worker_id = %worker.id,
+            peer = %peer,
+            message_type = %removed,
+            replacement = %replacement,
+            "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
+             this engine has no such message; run compose::update worker={name}"
+        );
+    }
+
     /// A frame that is not a valid `Message`. A removed message type (see
     /// [`REMOVED_MESSAGES`]) is dropped with one `warn` per connection and
     /// type, naming what replaces it. Anything else is logged, and answered
@@ -2962,20 +2977,28 @@ impl Engine {
             }
         };
         let message_type = frame.get("type").and_then(Value::as_str);
-        if let Some((index, (removed, replacement))) = message_type.and_then(|message_type| {
+        if let Some((index, _)) = message_type.and_then(|message_type| {
             REMOVED_MESSAGES
                 .iter()
                 .enumerate()
                 .find(|(_, (removed, _))| *removed == message_type)
         }) {
             if worker.first_removed_message(index) {
-                tracing::warn!(
-                    worker_id = %worker.id,
-                    peer = %peer,
-                    message_type = %removed,
-                    "dropping `{removed}` frames from this worker: this engine has no such \
-                     message; {replacement}"
-                );
+                // Name and SDK reach the registry on a spawned task, usually
+                // after this frame is read: hold the warning until the
+                // namespace resolves. The guard serializes with that
+                // transition, so nothing is pushed after it drains.
+                let state = self.namespace_states.get(&worker.id);
+                if matches!(state.as_deref(), Some(NamespaceState::Pending(_))) {
+                    worker
+                        .removed_messages_pending
+                        .lock()
+                        .expect("pending warnings poisoned")
+                        .push((index, peer));
+                } else {
+                    drop(state);
+                    self.warn_removed_frame(worker, peer, index);
+                }
             }
             return;
         }
@@ -4634,8 +4657,9 @@ mod tests {
     /// `engine::*` is reserved for infrastructure (which lives in `default`). A
     /// worker registering an `engine::*` id in another namespace is refused, so
     /// it cannot inherit the infra RBAC carve-out / middleware bypass keyed by
-    /// bare id. In `default` the claim refuses the ids the engine hosts, so an
-    /// `engine::*` id the engine does not host is allowed there.
+    /// bare id. In `default` the claim refuses the ids the engine hosts and
+    /// `ENGINE_RESERVED_PREFIXES` the prefixes it serves, so an `engine::*` id
+    /// the engine does not host is allowed there.
     #[tokio::test]
     async fn register_function_reserves_non_provider_engine_prefix_outside_default() {
         ensure_default_meter();
@@ -4727,6 +4751,88 @@ mod tests {
                 .is_some(),
             "engine::* in default is allowed"
         );
+    }
+
+    /// `sandbox::*` belongs to the engine's sandbox router. In `default` the
+    /// reserved list refuses the whole prefix, ids the router hosts or not,
+    /// before the claim runs, so the registration is refused there with the
+    /// engine's reservation as the owner, and stays allowed in a project
+    /// namespace.
+    #[tokio::test]
+    async fn register_function_reserves_sandbox_prefix_in_default() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        engine.register_function_handler(
+            crate::engine::RegisterFunctionRequest {
+                description: Some("router".into()),
+                ..make_request("sandbox::exec")
+            },
+            super::Handler::new(|_input| async { FunctionResult::Success(None) }),
+        );
+
+        let register = Message::RegisterFunction {
+            id: "sandbox::exec".to_string(),
+            description: Some("worker".into()),
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+            args_format: None,
+            private: false,
+            observable: true,
+            observe: None,
+        };
+
+        // A WS worker resolved to `default` cannot shadow the router.
+        let (tx, mut rx) = mpsc::channel::<Outbound>(8);
+        let dflt = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(dflt.clone());
+        engine.begin_namespace_resolution(&dflt);
+        engine
+            .resolve_connection_namespace(&dflt, DEFAULT_NAMESPACE)
+            .await;
+        engine
+            .dispatch_msg(&dflt, &register)
+            .await
+            .expect("dispatch");
+        assert_eq!(
+            engine
+                .functions
+                .get(DEFAULT_NAMESPACE, "sandbox::exec")
+                .unwrap()
+                ._description
+                .as_deref(),
+            Some("router"),
+            "the router's registration must survive the WS worker's"
+        );
+        let Some(Outbound::Protocol(Message::RegistrationRejected {
+            code,
+            function_id,
+            owner_worker_id,
+            ..
+        })) = std::iter::from_fn(|| rx.try_recv().ok())
+            .find(|o| matches!(o, Outbound::Protocol(Message::RegistrationRejected { .. })))
+        else {
+            panic!("a RegistrationRejected should be sent");
+        };
+        assert_eq!(code, crate::protocol::FUNCTION_NAMESPACE_CONFLICT);
+        assert_eq!(function_id.as_deref(), Some("sandbox::exec"));
+        assert_eq!(
+            owner_worker_id, "engine (reserved prefix)",
+            "the SDKs print the owner, so name the engine's reservation"
+        );
+
+        // Other namespaces stay open.
+        let (tx2, _rx2) = mpsc::channel::<Outbound>(8);
+        let orders = WorkerConnection::new(tx2);
+        engine.worker_registry.register_worker(orders.clone());
+        engine.begin_namespace_resolution(&orders);
+        engine.resolve_connection_namespace(&orders, "orders").await;
+        engine
+            .dispatch_msg(&orders, &register)
+            .await
+            .expect("dispatch");
+        assert!(engine.functions.get("orders", "sandbox::exec").is_some());
     }
 
     /// An id the engine registered has the engine as its host (v2 §7): a
@@ -5929,19 +6035,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removed_worker_function_points_to_compose_and_migration_guide() {
+    async fn removed_trigger_builtin_over_ws_returns_migration_message() {
         ensure_default_meter();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
 
-        let invocation_id = uuid::Uuid::new_v4();
         engine
             .router_msg(
                 &worker,
                 &Message::InvokeFunction {
-                    invocation_id: Some(invocation_id),
-                    function_id: "worker::add".to_string(),
+                    invocation_id: Some(uuid::Uuid::new_v4()),
+                    function_id: "engine::register_trigger".to_string(),
                     data: json!({}),
                     traceparent: None,
                     baggage: None,
@@ -5966,11 +6071,10 @@ mod tests {
         };
         let error = error.expect("removed function should return an error");
         assert_eq!(error.code, "function_not_found");
-        assert!(error.message.contains("Use compose::add instead"));
-        assert!(
-            error
-                .message
-                .contains("https://iii.dev/docs/upgrading/workers-to-compose")
+        assert_eq!(
+            error.message,
+            "`engine::register_trigger` was removed in iii 0.26: use `observe` / \
+             `engine::observers::dispose`; update the worker"
         );
     }
 
@@ -8877,6 +8981,8 @@ mod tests {
     #[tokio::test]
     async fn removed_frames_are_dropped_with_one_warning_per_type() {
         ensure_default_meter();
+        // A subscriber keeps the shared warn callsite enabled for the capturing tests.
+        let (_guard, _logs) = crate::deprecation::test_support::capture();
         let engine = Engine::new();
         let (tx, mut rx) = mpsc::channel::<Outbound>(8);
         let worker = WorkerConnection::new(tx);
@@ -8906,6 +9012,116 @@ mod tests {
         }
         let other = WorkerConnection::new(mpsc::channel::<Outbound>(1).0);
         assert!(other.first_removed_message(0), "per connection");
+    }
+
+    /// The dropped-frame warning names the worker, its SDK and the command
+    /// that updates it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn removed_frame_warning_names_worker_and_update_hint() {
+        ensure_default_meter();
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".into(),
+            Some("0.25.4".into()),
+            Some("cron".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let frame = serde_json::json!({ "type": "registertrigger", "id": "t-1" }).to_string();
+        let error = serde_json::from_str::<Message>(&frame).expect_err("not a message");
+        engine
+            .undecodable_frame(&worker, peer, frame.as_bytes(), &error)
+            .await;
+        let logs = logs.contents();
+        assert!(
+            logs.contains("from worker cron (node SDK 0.25.4)"),
+            "{logs}"
+        );
+        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+    }
+
+    /// The worker's name and SDK reach the registry after the removed frame is
+    /// read: the one warning waits for the namespace to resolve.
+    #[tokio::test(flavor = "current_thread")]
+    async fn removed_frame_warning_waits_for_worker_metadata() {
+        ensure_default_meter();
+        let (_guard, logs) = crate::deprecation::test_support::capture();
+        let engine = Engine::new();
+        let (tx, _rx) = mpsc::channel::<Outbound>(8);
+        let worker = WorkerConnection::new(tx);
+        engine.worker_registry.register_worker(worker.clone());
+        engine.begin_namespace_resolution(&worker);
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let frame = serde_json::json!({ "type": "registertrigger", "id": "t-1" }).to_string();
+        let error = serde_json::from_str::<Message>(&frame).expect_err("not a message");
+        for _ in 0..2 {
+            engine
+                .undecodable_frame(&worker, peer, frame.as_bytes(), &error)
+                .await;
+        }
+        assert!(logs.contents().is_empty(), "held back while pending");
+        engine.worker_registry.update_worker_metadata(
+            &worker.id,
+            "node".into(),
+            Some("0.25.4".into()),
+            Some("cron".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            engine
+                .resolve_connection_namespace(&worker, "default")
+                .await
+        );
+        let logs = logs.contents();
+        assert_eq!(logs.lines().count(), 1, "{logs}");
+        assert!(
+            logs.contains("from worker cron (node SDK 0.25.4)"),
+            "{logs}"
+        );
+        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+        assert!(logs.contains("`registertrigger`"), "{logs}");
+        assert!(logs.contains("replacement="), "{logs}");
+    }
+
+    /// An in-process miss for an id registered in another namespace does not
+    /// claim the worker is not running.
+    #[tokio::test]
+    async fn in_process_miss_skips_migration_message_when_registered_elsewhere() {
+        ensure_default_meter();
+        let engine = Engine::new();
+        let function = crate::function::Function {
+            handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            _function_id: "stream::set".into(),
+            _description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+        };
+        engine
+            .functions
+            .register_function_ns("other", "stream::set".into(), function);
+        let Err(error) = engine.internal_function_handler("default", "stream::set") else {
+            panic!("expected a miss");
+        };
+        assert_eq!(
+            error.message,
+            "Function stream::set not found in namespace default"
+        );
     }
 
     /// A 0.25 SDK's `observe: { delivery: owner }` is refused with

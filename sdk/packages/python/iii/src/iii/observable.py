@@ -992,7 +992,7 @@ class FunctionObservers:
             obs._adding = False
         if released:
             # The function was released while the hooks ran: undo them, no ack.
-            obs._refuse("OBSERVER_REMOVED", f"{self.function_id} was released while observer {obs.id} was added")
+            obs._refuse("OBSERVER_NOT_ACTIVE", f"{self.function_id} was released before observer {obs.id} was accepted")
             await self._unwind(obs, setup)
             return
         obs._setup.update(setup)
@@ -1029,7 +1029,9 @@ class FunctionObservers:
         if obs is None:
             return
         self._deactivate(obs)
-        obs._refuse("OBSERVER_REMOVED", f"observer {obs.id} of {self.function_id} was removed")
+        obs._refuse(
+            "OBSERVER_NOT_ACTIVE", f"observer {obs.id} of {self.function_id} was removed before it was accepted"
+        )
         if not obs._accepted:
             return
         obs._accepted = False

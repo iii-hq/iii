@@ -164,10 +164,10 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `compose::up`       | `file`, `container`, `frozen`                               | An operation result.                                                       |
 | `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
-| `compose::status`   | `file`                                                      | The project's namespace, file, state directory, daemon pid, worker states. |
+| `compose::status`   | `file`                                                      | Namespace, file, state directory, daemon pid, host targets, worker states. |
 | `compose::ps`       | `file`                                                      | The daemon pid and the operating-system processes of its projects.        |
 | `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
-| `compose::list`     | nothing                                                     | The daemon name, its namespace, its pid, and every project it holds.       |
+| `compose::list`     | nothing                                                     | The daemon name, namespace, pid, host targets, and every project it holds. |
 | `compose::validate` | `file`                                                      | A validation report.                                                       |
 | `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
 | `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
@@ -431,6 +431,9 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 
 `compose::update` without `worker` or `workers` updates every declared `package://` worker to its
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
+The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
+names) moves only to the newest release in the range that implements the engine's sandbox contract
+major (`^0.2` for contract 1).
 
 ```bash
 iii call compose::update
@@ -478,10 +481,56 @@ the next time the worker is restarted.
 ### Checking status
 
 `compose::status` reports each declared worker with its `state`, its `version` (the locked package
-version, or `local` for a `path://` worker), the active process `pid` when one exists, an `owned`
-flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
+version, or `local` for a `path://` worker), its `requested` selector, the active process `pid` when
+one exists, an `owned` flag, its rotating `log_path`, and `last_error` when there is one. `owned` is
 `false` for a worker this daemon has knowledge of but does not manage (ie. was not started by the
 compose daemon).
+
+`requested` is the `version` a `package://` worker declares in `worker-compose.yaml`, after variable
+expansion: a tag such as `latest`, a semver range, or an exact version. It is the selector that
+`compose::update worker=<name>` resolves again, so the release it selects now is the version that
+call moves to; a release outside it needs `worker=<name>@<selector>`. A `compose::update` without
+`worker` or `workers` resolves `latest` for every package instead. `version` is present only while
+the lock holds a result for that selector, so a worker whose selector changed in the file reports no
+`version` until Compose resolves it. A `path://` worker reports no `requested`.
+
+The response also carries the platform Compose resolves packages for. `target` is the target triple
+the daemon sends first as `target` to the registry's `POST /resolve`. `targets` lists every triple
+the host runs, preferred first: a static musl build of iii on a glibc Linux host lists
+`x86_64-unknown-linux-musl`, then `x86_64-unknown-linux-gnu`, and Compose resolves for the second
+only when the registry answers `unsupported_platform` and lists it as available. A client that
+checks the registry for updates itself can follow the same order to find a build Compose would
+install. Both fields are absent when iii has no target triple for the platform it was built for.
+
+```json
+{
+  "namespace": "default",
+  "file": "/srv/app/worker-compose.yaml",
+  "state_dir": "/srv/app/.iii/compose/default",
+  "daemon_pid": 4242,
+  "target": "x86_64-unknown-linux-musl",
+  "targets": ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+  "containers": [
+    {
+      "container": "state",
+      "state": "ready",
+      "version": "0.22.8",
+      "requested": "latest",
+      "pid": 81234,
+      "owned": true,
+      "log_path": "/srv/app/.iii/compose/default/logs/state.log"
+    },
+    {
+      "container": "api",
+      "state": "ready",
+      "version": "local",
+      "pid": 81240,
+      "owned": true,
+      "log_path": "/srv/app/.iii/compose/default/logs/api.log"
+    }
+  ]
+}
+```
 
 #### Worker states
 
@@ -490,7 +539,7 @@ compose daemon).
 | `starting`   | Spawned. The engine has not registered it yet.                                                |
 | `ready`      | Registered in the engine under `(namespace, container)`.                                      |
 | `restarting` | Waiting for the next configured retry. No process or PID is active.                           |
-| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, or one of its hooks failed. |
+| `failed`     | Exited unsuccessfully with no eligible retry, exhausted its retries, failed to start during `up` or a restart before it registered (a failed `pre_run` hook included), or did not register again within its `startup_timeout` after an engine reconnect and was stopped. After a daemon restart, also a worker that exited while the daemon was away or while it was being adopted, or whose live PID Compose cannot prove is the one it started. That process is left running and never signalled. `last_error` says why. |
 | `stopped`    | Stopped by the daemon, or exited successfully without an eligible restart.                    |
 
 ### Listing processes
@@ -531,7 +580,8 @@ iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 
 ### Listing projects
 
-`compose::list` returns the daemon name, its namespace, its pid, and other project information.
+`compose::list` returns the daemon name, its namespace, its pid, the same `target` and `targets` as
+`compose::status`, and every project it holds with its namespace, file, and worker states.
 
 ### Validating a file
 
@@ -671,13 +721,21 @@ containers:
 | `registration_namespace_grace_ms` | integer | engine default         | Namespace-registration grace passed to the engine.                                       |
 | `observers`                       | map     | engine defaults        | Observer limits and timeouts passed to the engine as written. See [Observers](./configuration#observers). |
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
+| `sandbox`                         | map     | absent                 | Binds the engine's `sandbox::*` router to an adapter. See below.                         |
 
-Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, `iii-stream`
-(deprecated; still accepted),
-and `iii-sandbox`. Use `#instance` for another instance of an allowed type, for example
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, and
+`iii-stream` (deprecated; still accepted). Use `#instance` for another instance of an allowed type, for example
 `iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
-usage analytics, and `iii-observability` for OpenTelemetry traces, metrics, and logs. Do not declare
-these workers.
+usage analytics, `iii-observability` for OpenTelemetry traces, metrics, and logs, and the
+`iii-sandbox` router. Do not declare these workers. A file that declares `iii-sandbox` under
+`engine.workers` fails with `SANDBOX_CONFIG_MOVED`, which prints the replacement; see [Upgrading to
+the sandbox worker](../upgrading/sandbox-worker).
+
+`engine.sandbox` takes `adapter`, the adapter's function prefix (`sandbox-libkrun` by default), and
+`namespace`, where the adapter runs (this project's namespace by default). A managed engine is
+bound to an adapter whether or not the section is present. Setting the section, with `namespace`
+unset or this project's, also makes Compose install that adapter, as does a bundle or `runtime.base_image` worker, or
+`iii call compose::add worker=iii-sandbox`. See [Sandboxes](../creating-workers/sandboxes).
 
 <Warning title="Deprecated">
   `iii-stream` is deprecated (iii-stream) and will be removed in an upcoming release.
@@ -707,7 +765,7 @@ Each key under `containers` is the name the worker registers under.
 | Field             | Type           | Default              | Description                                                                                                |
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `worker`          | string         | required             | `path://<dir>` or `package://<name>`. A package may name its registry: `package://<registry-host>/<name>`. |
-| `version`         | string         | absent               | Version range. Required for `package://`.                                                                  |
+| `version`         | string         | absent               | Version range. Required, and not empty, for `package://`. A `path://` worker ignores it.                   |
 | `start_after`     | array          | empty                | Workers that must start first (ie. a worker dependency). Self-dependencies and cycles are rejected.        |
 | `config_name`     | string         | absent               | The [configuration worker](./configuration) entry this worker owns.                                        |
 | `config_override` | mapping        | absent               | Merged on top of the fetched configuration; a mapping whose `name` changes is replaced whole.              |
@@ -739,13 +797,12 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `bundle` | A VM. The start command is the bundle's own `scripts.start`, read in the guest. |
 | `path`   | A path to a worker stored locally on disk.                                      |
 
-A bundle's VM is booted by `iii-worker`, which the installer ships beside `iii`. Native
-`iii-worker` artifacts are published for glibc and musl Linux on both x86_64 and aarch64, so Alpine
-and other musl distributions are supported alongside standard glibc ones. The shell installer and
-`iii update iii-worker` pick the right build automatically by looking for the host's musl loader,
-independent of which engine build target is installed. Compose runs `iii-worker` as a process rather
-than linking it, so the engine stays portable; a bundle worker on a machine without `iii-worker`
-fails saying so, and every other worker kind is unaffected.
+A bundle's VM, like a `path://` worker with `runtime.base_image`, runs in the `sandbox-libkrun`
+worker, which Compose installs from the registry when the project has such a worker. The adapter is
+built for three targets only: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`. On a musl Linux or Intel Mac host Compose fails with
+`UNSUPPORTED_PLATFORM`. On Linux the user running Compose needs read and write access to `/dev/kvm`,
+and `libcap-ng0` must be installed. Every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
 anything is downloaded. Run compose under WSL, where the VM still needs `/dev/kvm` and a guest
@@ -966,7 +1023,9 @@ directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 | `state.json`         | Child process records for the project. Owner-only.                                             |
 | `config/`            | Resolved worker configuration files.                                                          |
 | `logs/`              | Rotating stdout and stderr for project workers.                                                |
-| `vm/`                | VM state for bundle and local-image workers, including rootfs, boot scripts and guest configs. |
+
+VM workers keep their state outside this directory: the sandbox adapter stores it in
+`~/.iii/sandbox/workers/<vm_id>/`, and Compose deletes it when you remove the container.
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces.
@@ -1037,7 +1096,7 @@ Compose can output the following error codes:
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Compose file        | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`, `UNDEFINED_VARIABLE`, `INVALID_REFERENCE`, `UNTERMINATED_REFERENCE`                                                                                                        |
 | Worker declaration  | `MISSING_VERSION_FOR_PACKAGE`, `RUN_NOT_ALLOWED_FOR_PACKAGE`, `NOT_A_PACKAGE_CONTAINER`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                                                                         |
-| Worker resolution   | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `INVALID_WORKER_SPEC`, `WORKER_SOURCE_CHANGED`, `ENGINE_WORKER_IS_BUILTIN`                                                                                                                                                                                                             |
+| Worker resolution   | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `INVALID_WORKER_SPEC`, `WORKER_SOURCE_CHANGED`, `ENGINE_WORKER_IS_BUILTIN`, `INCOMPATIBLE_ENGINE`                                                                                                                                                                                      |
 | Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                       |
 | Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `CONFIG_PUBLISH_FAILED`, `ENGINE_CALL_FAILED`, `PROJECT_DID_NOT_START`                            |
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED` |

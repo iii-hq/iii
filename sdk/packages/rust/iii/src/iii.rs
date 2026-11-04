@@ -584,7 +584,9 @@ use crate::{
     context::{InvocationCtx, with_current},
     dispatch::{Hosted, Route, run_reporter},
     error::Error,
-    hooks::{AddedHook, Call, DeliverHook, HookStore, Match, Matcher, RemovedHook},
+    hooks::{
+        AddedHook, Call, DeliverHook, ErasedDeliverHook, HookStore, Match, Matcher, RemovedHook,
+    },
     observable::{FunctionEntry, HookOp, Observer},
     observe::{ObserverEntry, ObserverReason},
     protocol::{
@@ -1964,6 +1966,10 @@ pub(crate) struct IIIInner {
     /// Observe messages queued on a connection that dropped, waiting for the
     /// next engine's features.
     held_frames: Mutex<Vec<PreparedEnvelope>>,
+    /// Lets `iii ps` find this worker. Removed by `shutdown`/`shutdown_async`,
+    /// not by the connection thread: a client that exits right after
+    /// `shutdown_async` (`iii call`) kills that thread before it ends.
+    marker: Mutex<Option<crate::process_marker::Marker>>,
 }
 
 /// WebSocket client for communication with the III Engine.
@@ -2033,6 +2039,7 @@ impl IIIClient {
             reporter: Reporter::default(),
             hook_timeout_ms: AtomicU64::new(crate::observable::HOOK_TIMEOUT.as_millis() as u64),
             held_frames: Mutex::new(Vec::new()),
+            marker: Mutex::new(None),
         };
         Self {
             inner: Arc::new(inner),
@@ -2261,6 +2268,15 @@ impl IIIClient {
 
         let otel_config = self.take_otel_config();
 
+        *self.inner.marker.lock_or_recover() = Some(crate::process_marker::Marker::announce(
+            &self.inner.address,
+            self.inner
+                .worker_metadata
+                .lock_or_recover()
+                .as_ref()
+                .map(|metadata| metadata.name.as_str()),
+        ));
+
         // Spawn a dedicated OS thread with its own tokio runtime so
         // the connection loop is independent of the caller's runtime.
         // In Rust, a spawned thread does not keep the process alive on its own;
@@ -2272,15 +2288,6 @@ impl IIIClient {
             // thread: it gets the stack a process's main thread has.
             .stack_size(CONNECTION_THREAD_STACK)
             .spawn(move || {
-                // Lets `iii ps` find this worker while the connection loop runs.
-                let _marker = crate::process_marker::Marker::announce(
-                    &iii.inner.address,
-                    iii.inner
-                        .worker_metadata
-                        .lock_or_recover()
-                        .as_ref()
-                        .map(|metadata| metadata.name.as_str()),
-                );
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -2321,6 +2328,7 @@ impl IIIClient {
         self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
+        self.inner.marker.lock_or_recover().take();
 
         if let Some(handle) = self.inner.connection_thread.lock_or_recover().take() {
             let _ = handle.join();
@@ -2354,6 +2362,7 @@ impl IIIClient {
         self.inner.registration_changed.notify_waiters();
         let _ = self.inner.outbound.send(Outbound::Shutdown);
         self.set_connection_state(IIIConnectionState::Disconnected);
+        self.inner.marker.lock_or_recover().take();
     }
 
     #[cfg(test)]
@@ -2379,7 +2388,7 @@ impl IIIClient {
         if id.trim().is_empty() {
             panic!("id is required");
         }
-        let new_entry = |deliver: Option<Arc<dyn DeliverHook>>, matching: Option<Match>| {
+        let new_entry = |deliver: Option<Arc<dyn ErasedDeliverHook>>, matching: Option<Match>| {
             Arc::new(FunctionEntry::new(
                 id.clone(),
                 message.declares_v2(),
@@ -4596,6 +4605,26 @@ mod tests {
             .expect("the connection never ended")
             .unwrap();
         assert!(closed, "a stopping worker must send a close frame");
+    }
+
+    #[tokio::test]
+    async fn shutdown_async_removes_the_worker_marker() {
+        // Nothing listens there: the marker must not wait for a connection.
+        let iii = client_with_timings("127.0.0.1:1".parse().unwrap(), ConnTimings::default());
+        let path = iii
+            .inner
+            .marker
+            .lock_or_recover()
+            .as_ref()
+            .unwrap()
+            .0
+            .clone();
+        let path = path.expect("HOME must be writable for this test");
+        assert!(path.exists());
+
+        // `iii call` exits right after this, without joining the thread.
+        iii.shutdown_async().await;
+        assert!(!path.exists(), "{} outlived shutdown_async", path.display());
     }
 
     type Handshake = (String, tokio_tungstenite::tungstenite::http::HeaderMap);

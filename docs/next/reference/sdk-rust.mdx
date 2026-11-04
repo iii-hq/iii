@@ -307,7 +307,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
     <ParamField body="args" type="fn(args: Value) -> Self" required>
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
-    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
       What travels to the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
@@ -655,7 +655,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
     <ParamField body="args" type="fn(args: Value) -> Self" required>
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
-    <ParamField body="capture" type="fn(capture: impl IntoIterator) -> Self" required>
+    <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
       What travels to the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
@@ -806,7 +806,7 @@ on_observation_deliver_for(function_id: &str, hook: impl DeliverHook) -> &Self
 <ParamField body="hook" type="impl DeliverHook" required>
 
   <Expandable title="`DeliverHook` fields">
-    <ParamField body="on_deliver" type="fn(call: Call, observers: Vec<Observer>) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_deliver" type="fn(call: Call, observers: Vec<Observer>) -> impl Future<Output = Result<Value, Error>> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -872,7 +872,7 @@ on_observer_added(hook: impl AddedHook) -> &Self
 <ParamField body="hook" type="impl AddedHook" required>
 
   <Expandable title="`AddedHook` fields">
-    <ParamField body="on_added" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_added" type="fn(obs: Observer) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -900,7 +900,7 @@ on_observer_added_for(function_id: &str, hook: impl AddedHook) -> &Self
 <ParamField body="hook" type="impl AddedHook" required>
 
   <Expandable title="`AddedHook` fields">
-    <ParamField body="on_added" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_added" type="fn(obs: Observer) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -924,7 +924,7 @@ on_observer_removed(hook: impl RemovedHook) -> &Self
 <ParamField body="hook" type="impl RemovedHook" required>
 
   <Expandable title="`RemovedHook` fields">
-    <ParamField body="on_removed" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_removed" type="fn(obs: Observer) -> impl Future<Output = ()> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -951,7 +951,7 @@ on_observer_removed_for(function_id: &str, hook: impl RemovedHook) -> &Self
 <ParamField body="hook" type="impl RemovedHook" required>
 
   <Expandable title="`RemovedHook` fields">
-    <ParamField body="on_removed" type="fn(obs: Observer) -> Pin<Box<dyn Future + Send>>" required>
+    <ParamField body="on_removed" type="fn(obs: Observer) -> impl Future<Output = ()> + Send + '_" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1077,7 +1077,7 @@ recursing through spawned tasks stays bounded.
 **Signature**
 
 ```rust
-scope(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future
+scope(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future<Output = Output>
 ```
 
 #### Parameters
@@ -1385,10 +1385,13 @@ first call. Returning an error rejects the observer: an
 and a hook still running after 30 s is `OWNER_TIMEOUT`.
 
 Implemented for async closures taking the `Observer` by value.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observer_added`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_added` | fn(obs: [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_added` | fn(obs: [`Observer`](#observer)) -&gt; impl Future&lt;Output = Result&lt;(), [`ObserveRejection`](#observerejection)&gt;&gt; + Send + '_ | Yes | - |
 
 ---
 
@@ -1433,10 +1436,13 @@ of them), a snapshot taken when the call started. It applies their filters
 with `Observer::matches`.
 
 Implemented for async closures taking `(Call, Vec<Observer>)`.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observation_deliver_for`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_deliver` | fn(call: [`Call`](#call), observers: Vec&lt;[`Observer`](#observer)&gt;) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_deliver` | fn(call: [`Call`](#call), observers: Vec&lt;[`Observer`](#observer)&gt;) -&gt; impl Future&lt;Output = Result&lt;Value, [`Error`](#error)&gt;&gt; + Send + '_ | Yes | - |
 
 ---
 
@@ -1479,10 +1485,13 @@ runs for an observer that was not accepted. A panic is logged; the
 observer is removed either way.
 
 Implemented for async closures taking the `Observer` by value.
+Implement with plain `async fn`, without `#[async_trait]`. The returned
+future is `Send` and may borrow `self` across `.await`. This trait is not
+dyn-compatible; pass a concrete hook to `IIIClient::on_observer_removed`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `on_removed` | fn(obs: [`Observer`](#observer)) -&gt; Pin&lt;Box&lt;dyn Future + Send&gt;&gt; | Yes | - |
+| `on_removed` | fn(obs: [`Observer`](#observer)) -&gt; impl Future&lt;Output = ()&gt; + Send + '_ | Yes | - |
 
 ### iii_sdk::observable
 
@@ -1644,7 +1653,7 @@ The left side of an observer: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `fn(args: Value) -> Self` | Yes | Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean. |
-| `capture` | `fn(capture: impl IntoIterator) -> Self` | Yes | What travels to the target. Default `[input, output, caller]`. |
+| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What travels to the target. Default `[input, output, caller]`. |
 | `deliver` | fn(deliver: [`Deliver`](#deliver)) -&gt; Self | Yes | What the target receives when iii delivers: the `Observed` envelope (default), or the observed input or output alone. A function whose deliver hook calls targets itself documents what they receive. |
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |

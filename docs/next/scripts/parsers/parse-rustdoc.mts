@@ -100,9 +100,17 @@ export function rustTypeToString(type: any): string {
             const ret = output ? ` -> ${rustTypeToString(output)}` : ''
             return `${name}(${params})${ret}`
           }
-          if (t.args?.angle_bracketed?.args?.length) {
-            const args = t.args.angle_bracketed.args.map((a: any) => (a.type ? rustTypeToString(a.type) : '?')).join(', ')
-            return `${name}<${args}>`
+          if (t.args?.angle_bracketed) {
+            const angle = t.args.angle_bracketed
+            const args = (angle.args ?? []).map((a: any) =>
+              a.type ? rustTypeToString(a.type) : a.lifetime ?? '?',
+            )
+            // RPITIT futures carry their Output here, not in generic args.
+            for (const constraint of angle.constraints ?? []) {
+              const output = constraint.binding?.equality?.type
+              if (output != null) args.push(`${constraint.name} = ${rustTypeToString(output)}`)
+            }
+            if (args.length) return `${name}<${args.join(', ')}>`
           }
           return name
         }

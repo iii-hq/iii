@@ -154,6 +154,7 @@
                 "group": "Upgrading",
                 "pages": [
                   "next/upgrading/from-0-25-x",
+                  "next/upgrading/sandbox-worker",
                   "next/upgrading/from-0-24-x",
                   "next/upgrading/migrate-from-streams",
                   "next/upgrading/workers-to-compose",

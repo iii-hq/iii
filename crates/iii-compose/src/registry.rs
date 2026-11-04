@@ -189,56 +189,72 @@ pub(crate) async fn warn_alias(
 /// The rust target triple this daemon is running on, which is the one its
 /// children have to run on too.
 pub fn host_target() -> &'static str {
-    // `cfg!` rather than a runtime probe: the daemon and its children share a
-    // machine, so the triple compose was built for is the triple it needs.
-    if cfg!(all(
-        target_arch = "x86_64",
-        target_os = "linux",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "linux")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "linux")) {
-        "aarch64-unknown-linux-gnu"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "macos")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "macos")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(target_arch = "x86_64", target_os = "windows")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_arch = "aarch64", target_os = "windows")) {
-        "aarch64-pc-windows-msvc"
-    } else {
-        "unknown"
+    // Build constants rather than a runtime probe: the daemon and its children
+    // share a machine, so the triple compose was built for is the triple it
+    // needs.
+    target_triple(
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        cfg!(target_env = "musl"),
+    )
+}
+
+/// The triple of a build for `arch` and `os`; `musl` marks a static Linux
+/// build. `unknown` for a platform the registry publishes no builds for.
+fn target_triple(arch: &str, os: &str, musl: bool) -> &'static str {
+    match (arch, os, musl) {
+        ("x86_64", "linux", true) => "x86_64-unknown-linux-musl",
+        ("x86_64", "linux", false) => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux", true) => "aarch64-unknown-linux-musl",
+        ("aarch64", "linux", false) => "aarch64-unknown-linux-gnu",
+        ("x86_64", "macos", _) => "x86_64-apple-darwin",
+        ("aarch64", "macos", _) => "aarch64-apple-darwin",
+        ("x86_64", "windows", _) => "x86_64-pc-windows-msvc",
+        ("aarch64", "windows", _) => "aarch64-pc-windows-msvc",
+        _ => "unknown",
     }
 }
 
-/// The x86_64 glibc and musl dynamic loaders. A glibc distribution has the
-/// first. A musl one (Alpine) has the second, and may have the first too as a
-/// compatibility link to itself (libc6-compat, gcompat), so the musl loader
-/// decides, as it does for `iii-worker`'s own binary and the installer.
-const GLIBC_LOADER: &str = "/lib64/ld-linux-x86-64.so.2";
-const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
+/// The glibc and musl dynamic loaders of a Linux `arch`. A glibc distribution
+/// has the first. A musl one (Alpine) has the second, and may have the first
+/// too as a compatibility link to itself (libc6-compat, gcompat), so the musl
+/// loader decides, as it does for the installer.
+fn linux_loaders(arch: &str) -> Option<(&'static str, &'static str)> {
+    match arch {
+        "x86_64" => Some(("/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1")),
+        "aarch64" => Some(("/lib/ld-linux-aarch64.so.1", "/lib/ld-musl-aarch64.so.1")),
+        _ => None,
+    }
+}
 
 /// Every triple this host can run, preferred first: [`host_target`], then,
-/// for the static musl build on a glibc machine, the glibc one. That machine
+/// for a static musl build on a glibc machine, the glibc one. That machine
 /// runs both, and some workers publish only glibc builds (a C++ dependency
 /// with no musl toolchain, or backends loaded as shared libraries).
 pub fn host_targets() -> &'static [&'static str] {
     static TARGETS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     TARGETS.get_or_init(|| {
-        let glibc_host = Path::new(GLIBC_LOADER).exists() && !Path::new(MUSL_LOADER).exists();
+        let glibc_host = linux_loaders(std::env::consts::ARCH)
+            .is_some_and(|(glibc, musl)| Path::new(glibc).exists() && !Path::new(musl).exists());
         runnable_targets(host_target(), glibc_host)
     })
 }
 
 fn runnable_targets(native: &'static str, glibc_host: bool) -> Vec<&'static str> {
     let mut targets = vec![native];
-    if native == "x86_64-unknown-linux-musl" && glibc_host {
-        targets.push("x86_64-unknown-linux-gnu");
+    if glibc_host && let Some(glibc) = glibc_counterpart(native) {
+        targets.push(glibc);
     }
     targets
+}
+
+/// The glibc build of the same machine as a static musl `native` build.
+fn glibc_counterpart(native: &str) -> Option<&'static str> {
+    match native {
+        "x86_64-unknown-linux-musl" => Some("x86_64-unknown-linux-gnu"),
+        "aarch64-unknown-linux-musl" => Some("aarch64-unknown-linux-gnu"),
+        _ => None,
+    }
 }
 
 /// The first of `candidates` that `artifacts` has a build for.
@@ -425,6 +441,9 @@ pub async fn install_resolved(
         "bundle" => {
             let (install_dir, status) =
                 install_bundle(container, resolved, target, &cache_root).await?;
+            // The registry filters by `iii_version` when it resolves, but a bundle from
+            // `worker-compose.lock` is never resolved; cache hits come through here too.
+            crate::manifest::check_bundle_engine(container, &install_dir)?;
             (Payload::Bundle(install_dir), status)
         }
         // `engine` workers are compiled into the engine itself: there is no
@@ -626,10 +645,9 @@ fn artifact_for_target<'a>(
 ///
 /// Unix only, because starting one is: see [`ComposeError::BundleNeedsAVm`].
 ///
-/// The install is compose's own, not the machine-wide `~/.iii/workers-bundle/`
-/// that `iii add` keeps. That one is keyed by name alone and is replaced on
-/// every install, so two compose projects pinning different versions of the
-/// same bundle would overwrite each other between one `up` and the next.
+/// The install is keyed by name, version and digest under Compose's package
+/// cache, so two projects pinning different versions of the same bundle never
+/// overwrite each other between one `up` and the next.
 #[cfg(unix)]
 async fn install_bundle(
     container: &str,
@@ -887,19 +905,25 @@ async fn resolve_response(
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ResolveResponse> {
-    let client = reqwest::Client::builder()
-        .timeout(RESOLVE_ATTEMPT_TIMEOUT)
+    let mut builder = reqwest::Client::builder().timeout(RESOLVE_ATTEMPT_TIMEOUT);
+    if let Some(version) = crate::host_version() {
+        builder = builder.user_agent(format!("iii/{version}"));
+    }
+    let client = builder
         .build()
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
     let endpoint = format!("{registry}/resolve");
     let mut index = 0;
     let response = loop {
-        let request = serde_json::json!({
+        let mut request = serde_json::json!({
             "worker": name,
             "version": version_range,
             "target": candidates[index],
         });
+        if let Some(version) = crate::host_version() {
+            request["iii_version"] = version.into();
+        }
         let response = send_resolve_request(&client, &endpoint, &request)
             .await
             .map_err(|err| registry_error(container, registry, &err.to_string()))?;
@@ -911,6 +935,15 @@ async fn resolve_response(
         if let Some(next) = fallback_index(&body, candidates, index) {
             index = next;
             continue;
+        }
+        if let Some(available) = refused_platform(&body) {
+            return Err(ComposeError::UnsupportedPlatform {
+                container: container.to_string(),
+                name: name.to_string(),
+                version: version_range.to_string(),
+                target: candidates[index].to_string(),
+                available: available.join(", "),
+            });
         }
         return Err(ComposeError::PackageNotResolved {
             container: container.to_string(),
@@ -933,17 +966,29 @@ async fn resolve_response(
 /// when the registry refused `tried` as a platform the worker has no build
 /// for (`unsupported_platform`), and only one it lists as available.
 fn fallback_index(body: &str, candidates: &[&str], tried: usize) -> Option<usize> {
+    let available = refused_platform(body)?;
+    (tried + 1..candidates.len())
+        .find(|&index| available.iter().any(|target| target == candidates[index]))
+}
+
+/// The targets an `unsupported_platform` refusal lists as available, or
+/// `None` when `body` is not that refusal.
+fn refused_platform(body: &str) -> Option<Vec<String>> {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok()?;
     let error = parsed.get("error")?;
     if error.get("code")?.as_str()? != "unsupported_platform" {
         return None;
     }
-    let available = error.get("available")?.as_array()?;
-    (tried + 1..candidates.len()).find(|&index| {
-        available
-            .iter()
-            .any(|value| value.as_str() == Some(candidates[index]))
-    })
+    Some(
+        error
+            .get("available")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 async fn send_resolve_request(
@@ -1069,8 +1114,12 @@ fn registry_message(status: u16, body: &str) -> String {
 
     let mut sentence = message;
     if let Some(fix) = text("fix") {
-        sentence.push(' ');
-        sentence.push_str(&fix);
+        // The registry sometimes already ends the message with the fix ("; run: iii update").
+        let needle = fix.trim().trim_end_matches(['.', '!']).to_lowercase();
+        if !needle.is_empty() && !sentence.to_lowercase().contains(&needle) {
+            sentence.push(' ');
+            sentence.push_str(&fix);
+        }
     }
 
     // `fix` usually recites the versions already ("request one of: ..."), so the
@@ -1775,6 +1824,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_sends_host_iii_version() {
+        crate::set_host_version("0.26.0");
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"iii_version": "0.26.0"}),
+            ))
+            .and(matchers::header("user-agent", "iii/0.26.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "state",
+                    "version": "1.0.0",
+                    "type": "binary",
+                    "binaries": {}
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            &["x86_64-unknown-linux-gnu"],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn incompatible_engine_409_is_reported_with_registry_message() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "error": {
+                    "code": "incompatible_engine",
+                    "scope": "worker",
+                    "message": "state 1.0.0 requires iii >=0.26.0, running 0.25.0; run: iii update",
+                    "required_iii_engine_version": ">=0.26.0"
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = resolve_response(
+            "state",
+            &server.uri(),
+            "state",
+            "1.0.0",
+            &["x86_64-unknown-linux-gnu"],
+        )
+        .await
+        .unwrap_err();
+
+        match error {
+            ComposeError::PackageNotResolved { message, .. } => {
+                assert!(message.contains("requires iii >=0.26.0, running 0.25.0; run: iii update"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn a_cached_install_is_reused_and_corruption_is_repaired() {
         let server = MockServer::start().await;
         let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
@@ -1936,6 +2053,65 @@ mod tests {
     }
 
     #[test]
+    fn an_arm_musl_build_on_a_glibc_machine_also_runs_glibc_builds() {
+        const MUSL: &str = "aarch64-unknown-linux-musl";
+        const GNU: &str = "aarch64-unknown-linux-gnu";
+        assert_eq!(runnable_targets(MUSL, true), [MUSL, GNU]);
+        assert_eq!(runnable_targets(MUSL, false), [MUSL]);
+        assert_eq!(runnable_targets(GNU, true), [GNU]);
+    }
+
+    #[test]
+    fn a_static_linux_build_names_its_musl_triple_on_every_architecture() {
+        assert_eq!(
+            target_triple("x86_64", "linux", true),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("x86_64", "linux", false),
+            "x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            target_triple("aarch64", "linux", true),
+            "aarch64-unknown-linux-musl"
+        );
+        assert_eq!(
+            target_triple("aarch64", "linux", false),
+            "aarch64-unknown-linux-gnu"
+        );
+        assert_eq!(
+            target_triple("aarch64", "macos", false),
+            "aarch64-apple-darwin"
+        );
+        assert_eq!(
+            target_triple("x86_64", "macos", false),
+            "x86_64-apple-darwin"
+        );
+        assert_eq!(
+            target_triple("x86_64", "windows", false),
+            "x86_64-pc-windows-msvc"
+        );
+        assert_eq!(
+            target_triple("aarch64", "windows", false),
+            "aarch64-pc-windows-msvc"
+        );
+        assert_eq!(target_triple("riscv64", "linux", false), "unknown");
+    }
+
+    #[test]
+    fn the_glibc_probe_reads_the_loaders_of_the_host_architecture() {
+        assert_eq!(
+            linux_loaders("x86_64"),
+            Some(("/lib64/ld-linux-x86-64.so.2", "/lib/ld-musl-x86_64.so.1"))
+        );
+        assert_eq!(
+            linux_loaders("aarch64"),
+            Some(("/lib/ld-linux-aarch64.so.1", "/lib/ld-musl-aarch64.so.1"))
+        );
+        assert_eq!(linux_loaders("riscv64"), None);
+    }
+
+    #[test]
     fn a_published_native_build_wins_over_the_glibc_fallback() {
         let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
         let both = std::collections::BTreeMap::from([
@@ -2047,8 +2223,11 @@ mod tests {
         )
         .await
         .unwrap_err();
+        assert_eq!(error.code(), "UNSUPPORTED_PLATFORM");
         assert!(
-            error.to_string().contains("does not support platform"),
+            error
+                .to_string()
+                .contains("x86_64-apple-darwin, x86_64-unknown-linux-gnu"),
             "{error}"
         );
     }
@@ -2123,6 +2302,18 @@ mod tests {
     }
 
     // The bodies below are what api.workers.iii.dev actually answers.
+
+    #[test]
+    fn a_fix_already_in_the_message_is_not_repeated() {
+        let body = r#"{"error":{"code":"incompatible_engine","message":"state requires iii >=0.26.0, running 0.25.0; run: iii update","fix":"Run: iii update"}}"#;
+        assert_eq!(
+            registry_message(409, body)
+                .to_lowercase()
+                .matches("iii update")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn an_unknown_worker_reads_as_a_sentence() {

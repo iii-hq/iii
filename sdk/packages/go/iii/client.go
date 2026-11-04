@@ -136,7 +136,11 @@ type Client struct {
 	shutOnce sync.Once
 	shutDone chan struct{} // closed when the first Close or Shutdown has finished
 	// shutForce cuts a running Shutdown short (a Close called meanwhile). Guarded by mu.
-	shutForce     context.CancelFunc
+	shutForce context.CancelFunc
+	// removeMarker removes this client's `iii ps` marker, once. terminating is set
+	// by the first Close or Shutdown. Both guarded by mu.
+	removeMarker  func()
+	terminating   bool
 	connected     chan struct{} // closed once the first connection is established
 	connOnce      sync.Once
 	failed        chan struct{} // closed when the supervisor gives up (MaxRetries exceeded)
@@ -470,7 +474,7 @@ func defaultWorkerName() string {
 func (c *Client) Address() string { return c.url }
 
 // ConnectionState returns the current state of the connection to the engine. It
-// mirrors getConnectionState in the Node SDK; [Client.OnConnectionStateChange] reports
+// mirrors getConnectionState in the Node SDK; [Client.AddConnectionStateListener] reports
 // every change.
 func (c *Client) ConnectionState() ConnectionState {
 	c.mu.Lock()
@@ -1050,8 +1054,16 @@ func (c *Client) startSupervisor() {
 		c.started.Store(true)
 		c.startTelemetry() // otel_client.go: OpenTelemetry starts with the lifecycle
 		c.reporter.start()
-		// Lets `iii ps` find this worker until Close ends the supervisor.
-		remove := announceProcess(c.url, c.name, "")
+		// Lets `iii ps` find this worker. Close and Shutdown remove it themselves:
+		// a program that exits right after them ends before the supervisor does.
+		remove := sync.OnceFunc(announceProcess(c.url, c.name, ""))
+		c.mu.Lock()
+		c.removeMarker = remove
+		closed := c.terminating
+		c.mu.Unlock()
+		if closed {
+			remove() // Close or Shutdown came first and could not see this marker
+		}
 		go func() {
 			defer remove()
 			c.supervise()
@@ -1948,6 +1960,13 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 		defer stop()
 	}
 	defer close(c.shutDone)
+	c.mu.Lock()
+	c.terminating = true
+	removeMarker := c.removeMarker
+	c.mu.Unlock()
+	if removeMarker != nil {
+		removeMarker()
+	}
 
 	// Last chance for buffered reports and counters to reach the engine. A writer
 	// that does not drain (a peer that stopped reading) cannot hold the shutdown up:

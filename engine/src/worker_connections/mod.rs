@@ -418,6 +418,9 @@ pub struct WorkerConnection {
     /// The removed message types (`REMOVED_MESSAGES` in the engine) this
     /// connection was warned about, one bit each.
     pub removed_messages_warned: Arc<AtomicU8>,
+    /// Removed-message warnings held back until the worker's name and SDK
+    /// reach the registry: `(index, peer)`.
+    pub removed_messages_pending: Arc<std::sync::Mutex<Vec<(usize, std::net::SocketAddr)>>>,
     /// The observe depth of each in-flight invocation forwarded to this
     /// connection at depth > 0: the loop guard's stand-in for the depth of
     /// what the connection does meanwhile without saying (calls from a worker
@@ -462,6 +465,7 @@ impl WorkerConnection {
             reattach_token: Uuid::new_v4(),
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
+            removed_messages_pending: Arc::default(),
             inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
             routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
@@ -499,6 +503,7 @@ impl WorkerConnection {
             reattach_token: Uuid::new_v4(),
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
+            removed_messages_pending: Arc::default(),
             inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
             routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }

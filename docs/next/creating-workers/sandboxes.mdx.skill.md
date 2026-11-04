@@ -2,331 +2,92 @@
 
 
 Sandboxes run untrusted or short-lived code in an isolated microVM and capture its output, useful
-for agent tool-calls, REPLs, and one-off jobs. They are provided by the `iii-sandbox` worker. Enable
-it in the managed Compose file before starting the engine:
+for agent tool-calls, REPLs, and one-off jobs. The engine's `iii-sandbox` router serves the
+`sandbox::*` functions and forwards each call to a sandbox adapter. The `sandbox-libkrun` worker is
+the adapter that runs the VMs, and Compose installs it from the registry when a project needs it:
+when the compose file sets `engine.sandbox` for its own namespace, when it declares a worker that
+runs in a VM (a bundle worker, or a `path://` worker with `runtime.base_image`), or when you run
+`iii call compose::add worker=iii-sandbox`. To change which images the adapter allows, set its
+configuration under `containers.sandbox-libkrun.config_override`:
 
 ```yaml worker-compose.yaml
 engine:
-  workers:
-    iii-sandbox:
-      auto_install: true
+  sandbox:
+    adapter: sandbox-libkrun
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: "^0.2"
+    config_override:
       image_allowlist: [python, node]
 ```
 
+`image_allowlist` and `custom_images` set the images a sandbox can boot. An engine that no Compose
+file manages has no adapter bound, so its `sandbox::*` calls fail with [S303](#S303) until you set a
+top-level `sandbox:` section in its engine config. [Upgrading to the sandbox
+worker](../upgrading/sandbox-worker) covers that case and the move from the 0.25 setup.
+
 <Note>
-  This page is a quick tour of the sandbox worker. For the authoritative documentation, see the
-  [iii-sandbox worker docs](https://workers.iii.dev/workers/iii-sandbox).
+  This page is a quick tour of the sandbox functions. For the adapter's own documentation, see the
+  [sandbox-libkrun docs](https://workers.iii.dev/workers/sandbox-libkrun).
 </Note>
 
-Sandboxes work through the worker's `sandbox::*` functions, called the same way as any other
-function (see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names
-such as `python` or `node`, not arbitrary OCI references.
+You drive sandboxes by calling the `sandbox::*` functions, the same way you call any function
+(see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names such as
+`python` or `node`, not arbitrary OCI references. The examples below capture the new sandbox's id
+with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
 `sandbox::run` boots a VM, runs a snippet, captures its output, and stops the VM in a single call,
 so there is nothing to clean up.
 
-<Tabs>
-  <Tab title="CLI">
-    ```bash
-    # print the snippet's stdout (4)
-    iii call sandbox::run image=python lang=python code='print(2+2)' | jq -r .stdout
-    ```
-
-  </Tab>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from "iii-sdk";
-
-    const worker = registerWorker();
-
-    // the reply carries stdout, stderr, exit_code, timed_out, duration_ms and success
-    const reply = await worker.call({
-      function_id: "sandbox::run",
-      payload: { image: "python", lang: "python", code: "print(2+2)" },
-    });
-
-    console.log(reply.stdout); // 4
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import register_worker
-
-    worker = register_worker()
-
-    # the reply carries stdout, stderr, exit_code, timed_out, duration_ms and success
-    reply = worker.call({
-        "function_id": "sandbox::run",
-        "payload": {"image": "python", "lang": "python", "code": "print(2+2)"},
-    })
-
-    print(reply["stdout"])  # 4
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{register_worker_from_env, InitOptions};
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() -> Result<(), iii_sdk::Error> {
-        let worker = register_worker_from_env(InitOptions::default());
-
-        // the reply carries stdout, stderr, exit_code, timed_out, duration_ms and success
-        let reply = worker
-            .call(CallRequest::new(
-                "sandbox::run",
-                json!({ "image": "python", "lang": "python", "code": "print(2+2)" }),
-            ))
-            .await?;
-
-        println!("{}", reply["stdout"]); // 4
-        Ok(())
-    }
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    package main
-
-    import (
-    	"context"
-    	"encoding/json"
-    	"fmt"
-    	"log"
-
-    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-    )
-
-    type runReply struct {
-    	Stdout string `json:"stdout"`
-    }
-
-    func main() {
-    	client := iii.RegisterWorker("")
-    	defer client.Close()
-
-    	result, err := client.Call(context.Background(), iii.CallRequest{
-    		FunctionID: "sandbox::run",
-    		Payload:    json.RawMessage(`{"image":"python","lang":"python","code":"print(2+2)"}`),
-    	})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-
-    	var reply runReply
-    	if err := json.Unmarshal(result, &reply); err != nil {
-    		log.Fatal(err)
-    	}
-    	fmt.Println(reply.Stdout) // 4
-    }
-    ```
-
-  </Tab>
-</Tabs>
+```bash
+# run a snippet and print just its stdout (-> 4)
+iii call sandbox::run image=python lang=python code='print(2+2)' | jq -r .stdout
+```
 
 `lang` accepts `node`, `python`, `shell`, or an interpreter path. Pass `keep_sandbox=true` to leave
-the VM running afterwards, and stop it yourself with `sandbox::stop`.
+the VM running afterwards (then stop it yourself with `sandbox::stop`).
 
 ## Lifecycle
 
-For multi-step work, create a sandbox, operate on it with its id, then stop it. Every function takes
-a `sandbox_id` plus its own fields. A `cmd` that contains whitespace, with `args` and `argv` empty,
-is split into the binary and its arguments.
+For multi-step work, create a sandbox, operate on it with its id, then stop it. Most functions take
+flat `key=value` arguments; only nested payloads need `--json`.
 
-<Tabs>
-  <Tab title="CLI">
-    ```bash
-    # boot a sandbox and capture its id
-    SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
+```bash
+# boot a sandbox and capture its id
+SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
 
-    # run a command and print its stdout
-    iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
+# run a command and print its stdout
+iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
 
-    # list the active sandbox ids
-    iii call sandbox::list | jq -r '.sandboxes[].sandbox_id'
+# list the active sandbox ids
+iii call sandbox::list | jq -r '.sandboxes[].sandbox_id'
 
-    # stop when done
-    iii call sandbox::stop sandbox_id=$SB
-    ```
+# stop when done
+iii call sandbox::stop sandbox_id=$SB
+```
 
-  </Tab>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from "iii-sdk";
-
-    const worker = registerWorker();
-
-    // boot a sandbox; the reply carries sandbox_id and image
-    const { sandbox_id } = await worker.call({
-      function_id: "sandbox::create",
-      payload: { image: "python" },
-    });
-
-    const run = await worker.call({
-      function_id: "sandbox::exec",
-      payload: { sandbox_id, cmd: "python --version" },
-    });
-    console.log(run.stdout);
-
-    const sandboxes = await worker.call({ function_id: "sandbox::list", payload: {} });
-    console.log(sandboxes.sandboxes.map((row: { sandbox_id: string }) => row.sandbox_id));
-
-    await worker.call({ function_id: "sandbox::stop", payload: { sandbox_id } });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import register_worker
-
-    worker = register_worker()
-
-    # boot a sandbox; the reply carries sandbox_id and image
-    created = worker.call({"function_id": "sandbox::create", "payload": {"image": "python"}})
-    sandbox_id = created["sandbox_id"]
-
-    run = worker.call({
-        "function_id": "sandbox::exec",
-        "payload": {"sandbox_id": sandbox_id, "cmd": "python --version"},
-    })
-    print(run["stdout"])
-
-    sandboxes = worker.call({"function_id": "sandbox::list", "payload": {}})
-    print([row["sandbox_id"] for row in sandboxes["sandboxes"]])
-
-    worker.call({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id}})
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{register_worker_from_env, InitOptions};
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() -> Result<(), iii_sdk::Error> {
-        let worker = register_worker_from_env(InitOptions::default());
-
-        // boot a sandbox; the reply carries sandbox_id and image
-        let created = worker
-            .call(CallRequest::new("sandbox::create", json!({ "image": "python" })))
-            .await?;
-        let sandbox_id = created["sandbox_id"].as_str().expect("sandbox_id").to_string();
-
-        let run = worker
-            .call(CallRequest::new(
-                "sandbox::exec",
-                json!({ "sandbox_id": &sandbox_id, "cmd": "python --version" }),
-            ))
-            .await?;
-        println!("{}", run["stdout"]);
-
-        let list = worker.call(CallRequest::new("sandbox::list", json!({}))).await?;
-        println!("{:?}", list["sandboxes"]);
-
-        worker
-            .call(CallRequest::new(
-                "sandbox::stop",
-                json!({ "sandbox_id": &sandbox_id }),
-            ))
-            .await?;
-        Ok(())
-    }
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    package main
-
-    import (
-    	"context"
-    	"encoding/json"
-    	"fmt"
-    	"log"
-
-    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-    )
-
-    type createReply struct {
-    	SandboxID string `json:"sandbox_id"`
-    }
-
-    func main() {
-    	ctx := context.Background()
-    	client := iii.RegisterWorker("")
-    	defer client.Close()
-
-    	// boot a sandbox; the reply carries sandbox_id and image
-    	created, err := client.Call(ctx, iii.CallRequest{
-    		FunctionID: "sandbox::create",
-    		Payload:    json.RawMessage(`{"image":"python"}`),
-    	})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-    	var sandbox createReply
-    	if err := json.Unmarshal(created, &sandbox); err != nil {
-    		log.Fatal(err)
-    	}
-
-    	run, err := client.Call(ctx, iii.CallRequest{
-    		FunctionID: "sandbox::exec",
-    		Payload:    json.RawMessage(`{"sandbox_id":"` + sandbox.SandboxID + `","cmd":"python --version"}`),
-    	})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-    	fmt.Println(string(run))
-
-    	active, err := client.Call(ctx, iii.CallRequest{FunctionID: "sandbox::list"})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-    	fmt.Println(string(active))
-
-    	if _, err := client.Call(ctx, iii.CallRequest{
-    		FunctionID: "sandbox::stop",
-    		Payload:    json.RawMessage(`{"sandbox_id":"` + sandbox.SandboxID + `"}`),
-    	}); err != nil {
-    		log.Fatal(err)
-    	}
-    }
-    ```
-
-  </Tab>
-</Tabs>
+A whitespace-containing `cmd` is split into a command and its arguments. It is not a shell, so it
+does not expand variables or chain commands; use `sandbox::run` with `lang=shell` for that.
 
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
-cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. For large output, write
-it to a file in the sandbox and fetch it with `sandbox::fs::read`.
-
-<Note>
-  The split of `cmd` is not a shell. It does not expand variables or chain commands. Use
-  `sandbox::run` with `lang: "shell"` for shell semantics.
-</Note>
-
-<Note>
-  A contract 1.0 adapter sends neither truncation key, and the router passes its reply through
-  unchanged, so a missing key means unknown, not `false`. Trust a `false` only from an adapter whose
-  contract minor is 1 or later. The adapter's contract version is `info.contract` in the
-  `sandbox::adapter::info` reply; the top-level `contract` there is the router's own.
-</Note>
+cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. A contract 1.0 adapter
+sends neither key, and the router passes its reply through unchanged, so a missing key means
+unknown. A client that parses replies with the `iii-sandbox-contract` types reads a missing key as
+`false`, so it should trust a `false` only from an adapter whose contract minor is 1 or later. The
+adapter's contract version is `info.contract` in the `sandbox::adapter::info`
+reply; the top-level `contract` there is the router's own. For large output, write it to a file in
+the sandbox and fetch it with `sandbox::fs::read`.
 
 ## Concurrency and idle cleanup
 
 A sandbox accepts up to `max_concurrent_exec_per_sandbox` simultaneous `sandbox::exec` calls (four
 by default). Concurrent execs share the guest filesystem and process table without mutual exclusion,
 so coordinate commands that mutate shared state. `sandbox::list` reports `exec_in_flight` and
-`exec_slots_free`.
+`exec_slots_free`; `exec_in_progress` only indicates whether at least one exec is running and does
+not mean the next call will be rejected.
 
 Idle cleanup treats an active exec or relayed TCP, UDP, or DNS payload as activity, so a sandbox
 serving network traffic is not automatically stopped while it is handling requests. Bare
@@ -334,474 +95,81 @@ acknowledgements and keepalive probes do not count as activity. Each exec remain
 `max_exec_timeout_ms`, and you should still call `sandbox::stop` when the sandbox is no longer
 needed.
 
-<Note>
-  `exec_in_progress` only reports whether at least one exec is running. It does not mean the next
-  call will be rejected.
-</Note>
-
 ## Catalog
 
-`sandbox::catalog::list` reports the images this engine can boot: the bundled presets plus any image
-the operator registered. Call it when you do not already know what is available.
+`sandbox::catalog::list` reports the images this engine can boot (presets plus any
+operator-registered images). Call it when you do not already know what is available. It does not
+boot a sandbox, so there is nothing to stop.
 
-<Tabs>
-  <Tab title="CLI">
-    ```bash
-    # list bootable image names (e.g. python, node)
-    iii call sandbox::catalog::list | jq -r '.images[].name'
-    ```
-
-  </Tab>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from "iii-sdk";
-
-    const worker = registerWorker();
-
-    // each entry carries name, oci_ref and kind (preset or custom)
-    const catalog = await worker.call({ function_id: "sandbox::catalog::list", payload: {} });
-    console.log(catalog.images.map((image: { name: string }) => image.name));
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import register_worker
-
-    worker = register_worker()
-
-    # each entry carries name, oci_ref and kind (preset or custom)
-    catalog = worker.call({"function_id": "sandbox::catalog::list", "payload": {}})
-    print([image["name"] for image in catalog["images"]])
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{register_worker_from_env, InitOptions};
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() -> Result<(), iii_sdk::Error> {
-        let worker = register_worker_from_env(InitOptions::default());
-
-        // each entry carries name, oci_ref and kind (preset or custom)
-        let catalog = worker
-            .call(CallRequest::new("sandbox::catalog::list", json!({})))
-            .await?;
-        for image in catalog["images"].as_array().expect("images") {
-            println!("{}", image["name"]);
-        }
-        Ok(())
-    }
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    package main
-
-    import (
-    	"context"
-    	"encoding/json"
-    	"fmt"
-    	"log"
-
-    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-    )
-
-    type catalogEntry struct {
-    	Name string `json:"name"`
-    }
-
-    func main() {
-    	client := iii.RegisterWorker("")
-    	defer client.Close()
-
-    	// each entry carries name, oci_ref and kind (preset or custom)
-    	result, err := client.Call(context.Background(), iii.CallRequest{
-    		FunctionID: "sandbox::catalog::list",
-    	})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-    	var catalog struct {
-    		Images []catalogEntry `json:"images"`
-    	}
-    	if err := json.Unmarshal(result, &catalog); err != nil {
-    		log.Fatal(err)
-    	}
-    	for _, image := range catalog.Images {
-    		fmt.Println(image.Name)
-    	}
-    }
-    ```
-
-  </Tab>
-</Tabs>
+```bash
+# list bootable image names (e.g. python, node)
+iii call sandbox::catalog::list | jq -r '.images[].name'
+```
 
 ## Filesystem
 
 The `sandbox::fs::*` functions manipulate files inside a running sandbox. Each takes a `sandbox_id`
 plus operation-specific fields.
 
-<Tabs>
-  <Tab title="CLI">
-    ```bash
-    # boot a sandbox and capture its id
-    SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
+```bash
+# boot a sandbox and capture its id
+SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
 
-    # reuse a directory and file path across the calls
-    D=/work; F=$D/main.py
+# reuse a directory and file path across the calls
+D=/work; F=$D/main.py
 
-    # create the directory
-    iii call sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
+# create the directory
+iii call sandbox::fs::mkdir sandbox_id=$SB path=$D parents=true
 
-    # write a file
-    iii call sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
+# write a file
+iii call sandbox::fs::write sandbox_id=$SB path=$F content='print(1)'
 
-    # list the directory
-    iii call sandbox::fs::ls sandbox_id=$SB path=$D | jq -r '.entries[].name'
+# list the directory
+iii call sandbox::fs::ls sandbox_id=$SB path=$D | jq -r '.entries[].name'
 
-    # stat the file
-    iii call sandbox::fs::stat sandbox_id=$SB path=$F
+# stat the file
+iii call sandbox::fs::stat sandbox_id=$SB path=$F
 
-    # read the file contents
-    iii call sandbox::fs::read sandbox_id=$SB path=$F | jq -r .body
+# read the file contents
+iii call sandbox::fs::read sandbox_id=$SB path=$F | jq -r .body
 
-    # change permissions
-    iii call sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
+# change permissions
+iii call sandbox::fs::chmod sandbox_id=$SB path=$F mode=0644
 
-    # search for a pattern
-    iii call sandbox::fs::grep sandbox_id=$SB path=$D pattern=print
+# search for a pattern
+iii call sandbox::fs::grep sandbox_id=$SB path=$D pattern=print
 
-    # find and replace across files
-    iii call sandbox::fs::sed sandbox_id=$SB path=$D pattern=print replacement=log
+# find and replace across files
+iii call sandbox::fs::sed sandbox_id=$SB path=$D pattern=print replacement=log
 
-    # move the file
-    iii call sandbox::fs::mv sandbox_id=$SB src=$F dst=$D/app.py
+# move the file
+iii call sandbox::fs::mv sandbox_id=$SB src=$F dst=$D/app.py
 
-    # remove the file
-    iii call sandbox::fs::rm sandbox_id=$SB path=$D/app.py
+# remove the file
+iii call sandbox::fs::rm sandbox_id=$SB path=$D/app.py
 
-    # stop the sandbox
-    iii call sandbox::stop sandbox_id=$SB
-    ```
+# stop the sandbox
+iii call sandbox::stop sandbox_id=$SB
+```
 
-  </Tab>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { registerWorker } from "iii-sdk";
-
-    const worker = registerWorker();
-
-    const { sandbox_id } = await worker.call({
-      function_id: "sandbox::create",
-      payload: { image: "python" },
-    });
-
-    const dir = "/work";
-    const file = `${dir}/main.py`;
-
-    await worker.call({
-      function_id: "sandbox::fs::mkdir",
-      payload: { sandbox_id, path: dir, parents: true },
-    });
-    await worker.call({
-      function_id: "sandbox::fs::write",
-      payload: { sandbox_id, path: file, content: "print(1)" },
-    });
-
-    const listed = await worker.call({
-      function_id: "sandbox::fs::ls",
-      payload: { sandbox_id, path: dir },
-    });
-    console.log(listed.entries.map((entry: { name: string }) => entry.name));
-
-    const stat = await worker.call({
-      function_id: "sandbox::fs::stat",
-      payload: { sandbox_id, path: file },
-    });
-    console.log(stat.mode);
-
-    const read = await worker.call({
-      function_id: "sandbox::fs::read",
-      payload: { sandbox_id, path: file },
-    });
-    console.log(read.body);
-
-    await worker.call({
-      function_id: "sandbox::fs::chmod",
-      payload: { sandbox_id, path: file, mode: "0644" },
-    });
-
-    const found = await worker.call({
-      function_id: "sandbox::fs::grep",
-      payload: { sandbox_id, path: dir, pattern: "print" },
-    });
-    console.log(found.matches);
-
-    await worker.call({
-      function_id: "sandbox::fs::sed",
-      payload: { sandbox_id, path: dir, pattern: "print", replacement: "log" },
-    });
-    await worker.call({
-      function_id: "sandbox::fs::mv",
-      payload: { sandbox_id, src: file, dst: `${dir}/app.py` },
-    });
-    await worker.call({
-      function_id: "sandbox::fs::rm",
-      payload: { sandbox_id, path: `${dir}/app.py` },
-    });
-
-    await worker.call({ function_id: "sandbox::stop", payload: { sandbox_id } });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    from iii import register_worker
-
-    worker = register_worker()
-
-    created = worker.call({"function_id": "sandbox::create", "payload": {"image": "python"}})
-    sandbox_id = created["sandbox_id"]
-
-    directory = "/work"
-    path = "/work/main.py"
-
-    def fs(function_id, **fields):
-        return worker.call({"function_id": function_id, "payload": {"sandbox_id": sandbox_id, **fields}})
-
-    fs("sandbox::fs::mkdir", path=directory, parents=True)
-    fs("sandbox::fs::write", path=path, content="print(1)")
-
-    listed = fs("sandbox::fs::ls", path=directory)
-    print([entry["name"] for entry in listed["entries"]])
-
-    print(fs("sandbox::fs::stat", path=path)["mode"])
-    print(fs("sandbox::fs::read", path=path)["body"])
-
-    fs("sandbox::fs::chmod", path=path, mode="0644")
-
-    found = fs("sandbox::fs::grep", path=directory, pattern="print")
-    print(found["matches"])
-
-    fs("sandbox::fs::sed", path=directory, pattern="print", replacement="log")
-    fs("sandbox::fs::mv", src=path, dst="/work/app.py")
-    fs("sandbox::fs::rm", path="/work/app.py")
-
-    worker.call({"function_id": "sandbox::stop", "payload": {"sandbox_id": sandbox_id}})
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{register_worker_from_env, InitOptions};
-    use serde_json::json;
-
-    #[tokio::main]
-    async fn main() -> Result<(), iii_sdk::Error> {
-        let worker = register_worker_from_env(InitOptions::default());
-
-        let created = worker
-            .call(CallRequest::new("sandbox::create", json!({ "image": "python" })))
-            .await?;
-        let sandbox_id = created["sandbox_id"].as_str().expect("sandbox_id").to_string();
-        let dir = "/work";
-        let file = "/work/main.py";
-
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::mkdir",
-                json!({ "sandbox_id": &sandbox_id, "path": dir, "parents": true }),
-            ))
-            .await?;
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::write",
-                json!({ "sandbox_id": &sandbox_id, "path": file, "content": "print(1)" }),
-            ))
-            .await?;
-
-        let listed = worker
-            .call(CallRequest::new(
-                "sandbox::fs::ls",
-                json!({ "sandbox_id": &sandbox_id, "path": dir }),
-            ))
-            .await?;
-        println!("{:?}", listed["entries"]);
-
-        let stat = worker
-            .call(CallRequest::new(
-                "sandbox::fs::stat",
-                json!({ "sandbox_id": &sandbox_id, "path": file }),
-            ))
-            .await?;
-        println!("{}", stat["mode"]);
-
-        let read = worker
-            .call(CallRequest::new(
-                "sandbox::fs::read",
-                json!({ "sandbox_id": &sandbox_id, "path": file }),
-            ))
-            .await?;
-        println!("{}", read["body"]);
-
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::chmod",
-                json!({ "sandbox_id": &sandbox_id, "path": file, "mode": "0644" }),
-            ))
-            .await?;
-
-        let found = worker
-            .call(CallRequest::new(
-                "sandbox::fs::grep",
-                json!({ "sandbox_id": &sandbox_id, "path": dir, "pattern": "print" }),
-            ))
-            .await?;
-        println!("{:?}", found["matches"]);
-
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::sed",
-                json!({ "sandbox_id": &sandbox_id, "path": dir, "pattern": "print", "replacement": "log" }),
-            ))
-            .await?;
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::mv",
-                json!({ "sandbox_id": &sandbox_id, "src": file, "dst": "/work/app.py" }),
-            ))
-            .await?;
-        worker
-            .call(CallRequest::new(
-                "sandbox::fs::rm",
-                json!({ "sandbox_id": &sandbox_id, "path": "/work/app.py" }),
-            ))
-            .await?;
-
-        worker
-            .call(CallRequest::new(
-                "sandbox::stop",
-                json!({ "sandbox_id": &sandbox_id }),
-            ))
-            .await?;
-        Ok(())
-    }
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    package main
-
-    import (
-    	"context"
-    	"encoding/json"
-    	"fmt"
-    	"log"
-
-    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
-    )
-
-    type createReply struct {
-    	SandboxID string `json:"sandbox_id"`
-    }
-
-    type fsRequest struct {
-    	SandboxID   string `json:"sandbox_id"`
-    	Path        string `json:"path,omitempty"`
-    	Src         string `json:"src,omitempty"`
-    	Dst         string `json:"dst,omitempty"`
-    	Content     string `json:"content,omitempty"`
-    	Mode        string `json:"mode,omitempty"`
-    	Pattern     string `json:"pattern,omitempty"`
-    	Replacement string `json:"replacement,omitempty"`
-    	Parents     bool   `json:"parents,omitempty"`
-    }
-
-    func main() {
-    	ctx := context.Background()
-    	client := iii.RegisterWorker("")
-    	defer client.Close()
-
-    	created, err := client.Call(ctx, iii.CallRequest{
-    		FunctionID: "sandbox::create",
-    		Payload:    json.RawMessage(`{"image":"python"}`),
-    	})
-    	if err != nil {
-    		log.Fatal(err)
-    	}
-    	var sandbox createReply
-    	if err := json.Unmarshal(created, &sandbox); err != nil {
-    		log.Fatal(err)
-    	}
-
-    	dir, file := "/work", "/work/main.py"
-
-    	fs := func(functionID string, req fsRequest) json.RawMessage {
-    		req.SandboxID = sandbox.SandboxID
-    		payload, err := json.Marshal(req)
-    		if err != nil {
-    			log.Fatal(err)
-    		}
-    		result, err := client.Call(ctx, iii.CallRequest{FunctionID: functionID, Payload: payload})
-    		if err != nil {
-    			log.Fatal(err)
-    		}
-    		return result
-    	}
-
-    	fs("sandbox::fs::mkdir", fsRequest{Path: dir, Parents: true})
-    	fs("sandbox::fs::write", fsRequest{Path: file, Content: "print(1)"})
-
-    	fmt.Println(string(fs("sandbox::fs::ls", fsRequest{Path: dir})))
-    	fmt.Println(string(fs("sandbox::fs::stat", fsRequest{Path: file})))
-    	fmt.Println(string(fs("sandbox::fs::read", fsRequest{Path: file})))
-
-    	fs("sandbox::fs::chmod", fsRequest{Path: file, Mode: "0644"})
-    	fmt.Println(string(fs("sandbox::fs::grep", fsRequest{Path: dir, Pattern: "print"})))
-
-    	fs("sandbox::fs::sed", fsRequest{Path: dir, Pattern: "print", Replacement: "log"})
-    	fs("sandbox::fs::mv", fsRequest{Src: file, Dst: "/work/app.py"})
-    	fs("sandbox::fs::rm", fsRequest{Path: "/work/app.py"})
-
-    	if _, err := client.Call(ctx, iii.CallRequest{
-    		FunctionID: "sandbox::stop",
-    		Payload:    json.RawMessage(`{"sandbox_id":"` + sandbox.SandboxID + `"}`),
-    	}); err != nil {
-    		log.Fatal(err)
-    	}
-    }
-    ```
-
-  </Tab>
-</Tabs>
-
-`sandbox::fs::write` takes a UTF-8 body in `content`, a base64 body in `content_b64`, or a stream
-channel. `sandbox::fs::read` returns `body` inline for a text file under the adapter's 1 MiB cap,
-and always returns a `content` channel for the full bytes, so a large or binary file stays off the
-call payload.
+For programmatic file transfer, use `sandbox::fs::write` and `sandbox::fs::read` from the previous
+section. Both operations stream through iii data channels, so they are also suitable for binary or
+larger payloads when called through an SDK.
 
 ## Error codes
 
-A failed `sandbox::*` call returns one error shape: a stable `code` (S-code), a `type`, a `message`,
-a `retryable` flag, and a `docs_url` that links to the matching entry below.
+A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
+`code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
+not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
+router returns S301-S304, and every adapter returns the rest. The `docs_url` in the error payload
+links to the matching entry below.
 
-- <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed
-  sandbox_id)
+- <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed sandbox_id)
 - <a id="S002"></a>**S002** (validation): sandbox uuid not found in registry
-- <a id="S003"></a>**S003** (validation): sandbox is at its exec concurrency cap
-  (max_concurrent_exec_per_sandbox, default 4); a slot frees when any in-flight exec finishes, but
-  detach foreground processes rather than waiting on them
+- <a id="S003"></a>**S003** (validation): sandbox is at its exec concurrency cap (max_concurrent_exec_per_sandbox, default 4); a slot frees when any in-flight exec finishes, but detach foreground processes rather than waiting on them
 - <a id="S004"></a>**S004** (validation): sandbox already stopped; create a new one
 - <a id="S100"></a>**S100** (config): image not in catalog or allowlist
-- <a id="S101"></a>**S101** (internal): rootfs missing on disk; enable auto_install or pre-provision
-  cache
+- <a id="S101"></a>**S101** (internal): rootfs missing on disk; enable auto_install or pre-provision cache
 - <a id="S102"></a>**S102** (transient): auto-install pull/extract failed; retry
 - <a id="S200"></a>**S200** (execution): exec exceeded timeout_ms
 - <a id="S210"></a>**S210** (filesystem): fs op rejected by supervisor as invalid
@@ -813,26 +181,16 @@ a `retryable` flag, and a `docs_url` that links to the matching entry below.
 - <a id="S216"></a>**S216** (filesystem): generic fs I/O failure
 - <a id="S217"></a>**S217** (filesystem): invalid regex/pattern in grep or sed
 - <a id="S218"></a>**S218** (transient): fs streaming channel aborted mid-flight; retry
-- <a id="S219"></a>**S219** (filesystem): fs op unsupported by this supervisor; upgrade the sandbox
-  adapter
+- <a id="S219"></a>**S219** (filesystem): fs op unsupported by this supervisor; upgrade the sandbox adapter
 - <a id="S300"></a>**S300** (platform): VM boot or supervisor session failure
-- <a id="S301"></a>**S301** (transient): AdapterUnavailable: the sandbox adapter is not connected;
-  retry once it is up
-- <a id="S302"></a>**S302** (config): ContractMismatch: the adapter implements a different contract
-  major version than the engine
-- <a id="S303"></a>**S303** (config): NoAdapterConfigured: this engine has no sandbox adapter; set
-  sandbox.adapter in its engine config
-- <a id="S304"></a>**S304** (platform): OperationUnsupported: the adapter does not implement this
-  operation
+- <a id="S301"></a>**S301** (transient): AdapterUnavailable: the sandbox adapter is not connected; retry once it is up
+- <a id="S302"></a>**S302** (config): ContractMismatch: the adapter implements a different contract major version than the engine
+- <a id="S303"></a>**S303** (config): NoAdapterConfigured: this engine has no sandbox adapter; set sandbox.adapter in its engine config
+- <a id="S304"></a>**S304** (platform): OperationUnsupported: the adapter does not implement this operation
 - <a id="S400"></a>**S400** (config): resource limit exceeded (cpu/memory/concurrency cap)
-- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, or host_path outside the
-  allowed roots
-- <a id="S502"></a>**S502** (validation): StateBusy: a VM already holds this state key; fix carries
-  the live vm_id and instance
-- <a id="S503"></a>**S503** (validation): InstanceMismatch: the request names a different instance
-  than the live VM; fix carries the live vm_id and instance
+- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, or host_path outside the allowed roots
+- <a id="S502"></a>**S502** (validation): StateBusy: a VM already holds this state key; fix carries the live vm_id and instance
+- <a id="S503"></a>**S503** (validation): InstanceMismatch: the request names a different instance than the live VM; fix carries the live vm_id and instance
 - <a id="S504"></a>**S504** (validation): VmNotFound: no VM with this vm_id
 - <a id="S505"></a>**S505** (validation): Unauthorized: the request auth token does not match
 - <a id="S506"></a>**S506** (transient): PrepareFailed: worker::prepare failed; retry
-
-<Note>The codes belong to the sandbox contract, not to one worker.</Note>

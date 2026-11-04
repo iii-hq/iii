@@ -5,7 +5,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use iii_compose::{ComposeFile, RestartPolicy};
+use iii_compose::{ComposeError, ComposeFile, RestartPolicy, config::SandboxSpec};
 
 fn parse(text: &str) -> Result<ComposeFile, iii_compose::ComposeError> {
     ComposeFile::parse(text, PathBuf::from("/srv/app/worker-compose.yaml"))
@@ -118,8 +118,6 @@ engine:
       port: 50124
     iii-http-functions: {}
     iii-stream: {}
-    iii-sandbox:
-      auto_install: false
 containers:
   api:
     worker: path://./workers/api
@@ -139,14 +137,12 @@ containers:
         vec![
             "configuration",
             "iii-http-functions",
-            "iii-sandbox",
             "iii-stream",
             "iii-worker-manager",
             "iii-worker-manager#rbac",
         ],
         "the public map is canonical regardless of YAML declaration order"
     );
-    assert_eq!(engine.workers["iii-sandbox"]["auto_install"], false);
 }
 
 #[test]
@@ -1004,6 +1000,28 @@ containers:
 }
 
 #[test]
+fn an_empty_version_is_no_version_for_a_package_worker() {
+    for version in ["''", "'  '", "${III_COMPOSE_EMPTY_VERSION_TEST_UNSET:-}"] {
+        assert_eq!(
+            code(&format!(
+                "containers:\n  api:\n    worker: package://workers.iii.dev/api\n    version: {version}\n"
+            )),
+            "MISSING_VERSION_FOR_PACKAGE",
+            "version: {version}"
+        );
+    }
+}
+
+#[test]
+fn a_path_worker_still_ignores_an_empty_version() {
+    let file = parse(
+        "containers:\n  api:\n    worker: path://.\n    version: ''\n    scripts:\n      run: ./api\n",
+    )
+    .unwrap();
+    assert_eq!(file.containers["api"].requested(), None);
+}
+
+#[test]
 fn orders_a_diamond_graph_dependencies_first() {
     let file = parse(
         r#"
@@ -1125,5 +1143,89 @@ containers:
     assert!(
         err.to_string().contains("config_name"),
         "the error should point at the key that replaced it: {err}"
+    );
+}
+
+#[test]
+fn engine_sandbox_section_defaults_to_sandbox_libkrun() {
+    let engine = parse("engine:\n  sandbox: {}\ncontainers: {}\n")
+        .unwrap()
+        .engine
+        .unwrap();
+    assert_eq!(
+        engine.sandbox,
+        Some(SandboxSpec {
+            adapter: "sandbox-libkrun".into(),
+            namespace: None
+        })
+    );
+    let engine =
+        parse("engine:\n  sandbox: {adapter: sandbox-docker, namespace: shared}\ncontainers: {}\n")
+            .unwrap()
+            .engine
+            .unwrap();
+    assert_eq!(engine.sandbox.unwrap().namespace.as_deref(), Some("shared"));
+    assert_eq!(
+        parse("engine: {workers: {}}\ncontainers: {}\n")
+            .unwrap()
+            .engine
+            .unwrap()
+            .sandbox,
+        None
+    );
+}
+
+#[test]
+fn engine_sandbox_rejects_unknown_keys() {
+    assert_eq!(
+        code("engine:\n  sandbox: {adaptor: x}\ncontainers: {}\n"),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+const MOVED: &str = "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the sandbox-libkrun worker, which Compose installs for you. Replace the block with `engine.sandbox.adapter: sandbox-libkrun` (optional, the default) and move image_allowlist/custom_images/default_* to `containers.sandbox-libkrun.config_override`. Guide: https://iii.dev/docs/upgrading/sandbox-worker";
+
+#[test]
+fn the_pre_0_26_sandbox_block_fails_with_its_replacement() {
+    let error = parse(
+        "engine:\n  workers:\n    iii-sandbox:\n      image_allowlist: [python]\n      default_cpus: 2\ncontainers: {}\n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "SANDBOX_CONFIG_MOVED");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^0.2'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
+        )
+    );
+}
+
+#[test]
+fn replacement_yaml_parses_and_keeps_the_old_block() {
+    for block in [
+        "iii-sandbox:\n      image_allowlist: [python, node]\n      custom_images: {r: {image: 'docker.io/r:1'}}",
+        "iii-sandbox#second: {}",
+    ] {
+        let Err(ComposeError::SandboxConfigMoved { replacement }) = parse(&format!(
+            "engine:\n  workers:\n    {block}\ncontainers: {{}}\n"
+        )) else {
+            panic!("{block}")
+        };
+        let file = ComposeFile::parse(&replacement, "/tmp/worker-compose.yaml").unwrap();
+        let adapter = &file.containers["sandbox-libkrun"];
+        assert_eq!(adapter.version.as_deref(), Some("^0.2"));
+        let old: serde_yaml::Mapping = serde_yaml::from_str(block).unwrap();
+        assert_eq!(adapter.config_override.as_ref(), old.values().next());
+    }
+}
+
+#[test]
+fn unsupported_engine_worker_points_to_engine_sandbox() {
+    let message = parse("engine:\n  workers:\n    queue: {}\ncontainers: {}\n")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !message.contains("iii-sandbox") && message.contains("engine.sandbox"),
+        "{message}"
     );
 }

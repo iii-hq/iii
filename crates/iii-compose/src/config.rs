@@ -60,7 +60,6 @@ pub const CONFIGURABLE_ENGINE_WORKERS: &[&str] = &[
     "iii-worker-manager",
     "iii-http-functions",
     "iii-stream",
-    "iii-sandbox",
 ];
 
 /// Engine worker map keys may carry the engine's existing `#instance`
@@ -333,6 +332,25 @@ pub struct EngineSpec {
     /// engine validates it.
     pub observers: Option<serde_yaml::Value>,
     pub workers: BTreeMap<String, serde_yaml::Value>,
+    /// Which adapter the engine's `sandbox::*` router forwards to. `None` is no
+    /// section: the managed engine still binds the default adapter.
+    pub sandbox: Option<SandboxSpec>,
+}
+
+/// The `engine.sandbox` section. The adapter name is not checked here: the
+/// engine rejects a binding it cannot resolve (`INVALID_SANDBOX_CONFIG`).
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxSpec {
+    #[serde(default = "default_sandbox_adapter")]
+    pub adapter: String,
+    /// The namespace the adapter runs in; the owning project's when absent.
+    #[serde(default)]
+    pub namespace: Option<String>,
+}
+
+fn default_sandbox_adapter() -> String {
+    iii_sandbox_contract::DEFAULT_ADAPTER.to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -378,9 +396,18 @@ impl ComposeFile {
     }
 
     /// Parses compose YAML that is already in memory. `path` is used for
-    /// diagnostics and to resolve relative paths.
+    /// diagnostics and to resolve relative paths. A relative `path` is made
+    /// absolute first, so what is resolved against it (a VM's `host_path`)
+    /// does not depend on the working directory of whoever reads it next.
+    /// A rooted path is kept as given: on Windows `/srv/app` has no drive,
+    /// and making it absolute would pin it to the current one.
     pub fn parse(text: &str, path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
+        let path = if path.has_root() {
+            path
+        } else {
+            std::path::absolute(&path).unwrap_or(path)
+        };
         let base_dir = path
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -477,6 +504,11 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
     let mut workers = BTreeMap::new();
     for (name, config) in raw.workers {
         let worker_type = engine_worker_type(&name);
+        if worker_type == "iii-sandbox" {
+            return Err(ComposeError::SandboxConfigMoved {
+                replacement: sandbox_replacement(&config),
+            });
+        }
         if INJECTED_ENGINE_WORKERS.contains(&worker_type) {
             return Err(ComposeError::EngineWorkerIsInjected { worker: name });
         }
@@ -506,7 +538,23 @@ fn validate_engine(raw: RawEngineSpec) -> Result<EngineSpec> {
         registration_namespace_grace_ms: raw.registration_namespace_grace_ms,
         observers,
         workers,
+        sandbox: raw.sandbox,
     })
+}
+
+/// The `containers:` entry that carries a pre-0.26 `engine.workers.iii-sandbox`
+/// block to `sandbox-libkrun`. It has no `# added by compose::add` marker: the
+/// operator declares it, so Compose never removes it with its `config_override`.
+/// The version is a range because the migration check is offline.
+pub fn sandbox_replacement(old: &serde_yaml::Value) -> String {
+    let mut text = format!(
+        "containers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '{}'\n    config_override:\n",
+        crate::sandbox::ADAPTER_RANGE
+    );
+    for line in serde_yaml::to_string(old).unwrap_or_default().lines() {
+        text.push_str(&format!("      {line}\n"));
+    }
+    text
 }
 
 /// Reads `engine.url` from a Compose document, and nothing else.
@@ -599,7 +647,14 @@ fn validate_container(
     let worker = parse_worker_source(key, &raw.worker, base_dir)?;
     let is_package = matches!(worker, WorkerSource::Package { .. });
 
-    if is_package && raw.version.is_none() {
+    // An empty selector (`version: ""`, or a variable that expands to nothing)
+    // selects nothing, and the lock refuses to record one.
+    if is_package
+        && raw
+            .version
+            .as_deref()
+            .is_none_or(|version| version.trim().is_empty())
+    {
         return Err(ComposeError::MissingVersionForPackage {
             container: key.to_string(),
         });
@@ -753,6 +808,19 @@ impl Container {
                 .resolved_package
                 .as_ref()
                 .map(|package| package.version.clone()),
+        }
+    }
+
+    /// The registry selector a `package://` worker is resolved against: its
+    /// declared `version`, a tag such as `latest`, a semver range, or an exact
+    /// version. It is the value the lock records as `requested`, and the one
+    /// `compose::update worker=<name>` resolves again. `None` for a `path://`
+    /// worker, which has no registry selector even when it declares a
+    /// `version`.
+    pub fn requested(&self) -> Option<&str> {
+        match &self.worker {
+            WorkerSource::Path { .. } => None,
+            WorkerSource::Package { .. } => Some(self.version.as_deref().unwrap_or("*")),
         }
     }
 
@@ -1039,6 +1107,8 @@ struct RawEngineSpec {
     #[serde(default, deserialize_with = "deserialize_unique_map")]
     #[schemars(with = "BTreeMap<String, serde_json::Value>")]
     workers: IndexMap<String, serde_yaml::Value>,
+    #[serde(default)]
+    sandbox: Option<SandboxSpec>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1254,6 +1324,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn requested_is_a_package_selector_as_declared_and_absent_for_a_path_worker() {
+        let compose = ComposeFile::parse(
+            r#"
+containers:
+  tagged:
+    worker: package://api.workers.iii.dev/state
+    version: latest
+  ranged:
+    worker: package://api.workers.iii.dev/queue
+    version: ^0.22
+  pinned:
+    worker: package://private.example/team/cache
+    version: 0.22.8
+  defaulted:
+    worker: package://api.workers.iii.dev/stream
+    version: ${III_COMPOSE_REQUESTED_TEST_UNSET:-next}
+  local:
+    worker: path://.
+    version: 1.0.0
+    scripts:
+      run: ./local
+"#,
+            Path::new("worker-compose.yaml"),
+        )
+        .unwrap();
+        let requested = |key: &str| compose.containers[key].requested();
+
+        assert_eq!(requested("tagged"), Some("latest"));
+        assert_eq!(requested("ranged"), Some("^0.22"));
+        assert_eq!(requested("pinned"), Some("0.22.8"));
+        // The selector compose resolves is the interpolated one.
+        assert_eq!(requested("defaulted"), Some("next"));
+        // A path worker is never resolved, so its `version` selects nothing.
+        assert_eq!(requested("local"), None);
+    }
+
+    #[test]
     fn engine_only_parse_ignores_invalid_container_state() {
         let text = r#"
 engine:
@@ -1387,6 +1494,41 @@ engine:
         let text = example["worker-compose.yaml"].as_str().unwrap();
         let parsed = ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap();
         assert!(parsed.containers.contains_key("state"));
+    }
+
+    /// `compose::add` with no `file` parses the daemon's relative default: a
+    /// `path://../` worker must still reach the adapter as an absolute path.
+    #[test]
+    fn a_relative_compose_path_resolves_workers_absolutely() {
+        let parsed = ComposeFile::parse(
+            "containers:\n  vm: {worker: path://../outside}\n",
+            "worker-compose.yaml",
+        )
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(parsed.path, cwd.join("worker-compose.yaml"));
+        assert_eq!(parsed.base_dir, cwd);
+        assert_eq!(
+            parsed.containers["vm"].worker_dir(),
+            Some(cwd.join("../outside").as_path())
+        );
+    }
+
+    /// A rooted path is not pinned to the current drive on Windows, so a
+    /// project parsed from `/srv/app` resolves its workers under `/srv/app`.
+    #[test]
+    fn a_rooted_compose_path_is_kept_as_given() {
+        let parsed = ComposeFile::parse(
+            "containers:\n  vm: {worker: path://./api}\n",
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+        assert_eq!(parsed.path, PathBuf::from("/srv/app/worker-compose.yaml"));
+        assert_eq!(parsed.base_dir, PathBuf::from("/srv/app"));
+        assert_eq!(
+            parsed.containers["vm"].worker_dir(),
+            Some(Path::new("/srv/app/api"))
+        );
     }
 
     #[test]

@@ -72,6 +72,9 @@ pub enum Outcome {
     Exited(ExitStatus),
     /// Still running when the caller stopped waiting.
     Running,
+    /// Not known right now: a remote VM whose adapter did not answer. Never
+    /// restarts or cascades. A local process is never in this state.
+    Unknown,
 }
 
 /// Grace period between SIGTERM and SIGKILL during teardown.

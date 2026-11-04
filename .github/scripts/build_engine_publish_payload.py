@@ -174,6 +174,8 @@ def build_payload(
         "version": engine_version,
         "tag": registry_tag or "latest",
         "type": "engine",
+        # Keeps older engines on the rows of their own release; the range grammar has no prerelease.
+        "iii_engine_version": ">=" + engine_version.split("-", 1)[0].split("+", 1)[0],
         "readme": readme,
         "repo": repo_url,
         "description": meta.get("description", ""),

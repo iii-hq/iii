@@ -70,13 +70,13 @@ use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     future::Future,
+    pin::Pin,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
@@ -95,14 +95,14 @@ use crate::{
 /// and a hook still running after 30 s is `OWNER_TIMEOUT`.
 ///
 /// Implemented for async closures taking the [`Observer`] by value.
-// async_trait injects #[must_use] on boxed Future-returning trait methods.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
+/// Implement with plain `async fn`, without `#[async_trait]`. The returned
+/// future is `Send` and may borrow `self` across `.await`. This trait is not
+/// dyn-compatible; pass a concrete hook to [`IIIClient::on_observer_added`].
 pub trait AddedHook: Send + Sync + 'static {
-    async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection>;
+    fn on_added(
+        &self,
+        obs: Observer,
+    ) -> impl Future<Output = Result<(), ObserveRejection>> + Send + '_;
 }
 
 /// Runs once for every accepted observer when it is removed (unobserved,
@@ -111,13 +111,11 @@ pub trait AddedHook: Send + Sync + 'static {
 /// observer is removed either way.
 ///
 /// Implemented for async closures taking the [`Observer`] by value.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
+/// Implement with plain `async fn`, without `#[async_trait]`. The returned
+/// future is `Send` and may borrow `self` across `.await`. This trait is not
+/// dyn-compatible; pass a concrete hook to [`IIIClient::on_observer_removed`].
 pub trait RemovedHook: Send + Sync + 'static {
-    async fn on_removed(&self, obs: Observer);
+    fn on_removed(&self, obs: Observer) -> impl Future<Output = ()> + Send + '_;
 }
 
 /// Delivers each call of one function itself, in place of iii's delivery:
@@ -134,16 +132,17 @@ pub trait RemovedHook: Send + Sync + 'static {
 /// with [`Observer::matches`].
 ///
 /// Implemented for async closures taking `(Call, Vec<Observer>)`.
-#[allow(
-    clippy::double_must_use,
-    reason = "async_trait generates redundant must_use on boxed futures"
-)]
-#[async_trait]
+/// Implement with plain `async fn`, without `#[async_trait]`. The returned
+/// future is `Send` and may borrow `self` across `.await`. This trait is not
+/// dyn-compatible; pass a concrete hook to [`IIIClient::on_observation_deliver_for`].
 pub trait DeliverHook: Send + Sync + 'static {
-    async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error>;
+    fn on_deliver(
+        &self,
+        call: Call,
+        observers: Vec<Observer>,
+    ) -> impl Future<Output = Result<Value, Error>> + Send + '_;
 }
 
-#[async_trait]
 impl<F, Fut> AddedHook for F
 where
     F: Fn(Observer) -> Fut + Send + Sync + 'static,
@@ -154,7 +153,6 @@ where
     }
 }
 
-#[async_trait]
 impl<F, Fut> RemovedHook for F
 where
     F: Fn(Observer) -> Fut + Send + Sync + 'static,
@@ -165,7 +163,6 @@ where
     }
 }
 
-#[async_trait]
 impl<F, Fut> DeliverHook for F
 where
     F: Fn(Call, Vec<Observer>) -> Fut + Send + Sync + 'static,
@@ -173,6 +170,55 @@ where
 {
     async fn on_deliver(&self, call: Call, observers: Vec<Observer>) -> Result<Value, Error> {
         self(call, observers).await
+    }
+}
+
+// Only the SDK's heterogeneous hook store needs dynamic dispatch. Concrete
+// hooks return native futures; each stored invocation boxes exactly once.
+pub(crate) trait ErasedAddedHook: Send + Sync {
+    fn added(
+        &self,
+        obs: Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + '_>>;
+}
+
+pub(crate) trait ErasedRemovedHook: Send + Sync {
+    fn removed(&self, obs: Observer) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
+
+pub(crate) trait ErasedDeliverHook: Send + Sync {
+    fn deliver(
+        &self,
+        call: Call,
+        observers: Vec<Observer>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + '_>>;
+}
+
+// Invoke inside the future, not while constructing it: an explicit RPITIT
+// implementation can panic before returning its future. The caller's
+// catch_unwind must cover that code as well as subsequent polls.
+impl<T: AddedHook> ErasedAddedHook for T {
+    fn added(
+        &self,
+        obs: Observer,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ObserveRejection>> + Send + '_>> {
+        Box::pin(async move { self.on_added(obs).await })
+    }
+}
+
+impl<T: RemovedHook> ErasedRemovedHook for T {
+    fn removed(&self, obs: Observer) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move { self.on_removed(obs).await })
+    }
+}
+
+impl<T: DeliverHook> ErasedDeliverHook for T {
+    fn deliver(
+        &self,
+        call: Call,
+        observers: Vec<Observer>,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + '_>> {
+        Box::pin(async move { self.on_deliver(call, observers).await })
     }
 }
 
@@ -649,21 +695,21 @@ pub(crate) enum Level {
 /// hook, caught up for the observers already active.
 #[derive(Clone)]
 pub(crate) struct AddedSlot {
-    pub hook: Arc<dyn AddedHook>,
+    pub hook: Arc<dyn ErasedAddedHook>,
     pub generation: u64,
 }
 
 #[derive(Clone, Default)]
 struct LevelHooks {
     added: Option<AddedSlot>,
-    removed: Option<Arc<dyn RemovedHook>>,
+    removed: Option<Arc<dyn ErasedRemovedHook>>,
 }
 
 #[derive(Clone, Default)]
 struct FunctionHooks {
     level: LevelHooks,
     matching: Option<Match>,
-    deliver: Option<Arc<dyn DeliverHook>>,
+    deliver: Option<Arc<dyn ErasedDeliverHook>>,
 }
 
 impl FunctionHooks {
@@ -699,7 +745,7 @@ pub(crate) struct HookStore {
 pub(crate) struct HookStoreGuard<'a>(std::sync::MutexGuard<'a, HookState>);
 
 impl HookStoreGuard<'_> {
-    pub(crate) fn deliver(&self, function_id: &str) -> Option<Arc<dyn DeliverHook>> {
+    pub(crate) fn deliver(&self, function_id: &str) -> Option<Arc<dyn ErasedDeliverHook>> {
         self.0
             .by_id
             .get(function_id)
@@ -743,7 +789,7 @@ impl HookStore {
 
     /// The removed hooks that apply to `function_id`: the function's, then
     /// the worker's.
-    pub(crate) fn removed(&self, function_id: &str) -> [Option<Arc<dyn RemovedHook>>; 2] {
+    pub(crate) fn removed(&self, function_id: &str) -> [Option<Arc<dyn ErasedRemovedHook>>; 2] {
         let state = self.state.lock_or_recover();
         [
             state
@@ -769,7 +815,7 @@ impl HookStore {
         ids
     }
 
-    fn set_added(&self, function_id: Option<&str>, hook: Option<Arc<dyn AddedHook>>) -> bool {
+    fn set_added(&self, function_id: Option<&str>, hook: Option<Arc<dyn ErasedAddedHook>>) -> bool {
         let mut state = self.state.lock_or_recover();
         state.generation += 1;
         let generation = state.generation;
@@ -782,7 +828,7 @@ impl HookStore {
         set
     }
 
-    fn set_removed(&self, function_id: Option<&str>, hook: Option<Arc<dyn RemovedHook>>) {
+    fn set_removed(&self, function_id: Option<&str>, hook: Option<Arc<dyn ErasedRemovedHook>>) {
         let mut state = self.state.lock_or_recover();
         match function_id {
             None => state.worker.removed = hook,
@@ -794,7 +840,7 @@ impl HookStore {
 impl IIIClient {
     /// Sets the added hook of `function_id`, or of every function when it is
     /// `None`, and catches it up for the observers already active.
-    fn set_added_hook(&self, function_id: Option<&str>, hook: Option<Arc<dyn AddedHook>>) {
+    fn set_added_hook(&self, function_id: Option<&str>, hook: Option<Arc<dyn ErasedAddedHook>>) {
         if !self.inner.hooks.set_added(function_id, hook) {
             return;
         }
@@ -808,7 +854,7 @@ impl IIIClient {
         }
     }
 
-    fn set_deliver_hook(&self, function_id: &str, hook: Option<Arc<dyn DeliverHook>>) {
+    fn set_deliver_hook(&self, function_id: &str, hook: Option<Arc<dyn ErasedDeliverHook>>) {
         let entry = {
             // Under the store lock, as a registration reads it: the entry of
             // a function registered meanwhile gets the hook either way.
