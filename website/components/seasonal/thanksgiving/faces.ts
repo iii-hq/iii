@@ -1,27 +1,9 @@
+import type { Face, Px } from '../shared/cube-mark'
+
 /**
  * Pixel harvest faces for the cube-turn mark, in the Halloween monsters' format. Every shape is drawn on a 16×16 head
  * grid; accessories may reach 4 cells past it on any side. A rect is [x, y, width, height, fill?].
  */
-export type Px = readonly [x: number, y: number, w: number, h: number, fill?: string]
-
-export interface Face {
-  name: string
-  /** Skin colour; the front face tints toward it while the bars fold into a square. */
-  color: string
-  /** Head silhouette, filled with `color`. */
-  head: readonly Px[]
-  /** Markings painted on the head under the visor. */
-  marks?: readonly Px[]
-  /** The dark screen the eyes sit on. */
-  visor?: readonly Px[]
-  /** These blink. */
-  eyes: readonly Px[]
-  /** Painted over the eyes, unanimated. */
-  details?: readonly Px[]
-  /** Pop out once the face has turned toward the viewer. */
-  extras?: readonly Px[]
-}
-
 const RED = '#c9472f'
 const ORANGE = '#e5852e'
 const AMBER = '#ebb24b'
@@ -167,11 +149,3 @@ const CORN: Face = {
 }
 
 export const FACES: readonly Face[] = [TURKEY, PIE, LEAF, CORN]
-
-/** Blend a #rrggbb colour toward white; the front face passes through this pale tint before the turn. */
-export function tint(hex: string, amount: number): string {
-  const n = Number.parseInt(hex.slice(1), 16)
-  const mix = (c: number) => Math.round(c + (255 - c) * amount)
-  const [r, g, b] = [mix(n >> 16), mix((n >> 8) & 0xff), mix(n & 0xff)]
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`
-}

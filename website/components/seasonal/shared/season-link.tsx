@@ -1,9 +1,22 @@
 'use client'
 
 import { useInView, useReducedMotion } from 'motion/react'
-import { useEffect, useRef, useState } from 'react'
+import { type ComponentType, useEffect, useRef, useState } from 'react'
 
-import { IDEAS } from './ideas'
+import type { MarkProps } from './mark-svg'
+
+/** One seasonal mark in a season's rotation. */
+export type Idea = {
+  id: string
+  name: string
+  Mark: ComponentType<MarkProps>
+  /** How long an autoplay holds the mark on. */
+  showMs: number
+  /** How long one play runs once started, even if `on` drops; only play-once ideas need it. */
+  playMs: number
+  /** After `on` drops, how long until the mark is back at rest and the next idea can take over. */
+  settleMs: number
+}
 
 /** Autoplay: the first play this long after the mark comes on screen... */
 const FIRST_MS = 1750
@@ -13,25 +26,30 @@ const FIRST_MS = 1750
  */
 const REST_MS = 3400
 
+/** What the header and footer pass to a season's link. */
+export type SeasonLinkProps = {
+  href: string
+  label: string
+  /** The mark's size in px. */
+  size: number
+  /** Play on its own every few seconds while on screen (default on). */
+  autoplay?: boolean
+  className?: string
+}
+
 /**
- * A link wearing the iii mark for Thanksgiving week. It plays on hover or keyboard focus and, with `autoplay`, on its
- * own every few seconds while it is on screen. Each play shows the next of the six ideas, starting from a random one
- * so a returning reader meets something new.
+ * A link wearing a season's iii mark. It plays on hover or keyboard focus and, with `autoplay`, on its own every few
+ * seconds while it is on screen. Each play shows the next of the season's `ideas`, starting from a random one so a
+ * returning reader meets something new.
  */
-export default function ThanksgivingLink({
+export function SeasonLink({
+  ideas,
   href,
   label,
   size,
   autoplay = true,
   className,
-}: {
-  href: string
-  label: string
-  /** The mark's size in px. */
-  size: number
-  autoplay?: boolean
-  className?: string
-}) {
+}: SeasonLinkProps & { ideas: readonly Idea[] }) {
   const ref = useRef<HTMLAnchorElement>(null)
   const inView = useInView(ref)
   const reduceMotion = useReducedMotion()
@@ -40,14 +58,14 @@ export default function ThanksgivingLink({
   const [index, setIndex] = useState(0)
   const on = hovered || visiting
 
-  const idea = IDEAS[index]
+  const idea = ideas[index]
   const ideaRef = useRef(idea)
   ideaRef.current = idea
 
   // Picked after mount so the server and client markup agree.
-  useEffect(() => setIndex(Math.floor(Math.random() * IDEAS.length)), [])
+  useEffect(() => setIndex(Math.floor(Math.random() * ideas.length)), [ideas.length])
 
-  // Once a play ends and the mark is back at rest, queue the next idea. A play-once idea (the trot) keeps going after
+  // Once a play ends and the mark is back at rest, queue the next idea. A play-once idea (a trot, a firework) keeps going after
   // the pointer leaves, so wait for it to finish too; hovering again before then replays the same one, so the mark
   // never swaps mid-animation.
   const played = useRef(false)
@@ -62,10 +80,10 @@ export default function ThanksgivingLink({
     const wait = Math.max(idea.settleMs, busyUntil.current - performance.now())
     const timer = window.setTimeout(() => {
       played.current = false
-      setIndex((n) => (n + 1) % IDEAS.length)
+      setIndex((n) => (n + 1) % ideas.length)
     }, wait)
     return () => window.clearTimeout(timer)
-  }, [on, idea])
+  }, [on, idea, ideas.length])
 
   // Autoplay: only while the mark is on screen and the tab is visible, and never for readers who asked for less motion.
   useEffect(() => {

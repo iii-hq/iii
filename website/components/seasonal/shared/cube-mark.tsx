@@ -5,10 +5,37 @@ import { useRef, useState } from 'react'
 
 import { cn } from '@/lib/utils'
 
-import { FACES, type Px, tint } from './faces'
+/** A pixel face for the cube turn. Every shape is drawn on a 16×16 head grid; accessories may reach 4 cells past it. */
+export type Px = readonly [x: number, y: number, w: number, h: number, fill?: string]
+
+export interface Face {
+  name: string
+  /** Skin colour; the front face tints toward it while the bars fold into a square. */
+  color: string
+  /** Head silhouette, filled with `color`. */
+  head: readonly Px[]
+  /** Markings painted on the head under the visor. */
+  marks?: readonly Px[]
+  /** The dark screen the eyes sit on. */
+  visor?: readonly Px[]
+  /** These blink. */
+  eyes: readonly Px[]
+  /** Painted over the eyes, unanimated. */
+  details?: readonly Px[]
+  /** Pop out once the face has turned toward the viewer. */
+  extras?: readonly Px[]
+}
+
+/** Blend a #rrggbb colour toward white; the front face passes through this pale tint before the turn. */
+export function tint(hex: string, amount: number): string {
+  const n = Number.parseInt(hex.slice(1), 16)
+  const mix = (c: number) => Math.round(c + (255 - c) * amount)
+  const [r, g, b] = [mix(n >> 16), mix((n >> 8) & 0xff), mix(n & 0xff)]
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`
+}
 
 /*
- * The cube turn from the Halloween mark (#2435), kept as-is so the harvest faces can be judged against it. When it
+ * The cube turn from the Halloween mark (#2435), showing one of a season's pixel faces. When it
  * turns on, the six bars fold into a square while it blushes toward the face's colour, then the square turns like
  * the front of a cube to show the face on the next side. Turning off plays it backwards.
  *
@@ -38,13 +65,15 @@ function Rects({ px, fill }: { px: readonly Px[]; fill?: string }) {
 /** The animation alone, with no interaction: whoever renders it decides when it is `on`. */
 export function CubeMark({
   on,
+  faces,
   face,
   size,
   ink = '#ffffff',
   className,
 }: {
   on: boolean
-  /** Index into FACES. A change waits until the mark is back at rest, so a face never swaps mid-turn. */
+  faces: readonly Face[]
+  /** Index into `faces`. A change waits until the mark is back at rest, so a face never swaps mid-turn. */
   face: number
   /** In px; the cube depth is derived from it. */
   size: number
@@ -60,7 +89,7 @@ export function CubeMark({
   // Whether the cube has started to turn since it last came to rest; read when the fold-out is scheduled.
   const turned = useRef(false)
 
-  const m = FACES[shown % FACES.length]
+  const m = faces[shown % faces.length]
   const state = on ? 'on' : 'off'
 
   return (

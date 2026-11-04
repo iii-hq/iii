@@ -1,11 +1,16 @@
 'use client'
 
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { type ComponentType, type LazyExoticComponent, lazy, Suspense, useEffect, useState } from 'react'
 
 import { currentSeason, type Season } from '@/lib/seasons'
 
-// Loaded only while a season is showing, so the rest of the year no visitor downloads it.
-const ThanksgivingLink = lazy(() => import('./thanksgiving/thanksgiving-link'))
+import type { SeasonLinkProps } from './shared/season-link'
+
+// Each season's link is loaded only while that season is showing, so the rest of the year no visitor downloads it.
+const LINKS: Record<Season, LazyExoticComponent<ComponentType<SeasonLinkProps>>> = {
+  diwali: lazy(() => import('./diwali/link')),
+  thanksgiving: lazy(() => import('./thanksgiving/link')),
+}
 
 /** The plain mark at the seasonal size, held in place while the seasonal code loads. */
 function RestingMark({ size }: { size: number }) {
@@ -46,7 +51,8 @@ export function SeasonalLink({
   const [season, setSeason] = useState<Season | null>(null)
   useEffect(() => setSeason(currentSeason()), [])
 
-  if (season === 'thanksgiving') {
+  if (season) {
+    const SeasonLink = LINKS[season]
     return (
       <Suspense
         fallback={
@@ -55,7 +61,7 @@ export function SeasonalLink({
           </a>
         }
       >
-        <ThanksgivingLink href={href} label={label} size={size} autoplay={autoplay} className={className} />
+        <SeasonLink href={href} label={label} size={size} autoplay={autoplay} className={className} />
       </Suspense>
     )
   }
