@@ -84,7 +84,7 @@ class ObserveSource(_ObserveSourceRequired, total=False):
 
     Attributes:
         function_id: The observed function.
-        namespace: Defaults to this worker's (``engine::*`` resolves to ``default``).
+        namespace: Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``).
         args: For the worker that hosts the function, which reads them in its
             hooks; validated against the function's ``args_format``. A function
             without ``args_format`` takes none.

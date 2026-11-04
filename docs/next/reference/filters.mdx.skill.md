@@ -164,11 +164,11 @@ whatever its other conditions say. A filter without one (its conditions are rang
 `$exists`, `$prefix`, conditions inside `$or`, `$not`, or `$any`, or an `$eq` of an array or an
 object) is evaluated on every call.
 
-Where the lookups would spare a call little, the engine evaluates every observer's filter, as a
-scan does: when the index files fewer than two observers per indexed path, and when a call meets
-the conditions of half the observers or more. A call therefore costs at most about the evaluation
-of every filter plus one lookup per indexed path. A function none of whose observers has an
-indexable filter keeps no index, and its calls evaluate every filter.
+Where the lookups would spare a call little, the engine evaluates every observer's filter, as a scan
+does: when the index files fewer than two observers per indexed path, and when a call meets the
+conditions of half the observers or more. A call therefore costs at most about the evaluation of
+every filter plus one lookup per indexed path. A function none of whose observers has an indexable
+filter keeps no index, and its calls evaluate every filter.
 
 ## Validation
 

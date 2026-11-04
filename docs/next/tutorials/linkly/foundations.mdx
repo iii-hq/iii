@@ -42,12 +42,12 @@ engine:
 containers:
   http:
     worker: package://http
-    version: "0.21.9"
+    version: "latest"
     config_name: http
 
   state:
     worker: package://state
-    version: "0.22.8"
+    version: "latest"
     config_name: state
     config_override:
       adapter:
@@ -63,13 +63,12 @@ The `engine:` section is where the engine can be configured, this is useful for 
 compose project and the engine with `iii compose --up`.
 
 `containers` store one entry for each worker. Workers can exist as remote packages or local paths.
-For example `http` comes from a remote package, while `linkly` will be a path from your project
+For example `http` comes from a remote package, while `link` will be a path from your project
 directory to the local worker.
 
 `state` uses an in-memory store by default, so every restart starts clean. That's what we want for
 this chapter. The `config_override` block declares that default explicitly.
-[Ch. 3: Persist everything](/tutorials/linkly/persistence) will swap this approach for durable
-storage.
+[Ch. 3: Persist everything](./persistence) will swap this approach for durable storage.
 
 ## Explore the link worker
 
@@ -96,7 +95,8 @@ scripts:
   Compose runs the worker from `scripts.start`, but a worker can also be an ordinary service. Any
   process that uses a iii SDK and calls `registerWorker()` is a worker.
   <p>
-    Learn more about the [`iii.worker.yaml` manifest](/creating-workers/workers#worker-manifest).
+    Learn more about the [`iii.worker.yaml`
+    manifest](../../creating-workers/workers#worker-manifest).
   </p>
 </Info>
 
@@ -389,7 +389,7 @@ worker.observe(
   This is the first observer you've added yourself. In iii every function is observable, and
   `worker.observe(a, b)` means that when `a` runs, `b` runs. Here `a` is `http::on-request`, which
   runs once per HTTP request, and its `args` tell the `http` worker which requests are yours. Learn
-  more about [Observers](/using-iii/observers).
+  more about [Observers](../../using-iii/observers).
 </Check>
 
 <Info>
@@ -507,5 +507,5 @@ You have built a real link shortener: a domain worker exposed over HTTP, where t
 engine still clears every link, though: `state` is in-memory until Chapter 3 swaps it for durable
 storage.
 
-Next, in [Ch. 2: Observe everything](/tutorials/linkly/observability), you will add logs and traces
-and watch invocations flow through the engine in the console.
+Next, in [Ch. 2: Observe everything](./observability), you will add logs and traces and watch
+invocations flow through the engine in the console.

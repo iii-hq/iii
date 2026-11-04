@@ -1,7 +1,7 @@
 {
   "type": "invokefunction",
   "invocation_id": "d93a1fa9-09e3-4384-8d1c-d2b8c00b26c8",
-  "function_id": "console::observers::refresh",
+  "function_id": "ade::observers::refresh",
   "data": {
     "observer_id": "0ad9be10-9c1b-425e-9cdd-74160cb9fe09",
     "activation_id": "6c796915-9a68-4c37-9f40-618816372d58",

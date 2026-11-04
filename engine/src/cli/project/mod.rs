@@ -438,6 +438,8 @@ const ONBOARDING_CONTAINER: &str = "  # The guided tour. It serves the `onboardi
     version: \"latest\"
     start_after:
       - state
+      - queue
+      - ade
 
 ";
 
@@ -483,14 +485,35 @@ fn seed_onboarding_container(dir: &Path) {
 /// leaves the interrupt to compose.
 static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 
-/// The console worker's configuration entry, and its own default port for
-/// when that entry has no `http_port` yet.
+/// The console worker's configuration entry when it runs outside Compose, and
+/// its own default port for when that entry has no `http_port` yet.
 const CONSOLE_CONFIG: &str = "console";
 const DEFAULT_CONSOLE_PORT: u16 = 3113;
 const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Room for compose's startup renderer to print its closing line and stop
 /// repainting before anything else writes to the terminal.
 const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The configuration entry the project's console reads.
+///
+/// Compose gives every container its own entry and hands it over as
+/// `III_CONFIG_NAME`: the container's `config_name`, or
+/// `<namespace>-<container>` (`default-ade` for the harness template). So find
+/// the container running the `ade` package (or its `console` alias) and
+/// resolve its name the way Compose does. `console` is the entry of a direct
+/// run, and the answer when no such container is declared.
+fn console_config_name(file: &iii_compose::config::ComposeFile, namespace: &str) -> String {
+    file.containers
+        .iter()
+        .find(|(_, container)| match &container.worker {
+            iii_compose::config::WorkerSource::Package { reference } => {
+                matches!(reference.rsplit('/').next(), Some("ade") | Some("console"))
+            }
+            iii_compose::config::WorkerSource::Path { .. } => false,
+        })
+        .and_then(|(key, container)| container.resolved_config_name(namespace, key).ok())
+        .unwrap_or_else(|| CONSOLE_CONFIG.to_string())
+}
 
 /// Waits for the tour's project to serve, then points the user at the console
 /// and opens it on request.
@@ -518,7 +541,7 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     wait_until_settled(&client, &file.path, &namespace).await;
 
     let port = client
-        .fetch_config(CONSOLE_CONFIG)
+        .fetch_config(&console_config_name(&file, &namespace))
         .await
         .ok()
         .flatten()
@@ -1108,6 +1131,36 @@ mod tests {
 
         // Compose rejects a `package://` container with no version.
         assert!(patched.contains("version: \"latest\""));
+
+        // The tour needs the console and the queue as well as state.
+        assert!(
+            patched.contains("start_after:\n      - state\n      - queue\n      - ade\n"),
+            "{patched}"
+        );
+    }
+
+    /// Under Compose the console reads its own container's entry, not
+    /// `console`, so the announcer has to look up the same name.
+    #[test]
+    fn the_console_entry_is_the_ade_containers_compose_name() {
+        let parse = |text: &str| {
+            iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap()
+        };
+
+        let harness = parse(
+            "containers:\n  state:\n    worker: package://state\n    version: \"latest\"\n  ade:\n    worker: package://ade\n    version: \"latest\"\n",
+        );
+        assert_eq!(console_config_name(&harness, "default"), "default-ade");
+        assert_eq!(console_config_name(&harness, "demo"), "demo-ade");
+
+        let renamed = parse(
+            "containers:\n  web:\n    worker: package://ade\n    version: \"latest\"\n    config_name: my-console\n",
+        );
+        assert_eq!(console_config_name(&renamed, "default"), "my-console");
+
+        let none =
+            parse("containers:\n  state:\n    worker: package://state\n    version: \"latest\"\n");
+        assert_eq!(console_config_name(&none, "default"), CONSOLE_CONFIG);
     }
 
     #[test]

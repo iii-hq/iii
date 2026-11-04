@@ -256,12 +256,13 @@ export interface ISdk {
   /**
    * Says which observers want each call of a function. By default every
    * observer wants every call. A predicate `(obs, call) => boolean` is asked
-   * once per active observer per call; `{ observer, call }` key functions are
-   * computed once per observer, when it is accepted, and once per call, and an
+   * once per observation (for every call, once for each active observer);
+   * `{ observer, call }` key functions are computed once per observer, when
+   * it is accepted, and once per call, and an
    * observer wants a call when they share a key (the SDK keeps an index). The
    * observers' `on`, filters, policy and `deliver` still apply. A hook set
    * while observers are active rebuilds the index from them. `null` removes
-   * the hook.
+   * the hook, predicate or keys: every observer gets every call again.
    *
    * A function with a match hook needs an engine with `observe.v2`: against
    * an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.

@@ -690,7 +690,8 @@ class Sdk implements ISdk {
    * Says which observers want each call of `functionId`: a predicate
    * `(obs, call) => boolean`, or `{ observer, call }` key functions the SDK
    * indexes. iii's delivery (or the function's deliver hook) gets only the
-   * observers that want the call. `null` removes the hook.
+   * observers that want the call. `null` removes the hook: every observer
+   * gets every call again.
    */
   onObservationMatch: ISdk['onObservationMatch'] = (functionId: string, hook: MatchHook | null): ISdk => {
     this.setFunctionHook(functionId, 'match', hook)

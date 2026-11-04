@@ -3,9 +3,9 @@
 
 The `iii-worker-manager` worker owns the connections between workers and the engine. It always runs
 a **trusted listener** (on `49134` by default) that your own workers connect to through `III_URL`.
-To let an **untrusted** client connect, a browser tab, a third-party process, anything you do not
-run yourself, you add an **RBAC-gated listener**: a second port where every connection is
-authenticated by a function you write and every call is checked against an allowlist.
+To let an **untrusted** client connect, you add an **RBAC-gated listener**: a second port where
+every connection is authenticated by a function you write and every call is checked against an
+allowlist.
 
 <Note>
   `iii-worker-manager` is always running, so there is nothing to add; you configure it directly in
@@ -26,8 +26,7 @@ and restricts each session to an allowlist of functions.
   otherwise your own workers lose the port they connect through.
 </Warning>
 
-Declare both listeners: the trusted one your own workers keep using on `49134`, and an RBAC-gated
-one on a separate port (here `3110`, for browsers and other untrusted connections):
+Declare one `iii-worker-manager` entry for each listener:
 
 ```yaml config.yaml
 workers:
@@ -54,9 +53,10 @@ workers:
   The `stream::*` rule above exposes deprecated functions. `stream::*` is deprecated (iii-stream)
   and will be removed in an upcoming release. Behavior is unchanged for now. Expose your own domain
   functions instead; see [Migrate from iii-stream and pubsub](../upgrading/migrate-from-streams).
-  The `auth_function_id` on this page is connection authorization and is **not** deprecated. Only
-  the separate `auth_function` setting of `iii-stream` is.
 </Warning>
+
+A browser client connects to the RBAC port with `iii-browser-sdk`; see
+[Ch. 7: Bring in the browser](/tutorials/linkly/frontend).
 
 `auth_function_id` names a function the worker invokes once per connection to authorize the worker
 to connect (or reject it if authorization fails). That is covered in the next section.
@@ -85,11 +85,11 @@ session must call a function in another namespace:
 
 ```yaml
 expose_functions:
-  - match: "orders::*"
-    namespace: orders
+  - match: "link::*"
+    namespace: browser
   - metadata:
       public: true
-    namespace: analytics
+    namespace: linkly
 ```
 
 The `match` value supports `*` wildcards for the function id. The `namespace` value is an exact
@@ -100,11 +100,15 @@ function is registered, so you can shape it however your access model needs and 
 fields you choose, for example `{ public: true }`, `{ tier: "premium" }`, or `{ scopes: ["read"] }`.
 
 <Warning>
-  All access should be gated system-side. You should never rely on an untrusted worker to define
-  what they can or can't have access to. For example `metadata.public = true` in the above example
-  is defined and managed by the trusted `iii-worker-manager` and is not part of a payload sent by
-  the worker.
+  All access is gated system-side. The access of an untrusted worker must not come from that worker.
+  For example, `metadata.public = true` above is defined and managed by the trusted
+  `iii-worker-manager` and is not part of a payload sent by the worker.
 </Warning>
+
+<Note>
+  `auth_function_id` is connection authorization, and it is not deprecated. The deprecated
+  `auth_function` setting belongs to `iii-stream`, which is a separate worker.
+</Note>
 
 ## Write the auth function
 
@@ -140,10 +144,10 @@ to reject the connection.**
           throw new Error("unauthorized");
         }
         return {
-          allowed_functions: [], // extra IDs to allow beyond expose_functions
-          forbidden_functions: [], // denied even if matched; supersedes allowed
-          allow_function_registration: true, // can the worker register its own callbacks
-          context: { source: "browser" }, // forwarded to middleware on every call
+          allowed_functions: [],
+          forbidden_functions: [],
+          allow_function_registration: true,
+          context: { source: "browser" },
         };
       },
     );
@@ -165,10 +169,10 @@ to reject the connection.**
         if token != os.environ.get("BROWSER_TOKEN", "dev-token"):
             raise Exception("unauthorized")
         return {
-            "allowed_functions": [],  # extra IDs to allow beyond expose_functions
-            "forbidden_functions": [],  # denied even if matched; supersedes allowed
-            "allow_function_registration": True,  # register its own callbacks
-            "context": {"source": "browser"},  # forwarded to middleware on every call
+            "allowed_functions": [],
+            "forbidden_functions": [],
+            "allow_function_registration": True,
+            "context": {"source": "browser"},
         }
 
     worker.register_function("auth::browser", browser)
@@ -178,55 +182,91 @@ to reject the connection.**
   <Tab title="Rust">
     ```rust src/main.rs
     use iii_helpers::worker_connection_manager::AuthInput;
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{InitOptions, MiddlewareFunctionInput, RegisterFunction, register_worker};
-    use serde_json::{json, Value};
+    use iii_sdk::{register_worker, Error, InitOptions, RegisterFunction};
+    use serde_json::json;
 
-    let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
-    let worker = register_worker(&url, InitOptions::default());
+    fn main() {
+        let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
+        let worker = register_worker(&url, InitOptions::default());
 
-    worker.register_function("auth::browser", RegisterFunction::new(|input: AuthInput| {
-        let token = input.query_params.get("token").and_then(|v| v.first());
-        let expected = std::env::var("BROWSER_TOKEN").unwrap_or_else(|_| "dev-token".into());
-        if token.map(String::as_str) != Some(expected.as_str()) {
-            return Err(iii_sdk::Error::Handler("unauthorized".into()));
-        }
-        Ok(json!({
-            "allowed_functions": [],          // extra IDs to allow beyond expose_functions
-            "forbidden_functions": [],        // denied even if matched; supersedes allowed
-            "allow_function_registration": true,      // register its own callbacks
-            "context": { "source": "browser" },       // forwarded to middleware on every call
-        }))
-    }));
+        worker.register_function(
+            "auth::browser",
+            RegisterFunction::new(|input: AuthInput| {
+                let token = input.query_params.get("token").and_then(|v| v.first());
+                let expected =
+                    std::env::var("BROWSER_TOKEN").unwrap_or_else(|_| "dev-token".into());
+                if token.map(String::as_str) != Some(expected.as_str()) {
+                    return Err(Error::Handler("unauthorized".into()));
+                }
+                Ok(json!({
+                    "allowed_functions": [],
+                    "forbidden_functions": [],
+                    "allow_function_registration": true,
+                    "context": { "source": "browser" },
+                }))
+            }),
+        );
+
+        // The connection runs on a background thread; keep the process alive.
+        std::thread::park();
+    }
     ```
 
   </Tab>
   <Tab title="Go">
     ```go main.go
-    import "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
+    package main
 
-    client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithName("auth"))
+    import (
+    	"context"
+    	"encoding/json"
+    	"errors"
+    	"log"
+    	"os"
+    	"os/signal"
+    	"syscall"
 
-    client.RegisterFunction("auth::browser", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var input workerconnection.AuthInput
-        if err := json.Unmarshal(data, &input); err != nil {
-            return nil, err
-        }
-        expected := os.Getenv("BROWSER_TOKEN")
-        if expected == "" {
-            expected = "dev-token"
-        }
-        if token := input.QueryParams["token"]; len(token) == 0 || token[0] != expected {
-            return nil, errors.New("unauthorized")
-        }
-        return map[string]any{
-            "allowed_functions":               []string{}, // extra IDs to allow beyond expose_functions
-            "forbidden_functions":             []string{}, // denied even if matched; supersedes allowed
-            "allow_function_registration":     true,       // register its own callbacks
-            // forwarded to middleware on every call
-            "context": map[string]string{"source": "browser"},
-        }, nil
-    })
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    	"github.com/iii-hq/iii/sdk/packages/go/iii/helpers/workerconnection"
+    )
+
+    func main() {
+    	url := os.Getenv("III_URL")
+    	if url == "" {
+    		url = iii.DefaultEngineURL
+    	}
+    	client := iii.RegisterWorker(url, iii.WithName("auth"))
+
+    	if _, err := client.RegisterFunction("auth::browser", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var input workerconnection.AuthInput
+    		if err := json.Unmarshal(data, &input); err != nil {
+    			return nil, err
+    		}
+    		expected := os.Getenv("BROWSER_TOKEN")
+    		if expected == "" {
+    			expected = "dev-token"
+    		}
+    		if token := input.QueryParams["token"]; len(token) == 0 || token[0] != expected {
+    			return nil, errors.New("unauthorized")
+    		}
+    		return map[string]any{
+    			"allowed_functions":           []string{},
+    			"forbidden_functions":         []string{},
+    			"allow_function_registration": true,
+    			"context":                     map[string]string{"source": "browser"},
+    		}, nil
+    	}); err != nil {
+    		log.Fatalf("register auth::browser: %v", err)
+    	}
+
+    	// Serve until interrupted.
+    	stop := make(chan os.Signal, 1)
+    	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+    	<-stop
+    	if err := client.Close(); err != nil {
+    		log.Printf("close: %v", err)
+    	}
+    }
     ```
 
   </Tab>
@@ -237,14 +277,14 @@ the untrusted client connects through `3110`.
 
 The returned object is an `AuthResult`:
 
-| Field                          | Meaning                                                                     |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `namespaces`                   | Grants per namespace: `{ "orders": ["svc::*"] }`. See below.                |
-| `allowed_functions`            | Function IDs to allow in addition to `expose_functions`, in `default` only. |
-| `forbidden_functions`          | Function IDs to deny even if they match. Takes precedence.                  |
-| `allow_function_registration`  | Whether the session may register functions (defaults to `true`).            |
-| `context`                      | Arbitrary object forwarded to the middleware on every call.                 |
-| `function_registration_prefix` | Optional prefix applied to every function the session registers.            |
+| Field                          | Meaning                                                                                                                                                                  |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `namespaces`                   | Grants per namespace: `{ "browser": ["link::*"] }`. See below.                                                                                                           |
+| `allowed_functions`            | Function IDs to allow in addition to `expose_functions`, in `default` only.                                                                                              |
+| `forbidden_functions`          | Function IDs to deny even if they match. Holds in every namespace and takes precedence over every other grant, including the infrastructure functions each worker needs. |
+| `allow_function_registration`  | Whether the session may register functions (defaults to `true`).                                                                                                         |
+| `context`                      | Arbitrary object forwarded to the middleware on every call.                                                                                                              |
+| `function_registration_prefix` | Optional prefix applied to every function the session registers, and to the target function of each observer it creates.                                                 |
 
 ### Scope a session to namespaces
 
@@ -255,46 +295,21 @@ uses:
 ```json
 {
   "namespaces": {
-    "orders": ["svc::*", "billing::charge"],
-    "analytics": []
+    "browser": ["link::*", "link::click_summary"],
+    "linkly": []
   }
 }
 ```
 
 The keys carry a second meaning: they are the namespaces the session may declare on
-`engine::workers::register`. A session holding this result registers in `orders` or `analytics`;
-declaring `default`, or any other namespace, is refused with `FORBIDDEN`. An entry with an empty
-list, like `analytics` above, grants the namespace and no functions inside it: the session may
-register there and reaches only what `expose_functions` exposes.
+`engine::workers::register` and address on a call. A session holding this result registers in
+`browser` or `linkly`; declaring `default`, or any other namespace, is refused with `FORBIDDEN`, and
+a call into a namespace outside the list is refused with `FORBIDDEN`. An entry with an empty list,
+like `linkly` above, grants the namespace and no functions inside it: the session registers there
+and reaches only what `expose_functions` exposes.
 
 Return an empty `namespaces` (or omit it) to leave the session unscoped: it declares any namespace,
 and only `allowed_functions` and `expose_functions` apply.
-
-<Warning>
-  `allowed_functions` applies in `default` only. A grant listed there does not answer in `orders`,
-  even for a session scoped to it. Put per-namespace grants in `namespaces`.
-</Warning>
-
-`forbidden_functions` is the exception: it holds in every namespace, and it wins over both
-`namespaces` and the infrastructure functions every worker needs.
-
-## Connect a client
-
-A browser connects with `iii-browser-sdk` pointed at the RBAC port. Browsers cannot set custom
-WebSocket headers, so the token travels as a query parameter, the same one `auth::browser` reads:
-
-```typescript src/iii.ts
-import { registerWorker } from "iii-browser-sdk";
-
-const token = import.meta.env.VITE_BROWSER_TOKEN ?? "dev-token";
-export const worker = registerWorker(`ws://localhost:3110?token=${encodeURIComponent(token)}`, {
-  namespace: "browser",
-});
-```
-
-The session can now call only the functions `expose_functions` (plus `allowed_functions`) permit.
-For an end-to-end walkthrough that turns a browser tab into a worker, see
-[Ch. 7: Bring in the browser](/tutorials/linkly/frontend).
 
 ## Intercept calls with middleware
 
@@ -317,6 +332,12 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript src/index.ts
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134", {
+      workerName: "auth",
+    });
+
     worker.registerFunction(
       "auth::middleware",
       async (input: {
@@ -330,13 +351,25 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
       },
     );
     ```
+
   </Tab>
   <Tab title="Python">
     ```python src/main.py
+    import os
+
+    from iii import register_worker, InitOptions
+
+    worker = register_worker(
+        os.environ.get("III_URL", "ws://localhost:49134"),
+        InitOptions(worker_name="auth"),
+    )
+
+
     def middleware(req: dict) -> dict:
         # stamp the authenticated caller onto every payload, then forward the call
         payload = {**req["payload"], "_source": req["context"]["source"]}
         return worker.call({"function_id": req["function_id"], "payload": payload})
+
 
     worker.register_function("auth::middleware", middleware)
     ```
@@ -344,55 +377,100 @@ acts as a proxy: forward the (optionally rewritten) call and return its result, 
   </Tab>
   <Tab title="Rust">
     ```rust src/main.rs
-    let mw = worker.clone();
-    worker.register_function(
-        "auth::middleware",
-        RegisterFunction::new_async(move |input: MiddlewareFunctionInput| {
-            let worker = mw.clone();
-            async move {
-                // stamp the authenticated caller onto every payload, then forward the call
-                let mut payload = input.payload.clone();
-                if let Some(obj) = payload.as_object_mut() {
-                    obj.insert(
-                        "_source".into(),
-                        input.context.get("source").cloned().unwrap_or(Value::Null),
-                    );
+    use iii_sdk::{
+        register_worker, CallRequest, InitOptions, MiddlewareFunctionInput, RegisterFunction,
+    };
+    use serde_json::Value;
+
+    fn main() {
+        let url = std::env::var("III_URL").unwrap_or_else(|_| "ws://localhost:49134".into());
+        let worker = register_worker(&url, InitOptions::default());
+
+        let forwarder = worker.clone();
+        worker.register_function(
+            "auth::middleware",
+            RegisterFunction::new_async(move |input: MiddlewareFunctionInput| {
+                let forwarder = forwarder.clone();
+                async move {
+                    // stamp the authenticated caller onto every payload, then forward the call
+                    let mut payload = input.payload.clone();
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert(
+                            "_source".into(),
+                            input.context.get("source").cloned().unwrap_or(Value::Null),
+                        );
+                    }
+                    forwarder.call(CallRequest::new(input.function_id, payload)).await
                 }
-                worker.call(CallRequest::new(input.function_id, payload)).await
-            }
-        }),
-    );
+            }),
+        );
+
+        // The connection runs on a background thread; keep the process alive.
+        std::thread::park();
+    }
     ```
+
   </Tab>
   <Tab title="Go">
     ```go main.go
-    client.RegisterFunction("auth::middleware", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var input iii.MiddlewareFunctionInput
-        if err := json.Unmarshal(data, &input); err != nil {
-            return nil, err
-        }
-        var payload, session map[string]any
-        if err := json.Unmarshal(input.Payload, &payload); err != nil {
-            return nil, err
-        }
-        if err := json.Unmarshal(input.Context, &session); err != nil {
-            return nil, err
-        }
-        // stamp the authenticated caller onto every payload, then forward the call
-        if payload == nil {
-            payload = map[string]any{}
-        }
-        payload["_source"] = session["source"]
-        forwarded, err := json.Marshal(payload)
-        if err != nil {
-            return nil, err
-        }
-        return client.Call(ctx, iii.CallRequest{
-            FunctionID: input.FunctionID,
-            Payload:    forwarded,
-            Namespace:  input.Namespace, // stay in the namespace the caller addressed
-        })
-    })
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+    	"os/signal"
+    	"syscall"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	url := os.Getenv("III_URL")
+    	if url == "" {
+    		url = iii.DefaultEngineURL
+    	}
+    	client := iii.RegisterWorker(url, iii.WithName("auth"))
+
+    	if _, err := client.RegisterFunction("auth::middleware", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var input iii.MiddlewareFunctionInput
+    		if err := json.Unmarshal(data, &input); err != nil {
+    			return nil, err
+    		}
+    		var payload, session map[string]any
+    		if err := json.Unmarshal(input.Payload, &payload); err != nil {
+    			return nil, err
+    		}
+    		if err := json.Unmarshal(input.Context, &session); err != nil {
+    			return nil, err
+    		}
+    		// stamp the authenticated caller onto every payload, then forward the call
+    		if payload == nil {
+    			payload = map[string]any{}
+    		}
+    		payload["_source"] = session["source"]
+    		forwarded, err := json.Marshal(payload)
+    		if err != nil {
+    			return nil, err
+    		}
+    		return client.Call(ctx, iii.CallRequest{
+    			FunctionID: input.FunctionID,
+    			Payload:    forwarded,
+    			Namespace:  input.Namespace,
+    		})
+    	}); err != nil {
+    		log.Fatalf("register auth::middleware: %v", err)
+    	}
+
+    	// Serve until interrupted.
+    	stop := make(chan os.Signal, 1)
+    	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+    	<-stop
+    	if err := client.Close(); err != nil {
+    		log.Printf("close: %v", err)
+    	}
+    }
     ```
 
   </Tab>
@@ -412,9 +490,11 @@ session may observe a function only when its grants (`expose_functions`, `namesp
 the observed function and the target.
 
 A worker that reconnects and reattaches keeps its observers only as far as its new session allows:
-the engine checks the grants again and calls the hook again for each observer, with the
-registration as the worker asked for it and the new session's `context`. An observer either check
-refuses is disposed with `FORBIDDEN`; an object answer keeps the observer as it is.
+the engine checks the grants again and calls the hook again for each observer, with the registration
+as the worker asked for it and the new session's `context`. An observer either check refuses is
+disposed with `FORBIDDEN`. An object answer keeps the observer, with the fields it names rewritten
+and the others left as the worker asked for them. Any other answer, or an error, disposes the
+observer with `FORBIDDEN`.
 
 A [private function](./observable-functions#private-functions) accepts calls only from the
 connection that hosts it. A call to it from any other session fails with `FORBIDDEN`, whatever the
@@ -424,4 +504,6 @@ whose grants cover a private function may observe it.
 Calls a worker makes to its own functions normally run in-process
 ([local dispatch](../using-iii/observers#local-dispatch)). For a session with a
 `middleware_function_id`, the engine turns local dispatch off, so every call still passes through
-the middleware.
+the middleware, except calls of a function the session hosts privately: those skip the middleware
+and still run in-process, because the middleware's forward would come from another connection, which
+a [private function](./observable-functions#private-functions) refuses.

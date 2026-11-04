@@ -2,8 +2,8 @@ use iii_sdk::engine::EngineSources;
 use iii_sdk::{Deliver, Error, IIIClient, RegisterFunction, Source};
 use serde_json::json;
 
-/// Observers of the event sources the cron, state, http, pubsub, queue,
-/// stream and observability workers host: when the source runs, the target
+/// Observers of the event sources the cron, state, http, pubsub, queue and
+/// observability workers host: when the source runs, the target
 /// runs. `args` tell the source's worker what to set up (a cron expression, a
 /// route, a queue subscriber); `filters` pick the calls that reach the target.
 pub fn setup(iii: &IIIClient) {
@@ -76,17 +76,6 @@ pub fn setup(iii: &IIIClient) {
         "example::on_error_log",
     );
 
-    // ── Streams: changes of the `chat` stream ────────────────────────
-    iii.register_function(
-        "example::on_chat_message",
-        RegisterFunction::new(on_chat_message).description("Handles chat stream events"),
-    );
-    iii.observe(
-        Source::function(EngineSources::STREAM_CHANGED)
-            .filters(json!({ "input.stream_name": { "$eq": "chat" } }))
-            .deliver(Deliver::Input),
-        "example::on_chat_message",
-    );
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
@@ -134,8 +123,4 @@ struct LogRecord {
 
 fn on_error_log(record: LogRecord) -> Result<serde_json::Value, Error> {
     Ok(json!({ "alerted": true, "severity": record.severity_text, "message": record.body }))
-}
-
-fn on_chat_message(change: serde_json::Value) -> Result<serde_json::Value, Error> {
-    Ok(json!({ "received": true, "event": change }))
 }

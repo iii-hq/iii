@@ -67,7 +67,7 @@ export interface Observed<I = unknown, O = unknown> {
 export interface ObserveSource {
   /** The observed function. */
   function_id: string
-  /** Defaults to this worker's namespace (`engine::*` resolves to `default`). */
+  /** Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). */
   namespace?: string
   /**
    * For the worker that hosts the function: what to set up and which calls
@@ -181,9 +181,9 @@ export interface Observer {
   /**
    * Resolves once the SDK has acked the observer. A call made after it
    * resolves reaches an active observer, so a provider sends an observer its
-   * initial state from here: a call of its own function with
-   * `metadata: { for_observer: obs.id }`, which the function's match hook
-   * gives to this observer alone, delivered like every call. Rejects with an
+   * initial state from here: a call through it
+   * (`iii.call({ observer: obs, payload })`), which runs its target alone
+   * with the payload as given. Rejects with an
    * {@link ObserveRejection} when the observer is rejected first.
    *
    * @example
@@ -193,9 +193,8 @@ export interface Observer {
    *     .accepted()
    *     .then(() =>
    *       iii.call({
-   *         function_id: 'tmux::on-changed',
+   *         observer: obs,
    *         payload: stateFor(obs.args),
-   *         metadata: { for_observer: obs.id },
    *         action: CallAction.Void(),
    *       }),
    *     )
@@ -203,9 +202,6 @@ export interface Observer {
    *       // a rejected observer gets nothing
    *     })
    * })
-   * iii.onObservationMatch('tmux::on-changed', (obs, call) =>
-   *   call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,
-   * )
    * ```
    */
   accepted(): Promise<void>
@@ -248,13 +244,11 @@ export interface MatchKeys<I = unknown, O = unknown> {
 /**
  * Which observers want each call of a function (`onObservationMatch`). By
  * default every observer wants every call. A predicate is asked once per
- * active observer per call (a throw counts as no match). Keys are computed
+ * observation: for every call, once for each active observer (a throw
+ * counts as no match for that observer). Keys are computed
  * once per observer, when it is accepted, and once per call. The observers'
- * `on`, filters, policy and `deliver` still apply. A host that sends one
- * observer something of its own (its initial state) calls the function with
- * `metadata: { for_observer: obs.id }`; the hook gives such a call to that
- * observer alone (a predicate compares the ids; keys file each observer under
- * `for_observer:<id>` too).
+ * `on`, filters, policy and `deliver` still apply. Setting it to `null`
+ * removes it: every observer gets every call again.
  */
 export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKeys<I, O>
 

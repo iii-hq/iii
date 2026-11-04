@@ -46,8 +46,9 @@ wait_for_port() {
 wait_for_containers() {
   local log=$1 tries=${2:-600}
   for ((i = 0; i < tries; i++)); do
-    grep -qE 'Containers Running \(([0-9]+)/\1\)' "$log" && return 0
-    grep -qE 'Containers (Cancelled|Failed)' "$log" && return 1
+    # LC_ALL=C: BSD grep (macOS) fails a backreference on UTF-8 input in a UTF-8 locale.
+    LC_ALL=C grep -qE 'Containers Running \(([0-9]+)/\1\)' "$log" && return 0
+    LC_ALL=C grep -qE 'Containers (Cancelled|Failed)' "$log" && return 1
     sleep 1
   done
   return 1

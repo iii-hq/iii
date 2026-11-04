@@ -81,7 +81,7 @@ await new Promise((r) => setTimeout(r, 2000));
 console.log(JSON.stringify({ code: (click as { code: string }).code, received }));
 process.exit(0);
 EOF
-filter_out="$(cd "$PROJECT/click-streamer" && timeout 60 node --import tsx filter-check.ts 2>&1)"
+filter_out="$(cd "$PROJECT/click-streamer" && perl -e 'alarm shift; exec @ARGV' 60 node --import tsx filter-check.ts 2>&1)"
 echo "       filter check: $filter_out"
 check "a filter on input.code selects clicks, no filter hears every click" \
   '{"code":"other","received":{"empty":[],"none":["other"]}}' "$filter_out"

@@ -259,10 +259,9 @@ observer's registration metadata, and a request that names metadata
 raises ``ValueError`` before anything is sent.
 The payload goes as given: filters are applied where the worker
 chooses observers: iii's delivery, or ``obs.matches(call)`` in an
-``on_observation_deliver``. A call through an observer belongs in that
-deliver hook; to send one observer something outside delivery (its
-initial state), call the function with ``"metadata": {"for_observer":
-obs.id}`` (see `Observer.accepted`).
+``on_observation_deliver``. A host also calls through an observer to
+send it something of its own, such as its initial state once it is
+accepted (see `Observer.accepted`).
 
 **Signature**
 
@@ -374,7 +373,7 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
       Which calls reach the target; ``{}`` (or absent) = every call.
     </ParamField>
     <ParamField body="namespace" type="str">
-      Defaults to this worker's (``engine::*`` resolves to ``default``).
+      Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``).
     </ParamField>
     <ParamField body="on" type="Literal['success', 'error', 'complete']">
       ``"success"`` (default), ``"error"`` or ``"complete"``.
@@ -585,8 +584,7 @@ async (request: dict[str, Any] | CallRequest) -> Any
 ```python
 result = await worker.call_async({'function_id': 'greet', 'payload': {'name': 'World'}})
 await worker.call_async(
-    {'function_id': 'stock::on-changed', 'payload': state,
-     'metadata': {'for_observer': obs.id}, 'action': CallAction.Void()}
+    {'observer': obs, 'payload': state, 'action': CallAction.Void()}
 )
 ```
 
@@ -804,9 +802,10 @@ every observer wants every call; iii's delivery then applies their
 ``on`` and filters, and an ``on_observation_deliver`` receives only the
 observers that matched.
 
-As a predicate, ``hook(obs, call) -> bool`` is asked once per active
-observer per call, before filters; a predicate that raises counts as
-no match. As keys, ``observer=`` and ``call=`` key functions each
+As a predicate, ``hook(obs, call) -> bool`` is asked once per
+observation: for every call, once for each active observer, before
+its filters; a predicate that raises counts as no match for that
+observer. As keys, ``observer=`` and ``call=`` key functions each
 return a string or strings, and an observer wants a call when they
 share a key: the SDK computes an observer's keys once, when it is
 accepted, and files it under each, so a call costs one lookup per key
@@ -818,15 +817,10 @@ under ``"primary|*|insert"`` and give a change the keys
 ``"primary|orders|insert"``, ``"primary|orders|*"``,
 ``"primary|*|insert"`` and ``"primary|*|*"``.
 
-A host that sends one observer something of its own (its initial
-state) calls the function with ``"metadata": {"for_observer":
-obs.id}``, and the hook gives such a call to that observer alone: a
-predicate compares the ids, and key functions also file each observer
-under ``f"for_observer:{obs.id}"`` and give such a call that one key.
-
 Works as a decorator for a predicate
 (``@iii.on_observation_match("fn::id")``) and returns the hook (a
-`MatchKeys` for the keys form); ``None`` removes it. A match
+`MatchKeys` for the keys form); ``None`` removes it, and every
+observer gets every call again. A match
 hook set while the function has active observers is applied to them
 on the SDK loop, which rebuilds the index from them. Predicates and
 key functions are sync: they run on every call. A function with a
@@ -1321,7 +1315,7 @@ keeps it in its own index (route table, consumers, ...).
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack): a call of the function with ``"metadata": \{"for_observer": obs.id\}``, which the function's match hook gives to this observer alone, delivered like every call. Use `accepted_async` in async code. |
+| `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack): a call through it (``\{"observer": obs, "payload": ...\}``), which runs its target alone with the payload as given. Use `accepted_async` in async code. |
 | `accepted_async` | `async () -> None` | Yes | Waits until the SDK has acked this observer (on any event loop). |
 | `args` | `dict[str, Any]` | No | The observer's args, validated against ``args_format`` by the engine. |
 | `capture` | `list[str]` | No | What travels to the target when iii delivers. |
@@ -1385,7 +1379,7 @@ The left side of ``iii.observe``: what is observed.
 | `capture` | `list[Capture]` | No | Default ``["input", "output", "caller"]``. |
 | `deliver` | `Literal['envelope', 'input', 'output']` | No | What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``. |
 | `filters` | `Filter` | No | Which calls reach the target; ``\{\}`` (or absent) = every call. |
-| `namespace` | `str` | No | Defaults to this worker's (``engine::*`` resolves to ``default``). |
+| `namespace` | `str` | No | Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``). |
 | `on` | `Literal['success', 'error', 'complete']` | No | ``"success"`` (default), ``"error"`` or ``"complete"``. |
 
 ---
@@ -1515,9 +1509,6 @@ observe them with ``iii.observe(EngineSources.FUNCTIONS_CHANGED, target)``
 | `LOG` | `Final[str]` | No | - |
 | `OBSERVERS_CHANGED` | `Final[str]` | No | - |
 | `SPAN` | `Final[str]` | No | - |
-| `STREAM_CHANGED` | `Final[str]` | No | - |
-| `STREAM_JOIN` | `Final[str]` | No | - |
-| `STREAM_LEAVE` | `Final[str]` | No | - |
 | `WORKERS_CHANGED` | `Final[str]` | No | - |
 
 ### iii.errors

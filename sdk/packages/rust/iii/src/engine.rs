@@ -55,12 +55,6 @@ impl EngineSources {
     pub const SPAN: &'static str = "observability::on-span";
     /// The engine's configuration was reloaded.
     pub const CONFIGURATION_UPDATED: &'static str = "configuration::on-updated";
-    /// A stream item changed; filter on `input.stream_name`, `input.group_id`.
-    pub const STREAM_CHANGED: &'static str = "stream::on-changed";
-    /// A client joined a stream.
-    pub const STREAM_JOIN: &'static str = "stream::on-join";
-    /// A client left a stream.
-    pub const STREAM_LEAVE: &'static str = "stream::on-leave";
 }
 
 #[cfg(test)]
@@ -86,9 +80,6 @@ mod tests {
                 EngineSources::LOG,
                 EngineSources::SPAN,
                 EngineSources::CONFIGURATION_UPDATED,
-                EngineSources::STREAM_CHANGED,
-                EngineSources::STREAM_JOIN,
-                EngineSources::STREAM_LEAVE,
             ],
             [
                 "engine::on-functions-changed",
@@ -97,9 +88,6 @@ mod tests {
                 "observability::on-log",
                 "observability::on-span",
                 "configuration::on-updated",
-                "stream::on-changed",
-                "stream::on-join",
-                "stream::on-leave",
             ]
         );
     }

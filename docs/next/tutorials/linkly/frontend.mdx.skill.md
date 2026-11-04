@@ -39,7 +39,7 @@ Uncomment the Ch. 7 `rbac-proxy` container:
 ```yaml worker-compose.yaml
 rbac-proxy:
   worker: package://rbac-proxy
-  version: "1.0.6"
+  version: "latest"
   config_name: rbac-proxy
   config_override:
     host: 127.0.0.1
@@ -199,11 +199,11 @@ Now install the dependencies:
 ```bash
 cd frontend
 npm install
-npm install iii-browser-sdk
+npm install iii-browser-sdk@0.26.0
 ```
 
-`iii-browser-sdk` installs at its latest release while the backend workers pin `iii-sdk` 0.26.0. The
-two work together: each one connects to the engine, never to the other.
+`iii-browser-sdk` is pinned to 0.26.0, the same version as the `iii-sdk` the backend workers pin:
+the tab uses the 0.26 `observe` and `call` API. Each one connects to the engine, never to the other.
 
 Then tell the app where the proxy is and which token to send. Create `frontend/.env.local`; Vite
 reads it at startup. `VITE_LINKLY_TOKEN` must equal `LINKLY_BROWSER_TOKEN` in the project's `.env`,
@@ -281,8 +281,10 @@ feed with it, then reads the starting total with `link::click_summary`. The feed
 Two details keep the counter correct:
 
 - **Observe first, then read.** A click that lands between the two is still delivered. Clicks that
-  arrive before the read returns wait in `early`, and the click id tells the tab whether the total
-  already includes them, so nothing is counted twice.
+  arrive before the read returns wait in `early`. The read's `last_id` tells the tab which clicks
+  the total already includes, and the tab remembers each later click id it counts. The queue
+  delivers several clicks at once, so they can arrive out of order, and nothing is counted twice or
+  skipped.
 - **Read again after a reconnect.** Clicks sent while the tab was disconnected are not replayed, but
   the stored total is always current.
 
@@ -290,13 +292,15 @@ The cleanup removes the observer and the function on unmount:
 
 ```tsx src/App.tsx
 useEffect(() => {
-  let lastId = 0; // highest click id already counted
+  let lastId = 0; // clicks up to this id are already in the total that was read
+  const counted = new Set<number>(); // clicks above lastId already counted
   let ready = false; // false until the read lands
   const early: Click[] = [];
 
   function apply(click: Click) {
-    if (click.id <= lastId) return; // a duplicate, or already in the total
-    lastId = click.id;
+    // Already in the total, or counted before: clicks can arrive out of order.
+    if (click.id <= lastId || counted.has(click.id)) return;
+    counted.add(click.id);
     setClicks((n) => n + 1);
     setLatest(click);
   }
@@ -310,6 +314,7 @@ useEffect(() => {
       payload: {},
     });
     lastId = summary.last_id;
+    counted.clear();
     setClicks(summary.total);
     ready = true;
     early.splice(0).forEach(apply);
@@ -326,7 +331,10 @@ useEffect(() => {
     { function_id: "click-streamer::on-click", namespace: "default", deliver: "output" },
     "ui::on_click",
   );
-  listener.ready().then(sync);
+  // ready() rejects when the observe is refused, for example FORBIDDEN when
+  // the feed is missing from expose_functions or TOO_MANY_LISTENERS from the
+  // Ch. 5 cap.
+  listener.ready().then(sync, (err) => console.error("live clicks unavailable:", err));
   const stopListening = worker.addConnectionStateListener((state) => {
     if (state === "connected") sync();
   });

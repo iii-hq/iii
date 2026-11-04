@@ -202,10 +202,8 @@ async def route(call, observers):
 ```
 
 To send one observer something of its own, such as its initial state, call
-the function with `"metadata": {"for_observer": obs.id}` once the observer is
-accepted, and let the match hook give that call to that observer alone. iii
-delivers it like every call, so the target receives it in the shape it
-receives every call of the function:
+through that observer once it is accepted. The call runs that observer's
+target alone, with the payload as given:
 
 ```python
 import asyncio
@@ -219,9 +217,8 @@ async def send_state(obs):
     except ObserveRejection:
         return  # a rejected observer gets nothing
     await iii.call_async({
-        "function_id": "tmux::on-changed",
+        "observer": obs,
         "payload": state_for(obs.args),
-        "metadata": {"for_observer": obs.id},
         "action": CallAction.Void(),
     })
 
@@ -229,18 +226,7 @@ async def send_state(obs):
 @iii.on_observer_added("tmux::on-changed")
 async def on_added(obs):
     asyncio.get_running_loop().create_task(send_state(obs))
-
-
-@iii.on_observation_match("tmux::on-changed")
-def wants(obs, call):
-    for_observer = (call.metadata or {}).get("for_observer")
-    if for_observer:
-        return for_observer == obs.id
-    return obs.args["session"] == call.input["session"]
 ```
-
-With keys, file each observer under `f"for_observer:{obs.id}"` as well, and
-give such a call that one key.
 
 Inside any handler, `iii.current_invocation()` returns the running invocation
 (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`). Sync
