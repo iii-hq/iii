@@ -18,7 +18,13 @@ import {
 } from '../shared/anim'
 import { COLS, colX, INK, type MarkProps, MarkSvg } from '../shared/mark-svg'
 
-/* Diwali takes on the iii mark. At t = 0 every idea draws exactly the plain mark. */
+/*
+ * Diwali takes on the iii mark. At t = 0 every idea draws exactly the plain mark.
+ *
+ * Two things make these read at the header's 24px, where the dots are 6px squares: the stems take part (light and
+ * colour wash down them from whatever is happening on the dots), and a soft warm halo sits behind the whole mark
+ * while it plays, so even when the details are too small to name, the mark is visibly lit.
+ */
 
 export const SAFFRON = '#ff9933'
 export const GOLD = '#f2c14e'
@@ -35,7 +41,8 @@ const CLAY_DARK = '#7c3a18'
 const FLAME =
   'M0 -4.6 C1.1 -3.2 1.6 -2 1.5 -1.1 C1.4 -0.3 0.8 0.2 0 0.2 C-0.8 0.2 -1.4 -0.3 -1.5 -1.1 C-1.6 -2 -1.1 -3.2 0 -4.6 Z'
 
-function FlameDefs({ id }: { id: string }) {
+/** Gradients the ideas share: the glow, the flame, and a wash per column in `washes` colours. */
+function Defs({ id, washes = [] }: { id: string; washes?: readonly string[] }) {
   return (
     <defs>
       <radialGradient id={`${id}-glow`}>
@@ -47,7 +54,28 @@ function FlameDefs({ id }: { id: string }) {
         <stop offset="0.45" stopColor={SAFFRON} />
         <stop offset="1" stopColor={FLAME_TIP} />
       </linearGradient>
+      {washes.map((color, col) => (
+        <linearGradient key={color} id={`${id}-wash-${col}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity={0.95} />
+          <stop offset="1" stopColor={color} stopOpacity={0} />
+        </linearGradient>
+      ))}
     </defs>
+  )
+}
+
+/** The warm halo behind the whole mark. */
+function Backlight({ id, amount }: { id: string; amount: number }) {
+  return <ellipse cx={8} cy={7} rx={13} ry={11} fill={`url(#${id}-glow)`} opacity={clamp01(amount)} />
+}
+
+/** A stem, with light from its dot washing down it. */
+function Stem({ id, col, wash }: { id: string; col: number; wash: number }) {
+  return (
+    <g>
+      <rect x={colX(col)} y={6} width={4} height={10} fill={INK} />
+      <rect x={colX(col)} y={6} width={4} height={10} fill={`url(#${id}-wash-${col})`} opacity={clamp01(wash)} />
+    </g>
   )
 }
 
@@ -57,6 +85,7 @@ function FlameDefs({ id }: { id: string }) {
 
 /** A diya's clay bowl, its rim centred on (0, 0) and its spout to the right. */
 const BOWL = 'M-2.5 -0.2 C-2.3 1.6 -1.1 2.1 0 2.1 C1.2 2.1 2.1 1.6 2.4 0.4 L3.3 -0.4 L2.2 -0.1 Z'
+const LAMPLIGHT = '#ffe2a8'
 
 export function DiyasMark({ on, size, still }: MarkProps) {
   const live = useTimeline(on, { duration: 1.1 })
@@ -65,22 +94,28 @@ export function DiyasMark({ on, size, still }: MarkProps) {
   const clock = useClock(idle)
   const id = useId().replace(/:/g, '')
 
+  const lamps = COLS.map((col) => ({
+    shape: easeOut(seg(t, 0.04 + 0.14 * col, 0.34 + 0.14 * col)),
+    lit: seg(t, 0.24 + 0.14 * col, 0.6 + 0.14 * col),
+    flicker: idle ? 0.07 * Math.sin(clock * 9 + col * 2.1) + 0.04 * Math.sin(clock * 23 + col * 5) : 0,
+    sway: idle ? 5 * Math.sin(clock * 4.3 + col * 1.7) : 0,
+  }))
+  const room = lamps.reduce((sum, lamp) => sum + lamp.lit, 0) / 3
+
   return (
     <MarkSvg size={size}>
-      <FlameDefs id={id} />
+      <Defs id={id} washes={[LAMPLIGHT, LAMPLIGHT, LAMPLIGHT]} />
+      <Backlight id={id} amount={0.5 * room + (idle ? 0.06 * Math.sin(clock * 3) : 0)} />
       {COLS.map((col) => {
         const cx = colX(col) + 2
-        const shape = easeOut(seg(t, 0.04 + 0.14 * col, 0.34 + 0.14 * col))
-        const lit = seg(t, 0.24 + 0.14 * col, 0.6 + 0.14 * col)
+        const { shape, lit, flicker, sway } = lamps[col]
         const bowl = pop(cx, 2.4, shape)
-        const flicker = idle ? 0.07 * Math.sin(clock * 9 + col * 2.1) + 0.04 * Math.sin(clock * 23 + col * 5) : 0
-        const sway = idle ? 5 * Math.sin(clock * 4.3 + col * 1.7) : 0
-        const grow = lerp(0.3, 1, backOut(lit)) * 0.72
+        const grow = lerp(0.3, 1, backOut(lit)) * 0.9
         const glow = easeOut(lit) * (0.85 + (idle ? 0.15 * Math.sin(clock * 11 + col) : 0))
         return (
           <g key={col}>
-            <circle cx={cx + 0.3} cy={0.6} r={4.6} fill={`url(#${id}-glow)`} opacity={glow} />
-            <rect x={colX(col)} y={6} width={4} height={10} fill={INK} />
+            <circle cx={cx + 0.3} cy={0.4} r={5.2} fill={`url(#${id}-glow)`} opacity={glow} />
+            <Stem id={id} col={col} wash={0.75 * easeOut(lit)} />
             {shape < 1 && (
               <rect
                 x={colX(col)}
@@ -131,12 +166,16 @@ export function RangoliMark({ on, size, still }: MarkProps) {
   const t = still ? 1 : live
   const idle = on && t === 1 && !still
   const clock = useClock(idle)
+  const id = useId().replace(/:/g, '')
 
   return (
     <MarkSvg size={size}>
-      {COLS.map((col) => (
-        <rect key={col} x={colX(col)} y={6} width={4} height={10} fill={INK} />
-      ))}
+      <Defs id={id} washes={RANGOLI_COLORS.map(([a]) => a)} />
+      <Backlight id={id} amount={0.3 * easeOut(t)} />
+      {COLS.map((col) => {
+        const offset = 0.08 * col
+        return <Stem key={col} id={id} col={col} wash={0.7 * easeOut(seg(t, 0.2 + offset, 0.6 + offset))} />
+      })}
       {COLS.map((col) => {
         const cx = colX(col) + 2
         const offset = 0.08 * col
@@ -198,14 +237,16 @@ export function SparklerMark({ on, size, still }: MarkProps) {
 
   return (
     <MarkSvg size={size}>
-      <FlameDefs id={id} />
+      <Defs id={id} washes={[GOLD, GOLD, GOLD]} />
+      <Backlight id={id} amount={glow * (0.5 + (clock > 0 ? 0.08 * Math.sin(clock * 17) : 0))} />
       {COLS.map((col) => (
-        <rect key={col} x={colX(col)} y={6} width={4} height={10} fill={INK} />
+        <Stem key={col} id={id} col={col} wash={0.8 * glow} />
       ))}
       {COLS.map((col) => {
         const cx = colX(col) + 2
         return (
           <g key={col}>
+            <circle cx={cx} cy={2} r={4.2} fill={`url(#${id}-glow)`} opacity={glow} />
             {(clock > 0 || still) &&
               SPARKS.map((k) => {
                 const angle = ((k / SPARKS.length) * 360 + col * 17 + ((k * 53) % 23)) * (Math.PI / 180)
@@ -230,7 +271,6 @@ export function SparklerMark({ on, size, still }: MarkProps) {
                   </g>
                 )
               })}
-            <circle cx={cx} cy={2} r={4.2} fill={`url(#${id}-glow)`} opacity={glow} />
             <rect x={colX(col)} y={0} width={4} height={4} fill={mix(INK, GOLD, glow)} />
             <rect x={cx - 0.9} y={1.1} width={1.8} height={1.8} fill={CORE} opacity={glow * 0.9} />
           </g>
@@ -241,7 +281,8 @@ export function SparklerMark({ on, size, still }: MarkProps) {
 }
 
 /* ------------------------------------------------------------------------------------------------------------------ */
-/* 4. Fireworks: the dots launch like rockets, burst into coloured sparks, then grow back. Plays once.                */
+/* 4. Fireworks: each dot is a launch pad. A rocket streaks up from it and bursts above the mark; the dot glows as    */
+/*    its fuse and the stem lights with the launch. The mark itself never comes apart. Plays once.                     */
 /* ------------------------------------------------------------------------------------------------------------------ */
 
 const BURST_COLORS: readonly (readonly [string, string])[] = [
@@ -250,11 +291,11 @@ const BURST_COLORS: readonly (readonly [string, string])[] = [
   [SAFFRON, MAGENTA],
 ]
 const BURST = Array.from({ length: 14 }, (_, i) => i)
-const BURST_Y = -4.5
+const BURST_Y = -4.6
 
 /** A shell bursting at (cx, BURST_Y): sparks streak outward, droop as they fall, and fade. */
 function Burst({ cx, b, colors }: { cx: number; b: number; colors: readonly [string, string] }) {
-  const r = 4.2 * easeOut(b)
+  const r = 3.9 * easeOut(b)
   const tail = 1.6 * (1 - b)
   const droop = 1.6 * b * b
   return (
@@ -283,52 +324,46 @@ function Burst({ cx, b, colors }: { cx: number; b: number; colors: readonly [str
 
 export function FireworksMark({ on, size, still }: MarkProps) {
   const t = useTimeline(on, { duration: 2.6, oneshot: true })
+  const id = useId().replace(/:/g, '')
+
+  const shots = COLS.map((col) => {
+    const start = 0.04 + 0.16 * col
+    return {
+      fuse: still ? 1 : seg(t, start, start + 0.1),
+      launch: still ? 1 : seg(t, start + 0.08, start + 0.26),
+      burst: still ? 0.4 : seg(t, start + 0.24, start + 0.64),
+      cool: still ? 0 : seg(t, start + 0.5, start + 0.8),
+    }
+  })
+  const flash = Math.max(...shots.map(({ burst }) => (burst > 0 && burst < 1 ? 1 - burst : 0)))
 
   return (
     <MarkSvg size={size}>
+      <Defs id={id} washes={[GOLD, GOLD, GOLD]} />
+      <Backlight id={id} amount={0.55 * flash} />
       {COLS.map((col) => {
         const cx = colX(col) + 2
-        if (still) {
-          return (
-            <g key={col}>
-              <rect x={colX(col)} y={6} width={4} height={10} fill={INK} />
-              <rect x={colX(col)} y={0} width={4} height={4} fill={INK} />
-              <Burst cx={cx} b={0.4} colors={BURST_COLORS[col]} />
-            </g>
-          )
-        }
-        const start = 0.04 + 0.16 * col
-        const launch = seg(t, start, start + 0.2)
-        const burst = seg(t, start + 0.2, start + 0.58)
-        const regrow = seg(t, 0.76 + 0.06 * col, 0.92 + 0.06 * col)
+        const { fuse, launch, burst, cool } = shots[col]
+        // The dot glows gold while its rocket is lit, then cools back to ink.
+        const hot = easeOut(fuse) * (1 - easeOut(cool))
         const rising = launch > 0 && launch < 1
-        const y = lerp(2, BURST_Y, easeOut(launch))
-        const shrink = lerp(4, 1.2, easeOut(Math.min(1, launch * 3)))
-        const grown = regrow > 0 ? pop(cx, 2, regrow) : null
+        const head = lerp(0.5, BURST_Y + 0.6, easeOut(launch))
+        const tail = Math.min(0.5, head + 3.2 * (1 - launch))
         return (
           <g key={col}>
-            <rect x={colX(col)} y={6} width={4} height={10} fill={INK} />
-            {t <= start && <rect x={colX(col)} y={0} width={4} height={4} fill={INK} />}
+            <Stem id={id} col={col} wash={0.8 * hot} />
+            <rect x={colX(col)} y={0} width={4} height={4} fill={mix(INK, GOLD, hot)} />
+            {hot > 0 && <rect x={cx - 0.9} y={1.1} width={1.8} height={1.8} fill={CORE} opacity={hot * 0.9} />}
             {rising && (
-              <g>
-                <path
-                  d={`M${cx} ${y + 0.8} L${cx} ${y + 0.8 + 3 * (1 - launch)}`}
-                  stroke={GOLD}
-                  strokeWidth={0.35}
-                  strokeLinecap="round"
-                  opacity={0.7 * (1 - launch)}
-                />
-                <rect
-                  x={cx - shrink / 2}
-                  y={y - shrink / 2}
-                  width={shrink}
-                  height={shrink}
-                  fill={mix(INK, GOLD, launch)}
-                />
-              </g>
+              <path
+                d={`M${cx} ${tail} L${cx} ${head}`}
+                stroke={GOLD}
+                strokeWidth={0.5}
+                strokeLinecap="round"
+                opacity={0.9 * (1 - launch * 0.5)}
+              />
             )}
             {burst > 0 && burst < 1 && <Burst cx={cx} b={burst} colors={BURST_COLORS[col]} />}
-            {grown && <rect x={colX(col)} y={0} width={4} height={4} fill={INK} {...grown} />}
           </g>
         )
       })}
@@ -355,12 +390,12 @@ function swags(sag: number): readonly (readonly [Point, Point, Point])[] {
     ],
     [
       [2, -0.5],
-      [5, 5 + sag],
+      [5, 6.2 + sag],
       [8, -0.5],
     ],
     [
       [8, -0.5],
-      [11, 5 - sag],
+      [11, 6.2 - sag],
       [14, -0.5],
     ],
     [
@@ -379,9 +414,9 @@ const at = ([a, c, b]: readonly [Point, Point, Point], u: number): Point => [
 function Marigold({ x, y, n }: { x: number; y: number; n: number }) {
   return (
     <g>
-      <circle cx={x} cy={y} r={0.95} fill={n % 2 ? MARIGOLD : SAFFRON} />
-      <circle cx={x} cy={y} r={0.5} fill={MARIGOLD_DEEP} />
-      <circle cx={x} cy={y} r={0.18} fill="#7a3d00" />
+      <circle cx={x} cy={y} r={1.15} fill={n % 2 ? MARIGOLD : SAFFRON} />
+      <circle cx={x} cy={y} r={0.62} fill={MARIGOLD_DEEP} />
+      <circle cx={x} cy={y} r={0.22} fill="#7a3d00" />
     </g>
   )
 }
@@ -391,6 +426,7 @@ export function ToranMark({ on, size, still }: MarkProps) {
   const t = still ? 1 : live
   const idle = on && t === 1 && !still
   const clock = useClock(idle)
+  const id = useId().replace(/:/g, '')
   const curves = swags(idle ? 0.45 * Math.sin(clock * 2) : 0)
 
   const flowers = curves.flatMap((curve, k) =>
@@ -407,9 +443,11 @@ export function ToranMark({ on, size, still }: MarkProps) {
 
   return (
     <MarkSvg size={size}>
+      <Defs id={id} washes={[MARIGOLD, MARIGOLD, MARIGOLD]} />
+      <Backlight id={id} amount={0.3 * easeOut(t)} />
       {COLS.map((col) => (
         <g key={col}>
-          <rect x={colX(col)} y={6} width={4} height={10} fill={INK} />
+          <Stem id={id} col={col} wash={0.45 * easeOut(seg(t, 0.3, 0.8))} />
           <rect x={colX(col)} y={0} width={4} height={4} fill={INK} />
         </g>
       ))}
@@ -425,8 +463,8 @@ export function ToranMark({ on, size, still }: MarkProps) {
       <path d="M-1.4 3.8 L-1.4 7.1 M17.4 3.8 L17.4 7.1" stroke={STRING} strokeWidth={0.2} opacity={seg(t, 0.4, 0.6)} />
       {[2, 8, 14].map((x) => (
         <g key={x} opacity={leaves}>
-          <ellipse cx={x - 0.8} cy={-1.3} rx={0.42} ry={1} fill={LEAF} transform={`rotate(-40 ${x - 0.8} -1.3)`} />
-          <ellipse cx={x + 0.8} cy={-1.3} rx={0.42} ry={1} fill={LEAF} transform={`rotate(40 ${x + 0.8} -1.3)`} />
+          <ellipse cx={x - 0.9} cy={-1.5} rx={0.46} ry={1.1} fill={LEAF} transform={`rotate(-40 ${x - 0.9} -1.5)`} />
+          <ellipse cx={x + 0.9} cy={-1.5} rx={0.46} ry={1.1} fill={LEAF} transform={`rotate(40 ${x + 0.9} -1.5)`} />
         </g>
       ))}
       {[...flowers, ...tassels].map(([x, y], i) => {
