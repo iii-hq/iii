@@ -105,9 +105,9 @@
                 "group": "Using iii",
                 "pages": [
                   "next/using-iii/workers",
-                  "next/using-iii/workers-registry",
                   "next/using-iii/functions",
                   "next/using-iii/observers",
+                  "next/using-iii/workers-registry",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
                   "next/using-iii/compose",
@@ -143,9 +143,9 @@
                     ]
                   },
                   "next/creating-workers/workers",
-                  "next/creating-workers/worker-manifest",
-                  "next/creating-workers/observable-functions",
                   "next/creating-workers/functions",
+                  "next/creating-workers/observable-functions",
+                  "next/creating-workers/worker-manifest",
                   "next/creating-workers/channels"
                 ]
               },
