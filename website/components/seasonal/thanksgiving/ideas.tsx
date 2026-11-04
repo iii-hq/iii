@@ -30,18 +30,36 @@ export type Idea = {
   oneshot?: boolean
   /** Driven by springs rather than a timeline, so it cannot be slowed down or scrubbed. */
   springs?: boolean
-  /** How long a drop-in holds the mark on. */
+  /** How long an autoplay holds the mark on. */
   showMs: number
+  /** How long one play runs once started, even if `on` drops; only play-once ideas need it. */
+  playMs: number
   /** After `on` drops, how long until the mark is back at rest and the next idea can take over. */
   settleMs: number
 }
 
 /** The six ideas the site rotates through during Thanksgiving week, in order. */
 export const IDEAS: readonly Idea[] = [
-  { id: 'strut', name: 'Strut', Mark: StrutMark, showMs: 2600, settleMs: 900 },
-  { id: 'gobble', name: 'Gobble', Mark: GobbleMark, showMs: 2600, settleMs: 700 },
-  { id: 'turkey-cube', name: 'Turkey cube', Mark: TurkeyCubeMark, springs: true, showMs: 2600, settleMs: 1100 },
-  { id: 'lineup', name: 'Harvest lineup', Mark: LineupCubeMark, springs: true, showMs: 2600, settleMs: 1100 },
-  { id: 'trot', name: 'Turkey trot', Mark: TrotMark, oneshot: true, showMs: 400, settleMs: 3000 },
-  { id: 'chorus', name: 'Gobble chorus', Mark: ChorusMark, showMs: 3000, settleMs: 900 },
+  { id: 'strut', name: 'Strut', Mark: StrutMark, showMs: 2600, playMs: 0, settleMs: 900 },
+  { id: 'gobble', name: 'Gobble', Mark: GobbleMark, showMs: 2600, playMs: 0, settleMs: 700 },
+  {
+    id: 'turkey-cube',
+    name: 'Turkey cube',
+    Mark: TurkeyCubeMark,
+    springs: true,
+    showMs: 2600,
+    playMs: 0,
+    settleMs: 1100,
+  },
+  {
+    id: 'lineup',
+    name: 'Harvest lineup',
+    Mark: LineupCubeMark,
+    springs: true,
+    showMs: 2600,
+    playMs: 0,
+    settleMs: 1100,
+  },
+  { id: 'trot', name: 'Turkey trot', Mark: TrotMark, oneshot: true, showMs: 2800, playMs: 2900, settleMs: 200 },
+  { id: 'chorus', name: 'Gobble chorus', Mark: ChorusMark, showMs: 3000, playMs: 0, settleMs: 900 },
 ]

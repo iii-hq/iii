@@ -30,7 +30,7 @@ export function SeasonalLink({
   href,
   label,
   size,
-  dropIn,
+  autoplay,
   className,
   children,
 }: {
@@ -38,8 +38,8 @@ export function SeasonalLink({
   label: string
   /** The seasonal mark's size in px. */
   size: number
-  /** Play once on its own shortly after the first page load of a visit. */
-  dropIn?: boolean
+  /** Play on its own every few seconds while on screen (default on). */
+  autoplay?: boolean
   className?: string
   children: React.ReactNode
 }) {
@@ -55,7 +55,7 @@ export function SeasonalLink({
           </a>
         }
       >
-        <ThanksgivingLink href={href} label={label} size={size} dropIn={dropIn} className={className} />
+        <ThanksgivingLink href={href} label={label} size={size} autoplay={autoplay} className={className} />
       </Suspense>
     )
   }

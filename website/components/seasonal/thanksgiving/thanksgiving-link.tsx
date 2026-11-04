@@ -5,27 +5,28 @@ import { useEffect, useRef, useState } from 'react'
 
 import { IDEAS } from './ideas'
 
-/** The header drops in once per browsing session, this long after the page loads. */
-const DROP_IN_MS = 2500
-const DROP_IN_KEY = 'iii-thanksgiving-drop-in'
+/** Autoplay, like the Halloween mark: the first play this long after the mark comes on screen... */
+const FIRST_MS = 2500
+/** ...then a pause this long after each play before the next one. */
+const REST_MS = 6000
 
 /**
- * A link wearing the iii mark for Thanksgiving week. It plays on hover or keyboard focus and, with `dropIn`, once on
- * its own shortly after the first page load of a visit. Each play shows the next of the six ideas, starting from a
- * random one so a returning reader meets something new.
+ * A link wearing the iii mark for Thanksgiving week. It plays on hover or keyboard focus and, with `autoplay`, on its
+ * own every few seconds while it is on screen. Each play shows the next of the six ideas, starting from a random one
+ * so a returning reader meets something new.
  */
 export default function ThanksgivingLink({
   href,
   label,
   size,
-  dropIn = false,
+  autoplay = true,
   className,
 }: {
   href: string
   label: string
   /** The mark's size in px. */
   size: number
-  dropIn?: boolean
+  autoplay?: boolean
   className?: string
 }) {
   const ref = useRef<HTMLAnchorElement>(null)
@@ -43,48 +44,46 @@ export default function ThanksgivingLink({
   // Picked after mount so the server and client markup agree.
   useEffect(() => setIndex(Math.floor(Math.random() * IDEAS.length)), [])
 
-  // Once a play ends and the mark has settled back to rest, queue the next idea. Hovering again before then replays
-  // the same one, so a face never swaps mid-animation.
+  // Once a play ends and the mark is back at rest, queue the next idea. A play-once idea (the trot) keeps going after
+  // the pointer leaves, so wait for it to finish too; hovering again before then replays the same one, so the mark
+  // never swaps mid-animation.
   const played = useRef(false)
+  const busyUntil = useRef(0)
   useEffect(() => {
     if (on) {
       played.current = true
+      busyUntil.current = performance.now() + idea.playMs
       return
     }
     if (!played.current) return
+    const wait = Math.max(idea.settleMs, busyUntil.current - performance.now())
     const timer = window.setTimeout(() => {
       played.current = false
       setIndex((n) => (n + 1) % IDEAS.length)
-    }, idea.settleMs)
+    }, wait)
     return () => window.clearTimeout(timer)
   }, [on, idea])
 
-  // The drop-in: once per session, only while the mark is on screen and the tab is visible, and never for readers who
-  // asked for less motion.
+  // Autoplay: only while the mark is on screen and the tab is visible, and never for readers who asked for less motion.
   useEffect(() => {
-    if (!dropIn || reduceMotion || !inView) return
-    try {
-      if (window.sessionStorage.getItem(DROP_IN_KEY)) return
-    } catch {
-      // Storage blocked: still drop in, just without remembering it.
+    if (!autoplay || reduceMotion || !inView) return
+    let timer = 0
+    const next = (wait: number) => {
+      timer = window.setTimeout(() => {
+        if (document.hidden) return next(REST_MS)
+        setVisiting(true)
+        timer = window.setTimeout(() => {
+          setVisiting(false)
+          next(REST_MS)
+        }, ideaRef.current.showMs)
+      }, wait)
     }
-    let hold = 0
-    const start = window.setTimeout(() => {
-      if (document.hidden) return
-      try {
-        window.sessionStorage.setItem(DROP_IN_KEY, '1')
-      } catch {
-        // Storage blocked: the drop-in may repeat on the next page, which is harmless.
-      }
-      setVisiting(true)
-      hold = window.setTimeout(() => setVisiting(false), ideaRef.current.showMs)
-    }, DROP_IN_MS)
+    next(FIRST_MS)
     return () => {
-      window.clearTimeout(start)
-      window.clearTimeout(hold)
+      window.clearTimeout(timer)
       setVisiting(false)
     }
-  }, [dropIn, reduceMotion, inView])
+  }, [autoplay, reduceMotion, inView])
 
   const { Mark } = idea
   return (
@@ -93,6 +92,8 @@ export default function ThanksgivingLink({
       href={href}
       aria-label={label}
       className={className}
+      data-idea={idea.id}
+      data-playing={on || undefined}
       // Touch fires a hover on tap, which would start a play right as the page navigates away.
       onPointerEnter={(e) => e.pointerType === 'mouse' && setHovered(true)}
       onPointerLeave={(e) => e.pointerType === 'mouse' && setHovered(false)}

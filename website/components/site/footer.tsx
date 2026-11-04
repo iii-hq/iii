@@ -53,7 +53,7 @@ export function Footer({ container }: { container?: string } = {}) {
       <div className={cn(container ?? 'mx-auto max-w-[1240px] px-5 sm:px-6 md:px-5', 'pt-14 md:pt-16')}>
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] lg:gap-20">
           <div className="flex flex-col">
-            {/* Wears a seasonal mark during its date window (Thanksgiving week); plays on hover or focus. */}
+            {/* Wears a seasonal mark during its date window (Thanksgiving week), playing on its own every few seconds. */}
             <SeasonalLink
               href="#hero"
               label="iii, back to top"

@@ -117,12 +117,11 @@ export function Header({ stats: buildStats }: { stats: CommunityStats }) {
           {/* Phones: a 48px bar, and the logo and the menu icon sit the same 14px in from each end (the icon is 16px
               inside a 36px button, so 4px of padding puts its lines 14px in). Wider screens keep the 56px bar. */}
           <div className="flex h-12 items-center gap-2 pr-1 pl-3.5 sm:h-14 sm:pr-2 sm:pl-4 md:pl-5">
-            {/* Wears a seasonal mark during its date window (Thanksgiving week), and plays once on its own per visit. */}
+            {/* Wears a seasonal mark during its date window (Thanksgiving week), playing on its own every few seconds. */}
             <SeasonalLink
               href="/"
               label="iii home"
               size={24}
-              dropIn
               className={cn('mr-3 flex items-center rounded-md', focusRing)}
             >
               <NavLogo />
