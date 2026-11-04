@@ -20,6 +20,12 @@ Your worker defines function observation with four hooks, two are observer speci
 specific to each individual observation. The observer lifecycle hooks add your own set-up and
 teardown per observer. The observation lifecycle hooks replace how iii matches and delivers calls.
 
+Both observer lifecycle hooks can be set for one function or for every function the worker hosts,
+and both levels run. When an observer is added, the worker's hook runs, then the function's. When an
+observer is removed, the function's hook runs, then the worker's. For each function the SDK runs the
+observer lifecycle hooks one at a time, in the order the engine announced the observers; hooks of
+different functions run concurrently.
+
 ### Observer lifecycle
 
 These hooks run once per observer, when it starts and stops observing the function.
@@ -28,7 +34,8 @@ These hooks run once per observer, when it starts and stops observing the functi
 
 Runs before the observer is accepted. Use it to set something up from the observer's args. When it
 returns, the observer becomes active and receives the function's calls. Throw to reject the observer
-instead.
+instead. A hook that runs past 30 seconds (`observers.owner_ack_timeout_ms`) fails the observer with
+`OWNER_TIMEOUT`; a removed hook that runs past it is only logged.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -121,6 +128,8 @@ instead.
         "database/sql"
         "fmt"
         "os"
+
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
@@ -153,7 +162,9 @@ instead.
 #### `onObserverRemoved(obs)`
 
 Runs after the engine has removed the observer and delivery to it has stopped. Use it to perform
-your own teardown.
+your own teardown. It runs once for each accepted observer, when the consumer disposes it, when
+`max_fires` or expiry ends it, when the observing worker disconnects, and after a late rejection.
+For an observer that is never accepted it runs only at the levels whose `onObserverAdded` resolved.
 
 <Note>
   If `onObserverRemoved` throws an error it will cause the error to be logged but it will not
@@ -236,6 +247,8 @@ your own teardown.
         "database/sql"
         "fmt"
         "os"
+
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
@@ -436,6 +449,555 @@ deliver the call yourself and change what is returned to the caller.
   </Tab>
 </Tabs>
 
+### Set a hook for one function or for every function
+
+A hook set on the worker runs for every function the worker hosts. A hook set on one function runs
+for that function only.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Client } from "pg";
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    let listener: Client | undefined;
+    let observed = 0;
+
+    worker.onObserverAdded(async () => {
+      if (observed++ > 0) return;
+      listener = new Client({ connectionString: process.env.PRIMARY_DATABASE_URL });
+      await listener.connect();
+      await listener.query("LISTEN iii_row_changed");
+    });
+
+    worker.onObserverRemoved(async () => {
+      if (--observed > 0) return;
+      await listener?.end();
+      listener = undefined;
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    import psycopg
+
+    # every function this worker hosts: hold one LISTEN connection while anything is observed
+    listener: psycopg.Connection | None = None
+    observed = 0
+
+    @worker.on_observer_added
+    def open_listener(obs):
+        global listener, observed
+        observed += 1
+        if observed > 1:
+            return
+        listener = psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)
+        listener.execute("LISTEN iii_row_changed")
+
+    @worker.on_observer_removed
+    def close_listener(obs):
+        global listener, observed
+        observed -= 1
+        if observed > 0:
+            return
+        listener.close()
+        listener = None
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use iii_sdk::{ObserveRejection, Observer};
+    use sqlx::postgres::PgListener;
+    use tokio::sync::Mutex;
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    let listener: Arc<Mutex<Option<PgListener>>> = Arc::new(Mutex::new(None));
+    let observed = Arc::new(AtomicUsize::new(0));
+
+    let (slot, count) = (listener.clone(), observed.clone());
+    worker.on_observer_added(move |_obs: Observer| {
+        let (slot, count) = (slot.clone(), count.clone());
+        async move {
+            if count.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(());
+            }
+            let url = std::env::var("PRIMARY_DATABASE_URL").unwrap_or_default();
+            let mut conn = PgListener::connect(&url)
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            conn.listen("iii_row_changed")
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            *slot.lock().await = Some(conn);
+            Ok(())
+        }
+    });
+
+    let (slot, count) = (listener.clone(), observed.clone());
+    worker.on_observer_removed(move |_obs: Observer| {
+        let (slot, count) = (slot.clone(), count.clone());
+        async move {
+            if count.fetch_sub(1, Ordering::SeqCst) > 1 {
+                return;
+            }
+            slot.lock().await.take();
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "context"
+        "os"
+        "sync"
+
+        "github.com/jackc/pgx/v5"
+    )
+
+    // every function this worker hosts: hold one LISTEN connection while anything is observed
+    var (
+        mu       sync.Mutex
+        listener *pgx.Conn
+        observed int
+    )
+
+    worker.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
+        mu.Lock()
+        defer mu.Unlock()
+        observed++
+        if observed > 1 {
+            return nil
+        }
+        conn, err := pgx.Connect(ctx, os.Getenv("PRIMARY_DATABASE_URL"))
+        if err != nil {
+            return err
+        }
+        if _, err := conn.Exec(ctx, "LISTEN iii_row_changed"); err != nil {
+            return err
+        }
+        listener = conn
+        return nil
+    })
+
+    worker.OnObserverRemoved(func(ctx context.Context, obs *iii.Observer) {
+        mu.Lock()
+        defer mu.Unlock()
+        observed--
+        if observed > 0 {
+            return
+        }
+        listener.Close(ctx)
+        listener = nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+For one function, pass its id to the same pair:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Client } from "pg";
+
+    let listener: Client | undefined;
+    let observed = 0;
+
+    worker.onObserverAdded("database::on-row-changed", async (obs) => {
+      if (observed++ > 0) return;
+      listener = new Client({ connectionString: process.env.PRIMARY_DATABASE_URL });
+      await listener.connect();
+      await listener.query("LISTEN iii_row_changed");
+    });
+
+    worker.onObserverRemoved("database::on-row-changed", async (obs) => {
+      if (--observed > 0) return;
+      await listener?.end();
+      listener = undefined;
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    import psycopg
+
+    listener: psycopg.Connection | None = None
+    observed = 0
+
+    @worker.on_observer_added("database::on-row-changed")
+    def open_listener(obs):
+        global listener, observed
+        observed += 1
+        if observed > 1:
+            return
+        listener = psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)
+        listener.execute("LISTEN iii_row_changed")
+
+    @worker.on_observer_removed("database::on-row-changed")
+    def close_listener(obs):
+        global listener, observed
+        observed -= 1
+        if observed > 0:
+            return
+        listener.close()
+        listener = None
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use iii_sdk::{ObserveRejection, Observer};
+    use sqlx::postgres::PgListener;
+    use tokio::sync::Mutex;
+
+    let listener: Arc<Mutex<Option<PgListener>>> = Arc::new(Mutex::new(None));
+    let observed = Arc::new(AtomicUsize::new(0));
+
+    let (slot, count) = (listener.clone(), observed.clone());
+    worker.on_observer_added_for("database::on-row-changed", move |_obs: Observer| {
+        let (slot, count) = (slot.clone(), count.clone());
+        async move {
+            if count.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Ok(());
+            }
+            let url = std::env::var("PRIMARY_DATABASE_URL").unwrap_or_default();
+            let mut conn = PgListener::connect(&url)
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            conn.listen("iii_row_changed")
+                .await
+                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
+            *slot.lock().await = Some(conn);
+            Ok(())
+        }
+    });
+
+    let (slot, count) = (listener.clone(), observed.clone());
+    worker.on_observer_removed_for("database::on-row-changed", move |_obs: Observer| {
+        let (slot, count) = (slot.clone(), count.clone());
+        async move {
+            if count.fetch_sub(1, Ordering::SeqCst) > 1 {
+                return;
+            }
+            slot.lock().await.take();
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "context"
+        "os"
+        "sync"
+
+        "github.com/jackc/pgx/v5"
+    )
+
+    var (
+        mu       sync.Mutex
+        listener *pgx.Conn
+        observed int
+    )
+
+    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+        mu.Lock()
+        defer mu.Unlock()
+        observed++
+        if observed > 1 {
+            return nil
+        }
+        conn, err := pgx.Connect(ctx, os.Getenv("PRIMARY_DATABASE_URL"))
+        if err != nil {
+            return err
+        }
+        if _, err := conn.Exec(ctx, "LISTEN iii_row_changed"); err != nil {
+            return err
+        }
+        listener = conn
+        return nil
+    })
+
+    worker.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
+        mu.Lock()
+        defer mu.Unlock()
+        observed--
+        if observed > 0 {
+            return
+        }
+        listener.Close(ctx)
+        listener = nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+A hook for one function is set by id (see [Hooks](#hooks)) or chained on the `FunctionRef` that
+`registerFunction` returns. Each method returns its receiver, so calls chain. Added, removed and
+deliver hooks can be sync or async. A match predicate and key functions are sync, since they run on
+every call.
+
+Removing a hook returns the function to its default (see [Hooks](#hooks)).
+
+Hooks are stored by function id. They stay in place across `unregister()` and a later registration
+of the same id, and they can be set before the function is registered. Once the worker's connection
+is registered, the SDK logs a warning for each hook id the worker has not registered, which catches
+a mistyped id.
+
+### Reject an observer
+
+An observer is accepted when every `onObserverAdded` that applies to it resolves. The SDK then
+acknowledges it to the engine, and the observer becomes `active`. So its database trigger exists
+before the first call it must receive.
+
+An `onObserverAdded` that throws rejects the observer. A thrown `ObserveRejection(code, message)`
+sets the code the consumer's `ready()` fails with; any other error is `OBSERVE_REJECTED`.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { ObserveRejection } from "iii-sdk";
+
+    worker.onObserverAdded("database::on-row-changed", async (obs) => {
+      const { db } = obs.args as { db: string };
+      // accept: a hook that returns accepts the observer
+      if (db === "primary") return;
+      // reject: a thrown ObserveRejection sets the code ready() fails with
+      throw new ObserveRejection("UNKNOWN_DB", `no database '${db}'`);
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import ObserveRejection
+
+    @worker.on_observer_added("database::on-row-changed")
+    def accept_primary(obs):
+        db = obs.args["db"]
+        # accept: a hook that returns accepts the observer
+        if db == "primary":
+            return
+        # reject: a raised ObserveRejection sets the code ready() fails with
+        raise ObserveRejection("UNKNOWN_DB", f"no database '{db}'")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{ObserveRejection, Observer};
+
+    worker.on_observer_added_for("database::on-row-changed", move |obs: Observer| async move {
+        let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
+        // accept: Ok accepts the observer
+        if db == "primary" {
+            return Ok(());
+        }
+        // reject: Err sets the code ready() fails with
+        Err(ObserveRejection::new("UNKNOWN_DB", format!("no database '{db}'")))
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    worker.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+        db, _ := obs.Args["db"].(string)
+        // accept: returning nil accepts the observer
+        if db == "primary" {
+            return nil
+        }
+        // reject: the returned error sets the code ready() fails with
+        return iii.ObserveRejection("UNKNOWN_DB", "no database '"+db+"'")
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+### No replay of past executions
+
+iii stores no observation history. A hook reacts only to the executions of its function that happen
+after the hook is registered, and an observer receives only the calls that happen after it is
+accepted.
+
+### Reject an observer later
+
+An observer that the function accepted can become invalid later. For example, a configuration reload
+can remove the resource that the observer watches. `obs.reject(code, message)` stops delivery to the
+observer immediately, and the SDK runs `onObserverRemoved` next, connected or not. The engine moves
+the observer to `error` with that code. If the connection is lost, the SDK sends the rejection again
+after it reconnects.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { Pool } from "pg";
+
+    type RowChange = { db: string; table: string; op: "insert" | "update" | "delete"; row: unknown };
+
+    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
+    const rowChanged = worker.registerFunction(
+      "database::on-row-changed",
+      (change: RowChange) => change,
+      {
+        private: true,
+        // the args an observer of this function passes
+        args_format: {
+          type: "object",
+          properties: { db: { type: "string" }, table: { type: "string" }, op: { type: "string" } },
+          required: ["db", "table", "op"],
+        },
+      },
+    );
+
+    function rejectDroppedDatabases() {
+      for (const obs of rowChanged.observers()) {
+        if (!pools.has(obs.args.db as string)) {
+          obs.reject("UNKNOWN_DB", `no database '${obs.args.db}'`);
+        }
+      }
+    }
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from psycopg_pool import ConnectionPool
+
+    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
+    # the args an observer of this function passes
+    ROW_ARGS = {
+        "type": "object",
+        "properties": {"db": {"type": "string"}, "table": {"type": "string"}, "op": {"type": "string"}},
+        "required": ["db", "table", "op"],
+    }
+
+    row_changed = worker.register_function(
+        "database::on-row-changed", lambda change: change, private=True, args_format=ROW_ARGS
+    )
+
+    def reject_dropped_databases():
+        for obs in row_changed.observers():
+            db = obs.args["db"]
+            if db not in pools:
+                obs.reject("UNKNOWN_DB", f"no database '{db}'")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+
+    use iii_sdk::{Error, RegisterFunction};
+    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
+    use serde::{Deserialize, Serialize};
+    use serde_json::Value;
+    use sqlx::PgPool;
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct RowChange {
+        db: String,
+        table: String,
+        op: String,
+        row: Value,
+    }
+
+    let pools: HashMap<String, PgPool> = HashMap::from([(
+        "primary".to_string(),
+        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
+    )]);
+
+    #[derive(JsonSchema)]
+    struct RowChangeArgs {
+        db: String,
+        table: String,
+        op: String,
+    }
+
+    let row_changed = worker.register_function(
+        "database::on-row-changed",
+        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change))
+            .private()
+            // the args an observer of this function passes
+            .args_format::<RowChangeArgs>(),
+    );
+
+    fn reject_dropped_databases(
+        row_changed: &iii_sdk::runtime::FunctionRef,
+        pools: &HashMap<String, PgPool>,
+    ) {
+        for obs in row_changed.observers() {
+            let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
+            if !pools.contains_key(&db) {
+                obs.reject("UNKNOWN_DB", format!("no database '{db}'"));
+            }
+        }
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "database/sql"
+        "encoding/json"
+        "os"
+
+        _ "github.com/jackc/pgx/v5/stdlib"
+    )
+
+    type rowChange struct {
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
+    }
+
+    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
+    pools := map[string]*sql.DB{"primary": primary}
+
+    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
+        Private: true,
+        // the args an observer of this function passes
+        ArgsFormat: json.RawMessage(`{"type":"object","properties":{"db":{"type":"string"},"table":{"type":"string"},"op":{"type":"string"}},"required":["db","table","op"]}`),
+    })
+
+    rejectDroppedDatabases := func() {
+        for _, obs := range rowChanged.Observers() {
+            db, _ := obs.Args["db"].(string)
+            if _, ok := pools[db]; !ok {
+                obs.Reject("UNKNOWN_DB", "no database '"+db+"'")
+            }
+        }
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+`FunctionRef.observers()` returns the active observers of the function.
+
 ## Producing events with observers
 
 Function observation is not limited to input/output. Functions can use the same observer pattern to
@@ -448,9 +1010,8 @@ with the event as the payload. That second function works as the event source:
 - `private: true` keeps the calls to this worker: other workers can observe the event source, and
   only this worker can call it (see [Private functions](#private-functions)).
 
-`FunctionRef.isObserved()` returns true when the event source has at least 1 active observer. It
-costs one atomic load, so call it before you build the event, and skip the event when no worker
-observes it.
+`FunctionRef.isObserved()` returns true when the event source has at least 1 active observer. It has
+minimal overhead, so it can be used to skip events that are not being observed.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -608,374 +1169,6 @@ observes it.
 Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
 observer's filters match.
-
-## Set up and tear down per observer
-
-`onObserverAdded` and `onObserverRemoved` can be set for one function, or for every function the
-worker hosts, and both levels run:
-
-- When an observer is added, the worker's `onObserverAdded` runs, then the function's.
-- When an observer is removed, the function's `onObserverRemoved` runs, then the worker's.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { Client } from "pg";
-
-    // every function this worker hosts: hold one LISTEN connection while anything is observed
-    let listener: Client | undefined;
-    let observed = 0;
-
-    worker.onObserverAdded(async () => {
-      if (observed++ > 0) return;
-      listener = new Client({ connectionString: process.env.PRIMARY_DATABASE_URL });
-      await listener.connect();
-      await listener.query("LISTEN iii_row_changed");
-    });
-
-    worker.onObserverRemoved(async () => {
-      if (--observed > 0) return;
-      await listener?.end();
-      listener = undefined;
-    });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    import os
-
-    import psycopg
-
-    # every function this worker hosts: hold one LISTEN connection while anything is observed
-    listener: psycopg.Connection | None = None
-    observed = 0
-
-    @worker.on_observer_added
-    def open_listener(obs):
-        global listener, observed
-        observed += 1
-        if observed > 1:
-            return
-        listener = psycopg.connect(os.environ["PRIMARY_DATABASE_URL"], autocommit=True)
-        listener.execute("LISTEN iii_row_changed")
-
-    @worker.on_observer_removed
-    def close_listener(obs):
-        global listener, observed
-        observed -= 1
-        if observed > 0:
-            return
-        listener.close()
-        listener = None
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-
-    use iii_sdk::{ObserveRejection, Observer};
-    use sqlx::postgres::PgListener;
-    use tokio::sync::Mutex;
-
-    // every function this worker hosts: hold one LISTEN connection while anything is observed
-    let listener: Arc<Mutex<Option<PgListener>>> = Arc::new(Mutex::new(None));
-    let observed = Arc::new(AtomicUsize::new(0));
-
-    let (slot, count) = (listener.clone(), observed.clone());
-    worker.on_observer_added(move |_obs: Observer| {
-        let (slot, count) = (slot.clone(), count.clone());
-        async move {
-            if count.fetch_add(1, Ordering::SeqCst) > 0 {
-                return Ok(());
-            }
-            let url = std::env::var("PRIMARY_DATABASE_URL").unwrap_or_default();
-            let mut conn = PgListener::connect(&url)
-                .await
-                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
-            conn.listen("iii_row_changed")
-                .await
-                .map_err(|e| ObserveRejection::new("DB_ERROR", e.to_string()))?;
-            *slot.lock().await = Some(conn);
-            Ok(())
-        }
-    });
-
-    let (slot, count) = (listener.clone(), observed.clone());
-    worker.on_observer_removed(move |_obs: Observer| {
-        let (slot, count) = (slot.clone(), count.clone());
-        async move {
-            if count.fetch_sub(1, Ordering::SeqCst) > 1 {
-                return;
-            }
-            slot.lock().await.take();
-        }
-    });
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import (
-        "context"
-        "os"
-        "sync"
-
-        "github.com/jackc/pgx/v5"
-    )
-
-    // every function this worker hosts: hold one LISTEN connection while anything is observed
-    var (
-        mu       sync.Mutex
-        listener *pgx.Conn
-        observed int
-    )
-
-    worker.OnObserverAdded(func(ctx context.Context, obs *iii.Observer) error {
-        mu.Lock()
-        defer mu.Unlock()
-        observed++
-        if observed > 1 {
-            return nil
-        }
-        conn, err := pgx.Connect(ctx, os.Getenv("PRIMARY_DATABASE_URL"))
-        if err != nil {
-            return err
-        }
-        if _, err := conn.Exec(ctx, "LISTEN iii_row_changed"); err != nil {
-            return err
-        }
-        listener = conn
-        return nil
-    })
-
-    worker.OnObserverRemoved(func(ctx context.Context, obs *iii.Observer) {
-        mu.Lock()
-        defer mu.Unlock()
-        observed--
-        if observed > 0 {
-            return
-        }
-        listener.Close(ctx)
-        listener = nil
-    })
-    ```
-
-  </Tab>
-</Tabs>
-
-A hook for one function is set by id (see [Hooks](#hooks)) or chained on the `FunctionRef` that
-`registerFunction` returns. Each method returns its receiver, so calls chain. Added, removed and
-deliver hooks can be sync or async. A match predicate and key functions are sync, since they run on
-every call.
-
-Removing a hook returns the function to its default (see [Hooks](#hooks)).
-
-Hooks are stored by function id. They stay in place across `unregister()` and a later registration
-of the same id, and they can be set before the function is registered. Once the worker's connection
-is registered, the SDK logs a warning for each hook id the worker has not registered, which catches
-a mistyped id.
-
-### Accept or reject an observer
-
-- **Accepted.** An observer is accepted when every `onObserverAdded` that applies to it has
-  resolved. The SDK then acknowledges it to the engine, and the observer becomes `active`. So its
-  database trigger exists before the first call it must receive.
-- **Rejected.** When an `onObserverAdded` throws, the observer is rejected. A thrown
-  `ObserveRejection(code, message)` sets the code the consumer's `ready()` fails with; any other
-  error is `OBSERVE_REJECTED`. The `onObserverRemoved` of each level whose `onObserverAdded` already
-  resolved runs, so a worker-wide hook that retained a resource releases it.
-- **Removed.** `onObserverRemoved` runs exactly once for every accepted observer: when the consumer
-  disposes it, when `max_fires` or expiry ends it, when the observing worker disconnects, and on a
-  late rejection with `obs.reject()`. For an observer that is never accepted, it runs only at the
-  levels whose `onObserverAdded` resolved. No SDK runs it yet when the worker that hosts the
-  function shuts down.
-- **Away and back.** When the observing worker disconnects, its observers are `suspended` for
-  `observers.observer_grace_ms` (30 s by default), and the worker that hosts the function runs
-  `onObserverRemoved` for each. If the observing worker reconnects in that time, the host gets each
-  observer again, in the order they were created, runs `onObserverAdded`, and the observer is
-  `active` once it is accepted.
-- **Back on a new connection.** A restarted observing worker observes under the ids it used before.
-  Under the same worker name, namespace and principal, its observe replaces the `suspended` observer
-  (see [Observer states](../using-iii/observers#observer-states)); from any other worker the id
-  stays taken (`OBSERVER_ID_CONFLICT`) until the grace period ends. The host already ran
-  `onObserverRemoved` for the old observer and receives nothing more about it. It gets the new
-  observer like any other and runs `onObserverAdded`, so a resource kept by `obs.id`, such as a
-  queue subscriber's backlog, serves the new observer.
-- **One at a time.** For each function, the SDK runs observer lifecycle hooks one at a time, in the
-  order the engine announced the observers. Hooks of different functions run concurrently.
-- **Timeout.** An `onObserverAdded` that runs past 30 seconds (`observers.owner_ack_timeout_ms` in
-  the engine) fails the observer with `OWNER_TIMEOUT`. A removed hook that runs past it is logged.
-
-### When hooks take effect
-
-The SDK acknowledges no observer of a function before the call that registered the function has
-returned. So set hooks by id before `registerFunction`: they run for every observer. In Node, a hook
-chained on the `registerFunction` result, or set later in the same synchronous block, runs for every
-observer too, since inbound messages run on the event loop.
-
-A hook set once a function already has active observers is caught up: the SDK runs it for each of
-them at once, a throw late-rejects that observer, and the SDK logs one warning naming the function
-and the number of observers that were active without the hook.
-
-### Reject an observer later
-
-An observer that the function accepted can become invalid later. For example, a configuration reload
-can remove the resource that the observer watches. `obs.reject(code, message)` stops delivery to the
-observer immediately, and the SDK runs `onObserverRemoved` next, connected or not. The engine moves
-the observer to `error` with that code. If the connection is lost, the SDK sends the rejection again
-after it reconnects.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    import { Pool } from "pg";
-
-    type RowChange = { db: string; table: string; op: "insert" | "update" | "delete"; row: unknown };
-
-    const pools = new Map([["primary", new Pool({ connectionString: process.env.PRIMARY_DATABASE_URL })]]);
-    const rowChanged = worker.registerFunction(
-      "database::on-row-changed",
-      (change: RowChange) => change,
-      {
-        private: true,
-        // the args an observer of this function passes
-        args_format: {
-          type: "object",
-          properties: { db: { type: "string" }, table: { type: "string" }, op: { type: "string" } },
-          required: ["db", "table", "op"],
-        },
-      },
-    );
-
-    function rejectDroppedDatabases() {
-      for (const obs of rowChanged.observers()) {
-        if (!pools.has(obs.args.db as string)) {
-          obs.reject("UNKNOWN_DB", `no database '${obs.args.db}'`);
-        }
-      }
-    }
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    import os
-
-    from psycopg_pool import ConnectionPool
-
-    pools = {"primary": ConnectionPool(os.environ["PRIMARY_DATABASE_URL"])}
-    # the args an observer of this function passes
-    ROW_ARGS = {
-        "type": "object",
-        "properties": {"db": {"type": "string"}, "table": {"type": "string"}, "op": {"type": "string"}},
-        "required": ["db", "table", "op"],
-    }
-
-    row_changed = worker.register_function(
-        "database::on-row-changed", lambda change: change, private=True, args_format=ROW_ARGS
-    )
-
-    def reject_dropped_databases():
-        for obs in row_changed.observers():
-            db = obs.args["db"]
-            if db not in pools:
-                obs.reject("UNKNOWN_DB", f"no database '{db}'")
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use std::collections::HashMap;
-
-    use iii_sdk::{Error, RegisterFunction};
-    use schemars::JsonSchema; // schemars 0.8, the version iii-sdk uses
-    use serde::{Deserialize, Serialize};
-    use serde_json::Value;
-    use sqlx::PgPool;
-
-    #[derive(Serialize, Deserialize, JsonSchema)]
-    struct RowChange {
-        db: String,
-        table: String,
-        op: String,
-        row: Value,
-    }
-
-    let pools: HashMap<String, PgPool> = HashMap::from([(
-        "primary".to_string(),
-        PgPool::connect(&std::env::var("PRIMARY_DATABASE_URL")?).await?,
-    )]);
-
-    #[derive(JsonSchema)]
-    struct RowChangeArgs {
-        db: String,
-        table: String,
-        op: String,
-    }
-
-    let row_changed = worker.register_function(
-        "database::on-row-changed",
-        RegisterFunction::new(|change: RowChange| Ok::<_, Error>(change))
-            .private()
-            // the args an observer of this function passes
-            .args_format::<RowChangeArgs>(),
-    );
-
-    fn reject_dropped_databases(
-        row_changed: &iii_sdk::runtime::FunctionRef,
-        pools: &HashMap<String, PgPool>,
-    ) {
-        for obs in row_changed.observers() {
-            let db = obs.args_value()["db"].as_str().unwrap_or_default().to_string();
-            if !pools.contains_key(&db) {
-                obs.reject("UNKNOWN_DB", format!("no database '{db}'"));
-            }
-        }
-    }
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import (
-        "database/sql"
-        "encoding/json"
-        "os"
-    )
-
-    type rowChange struct {
-        DB    string          `json:"db"`
-        Table string          `json:"table"`
-        Op    string          `json:"op"`
-        Row   json.RawMessage `json:"row"`
-    }
-
-    primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
-    pools := map[string]*sql.DB{"primary": primary}
-
-    rowChanged, _ := worker.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
-        Private: true,
-        // the args an observer of this function passes
-        ArgsFormat: json.RawMessage(`{"type":"object","properties":{"db":{"type":"string"},"table":{"type":"string"},"op":{"type":"string"}},"required":["db","table","op"]}`),
-    })
-
-    rejectDroppedDatabases := func() {
-        for _, obs := range rowChanged.Observers() {
-            db, _ := obs.Args["db"].(string)
-            if _, ok := pools[db]; !ok {
-                obs.Reject("UNKNOWN_DB", "no database '"+db+"'")
-            }
-        }
-    }
-    ```
-
-  </Tab>
-</Tabs>
-
-`FunctionRef.observers()` returns the active observers of the function.
 
 ## Choose who gets each call
 
@@ -1283,13 +1476,18 @@ A call that names an observer runs that observer's target and resolves to the ta
   </Tab>
   <Tab title="Go">
     ```go
-    import "encoding/json"
+    import (
+        "encoding/json"
+        "fmt"
+    )
 
     observers := rowChanged.Observers()
     obs := observers[0] // an active observer of database::on-row-changed
     payload, _ := json.Marshal(map[string]any{"db": "primary", "table": "orders", "op": "insert", "row": map[string]any{"id": 1}})
 
     result, err := worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload}) // the target's result
+    fmt.Println(string(result), err)
+
     worker.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload, Action: iii.VoidAction()}) // fire-and-forget
     ```
 
@@ -1458,6 +1656,8 @@ function's targets expect.
         "database/sql"
         "encoding/json"
         "os"
+
+        _ "github.com/jackc/pgx/v5/stdlib"
     )
 
     primary, _ := sql.Open("pgx", os.Getenv("PRIMARY_DATABASE_URL"))
