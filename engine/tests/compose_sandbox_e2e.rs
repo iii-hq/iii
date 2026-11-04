@@ -268,6 +268,30 @@ impl Project {
             .map(str::to_owned)
     }
 
+    /// The running process of `key`, once one is: the host command of a container
+    /// that runs its own VM.
+    fn pid(&self, key: &str) -> Option<u32> {
+        let status = self
+            .call(Some(NAMESPACE), "compose::status", json!({}), SHORT)
+            .ok()?;
+        let pid = status["containers"]
+            .as_array()?
+            .iter()
+            .find(|container| container["container"] == key)?["pid"]
+            .as_u64()?;
+        Some(pid as u32)
+    }
+
+    /// SIGKILLs the host command of `key`, then waits for `state`.
+    fn kill_command(&self, key: &str, state: &str) {
+        let command = self.pid(key).expect("a running command");
+        sigkill(command);
+        wait_for(SHORT, &format!("{key} to read {state}"), || {
+            (self.pid(key) != Some(command) && self.state(key).as_deref() == Some(state))
+                .then_some(())
+        });
+    }
+
     fn wait_ready(&mut self, key: &str, timeout: Duration) {
         let deadline = Instant::now() + timeout;
         loop {
@@ -577,7 +601,7 @@ fn fake_adapter() {
 
     use iii_sandbox_contract::{
         AdapterInfo, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
-        scoped_auth_matches,
+        SandboxErrorCode, scoped_auth_matches,
     };
     use iii_sdk::RegisterFunction;
 
@@ -589,15 +613,28 @@ fn fake_adapter() {
         iii_sdk::InitOptions::default(),
     );
     let project = std::env::var("III_SANDBOX_WORKER_TOKEN").unwrap();
-    let guest: Arc<Mutex<Option<Child>>> = Arc::default();
+    // The last boot, and the state key it was for.
+    let guest: Arc<Mutex<Option<(String, Child)>>> = Arc::default();
     let instance = Arc::new(Mutex::new(0_u64));
     // A call by `vm_id` carries no state key: the one the VM was booted with stands in.
     let state_key = Arc::new(Mutex::new(String::new()));
 
-    type Answer = fn(&Value, &Mutex<Option<Child>>, &Mutex<u64>) -> Value;
+    // As the real adapter names its live boot: an S502 or S503 carries it in `fix`.
+    fn refused(code: SandboxErrorCode, instance: u64) -> iii_sdk::Error {
+        let fix = json!({ "vm_id": "v", "instance": instance });
+        let payload = iii_sandbox_contract::error_payload(code, "refused", Some(fix), None);
+        iii_sdk::Error::Handler(payload.to_string())
+    }
+
+    type Answer =
+        fn(&Value, &Mutex<Option<(String, Child)>>, &Mutex<u64>) -> Result<Value, iii_sdk::Error>;
     let handlers: [(&str, Answer); 5] = [
-        ("worker::prepare", |_, _, _| json!({})),
+        ("worker::prepare", |_, _, _| Ok(json!({}))),
         ("worker::start", |request, guest, instance| {
+            let state_key = request["state_key"].as_str().unwrap();
+            if matches!(&*guest.lock().unwrap(), Some((booted, _)) if booted == state_key) {
+                return Err(refused(SandboxErrorCode::S502, *instance.lock().unwrap()));
+            }
             let [program, args @ ..] = this_test_binary_runs("fake_guest");
             let env = request["env"].as_object().unwrap();
             let child = Command::new(program)
@@ -609,23 +646,32 @@ fn fake_adapter() {
                 .env(FAKE_GUEST, "1")
                 .spawn()
                 .unwrap();
-            *guest.lock().unwrap() = Some(child);
+            *guest.lock().unwrap() = Some((state_key.to_string(), child));
             let mut instance = instance.lock().unwrap();
             *instance += 1;
-            json!({ "vm_id": "v", "instance": *instance })
+            Ok(json!({ "vm_id": "v", "instance": *instance }))
         }),
-        ("worker::status", |_, guest, instance| {
-            let running = guest.lock().unwrap().is_some();
-            fake_status(*instance.lock().unwrap(), running)
+        ("worker::status", |request, guest, instance| {
+            let instance = *instance.lock().unwrap();
+            // Instance 0 is no boot: Compose asks for it to learn the live one.
+            if request["instance"] == 0 && instance > 0 {
+                return Err(refused(SandboxErrorCode::S503, instance));
+            }
+            Ok(fake_status(instance, guest.lock().unwrap().is_some()))
         }),
         ("worker::stop", |_, guest, instance| {
-            if let Some(mut child) = guest.lock().unwrap().take() {
+            if let Some((_, mut child)) = guest.lock().unwrap().take() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            fake_status(*instance.lock().unwrap(), false)
+            Ok(fake_status(*instance.lock().unwrap(), false))
         }),
-        ("worker::destroy", |_, _, _| json!({ "destroyed": true })),
+        ("worker::destroy", |_, guest, instance| {
+            if guest.lock().unwrap().is_some() {
+                return Err(refused(SandboxErrorCode::S502, *instance.lock().unwrap()));
+            }
+            Ok(json!({ "destroyed": true }))
+        }),
     ];
     for (suffix, answer) in handlers {
         let (project, guest, instance, state_key) = (
@@ -657,7 +703,7 @@ fn fake_adapter() {
                         .unwrap();
                     let call = json!({ "function": suffix, "token": token, "request": request });
                     writeln!(calls, "{call}").unwrap();
-                    Ok(answer(&request, &guest, &instance))
+                    answer(&request, &guest, &instance)
                 },
             ),
         );
@@ -727,6 +773,89 @@ fn write_fake_adapter_and_guests(root: &std::path::Path, guests: &[&str]) {
     }
 }
 
+/// The calls the fake adapter under `root` answered, of `function`.
+fn fake_adapter_calls(root: &std::path::Path, function: &str) -> Vec<Value> {
+    std::fs::read_to_string(root.join("adapter").join(FAKE_ADAPTER_CALLS))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|call| call["function"] == function)
+        .collect()
+}
+
+/// A SIGKILL of the command leaves its VM up under the worker's name, so the policy's next
+/// command finds both and reattaches: no second boot, no stop, one attempt per crash.
+#[test]
+#[serial_test::serial(sandbox_vm)]
+fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
+    for policy in ["always", "on-failure"] {
+        let mut project = Project::declaring(&format!(
+            "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{run: iii sandbox run}}\n",
+        ));
+        let root = project.dir.path().to_path_buf();
+        write_fake_adapter_and_guests(&root, &["app"]);
+        project.start();
+        project.wait_ready("sandbox-libkrun", SHORT);
+        project.wait_ready("app", SHORT);
+
+        for crash in 1..=3 {
+            project.kill_command("app", "ready");
+            // Refused once per crash, naming the boot the command then follows.
+            wait_for(SHORT, "the command's worker::start", || {
+                (fake_adapter_calls(&root, "worker::start").len() == crash + 1).then_some(())
+            });
+        }
+        let log = std::fs::read_to_string(project.home.path().join("compose.log")).unwrap();
+        assert!(log.contains("(attempt 3 of 5)"), "{log}");
+        assert!(!log.contains("(attempt 4 of 5)"), "{log}");
+        assert!(!log.contains("CONTAINER_NAME_TAKEN"), "{log}");
+        assert_eq!(
+            fake_adapter_calls(&root, "worker::stop"),
+            Vec::<Value>::new()
+        );
+
+        project.shutdown();
+    }
+}
+
+/// With no policy, an operator's `up` inside the lease's grace reattaches, and a `remove`
+/// there still takes the VM's state, stopping the VM its destroy is refused for.
+#[test]
+#[serial_test::serial(sandbox_vm)]
+fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
+    let mut project = Project::declaring(&format!(
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n",
+    ));
+    let root = project.dir.path().to_path_buf();
+    write_fake_adapter_and_guests(&root, &["app"]);
+    project.start();
+    project.wait_ready("sandbox-libkrun", SHORT);
+    project.wait_ready("app", SHORT);
+
+    project.kill_command("app", "failed");
+    let up = project.compose_call("compose::up", json!({}), SHORT);
+    assert_eq!(up["status"], "ok", "{up}");
+    assert_eq!(up.get("not_required_failures"), None, "{up}");
+    project.wait_ready("app", SHORT);
+    wait_for(SHORT, "the command's worker::start", || {
+        (fake_adapter_calls(&root, "worker::start").len() == 2).then_some(())
+    });
+    assert_eq!(
+        fake_adapter_calls(&root, "worker::stop"),
+        Vec::<Value>::new()
+    );
+
+    project.kill_command("app", "failed");
+    project.remove("app");
+    let destroys = fake_adapter_calls(&root, "worker::destroy");
+    assert_eq!(destroys.len(), 2, "{destroys:?}");
+    let stops = fake_adapter_calls(&root, "worker::stop");
+    assert_eq!(stops.len(), 1, "{stops:?}");
+    assert_eq!(stops[0]["token"], "project");
+
+    project.shutdown();
+}
+
 /// Every `iii sandbox run` holds its own engine connection, so one does not keep
 /// another from registering.
 #[test]
@@ -753,14 +882,7 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     ));
     let root = project.dir.path().to_path_buf();
     write_fake_adapter_and_guests(&root, &["app"]);
-    let calls = |function: &str| -> Vec<Value> {
-        std::fs::read_to_string(root.join("adapter").join(FAKE_ADAPTER_CALLS))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).unwrap())
-            .filter(|call| call["function"] == function)
-            .collect()
-    };
+    let calls = |function: &str| fake_adapter_calls(&root, function);
 
     project.start();
     project.wait_ready("sandbox-libkrun", SHORT);

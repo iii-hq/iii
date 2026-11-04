@@ -1105,12 +1105,7 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
     if ctx.engine.has_exited() || !ctx.engine.is_connected() {
         return;
     }
-    let probe = VmRecord {
-        adapter: adapter_name(ctx.file).to_string(),
-        namespace: ctx.project_namespace.to_string(),
-        vm_id: vm_id(&state_key(ctx.state_dir, key)),
-        instance: 0,
-    };
+    let probe = boot_probe(ctx, key);
     let (client, grace) = (ctx.engine.client(), ctx.file.stop_timeout);
     let stop_live = || async {
         let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
@@ -1125,6 +1120,44 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
     // would close the window outright.
     tokio::time::sleep(PROBE_AGAIN).await;
     stop_live().await;
+}
+
+/// VM container `key` at instance 0, which no boot is: the adapter answers with the one it holds.
+fn boot_probe(ctx: &LifecycleCtx<'_>, key: &str) -> VmRecord {
+    VmRecord {
+        adapter: adapter_name(ctx.file).to_string(),
+        namespace: ctx.project_namespace.to_string(),
+        vm_id: vm_id(&state_key(ctx.state_dir, key)),
+        instance: 0,
+    }
+}
+
+/// The boot of container `key`, one that [`runs_own_vm`], that is running at its adapter: the VM
+/// outlived the `iii sandbox run` that ran it, and the next one reattaches. Its guest is not a
+/// stranger holding the worker's name. A boot still preparing cannot hold that name yet.
+pub(crate) async fn own_vm_running(ctx: &LifecycleCtx<'_>, key: &str) -> Option<VmRecord> {
+    if !runs_own_vm(ctx.file, key) {
+        return None;
+    }
+    let (client, token) = (ctx.engine.client(), ctx.sandbox_token);
+    let probe = boot_probe(ctx, key);
+    let latest = superseded_by(&worker_status(client, &probe, token).await, &probe)?;
+    let status = worker_status(client, &latest, token).await.ok()?;
+    matches!(status.state, State::Running).then_some(latest)
+}
+
+/// Stops what [`own_vm_running`] finds, for a start that must boot the VM anew. One that does not
+/// stop keeps the name, which the start then refuses.
+pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) {
+    if let Some(running) = own_vm_running(ctx, key).await {
+        let _ = worker_stop(
+            ctx.engine.client(),
+            &running,
+            ctx.sandbox_token,
+            ctx.file.stop_timeout,
+        )
+        .await;
+    }
 }
 
 /// [`call`] for a step of `container`'s start (or its destroy), which an engine
@@ -1199,8 +1232,10 @@ fn reconnect_line(container: &str, function: &str, wait: Duration) -> String {
 }
 
 /// `worker::destroy` for VM container `key`'s state, by its `state_key`. The
-/// adapter refuses it while the VM runs, so it goes after the stop. A failure
-/// only leaves the state behind, and says where.
+/// adapter refuses it while the VM runs, so it goes after the stop, and once more
+/// after stopping a VM the refusal names: one whose `iii sandbox run` died is up
+/// until its lease ends it, and nothing asks again then. A failure only leaves
+/// the state behind, and says where.
 pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str, namespace: &str) {
     let state_key = state_key(ctx.state_dir, key);
     let request = WorkerDestroyRequest {
@@ -1208,17 +1243,32 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
         state_key: state_key.clone(),
     };
     // Registering: an adapter started for this call may not list it yet.
-    let destroyed = start_call::<WorkerDestroyResponse>(
-        ctx.engine,
-        key,
-        adapter,
-        namespace,
-        WORKER_DESTROY,
-        &request,
-        DESTROY_TIMEOUT,
-        true,
-    )
-    .await;
+    let destroy = || {
+        start_call::<WorkerDestroyResponse>(
+            ctx.engine,
+            key,
+            adapter,
+            namespace,
+            WORKER_DESTROY,
+            &request,
+            DESTROY_TIMEOUT,
+            true,
+        )
+    };
+    let mut destroyed = destroy().await;
+    if let Err(error) = &destroyed
+        && stop_busy_boot(
+            ctx.engine,
+            adapter,
+            namespace,
+            error,
+            ctx.sandbox_token,
+            ctx.file.stop_timeout,
+        )
+        .await
+    {
+        destroyed = destroy().await;
+    }
     if let Err(error) = destroyed {
         let error = ComposeError::EngineCallFailed {
             function: adapter_function_id(adapter, WORKER_DESTROY),
@@ -1411,21 +1461,36 @@ async fn worker_start(
     };
     let mut started = start().await;
     if let Err(error) = &started
-        && sandbox_code(error) == Some(SandboxErrorCode::S502)
+        && stop_busy_boot(engine, adapter, namespace, error, &request.auth, grace).await
     {
-        // A stop that fails (S502 on a boot still preparing) still gets the retry.
-        if let Some(live) = live_instance(error) {
-            let live = VmRecord {
-                adapter: adapter.to_string(),
-                namespace: namespace.to_string(),
-                vm_id: live.vm_id,
-                instance: live.instance,
-            };
-            let _ = worker_stop(engine.client(), &live, &request.auth, grace).await;
-        }
         started = start().await;
     }
     started
+}
+
+/// Whether `error` is an S502, whose live boot this has then stopped with `grace` for the one
+/// retry of what it refused. A stop that fails (S502 on a boot still preparing) still gets that.
+async fn stop_busy_boot(
+    engine: &EngineClient,
+    adapter: &str,
+    namespace: &str,
+    error: &iii_sdk::Error,
+    token: &str,
+    grace: Duration,
+) -> bool {
+    if sandbox_code(error) != Some(SandboxErrorCode::S502) {
+        return false;
+    }
+    if let Some(live) = live_instance(error) {
+        let live = VmRecord {
+            adapter: adapter.to_string(),
+            namespace: namespace.to_string(),
+            vm_id: live.vm_id,
+            instance: live.instance,
+        };
+        let _ = worker_stop(engine.client(), &live, token, grace).await;
+    }
+    true
 }
 
 pub(crate) async fn worker_stop(
@@ -3092,6 +3157,120 @@ pub(crate) mod tests {
                 }
             }
             assert_eq!(destroyed, [serde_json::json!(state_key(dir.path(), "vm"))]);
+        }
+    }
+
+    /// A plain VM or process holding its name is not asked about: only a container that runs
+    /// its own VM has one that may outlive what ran it.
+    #[tokio::test]
+    async fn only_a_container_that_runs_its_own_vm_is_asked_about() {
+        let (url, mut called) = fake_engine_url(|function, _| match function {
+            "sandbox-libkrun::worker::status" => answered(status(State::Running, None, None)),
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        manifest(dir.path(), "plain", "scripts: {start: run}\n");
+        let file = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm}\n  plain: {worker: path://./plain}\n",
+        );
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        for key in ["vm", "plain"] {
+            assert!(own_vm_running(&ctx, key).await.is_none());
+            stop_own_vm(&ctx, key).await;
+        }
+        assert_eq!(drain(&mut called), []);
+    }
+
+    /// A VM the command that ran it left behind refuses the destroy until its lease stops
+    /// it, and nothing would ask again then. So it is stopped now, and asked once more; a
+    /// second refusal only leaves the state behind.
+    #[tokio::test]
+    async fn a_destroy_refused_for_a_live_vm_stops_it_and_asks_once_more() {
+        for refusals in [1, 2] {
+            let destroys = std::sync::atomic::AtomicUsize::new(0);
+            let (url, mut called) = fake_engine_url(move |function, _| match function {
+                "sandbox-libkrun::worker::destroy"
+                    if destroys.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < refusals =>
+                {
+                    refused(SandboxErrorCode::S502, 7)
+                }
+                "sandbox-libkrun::worker::destroy" => {
+                    answered(serde_json::json!({ "destroyed": true }))
+                }
+                "sandbox-libkrun::worker::stop" => answered(status(State::Stopped, None, None)),
+                _ => not_found(),
+            })
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            manifest(
+                dir.path(),
+                "vm",
+                "runtime: {base_image: python}\nscripts: {start: run}\n",
+            );
+            let file = parse(dir.path(), "containers:\n  vm: {worker: path://./vm}\n");
+            let engine = EngineClient::connect(&url, "t", "t");
+            let (shutdown, post_runs, diagnostics) = Default::default();
+            let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+            let ctx = LifecycleCtx {
+                shutdown: &shutdown,
+                file: &file,
+                engine: &engine,
+                post_runs: &post_runs,
+                compose_namespace: "t",
+                project_namespace: "shop",
+                engine_url: &url,
+                package_cache: dir.path(),
+                logs: &logs,
+                state_dir: dir.path(),
+                sandbox_token: "project-token",
+                empty_env_diagnostics: &diagnostics,
+            };
+
+            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop").await;
+
+            let mut calls = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                let auth = payload["auth"].as_str().unwrap().to_string();
+                calls.push((function, payload["instance"].as_u64(), auth));
+            }
+            let call = |suffix: &str, instance| {
+                (
+                    format!("sandbox-libkrun::{suffix}"),
+                    instance,
+                    "project-token".to_string(),
+                )
+            };
+            assert_eq!(
+                calls,
+                [
+                    call("worker::destroy", None),
+                    call("worker::stop", Some(7)),
+                    call("worker::destroy", None),
+                ]
+            );
         }
     }
 

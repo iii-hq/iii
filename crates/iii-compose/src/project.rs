@@ -2077,10 +2077,27 @@ mod adapter_restart_tests {
         fixture.project.shutdown().await;
     }
 
-    /// An image pull can outlast `startup_timeout`, which starts with the
-    /// process, so it is over before the process starts.
-    #[tokio::test]
-    async fn a_container_that_runs_its_own_vm_is_prepared_before_its_process_starts() {
+    /// What the stand-in adapter and engine hold for `own`'s VM.
+    #[derive(Default)]
+    struct OwnVm {
+        /// Whether `own` was up at each `worker::prepare`.
+        prepares: Vec<bool>,
+        /// What `worker::status` says of instance 1; `None` is no such VM (S504).
+        state: Option<State>,
+        /// A worker named `own` is connected, with or without a command running.
+        name_held: bool,
+        /// Each `worker::stop` it answered.
+        stops: Vec<serde_json::Value>,
+    }
+
+    /// `sb` beside `own`, a container that runs its own VM with `policy`, neither started.
+    async fn own_vm_project(
+        policy: &str,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Project>,
+        Arc<std::sync::Mutex<OwnVm>>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         manifest(
             dir.path(),
@@ -2107,7 +2124,7 @@ mod adapter_restart_tests {
             format!(
                 "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  \
                  sb: {{worker: path://./sb}}\n  \
-                 own:\n    worker: path://./own\n    start_after: [sb]\n    \
+                 own:\n    worker: path://./own\n    start_after: [sb]\n    {policy}\n    \
                  environment: {{PATH: '{}:/usr/bin:/bin'}}\n    \
                  scripts: {{run: iii sandbox run}}\n",
                 bin.display()
@@ -2115,14 +2132,16 @@ mod adapter_restart_tests {
         )
         .unwrap();
 
-        // Whether the process was up at each `worker::prepare`.
-        let prepares = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (seen, root) = (prepares.clone(), dir.path().to_path_buf());
+        let vm = Arc::new(std::sync::Mutex::new(OwnVm::default()));
+        let (held, root) = (vm.clone(), dir.path().to_path_buf());
         let (url, _called) = fake_engine_url(move |function, payload| match function {
             "engine::workers::list" => {
+                let name_held = held.lock().unwrap().name_held;
                 let workers = ["sb", "own"]
                     .into_iter()
-                    .filter(|worker| alive(&root, worker).is_some())
+                    .filter(|worker| {
+                        alive(&root, worker).is_some() || (*worker == "own" && name_held)
+                    })
                     .map(|worker| json!({ "name": worker, "namespace": "shop" }))
                     .collect::<Vec<_>>();
                 answered(json!({ "workers": workers }))
@@ -2139,8 +2158,25 @@ mod adapter_restart_tests {
             }),
             "sandbox-libkrun::worker::prepare" => {
                 assert_eq!(payload["source"]["run_override"], "iii sandbox run");
-                seen.lock().unwrap().push(alive(&root, "own").is_some());
+                held.lock()
+                    .unwrap()
+                    .prepares
+                    .push(alive(&root, "own").is_some());
                 answered(json!({}))
+            }
+            "sandbox-libkrun::worker::status" => {
+                match (&held.lock().unwrap().state, payload["instance"].as_u64()) {
+                    (None, _) => refused(SandboxErrorCode::S504, 0),
+                    (Some(state), Some(1)) => answered(status(state.clone(), None, None)),
+                    (Some(_), _) => refused(SandboxErrorCode::S503, 1),
+                }
+            }
+            "sandbox-libkrun::worker::stop" => {
+                let mut vm = held.lock().unwrap();
+                vm.stops.push(payload.clone());
+                vm.state = Some(State::Stopped);
+                vm.name_held = false;
+                answered(status(State::Stopped, None, Some(15)))
             }
             "configuration::get" => {
                 json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
@@ -2165,12 +2201,161 @@ mod adapter_restart_tests {
         )
         .await
         .unwrap();
+        (dir, project, vm)
+    }
+
+    /// SIGKILLs `own`'s `iii sandbox run` as its VM runs on under the worker's name, and
+    /// lets the supervisor see it. Returns the command's pid.
+    async fn kill_own_vm_command(
+        dir: &Path,
+        project: &Project,
+        vm: &std::sync::Mutex<OwnVm>,
+    ) -> u32 {
+        {
+            let mut vm = vm.lock().unwrap();
+            vm.state = Some(State::Running);
+            vm.name_held = true;
+        }
+        let pid = alive(dir, "own").unwrap();
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        )
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        project.reap_unexpected_exits().await;
+        pid
+    }
+
+    async fn own_status(project: &Project) -> ContainerStatus {
+        project
+            .status()
+            .await
+            .into_iter()
+            .find(|status| status.container == "own")
+            .unwrap()
+    }
+
+    /// Up, ready, on a command of its own: the one a crash took is `killed`.
+    async fn assert_own_vm_came_back(project: &Project, killed: u32) {
+        let own = own_status(project).await;
+        assert_eq!(own.state, ChildStatus::Ready, "{:?}", own.last_error);
+        assert_eq!(own.last_error, None);
+        assert_ne!(own.pid, Some(killed));
+        assert!(crate::process::is_running(own.pid.unwrap()));
+    }
+
+    /// Its VM lives on under its name, so there is no release to wait out and nothing to
+    /// stop: the next command reattaches. Each crash costs one attempt, however many come.
+    #[tokio::test]
+    async fn a_killed_iii_sandbox_run_costs_one_attempt_and_comes_back_on_its_vm() {
+        for policy in ["restart: always", "restart: on-failure"] {
+            let (dir, project, vm) = own_vm_project(policy).await;
+            let up = project.up(None, "up".into()).await;
+            assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+
+            for crash in 1..=2 {
+                let killed = kill_own_vm_command(dir.path(), &project, &vm).await;
+
+                assert_own_vm_came_back(&project, killed).await;
+                assert_eq!(
+                    project.inner.lock().await.restarts.attempts["own"].spent,
+                    crash
+                );
+                // The pid the next crash kills, written once the command has started.
+                while alive(dir.path(), "own") != own_status(&project).await.pid {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+            assert_eq!(vm.lock().unwrap().stops, Vec::<serde_json::Value>::new());
+            project.shutdown().await;
+        }
+    }
+
+    /// With no policy to run the command again, an operator's `up` does, as long as the
+    /// lease has not taken the VM.
+    #[tokio::test]
+    async fn an_up_after_a_killed_iii_sandbox_run_comes_back_on_its_vm() {
+        let (dir, project, vm) = own_vm_project("").await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let killed = kill_own_vm_command(dir.path(), &project, &vm).await;
+        assert_eq!(own_status(&project).await.state, ChildStatus::Failed);
+
+        let up = project.up(None, "up".into()).await;
+
+        assert_eq!(
+            reply(&up, "own")["not_required_failures"],
+            json!(null),
+            "{up:?}"
+        );
+        assert_own_vm_came_back(&project, killed).await;
+        assert_eq!(vm.lock().unwrap().stops, Vec::<serde_json::Value>::new());
+        project.shutdown().await;
+    }
+
+    /// A restart someone asked for, after an edit say, boots the VM anew even though the
+    /// command that ran it is already gone.
+    #[tokio::test]
+    async fn a_restart_asked_for_after_a_killed_iii_sandbox_run_stops_its_vm() {
+        let (dir, project, vm) = own_vm_project("").await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let killed = kill_own_vm_command(dir.path(), &project, &vm).await;
+
+        let restart = project.restart_one("own", "restart".into()).await;
+
+        assert_eq!(restart.status, OpStatus::Ok, "{restart:?}");
+        assert_own_vm_came_back(&project, killed).await;
+        let stops = std::mem::take(&mut vm.lock().unwrap().stops);
+        assert_eq!(stops.len(), 1, "{stops:?}");
+        assert_eq!(stops[0]["instance"], 1);
+        assert_eq!(stops[0]["auth"], json!(project.sandbox_token));
+        project.shutdown().await;
+    }
+
+    /// A name held with no VM of ours running, or none that could hold it yet, is a stranger's.
+    #[tokio::test]
+    async fn a_name_held_while_the_vm_does_not_run_is_still_refused() {
+        for state in [
+            None,
+            Some(State::Preparing),
+            Some(State::Exited),
+            Some(State::Stopped),
+        ] {
+            let (dir, project, vm) = own_vm_project("").await;
+            {
+                let mut vm = vm.lock().unwrap();
+                vm.state = state.clone();
+                vm.name_held = true;
+            }
+
+            let up = project.up(None, "up".into()).await;
+
+            let own = up
+                .containers
+                .iter()
+                .find(|result| result.container == "own")
+                .unwrap();
+            assert_eq!(own.state, ChildStatus::Failed, "{state:?}");
+            let error = own.error.as_ref().unwrap();
+            assert_eq!(error.code, "CONTAINER_NAME_TAKEN", "{state:?}");
+            assert_eq!(alive(dir.path(), "own"), None);
+            project.shutdown().await;
+        }
+    }
+
+    /// An image pull can outlast `startup_timeout`, which starts with the
+    /// process, so it is over before the process starts.
+    #[tokio::test]
+    async fn a_container_that_runs_its_own_vm_is_prepared_before_its_process_starts() {
+        let (dir, project, vm) = own_vm_project("").await;
 
         let up = project.up(None, "up".into()).await;
 
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         assert!(alive(dir.path(), "own").is_some());
-        assert_eq!(*prepares.lock().unwrap(), [false]);
+        assert_eq!(vm.lock().unwrap().prepares, [false]);
         project.shutdown().await;
     }
 

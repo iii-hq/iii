@@ -625,12 +625,19 @@ async fn restart_one_scoped(
     // with the corpse of its predecessor and fail CONTAINER_NAME_TAKEN, which
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
-    let Some(released) = ctx
-        .shutdown
-        .signal()
-        .run(await_name_release(ctx, key))
-        .await
-    else {
+    //
+    // The VM of a dead `iii sandbox run` stays up under the name. A supervised
+    // retry has no release to wait for, as its command reattaches; a restart
+    // someone asked for, after an edit say, boots that VM anew.
+    let released = async {
+        if retry.is_none() {
+            crate::sandbox::stop_own_vm(ctx, key).await;
+        } else if crate::sandbox::own_vm_running(ctx, key).await.is_some() {
+            return Ok(());
+        }
+        await_name_release(ctx, key).await
+    };
+    let Some(released) = ctx.shutdown.signal().run(released).await else {
         report::plan_done();
         return None;
     };
@@ -1100,8 +1107,12 @@ async fn start_one_until_shutdown(
     // one already is before we spawn, that check would pass on the *stranger*:
     // the container would be reported ready in milliseconds while the process
     // we started loses the `(namespace, worker_name)` lease and dies rejected.
-    // Refuse instead, and say who is holding the name.
-    if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))? {
+    // Refuse instead, and say who is holding the name. The guest of a VM that
+    // outlived its `iii sandbox run` is no stranger: the command started below
+    // reattaches to it, and that registration is the readiness it is after.
+    if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))?
+        && wait_or_interrupt!(crate::sandbox::own_vm_running(ctx, key)).is_none()
+    {
         return Err(ComposeError::ContainerNameTaken {
             container: key.to_string(),
             namespace: ctx.project_namespace.to_string(),
