@@ -66,6 +66,7 @@ pub struct RouterInfo {
     pub namespace: Option<String>,
     /// The engine's own `ContractVersion::CURRENT`.
     pub contract: ContractVersion,
-    /// The adapter's own info; `None` when unbound or the adapter is not connected.
+    /// The adapter's own info; `None` when unbound, or when the adapter is not connected
+    /// or does not answer within 2 s.
     pub info: Option<AdapterInfo>,
 }

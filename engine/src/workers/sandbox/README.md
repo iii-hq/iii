@@ -116,6 +116,8 @@ engine:
   keys they had under `engine.workers.iii-sandbox`.
 - The router reads `adapter::info` again whenever the adapter registers it anew (a restart or a
   swap), so an adapter that implements another contract major gets `S302` on its first call.
+- `sandbox::adapter::info` always names the binding. It waits up to 2 s for the adapter's own info,
+  then answers with `info: null`.
 
 Host requirements (hardware virtualization, the embedded guest init) belong to `sandbox-libkrun`.
 
