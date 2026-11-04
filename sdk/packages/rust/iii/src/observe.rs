@@ -96,7 +96,7 @@ impl Source {
 
     /// The namespace the function is in. Unset, it resolves like a
     /// [`call`](crate::IIIClient::call): this worker's namespace (`default`
-    /// for `engine::*`).
+    /// for `engine::*` and `configuration::*`).
     pub fn namespace(mut self, namespace: impl Into<String>) -> Self {
         self.namespace = Some(namespace.into());
         self

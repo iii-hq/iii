@@ -166,34 +166,19 @@ iii.onObservationDeliver('http::on-request', async (call) => {
 ```
 
 To send one observer something of its own, such as its initial state, call
-the function with `metadata: { for_observer: obs.id }` once `obs.accepted()`
-resolves, and let the match hook give that call to that observer alone. iii
-delivers it like every call, so the target receives it in the shape it
-receives every call of the function:
+through that observer once `obs.accepted()` resolves. The call runs that
+observer's target alone, with the payload as given:
 
 ```javascript
 iii.onObserverAdded('tmux::on-changed', (obs) => {
   void obs
     .accepted()
-    .then(() =>
-      iii.call({
-        function_id: 'tmux::on-changed',
-        payload: stateFor(obs.args),
-        metadata: { for_observer: obs.id },
-        action: CallAction.Void(),
-      }),
-    )
+    .then(() => iii.call({ observer: obs, payload: stateFor(obs.args), action: CallAction.Void() }))
     .catch(() => {
       // a rejected observer gets nothing
     })
 })
-iii.onObservationMatch('tmux::on-changed', (obs, call) =>
-  call.metadata?.for_observer ? call.metadata.for_observer === obs.id : obs.args.session === call.input.session,
-)
 ```
-
-With keys, file each observer under `for_observer:<id>` as well, and give such
-a call that one key.
 
 A worker's own call to its private function passes the input and the result
 by reference: the handler and the hooks treat both as read-only, and with

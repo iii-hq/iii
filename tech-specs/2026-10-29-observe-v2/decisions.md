@@ -563,9 +563,9 @@ differ, this file wins, and the spec is updated to match.
     args.** Session-scoped events (session-manager, harness, approval-gate)
     take no args; consumers filter on `input.session_id`.
 29. **Naming.** A trigger type `T` of worker `W` becomes `W::on-<event>`
-    (`console::workspace::changed` → `console::workspace::on-changed`). ADE
-    UI assets: `console::ui::asset` with args `{ kind: 'script' | 'style' |
-    'module', path }`; browsers observe `console::ui::on-assets-changed`.
+    (`ade::workspace::changed` → `ade::workspace::on-changed`). ADE
+    UI assets: `ade::ui::asset` with args `{ kind: 'script' | 'style' |
+    'module', path }`; browsers observe `ade::ui::on-assets-changed`.
 30. **Harness.** The agent tools `harness::observe` and `harness::unobserve`
     replace the intercepted `engine::register_trigger`. Stored bindings with
     a `trigger_type` are translated at boot through the table in spec §11;

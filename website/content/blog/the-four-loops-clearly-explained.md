@@ -463,7 +463,7 @@ We've also got a Discord where someone is always around to help out:
 iii is open source. The engine is at
 [github.com/iii-hq/iii](https://github.com/iii-hq/iii). The harness workers
 are at [github.com/iii-hq/workers](https://github.com/iii-hq/workers). The
-worker registry is at [workers.iii.dev](https://workers.iii.dev). The docs
+worker registry is at [iii.dev/registry](https://iii.dev/registry). The docs
 are at [iii.dev/docs](https://iii.dev/docs).
 
 Mike Piccolo, Founder & CEO [@iiidevs](https://x.com/iiidevs)

@@ -108,7 +108,7 @@ def build_observe_message(
     """``observe {id, source, target, ...}`` from the three arguments of
     ``iii.observe``. Only what the caller set is sent; the engine applies the
     defaults. ``resolve_namespace(explicit, function_id, field)`` gives the
-    namespace of an unqualified id (this worker's, ``default`` for ``engine::*``).
+    namespace of an unqualified id (this worker's, ``default`` for ``engine::*`` and ``configuration::*``).
     """
     src = snapshot(source, "observe: source")
     target_ref = {"function_id": target} if isinstance(target, str) else snapshot(target, "observe: target")

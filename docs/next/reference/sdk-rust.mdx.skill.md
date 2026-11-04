@@ -226,7 +226,7 @@ async call(request: impl Into<CallRequestWithMetadata>) -> Result<Value, Error>
       A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action.
     </ParamField>
     <ParamField body="observer" type="fn(observer: &Observer, payload: Value) -> CallRequestWithMetadata" required>
-      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`).
+      A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. A host makes it in the function's deliver hook, or to send one observer something of its own, such as its initial state once it is accepted (see `Observer::accepted`).
     </ParamField>
   </Expandable>
 </ParamField>
@@ -321,7 +321,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
       The observed function id.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
-      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`).
+      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
     </ParamField>
     <ParamField body="on" type="fn(on: On) -> Self" required>
       Which outcomes reach the target. Default `On::Success`.
@@ -669,7 +669,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
       The observed function id.
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
-      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`).
+      The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
     </ParamField>
     <ParamField body="on" type="fn(on: On) -> Self" required>
       Which outcomes reach the target. Default `On::Success`.
@@ -836,7 +836,7 @@ on_observation_match_for(function_id: &str, rule: Match) -> &Self
 
   <Expandable title="`Match` fields">
     <ParamField body="Predicate" type="(Arc<dyn Fn(&Observer, &Call) -> bool + Send + Sync>)" required>
-      Asked once per active observer per call, before its filters. A predicate that panics counts as no match, logged once per function.
+      Asked once per observation: for every call, once for each active observer, before its filters. A predicate that panics counts as no match for that observer, logged once per function.
     </ParamField>
     <ParamField body="Keys" type="{ observer: Arc<dyn Fn(&'a Observer) -> Keys<'a> + Send + Sync>, call: Arc<dyn Fn(&'a Call) -> Keys<'a> + Send + Sync> }" required>
       An observer wants a call when they share a key. The SDK computes an observer's keys once, when it is accepted, and files it under each (an observer whose key function panics is rejected with `OBSERVE_REJECTED`); a call's keys once per call. A call matches the observers filed under any of its keys, each once. Keys express wildcards by listing them: an observer of every table filed under `"primary|*|insert"`, and a change matching `"primary|orders|insert"`, `"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four lookups, whatever the number of observers.
@@ -1463,16 +1463,12 @@ Which calls of a function each observer wants: the function's match hook
 (`IIIClient::on_observation_match_for`). A worker sets it when its
 observers' args say which calls they want; iii does everything else as
 usual: the observers' filters, `on`, policy and `deliver` still apply.
-
-A host that sends one observer something of its own (its initial state)
-calls the function with metadata `{ "for_observer": <observer id> }`, and
-the hook gives such a call to that observer alone: a predicate compares
-the ids, and key functions also file each observer under
-`"for_observer:<id>"` and give such a call that one key.
+`IIIClient::clear_observation_match_for` removes it: every observer
+wants every call again.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Predicate` | (Arc&lt;dyn Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync&gt;) | Yes | Asked once per active observer per call, before its filters. A<br />predicate that panics counts as no match, logged once per function. |
+| `Predicate` | (Arc&lt;dyn Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync&gt;) | Yes | Asked once per observation: for every call, once for each active<br />observer, before its filters. A predicate that panics counts as no<br />match for that observer, logged once per function. |
 | `Keys` | \{ observer: Arc&lt;dyn Fn(&'a [`Observer`](#observer)) -&gt; [`Keys`](#keys)&lt;'a&gt; + Send + Sync&gt;, call: Arc&lt;dyn Fn(&'a [`Call`](#call)) -&gt; [`Keys`](#keys)&lt;'a&gt; + Send + Sync&gt; \} | Yes | An observer wants a call when they share a key. The SDK computes an<br />observer's keys once, when it is accepted, and files it under each<br />(an observer whose key function panics is rejected with<br />`OBSERVE_REJECTED`); a call's keys once per call. A call matches the<br />observers filed under any of its keys, each once. Keys express<br />wildcards by listing them: an observer of every table filed under<br />`"primary|*|insert"`, and a change matching `"primary|orders|insert"`,<br />`"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four<br />lookups, whatever the number of observers. |
 | `keys` | `fn(observer: O, call: C) -> Self` | Yes | The keys an observer is filed under, and the keys a call matches. With them, `FunctionRef::is_observed_for` answers with one hash lookup per call key. |
 | `predicate` | fn(f: impl Fn(&[`Observer`](#observer), &[`Call`](#call)) -&gt; bool + Send + Sync + 'static) -&gt; Self | Yes | Does `obs` want `call`? |
@@ -1515,7 +1511,7 @@ runs. Handles given out earlier keep the view they were made with, and
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `accepted` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Resolves once the SDK has acked the observer, which makes it active: a call made after this resolves reaches an active observer, since the engine handles a connection's frames in order. A provider sends an observer its initial state this way: a call of its own function with metadata `{ "for_observer": <the observer's id> }`, which the function's match hook gives to this observer alone, delivered like every call. Fails with the rejection's code when the observer is rejected first. |
+| `accepted` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Resolves once the SDK has acked the observer, which makes it active: a call made after this resolves reaches an active observer, since the engine handles a connection's frames in order. A provider sends an observer its initial state this way: a call through it (`CallRequest::observer`), which runs its target alone with the payload as given. Fails with the rejection's code when the observer is rejected first. |
 | `args` | fn() -&gt; Result&lt;T, [`ObserveRejection`](#observerejection)&gt; | Yes | The observer's args as `T`. The engine validated them against the function's `args_format`; a mismatch with `T` is `INVALID_ARGS`. |
 | `args_value` | `fn() -> &Value` | Yes | The observer's args as JSON (`{}` when it has none). |
 | `capture` | fn() -&gt; &[[`Capture`](#capture)] | Yes | What deliveries ship to the target. |
@@ -1660,7 +1656,7 @@ The left side of an observer: what is observed.
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
 | `function_id` | `fn() -> &str` | Yes | The observed function id. |
-| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*`). |
+| `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`). |
 | `on` | fn(on: [`On`](#on)) -&gt; Self | Yes | Which outcomes reach the target. Default `On::Success`. |
 
 ---
@@ -1766,7 +1762,7 @@ CallRequest::new("my::function", json!({})).metadata(json!({ "tenant": "acme" })
 | `metadata` | fn(metadata: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Attach per-invocation metadata without adding a required field to `CallRequest` struct literals. |
 | `namespace` | fn(namespace: impl Into&lt;String&gt;) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | Target a specific namespace for this invocation without adding a required field to `CallRequest` struct literals. Serializes into `Message::InvokeFunction`'s `namespace`. |
 | `new` | `fn(function_id: impl Into<String>, payload: Value) -> Self` | Yes | A synchronous request/response call of `function_id` with `payload`, the default timeout and no routing action. |
-| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. It belongs in the function's deliver hook, whose function documents what its targets receive; to send one observer something outside delivery (its initial state), call the function with metadata `{ "for_observer": <observer id> }` (see `Observer::accepted`). |
+| `observer` | fn(observer: &[`Observer`](#observer), payload: Value) -&gt; [`CallRequestWithMetadata`](#callrequestwithmetadata) | Yes | A call through `observer`: the engine runs the observer's target with `payload`, as given, and applies the observer's policy, metadata sidecar and loop guard. Only the worker that hosts the observer's function may make it (`NOT_FUNCTION_OWNER`); it never runs in-process. It takes no metadata: the target's metadata argument is the observer's registration metadata, and `IIIClient::call` refuses a request given `metadata` before anything is sent. A host makes it in the function's deliver hook, or to send one observer something of its own, such as its initial state once it is accepted (see `Observer::accepted`). |
 
 ---
 

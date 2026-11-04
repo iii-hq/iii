@@ -42,7 +42,7 @@ With the daemon running, show me the output of:
   iii call -n dev compose::status file=worker-compose.yaml
   iii call engine::workers::list
   iii call engine::functions::list
-If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii call command.
+If the engine is not on localhost port 49134, add --address <host> and --port <port> to each iii call command. With an iii CLI older than 0.26, run iii trigger instead of iii call: same arguments (from 0.26, trigger is an alias of call).
 
 If startup reports UNSUPPORTED_CONFIG_WORKERS, UNSUPPORTED_ENGINE_WORKER, ENGINE_WORKER_IS_INJECTED, or any other error from the Common errors list on the page, fix the cause and rerun. Do not work around an error by deleting a worker.
 
@@ -167,7 +167,8 @@ containers:
 Translate `iii-exec` commands into `pre_run`, `run`, and `post_run`. Custom local workers use
 `path://`; registry workers use `package://` plus a version.
 
-You can also add a registry worker after the managed daemon is running:
+You can also add a registry worker after the managed daemon is running. With an iii CLI older than
+0.26, run `iii trigger` instead of `iii call`, with the same arguments:
 
 ```bash
 iii call -n dev compose::add worker=http
@@ -215,7 +216,7 @@ Run those commands under separate supervisors. Explicit `--engine` has highest p
 override an `engine.url` in the Compose file. Without either value, Compose uses `III_URL`, then
 defaults to `ws://127.0.0.1:49134`.
 
-Verify the migration:
+Verify the migration (with an iii CLI older than 0.26, run `iii trigger` instead of `iii call`):
 
 ```bash
 iii call -n dev compose::status file=worker-compose.yaml

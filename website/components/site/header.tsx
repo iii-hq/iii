@@ -4,7 +4,7 @@ import { NavigationMenu } from '@base-ui/react/navigation-menu'
 import { ArrowRightIcon, ArrowUpRightIcon } from 'lucide-react'
 import { AnimatePresence, motion, useMotionValueEvent, useScroll } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { HauntedLink } from '@/components/halloween/haunted-link'
+
 import {
   IconArrowDown,
   IconBookmark,
@@ -25,6 +25,7 @@ import { duration, easeOut, spring, stagger } from '@/lib/motion'
 import { links } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import { CountUp } from './count-up'
+import { NavLogo } from './nav-graphics'
 
 type Icon = React.ComponentType<{ className?: string }>
 /** `meta` is a short right-aligned detail (a live count); empty when there is nothing worth saying. */
@@ -45,7 +46,7 @@ const plainLinks = [
   { label: 'Docs', href: links.docs, icon: IconDocument, external: false },
   { label: 'Blog', href: links.blog, icon: IconPaper, external: false },
   { label: 'Roadmap', href: links.roadmap, icon: IconDiscovery, external: false },
-  { label: 'Worker registry', href: links.registry, icon: IconPackage, external: true },
+  { label: 'Worker registry', href: links.registry, icon: IconPackage, external: false },
 ]
 
 const focusRing = 'outline-none focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-2'
@@ -115,13 +116,9 @@ export function Header({ stats: buildStats }: { stats: CommunityStats }) {
           {/* Phones: a 48px bar, and the logo and the menu icon sit the same 14px in from each end (the icon is 16px
               inside a 36px button, so 4px of padding puts its lines 14px in). Wider screens keep the 56px bar. */}
           <div className="flex h-12 items-center gap-2 pr-1 pl-3.5 sm:h-14 sm:pr-2 sm:pl-4 md:pl-5">
-            {/* Halloween: the haunted mark. Swap back to <NavLogo /> in a plain home link to retire it. */}
-            <HauntedLink
-              href="/"
-              label="iii home"
-              size="24px"
-              className={cn('mr-3 flex items-center rounded-md', focusRing)}
-            />
+            <a href="/" aria-label="iii home" className={cn('mr-3 flex items-center rounded-md', focusRing)}>
+              <NavLogo />
+            </a>
 
             <DesktopNav community={community} />
 

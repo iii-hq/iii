@@ -50,9 +50,9 @@ var unsupportedReason = &ObserveReason{
 // call that the function's worker delivers to the observer and that passes
 // source.Filters. target is a function registered by some worker (until it is, the
 // observer stays pending). source.Args go to the worker that hosts the function, which
-// reads them in its hooks (a cron expression, a route).
+// reads them in its hooks (a route, a table).
 //
-// It returns the handle at once, also before the connection is up; the observer is
+// It returns the handle immediately, even before the connection is up; the observer is
 // replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS,
 // INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and
 // UNSUPPORTED against an engine without observe) show up as state error and fail

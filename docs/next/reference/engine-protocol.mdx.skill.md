@@ -131,12 +131,12 @@ different releases work together.
 
 What each feature turns on:
 
-| Feature             | Meaning                                                                                                                                                                                                       |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields. |
-| `observe.v2`        | Includes `observe.v1`. The host runs its functions' match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`.        |
-| `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                  |
-| `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                             |
+| Feature             | Meaning                                                                                                                                                                                                            |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields.      |
+| `observe.v2`        | Includes `observe.v1`. The host runs its functions' observation match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`. |
+| `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                       |
+| `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                                  |
 
 Rules:
 
@@ -494,10 +494,7 @@ as the reason, and logs it at `debug`:
 ```
 
 A host sends one observer something of its own, such as its initial state once `obs.accepted()`
-resolves, as a call of its own function with `metadata: { "for_observer": "<observer id>" }`. The
-function's match hook gives that call to that observer alone, and it reaches the engine as every
-call of the function does: an `InvocationsObserved` item for a local call, `matched` on the
-`InvocationResult` of a routed one. See
+resolves, as a call through that observer, as above. See
 [Send an observer its initial state](../creating-workers/observable-functions#send-an-observer-its-initial-state).
 
 ## `InvocationResult`
@@ -552,9 +549,9 @@ answer's `result` or `error`, the caller it forwarded the call with, and the cal
 host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
 three things:
 
-| The answer carries | When                                                                                                                                                                                               | The engine                                                                                                               |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                             | Evaluates `on` and filters of every active observer of the function.                                                     |
+| The answer carries | When                                                                                                                                                                                                  | The engine                                                                                                               |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                          | Evaluates `on` and filters of every active observer of the function.                                                     |
 | `matched`          | The function has an `onObservationMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
 | `delivered: true`  | The function's `onObservationDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
 
@@ -756,10 +753,10 @@ function runs, the target runs. The **observing worker** is the connection that 
 
 The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
 SDK runs the handler, then matches observers to the call: every active observer by default, or those
-the function's `onObservationMatch` hook selects by predicate or by keys. iii's delivery then selects
-the matching observers whose `on` and filters match the call. A function's `onObservationDeliver` hook
-takes delivery over: it receives the matching observers and calls through them itself. Where the
-filters run depends on the call:
+the function's `onObservationMatch` hook selects by predicate or by keys. iii's delivery then
+selects the matching observers whose `on` and filters match the call. A function's
+`onObservationDeliver` hook takes delivery over: it receives the matching observers and calls
+through them itself. Where the filters run depends on the call:
 
 - **Local call.** The host called its own function, and the engine never sees the call. The host
   evaluates `on` and filters and sends the observers delivered in a batched
@@ -914,7 +911,7 @@ States:
 
 | State       | Meaning                                                                                                                                                                                                                                                                                                                                                                               |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by another.                                                                                                                                          |
+| `pending`   | No host yet, waiting for the host's ack, or no target yet. An observer goes back to `pending` when its function's host disconnects or unregisters it, and is replayed when the function registers again, by the same worker or by another.                                                                                                                                            |
 | `active`    | Delivering. A host that declared `observe.v1` acked the observer first, after every `onObserverAdded` hook that applies to it resolved.                                                                                                                                                                                                                                               |
 | `suspended` | The observing worker disconnected (`OBSERVER_DISCONNECTED`, resumed by a `Reattach` within `observers.observer_grace_ms`), or a target that was available went away (`TARGET_UNAVAILABLE`).                                                                                                                                                                                           |
 | `error`     | Rejected (invalid args or filters, RBAC, a rejection by the host). See `reason`.                                                                                                                                                                                                                                                                                                      |

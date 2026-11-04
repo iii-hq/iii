@@ -5,7 +5,7 @@ import { getCommunityStats } from '@/lib/community'
 export type PageStats = {
   stars: number | null
   contributors: number | null
-  /** Workers listed at workers.iii.dev, read from the registry's own badge. */
+  /** Workers listed at iii.dev/registry, read from the registry's own badge. */
   workers: number
   /** Adoption, as the 2026-10-05 sync asked for: the SDK on each package registry, plus the engine image. */
   downloads: {
@@ -64,7 +64,7 @@ async function getContributors(): Promise<number | null> {
  */
 async function getWorkers(): Promise<number | null> {
   try {
-    const res = await fetch('https://workers.iii.dev/badge/workers.svg', {
+    const res = await fetch('https://iii.dev/registry/badge/workers.svg', {
       headers: { Accept: 'image/svg+xml' },
       next: { revalidate: 3600 },
       signal: AbortSignal.timeout(4000),

@@ -163,5 +163,5 @@ iii call link::resolve code=mydocslink
 ## Conclusion
 
 Linkly can now ingest a file's worth of links in a single streamed upload through a dedicated
-`bulk-importer` worker. Next, in [Ch. 7: Bring in the browser](/tutorials/linkly/frontend), you turn
-a browser tab into a worker that creates links and subscribes to the live click stream.
+`bulk-importer` worker. Next, in [Ch. 7: Bring in the browser](./frontend), you turn a browser tab
+into a worker that creates links and subscribes to the live click stream.

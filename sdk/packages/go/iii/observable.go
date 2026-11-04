@@ -27,12 +27,9 @@ const observeHookTimeout = 30 * time.Second
 // defaultCapture is what an absent capture means.
 var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 
-// errNotActive is what Accepted returns for an observer removed, or whose function was
-// released, before the SDK accepted it: it never became active. OBSERVER_NOT_ACTIVE is
-// the code the Node, Python and Rust SDKs report for it.
-func errNotActive(message string) error {
-	return &ObserveRejectionError{Code: "OBSERVER_NOT_ACTIVE", Message: message}
-}
+// errObserverRemoved is what Accepted returns for an observer removed before the SDK
+// accepted it.
+var errObserverRemoved = errors.New("iii: observer removed before it was accepted")
 
 // errAcceptedInAddedHook is what Accepted returns when it is called with the ctx of the
 // observer's own added hook, which the ack waits for.
@@ -535,7 +532,7 @@ func (f *functionObservers) add(info ObserverInfo, revision uint64, namespace st
 		// released (a conflict, a withdrawal, an unregister) while its hooks ran, even
 		// if registered again since: as removed, no ack
 		f.mu.Unlock()
-		obs.settle(errNotActive(fmt.Sprintf("%s was released before observer %s was accepted", f.functionID, obs.id)))
+		obs.settle(errObserverRemoved)
 		f.tearDown(obs)
 		return
 	}
@@ -663,7 +660,7 @@ func (f *functionObservers) remove(id string) {
 	delete(f.known, id)
 	f.deactivateLocked(obs)
 	f.mu.Unlock()
-	obs.settle(errNotActive(fmt.Sprintf("observer %s of %s was removed before it was accepted", obs.id, f.functionID)))
+	obs.settle(errObserverRemoved)
 	f.tearDown(obs)
 }
 
@@ -964,33 +961,25 @@ func (o *Observer) Matches(call *Call) bool {
 // Accepted waits until the SDK has acked the observer as accepted, and returns nil. A
 // call made after that reaches an active observer, since the engine handles a
 // connection's frames in order: a host sends a new observer its initial state this way,
-// with a call of its own function whose metadata is {"for_observer": <obs.ID>}. The
-// function's [MatchHook] gives that call to this observer alone, and iii delivers it
-// like every call. It returns an *[ObserveRejectionError] when the observer is rejected
-// first (code OBSERVER_NOT_ACTIVE when it is removed, or its function released, first),
-// and ctx's error when ctx is done first.
+// with a call through it (a [CallRequest] with Observer set), which runs its target alone
+// with the payload as given. It returns an *[ObserveRejectionError] when the observer is rejected
+// first, an error when it is removed first, and ctx's error when ctx is done first.
 // Once accepted, it returns nil at once.
 //
 // The ack waits for the observer's added hooks to return, so an added hook that sends
-// initial state starts a goroutine that waits on Accepted and then calls the function
-// for the observer:
+// initial state starts a goroutine that waits on Accepted and then calls through the
+// observer:
 //
 //	client.OnObserverAddedFor("prices::on-change", func(ctx context.Context, obs *iii.Observer) error {
 //		go func() {
 //			if obs.Accepted(context.Background()) == nil {
-//				meta, _ := json.Marshal(map[string]string{"for_observer": obs.ID})
 //				_, _ = client.Call(context.Background(), iii.CallRequest{
-//					FunctionID: "prices::on-change", Payload: prices.Current(), Metadata: meta, Action: iii.VoidAction(),
+//					Observer: obs, Payload: prices.Current(), Action: iii.VoidAction(),
 //				})
 //			}
 //		}()
 //		return nil
 //	})
-//	client.OnObservationMatchFor("prices::on-change", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-//		var meta struct{ ForObserver string `json:"for_observer"` }
-//		_ = json.Unmarshal(call.Metadata, &meta)
-//		return meta.ForObserver == "" || meta.ForObserver == obs.ID
-//	}))
 //
 // Called with the ctx of the observer's own added hook (or one derived from it), which
 // ends when the hook returns, it returns an error at once.

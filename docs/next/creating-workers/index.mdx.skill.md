@@ -3,20 +3,14 @@
 # Overview
 
 
-Every new capability in a iii system is added by creating a Worker. A queue, a scheduler, an HTTP
-edge, a browser tab, an agent, a CRM integration, or a sandbox. Each is a Worker that connects to
-the Engine, registers Functions, and observes other Functions.
+Every new capability in an iii system is added by creating a Worker.
 
 ## Workers are the services
 
-A Worker is the unit of capability in iii. It is the service. When you need new behaviour, you write
-a new Worker (or install an existing one from the registry); you do not patch the Engine, add a
-plugin to it, or fork it. The Engine is a fixed coordinator, it routes invocations between Workers
-and maintains the live registry of what each Worker provides. Everything that makes a iii system do
-something useful runs in a Worker.
-
-This is why "add a Worker" is the answer to almost every "how do I add X to iii?" question. If a
-capability is missing, the gap is filled by a Worker, not by a change to iii itself.
+A Worker is the service. When you need new behaviour, you write a new Worker (or install an existing
+one from the registry); you do not patch the Engine, add a plugin to it, or fork it. The Engine is a
+fixed coordinator, it routes invocations between Workers and maintains the live registry of what
+each Worker provides.
 
 <Note>
   For the mental model behind Workers, Functions, Observers, and the Engine, see [Understanding iii
@@ -25,12 +19,12 @@ capability is missing, the gap is filled by a Worker, not by a change to iii its
 
 ## Build on existing Workers
 
-Most Workers you create will use one or more existing Workers for their basic functionality, an HTTP
-endpoint, a key-value store, a queue, scheduling, observability, a sandbox, rather than building
-those from scratch. Reach for what already exists before writing your own.
+Most Workers you create use one or more existing Workers for their basic functionality. Use what
+already exists before you write your own.
 
 The ones you reach for most often are documented here under **Common Workers**:
 
+- [Database](./database), run SQL against PostgreSQL, MySQL, or SQLite.
 - [HTTP](./http), expose Functions as HTTP endpoints.
 - [Queues](./queues), async job processing with retries and a dead-letter queue.
 - [Observability](./observability), traces, metrics, and logs across Workers.
@@ -42,7 +36,7 @@ common functionality for your Worker, look in these two places first.
 
 ## What's in this section
 
-<CardGroup cols={3}>
+<CardGroup cols={2}>
   <Card title="Workers" href="./workers" icon="server">
     Connect a Worker to the Engine and deploy it.
   </Card>
@@ -51,5 +45,11 @@ common functionality for your Worker, look in these two places first.
   </Card>
   <Card title="Observable functions" href="./observable-functions" icon="bolt">
     Decide what happens when your Functions are observed.
+  </Card>
+  <Card title="Worker manifest" href="./worker-manifest" icon="file-code">
+    Provision and start a Worker from `iii.worker.yaml`.
+  </Card>
+  <Card title="Channels" href="./channels" icon="stream">
+    Stream large or binary payloads between Workers.
   </Card>
 </CardGroup>

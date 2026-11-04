@@ -19,7 +19,4 @@ def test_engine_source_ids() -> None:
     assert EngineSources.LOG == "observability::on-log"
     assert EngineSources.SPAN == "observability::on-span"
     assert EngineSources.CONFIGURATION_UPDATED == "configuration::on-updated"
-    assert EngineSources.STREAM_CHANGED == "stream::on-changed"
-    assert EngineSources.STREAM_JOIN == "stream::on-join"
-    assert EngineSources.STREAM_LEAVE == "stream::on-leave"
     assert not hasattr(iii.engine, "EngineTriggers")

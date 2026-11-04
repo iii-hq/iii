@@ -299,7 +299,7 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
       The observed function.
     </ParamField>
     <ParamField body="namespace" type="string">
-      Defaults to this worker's namespace (`engine::*` resolves to `default`).
+      Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`).
     </ParamField>
     <ParamField body="on" type="'success' | 'error' | 'complete'">
       Which outcomes reach the target; default `'success'`.
@@ -552,12 +552,13 @@ worker.onObservationDeliver('http::on-request', async (call) => {
 
 Says which observers want each call of a function. By default every
 observer wants every call. A predicate `(obs, call) => boolean` is asked
-once per active observer per call; `{ observer, call }` key functions are
-computed once per observer, when it is accepted, and once per call, and an
+once per observation (for every call, once for each active observer);
+`{ observer, call }` key functions are computed once per observer, when
+it is accepted, and once per call, and an
 observer wants a call when they share a key (the SDK keeps an index). The
 observers' `on`, filters, policy and `deliver` still apply. A hook set
 while observers are active rebuilds the index from them. `null` removes
-the hook.
+the hook, predicate or keys: every observer gets every call again.
 
 A function with a match hook needs an engine with `observe.v2`: against
 an older one it stays unregistered, and the SDK logs `UNSUPPORTED` once.
@@ -890,13 +891,11 @@ type Key = string | readonly string[]
 
 Which observers want each call of a function (`onObservationMatch`). By
 default every observer wants every call. A predicate is asked once per
-active observer per call (a throw counts as no match). Keys are computed
+observation: for every call, once for each active observer (a throw
+counts as no match for that observer). Keys are computed
 once per observer, when it is accepted, and once per call. The observers'
-`on`, filters, policy and `deliver` still apply. A host that sends one
-observer something of its own (its initial state) calls the function with
-`metadata: { for_observer: obs.id }`; the hook gives such a call to that
-observer alone (a predicate compares the ids; keys file each observer under
-`for_observer:<id>` too).
+`on`, filters, policy and `deliver` still apply. Setting it to `null`
+removes it: every observer gets every call again.
 
 ```typescript
 type MatchHook = MatchPredicate<I, O> | MatchKeys<I, O>
@@ -981,7 +980,7 @@ Who observes, the observer's metadata and its policy stay with the engine.
 | `id` | `string` | Yes | - |
 | `on` | `"success" \| "error" \| "complete"` | Yes | - |
 | `target` | `string` | Yes | The target function id. |
-| `accepted` | `() => Promise<void>` | Yes | Resolves once the SDK has acked the observer. A call made after it<br />resolves reaches an active observer, so a provider sends an observer its<br />initial state from here: a call of its own function with<br />`metadata: { for_observer: obs.id }`, which the function's match hook<br />gives to this observer alone, delivered like every call. Rejects with an<br />ObserveRejection when the observer is rejected first. |
+| `accepted` | `() => Promise<void>` | Yes | Resolves once the SDK has acked the observer. A call made after it<br />resolves reaches an active observer, so a provider sends an observer its<br />initial state from here: a call through it<br />(`iii.call({ observer: obs, payload })`), which runs its target alone<br />with the payload as given. Rejects with an<br />ObserveRejection when the observer is rejected first. |
 | `matches` | (call: Partial&lt;[`Call`](#call)&gt;) =&gt; boolean | Yes | Whether `call` reaches this observer: its `on` accepts the call's<br />`status` (absent reads as `'success'`) and its filters match the call. |
 | `reject` | `(code: string, message: string) => void` | Yes | Late rejection of an active observer (e.g. after a config reload). It<br />stops receiving calls at once, its `onObserverRemoved` hooks run, and it<br />stays rejected across reconnects until the engine adds it again. |
 
@@ -1050,7 +1049,7 @@ The left side of `iii.observe`: what is observed.
 | `deliver` | `"input" \| "output" \| "envelope"` | No | What the target receives when iii delivers: the Observed envelope<br />(default), the call's `input`, or its `output`. |
 | `filters` | [`Filter`](#filter) | No | Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. |
 | `function_id` | `string` | Yes | The observed function. |
-| `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` resolves to `default`). |
+| `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). |
 | `on` | `"success" \| "error" \| "complete"` | No | Which outcomes reach the target; default `'success'`. |
 
 ---
@@ -1192,9 +1191,6 @@ None takes args; filter on the event (`input`) instead.
 | `LOG` | `"observability::on-log"` | Yes | A log record. |
 | `OBSERVERS_CHANGED` | `"engine::on-observers-changed"` | Yes | An observer changed state: `{ observer_id, function_id, target, state, reason? }`. |
 | `SPAN` | `"observability::on-span"` | Yes | A finished span. |
-| `STREAM_CHANGED` | `"stream::on-changed"` | Yes | A stream item changed; filter on `input.stream_name`, `input.group_id`. |
-| `STREAM_JOIN` | `"stream::on-join"` | Yes | A client joined a stream group. |
-| `STREAM_LEAVE` | `"stream::on-leave"` | Yes | A client left a stream group. |
 | `WORKERS_CHANGED` | `"engine::on-workers-changed"` | Yes | A worker connected or left. |
 
 ---

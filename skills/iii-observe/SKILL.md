@@ -507,19 +507,13 @@ How hooks behave:
   `is_observed_for(&call)`, Go `IsObserved()` / `IsObservedFor(call)`. `observers()` lists the
   active ones.
 - **A call for one observer.** To send one observer something of its own (its initial state, an
-  event it missed), a source calls its own function with `metadata: { for_observer: obs.id }`, and
-  its match hook gives that call to that observer alone: a predicate compares
-  `call.metadata.for_observer` with `obs.id`; key functions also file each observer under
-  `for_observer:<id>` and give such a call that one key. iii delivers it like every call, with the
-  observer's `deliver`, `capture`, filters, `on`, and policy, so its target receives every event of
-  the function in one shape. Under RBAC middleware, a host's call of a function it does not host
-  privately goes through the middleware, which receives the metadata as its own: make the function
-  private, or have the middleware forward the call's metadata. A call through an observer belongs
-  in a deliver hook.
+  event it missed), the host calls through that observer once it is active:
+  `iii.call({ observer: obs, payload })`. The call runs that observer's target alone, with the
+  payload as given and the observer's registration metadata.
 - **`obs.accepted()`** resolves once the SDK has acknowledged the observer. A call made afterwards
   reaches an active observer if its target is registered (one whose target is not registered yet
-  stays `pending`, and the call is dropped as `INACTIVE`), so a source sends initial state as a
-  call for that observer. The
+  stays `pending`, and the call fails with `OBSERVER_NOT_ACTIVE`), so a source sends initial state
+  through that observer once it resolves. The
   observer becomes active after `onObserverAdded` returns, so the hook starts a task that waits and
   then makes the call with `CallAction.Void()`. `accepted()` fails for an observer rejected first
   (a match key function that throws, `obs.reject`), and the task then sends nothing: in Node and
@@ -530,15 +524,14 @@ How hooks behave:
   its own, since the hook's `ctx` makes it return an error at once.
 
 ```typescript
-// a new observer gets the state of its session; every other change goes to the session's observers
+// a new observer gets the state of its session
 iii.onObserverAdded("tmux::on-changed", (obs) => {
   void obs
     .accepted()
     .then(() =>
       iii.call({
-        function_id: "tmux::on-changed",
+        observer: obs,
         payload: stateFor(obs.args),
-        metadata: { for_observer: obs.id },
         action: CallAction.Void(),
       }),
     )
@@ -546,11 +539,6 @@ iii.onObserverAdded("tmux::on-changed", (obs) => {
       // a rejected observer gets nothing
     });
 });
-iii.onObservationMatch("tmux::on-changed", (obs, call) =>
-  call.metadata?.for_observer
-    ? call.metadata.for_observer === obs.id
-    : obs.args.session === call.input.session,
-);
 ```
 
 - **Registration options.** `args_format` (JSON Schema for observers' args; `INVALID_ARGS` when

@@ -104,7 +104,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | G1 | Every worker builds and passes its own test suite against the v2 engine and SDKs. | test |
 | G2 | database, cron, http, queue, state match spec §10 (match hooks, deliver hooks, changeFeed setup, `isObserved(call)` gates). | read, test |
 | G3 | Harness: `harness::observe` / `harness::unobserve` agent tools; stored bindings translated at boot or retired with a notice; `harness::on-*` private sources; `observer_fired` records (readers accept `trigger_fired`); envelope deliveries; `expires_in_ms` backstop. | test |
-| G4 | ADE: Observers screen (`ext:observers`, migrated state), `console::ui::asset` with `{ kind, path }`, initial sync through `accepted()`, injectable-UI `functionCalls` / `function-call` with old role accepted. | test, read |
+| G4 | ADE: Observers screen (`ext:observers`, migrated state), `ade::ui::asset` with `{ kind, path }`, initial sync through `accepted()`, injectable-UI `functionCalls` / `function-call` with old role accepted. | test, read |
 | G5 | rbac-proxy: observe.v1/v2 forwarded, `local-dispatch.v1` only without middleware or for a function the session hosts privately (decision 46), removed frames dropped with warn-once, observer discovery filtered by access. | test |
 | G6 | SDK pins `=0.26.0` / `0.26.0` / `>=0.26.0` / `v0.26.0`; no committed path overrides. | grep |
 

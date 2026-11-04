@@ -6,6 +6,7 @@ import { parseHelpersGriffe, parseGriffe } from './parsers/parse-griffe.mjs'
 import { parseHelpersRustdoc, parseRustdoc } from './parsers/parse-rustdoc.mjs'
 import { parseBrowserTypedoc, parseHelpersTypedoc, parseNodeTypedoc } from './parsers/parse-typedoc.mjs'
 import { renderSdkMdx } from './renderers/render-mdx.mjs'
+import { findBrokenTableRows } from './renderers/components.mjs'
 import type { SdkDoc } from './types.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -120,6 +121,13 @@ for (const target of targets) {
     doc.metadata.docSourcePath = target.sourcePath
     const mdx = renderSdkMdx(doc)
     writeFileSync(target.outputPath, mdx, 'utf-8')
+    // A table row MDX cannot read fails the page's build (Mintlify then drops the page), so fail here.
+    const broken = findBrokenTableRows(mdx)
+    if (broken.length) {
+      console.error(`  [ERROR] ${target.outputPath} has table rows MDX cannot parse:`)
+      for (const problem of broken) console.error(`    ${problem}`)
+      hasErrors = true
+    }
     const counts = doc.isLibrary
       ? `Modules: ${doc.modules?.length ?? 0}, Types: ${(doc.modules ?? []).reduce((n, m) => n + m.types.length, 0)}`
       : `Methods: ${doc.methods.length}, Types: ${doc.types.length}`

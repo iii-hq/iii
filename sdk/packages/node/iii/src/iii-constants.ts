@@ -29,12 +29,6 @@ export const EngineSources = {
   SPAN: 'observability::on-span',
   /** The engine's configuration was reloaded. */
   CONFIGURATION_UPDATED: 'configuration::on-updated',
-  /** A stream item changed; filter on `input.stream_name`, `input.group_id`. */
-  STREAM_CHANGED: 'stream::on-changed',
-  /** A client joined a stream group. */
-  STREAM_JOIN: 'stream::on-join',
-  /** A client left a stream group. */
-  STREAM_LEAVE: 'stream::on-leave',
 } as const
 
 /** Log function paths */

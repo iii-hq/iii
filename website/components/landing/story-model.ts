@@ -106,12 +106,12 @@ export const STORY_BEATS: Record<StoryStage, Beat[]> = {
     { caption: 'Twelve new workers, one request. Any worker can call them through iii.', active: [] },
   ],
   react: [
-    { caption: 'Three handlers observe github::pr::on-event.', active: [] },
+    { caption: 'Three functions observe github::pr::on-event.', active: [] },
     { caption: 'A pull request opens on GitHub.', active: [] },
     { caption: 'The github worker calls github::pr::on-event through iii.', active: [] },
     { caption: 'iii delivers the event to every observer at once.', active: [] },
     { caption: 'Each handler reacts on its own: a review, a message, a test run.', active: [] },
-    { caption: 'Add a fourth handler. The event source does not change.', active: [] },
+    { caption: 'Add a fourth observer. The event source does not change.', active: [] },
     { caption: 'One event, four reactions. Nothing upstream was edited.', active: [] },
   ],
 }

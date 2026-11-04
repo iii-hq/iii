@@ -114,10 +114,9 @@ impl CallRequest {
     /// registration metadata, and [`IIIClient::call`](crate::IIIClient::call)
     /// refuses a request given [`metadata`](CallRequestWithMetadata::metadata)
     /// before anything is sent.
-    /// It belongs in the function's deliver hook, whose function documents
-    /// what its targets receive; to send one observer something outside
-    /// delivery (its initial state), call the function with metadata
-    /// `{ "for_observer": <observer id> }` (see [`Observer::accepted`](crate::Observer::accepted)).
+    /// A host makes it in the function's deliver hook, or to send one
+    /// observer something of its own, such as its initial state once it is
+    /// accepted (see [`Observer::accepted`](crate::Observer::accepted)).
     ///
     /// ```rust,no_run
     /// # use iii_sdk::{CallAction, CallRequest, IIIClient, Observer};

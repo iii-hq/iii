@@ -268,9 +268,6 @@ func TestEngineSources(t *testing.T) {
 		{EngineSources.Log, "observability::on-log"},
 		{EngineSources.Span, "observability::on-span"},
 		{EngineSources.ConfigurationUpdated, "configuration::on-updated"},
-		{EngineSources.StreamChanged, "stream::on-changed"},
-		{EngineSources.StreamJoin, "stream::on-join"},
-		{EngineSources.StreamLeave, "stream::on-leave"},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%q, want %q", tc.got, tc.want)

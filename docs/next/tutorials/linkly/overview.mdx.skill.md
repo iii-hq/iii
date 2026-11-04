@@ -13,16 +13,14 @@ link shortener itself, but the pattern: a real system on iii is a set of small w
 each other's functions and observe them. You add capability without needing to refactor existing
 functionality.
 
-<Note>New to iii? [Install](/install) it before you begin.</Note>
+<Note>New to iii? [Install](../../install) it before you begin.</Note>
 
 ## Choose your path
 
 Both paths will build the same system.
 
-- [Agentic](/tutorials/linkly/agentic) gives an AI agent one prompt per chapter and reviews what it
-  writes.
-- [Exploration](/tutorials/linkly/foundations) writes each chapter by hand, with the reasoning
-  behind every step.
+- [Agentic](./agentic) gives an AI agent one prompt per chapter and reviews what it writes.
+- [Exploration](./foundations) writes each chapter by hand, with the reasoning behind every step.
 
 ## An overview of the chapters
 
