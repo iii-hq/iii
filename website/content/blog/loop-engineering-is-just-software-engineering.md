@@ -227,6 +227,6 @@ the rest of the system. The agent is a Worker. Its memory is state. Its
 orchestration is observers. Its durable execution loop is a queue consumer.
 
 The harness worker and its full dependency chain are at
-[workers.iii.dev](https://workers.iii.dev). The complete tutorial showing queues,
+[iii.dev/registry](https://iii.dev/registry). The complete tutorial showing queues,
 pub/sub, observability, and state composing in one real application is at
 [iii.dev/docs/tutorials/linkly/overview](https://iii.dev/docs/tutorials/linkly/overview).

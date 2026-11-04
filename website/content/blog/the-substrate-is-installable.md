@@ -23,7 +23,7 @@ The single most important line is:
 
 That sounds like a tagline. It is also literally true.
 
-When you type `iii worker add iii-state`, the engine pulls a published worker from the [registry at workers.iii.dev](https://workers.iii.dev/), starts it, and registers its functions on the engine. From the moment that command returns, every other worker in your system can call `state::set` and `state::get` and observe `state::on-changed`. There is no integration code. There is no SDK to import. There is no client to instantiate. The worker is there, the catalog updated, and every existing worker, including any agent already running, can use it on the next tick.
+When you type `iii worker add iii-state`, the engine pulls a published worker from the [registry at iii.dev/registry](https://iii.dev/registry), starts it, and registers its functions on the engine. From the moment that command returns, every other worker in your system can call `state::set` and `state::get` and observe `state::on-changed`. There is no integration code. There is no SDK to import. There is no client to instantiate. The worker is there, the catalog updated, and every existing worker, including any agent already running, can use it on the next tick.
 
 That is the move that turns **"the missing substrate" into "an installable package."**
 
@@ -129,7 +129,7 @@ That symmetry is what makes the worker model actually compose, instead of just b
 
 ## The harness is workers, too
 
-Look back at the long list of things every long-running agent ends up rebuilding: task state, event logs, replay, approvals, memory, retries, branching, provenance, capability tracking, durable workflow runs. Now look at what's on workers.iii.dev today.
+Look back at the long list of things every long-running agent ends up rebuilding: task state, event logs, replay, approvals, memory, retries, branching, provenance, capability tracking, durable workflow runs. Now look at what's on iii.dev/registry today.
 
 Durable agent turn loop → `turn-orchestrator`.
 
@@ -169,10 +169,10 @@ If the agent needs something none of those workers do, you write a new worker. T
 
 The "missing primitive" framing is the right framing: the missing thing may be a persistent, reactive, inspectable, evolving state substrate, treated not as separate systems around an agent loop, but as one operational substrate.
 
-That description fits iii exactly. It also fits what's on workers.iii.dev today. The substrate isn't missing. It's installed in three commands and extended at runtime in one. The reason it doesn't feel solved yet, in the broader ecosystem, is that we've been treating it as architecture each team builds. The move that worked, for us, was to make it a primitive each team installs and extends.
+That description fits iii exactly. It also fits what's on iii.dev/registry today. The substrate isn't missing. It's installed in three commands and extended at runtime in one. The reason it doesn't feel solved yet, in the broader ecosystem, is that we've been treating it as architecture each team builds. The move that worked, for us, was to make it a primitive each team installs and extends.
 
 The agent harness debate, the memory debate, the workflow debate, the orchestration debate; they all dissolve into composition once you have the right primitive. Three primitives. One engine. A registry that anyone can publish to. A `iii worker add` command that turns the substrate into a one-liner. Real-time live discovery so capabilities show up the moment they connect. Same contract, both sides, so application teams and platform teams stop having to translate at every boundary.
 
 When the substrate is a primitive instead of a project, capability evolution is what the system does, not what the team builds.
 
-iii is open source. The docs are at [iii.dev/docs](https://iii.dev/docs). The registry is at [workers.iii.dev](https://workers.iii.dev/). The fastest way to feel the argument is to type `iii worker add iii-state` and watch a different worker react to it a second later.
+iii is open source. The docs are at [iii.dev/docs](https://iii.dev/docs). The registry is at [iii.dev/registry](https://iii.dev/registry). The fastest way to feel the argument is to type `iii worker add iii-state` and watch a different worker react to it a second later.

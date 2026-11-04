@@ -8,8 +8,8 @@ import styles from './story-react.module.css'
 
 /**
  * Reactivity as observers, drawn as one fan-out read top to bottom: a pull request opens, the github worker calls
- * `github::pr::on-event` through iii, iii delivers it to every observer at once, and each handler reacts on its own.
- * Then a fourth handler observes the same function without anything upstream changing.
+ * `github::pr::on-event` through iii, iii delivers it to every observer at once, and each function reacts on its own.
+ * Then a fourth function observes the same function without anything upstream changing.
  */
 
 const HANDLERS = [

@@ -12,7 +12,7 @@ import { pageMetadata } from '@/lib/seo'
 import { cn } from '@/lib/utils'
 
 const TITLE = 'iii blog'
-const DESCRIPTION = 'Notes from the team building iii — three primitives, zero integration cost.'
+const DESCRIPTION = 'Notes from the team building iii — one primitive, zero integration cost.'
 const RSS_PATH = '/blog/rss.xml'
 
 const base = pageMetadata({ title: TITLE, description: DESCRIPTION, path: '/blog/' })
