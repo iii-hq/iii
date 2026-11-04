@@ -523,11 +523,7 @@ fn leading_whitespace(line: &str) -> &str {
 }
 
 fn dependency_name(value: &str) -> &str {
-    value
-        .trim()
-        .split_once(" #")
-        .map_or_else(|| value.trim(), |(name, _)| name.trim())
-        .trim_matches(['"', '\''])
+    without_comment(value).trim().trim_matches(['"', '\''])
 }
 
 /// Keeps the file's final newline as it was: adding one to a file without it,
@@ -1338,6 +1334,21 @@ containers:
         assert_eq!(
             out,
             "containers:\n  api: # the front door\n    worker: path://./workers/api\n  queue:\t# drained on stop\n    worker: path://./workers/queue\n    start_after: # [in boot order]\n      - api\n"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    #[test]
+    fn removing_reads_a_tab_before_a_dependency_comment_as_a_comment() {
+        let text = "containers:\n  database:\n    worker: path://./workers/database\n  api:\n    worker: path://./workers/api\n    start_after:\n      - database\t# first\n";
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert_eq!(
+            out,
+            "containers:\n  api:\n    worker: path://./workers/api\n"
         );
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
     }
