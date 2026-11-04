@@ -273,183 +273,7 @@ For an observer that is never accepted it runs only at the levels whose `onObser
   </Tab>
 </Tabs>
 
-### Observation lifecycle
-
-These hooks run per call. An observation is one call of the function reaching, or being considered
-for, one observer.
-
-#### `onObservationMatch(obs, call)`
-
-By default, every call is observed by every observer. Override it to select, for one call, which
-observers get it, from their args: a predicate, or keys that iii indexes.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.onObservationMatch("database::on-row-changed", (obs, call) =>
-      // one observation: this observer, this call
-      obs.args.table === (call.input as { table: string }).table,
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    worker.on_observation_match(
-        "database::on-row-changed",
-        # one observation: this observer, this call
-        lambda obs, call: obs.args["table"] == call.input["table"],
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::Match;
-
-    worker.on_observation_match_for(
-        "database::on-row-changed",
-        // one observation: this observer, this call
-        Match::predicate(|obs, call| obs.args_value()["table"] == call.input["table"]),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import "encoding/json"
-
-    type rowChange struct {
-        Table string `json:"table"`
-    }
-
-    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(
-        // one observation: this observer, this call
-        func(obs *iii.Observer, call *iii.Call) bool {
-            var change rowChange
-            _ = json.Unmarshal(call.Input, &change)
-            return obs.Args["table"] == change.Table
-        },
-    ))
-    ```
-
-  </Tab>
-</Tabs>
-
-Both forms are in [Match observers to calls](#match-observers-to-calls).
-
-#### `onObservationDeliver(call, observers)`
-
-By default, iii carries out each observation: it runs the target of every matched observer whose
-`on` and filters match the call, and gives the caller the handler's return value. Override it to
-deliver the call yourself and change what is returned to the caller.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    type RowChange = {
-      db: string;
-      table: string;
-      op: "insert" | "update" | "delete";
-      row: Record<string, unknown>;
-    };
-
-    worker.onObservationDeliver("database::on-row-changed", async (call, observers) => {
-      const change = call.input as RowChange;
-      // the observer that names this table, before one that names every table
-      const observer =
-        observers.find((obs) => obs.args.table === change.table) ??
-        observers.find((obs) => obs.args.table === "*");
-      if (!observer || !observer.matches(call)) return { delivered: false };
-      return worker.call({ observer, payload: change }); // the caller gets the target's result
-    });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    @worker.on_observation_deliver("database::on-row-changed")
-    async def deliver(call, observers):
-        change = call.input
-        # the observer that names this table, before one that names every table
-        observer = next((obs for obs in observers if obs.args["table"] == change["table"]), None)
-        if observer is None:
-            observer = next((obs for obs in observers if obs.args["table"] == "*"), None)
-        if observer is None or not observer.matches(call):
-            return {"delivered": False}
-        return await worker.call_async({"observer": observer, "payload": change})  # the target's result
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Call, Observer};
-    use serde_json::json;
-
-    let iii = worker.clone();
-    worker.on_observation_deliver_for("database::on-row-changed", move |call: Call, observers: Vec<Observer>| {
-        let iii = iii.clone();
-        async move {
-            let table = call.input["table"].as_str().unwrap_or_default().to_string();
-            // the observer that names this table, before one that names every table
-            let observer = observers
-                .iter()
-                .find(|obs| obs.args_value()["table"] == table)
-                .or_else(|| observers.iter().find(|obs| obs.args_value()["table"] == "*"));
-            let Some(observer) = observer else {
-                return Ok(json!({ "delivered": false }));
-            };
-            if !observer.matches(&call) {
-                return Ok(json!({ "delivered": false }));
-            }
-            iii.call(CallRequest::observer(observer, call.input.clone())).await // the target's result
-        }
-    });
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import (
-        "context"
-        "encoding/json"
-    )
-
-    type rowChange struct {
-        DB    string          `json:"db"`
-        Table string          `json:"table"`
-        Op    string          `json:"op"`
-        Row   json.RawMessage `json:"row"`
-    }
-
-    worker.OnObservationDeliverFor("database::on-row-changed", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
-        var change rowChange
-        if err := json.Unmarshal(call.Input, &change); err != nil {
-            return nil, err
-        }
-        var observer *iii.Observer
-        for _, obs := range observers {
-            // the observer that names this table, before one that names every table
-            if obs.Args["table"] == change.Table {
-                observer = obs
-                break
-            }
-            if observer == nil && obs.Args["table"] == "*" {
-                observer = obs
-            }
-        }
-        if observer == nil || !observer.Matches(call) {
-            return map[string]bool{"delivered": false}, nil
-        }
-        return worker.Call(ctx, iii.CallRequest{Observer: observer, Payload: call.Input}) // the target's result
-    })
-    ```
-
-  </Tab>
-</Tabs>
-
-### Set a hook for one function or for every function
+#### Set a hook for one function or for every function
 
 A hook set on the worker runs for every function the worker hosts. A hook set on one function runs
 for that function only.
@@ -752,8 +576,7 @@ For one function, pass its id to the same pair:
 
 A hook for one function is set by id (see [Hooks](#hooks)) or chained on the `FunctionRef` that
 `registerFunction` returns. Each method returns its receiver, so calls chain. Added, removed and
-deliver hooks can be sync or async. A match predicate and key functions are sync, since they run on
-every call.
+deliver hooks can be sync or async. A match predicate is sync, since it runs on every call.
 
 Removing a hook returns the function to its default (see [Hooks](#hooks)).
 
@@ -762,7 +585,7 @@ of the same id, and they can be set before the function is registered. Once the 
 is registered, the SDK logs a warning for each hook id the worker has not registered, which catches
 a mistyped id.
 
-### Reject an observer
+#### Reject an observer
 
 An observer is accepted when every `onObserverAdded` that applies to it resolves. The SDK then
 acknowledges it to the engine, and the observer becomes `active`. So its database trigger exists
@@ -833,13 +656,13 @@ sets the code the consumer's `ready()` fails with; any other error is `OBSERVE_R
   </Tab>
 </Tabs>
 
-### No replay of past executions
+#### No replay of past executions
 
-iii stores no observation history. A hook reacts only to the executions of its function that happen
-after the hook is registered, and an observer receives only the calls that happen after it is
+iii does not store observation history. A hook reacts only to the executions of its function that
+happen after the hook is registered, and an observer receives only the calls that happen after it is
 accepted.
 
-### Reject an observer later
+#### Reject an observer later
 
 An observer that the function accepted can become invalid later. For example, a configuration reload
 can remove the resource that the observer watches. `obs.reject(code, message)` stops delivery to the
@@ -997,6 +820,265 @@ after it reconnects.
 </Tabs>
 
 `FunctionRef.observers()` returns the active observers of the function.
+
+### Observation lifecycle
+
+These hooks run per call. An observation is one call of the function reaching, or being considered
+for, one observer.
+
+#### `onObservationMatch(obs, call)`
+
+By default, every call is observed by every observer. Override it to select, for one call, which
+observers get it: a predicate that returns a boolean.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.onObservationMatch("database::on-row-changed", (obs, call) =>
+      // one observation: this observer, this call
+      obs.args.table === (call.input as { table: string }).table,
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.on_observation_match(
+        "database::on-row-changed",
+        # one observation: this observer, this call
+        lambda obs, call: obs.args["table"] == call.input["table"],
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Match;
+
+    worker.on_observation_match_for(
+        "database::on-row-changed",
+        // one observation: this observer, this call
+        Match::predicate(|obs, call| obs.args_value()["table"] == call.input["table"]),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "encoding/json"
+
+    type rowChange struct {
+        Table string `json:"table"`
+    }
+
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(
+        // one observation: this observer, this call
+        func(obs *iii.Observer, call *iii.Call) bool {
+            var change rowChange
+            _ = json.Unmarshal(call.Input, &change)
+            return obs.Args["table"] == change.Table
+        },
+    ))
+    ```
+
+  </Tab>
+</Tabs>
+
+#### `onObservationDeliver(call, observers)`
+
+By default, iii carries out each observation: it runs the target of every matched observer whose
+`on` and filters match the call, and gives the caller the handler's return value. Override it to
+deliver the call yourself and change what is returned to the caller.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    type RowChange = {
+      db: string;
+      table: string;
+      op: "insert" | "update" | "delete";
+      row: Record<string, unknown>;
+    };
+
+    worker.onObservationDeliver("database::on-row-changed", async (call, observers) => {
+      const change = call.input as RowChange;
+      // the observer that names this table, before one that names every table
+      const observer =
+        observers.find((obs) => obs.args.table === change.table) ??
+        observers.find((obs) => obs.args.table === "*");
+      if (!observer || !observer.matches(call)) return { delivered: false };
+      return worker.call({ observer, payload: change }); // the caller gets the target's result
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    @worker.on_observation_deliver("database::on-row-changed")
+    async def deliver(call, observers):
+        change = call.input
+        # the observer that names this table, before one that names every table
+        observer = next((obs for obs in observers if obs.args["table"] == change["table"]), None)
+        if observer is None:
+            observer = next((obs for obs in observers if obs.args["table"] == "*"), None)
+        if observer is None or not observer.matches(call):
+            return {"delivered": False}
+        return await worker.call_async({"observer": observer, "payload": change})  # the target's result
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::protocol::CallRequest;
+    use iii_sdk::{Call, Observer};
+    use serde_json::json;
+
+    let iii = worker.clone();
+    worker.on_observation_deliver_for("database::on-row-changed", move |call: Call, observers: Vec<Observer>| {
+        let iii = iii.clone();
+        async move {
+            let table = call.input["table"].as_str().unwrap_or_default().to_string();
+            // the observer that names this table, before one that names every table
+            let observer = observers
+                .iter()
+                .find(|obs| obs.args_value()["table"] == table)
+                .or_else(|| observers.iter().find(|obs| obs.args_value()["table"] == "*"));
+            let Some(observer) = observer else {
+                return Ok(json!({ "delivered": false }));
+            };
+            if !observer.matches(&call) {
+                return Ok(json!({ "delivered": false }));
+            }
+            iii.call(CallRequest::observer(observer, call.input.clone())).await // the target's result
+        }
+    });
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+        "context"
+        "encoding/json"
+    )
+
+    type rowChange struct {
+        DB    string          `json:"db"`
+        Table string          `json:"table"`
+        Op    string          `json:"op"`
+        Row   json.RawMessage `json:"row"`
+    }
+
+    worker.OnObservationDeliverFor("database::on-row-changed", func(ctx context.Context, call *iii.Call, observers []*iii.Observer) (any, error) {
+        var change rowChange
+        if err := json.Unmarshal(call.Input, &change); err != nil {
+            return nil, err
+        }
+        var observer *iii.Observer
+        for _, obs := range observers {
+            // the observer that names this table, before one that names every table
+            if obs.Args["table"] == change.Table {
+                observer = obs
+                break
+            }
+            if observer == nil && obs.Args["table"] == "*" {
+                observer = obs
+            }
+        }
+        if observer == nil || !observer.Matches(call) {
+            return map[string]bool{"delivered": false}, nil
+        }
+        return worker.Call(ctx, iii.CallRequest{Observer: observer, Payload: call.Input}) // the target's result
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+#### Match observers to calls
+
+`onObservationMatch` selects, for each call, which observers get it, so a function can route its
+calls by the args of its observers. iii does everything else as usual: each observer's `on`,
+filters, policy and `deliver` still apply.
+
+A predicate receives the observer and the call, and returns a boolean: `true` when that observer
+gets this call, `false` when it does not.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.onObservationMatch(
+      "database::on-row-changed",
+      (obs, call) => obs.args.db === call.input.db && obs.args.table === call.input.table,
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    worker.on_observation_match(
+        "database::on-row-changed",
+        lambda obs, call: obs.args["db"] == call.input["db"] and obs.args["table"] == call.input["table"],
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Match;
+
+    worker.on_observation_match_for(
+        "database::on-row-changed",
+        Match::predicate(|obs, call| {
+            let args = obs.args_value();
+            args["db"] == call.input["db"] && args["table"] == call.input["table"]
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "encoding/json"
+
+    type rowChange struct {
+        DB    string `json:"db"`
+        Table string `json:"table"`
+    }
+
+    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+        var change rowChange
+        _ = json.Unmarshal(call.Input, &change)
+        return obs.Args["db"] == change.DB && obs.Args["table"] == change.Table
+    }))
+    ```
+
+  </Tab>
+</Tabs>
+
+The SDK calls the predicate once for each active observer. It runs before that observer's `on` and
+filters. A predicate that throws counts as no match for that observer, and the SDK logs the error
+once per function.
+
+#### Deliver calls yourself
+
+`onObservationDeliver` carries out a call's observations: it hands the call to its observers and
+returns their answer to the caller. It is for a function whose observers' answers matter, or whose
+calls each go to one observer. The hook receives the call and the observers that matched it (by
+`onObservationMatch`, or every active observer), as a snapshot taken when the call started. What it
+returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
+runs inside the function's invocation, so calls it makes have that invocation as their caller.
+
+The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
+a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
+receives only the observers the match hook matched. The queue worker's `queue::on-message` files
+each message under its subscriber's key, so its deliver hook receives that one observer.
+
+<Note>
+  An observer's args and the call settle the choice in
+  [`onObservationMatch`](#match-observers-to-calls). Choose in `onObservationDeliver` when the
+  choice compares observers with each other, or when making it produces part of the payload.
+</Note>
 
 ## Producing events with observers
 
@@ -1170,265 +1252,6 @@ Because the worker calls its own function, the call runs in-process
 ([local dispatch](../using-iii/observers#local-dispatch)) and reaches the engine only when an
 observer's filters match.
 
-## Choose who gets each call
-
-Every call of a function, local or routed, runs in the worker that hosts the function, in three
-steps:
-
-1. **The handler runs.** Its return value is what observers observe.
-2. **The call's observations are decided.** An observation is the call reaching one observer. By
-   default every observer of the function gets every call.
-   [`onObservationMatch`](#match-observers-to-calls) narrows that.
-3. **The observations are carried out.** By default iii delivers the call to each observer.
-   [`onObservationDeliver`](#deliver-calls-yourself) takes delivery over.
-
-iii's delivery:
-
-1. selects, among the matching observers, those whose `on` matches the call's status and whose
-   filters match the call. The engine does it for a call it routed to the worker, with the input it
-   forwarded and the result the worker answers; the worker does it for a call it makes to its own
-   function;
-2. runs each target with the observer's `deliver` choice, policy, metadata, and
-   [loop guard](../using-iii/observers#loop-guard);
-3. gives the caller the handler's return value, or rethrows its error.
-
-It does not wait for targets. The caller and the observers receive the same value. The engine finds
-the observers whose filters hold an `$eq` or `$in` on a value of the call through an index, so a
-routed call costs about one lookup however many observers filter on their own value (see
-[Filters](../reference/filters#many-observers)).
-
-### Match observers to calls
-
-`onObservationMatch` selects, for each call, which observers get it. A function sets it when its
-observers' args determine which calls they get. iii does everything else as usual: each observer's
-`on`, filters, policy and `deliver` still apply.
-
-As a predicate, the hook takes one possible observation, the observer and the call, and returns
-whether it happens.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.onObservationMatch(
-      "database::on-row-changed",
-      (obs, call) => obs.args.db === call.input.db && obs.args.table === call.input.table,
-    );
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    worker.on_observation_match(
-        "database::on-row-changed",
-        lambda obs, call: obs.args["db"] == call.input["db"] and obs.args["table"] == call.input["table"],
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::Match;
-
-    worker.on_observation_match_for(
-        "database::on-row-changed",
-        Match::predicate(|obs, call| {
-            let args = obs.args_value();
-            args["db"] == call.input["db"] && args["table"] == call.input["table"]
-        }),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import "encoding/json"
-
-    type rowChange struct {
-        DB    string `json:"db"`
-        Table string `json:"table"`
-    }
-
-    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-        var change rowChange
-        _ = json.Unmarshal(call.Input, &change)
-        return obs.Args["db"] == change.DB && obs.Args["table"] == change.Table
-    }))
-    ```
-
-  </Tab>
-</Tabs>
-
-The SDK calls the predicate once per observation: for every call, once for each active observer,
-before that observer's `on` and filters. A predicate that throws counts as no match for that
-observer, and the SDK logs it once per function.
-
-Keys suit a function with many observers. One key function gives the keys an observer listens for,
-the other gives the keys a call is, and an observer matches a call when they share a key. The SDK
-keeps an index from keys to observers, so a call costs one lookup per key.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    type RowChange = {
-      db: string;
-      table: string;
-      op: "insert" | "update" | "delete";
-      row: unknown;
-    };
-
-    const key = (db: string, table: string, op: string) => `${db}|${table}|${op}`;
-
-    worker.onObservationMatch("database::on-row-changed", {
-      // the keys this observer listens for
-      observer: (obs) => key(obs.args.db as string, obs.args.table as string, obs.args.op as string),
-      // the keys this call is
-      call: (call) => {
-        const change = call.input as RowChange;
-        return [
-          key(change.db, change.table, change.op),
-          key(change.db, change.table, "*"),
-          key(change.db, "*", change.op),
-          key(change.db, "*", "*"),
-        ];
-      },
-    });
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    def key(db, table, op):
-        return f"{db}|{table}|{op}"
-
-    worker.on_observation_match(
-        "database::on-row-changed",
-        # the keys this observer listens for
-        observer=lambda obs: key(obs.args["db"], obs.args["table"], obs.args["op"]),
-        # the keys this call is
-        call=lambda call: [
-            key(call.input["db"], call.input["table"], call.input["op"]),
-            key(call.input["db"], call.input["table"], "*"),
-            key(call.input["db"], "*", call.input["op"]),
-            key(call.input["db"], "*", "*"),
-        ],
-    )
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Keys, Match};
-
-    let key = |db: &str, table: &str, op: &str| format!("{db}|{table}|{op}");
-
-    worker.on_observation_match_for(
-        "database::on-row-changed",
-        Match::keys(
-            // the keys this observer listens for
-            move |obs| {
-                let args = obs.args_value();
-                let (db, table, op) = (
-                    args["db"].as_str().unwrap_or_default(),
-                    args["table"].as_str().unwrap_or("*"),
-                    args["op"].as_str().unwrap_or("*"),
-                );
-                Keys::from(key(db, table, op))
-            },
-            // the keys this call is
-            move |call| {
-                let input = &call.input;
-                let (db, table, op) = (
-                    input["db"].as_str().unwrap_or_default(),
-                    input["table"].as_str().unwrap_or_default(),
-                    input["op"].as_str().unwrap_or_default(),
-                );
-                Keys::from(vec![
-                    key(db, table, op),
-                    key(db, table, "*"),
-                    key(db, "*", op),
-                    key(db, "*", "*"),
-                ])
-            },
-        ),
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    import "encoding/json"
-
-    type rowChange struct {
-        DB    string `json:"db"`
-        Table string `json:"table"`
-        Op    string `json:"op"`
-    }
-
-    key := func(db, table, op string) string { return db + "|" + table + "|" + op }
-
-    worker.OnObservationMatchFor("database::on-row-changed", iii.MatchKeys(
-        // the keys this observer listens for
-        func(obs *iii.Observer) []string {
-            db, _ := obs.Args["db"].(string)
-            table, _ := obs.Args["table"].(string)
-            op, _ := obs.Args["op"].(string)
-            return []string{key(db, table, op)}
-        },
-        // the keys this call is
-        func(call *iii.Call) []string {
-            var change rowChange
-            _ = json.Unmarshal(call.Input, &change)
-            return []string{
-                key(change.DB, change.Table, change.Op),
-                key(change.DB, change.Table, "*"),
-                key(change.DB, "*", change.Op),
-                key(change.DB, "*", "*"),
-            }
-        },
-    ))
-    ```
-
-  </Tab>
-</Tabs>
-
-- A key function returns one key or a list of keys.
-- The SDK computes an observer's keys once, when it is accepted, and files the observer under each.
-  It unfiles the observer when it is removed. An observer whose key function throws is rejected with
-  `OBSERVE_REJECTED`.
-- The SDK computes a call's keys once per call. A call matches the observers filed under any of its
-  keys, each once.
-- A match hook set while the function has active observers rebuilds the index from them.
-
-Keys express wildcards by listing them. The
-[database worker](./database#how-the-worker-hosts-row-changes) files an observer of every table
-under `"primary|*|insert"`, and gives a change the keys `"primary|orders|insert"`,
-`"primary|orders|*"`, `"primary|*|insert"` and `"primary|*|*"`: four lookups, whatever the number of
-observers. Keys suit sources whose observers each get a slice of many calls.
-
-`isObserved(call)` is true when an observer is filed under one of the call's keys: one hash lookup
-per key. A source uses it to skip building an event that no observer gets. On a function without
-keys, the call is ignored.
-
-### Deliver calls yourself
-
-`onObservationDeliver` carries out a call's observations: it hands the call to its observers and
-returns their answer to the caller. It is for a function whose observers' answers matter, or whose
-calls each go to one observer. The hook receives the call and the observers that matched it (by
-`onObservationMatch`, or every active observer), as a snapshot taken when the call started. What it
-returns (or throws) is what the caller gets back; iii delivers nothing for that function. The hook
-runs inside the function's invocation, so calls it makes have that invocation as their caller.
-
-The hook applies each observer's `on` and filters with `obs.matches(call)` and runs its target with
-a [call through the observer](#call-through-an-observer). With both hooks set, the deliver hook
-receives only the observers the match hook matched. The queue worker's `queue::on-message` files
-each message under its subscriber's key, so its deliver hook receives that one observer.
-
-<Note>
-  An observer's args and the call settle the choice in
-  [`onObservationMatch`](#match-observers-to-calls). Choose in `onObservationDeliver` when the
-  choice compares observers with each other, or when making it produces part of the payload.
-</Note>
-
 ### Call through an observer
 
 A call that names an observer runs that observer's target and resolves to the target's result:
@@ -1534,8 +1357,8 @@ reaches an active observer, since the engine handles a connection's messages in 
 the observer's target is registered: an observer whose target is not registered yet stays `pending`,
 and the call fails with `OBSERVER_NOT_ACTIVE`. The observer becomes active after its
 `onObserverAdded` returns, so the hook starts a task that waits for `accepted()` and then makes the
-call. `accepted()` fails for an observer rejected first, such as one whose match key function
-throws, and the task then sends nothing.
+call. `accepted()` fails for an observer rejected first, such as one whose `onObserverAdded` throws,
+and the task then sends nothing.
 
 The target receives the payload as given, with the observer's registration metadata. Send what your
 function's targets expect.
