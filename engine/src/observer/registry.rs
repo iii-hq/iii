@@ -2273,12 +2273,10 @@ mod tests {
         let engine = engine_with_functions();
         let registry = engine.observers.clone();
         let entry = |function: &str| {
-            registry
-                .routed
-                .load()
-                .get(&("default", function) as &dyn FunctionKey)
-                .cloned()
+            let key = &("default", function) as &dyn FunctionKey;
+            registry.routed.load(key).get(key).cloned()
         };
+        let src = &("default", "test::src") as &dyn FunctionKey;
         let (first, _first_socket) = test_support::worker(&engine);
         test_support::observe_request(
             &engine,
@@ -2287,11 +2285,11 @@ mod tests {
         )
         .await;
         let held = entry("test::src").expect("in the view");
-        let view = registry.routed.load_full();
+        let view = registry.routed.load_full(src);
 
         registry.connection_closed(first.id, first.reattach_token);
         assert!(
-            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            Arc::ptr_eq(&registry.routed.load_full(src), &view),
             "not copied"
         );
         assert!(!registry.is_observed("default", "test::src"));
@@ -2312,7 +2310,7 @@ mod tests {
         );
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
         assert!(
-            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            Arc::ptr_eq(&registry.routed.load_full(src), &view),
             "not copied"
         );
         assert!(Arc::ptr_eq(&entry("test::src").unwrap(), &held));
@@ -2326,9 +2324,20 @@ mod tests {
             test_support::request("back", "test::dst", "test::src", None),
         )
         .await;
-        assert!(entry("test::src").is_none(), "left out of the copy");
+        // A copy of its shard leaves it out; another shard's copy leaves it
+        // as it is, found by nobody.
+        let dst = &("default", "test::dst") as &dyn FunctionKey;
+        if super::super::owner::RoutedShards::shard_index(src)
+            == super::super::owner::RoutedShards::shard_index(dst)
+        {
+            assert!(entry("test::src").is_none(), "left out of the copy");
+            assert_eq!(registry.routed.len(), 1);
+        } else {
+            assert!(entry("test::src").is_some_and(|held| !held.is_live()));
+            assert_eq!(registry.routed.len(), 2);
+        }
+        assert!(!registry.is_observed("default", "test::src"));
         assert!(registry.is_observed("default", "test::dst"));
-        assert_eq!(registry.routed.load().len(), 1);
         assert_eq!(registry.routed_live.load(Ordering::Acquire), 1);
     }
 

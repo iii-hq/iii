@@ -22,7 +22,7 @@
 
 use std::{
     borrow::Borrow,
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     hash::{Hash, Hasher},
     sync::{
         Arc,
@@ -31,6 +31,7 @@ use std::{
     time::Duration,
 };
 
+use arc_swap::ArcSwap;
 use iii_filter::FilterIndex;
 use serde_json::Value;
 use uuid::Uuid;
@@ -262,6 +263,105 @@ impl FunctionEntry {
 /// [`ObserverRegistry::route`]).
 pub(crate) type RoutedView = HashMap<RoutedKey, Arc<Routed>>;
 
+/// Shards the routed view is split into (a power of two): a change copies
+/// its function's shard, about `1 / ROUTED_SHARDS` of the view, not the
+/// whole view.
+const ROUTED_SHARDS: usize = 256;
+const _: () = assert!(ROUTED_SHARDS.is_power_of_two());
+
+/// The routed hook's view, in [`ROUTED_SHARDS`] shards by function. A reader
+/// loads its function's shard (one atomic load) and looks the function up
+/// there. A change replaces the shard with a changed copy, so a function
+/// joining or leaving the view costs a copy of its shard, whatever the
+/// number of functions the other shards route.
+pub(crate) struct RoutedShards {
+    shards: Box<[ArcSwap<RoutedView>]>,
+}
+
+impl RoutedShards {
+    pub(crate) fn new() -> Self {
+        Self {
+            shards: (0..ROUTED_SHARDS)
+                .map(|_| ArcSwap::from_pointee(RoutedView::new()))
+                .collect(),
+        }
+    }
+
+    /// The shard `key` falls in, by a fast unkeyed hash of its parts
+    /// (FxHash's mixing, eight bytes at a time): every call that reaches the
+    /// view pays it. It only spreads functions over shards; a shard keys them
+    /// with its map's own keyed hasher, so ids crafted to share a shard cost
+    /// a bigger shard to copy, never slower lookups.
+    #[inline]
+    pub(crate) fn shard_index(key: &dyn FunctionKey) -> usize {
+        const SEED: u64 = 0x51_7c_c1_b7_27_22_0a_95;
+        #[inline]
+        fn mix(hash: u64, word: u64) -> u64 {
+            (hash.rotate_left(5) ^ word).wrapping_mul(SEED)
+        }
+        #[inline]
+        fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
+            let mut chunks = bytes.chunks_exact(8);
+            for chunk in &mut chunks {
+                let mut word = [0u8; 8];
+                word.copy_from_slice(chunk);
+                hash = mix(hash, u64::from_le_bytes(word));
+            }
+            let rest = chunks.remainder();
+            let mut word = [0u8; 8];
+            word[..rest.len()].copy_from_slice(rest);
+            // The length keeps ("ab", "c") apart from ("a", "bc").
+            mix(mix(hash, u64::from_le_bytes(word)), bytes.len() as u64)
+        }
+        let (namespace, function_id) = key.parts();
+        let hash = fold(fold(0, namespace.as_bytes()), function_id.as_bytes());
+        // The top bits: a multiplicative hash mixes them best.
+        (hash >> (u64::BITS - ROUTED_SHARDS.trailing_zeros())) as usize
+    }
+
+    /// `key`'s shard as it is now.
+    #[inline]
+    pub(crate) fn load(&self, key: &dyn FunctionKey) -> arc_swap::Guard<Arc<RoutedView>> {
+        self.shards[Self::shard_index(key)].load()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn load_full(&self, key: &dyn FunctionKey) -> Arc<RoutedView> {
+        self.shards[Self::shard_index(key)].load_full()
+    }
+
+    /// Replaces `key`'s shard with `shard`. Called under `rebuild`.
+    fn store(&self, key: &dyn FunctionKey, shard: RoutedView) {
+        self.shards[Self::shard_index(key)].store(Arc::new(shard));
+    }
+
+    /// The functions the view holds, found or not, in every shard.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.shards.iter().map(|shard| shard.load().len()).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The functions the routed hook finds, in every shard.
+    #[cfg(debug_assertions)]
+    fn live(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|shard| {
+                shard
+                    .load()
+                    .values()
+                    .filter(|routed| routed.is_live())
+                    .count()
+            })
+            .sum()
+    }
+}
+
 /// A function's `(namespace, function_id)` in the routed view, shared, so a
 /// copy of the view copies no names. Looked up by `&dyn FunctionKey`, as a
 /// `FnKey` is.
@@ -322,7 +422,7 @@ impl Routed {
     /// view when its last active observer leaves, found by nobody, so the
     /// view is not copied for that, and the function's next active observer
     /// takes the same entry.
-    fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         matches!(self.callers, Callers::Host(_)) || self.active.is_some()
     }
 }
@@ -763,7 +863,7 @@ impl ObserverRegistry {
             Callers::Anyone
         };
         let _serialized = self.rebuild.write();
-        let current = self.routed.load();
+        let current = self.routed.load(routed_key(key));
         let routed = current.get(routed_key(key));
         if routed.map(|routed| routed.callers) == Some(callers) {
             return;
@@ -775,9 +875,9 @@ impl ObserverRegistry {
     /// Stores `key`'s view for the routed hook: kept while the function has
     /// active observers or a host only it may be called by, dropped
     /// otherwise. A function that stays in the view with the same callers
-    /// gets its new active set in place; the view itself is copied only when
-    /// a function joins or leaves it, or its callers change. Called under
-    /// `rebuild`.
+    /// gets its new active set in place; its shard of the view (`current`)
+    /// is copied only when a function joins or leaves it, or its callers
+    /// change. Called under `rebuild`.
     fn store_routed(
         &self,
         current: &RoutedView,
@@ -802,10 +902,8 @@ impl ObserverRegistry {
         }
         let was_live = held.is_some_and(|held| held.is_live());
         let mut next: RoutedView = HashMap::clone(current);
-        // The functions nobody finds go with the copy.
-        if current.len() > self.routed_live.load(Ordering::Relaxed) {
-            next.retain(|_, routed| routed.is_live());
-        }
+        // The shard's functions nobody finds go with the copy.
+        next.retain(|_, routed| routed.is_live());
         if kept {
             let routed = Routed::new(active, callers);
             match next.get_mut(routed_key(key)) {
@@ -817,7 +915,7 @@ impl ObserverRegistry {
         } else {
             next.remove(routed_key(key));
         }
-        self.routed.store(Arc::new(next));
+        self.routed.store(routed_key(key), next);
         self.count_live(was_live, kept);
     }
 
@@ -835,8 +933,7 @@ impl ObserverRegistry {
         }
         #[cfg(debug_assertions)]
         {
-            let view = self.routed.load();
-            let live = view.values().filter(|routed| routed.is_live()).count();
+            let live = self.routed.live();
             debug_assert_eq!(
                 live,
                 self.routed_live.load(Ordering::Relaxed),
@@ -873,9 +970,9 @@ impl ObserverRegistry {
         if self.routed_live.load(Ordering::Acquire) == 0 {
             return Ok(None);
         }
-        let view = self.routed.load();
-        let Some(routed) = view.get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
-        else {
+        let key = &(namespace, function_id) as &dyn FunctionKey;
+        let view = self.routed.load(key);
+        let Some(routed) = view.get(key) else {
             return Ok(None);
         };
         match routed.callers {
@@ -892,11 +989,12 @@ impl ObserverRegistry {
     /// otherwise one hash lookup more.
     #[inline]
     pub fn hosts_privately(&self, namespace: &str, function_id: &str, connection: Uuid) -> bool {
+        let key = &(namespace, function_id) as &dyn FunctionKey;
         self.routed_live.load(Ordering::Acquire) != 0
             && self
                 .routed
-                .load()
-                .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+                .load(key)
+                .get(key)
                 .is_some_and(|routed| routed.callers == Callers::Host(connection))
     }
 
@@ -1114,11 +1212,12 @@ impl ObserverRegistry {
         let _serialized = self.rebuild.write();
         let key = &observer.function;
         if cfg!(debug_assertions) {
-            let held = Self::active_in(&self.routed.load(), key).is_some_and(|set| {
-                set.observers
-                    .get(seq)
-                    .is_some_and(|held| Arc::ptr_eq(held, observer))
-            });
+            let held =
+                Self::active_in(&self.routed.load(routed_key(key)), key).is_some_and(|set| {
+                    set.observers
+                        .get(seq)
+                        .is_some_and(|held| Arc::ptr_eq(held, observer))
+                });
             debug_assert_eq!(
                 held,
                 observer.in_active_set(),
@@ -1130,7 +1229,7 @@ impl ObserverRegistry {
         if wanted == observer.in_active_set() {
             return;
         }
-        let current = self.routed.load();
+        let current = self.routed.load(routed_key(key));
         let routed = current.get(routed_key(key));
         let next = match routed.and_then(|routed| routed.active.load_full()) {
             Some(set) if wanted => set.with(observer),
@@ -1155,8 +1254,10 @@ impl ObserverRegistry {
             return;
         }
         let _serialized = self.rebuild.write();
-        // What changes, by function, in the order given.
+        // What changes, by function, in the order given; `at` finds each
+        // function's changes.
         let mut changes: Vec<(&FnKey, Vec<Change<'_>>)> = Vec::new();
+        let mut at: HashMap<&FnKey, usize> = HashMap::new();
         for observer in observers {
             if observer.seq().is_none() {
                 continue;
@@ -1165,16 +1266,24 @@ impl ObserverRegistry {
             if wanted == observer.in_active_set() {
                 continue;
             }
-            match changes
-                .iter_mut()
-                .find(|(key, _)| **key == observer.function)
+            // Consecutive observers of one function (a worker's, often) join
+            // its changes without a lookup.
+            if let Some((key, changing)) = changes.last_mut()
+                && **key == observer.function
             {
-                Some((_, changing)) => changing.push((observer, wanted)),
-                None => changes.push((&observer.function, vec![(observer, wanted)])),
+                changing.push((observer, wanted));
+                continue;
+            }
+            match at.entry(&observer.function) {
+                Entry::Occupied(slot) => changes[*slot.get()].1.push((observer, wanted)),
+                Entry::Vacant(slot) => {
+                    slot.insert(changes.len());
+                    changes.push((&observer.function, vec![(observer, wanted)]));
+                }
             }
         }
         for (key, changing) in changes {
-            let current = self.routed.load();
+            let current = self.routed.load(routed_key(key));
             let routed = current.get(routed_key(key));
             let set = routed.and_then(|routed| routed.active.load_full());
             let len = set.as_ref().map_or(0, |set| set.observers.len());
@@ -1277,7 +1386,7 @@ impl ObserverRegistry {
             .as_ref()
             .map(|entry| entry.observers())
             .unwrap_or_default();
-        let current = self.routed.load();
+        let current = self.routed.load(routed_key(key));
         let held = Self::active_in(&current, key);
         if members.is_empty() && held.is_none() {
             return;
@@ -1669,14 +1778,22 @@ impl ObserverRegistry {
     /// disposed with nothing more sent to the owner. Each function's owner
     /// sync is taken once for all of its observers among them.
     pub(crate) fn withdraw_all_while_away(self: &Arc<Self>, observers: &[Arc<Observer>]) {
+        // By function, in the order given; `at` finds each function's.
         let mut by_function: Vec<(&FnKey, Vec<&Arc<Observer>>)> = Vec::new();
+        let mut at: HashMap<&FnKey, usize> = HashMap::new();
         for observer in observers {
-            match by_function
-                .iter_mut()
-                .find(|(key, _)| **key == observer.function)
+            if let Some((key, withdrawn)) = by_function.last_mut()
+                && **key == observer.function
             {
-                Some((_, withdrawn)) => withdrawn.push(observer),
-                None => by_function.push((&observer.function, vec![observer])),
+                withdrawn.push(observer);
+                continue;
+            }
+            match at.entry(&observer.function) {
+                Entry::Occupied(slot) => by_function[*slot.get()].1.push(observer),
+                Entry::Vacant(slot) => {
+                    slot.insert(by_function.len());
+                    by_function.push((&observer.function, vec![observer]));
+                }
             }
         }
         for (key, withdrawn) in by_function {
@@ -2158,7 +2275,7 @@ mod tests {
 
         registry.on_function_change(FunctionChange::Unregistered, &namespace, &function_id);
         assert!(registry.route(&namespace, &function_id, None).is_ok());
-        assert!(registry.routed.load().is_empty(), "out of the routed view");
+        assert!(registry.routed.is_empty(), "out of the routed view");
         assert_eq!(
             registry.options(&namespace, &function_id),
             FunctionOptions::default()
@@ -2182,7 +2299,7 @@ mod tests {
         register_configuration_event_source(&engine);
         register_observability_event_sources(&engine);
         register_stream_event_sources(&engine);
-        assert!(engine.observers.routed.load().is_empty());
+        assert!(engine.observers.routed.is_empty());
         assert!(matches!(
             engine
                 .observers
@@ -2847,5 +2964,29 @@ mod tests {
             registry.keep_revision(&("ns".to_string(), format!("f{n}")), 1);
         }
         assert!(registry.revisions.len() <= MAX_KEPT_REVISIONS);
+    }
+
+    /// Function ids that differ only in a counter spread over the routed
+    /// view's shards, and a key's shard does not depend on its type.
+    #[test]
+    fn function_ids_spread_over_the_routed_shards() {
+        let mut counts = vec![0usize; ROUTED_SHARDS];
+        let n = 64 * ROUTED_SHARDS;
+        for i in 0..n {
+            let key: FnKey = ("default".to_string(), format!("orders::step-{i}"));
+            let index = RoutedShards::shard_index(&key);
+            assert_eq!(
+                index,
+                RoutedShards::shard_index(&("default", key.1.as_str()) as &dyn FunctionKey)
+            );
+            counts[index] += 1;
+        }
+        let (min, max) = (*counts.iter().min().unwrap(), *counts.iter().max().unwrap());
+        // 64 per shard on average.
+        assert!(min >= 32 && max <= 128, "from {min} to {max} per shard");
+        assert_ne!(
+            RoutedShards::shard_index(&("ab", "c") as &dyn FunctionKey),
+            RoutedShards::shard_index(&("a", "bc") as &dyn FunctionKey)
+        );
     }
 }

@@ -586,9 +586,10 @@ impl ObserverRegistry {
         if self.routed_live.load(Ordering::Acquire) == 0 {
             return None;
         }
+        let key = &(namespace, function_id) as &dyn crate::function::FunctionKey;
         self.routed
-            .load()
-            .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+            .load(key)
+            .get(key)
             .and_then(|routed| routed.active.load_full())
     }
 
@@ -596,11 +597,12 @@ impl ObserverRegistry {
     /// event source checks before building an event.
     #[inline]
     pub fn is_observed(&self, namespace: &str, function_id: &str) -> bool {
+        let key = &(namespace, function_id) as &dyn crate::function::FunctionKey;
         self.routed_live.load(Ordering::Acquire) != 0
             && self
                 .routed
-                .load()
-                .get(&(namespace, function_id) as &dyn crate::function::FunctionKey)
+                .load(key)
+                .get(key)
                 .is_some_and(|routed| routed.active.is_some())
     }
 

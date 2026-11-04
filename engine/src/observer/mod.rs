@@ -34,7 +34,7 @@ mod persistent;
 mod registry;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     hash::{BuildHasherDefault, Hash, Hasher},
     sync::{
         Arc, Mutex, OnceLock, Weak,
@@ -267,16 +267,16 @@ pub struct ObserverRegistry {
     /// with active observers and private functions a connection hosts, each
     /// with its active set, and the functions anyone may call whose last
     /// active observer left since the view was last copied (see
-    /// `routed_live`). An invocation reads it with one atomic load, and
-    /// clones the set of a function it holds under that set's read lock. A
-    /// function's set is replaced in place; the view is copied
-    /// (copy-on-write) only when a function joins or leaves it, or who may
-    /// call a function changes.
-    routed: ArcSwap<owner::RoutedView>,
+    /// `routed_live`). An invocation reads its function's shard with one
+    /// atomic load, and clones the set of a function it holds under that
+    /// set's read lock. A function's set is replaced in place; its shard is
+    /// copied (copy-on-write) only when a function joins or leaves it, or
+    /// who may call a function changes.
+    routed: owner::RoutedShards,
     /// The functions of `routed` the routed hook finds: with active
     /// observers, or with a host only it may call them. A function whose
     /// last active observer left stays in the view, found by nobody, until
-    /// the view is next copied. Changed with `routed`, under `rebuild`.
+    /// its shard is next copied. Changed with `routed`, under `rebuild`.
     routed_live: AtomicUsize,
     /// Serializes rebuilds of `routed`.
     rebuild: lifecycle::Lock<()>,
@@ -362,7 +362,7 @@ impl ObserverRegistry {
             by_connection: ByConnection::default(),
             by_function: DashMap::new(),
             by_target: DashMap::new(),
-            routed: ArcSwap::from_pointee(HashMap::new()),
+            routed: owner::RoutedShards::new(),
             routed_live: AtomicUsize::new(0),
             rebuild: lifecycle::Lock::new(()),
             observers_changed_watched: std::sync::atomic::AtomicBool::new(false),
