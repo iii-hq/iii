@@ -1514,7 +1514,11 @@ impl Daemon {
         let yaml_changed = yaml_changed || adapter.is_some();
         let topology_changed = runtime_topology_changed(&compose, &current);
         for (root, nodes) in resolved_graphs {
-            prepared.replace_graph(&root, nodes);
+            // Updating a generated adapter asks for a version, not for the adapter: a graph root
+            // would keep it after the last VM.
+            if !(generated.contains(&root) && generated_adapter.as_ref() == Some(&root)) {
+                prepared.replace_graph(&root, nodes);
+            }
         }
         let package_changed = selected_versions
             .keys()
@@ -4484,6 +4488,66 @@ containers:
             }),
         )
         .await;
+    }
+
+    /// An update that names a generated adapter, as a refusal of `iii sandbox
+    /// run` advises, asks for a version and not for the adapter.
+    #[tokio::test]
+    async fn an_update_by_name_leaves_a_generated_adapter_generated() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let bound = std::time::Duration::from_secs(10);
+        // An empty `containers:` is not a project, so one container that is no VM.
+        let (dir, path) = vm_project(
+            "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("update-by-name-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        // Each edit is on disk long before its start gives up on the engine that
+        // is not listening.
+        let registry = &crate::registry::TEST_REGISTRY;
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.add(Some(&path), &["./vm".to_string()], "add".into()),
+            ),
+        )
+        .await;
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.update(
+                    Some(&path),
+                    &["sandbox-libkrun@latest".to_string()],
+                    "update".into(),
+                ),
+            ),
+        )
+        .await;
+        assert!(
+            !crate::lockfile::graphs(&path)
+                .unwrap()
+                .contains_key("sandbox-libkrun"),
+            "the update made the adapter a root"
+        );
+
+        let _ = tokio::time::timeout(
+            bound,
+            registry.scope(
+                server.uri(),
+                daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+            ),
+        )
+        .await;
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("sandbox-libkrun:"), "{text}");
+        daemon.shutdown().await;
     }
 
     #[test]

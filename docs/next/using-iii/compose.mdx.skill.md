@@ -809,10 +809,18 @@ directory, prints the guest's output as its own, stops the VM when it is asked t
 with the VM's code. Listing the adapter is what grants access: the container gets a token that opens
 only its own VM, never the project's token, and its directory becomes one the adapter may mount. The
 guest receives the container's `environment` and `env_file` variables and the reserved `III_*`
-variables, not the host's environment. Removing the container still removes the VM's state.
+variables, not the host's environment. Compose pulls the VM's image before it starts the command, so
+the pull does not count against `startup_timeout`. Removing the container still removes the VM's
+state.
+
+A VM gets a copy of its worker's directory, and Compose's state beside the compose file holds the
+project's token. So a VM worker whose directory contains the compose file, such as `path://.`, can
+read that token. Keep the compose file outside the worker's directory, or set `III_COMPOSE_STATE_DIR`
+to move the state.
 
 The adapter must support sandbox contract 1.2. `iii sandbox run` exits with code 125 and names what
-is missing otherwise, and `iii call compose::update worker=sandbox-libkrun@latest` moves the adapter.
+is missing otherwise. `iii call compose::update worker=<container key>@latest` moves a `package://`
+adapter to its newest release, and the version staying put means no release supports it yet.
 A `package://` worker cannot opt in yet: `scripts.run` on one fails with
 `RUN_NOT_ALLOWED_FOR_PACKAGE`, so a bundle keeps running in the VM Compose boots for it.
 

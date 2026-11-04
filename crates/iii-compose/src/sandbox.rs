@@ -283,6 +283,9 @@ pub(crate) async fn adapter_change(
         return Ok(Some(AdapterChange::Upsert(adapter_request(adapter).await?)));
     };
     let container = &file.containers[&key];
+    if !matches!(container.worker, WorkerSource::Package { .. }) {
+        return Ok(None);
+    }
     let graphs = crate::lockfile::graphs(&file.path)?;
     if !crate::daemon::generated_dependencies(text, file, &graphs)?.contains(&key) {
         return Ok(None);
@@ -836,6 +839,23 @@ pub(crate) fn check_info(
     Ok(())
 }
 
+/// An adapter before contract 1.2 registers `worker::*` observable, so a worker observing them reads
+/// the project token Compose sends on every call.
+// shortcut: warns and goes on, because refusing would stop every project on such an adapter; refuse
+// once a contract 1.2 release has been out long enough to ask that of them.
+fn observable_token_warning(info: &AdapterInfo, adapter: &str) -> Option<String> {
+    let ContractVersion { major, minor } = info.contract;
+    (minor < 2).then(|| {
+        format!(
+            "{adapter} {} implements sandbox contract {major}.{minor}: a worker observing its \
+             worker::* functions can read this project's sandbox token, and use it to stop or \
+             destroy any of its VMs. Sandbox contract 1.2 closes this: move to a release that \
+             implements it",
+            info.adapter_version
+        )
+    })
+}
+
 /// `worker::start` for VM container `key` (spec 5.4, 7.4).
 pub(crate) fn start_request(
     token: &str,
@@ -886,30 +906,17 @@ pub(crate) fn start_request(
     })
 }
 
-/// Boots VM container `key` through this project's adapter, in the project
-/// namespace: `adapter::info` and its checks, `worker::prepare`, then
-/// `worker::start`. An S502 from the start names a live boot of the same
-/// state, which is stopped before the one retry.
-pub(crate) async fn start_vm(
+/// `adapter::info` and its checks, then `worker::prepare`, with its own budget for an image pull.
+/// Resolves to the `worker::start` that comes next.
+async fn prepare_vm(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     start: &StartSpec,
     env: BTreeMap<String, String>,
-) -> Result<RemoteVm> {
-    let container = ctx
-        .file
-        .containers
-        .get(key)
-        .ok_or_else(|| ComposeError::UnknownContainer {
-            container: key.to_string(),
-        })?;
+) -> Result<WorkerStartRequest> {
     let adapter = adapter_name(ctx.file);
     let declared = adapter_key(ctx.file, adapter)?.unwrap_or_else(|| adapter.to_string());
     let (engine, namespace) = (ctx.engine, ctx.project_namespace);
-    let failed = |error: iii_sdk::Error| ComposeError::SpawnFailed {
-        container: key.to_string(),
-        message: spawn_failed_message(&error),
-    };
 
     let info = start_call::<AdapterInfo>(
         engine,
@@ -922,8 +929,14 @@ pub(crate) async fn start_vm(
         true,
     )
     .await
-    .map_err(failed)?;
+    .map_err(|error| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: spawn_failed_message(&error),
+    })?;
     check_info(&info, adapter, &declared, key)?;
+    if let Some(warning) = observable_token_warning(&info, adapter) {
+        crate::report::daemon_line(&warning, true);
+    }
 
     let request = start_request(
         ctx.sandbox_token,
@@ -950,6 +963,52 @@ pub(crate) async fn start_vm(
     )
     .await
     .map_err(|error| prepare_failed(ctx.file, key, &declared, start, &error))?;
+    Ok(request)
+}
+
+/// [`prepare_vm`] for container `key` that [`runs_own_vm`], before its process starts: the process
+/// then finds the image in place. Its `scripts.run` stands in for a start command, which the
+/// manifest of such a container need not have.
+pub(crate) async fn prepare_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> Result<()> {
+    let Some((worker_dir, run)) = ctx
+        .file
+        .containers
+        .get(key)
+        .and_then(|container| Some((container.worker_dir()?, container.scripts.run.clone())))
+    else {
+        return Ok(());
+    };
+    let start = StartSpec::Vm(VmSpec::Local {
+        worker_dir: worker_dir.to_path_buf(),
+        run_override: run,
+    });
+    prepare_vm(ctx, key, &start, BTreeMap::new()).await?;
+    Ok(())
+}
+
+/// Boots VM container `key` through this project's adapter, in the project
+/// namespace: [`prepare_vm`], then `worker::start`. An S502 from the start names
+/// a live boot of the same state, which is stopped before the one retry.
+pub(crate) async fn start_vm(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    start: &StartSpec,
+    env: BTreeMap<String, String>,
+) -> Result<RemoteVm> {
+    let container = ctx
+        .file
+        .containers
+        .get(key)
+        .ok_or_else(|| ComposeError::UnknownContainer {
+            container: key.to_string(),
+        })?;
+    let adapter = adapter_name(ctx.file);
+    let (engine, namespace) = (ctx.engine, ctx.project_namespace);
+    let failed = |error: iii_sdk::Error| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: spawn_failed_message(&error),
+    };
+    let request = prepare_vm(ctx, key, start, env).await?;
 
     let started = match worker_start(
         engine,
@@ -1006,8 +1065,9 @@ fn prepare_failed(
     {
         message.push_str(&format!(
             ". If {} was added after the adapter started, restart the adapter, which \
-             restarts every VM worker and ends every sandbox: iii call compose::restart \
-             worker={adapter_key}",
+             restarts the VM workers it was running and ends every sandbox: iii call \
+             compose::restart worker={adapter_key}. It leaves this worker stopped, so then \
+             start it with: iii call compose::up",
             dir.display()
         ));
     }
@@ -1891,6 +1951,12 @@ pub(crate) mod tests {
             change(format!("{checkout}{app}"), true).await.unwrap(),
             None
         );
+        // Nothing to edit, so the text is not read: this header has no plain `containers:` line.
+        let commented = "containers:  # workers\n  sandbox-libkrun: {worker: path://./dev}\n";
+        assert_eq!(
+            change(format!("{commented}{app}"), true).await.unwrap(),
+            None
+        );
 
         // Keyed like the adapter but another worker: refused, never rewritten.
         manifest(dir, "other", "name: other\n");
@@ -2037,7 +2103,9 @@ pub(crate) mod tests {
         let outside = message(project.join("../shared/vm"));
         assert!(
             outside.contains("restart the adapter")
-                && outside.ends_with("compose::restart worker=sb"),
+                && outside.contains("the VM workers it was running")
+                && outside.contains("compose::restart worker=sb")
+                && outside.ends_with("iii call compose::up"),
             "{outside}"
         );
         assert!(!message(project.join("inner")).contains("restart the adapter"));
@@ -2075,6 +2143,23 @@ pub(crate) mod tests {
             started_at_ms: 0,
             ended_at_ms: None,
         }
+    }
+
+    #[test]
+    fn an_adapter_before_contract_1_2_is_named_as_showing_the_token_to_observers() {
+        let info = |minor| AdapterInfo {
+            adapter: "sandbox-libkrun".into(),
+            adapter_version: "0.3.0".into(),
+            contract: ContractVersion { major: 1, minor },
+            features: Vec::new(),
+        };
+        let warning = observable_token_warning(&info(1), "sandbox-libkrun").unwrap();
+        assert!(
+            warning.starts_with("sandbox-libkrun 0.3.0 implements sandbox contract 1.1"),
+            "{warning}"
+        );
+        assert!(warning.contains("observing"), "{warning}");
+        assert_eq!(observable_token_warning(&info(2), "sandbox-libkrun"), None);
     }
 
     #[test]

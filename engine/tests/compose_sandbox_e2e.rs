@@ -707,13 +707,7 @@ fn fake_guest() {
     }
 }
 
-#[test]
-#[serial_test::serial(sandbox_vm)]
-fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
-    let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{run: iii sandbox run}}\n",
-    ));
-    let root = project.dir.path().to_path_buf();
+fn write_fake_adapter_and_guests(root: &std::path::Path, guests: &[&str]) {
     std::fs::create_dir(root.join("adapter")).unwrap();
     std::fs::write(
         root.join("adapter/iii.worker.yaml"),
@@ -723,12 +717,42 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
         ),
     )
     .unwrap();
-    std::fs::create_dir(root.join("app")).unwrap();
-    std::fs::write(
-        root.join("app/iii.worker.yaml"),
-        "runtime: {base_image: python}\nscripts: {start: run}\n",
-    )
-    .unwrap();
+    for guest in guests {
+        std::fs::create_dir(root.join(guest)).unwrap();
+        std::fs::write(
+            root.join(guest).join("iii.worker.yaml"),
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        )
+        .unwrap();
+    }
+}
+
+/// Every `iii sandbox run` holds its own engine connection, so one does not keep
+/// another from registering.
+#[test]
+#[serial_test::serial(sandbox_vm)]
+fn two_path_workers_each_run_their_own_vm() {
+    let mut project = Project::declaring(&format!(
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n  app2:\n    worker: path://./app2\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n",
+    ));
+    write_fake_adapter_and_guests(project.dir.path(), &["app", "app2"]);
+
+    project.start();
+    project.wait_ready("sandbox-libkrun", SHORT);
+    project.wait_ready("app", SHORT);
+    project.wait_ready("app2", SHORT);
+
+    project.shutdown();
+}
+
+#[test]
+#[serial_test::serial(sandbox_vm)]
+fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
+    let mut project = Project::declaring(&format!(
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{run: iii sandbox run}}\n",
+    ));
+    let root = project.dir.path().to_path_buf();
+    write_fake_adapter_and_guests(&root, &["app"]);
     let calls = |function: &str| -> Vec<Value> {
         std::fs::read_to_string(root.join("adapter").join(FAKE_ADAPTER_CALLS))
             .unwrap_or_default()
@@ -748,11 +772,13 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     let request = &started[0]["request"];
     assert_eq!(request["worker_name"], "app");
     assert_eq!(request["source"]["kind"], "local");
-    assert_eq!(calls("worker::prepare")[0]["token"], "scoped");
-    assert_eq!(
-        calls("worker::prepare")[0]["request"]["state_key"],
-        request["state_key"]
-    );
+    // Compose pulls the image with its own token before the command starts, so
+    // the pull stays out of the startup timeout. The command's call finds it there.
+    let prepared = calls("worker::prepare");
+    assert_eq!(prepared.len(), 2, "{prepared:?}");
+    assert_eq!(prepared[0]["token"], "project");
+    assert_eq!(prepared[1]["token"], "scoped");
+    assert_eq!(prepared[1]["request"]["state_key"], request["state_key"]);
     let env = request["env"].as_object().unwrap();
     assert_eq!(env["APP_VAR"], "hello");
     assert_eq!(env["III_NAMESPACE"], NAMESPACE);

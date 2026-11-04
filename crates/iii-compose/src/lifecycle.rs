@@ -509,7 +509,8 @@ fn record_start_failure(
 ///
 /// The VMs of a sandbox adapter leave no such choice: they end with it. So an
 /// operator's restart of the adapter goes on to them, in
-/// [`Project::restart_one`](crate::project::Project::restart_one).
+/// [`Project::restart_one`](crate::project::Project::restart_one), and so does
+/// an edit's, in [`Project::reconcile_file`](crate::project::Project::reconcile_file).
 pub async fn restart_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -1246,6 +1247,17 @@ async fn start_one_until_shutdown(
     let plan = spawn_plan(&spawn_ctx);
     let child = match plan.command() {
         Some(command) => {
+            // Its image pull stays out of the startup timeout, which starts with the process, as
+            // it does for a VM booted below.
+            if crate::sandbox::runs_own_vm(ctx.file, key) {
+                report::starting(key, "preparing VM runtime");
+                if let Some(operation) = operation_id.and_then(crate::operation::active) {
+                    operation
+                        .emit(Some(key), "preparing", "preparing VM runtime")
+                        .await;
+                }
+                wait_or_interrupt!(crate::sandbox::prepare_own_vm(ctx, key))?;
+            }
             if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
                 return Err(StartFailure::Interrupted);
             }
@@ -1393,6 +1405,18 @@ async fn stop_one(
     }
 
     true
+}
+
+/// Stops `key` for the `up` that follows to start it again. That `up` refuses a name the engine
+/// still holds, and is the one to report it if the wait here runs out.
+pub(crate) async fn stop_for_up(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+) {
+    stop_one(ctx, children, records, key).await;
+    let _ = await_name_release(ctx, key).await;
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.

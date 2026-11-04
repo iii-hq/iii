@@ -150,9 +150,10 @@ starts. A declared worker outside the compose directory, such as `path://../shar
 
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
 directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
-and the adapter's S501, which names the roots and links its entry. The error ends with the command
-that restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which restarts every
-VM worker and ends every sandbox. Run it, or move the worker under the compose directory.
+and the adapter's S501, which names the roots and links its entry. The error names the command that
+restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which restarts each VM
+worker it was running and ends every sandbox. The worker that failed was not running, so start it
+afterwards with `iii call compose::up`. Or move the worker under the compose directory.
 
 ## Supported hosts
 

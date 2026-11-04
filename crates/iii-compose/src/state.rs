@@ -156,6 +156,8 @@ pub struct DaemonState {
     /// 0600 file so a restarted daemon hands the same value to an adopted
     /// adapter, and given to the adapter container only. `None` in state
     /// written before it existed.
+    // shortcut: a VM whose worker directory contains this file gets a copy, since the adapter syncs
+    // the whole directory; drop this once the released adapter excludes `.iii` from that sync.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_token: Option<String>,
 }

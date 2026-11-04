@@ -85,8 +85,9 @@ const NEVER_FORWARDED: [&str; 11] = [
 /// stops once this command is gone, and a reattach that does not replay the log.
 const REQUIRED_FEATURES: [&str; 3] = [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
 
-/// The connection's own name: never the container's, which belongs to the guest.
-const CLIENT_NAME: &str = "iii-sandbox";
+/// The connection's own name: never the container's, which belongs to the guest. A CLI command's
+/// marked name, because the engine keeps one live worker per plain name and one per container runs.
+const CLIENT_NAME: &str = "iii-cli:sandbox";
 /// How long the adapter may take to register `adapter::info` after it connects.
 const INFO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 /// `worker::prepare` pulls the image: room for a large one.
@@ -569,8 +570,9 @@ fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), String> {
     if !missing.is_empty() {
         return Err(format!(
             "{adapter} {version} does not support {}, which this iii needs from sandbox \
-             contract 1.2; move to a release that has them with: iii call compose::update \
-             worker={adapter}@latest",
+             contract 1.2. A package adapter moves to its newest release with: iii call \
+             compose::update worker=<its container key>@latest; if its version does not change, \
+             no release has them yet",
             missing.join(", ")
         ));
     }
@@ -1106,10 +1108,15 @@ mod tests {
         let error = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
         assert!(error.contains(FEATURE_SCOPED_AUTH), "{error}");
         assert!(error.contains("sandbox contract 1.2"), "{error}");
+        // The adapter's name is not its container key, and only a package can move.
         assert!(
-            error.ends_with("iii call compose::update worker=sandbox-libkrun@latest"),
+            error.contains("A package adapter moves")
+                && error.contains("iii call compose::update worker=<its container key>@latest")
+                && !error.contains("worker=sandbox-libkrun"),
             "{error}"
         );
+        // `latest` may be the version it runs: the advice does not promise a move.
+        assert!(error.contains("no release has them yet"), "{error}");
         adapter.features = REQUIRED_FEATURES.iter().map(|f| f.to_string()).collect();
         assert!(check_adapter(&adapter, "sandbox-libkrun").is_ok());
     }
