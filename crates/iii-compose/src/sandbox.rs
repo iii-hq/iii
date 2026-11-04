@@ -2016,8 +2016,13 @@ pub(crate) mod tests {
             change(format!("{checkout}{app}"), true).await.unwrap(),
             None
         );
-        // Nothing to edit, so the text is not read: this header has no plain `containers:` line.
+        // A comment on the key reads like the bare key.
         let commented = "containers:  # workers\n  sandbox-libkrun: {worker: path://./dev}\n";
+        assert_eq!(
+            change(format!("{commented}{app}"), true).await.unwrap(),
+            None
+        );
+        let commented = pinned.replace("containers:", "containers: # workers");
         assert_eq!(
             change(format!("{commented}{app}"), true).await.unwrap(),
             None

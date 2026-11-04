@@ -373,6 +373,53 @@ async fn add_rejects_an_engine_change_before_editing_the_file() {
     assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
 }
 
+/// The comment on the `containers:` line is the operator's: `compose::add` and
+/// `compose::remove` read that line as the bare key and leave it as it is.
+#[tokio::test]
+async fn add_and_remove_keep_a_comment_on_the_containers_line() {
+    let tmp = project_dir();
+    std::fs::create_dir_all(tmp.path().join("workers/extra")).unwrap();
+    std::fs::write(
+        tmp.path().join("workers/extra/iii.worker.yaml"),
+        "name: extra\nscripts:\n  start: exit 0\n",
+    )
+    .unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    let text = COMPOSE.replace("containers:", "containers: # my workers");
+    std::fs::write(&file, &text).unwrap();
+    let daemon = daemon();
+    // Each edit is on disk long before its start gives up on the engine that is
+    // not listening.
+    let bound = std::time::Duration::from_secs(30);
+
+    let added = tokio::time::timeout(
+        bound,
+        daemon.add(
+            Some(&file),
+            &["./workers/extra".to_string()],
+            "add-under-comment".to_string(),
+        ),
+    )
+    .await;
+    let edited = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        edited.contains("containers: # my workers\n") && edited.contains("extra:"),
+        "{added:?}\n{edited}"
+    );
+
+    let removed = tokio::time::timeout(
+        bound,
+        daemon.remove(
+            Some(&file),
+            &["extra".to_string()],
+            "remove-under-comment".to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{removed:?}");
+    daemon.shutdown().await;
+}
+
 #[tokio::test]
 async fn configured_add_rejects_invalid_batches_without_writing() {
     let tmp = project_dir();

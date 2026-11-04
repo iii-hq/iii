@@ -326,11 +326,18 @@ pub(crate) mod test_support {
     /// Capture WARN+ logs on the current thread until the guard drops. Use a
     /// current-thread runtime for async tests.
     pub(crate) fn capture() -> (tracing::subscriber::DefaultGuard, LogBuffer) {
+        capture_at(tracing::Level::WARN)
+    }
+
+    /// [`capture`], from `level` up.
+    pub(crate) fn capture_at(
+        level: tracing::Level,
+    ) -> (tracing::subscriber::DefaultGuard, LogBuffer) {
         let buffer = LogBuffer::default();
         let writer = buffer.clone();
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
+            .with_max_level(level)
             .with_writer(move || writer.clone())
             .finish();
         (tracing::subscriber::set_default(subscriber), buffer)
