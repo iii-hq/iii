@@ -367,8 +367,6 @@ To observe this function from another worker, see [Observers](../using-iii/obser
         // the tables this worker installed a trigger on, and how many observers want them
         holds: Arc<Mutex<HashMap<String, usize>>>,
     }
-
-    #[async_trait::async_trait]
     impl AddedHook for Capture {
         async fn on_added(&self, obs: Observer) -> Result<(), ObserveRejection> {
             let args: RowChangedArgs = obs.args()?;
@@ -400,8 +398,6 @@ To observe this function from another worker, see [Observers](../using-iii/obser
             Ok(())
         }
     }
-
-    #[async_trait::async_trait]
     impl RemovedHook for Capture {
         async fn on_removed(&self, obs: Observer) {
             let Ok(args) = obs.args::<RowChangedArgs>() else {
