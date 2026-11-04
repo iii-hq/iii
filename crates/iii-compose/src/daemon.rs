@@ -331,7 +331,7 @@ fn stale_graph_members(
 /// was asked for. That worker is a graph root in the lock and belongs to the
 /// operator like a hand-written declaration, so only marked containers that
 /// are not graph roots count as generated.
-fn generated_dependencies(
+pub(crate) fn generated_dependencies(
     text: &str,
     compose: &crate::ComposeFile,
     graphs: &BTreeMap<String, BTreeSet<String>>,
@@ -4413,6 +4413,77 @@ containers:
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
         daemon.shutdown().await;
+    }
+
+    /// Through the lock the real `compose::add`s write: an adapter asked for by
+    /// name, before or after a VM generated it, outlives the last VM, whose
+    /// removal would otherwise destroy its live sandboxes. One only a VM asked
+    /// for goes with it.
+    #[tokio::test]
+    async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let uri = server.uri();
+        // Each edit is on disk long before its start gives up on the engine that
+        // is not listening, so it gets 10s, and the rows run at once.
+        let bound = std::time::Duration::from_secs(10);
+        futures::future::join_all(
+            [
+                (&["iii-sandbox", "./vm"][..], true),
+                (&["./vm", "iii-sandbox"][..], true),
+                (&["./vm"][..], false),
+            ]
+            .map(|(adds, kept)| {
+                let uri = uri.clone();
+                async move {
+                    // An empty `containers:` is not a project, so one container that is no VM.
+                    let (dir, path) = vm_project(
+                        "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+                    );
+                    std::fs::create_dir(dir.path().join("api")).unwrap();
+                    let daemon = Daemon::start(
+                        "ws://127.0.0.1:1/ws".to_string(),
+                        format!("by-name-adapter-{}", uuid::Uuid::new_v4()),
+                        None,
+                        EnginePolicy::External,
+                    );
+                    for worker in adds {
+                        let _ = tokio::time::timeout(
+                            bound,
+                            crate::registry::TEST_REGISTRY.scope(
+                                uri.clone(),
+                                daemon.add(Some(&path), &[worker.to_string()], "add".into()),
+                            ),
+                        )
+                        .await;
+                    }
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(text.contains("sandbox-libkrun:"), "{adds:?}: {text}");
+                    assert!(text.contains("vm:"), "{adds:?}: {text}");
+
+                    let _ = tokio::time::timeout(
+                        bound,
+                        crate::registry::TEST_REGISTRY.scope(
+                            uri.clone(),
+                            daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+                        ),
+                    )
+                    .await;
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    assert!(!text.contains("vm:"), "{adds:?}: {text}");
+                    assert_eq!(text.contains("sandbox-libkrun:"), kept, "{adds:?}: {text}");
+                    // The next removal reads this lock: the root must outlive this one.
+                    assert_eq!(
+                        crate::lockfile::graphs(&path)
+                            .unwrap()
+                            .contains_key("sandbox-libkrun"),
+                        kept,
+                        "{adds:?}"
+                    );
+                    daemon.shutdown().await;
+                }
+            }),
+        )
+        .await;
     }
 
     #[test]

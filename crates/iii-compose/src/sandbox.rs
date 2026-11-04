@@ -228,7 +228,8 @@ pub(crate) enum AdapterChange {
 
 /// Adds the adapter a VM needs, re-resolves (`refresh`) or removes
 /// (`allow_remove`) the one Compose generated. An operator's adapter, of any
-/// key, version or source, is never touched. `file` must be lock-attached.
+/// key, version or source, written by hand or asked for by name, is never
+/// touched. `file` must be lock-attached.
 pub(crate) async fn adapter_change(
     text: &str,
     file: &ComposeFile,
@@ -246,10 +247,8 @@ pub(crate) async fn adapter_change(
         return Ok(Some(AdapterChange::Upsert(adapter_request(adapter).await?)));
     };
     let container = &file.containers[&key];
-    // `compose::add` marks a `path://` request too; only a package is ours.
-    if !matches!(container.worker, WorkerSource::Package { .. })
-        || !edit::is_generated_container(text, &key)?
-    {
+    let graphs = crate::lockfile::graphs(&file.path)?;
+    if !crate::daemon::generated_dependencies(text, file, &graphs)?.contains(&key) {
         return Ok(None);
     }
     if !needed {
@@ -1564,6 +1563,55 @@ pub(crate) mod tests {
         // up, build and add never remove it, so up leaves the file as it is.
         assert_eq!(
             adapter_change(&text, &file, "default", false, false)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    /// `compose::add` marks the worker asked for like one it generated; only the
+    /// lock's graph root tells them apart.
+    #[tokio::test]
+    async fn an_adapter_asked_for_by_name_is_never_refreshed_or_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let server = adapter_registry(b"").await;
+        let request = edit::parse_worker("sandbox-libkrun@0.2.0").unwrap();
+        let edit::Outcome::Added(text) =
+            edit::upsert_container("containers: {}\n", &request).unwrap()
+        else {
+            panic!("the adapter is new");
+        };
+        let mut file = parse(dir, &text);
+        let mut lock = crate::registry::TEST_REGISTRY
+            .scope(
+                server.uri(),
+                crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()),
+            )
+            .await
+            .unwrap();
+        lock.replace_graph(
+            "sandbox-libkrun",
+            BTreeSet::from(["sandbox-libkrun".to_string()]),
+        );
+        lock.write_if_changed().unwrap();
+
+        // The last VM is gone: it stays.
+        assert_eq!(
+            adapter_change(&text, &file, "default", false, true)
+                .await
+                .unwrap(),
+            None
+        );
+        // A VM still needs it: an update leaves it at the operator's 0.2.0.
+        manifest(dir, "local", "runtime: {base_image: python}\n");
+        let with_vm = format!("{text}  local: {{worker: path://./local}}\n");
+        assert_eq!(
+            crate::registry::TEST_REGISTRY
+                .scope(
+                    server.uri(),
+                    adapter_change(&with_vm, &parse(dir, &with_vm), "default", true, true),
+                )
                 .await
                 .unwrap(),
             None
