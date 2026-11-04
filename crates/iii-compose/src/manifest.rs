@@ -334,7 +334,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
 
         resolved.push(ContainerPlan {
             key: key.clone(),
-            start: resolve_start(key, container)?,
+            start: crate::sandbox::resolve_start(file, key, container)?,
             working_dir: crate::spawn::resolve_working_dir(
                 container.working_dir.as_deref(),
                 Some(worker_dir),

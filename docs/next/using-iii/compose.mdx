@@ -441,7 +441,7 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
 The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
 names) moves only to the newest release in the range that implements the engine's sandbox contract
-major (`^0.2` for contract 1).
+major (`^0.3` for contract 1).
 
 ```bash
 iii call compose::update
@@ -793,6 +793,34 @@ A path worker normally runs as a host process. A non-empty `runtime.base_image` 
 `iii.worker.yaml` selects a local VM instead. The worker's `scripts.install` and start command then
 run inside that image, and compose keeps the VM state inside the project. An invalid image reference
 fails the start instead of falling back to the host or to another image.
+
+A `path://` worker can opt in to running its own VM through the CLI instead. Set `scripts.run` to
+`iii sandbox run` and list the adapter's container in `start_after`:
+
+```yaml worker-compose.yaml
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: "^0.3"
+  api:
+    worker: path://./api
+    start_after: [sandbox-libkrun]
+    scripts:
+      run: iii sandbox run
+```
+
+Compose runs that command as a host process and supervises it like any other, with the directory of
+the `iii` binary running Compose first on its `PATH`. The command boots the VM from the worker's
+directory, prints the guest's output as its own, stops the VM when it is asked to stop, and exits
+with the VM's code. Listing the adapter is what grants access: the container gets a token that opens
+only its own VM, never the project's token, and its directory becomes one the adapter may mount. The
+guest receives the container's `environment` and `env_file` variables and the reserved `III_*`
+variables, not the host's environment. Removing the container still removes the VM's state.
+
+The adapter must support sandbox contract 1.2. `iii sandbox run` exits with code 125 and names what
+is missing otherwise, and `iii call compose::update worker=sandbox-libkrun@latest` moves the adapter.
+A `package://` worker cannot opt in yet: `scripts.run` on one fails with
+`RUN_NOT_ALLOWED_FOR_PACKAGE`, so a bundle keeps running in the VM Compose boots for it.
 
 ### Worker kinds
 

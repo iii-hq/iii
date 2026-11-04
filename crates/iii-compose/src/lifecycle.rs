@@ -36,7 +36,7 @@ use crate::{
     error::{ComposeError, Result},
     hooks,
     logs::LogStore,
-    manifest::{StartSpec, VmSpec, resolve_start},
+    manifest::{StartSpec, VmSpec},
     process::{Outcome, Supervised, spawn_supervised_piped},
     report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -778,7 +778,10 @@ async fn remove_one_scoped(
     // holds: a first boot that failed left no VM in it, a new daemon no record
     // at all. A failure only leaves the state behind, so the removal succeeds.
     let vm = records.remove(key).and_then(|record| record.vm);
-    if vm.is_some() || crate::sandbox::is_vm(ctx.file, key) {
+    if vm.is_some()
+        || crate::sandbox::is_vm(ctx.file, key)
+        || crate::sandbox::runs_own_vm(ctx.file, key)
+    {
         let (adapter, namespace) = vm.map_or_else(
             || {
                 let adapter = crate::sandbox::adapter_name(ctx.file);
@@ -1171,7 +1174,10 @@ async fn start_one_until_shutdown(
                 ),
             }
         }
-        crate::config::WorkerSource::Path { .. } => (resolve_start(key, container)?, None),
+        crate::config::WorkerSource::Path { .. } => (
+            crate::sandbox::resolve_start(ctx.file, key, container)?,
+            None,
+        ),
     };
 
     report::starting(key, "configuring");
@@ -1188,6 +1194,14 @@ async fn start_one_until_shutdown(
         key,
         ctx.sandbox_token,
         ctx.package_cache,
+        &mut user_env,
+    )?;
+    crate::sandbox::layer_own_vm_env(
+        ctx.file,
+        key,
+        ctx.sandbox_token,
+        ctx.state_dir,
+        ctx.project_namespace,
         &mut user_env,
     )?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;

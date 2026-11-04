@@ -9,6 +9,9 @@
 //! `/dev/kvm` (Linux) or Hypervisor.framework (Apple Silicon) and are ignored by
 //! default. CI runs them in `compose-sandbox-e2e-linux`; by hand:
 //! `cargo test --locked -p iii --test compose_sandbox_e2e -- --ignored --nocapture`.
+//!
+//! `a_path_worker_runs_its_own_vm_through_iii_sandbox_run` boots no VM: a fake
+//! adapter runs its guest as a process, so it needs neither and always runs.
 #![cfg(unix)]
 
 use std::{
@@ -162,9 +165,16 @@ struct Project {
 impl Project {
     /// `containers` is the operator's share of the `containers:` mapping, each
     /// entry indented two spaces. The adapter follows exactly as Compose writes
-    /// it, pre-declared because `up` would resolve `^0.2` against the live
+    /// it, pre-declared because `up` would resolve `^0.3` against the live
     /// registry, which a required check cannot depend on (D5).
     fn new(containers: &str) -> Self {
+        Self::declaring(&format!(
+            "{containers}  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n"
+        ))
+    }
+
+    /// `containers` is the whole `containers:` mapping.
+    fn declaring(containers: &str) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("sbx-e2e-project-")
             .tempdir()
@@ -181,7 +191,7 @@ impl Project {
         std::fs::write(
             &file,
             format!(
-                "stop_timeout: {}s\nstartup_timeout: 120s\nengine:\n  url: ws://127.0.0.1:{port}\ncontainers:\n{containers}  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n",
+                "stop_timeout: {}s\nstartup_timeout: 120s\nengine:\n  url: ws://127.0.0.1:{port}\ncontainers:\n{containers}",
                 STOP_TIMEOUT.as_secs()
             ),
         )
@@ -335,6 +345,18 @@ impl Project {
             !self.vm_states().is_empty(),
             "the adapter kept no VM state under $HOME/.iii/sandbox/workers before rm"
         );
+        self.remove(key);
+
+        let left = self.vm_states();
+        assert!(left.is_empty(), "rm left VM state behind: {left:?}");
+        let file = std::fs::read_to_string(&self.file).unwrap();
+        assert!(
+            !file.contains("sandbox-libkrun"),
+            "the generated adapter outlived its last VM:\n{file}"
+        );
+    }
+
+    fn remove(&self, key: &str) {
         let accepted = self.compose_call("compose::remove", json!({ "worker": key }), LONG);
         let operation_id = accepted["operation_id"]
             .as_str()
@@ -349,14 +371,6 @@ impl Project {
             (operation["status"] != "running").then_some(operation)
         });
         assert_eq!(finished["status"], "succeeded", "{finished}");
-
-        let left = self.vm_states();
-        assert!(left.is_empty(), "rm left VM state behind: {left:?}");
-        let file = std::fs::read_to_string(&self.file).unwrap();
-        assert!(
-            !file.contains("sandbox-libkrun"),
-            "the generated adapter outlived its last VM:\n{file}"
-        );
     }
 
     fn shutdown(&mut self) {
@@ -531,5 +545,253 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
     project.down();
     project.up_again("sandbox-vm-worker");
     project.remove_last_vm("sandbox-vm-worker");
+    project.shutdown();
+}
+
+/// Set on the fake adapter's container; the fixtures do nothing without their
+/// variable, since `--ignored` runs them too.
+const FAKE_ADAPTER: &str = "FAKE_ADAPTER";
+const FAKE_GUEST: &str = "FAKE_GUEST";
+/// In the fake adapter's working directory: one JSON object per call it answered.
+const FAKE_ADAPTER_CALLS: &str = "calls.jsonl";
+
+fn this_test_binary_runs(fixture: &str) -> [String; 5] {
+    [
+        std::env::current_exe().unwrap().display().to_string(),
+        "--ignored".into(),
+        "--exact".into(),
+        fixture.into(),
+        "--nocapture".into(),
+    ]
+}
+
+/// A contract 1.2 adapter whose "VM" is a process of this test binary. It records
+/// which token each call came with, as the real one would refuse a wrong one.
+#[test]
+#[ignore = "subprocess fixture of a_path_worker_runs_its_own_vm_through_iii_sandbox_run"]
+fn fake_adapter() {
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+
+    use iii_sandbox_contract::{
+        AdapterInfo, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
+        scoped_auth_matches,
+    };
+    use iii_sdk::RegisterFunction;
+
+    if std::env::var_os(FAKE_ADAPTER).is_none() {
+        return;
+    }
+    let iii = iii_sdk::register_worker(
+        &std::env::var("III_URL").unwrap(),
+        iii_sdk::InitOptions::default(),
+    );
+    let project = std::env::var("III_SANDBOX_WORKER_TOKEN").unwrap();
+    let guest: Arc<Mutex<Option<Child>>> = Arc::default();
+    let instance = Arc::new(Mutex::new(0_u64));
+    // A call by `vm_id` carries no state key: the one the VM was booted with stands in.
+    let state_key = Arc::new(Mutex::new(String::new()));
+
+    type Answer = fn(&Value, &Mutex<Option<Child>>, &Mutex<u64>) -> Value;
+    let handlers: [(&str, Answer); 5] = [
+        ("worker::prepare", |_, _, _| json!({})),
+        ("worker::start", |request, guest, instance| {
+            let [program, args @ ..] = this_test_binary_runs("fake_guest");
+            let env = request["env"].as_object().unwrap();
+            let child = Command::new(program)
+                .args(args)
+                .env_clear()
+                .envs(env.iter().map(|(k, v)| (k, v.as_str().unwrap())))
+                .env("III_URL", request["engine_url"].as_str().unwrap())
+                .env("III_WORKER_NAME", request["worker_name"].as_str().unwrap())
+                .env(FAKE_GUEST, "1")
+                .spawn()
+                .unwrap();
+            *guest.lock().unwrap() = Some(child);
+            let mut instance = instance.lock().unwrap();
+            *instance += 1;
+            json!({ "vm_id": "v", "instance": *instance })
+        }),
+        ("worker::status", |_, guest, instance| {
+            let running = guest.lock().unwrap().is_some();
+            fake_status(*instance.lock().unwrap(), running)
+        }),
+        ("worker::stop", |_, guest, instance| {
+            if let Some(mut child) = guest.lock().unwrap().take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            fake_status(*instance.lock().unwrap(), false)
+        }),
+        ("worker::destroy", |_, _, _| json!({ "destroyed": true })),
+    ];
+    for (suffix, answer) in handlers {
+        let (project, guest, instance, state_key) = (
+            project.clone(),
+            guest.clone(),
+            instance.clone(),
+            state_key.clone(),
+        );
+        iii.register_function(
+            format!("sandbox-libkrun::{suffix}"),
+            RegisterFunction::new(
+                move |request: Value, _: Option<Value>| -> Result<Value, iii_sdk::Error> {
+                    let mut state = state_key.lock().unwrap();
+                    if let Some(key) = request["state_key"].as_str() {
+                        key.clone_into(&mut state);
+                    }
+                    let auth = request["auth"].as_str().unwrap_or_default();
+                    let token = if auth == project {
+                        "project"
+                    } else if scoped_auth_matches(&project, &state, auth) {
+                        "scoped"
+                    } else {
+                        "other"
+                    };
+                    let mut calls = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(FAKE_ADAPTER_CALLS)
+                        .unwrap();
+                    let call = json!({ "function": suffix, "token": token, "request": request });
+                    writeln!(calls, "{call}").unwrap();
+                    Ok(answer(&request, &guest, &instance))
+                },
+            ),
+        );
+    }
+    iii.register_function(
+        "sandbox-libkrun::adapter::info",
+        RegisterFunction::new(
+            |_: Value, _: Option<Value>| -> Result<Value, iii_sdk::Error> {
+                Ok(serde_json::to_value(AdapterInfo {
+                    adapter: "sandbox-libkrun".into(),
+                    adapter_version: "0.3.0".into(),
+                    contract: ContractVersion::CURRENT,
+                    features: [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]
+                        .map(str::to_string)
+                        .to_vec(),
+                })?)
+            },
+        ),
+    );
+    std::thread::sleep(Duration::from_secs(600));
+}
+
+fn fake_status(instance: u64, running: bool) -> Value {
+    json!({
+        "vm_id": "v",
+        "instance": instance,
+        "state": if running { "running" } else { "stopped" },
+        "started_at_ms": 0,
+    })
+}
+
+/// The guest: registers as the worker the adapter was told to boot, and goes when
+/// the adapter does, as a VM on its lifeline would.
+#[test]
+#[ignore = "subprocess fixture of a_path_worker_runs_its_own_vm_through_iii_sandbox_run"]
+fn fake_guest() {
+    if std::env::var_os(FAKE_GUEST).is_none() {
+        return;
+    }
+    let _iii = iii_sdk::register_worker(
+        &std::env::var("III_URL").unwrap(),
+        iii_sdk::InitOptions::default(),
+    );
+    let adapter = std::os::unix::process::parent_id();
+    while std::os::unix::process::parent_id() == adapter {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+#[serial_test::serial(sandbox_vm)]
+fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
+    let mut project = Project::declaring(&format!(
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{run: iii sandbox run}}\n",
+    ));
+    let root = project.dir.path().to_path_buf();
+    std::fs::create_dir(root.join("adapter")).unwrap();
+    std::fs::write(
+        root.join("adapter/iii.worker.yaml"),
+        format!(
+            "name: sandbox-libkrun\nscripts:\n  start: {}\n",
+            this_test_binary_runs("fake_adapter").join(" ")
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir(root.join("app")).unwrap();
+    std::fs::write(
+        root.join("app/iii.worker.yaml"),
+        "runtime: {base_image: python}\nscripts: {start: run}\n",
+    )
+    .unwrap();
+    let calls = |function: &str| -> Vec<Value> {
+        std::fs::read_to_string(root.join("adapter").join(FAKE_ADAPTER_CALLS))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|call| call["function"] == function)
+            .collect()
+    };
+
+    project.start();
+    project.wait_ready("sandbox-libkrun", SHORT);
+    project.wait_ready("app", SHORT);
+
+    let started = calls("worker::start");
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(started[0]["token"], "scoped");
+    let request = &started[0]["request"];
+    assert_eq!(request["worker_name"], "app");
+    assert_eq!(request["source"]["kind"], "local");
+    assert_eq!(calls("worker::prepare")[0]["token"], "scoped");
+    assert_eq!(
+        calls("worker::prepare")[0]["request"]["state_key"],
+        request["state_key"]
+    );
+    let env = request["env"].as_object().unwrap();
+    assert_eq!(env["APP_VAR"], "hello");
+    assert_eq!(env["III_NAMESPACE"], NAMESPACE);
+    for host_only in [
+        "III_SANDBOX_TOKEN",
+        "III_SANDBOX_WORKER_TOKEN",
+        "III_URL",
+        "HOME",
+    ] {
+        assert!(
+            !env.contains_key(host_only),
+            "{host_only} reached the guest"
+        );
+    }
+
+    // The adapter's restart takes the VM with it, so the container follows.
+    let restarted = project.compose_call(
+        "compose::restart",
+        json!({ "worker": "sandbox-libkrun" }),
+        LONG,
+    );
+    assert_eq!(restarted["affected_workers"], json!(["app"]), "{restarted}");
+    project.wait_ready("app", SHORT);
+    assert_eq!(calls("worker::start").len(), 2);
+
+    // A stop reaches the VM through the command's SIGTERM, with its own token.
+    let stops = calls("worker::stop").len();
+    project.down();
+    let stopped = calls("worker::stop");
+    assert_eq!(stopped.len(), stops + 1, "{stopped:?}");
+    assert_eq!(stopped[stops]["token"], "scoped");
+
+    // Removing the container still removes its VM state.
+    project.up_again("app");
+    project.remove("app");
+    let destroyed = calls("worker::destroy");
+    assert_eq!(destroyed.len(), 1, "{destroyed:?}");
+    assert_eq!(destroyed[0]["token"], "project");
+    assert_eq!(destroyed[0]["request"]["state_key"], request["state_key"]);
+
     project.shutdown();
 }

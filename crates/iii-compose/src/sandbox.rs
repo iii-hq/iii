@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use tokio::{sync::watch, task::JoinHandle};
 
 use crate::{
-    config::{ComposeFile, WorkerSource},
+    config::{ComposeFile, Container, WorkerSource},
     edit::{self, NewContainer, Source},
     engine::EngineClient,
     error::{ComposeError, Result},
@@ -37,18 +37,20 @@ use crate::{
     logs::LogSink,
     manifest::{StartSpec, VmSpec, read_manifest},
     process::{DEFAULT_STOP_GRACE, Outcome},
+    sandbox_cli,
     state::{Reconciliation, VmRecord},
 };
 
 /// The adapter release range that implements contract major [`CONTRACT_MAJOR`], changed together with it.
-pub const ADAPTER_RANGE: &str = "^0.2";
+pub const ADAPTER_RANGE: &str = "^0.3";
 
 /// Why a project needs the sandbox adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
     /// A registry bundle container, by key.
     VmBundle(String),
-    /// A `path://` container whose manifest sets `runtime.base_image`, by key.
+    /// A `path://` container whose manifest sets `runtime.base_image`, or that
+    /// [`runs_own_vm`], by key.
     VmLocal(String),
     /// The file sets `engine.sandbox`, bound to its own namespace.
     Explicit,
@@ -89,11 +91,12 @@ fn vm_needs(file: &ComposeFile) -> Vec<Need> {
                 .is_some_and(|package| package.kind == "bundle")
                 .then(|| Need::VmBundle(key.clone())),
             // A broken manifest is `validate_offline`'s to report.
-            WorkerSource::Path { dir, .. } => read_manifest(dir)
+            WorkerSource::Path { dir, .. } => (read_manifest(dir)
                 .ok()
                 .flatten()
                 .is_some_and(|manifest| manifest.base_image.is_some())
-                .then(|| Need::VmLocal(key.clone())),
+                || runs_own_vm(file, key))
+            .then(|| Need::VmLocal(key.clone())),
         })
         .collect()
 }
@@ -159,6 +162,39 @@ pub fn adapter_key(file: &ComposeFile, adapter: &str) -> Result<Option<String>> 
         }
     }
     Ok(None)
+}
+
+/// Whether container `key` runs its own VM through the CLI: its `scripts.run`, which only a
+/// `path://` container can have, is `iii sandbox run`, and its `start_after` lists the adapter.
+/// To Compose that is a plain process, which still needs the adapter.
+pub(crate) fn runs_own_vm(file: &ComposeFile, key: &str) -> bool {
+    file.containers.get(key).is_some_and(|container| {
+        container
+            .scripts
+            .run
+            .as_deref()
+            .is_some_and(|run| run.split_whitespace().take(3).eq(["iii", "sandbox", "run"]))
+            && adapter_key(file, adapter_name(file))
+                .ok()
+                .flatten()
+                .is_some_and(|adapter| container.start_after.contains(&adapter))
+    })
+}
+
+/// How a `path://` container starts: [`crate::manifest::resolve_start`], but a VM that
+/// [`runs_own_vm`] is the host command that runs it.
+pub(crate) fn resolve_start(
+    file: &ComposeFile,
+    key: &str,
+    container: &Container,
+) -> Result<StartSpec> {
+    Ok(match crate::manifest::resolve_start(key, container)? {
+        StartSpec::Vm(VmSpec::Local {
+            run_override: Some(run),
+            ..
+        }) if runs_own_vm(file, key) => StartSpec::Shell(run),
+        start => start,
+    })
 }
 
 /// Starts every VM container after `adapter_key`. The edge lives in memory
@@ -429,6 +465,95 @@ pub(crate) fn layer_adapter_env(
             .collect();
         user_env.extend(adapter_env(token, &file.path, package_cache, &vm_dirs));
     }
+    Ok(())
+}
+
+/// Lays what `iii sandbox run` reads over `user_env` when container `key` [`runs_own_vm`], and
+/// only then. The token only opens this container's VM: the project's stays with the adapter.
+pub(crate) fn layer_own_vm_env(
+    file: &ComposeFile,
+    key: &str,
+    project_token: &str,
+    state_dir: &Path,
+    project_namespace: &str,
+    user_env: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let Some(worker_dir) = file
+        .containers
+        .get(key)
+        .and_then(|container| container.worker_dir())
+        .filter(|_| runs_own_vm(file, key))
+    else {
+        return Ok(());
+    };
+    let worker_dir = worker_dir
+        .to_str()
+        .ok_or_else(|| ComposeError::SpawnFailed {
+            container: key.to_string(),
+            message: format!(
+                "{} is not UTF-8, so the sandbox adapter cannot be handed it",
+                worker_dir.display()
+            ),
+        })?;
+    // The guest gets its own variables and what it reads of the reserved contract, such as the
+    // namespace readiness watches; the adapter gives it its engine URL.
+    let worker_env_keys: Vec<&str> = user_env
+        .keys()
+        .map(String::as_str)
+        .chain(
+            crate::spawn::RESERVED_ENV
+                .into_iter()
+                .filter(|name| *name != "III_URL" && !name.starts_with("III_SANDBOX_")),
+        )
+        .collect();
+    let worker_env_keys = worker_env_keys.join(",");
+    // `iii` in the command is this binary. A PATH that cannot lead with its directory is left as
+    // it is.
+    // shortcut: a user-set PATH reaches the guest with this host directory first, which matches
+    // nothing there; hand the guest the user's own value if that ever matters.
+    let path = user_env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|binary| Some(binary.parent()?.to_path_buf()))
+        .and_then(|lead| {
+            std::env::join_paths(std::iter::once(lead).chain(std::env::split_paths(&path))).ok()
+        })
+        .and_then(|path| path.into_string().ok());
+    if let Some(path) = path {
+        user_env.insert("PATH".to_string(), path);
+    }
+    let state_key = state_key(state_dir, key);
+    user_env.extend([
+        (
+            sandbox_cli::TOKEN_ENV.to_string(),
+            contract::scoped_auth_token(project_token, &state_key),
+        ),
+        (sandbox_cli::STATE_KEY_ENV.to_string(), state_key),
+        (
+            sandbox_cli::ADAPTER_ENV.to_string(),
+            adapter_name(file).to_string(),
+        ),
+        (
+            sandbox_cli::ADAPTER_NAMESPACE_ENV.to_string(),
+            project_namespace.to_string(),
+        ),
+        (
+            sandbox_cli::WORKER_DIR_ENV.to_string(),
+            worker_dir.to_string(),
+        ),
+        (
+            sandbox_cli::WORKER_ENV_KEYS_ENV.to_string(),
+            worker_env_keys,
+        ),
+        (
+            sandbox_cli::STOP_TIMEOUT_ENV.to_string(),
+            file.stop_timeout.as_millis().to_string(),
+        ),
+    ]);
     Ok(())
 }
 
@@ -1050,12 +1175,13 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
     }
 }
 
-/// Whether `key` is a VM container. `file` must be lock-attached, as for
-/// [`needs`].
+/// Whether `key` is a VM container Compose boots itself, which one that
+/// [`runs_own_vm`] is not. `file` must be lock-attached, as for [`needs`].
 pub(crate) fn is_vm(file: &ComposeFile, key: &str) -> bool {
-    vm_needs(file)
-        .iter()
-        .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
+    !runs_own_vm(file, key)
+        && vm_needs(file)
+            .iter()
+            .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
 }
 
 /// What a reopened project does with a recorded VM. With its owner gone, the
@@ -1485,7 +1611,7 @@ pub(crate) mod tests {
         assert!(file.containers["dev"].start_after.is_empty());
     }
 
-    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.2.3 for this
+    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.3.0 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1498,7 +1624,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "graph": [{
                     "name": "sandbox-libkrun",
-                    "version": "0.2.3",
+                    "version": "0.3.0",
                     "type": "binary",
                     "binaries": { (crate::registry::host_targets()[0]): {
                         "sha256": hex::encode(Sha256::digest(archive)),
@@ -1516,9 +1642,128 @@ pub(crate) mod tests {
         server
     }
 
-    /// `text` with a generated `sandbox-libkrun` 0.2.3 appended.
+    /// `api` beside the adapter `sb`, with `fields` in its declaration.
+    fn own_vm_project(dir: &Path, manifest_text: &str, fields: &str) -> ComposeFile {
+        manifest(dir, "api", manifest_text);
+        parse(
+            dir,
+            &format!(
+                "containers:\n  sb: {{worker: package://sandbox-libkrun, version: 1.0.0}}\n  api: {{worker: path://./api, {fields}}}\n"
+            ),
+        )
+    }
+
+    const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
+    const OWN_VM: &str = "start_after: [sb], scripts: {run: iii sandbox run}";
+
+    #[test]
+    fn a_container_runs_its_own_vm_with_the_command_and_the_adapter_in_start_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs =
+            |fields: &str| runs_own_vm(&own_vm_project(dir.path(), VM_MANIFEST, fields), "api");
+        assert!(runs(OWN_VM));
+        assert!(runs(
+            "start_after: [sb], scripts: {run: 'iii  sandbox run --command \"python main.py\"'}"
+        ));
+        assert!(!runs("scripts: {run: iii sandbox run}"));
+        assert!(!runs(
+            "start_after: [sb], scripts: {run: iii sandbox running}"
+        ));
+        assert!(!runs(
+            "start_after: [sb], scripts: {run: iii sandbox destroy}"
+        ));
+        assert!(!runs("start_after: [sb], scripts: {run: python main.py}"));
+        assert!(!runs("start_after: [sb]"));
+
+        // A generated adapter cannot be listed before it exists, so the in-memory edge counts.
+        let mut file = own_vm_project(dir.path(), VM_MANIFEST, "scripts: {run: iii sandbox run}");
+        wire_adapter(&mut file).unwrap();
+        assert!(runs_own_vm(&file, "api"));
+    }
+
+    /// To Compose it is a plain process, whatever its manifest says, that still needs the
+    /// adapter.
+    #[test]
+    fn a_container_that_runs_its_own_vm_is_a_process_that_needs_the_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        for manifest_text in [VM_MANIFEST, "scripts: {start: run}\n"] {
+            let file = own_vm_project(dir.path(), manifest_text, OWN_VM);
+            assert!(!is_vm(&file, "api"));
+            assert_eq!(needs(&file, "default"), vec![Need::VmLocal("api".into())]);
+            assert_eq!(
+                resolve_start(&file, "api", &file.containers["api"]).unwrap(),
+                StartSpec::Shell("iii sandbox run".into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_vm_container_without_the_command_stays_a_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        for (fields, run_override) in [
+            ("start_after: [sb]", None),
+            (
+                "start_after: [sb], scripts: {run: python main.py}",
+                Some("python main.py".to_string()),
+            ),
+        ] {
+            let file = own_vm_project(dir.path(), VM_MANIFEST, fields);
+            assert!(is_vm(&file, "api"));
+            assert_eq!(
+                resolve_start(&file, "api", &file.containers["api"]).unwrap(),
+                StartSpec::Vm(VmSpec::Local {
+                    worker_dir: file.containers["api"].worker_dir().unwrap().to_path_buf(),
+                    run_override,
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_generated_adapter_stays_for_a_container_that_runs_its_own_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", "scripts: {start: run}\n");
+        let text = with_generated_adapter(
+            "containers:\n  api: {worker: path://./api, scripts: {run: iii sandbox run}}\n",
+        )
+        .replace(
+            "{worker: path://./api,",
+            "{worker: path://./api, start_after: [sandbox-libkrun],",
+        );
+        let file = parse(dir.path(), &text);
+        assert_eq!(
+            adapter_change(&text, &file, "default", false, true)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_directory_of_a_container_that_runs_its_own_vm_is_a_host_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(&dir.path().join("shared"), "api", "scripts: {start: run}\n");
+        let file = parse(
+            &project,
+            &format!(
+                "containers:\n  sb: {{worker: package://sandbox-libkrun, version: 1.0.0}}\n  api: {{worker: path://../shared/api, {OWN_VM}}}\n"
+            ),
+        );
+        let mut env = BTreeMap::new();
+        layer_adapter_env(&file, "sb", "t0k", Path::new("/pkg"), &mut env).unwrap();
+        let roots: Vec<PathBuf> = std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect();
+        assert_eq!(roots.len(), 3, "{roots:?}");
+        assert_eq!(
+            roots[2].canonicalize().unwrap(),
+            dir.path().join("shared/api").canonicalize().unwrap()
+        );
+    }
+
+    /// `text` with a generated `sandbox-libkrun` 0.3.0 appended.
     fn with_generated_adapter(text: &str) -> String {
-        let request = edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let request = edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
         let edit::Outcome::Added(text) = edit::upsert_container(text, &request).unwrap() else {
             panic!("the adapter is new");
         };
@@ -1536,12 +1781,13 @@ pub(crate) mod tests {
             request.source,
             edit::Source::Package {
                 reference: "api.workers.iii.dev/sandbox-libkrun".into(),
-                version: Some("0.2.3".into())
+                version: Some("0.3.0".into())
             }
         );
         let asked: serde_json::Value =
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(asked["version"], ADAPTER_RANGE);
+        assert_eq!(ADAPTER_RANGE, "^0.3");
         let edit::Outcome::Added(text) =
             edit::upsert_container("containers: {}\n", &request).unwrap()
         else {

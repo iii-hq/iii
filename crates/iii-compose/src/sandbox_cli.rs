@@ -10,7 +10,8 @@
 //! `start_after`, and hands it what it needs in the environment ([`Context`]). The command boots
 //! the VM through the adapter's `worker::*` functions, prints the guest's output as its own, stops
 //! the VM when it is asked to stop, and exits with the VM's code. Compose supervises it like any
-//! other process and knows nothing about VMs.
+//! other process. Only a `path://` container can opt in so far: a package's `scripts.run` is
+//! refused, so nothing sets [`PACKAGE_DIR_ENV`] yet.
 
 use std::{
     collections::BTreeMap,
@@ -567,8 +568,9 @@ fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), String> {
         .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "{adapter} {version} does not support {}; this iii needs a newer {adapter}, \
-             which the project's `update` installs",
+            "{adapter} {version} does not support {}, which this iii needs from sandbox \
+             contract 1.2; move to a release that has them with: iii call compose::update \
+             worker={adapter}@latest",
             missing.join(", ")
         ));
     }
@@ -951,6 +953,107 @@ mod tests {
         );
     }
 
+    /// What Compose hands the container is what this command reads.
+    #[test]
+    fn compose_hands_the_container_everything_the_command_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "api",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = crate::config::ComposeFile::parse(
+            "stop_timeout: 7s\ncontainers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    environment: {API_KEY: k, PATH: /opt/tools}\n    scripts: {run: iii sandbox run}\n",
+            dir.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+        let state_dir = std::path::Path::new("/state");
+        let mut user_env = file.containers["api"].resolve_user_env("api").unwrap();
+        sandbox::layer_own_vm_env(&file, "api", "project", state_dir, "orders", &mut user_env)
+            .unwrap();
+        let start = crate::manifest::StartSpec::Shell("iii sandbox run".into());
+        let plan = crate::spawn::spawn_plan(&crate::spawn::SpawnCtx {
+            engine_url: "ws://engine.test:1",
+            namespace: "orders",
+            compose_namespace: "compose",
+            compose_file: &file.path,
+            container_key: "api",
+            start: &start,
+            config_name: Some("api-config"),
+            working_dir: dir.path(),
+            user_env: &user_env,
+        });
+
+        let ctx = Context::from_vars(&plan.env, None).unwrap();
+        let key = sandbox::state_key(state_dir, "api");
+        assert_eq!(ctx.target.state_key, key);
+        assert_eq!(
+            ctx.target.token,
+            iii_sandbox_contract::scoped_auth_token("project", &key)
+        );
+        assert_eq!(ctx.target.engine_url, "ws://engine.test:1");
+        assert_eq!(ctx.target.adapter, "sandbox-libkrun");
+        assert_eq!(ctx.target.adapter_namespace, "orders");
+        assert_eq!(ctx.worker_name, "api");
+        assert_eq!(ctx.stop_timeout, Duration::from_secs(7));
+        let WorkerSource::Local {
+            host_path,
+            run_override: None,
+        } = &ctx.source
+        else {
+            panic!("{:?}", ctx.source);
+        };
+        assert_eq!(
+            std::path::Path::new(host_path),
+            file.containers["api"].worker_dir().unwrap()
+        );
+
+        // The guest gets its own variables and the reserved contract: without III_NAMESPACE
+        // it would register where readiness does not look.
+        assert_eq!(
+            ctx.env.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "API_KEY",
+                "III_COMPOSE_DIR",
+                "III_COMPOSE_FILE",
+                "III_COMPOSE_NAMESPACE",
+                "III_CONFIG_NAME",
+                "III_NAMESPACE",
+                "III_WORKER_NAME",
+                "PATH",
+            ]
+        );
+        assert_eq!(ctx.env["III_NAMESPACE"], "orders");
+        assert_eq!(ctx.env["III_CONFIG_NAME"], "api-config");
+
+        // Only the scoped token reaches this container.
+        assert!(!plan.env.contains_key(PROJECT_TOKEN_ENV));
+        assert!(!plan.env.values().any(|value| value == "project"));
+        assert!(!plan.env[WORKER_ENV_KEYS_ENV].contains(PROJECT_TOKEN_ENV));
+
+        // `iii` is this binary, and the operator's PATH follows it.
+        let path: Vec<_> = std::env::split_paths(&plan.env["PATH"]).collect();
+        assert_eq!(path[0], std::env::current_exe().unwrap().parent().unwrap());
+        assert_eq!(path[1..], [std::path::PathBuf::from("/opt/tools")]);
+    }
+
+    #[test]
+    fn a_container_that_does_not_run_its_own_vm_gets_none_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(dir.path(), "api", "scripts: {start: run}\n");
+        let file = crate::config::ComposeFile::parse(
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  api: {worker: path://./api, start_after: [sb]}\n",
+            dir.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+        for key in ["api", "sb"] {
+            let mut env = BTreeMap::new();
+            sandbox::layer_own_vm_env(&file, key, "project", dir.path(), "orders", &mut env)
+                .unwrap();
+            assert!(env.is_empty(), "{key}: {env:?}");
+        }
+    }
+
     #[test]
     fn only_the_listed_worker_variables_reach_the_guest() {
         let expected: BTreeMap<String, String> = [("API_KEY", "k"), ("III_WORKER_NAME", "api")]
@@ -1002,6 +1105,11 @@ mod tests {
         let mut adapter = info(&[]);
         let error = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
         assert!(error.contains(FEATURE_SCOPED_AUTH), "{error}");
+        assert!(error.contains("sandbox contract 1.2"), "{error}");
+        assert!(
+            error.ends_with("iii call compose::update worker=sandbox-libkrun@latest"),
+            "{error}"
+        );
         adapter.features = REQUIRED_FEATURES.iter().map(|f| f.to_string()).collect();
         assert!(check_adapter(&adapter, "sandbox-libkrun").is_ok());
     }

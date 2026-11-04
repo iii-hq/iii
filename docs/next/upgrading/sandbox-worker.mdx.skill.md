@@ -35,7 +35,7 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.2'
+    version: '^0.3'
     config_override:
       image_allowlist:
       - python
@@ -117,7 +117,7 @@ one container. Write a `worker-compose.yaml` that declares the adapter:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.2'
+    version: '^0.3'
 ```
 
 It has no `engine:` section, so Compose attaches to your engine instead of starting one. Start it

@@ -1273,11 +1273,10 @@ impl Project {
         file.start_order()
             .unwrap_or_default()
             .into_iter()
-            .filter(|vm| {
-                matches!(
-                    inner.children.get(vm),
-                    Some(Child::Vm(hosted)) if hosted.record.adapter == adapter
-                )
+            .filter(|vm| match inner.children.get(vm) {
+                Some(Child::Vm(hosted)) => hosted.record.adapter == adapter,
+                Some(Child::Process(_)) => crate::sandbox::runs_own_vm(&file, vm),
+                None => false,
             })
             .collect()
     }
