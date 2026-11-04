@@ -815,29 +815,23 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
 | `error`     | Rejected. The reason has the code, for example `INVALID_ARGS`, `FORBIDDEN`, or a code from the function's worker.                                                                                  |
 | `disposed`  | Removed permanently, by `dispose()`, `max_fires`, `expires_in_ms`, or because the observing worker did not reconnect in time.                                                                      |
 
-- Registration order does not matter. An observer of a function whose worker has not started yet
-  stays `pending`, and becomes `active` when the worker registers the function and accepts it.
 - An observer belongs to the connection that created it. When that worker disconnects, its observers
   become `suspended` for `observers.observer_grace_ms` (30 s by default). If the worker reconnects
   in this time, it keeps its observers and their counters. If not, the observers become `disposed`.
-- A worker that restarts connects again as a new connection. An observer with an `id` of your own
-  (see [Policy and metadata](#policy-and-metadata)) comes back with it: the restarted worker, under
-  the same worker name and namespace, observes under that `id` again, and its observer replaces the
-  `suspended` one. A queue subscriber keeps its queued messages this way. An observer with a random
-  `id` stays `suspended` until the grace period ends.
-- Any connection can declare any worker name, so the two connections must also be the same
-  principal: both on ports without `rbac`, or both on RBAC ports where the auth function gave them
-  the same `context`, one that is not empty. A session with no `context` replaces nothing, and a
-  connection on a port without `rbac` and an RBAC session never replace each other's observers.
-- The worker name has to stay the same across restarts for this. Set it with `III_WORKER_NAME` or
-  the worker name option of the SDK; a worker that [iii compose](./compose) starts gets
-  `III_WORKER_NAME` from it. The default name, `hostname:pid` (a random name in the browser),
-  changes when the process restarts: the restarted worker's observe of the `id` then fails with
+- A restarted worker is a new connection. With an `id` of your own (see
+  [Policy and metadata](#policy-and-metadata)), the restarted worker's observe of that `id` replaces
+  its `suspended` observer, when both connections have the same worker name, namespace and
+  principal: both on ports without `rbac`, or both RBAC sessions whose auth function gave them the
+  same non-empty `context`. An observer with a random `id` stays `suspended` until the grace period
+  ends.
+- Set the worker name with `III_WORKER_NAME` or the worker name option of the SDK; a worker that
+  [iii compose](./compose) starts gets `III_WORKER_NAME` from it. The default name, `hostname:pid`,
+  changes when the process restarts, so the restarted worker's observe of the `id` fails with
   `OBSERVER_ID_CONFLICT` until the grace period ends.
 - When a worker reconnects, its SDK sends each of its observers to the engine again, with the same
   id. The engine keeps a record of a `disposed` observer for `observers.disposed_retention_ms` (1
   hour by default). In this time, the engine does not create the observer again, and the handle
-  becomes `disposed`. So `max_fires` and `expires_in_ms` stay in effect after a reconnect. After
+  becomes `disposed`, so `max_fires` and `expires_in_ms` stay in effect after a reconnect. After
   this time, the engine creates the observer again with new counters, as after an engine restart.
 - To know when an observer becomes `disposed`, and why, use `onStateChange` on its handle.
   `engine::observers::list` and `get` do not show disposed observers.
@@ -1142,22 +1136,9 @@ When the engine activates a target, the target's caller is the engine (`worker_n
 no `worker_id`), with the observed function and invocation as `function_id` and `invocation_id`. The
 current invocation's `activation` holds the `observer_id` and `activation_id`.
 
-The SDKs propagate the caller automatically from the handler you are in. Each SDK also exposes the
-current invocation (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`):
-
-| SDK     | Current invocation               | Notes                                                                                                            |
-| ------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Node    | `worker.currentInvocation()`     | Carried across `await` with `AsyncLocalStorage`.                                                                 |
-| Browser | `worker.currentInvocation()`     | Known until the handler's first `await`. Read it first and wrap later calls in `worker.withInvocation(inv, fn)`. |
-| Python  | `worker.current_invocation()`    | A `contextvars` context, carried into sync handlers' threads.                                                    |
-| Rust    | `iii_sdk::current_invocation()`  | A task-local. Work moved to `tokio::spawn` loses it; wrap the future in `iii_sdk::scope(ctx, fut)`.              |
-| Go      | `iii.InvocationFromContext(ctx)` | Pass the handler's `ctx` to `worker.Call` so outgoing calls carry the caller.                                    |
-
-In the browser, a call made after an `await` and outside `withInvocation` gets the depth of the
-deepest invocation that runs on the page. When several invocations run at the same time, this depth
-can be too high, and the loop guard can stop an observer chain early. While the page is offline, the
-functions that it hosts run locally, to a maximum of 256 nested calls. A call past that limit fails
-immediately with `LOCAL_DEPTH_EXCEEDED`.
+The SDK propagates the caller automatically from the handler you are in, and exposes the current
+invocation (`function_id`, `invocation_id`, `caller`, `activation`, `observe_depth`) as
+`worker.currentInvocation()`, carried across `await`.
 
 ## Loop guard
 
@@ -1257,88 +1238,6 @@ engine path:
 
 To turn it off for the whole engine, set `observers.local_dispatch: false` in the
 [engine configuration](./configuration#observers).
-
-## Make something observable
-
-To make something observable, register a function whose handler returns the event, and call that
-function whenever the thing happens. Each call runs the observers of the function. With
-`private: true`, only your worker can call the function, and every worker can observe it.
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    type FileChanged = { path: string; event: "created" | "modified" | "deleted" };
-
-    // Producer: a function that returns the change it is called with.
-    worker.registerFunction("files::on-change", (change: FileChanged) => change, { private: true });
-
-    // ...in your watcher loop, call it for each change.
-    await worker.call({ function_id: "files::on-change", payload: { path, event: "modified" } });
-
-    // Consumer, in any worker: when a file changes, process it.
-    worker.observe("files::on-change", "csv::process");
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    # Producer: a function that returns the change it is called with.
-    worker.register_function("files::on-change", lambda change: change, private=True)
-
-    # ...in your watcher loop, call it for each change.
-    worker.call({"function_id": "files::on-change", "payload": {"path": path, "event": "modified"}})
-
-    # Consumer, in any worker: when a file changes, process it.
-    worker.observe("files::on-change", "csv::process")
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::protocol::CallRequest;
-    use iii_sdk::{Error, RegisterFunction};
-    use serde_json::{Value, json};
-
-    // Producer: a function that returns the change it is called with.
-    worker.register_function(
-        "files::on-change",
-        RegisterFunction::new(|change: Value| Ok::<_, Error>(change)).private(),
-    );
-
-    // ...in your watcher loop, call it for each change.
-    worker
-        .call(CallRequest::new("files::on-change", json!({ "path": path, "event": "modified" })))
-        .await?;
-
-    // Consumer, in any worker: when a file changes, process it.
-    worker.observe("files::on-change", "csv::process");
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    // Producer: a function that returns the change it is called with.
-    worker.RegisterFunction("files::on-change", func(ctx context.Context, data json.RawMessage) (any, error) {
-        return data, nil
-    }, iii.FunctionOptions{Private: true})
-
-    // ...in your watcher loop, call it for each change.
-    worker.Call(ctx, iii.CallRequest{
-        FunctionID: "files::on-change",
-        Payload:    json.RawMessage(`{"path":"/data/orders.csv","event":"modified"}`),
-    })
-
-    // Consumer, in any worker: when a file changes, process it.
-    worker.ObserveFunction("files::on-change", "csv::process")
-    ```
-
-  </Tab>
-</Tabs>
-
-A function can also set something up for each observer from its `args`, for example watch only the
-paths its observers name, or decide which observers get each call. See
-[Observable functions](../creating-workers/observable-functions). You observe such a function the
-same way, with [args](#args).
 
 ## Authorization
 
