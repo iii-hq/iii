@@ -28,7 +28,7 @@ on:
           - rc
         default: none
       version_override:
-        description: 'Exact version, e.g. 0.25.0-rc.1. Required outside main (RC only); overrides bump. Publishes the selected branch.'
+        description: 'Exact version, e.g. 0.25.0-rc.1. Required outside main (RC, or X.Y.N from release/X.Y.x); overrides bump. Publishes the selected branch.'
         required: false
         type: string
         default: ''
@@ -86,14 +86,31 @@ jobs:
             echo "::error::Checkout does not match the selected source branch"
             exit 1
           fi
+          # Outside main: any branch may publish an explicit RC. A maintenance
+          # branch release/X.Y.x may also publish stable X.Y.N patches, so a
+          # fix can ship without the rest of main. Version selection still
+          # requires a base newer than the latest stable tag.
+          MAINTENANCE_RE='^release/(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.x$'
           if [[ "$BRANCH" != "main" ]]; then
-            if [[ "$PRERELEASE" != "rc" ]]; then
-              echo "::error::Only RC releases are allowed outside main; stable releases require main"
-              exit 1
-            fi
-            if [[ -z "$VERSION_OVERRIDE" ]]; then
-              echo "::error::RC releases outside main require version_override (e.g. 0.25.0-rc.1)"
-              exit 1
+            if [[ "$BRANCH" =~ $MAINTENANCE_RE ]]; then
+              LINE="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+              if [[ "$PRERELEASE" != "none" && "$PRERELEASE" != "rc" ]]; then
+                echo "::error::Maintenance branch $BRANCH publishes only stable or RC releases"
+                exit 1
+              fi
+              if [[ "$VERSION_OVERRIDE" != "$LINE".* ]]; then
+                echo "::error::Releases from $BRANCH require version_override $LINE.N (e.g. $LINE.1 or $LINE.1-rc.1)"
+                exit 1
+              fi
+            else
+              if [[ "$PRERELEASE" != "rc" ]]; then
+                echo "::error::Only RC releases are allowed from this branch; stable releases require main or a release/MAJOR.MINOR.x maintenance branch"
+                exit 1
+              fi
+              if [[ -z "$VERSION_OVERRIDE" ]]; then
+                echo "::error::RC releases outside main require version_override (e.g. 0.25.0-rc.1)"
+                exit 1
+              fi
             fi
           fi
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
@@ -168,6 +185,7 @@ jobs:
           SELECTED_VERSION: ${{ steps.versions.outputs.version }}
           SELECTED_TAG: ${{ steps.versions.outputs.tag }}
           VERSION_OVERRIDE: ${{ inputs.version_override }}
+          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           {
             printf '## Release selection\n\n'
@@ -184,15 +202,22 @@ jobs:
             elif [[ "$SOURCE_BRANCH" == "main" ]]; then
               printf '\nThe release preparation commit is pushed to main and tagged.\n'
             else
-              printf '\nOnly the tag is pushed. The preparation commit is reachable through it; neither main nor the source branch is updated. This release updates the shared rc channel, never latest.\n'
+              printf '\nOnly the tag is pushed. The preparation commit is reachable through it; neither main nor the source branch is updated.'
+              if [[ "${PRERELEASE:-rc}" == "none" ]]; then
+                printf ' This stable maintenance release updates latest and leaves the docs on main untouched.\n'
+              else
+                printf ' This release updates the shared rc channel, never latest.\n'
+              fi
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Stable releases pull their docs from docs/next/, so it must be prepared.
       # Validate even on dry runs so a release cannot be tagged without docs.
+      # Maintenance releases (release/X.Y.x) skip docs: they are published
+      # from main, which a tag-only maintenance release never updates.
       - name: Validate docs ready for stable release
         id: docs_check
-        if: inputs.target == 'iii' && inputs.prerelease == 'none'
+        if: inputs.target == 'iii' && inputs.prerelease == 'none' && steps.preflight.outputs.branch == 'main'
         run: |
           python3 .github/scripts/pin_docs.py validate \
             --docs-dir docs
@@ -241,7 +266,7 @@ jobs:
       # version: minor/major rotate (archive + promote + bump Next); patch just
       # refreshes the current Latest in place (no archive, no Next bump).
       - name: Update documentation versions
-        if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none'
+        if: inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none' && steps.preflight.outputs.branch == 'main'
         env:
           NEW_VERSION: ${{ steps.versions.outputs.version }}
         run: |

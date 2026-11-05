@@ -90,6 +90,9 @@ fn text(v: Value) -> WsMessage {
     WsMessage::Text(v.to_string().into())
 }
 
+/// As a contract major for [`fake_adapter`]: its `adapter::info` never answers.
+const HANG_INFO: u32 = u32::MAX;
+
 /// Connects the `fake` adapter in `fake-ns`, reporting contract `major`, and
 /// returns once its last id is in the engine's registry.
 async fn fake_adapter(port: u16, major: u32, engine: &Engine) -> FakeAdapter {
@@ -142,6 +145,10 @@ async fn fake_adapter(port: u16, major: u32, engine: &Engine) -> FakeAdapter {
                 "function_id": function_id,
             });
             match function_id.as_str() {
+                "fake::adapter::info" if major == HANG_INFO => {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                }
                 "fake::adapter::info" => {
                     calls.fetch_add(1, Ordering::Relaxed);
                     reply["result"] = json!({
@@ -287,6 +294,29 @@ async fn bound_router_without_adapter_answers_s301() {
             json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
         )
     );
+}
+
+/// The binding is the router's to give, and a harness applies its denies from this reply. An
+/// adapter that hangs must not hold it back past that harness's 3 s read.
+#[tokio::test]
+async fn info_names_the_binding_when_the_adapter_hangs() {
+    let (port, engine) = spawn_engine(bound()).await;
+    let adapter = fake_adapter(port, HANG_INFO, &engine).await;
+
+    let info = tokio::time::timeout(
+        Duration::from_secs(3),
+        call(&engine, ROUTER_INFO_ID, json!({}), None),
+    )
+    .await
+    .expect("a hung adapter must not hold the reply back");
+
+    assert_eq!(
+        info.unwrap(),
+        Some(
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
+        )
+    );
+    assert_eq!(adapter.info_calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

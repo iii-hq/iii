@@ -181,7 +181,7 @@ enum Commands {
     /// Run one Compose container's VM through its sandbox adapter.
     ///
     /// Compose starts `iii sandbox run` as the `scripts.run` of a container
-    /// that lists the adapter in `start_after`; stopping it stops the VM.
+    /// whose worker sets `runtime.base_image`; stopping it stops the VM.
     Sandbox(iii_compose::sandbox_cli::SandboxCli),
 
     /// List iii processes on this machine: engines, compose daemons and

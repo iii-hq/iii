@@ -282,10 +282,12 @@ containers:
 The first replacement is immediate. If it fails, later attempts use exponential backoff from
 `delay` up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a
 run-time exit, only the named worker bounces: workers that name it in `start_after` keep running and
-see their connection drop and reconnect. `compose::status` reports the worker as `restarting` while
-it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
-startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
-`last_error` says the supervisor gave up.
+see their connection drop and reconnect. VM workers cannot outlive the sandbox adapter: when it
+crashes and its own policy restarts it, they exit with it and each one follows its own policy, so a
+VM worker with no policy ends `failed` and one with `restart: always` spends an attempt.
+`compose::status` reports the worker as `restarting` while it waits for a run-time replacement. Once
+`max_attempts` is spent, `required` controls whether the startup operation fails. At run time, the
+worker is marked `failed`, its dependents are stopped, and `last_error` says the supervisor gave up.
 
 ### Stopping a project
 
@@ -413,6 +415,16 @@ worker. Those remain declared until they are removed explicitly.
 `compose::restart worker=state` stops that specified worker and starts it again. All other workers,
 including dependencies, are left unchanged.
 
+The sandbox adapter is the one exception, because a VM worker ends with the adapter that hosts it.
+`compose::restart worker=sandbox-libkrun` restarts the adapter and then each VM worker it was
+running, dependencies first, without spending any of their `restart` attempts. The response names
+those workers in `affected_workers`. A `required` VM worker that does not come back fails the
+operation. Otherwise, one that does not come back is listed in `not_required_failures`. If the adapter
+itself does not come back, no VM worker is started and those same rules apply to each one it was running, which
+`compose::status` then reports as `failed`, with a `last_error` that names the adapter. A process
+that runs its own VM with `iii sandbox run` is stopped. Once the adapter is fixed, `compose::up` starts
+them all again. A sandbox that was running under the adapter does not come back.
+
 `compose::restart` without a worker argument restarts the entire compose project. It is
 approximately the equivalent of `compose::down` followed by `compose::up`.
 
@@ -427,7 +439,7 @@ approximately the equivalent of `compose::down` followed by `compose::up`.
 registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
 The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
 names) moves only to the newest release in the range that implements the engine's sandbox contract
-major (`^0.2` for contract 1).
+major (`^0.3` for contract 1).
 
 ```bash
 iii call compose::update
@@ -780,6 +792,54 @@ A path worker normally runs as a host process. A non-empty `runtime.base_image` 
 run inside that image, and compose keeps the VM state inside the project. An invalid image reference
 fails the start instead of falling back to the host or to another image.
 
+A `path://` worker whose `iii.worker.yaml` sets `runtime.base_image` can run that VM through the CLI
+rather than have Compose boot it. Set `scripts.run` to `iii sandbox run`:
+
+```yaml worker-compose.yaml
+containers:
+  sandbox-libkrun:
+    worker: package://sandbox-libkrun
+    version: "^0.3"
+  api:
+    worker: path://./api
+    start_after: [sandbox-libkrun]
+    scripts:
+      run: iii sandbox run
+```
+
+`runtime.base_image` is required. With it, Compose starts the worker after the adapter and gives the
+command its token, whether or not `start_after` lists the adapter. Without it, the command boots no
+VM: a worker that lists the adapter fails with `S501`, and one that does not gets no token.
+
+Compose runs that command as a host process and supervises it like any other, with the directory of
+the `iii` binary running Compose first on its `PATH`. The command boots the VM from the worker's
+directory, prints the guest's stdout and stderr on its own stderr, stops the VM when it is asked to
+stop, and exits with the VM's code. The container gets a token that opens only its own VM, never the
+project's token. Its directory becomes one the adapter may mount if the container is declared when
+the adapter starts; `S501` says how to restart the adapter for one you add later. The guest receives the
+container's `environment` and `env_file` variables and the reserved `III_*` variables, not the host's
+environment. Compose pulls the VM's image before it starts the command, so the pull does not count
+against `startup_timeout`. Removing the container still removes the VM's state.
+
+`sandbox-libkrun` 0.3.1 and later hide the `.iii` directory, which holds Compose's state and the
+project's token, from a VM, both in its copy of the worker's directory and in the source share that
+copy is made from. Earlier versions do not, so there a VM worker whose directory contains the compose
+file, such as `path://.`, can read that token. Its disk keeps those bytes after the upgrade, so stop
+Compose and run `iii compose --up` once to replace the token: updating or restarting the adapter keeps it.
+
+A managed engine also writes `data/` and `config/` in the directory `iii compose --up` runs from, and
+`data/` holds the payloads of traced function calls. A VM worker whose directory contains them can
+read them on any version. So keep the compose file and the directory you start Compose from outside
+the worker's directory, as in `path://./api`. `III_COMPOSE_STATE_DIR` moves Compose's state and the
+token, but not `data/` or `config/`. Point it outside the worker's directory, because only the name
+`.iii` is hidden.
+
+The adapter must support sandbox contract 1.2. `iii sandbox run` exits with code 125 and names what
+is missing otherwise. `iii call compose::update worker=<container key>@latest` moves a `package://`
+adapter to its newest release, and the version staying put means no release supports it yet.
+A `package://` worker cannot opt in yet: `scripts.run` on one fails with
+`RUN_NOT_ALLOWED_FOR_PACKAGE`, so a bundle keeps running in the VM Compose boots for it.
+
 ### Worker kinds
 
 Worker packages can be released in multiple different "kinds". A kind compose cannot run fails with
@@ -987,7 +1047,7 @@ Compose polls `engine::workers::list` every 200 ms until the worker's `startup_t
 | It registered in `default` instead of the project's namespace. | `WORKER_IGNORED_NAMESPACE`         |
 | It registered under a different name in the right namespace.   | `WORKER_NAME_MISMATCH`             |
 | Its functions landed outside the project's namespace.          | `FUNCTIONS_IN_WRONG_NAMESPACE`     |
-| A worker already held that name in the namespace.              | `CONTAINER_NAME_TAKEN`             |
+| Another worker already held that name in the namespace.        | `CONTAINER_NAME_TAKEN`             |
 
 After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
 happens after it exits. An eligible retry keeps its dependents running and reports `restarting`

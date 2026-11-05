@@ -206,6 +206,11 @@ def calculate_version(
         the base and iterate the counter; if the request escalates
         beyond the current level, restart from the latest stable.
       - Otherwise apply the requested bump to the current base.
+      - Bumps never start below the latest stable: a release/X.Y.x
+        maintenance branch can publish a stable newer than this manifest
+        (e.g. 0.25.1 while main still reads 0.25.0), so the next patch
+        from main is 0.25.2. Promoting a prerelease whose base is already
+        released is rejected; use an explicit override instead.
     """
     cur = parse_version(current)
     if version_override not in (None, ""):
@@ -245,8 +250,20 @@ def calculate_version(
     if prerelease != "none" and prerelease not in PRERELEASE_LABELS:
         raise ValueError(f"unknown prerelease: {prerelease!r}")
 
+    stable = parse_version(latest_stable) if latest_stable is not None else None
+    behind_stable = stable is not None and (
+        (cur.major, cur.minor, cur.patch) <= (stable.major, stable.minor, stable.patch)
+    )
+    # Anchor bumps on the newer of the manifest and the latest stable.
+    anchor_base = latest_stable if behind_stable else cur.base
+
     if prerelease == "none" and cur.prerelease_label is not None:
         # Promote prerelease to stable.
+        if behind_stable:
+            raise ValueError(
+                f"cannot promote {current}: {cur.base} is not newer than the latest "
+                f"stable {latest_stable}; set version_override"
+            )
         return cur.base
 
     same_channel = (
@@ -261,10 +278,10 @@ def calculate_version(
             # No stable to anchor against, or the requested bump
             # escalates past the current train: restart from the
             # latest stable when available, else bump the current base.
-            anchor = latest_stable if (latest_stable and current_level is not None) else cur.base
+            anchor = latest_stable if (latest_stable and current_level is not None) else anchor_base
             new_base = bump_base(anchor, bump_type)
     else:
-        new_base = bump_base(cur.base, bump_type)
+        new_base = bump_base(anchor_base, bump_type)
 
     if prerelease == "none":
         return new_base

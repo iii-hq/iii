@@ -193,7 +193,7 @@ iii ps [OPTIONS]
 
 Run one Compose container's VM through its sandbox adapter.
 
-Compose starts `iii sandbox run` as the `scripts.run` of a container that lists the adapter in `start_after`; stopping it stops the VM.
+Compose starts `iii sandbox run` as the `scripts.run` of a container whose worker sets `runtime.base_image`; stopping it stops the VM.
 
 ```text
 iii sandbox <COMMAND>

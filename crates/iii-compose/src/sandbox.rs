@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use tokio::{sync::watch, task::JoinHandle};
 
 use crate::{
-    config::{ComposeFile, WorkerSource},
+    config::{ComposeFile, Container, WorkerSource},
     edit::{self, NewContainer, Source},
     engine::EngineClient,
     error::{ComposeError, Result},
@@ -37,18 +37,20 @@ use crate::{
     logs::LogSink,
     manifest::{StartSpec, VmSpec, read_manifest},
     process::{DEFAULT_STOP_GRACE, Outcome},
+    sandbox_cli,
     state::{Reconciliation, VmRecord},
 };
 
 /// The adapter release range that implements contract major [`CONTRACT_MAJOR`], changed together with it.
-pub const ADAPTER_RANGE: &str = "^0.2";
+pub const ADAPTER_RANGE: &str = "^0.3";
 
 /// Why a project needs the sandbox adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Need {
     /// A registry bundle container, by key.
     VmBundle(String),
-    /// A `path://` container whose manifest sets `runtime.base_image`, by key.
+    /// A `path://` container whose manifest sets `runtime.base_image`, or that
+    /// [`runs_own_vm`], by key.
     VmLocal(String),
     /// The file sets `engine.sandbox`, bound to its own namespace.
     Explicit,
@@ -89,11 +91,12 @@ fn vm_needs(file: &ComposeFile) -> Vec<Need> {
                 .is_some_and(|package| package.kind == "bundle")
                 .then(|| Need::VmBundle(key.clone())),
             // A broken manifest is `validate_offline`'s to report.
-            WorkerSource::Path { dir, .. } => read_manifest(dir)
+            WorkerSource::Path { dir, .. } => (read_manifest(dir)
                 .ok()
                 .flatten()
                 .is_some_and(|manifest| manifest.base_image.is_some())
-                .then(|| Need::VmLocal(key.clone())),
+                || runs_own_vm(file, key))
+            .then(|| Need::VmLocal(key.clone())),
         })
         .collect()
 }
@@ -159,6 +162,39 @@ pub fn adapter_key(file: &ComposeFile, adapter: &str) -> Result<Option<String>> 
         }
     }
     Ok(None)
+}
+
+/// Whether container `key` runs its own VM through the CLI: its `scripts.run`, which only a
+/// `path://` container can have, is `iii sandbox run`, and its `start_after` lists the adapter.
+/// To Compose that is a plain process, which still needs the adapter.
+pub(crate) fn runs_own_vm(file: &ComposeFile, key: &str) -> bool {
+    file.containers.get(key).is_some_and(|container| {
+        container
+            .scripts
+            .run
+            .as_deref()
+            .is_some_and(|run| run.split_whitespace().take(3).eq(["iii", "sandbox", "run"]))
+            && adapter_key(file, adapter_name(file))
+                .ok()
+                .flatten()
+                .is_some_and(|adapter| container.start_after.contains(&adapter))
+    })
+}
+
+/// How a `path://` container starts: [`crate::manifest::resolve_start`], but a VM that
+/// [`runs_own_vm`] is the host command that runs it.
+pub(crate) fn resolve_start(
+    file: &ComposeFile,
+    key: &str,
+    container: &Container,
+) -> Result<StartSpec> {
+    Ok(match crate::manifest::resolve_start(key, container)? {
+        StartSpec::Vm(VmSpec::Local {
+            run_override: Some(run),
+            ..
+        }) if runs_own_vm(file, key) => StartSpec::Shell(run),
+        start => start,
+    })
 }
 
 /// Starts every VM container after `adapter_key`. The edge lives in memory
@@ -228,7 +264,8 @@ pub(crate) enum AdapterChange {
 
 /// Adds the adapter a VM needs, re-resolves (`refresh`) or removes
 /// (`allow_remove`) the one Compose generated. An operator's adapter, of any
-/// key, version or source, is never touched. `file` must be lock-attached.
+/// key, version or source, written by hand or asked for by name, is never
+/// touched. `file` must be lock-attached.
 pub(crate) async fn adapter_change(
     text: &str,
     file: &ComposeFile,
@@ -246,10 +283,11 @@ pub(crate) async fn adapter_change(
         return Ok(Some(AdapterChange::Upsert(adapter_request(adapter).await?)));
     };
     let container = &file.containers[&key];
-    // `compose::add` marks a `path://` request too; only a package is ours.
-    if !matches!(container.worker, WorkerSource::Package { .. })
-        || !edit::is_generated_container(text, &key)?
-    {
+    if !matches!(container.worker, WorkerSource::Package { .. }) {
+        return Ok(None);
+    }
+    let graphs = crate::lockfile::graphs(&file.path)?;
+    if !crate::daemon::generated_dependencies(text, file, &graphs)?.contains(&key) {
         return Ok(None);
     }
     if !needed {
@@ -430,6 +468,95 @@ pub(crate) fn layer_adapter_env(
             .collect();
         user_env.extend(adapter_env(token, &file.path, package_cache, &vm_dirs));
     }
+    Ok(())
+}
+
+/// Lays what `iii sandbox run` reads over `user_env` when container `key` [`runs_own_vm`], and
+/// only then. The token only opens this container's VM: the project's stays with the adapter.
+pub(crate) fn layer_own_vm_env(
+    file: &ComposeFile,
+    key: &str,
+    project_token: &str,
+    state_dir: &Path,
+    project_namespace: &str,
+    user_env: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let Some(worker_dir) = file
+        .containers
+        .get(key)
+        .and_then(|container| container.worker_dir())
+        .filter(|_| runs_own_vm(file, key))
+    else {
+        return Ok(());
+    };
+    let worker_dir = worker_dir
+        .to_str()
+        .ok_or_else(|| ComposeError::SpawnFailed {
+            container: key.to_string(),
+            message: format!(
+                "{} is not UTF-8, so the sandbox adapter cannot be handed it",
+                worker_dir.display()
+            ),
+        })?;
+    // The guest gets its own variables and what it reads of the reserved contract, such as the
+    // namespace readiness watches; the adapter gives it its engine URL.
+    let worker_env_keys: Vec<&str> = user_env
+        .keys()
+        .map(String::as_str)
+        .chain(
+            crate::spawn::RESERVED_ENV
+                .into_iter()
+                .filter(|name| *name != "III_URL" && !name.starts_with("III_SANDBOX_")),
+        )
+        .collect();
+    let worker_env_keys = worker_env_keys.join(",");
+    // `iii` in the command is this binary. A PATH that cannot lead with its directory is left as
+    // it is.
+    // shortcut: a user-set PATH reaches the guest with this host directory first, which matches
+    // nothing there; hand the guest the user's own value if that ever matters.
+    let path = user_env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let path = std::env::current_exe()
+        .ok()
+        .and_then(|binary| Some(binary.parent()?.to_path_buf()))
+        .and_then(|lead| {
+            std::env::join_paths(std::iter::once(lead).chain(std::env::split_paths(&path))).ok()
+        })
+        .and_then(|path| path.into_string().ok());
+    if let Some(path) = path {
+        user_env.insert("PATH".to_string(), path);
+    }
+    let state_key = state_key(state_dir, key);
+    user_env.extend([
+        (
+            sandbox_cli::TOKEN_ENV.to_string(),
+            contract::scoped_auth_token(project_token, &state_key),
+        ),
+        (sandbox_cli::STATE_KEY_ENV.to_string(), state_key),
+        (
+            sandbox_cli::ADAPTER_ENV.to_string(),
+            adapter_name(file).to_string(),
+        ),
+        (
+            sandbox_cli::ADAPTER_NAMESPACE_ENV.to_string(),
+            project_namespace.to_string(),
+        ),
+        (
+            sandbox_cli::WORKER_DIR_ENV.to_string(),
+            worker_dir.to_string(),
+        ),
+        (
+            sandbox_cli::WORKER_ENV_KEYS_ENV.to_string(),
+            worker_env_keys,
+        ),
+        (
+            sandbox_cli::STOP_TIMEOUT_ENV.to_string(),
+            file.stop_timeout.as_millis().to_string(),
+        ),
+    ]);
     Ok(())
 }
 
@@ -712,6 +839,23 @@ pub(crate) fn check_info(
     Ok(())
 }
 
+/// An adapter before contract 1.2 registers `worker::*` observable, so a worker observing them reads
+/// the project token Compose sends on every call.
+// shortcut: warns and goes on, because refusing would stop every project on such an adapter; refuse
+// once a contract 1.2 release has been out long enough to ask that of them.
+fn observable_token_warning(info: &AdapterInfo, adapter: &str) -> Option<String> {
+    let ContractVersion { major, minor } = info.contract;
+    (minor < 2).then(|| {
+        format!(
+            "{adapter} {} implements sandbox contract {major}.{minor}: a worker observing its \
+             worker::* functions can read this project's sandbox token, and use it to stop or \
+             destroy any of its VMs. Sandbox contract 1.2 closes this: move to a release that \
+             implements it",
+            info.adapter_version
+        )
+    })
+}
+
 /// `worker::start` for VM container `key` (spec 5.4, 7.4).
 pub(crate) fn start_request(
     token: &str,
@@ -762,30 +906,17 @@ pub(crate) fn start_request(
     })
 }
 
-/// Boots VM container `key` through this project's adapter, in the project
-/// namespace: `adapter::info` and its checks, `worker::prepare`, then
-/// `worker::start`. An S502 from the start names a live boot of the same
-/// state, which is stopped before the one retry.
-pub(crate) async fn start_vm(
+/// `adapter::info` and its checks, then `worker::prepare`, with its own budget for an image pull.
+/// Resolves to the `worker::start` that comes next.
+async fn prepare_vm(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     start: &StartSpec,
     env: BTreeMap<String, String>,
-) -> Result<RemoteVm> {
-    let container = ctx
-        .file
-        .containers
-        .get(key)
-        .ok_or_else(|| ComposeError::UnknownContainer {
-            container: key.to_string(),
-        })?;
+) -> Result<WorkerStartRequest> {
     let adapter = adapter_name(ctx.file);
     let declared = adapter_key(ctx.file, adapter)?.unwrap_or_else(|| adapter.to_string());
     let (engine, namespace) = (ctx.engine, ctx.project_namespace);
-    let failed = |error: iii_sdk::Error| ComposeError::SpawnFailed {
-        container: key.to_string(),
-        message: spawn_failed_message(&error),
-    };
 
     let info = start_call::<AdapterInfo>(
         engine,
@@ -798,8 +929,14 @@ pub(crate) async fn start_vm(
         true,
     )
     .await
-    .map_err(failed)?;
+    .map_err(|error| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: spawn_failed_message(&error),
+    })?;
     check_info(&info, adapter, &declared, key)?;
+    if let Some(warning) = observable_token_warning(&info, adapter) {
+        crate::report::daemon_line(&warning, true);
+    }
 
     let request = start_request(
         ctx.sandbox_token,
@@ -826,6 +963,52 @@ pub(crate) async fn start_vm(
     )
     .await
     .map_err(|error| prepare_failed(ctx.file, key, &declared, start, &error))?;
+    Ok(request)
+}
+
+/// [`prepare_vm`] for container `key` that [`runs_own_vm`], before its process starts: the process
+/// then finds the image in place. Its `scripts.run` stands in for a start command, which the
+/// manifest of such a container need not have.
+pub(crate) async fn prepare_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> Result<()> {
+    let Some((worker_dir, run)) = ctx
+        .file
+        .containers
+        .get(key)
+        .and_then(|container| Some((container.worker_dir()?, container.scripts.run.clone())))
+    else {
+        return Ok(());
+    };
+    let start = StartSpec::Vm(VmSpec::Local {
+        worker_dir: worker_dir.to_path_buf(),
+        run_override: run,
+    });
+    prepare_vm(ctx, key, &start, BTreeMap::new()).await?;
+    Ok(())
+}
+
+/// Boots VM container `key` through this project's adapter, in the project
+/// namespace: [`prepare_vm`], then `worker::start`. An S502 from the start names
+/// a live boot of the same state, which is stopped before the one retry.
+pub(crate) async fn start_vm(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    start: &StartSpec,
+    env: BTreeMap<String, String>,
+) -> Result<RemoteVm> {
+    let container = ctx
+        .file
+        .containers
+        .get(key)
+        .ok_or_else(|| ComposeError::UnknownContainer {
+            container: key.to_string(),
+        })?;
+    let adapter = adapter_name(ctx.file);
+    let (engine, namespace) = (ctx.engine, ctx.project_namespace);
+    let failed = |error: iii_sdk::Error| ComposeError::SpawnFailed {
+        container: key.to_string(),
+        message: spawn_failed_message(&error),
+    };
+    let request = prepare_vm(ctx, key, start, env).await?;
 
     let started = match worker_start(
         engine,
@@ -882,7 +1065,9 @@ fn prepare_failed(
     {
         message.push_str(&format!(
             ". If {} was added after the adapter started, restart the adapter, which \
-             stops every VM: iii call compose::restart worker={adapter_key}",
+             restarts the VM workers it was running and ends every sandbox: iii call \
+             compose::restart worker={adapter_key}. It leaves this worker failed, so then \
+             start it with: iii call compose::up",
             dir.display()
         ));
     }
@@ -920,12 +1105,7 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
     if ctx.engine.has_exited() || !ctx.engine.is_connected() {
         return;
     }
-    let probe = VmRecord {
-        adapter: adapter_name(ctx.file).to_string(),
-        namespace: ctx.project_namespace.to_string(),
-        vm_id: vm_id(&state_key(ctx.state_dir, key)),
-        instance: 0,
-    };
+    let probe = boot_probe(ctx, key);
     let (client, grace) = (ctx.engine.client(), ctx.file.stop_timeout);
     let stop_live = || async {
         let reply = worker_stop(client, &probe, ctx.sandbox_token, grace).await;
@@ -940,6 +1120,46 @@ async fn stop_unanswered_start(ctx: &LifecycleCtx<'_>, key: &str) {
     // would close the window outright.
     tokio::time::sleep(PROBE_AGAIN).await;
     stop_live().await;
+}
+
+/// VM container `key` at instance 0, which no boot is: the adapter answers with the one it holds.
+fn boot_probe(ctx: &LifecycleCtx<'_>, key: &str) -> VmRecord {
+    VmRecord {
+        adapter: adapter_name(ctx.file).to_string(),
+        namespace: ctx.project_namespace.to_string(),
+        vm_id: vm_id(&state_key(ctx.state_dir, key)),
+        instance: 0,
+    }
+}
+
+/// The boot of container `key`, one that [`runs_own_vm`], that is running at its adapter: the VM
+/// outlived the `iii sandbox run` that ran it, and the next one reattaches. Its guest is not a
+/// stranger holding the worker's name. A boot still preparing cannot hold that name yet.
+pub(crate) async fn own_vm_running(ctx: &LifecycleCtx<'_>, key: &str) -> Option<VmRecord> {
+    if !runs_own_vm(ctx.file, key) || ctx.engine.has_exited() {
+        return None;
+    }
+    let (client, token) = (ctx.engine.client(), ctx.sandbox_token);
+    let probe = boot_probe(ctx, key);
+    let latest = superseded_by(&worker_status(client, &probe, token).await, &probe)?;
+    let status = worker_status(client, &latest, token).await.ok()?;
+    matches!(status.state, State::Running).then_some(latest)
+}
+
+/// Stops what [`own_vm_running`] finds, for a start that must boot the VM anew or a `down`, and
+/// says whether it found one. One that does not stop keeps the name, which the start then refuses.
+pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> bool {
+    let Some(running) = own_vm_running(ctx, key).await else {
+        return false;
+    };
+    let _ = worker_stop(
+        ctx.engine.client(),
+        &running,
+        ctx.sandbox_token,
+        ctx.file.stop_timeout,
+    )
+    .await;
+    true
 }
 
 /// [`call`] for a step of `container`'s start (or its destroy), which an engine
@@ -1014,8 +1234,10 @@ fn reconnect_line(container: &str, function: &str, wait: Duration) -> String {
 }
 
 /// `worker::destroy` for VM container `key`'s state, by its `state_key`. The
-/// adapter refuses it while the VM runs, so it goes after the stop. A failure
-/// only leaves the state behind, and says where.
+/// adapter refuses it while the VM runs, so it goes after the stop, and once more
+/// after stopping a VM the refusal names: one whose `iii sandbox run` died is up
+/// until its lease ends it, and nothing asks again then. A failure only leaves
+/// the state behind, and says where.
 pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str, namespace: &str) {
     let state_key = state_key(ctx.state_dir, key);
     let request = WorkerDestroyRequest {
@@ -1023,17 +1245,32 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
         state_key: state_key.clone(),
     };
     // Registering: an adapter started for this call may not list it yet.
-    let destroyed = start_call::<WorkerDestroyResponse>(
-        ctx.engine,
-        key,
-        adapter,
-        namespace,
-        WORKER_DESTROY,
-        &request,
-        DESTROY_TIMEOUT,
-        true,
-    )
-    .await;
+    let destroy = || {
+        start_call::<WorkerDestroyResponse>(
+            ctx.engine,
+            key,
+            adapter,
+            namespace,
+            WORKER_DESTROY,
+            &request,
+            DESTROY_TIMEOUT,
+            true,
+        )
+    };
+    let mut destroyed = destroy().await;
+    if let Err(error) = &destroyed
+        && stop_busy_boot(
+            ctx.engine,
+            adapter,
+            namespace,
+            error,
+            ctx.sandbox_token,
+            ctx.file.stop_timeout,
+        )
+        .await
+    {
+        destroyed = destroy().await;
+    }
     if let Err(error) = destroyed {
         let error = ComposeError::EngineCallFailed {
             function: adapter_function_id(adapter, WORKER_DESTROY),
@@ -1050,12 +1287,13 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
     }
 }
 
-/// Whether `key` is a VM container. `file` must be lock-attached, as for
-/// [`needs`].
+/// Whether `key` is a VM container Compose boots itself, which one that
+/// [`runs_own_vm`] is not. `file` must be lock-attached, as for [`needs`].
 pub(crate) fn is_vm(file: &ComposeFile, key: &str) -> bool {
-    vm_needs(file)
-        .iter()
-        .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
+    !runs_own_vm(file, key)
+        && vm_needs(file)
+            .iter()
+            .any(|need| matches!(need, Need::VmBundle(vm) | Need::VmLocal(vm) if vm == key))
 }
 
 /// What a reopened project does with a recorded VM. With its owner gone, the
@@ -1225,21 +1463,36 @@ async fn worker_start(
     };
     let mut started = start().await;
     if let Err(error) = &started
-        && sandbox_code(error) == Some(SandboxErrorCode::S502)
+        && stop_busy_boot(engine, adapter, namespace, error, &request.auth, grace).await
     {
-        // A stop that fails (S502 on a boot still preparing) still gets the retry.
-        if let Some(live) = live_instance(error) {
-            let live = VmRecord {
-                adapter: adapter.to_string(),
-                namespace: namespace.to_string(),
-                vm_id: live.vm_id,
-                instance: live.instance,
-            };
-            let _ = worker_stop(engine.client(), &live, &request.auth, grace).await;
-        }
         started = start().await;
     }
     started
+}
+
+/// Whether `error` is an S502, whose live boot this has then stopped with `grace` for the one
+/// retry of what it refused. A stop that fails (S502 on a boot still preparing) still gets that.
+async fn stop_busy_boot(
+    engine: &EngineClient,
+    adapter: &str,
+    namespace: &str,
+    error: &iii_sdk::Error,
+    token: &str,
+    grace: Duration,
+) -> bool {
+    if sandbox_code(error) != Some(SandboxErrorCode::S502) {
+        return false;
+    }
+    if let Some(live) = live_instance(error) {
+        let live = VmRecord {
+            adapter: adapter.to_string(),
+            namespace: namespace.to_string(),
+            vm_id: live.vm_id,
+            instance: live.instance,
+        };
+        let _ = worker_stop(engine.client(), &live, token, grace).await;
+    }
+    true
 }
 
 pub(crate) async fn worker_stop(
@@ -1338,7 +1591,7 @@ pub(crate) mod tests {
         ComposeFile::parse(text, dir.join("worker-compose.yaml")).unwrap()
     }
 
-    fn manifest(dir: &Path, worker: &str, text: &str) {
+    pub(crate) fn manifest(dir: &Path, worker: &str, text: &str) {
         std::fs::create_dir_all(dir.join(worker)).unwrap();
         std::fs::write(dir.join(worker).join("iii.worker.yaml"), text).unwrap();
     }
@@ -1485,7 +1738,7 @@ pub(crate) mod tests {
         assert!(file.containers["dev"].start_after.is_empty());
     }
 
-    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.2.3 for this
+    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.3.0 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1498,7 +1751,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "graph": [{
                     "name": "sandbox-libkrun",
-                    "version": "0.2.3",
+                    "version": "0.3.0",
                     "type": "binary",
                     "binaries": { (crate::registry::host_targets()[0]): {
                         "sha256": hex::encode(Sha256::digest(archive)),
@@ -1516,9 +1769,128 @@ pub(crate) mod tests {
         server
     }
 
-    /// `text` with a generated `sandbox-libkrun` 0.2.3 appended.
+    /// `api` beside the adapter `sb`, with `fields` in its declaration.
+    fn own_vm_project(dir: &Path, manifest_text: &str, fields: &str) -> ComposeFile {
+        manifest(dir, "api", manifest_text);
+        parse(
+            dir,
+            &format!(
+                "containers:\n  sb: {{worker: package://sandbox-libkrun, version: 1.0.0}}\n  api: {{worker: path://./api, {fields}}}\n"
+            ),
+        )
+    }
+
+    const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
+    const OWN_VM: &str = "start_after: [sb], scripts: {run: iii sandbox run}";
+
+    #[test]
+    fn a_container_runs_its_own_vm_with_the_command_and_the_adapter_in_start_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs =
+            |fields: &str| runs_own_vm(&own_vm_project(dir.path(), VM_MANIFEST, fields), "api");
+        assert!(runs(OWN_VM));
+        assert!(runs(
+            "start_after: [sb], scripts: {run: 'iii  sandbox run --command \"python main.py\"'}"
+        ));
+        assert!(!runs("scripts: {run: iii sandbox run}"));
+        assert!(!runs(
+            "start_after: [sb], scripts: {run: iii sandbox running}"
+        ));
+        assert!(!runs(
+            "start_after: [sb], scripts: {run: iii sandbox destroy}"
+        ));
+        assert!(!runs("start_after: [sb], scripts: {run: python main.py}"));
+        assert!(!runs("start_after: [sb]"));
+
+        // A generated adapter cannot be listed before it exists, so the in-memory edge counts.
+        let mut file = own_vm_project(dir.path(), VM_MANIFEST, "scripts: {run: iii sandbox run}");
+        wire_adapter(&mut file).unwrap();
+        assert!(runs_own_vm(&file, "api"));
+    }
+
+    /// To Compose it is a plain process, whatever its manifest says, that still needs the
+    /// adapter.
+    #[test]
+    fn a_container_that_runs_its_own_vm_is_a_process_that_needs_the_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        for manifest_text in [VM_MANIFEST, "scripts: {start: run}\n"] {
+            let file = own_vm_project(dir.path(), manifest_text, OWN_VM);
+            assert!(!is_vm(&file, "api"));
+            assert_eq!(needs(&file, "default"), vec![Need::VmLocal("api".into())]);
+            assert_eq!(
+                resolve_start(&file, "api", &file.containers["api"]).unwrap(),
+                StartSpec::Shell("iii sandbox run".into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_vm_container_without_the_command_stays_a_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        for (fields, run_override) in [
+            ("start_after: [sb]", None),
+            (
+                "start_after: [sb], scripts: {run: python main.py}",
+                Some("python main.py".to_string()),
+            ),
+        ] {
+            let file = own_vm_project(dir.path(), VM_MANIFEST, fields);
+            assert!(is_vm(&file, "api"));
+            assert_eq!(
+                resolve_start(&file, "api", &file.containers["api"]).unwrap(),
+                StartSpec::Vm(VmSpec::Local {
+                    worker_dir: file.containers["api"].worker_dir().unwrap().to_path_buf(),
+                    run_override,
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_generated_adapter_stays_for_a_container_that_runs_its_own_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", "scripts: {start: run}\n");
+        let text = with_generated_adapter(
+            "containers:\n  api: {worker: path://./api, scripts: {run: iii sandbox run}}\n",
+        )
+        .replace(
+            "{worker: path://./api,",
+            "{worker: path://./api, start_after: [sandbox-libkrun],",
+        );
+        let file = parse(dir.path(), &text);
+        assert_eq!(
+            adapter_change(&text, &file, "default", false, true)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_directory_of_a_container_that_runs_its_own_vm_is_a_host_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        manifest(&dir.path().join("shared"), "api", "scripts: {start: run}\n");
+        let file = parse(
+            &project,
+            &format!(
+                "containers:\n  sb: {{worker: package://sandbox-libkrun, version: 1.0.0}}\n  api: {{worker: path://../shared/api, {OWN_VM}}}\n"
+            ),
+        );
+        let mut env = BTreeMap::new();
+        layer_adapter_env(&file, "sb", "t0k", Path::new("/pkg"), &mut env).unwrap();
+        let roots: Vec<PathBuf> = std::env::split_paths(&env["III_SANDBOX_HOST_ROOTS"]).collect();
+        assert_eq!(roots.len(), 3, "{roots:?}");
+        assert_eq!(
+            roots[2].canonicalize().unwrap(),
+            dir.path().join("shared/api").canonicalize().unwrap()
+        );
+    }
+
+    /// `text` with a generated `sandbox-libkrun` 0.3.0 appended.
     fn with_generated_adapter(text: &str) -> String {
-        let request = edit::parse_worker("sandbox-libkrun@0.2.3").unwrap();
+        let request = edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
         let edit::Outcome::Added(text) = edit::upsert_container(text, &request).unwrap() else {
             panic!("the adapter is new");
         };
@@ -1536,12 +1908,13 @@ pub(crate) mod tests {
             request.source,
             edit::Source::Package {
                 reference: "api.workers.iii.dev/sandbox-libkrun".into(),
-                version: Some("0.2.3".into())
+                version: Some("0.3.0".into())
             }
         );
         let asked: serde_json::Value =
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(asked["version"], ADAPTER_RANGE);
+        assert_eq!(ADAPTER_RANGE, "^0.3");
         let edit::Outcome::Added(text) =
             edit::upsert_container("containers: {}\n", &request).unwrap()
         else {
@@ -1564,6 +1937,55 @@ pub(crate) mod tests {
         // up, build and add never remove it, so up leaves the file as it is.
         assert_eq!(
             adapter_change(&text, &file, "default", false, false)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    /// `compose::add` marks the worker asked for like one it generated; only the
+    /// lock's graph root tells them apart.
+    #[tokio::test]
+    async fn an_adapter_asked_for_by_name_is_never_refreshed_or_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let server = adapter_registry(b"").await;
+        let request = edit::parse_worker("sandbox-libkrun@0.2.0").unwrap();
+        let edit::Outcome::Added(text) =
+            edit::upsert_container("containers: {}\n", &request).unwrap()
+        else {
+            panic!("the adapter is new");
+        };
+        let mut file = parse(dir, &text);
+        let mut lock = crate::registry::TEST_REGISTRY
+            .scope(
+                server.uri(),
+                crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()),
+            )
+            .await
+            .unwrap();
+        lock.replace_graph(
+            "sandbox-libkrun",
+            BTreeSet::from(["sandbox-libkrun".to_string()]),
+        );
+        lock.write_if_changed().unwrap();
+
+        // The last VM is gone: it stays.
+        assert_eq!(
+            adapter_change(&text, &file, "default", false, true)
+                .await
+                .unwrap(),
+            None
+        );
+        // A VM still needs it: an update leaves it at the operator's 0.2.0.
+        manifest(dir, "local", "runtime: {base_image: python}\n");
+        let with_vm = format!("{text}  local: {{worker: path://./local}}\n");
+        assert_eq!(
+            crate::registry::TEST_REGISTRY
+                .scope(
+                    server.uri(),
+                    adapter_change(&with_vm, &parse(dir, &with_vm), "default", true, true),
+                )
                 .await
                 .unwrap(),
             None
@@ -1594,6 +2016,17 @@ pub(crate) mod tests {
         let checkout = "containers:\n  sandbox-libkrun: {worker: path://./dev}\n";
         assert_eq!(
             change(format!("{checkout}{app}"), true).await.unwrap(),
+            None
+        );
+        // A comment on the key reads like the bare key.
+        let commented = "containers:  # workers\n  sandbox-libkrun: {worker: path://./dev}\n";
+        assert_eq!(
+            change(format!("{commented}{app}"), true).await.unwrap(),
+            None
+        );
+        let commented = pinned.replace("containers:", "containers: # workers");
+        assert_eq!(
+            change(format!("{commented}{app}"), true).await.unwrap(),
             None
         );
 
@@ -1742,7 +2175,9 @@ pub(crate) mod tests {
         let outside = message(project.join("../shared/vm"));
         assert!(
             outside.contains("restart the adapter")
-                && outside.ends_with("compose::restart worker=sb"),
+                && outside.contains("the VM workers it was running")
+                && outside.contains("compose::restart worker=sb")
+                && outside.ends_with("iii call compose::up"),
             "{outside}"
         );
         assert!(!message(project.join("inner")).contains("restart the adapter"));
@@ -1766,7 +2201,11 @@ pub(crate) mod tests {
             .to_string()
     }
 
-    fn status(state: State, exit_code: Option<i32>, signal: Option<i32>) -> WorkerStatus {
+    pub(crate) fn status(
+        state: State,
+        exit_code: Option<i32>,
+        signal: Option<i32>,
+    ) -> WorkerStatus {
         WorkerStatus {
             vm_id: "v".into(),
             instance: 1,
@@ -1776,6 +2215,23 @@ pub(crate) mod tests {
             started_at_ms: 0,
             ended_at_ms: None,
         }
+    }
+
+    #[test]
+    fn an_adapter_before_contract_1_2_is_named_as_showing_the_token_to_observers() {
+        let info = |minor| AdapterInfo {
+            adapter: "sandbox-libkrun".into(),
+            adapter_version: "0.3.0".into(),
+            contract: ContractVersion { major: 1, minor },
+            features: Vec::new(),
+        };
+        let warning = observable_token_warning(&info(1), "sandbox-libkrun").unwrap();
+        assert!(
+            warning.starts_with("sandbox-libkrun 0.3.0 implements sandbox contract 1.1"),
+            "{warning}"
+        );
+        assert!(warning.contains("observing"), "{warning}");
+        assert_eq!(observable_token_warning(&info(2), "sandbox-libkrun"), None);
     }
 
     #[test]
@@ -2070,7 +2526,7 @@ pub(crate) mod tests {
     }
 
     /// [`fake_engine`]'s address, for an [`EngineClient`].
-    async fn fake_engine_url(
+    pub(crate) async fn fake_engine_url(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
         String,
@@ -2130,7 +2586,8 @@ pub(crate) mod tests {
                         };
                         let function = message["function_id"].as_str().unwrap_or_default();
                         if message["type"] != "invokefunction"
-                            || function.starts_with("engine::workers::")
+                            || (function.starts_with("engine::workers::")
+                                && function != "engine::workers::list")
                         {
                             continue;
                         }
@@ -2183,7 +2640,7 @@ pub(crate) mod tests {
         serde_json::json!({ "error": { "code": "invocation_failed", "message": message } })
     }
 
-    fn not_found() -> serde_json::Value {
+    pub(crate) fn not_found() -> serde_json::Value {
         serde_json::json!({ "error": { "code": "function_not_found", "message": "gone" } })
     }
 
@@ -2707,6 +3164,120 @@ pub(crate) mod tests {
                 }
             }
             assert_eq!(destroyed, [serde_json::json!(state_key(dir.path(), "vm"))]);
+        }
+    }
+
+    /// A plain VM or process holding its name is not asked about: only a container that runs
+    /// its own VM has one that may outlive what ran it.
+    #[tokio::test]
+    async fn only_a_container_that_runs_its_own_vm_is_asked_about() {
+        let (url, mut called) = fake_engine_url(|function, _| match function {
+            "sandbox-libkrun::worker::status" => answered(status(State::Running, None, None)),
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        manifest(dir.path(), "plain", "scripts: {start: run}\n");
+        let file = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm}\n  plain: {worker: path://./plain}\n",
+        );
+        let engine = EngineClient::connect(&url, "t", "t");
+        let (shutdown, post_runs, diagnostics) = Default::default();
+        let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+        let ctx = LifecycleCtx {
+            shutdown: &shutdown,
+            file: &file,
+            engine: &engine,
+            post_runs: &post_runs,
+            compose_namespace: "t",
+            project_namespace: "shop",
+            engine_url: &url,
+            package_cache: dir.path(),
+            logs: &logs,
+            state_dir: dir.path(),
+            sandbox_token: "t",
+            empty_env_diagnostics: &diagnostics,
+        };
+        for key in ["vm", "plain"] {
+            assert!(own_vm_running(&ctx, key).await.is_none());
+            stop_own_vm(&ctx, key).await;
+        }
+        assert_eq!(drain(&mut called), []);
+    }
+
+    /// A VM the command that ran it left behind refuses the destroy until its lease stops
+    /// it, and nothing would ask again then. So it is stopped now, and asked once more; a
+    /// second refusal only leaves the state behind.
+    #[tokio::test]
+    async fn a_destroy_refused_for_a_live_vm_stops_it_and_asks_once_more() {
+        for refusals in [1, 2] {
+            let destroys = std::sync::atomic::AtomicUsize::new(0);
+            let (url, mut called) = fake_engine_url(move |function, _| match function {
+                "sandbox-libkrun::worker::destroy"
+                    if destroys.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < refusals =>
+                {
+                    refused(SandboxErrorCode::S502, 7)
+                }
+                "sandbox-libkrun::worker::destroy" => {
+                    answered(serde_json::json!({ "destroyed": true }))
+                }
+                "sandbox-libkrun::worker::stop" => answered(status(State::Stopped, None, None)),
+                _ => not_found(),
+            })
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            manifest(
+                dir.path(),
+                "vm",
+                "runtime: {base_image: python}\nscripts: {start: run}\n",
+            );
+            let file = parse(dir.path(), "containers:\n  vm: {worker: path://./vm}\n");
+            let engine = EngineClient::connect(&url, "t", "t");
+            let (shutdown, post_runs, diagnostics) = Default::default();
+            let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+            let ctx = LifecycleCtx {
+                shutdown: &shutdown,
+                file: &file,
+                engine: &engine,
+                post_runs: &post_runs,
+                compose_namespace: "t",
+                project_namespace: "shop",
+                engine_url: &url,
+                package_cache: dir.path(),
+                logs: &logs,
+                state_dir: dir.path(),
+                sandbox_token: "project-token",
+                empty_env_diagnostics: &diagnostics,
+            };
+
+            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop").await;
+
+            let mut calls = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                let auth = payload["auth"].as_str().unwrap().to_string();
+                calls.push((function, payload["instance"].as_u64(), auth));
+            }
+            let call = |suffix: &str, instance| {
+                (
+                    format!("sandbox-libkrun::{suffix}"),
+                    instance,
+                    "project-token".to_string(),
+                )
+            };
+            assert_eq!(
+                calls,
+                [
+                    call("worker::destroy", None),
+                    call("worker::stop", Some(7)),
+                    call("worker::destroy", None),
+                ]
+            );
         }
     }
 

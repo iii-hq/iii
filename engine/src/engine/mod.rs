@@ -1260,6 +1260,26 @@ impl Engine {
         }
     }
 
+    /// What the debug log shows of a call's input or result: `observability::on-log`
+    /// hands that log to any observer in any namespace, so a function that refuses
+    /// observers is not shown to them through it. Nor is one with no registration,
+    /// which has no flag to read: its worker may be restarting, with callers still
+    /// sending what it would refuse to show.
+    fn loggable<'a>(
+        &self,
+        namespace: &str,
+        function_id: &str,
+        value: &'a dyn std::fmt::Debug,
+    ) -> &'a dyn std::fmt::Debug {
+        if self.functions.get(namespace, function_id).is_some()
+            && self.observers.options(namespace, function_id).observable
+        {
+            value
+        } else {
+            &"<not observable>"
+        }
+    }
+
     /// The namespace this connection was already committed to, or `None` while it
     /// is still `Pending`. Unlike [`Self::connection_namespace`], this
     /// distinguishes "not yet fixed" (`Pending` → `None`) from "fixed to
@@ -1566,7 +1586,7 @@ impl Engine {
                     traceparent = %crate::logging::display_option(traceparent),
                     baggage = %crate::logging::display_option(baggage),
                     action = ?action,
-                    payload = ?data,
+                    payload = ?self.loggable(effective_namespace(namespace), function_id, data),
                     "InvokeFunction"
                 );
 
@@ -2014,7 +2034,12 @@ impl Engine {
                 tracing::debug!(
                     function_id = %function_id,
                     invocation_id = %invocation_id,
-                    result = ?result,
+                    result = ?self.loggable(
+                        &self.connection_namespace(worker),
+                        // The host answers with the id it was invoked by, without its prefix.
+                        &resolve_registration_id(worker, function_id),
+                        result,
+                    ),
                     error = ?error,
                     matched = ?matched.as_ref().map(Vec::len),
                     delivered,
@@ -3070,7 +3095,7 @@ impl Engine {
             message_type = %removed,
             replacement = %replacement,
             "dropping `{removed}` frames from worker {name} ({runtime} SDK {version}): \
-             this engine has no such message; run compose::update worker={name}"
+             this engine has no such message; run compose::update worker={name}@latest"
         );
     }
 
@@ -9201,7 +9226,111 @@ mod tests {
             logs.contains("from worker cron (node SDK 0.25.4)"),
             "{logs}"
         );
-        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+        assert!(
+            logs.contains("run compose::update worker=cron@latest"),
+            "{logs}"
+        );
+    }
+
+    /// `observability::on-log` hands the debug log to any observer in any
+    /// namespace, so it shows nothing of a call to a function that refuses
+    /// observers. A function that does not, or that nobody registered, is logged.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_debug_log_hides_the_calls_of_a_function_that_is_not_observable() {
+        ensure_default_meter();
+        let (_guard, logs) = crate::deprecation::test_support::capture_at(tracing::Level::DEBUG);
+        let engine = Engine::new();
+        let (tx, _host_rx) = mpsc::channel::<Outbound>(8);
+        let host = WorkerConnection::new(tx);
+        engine.begin_namespace_resolution(&host);
+        engine.resolve_connection_namespace(&host, "orders").await;
+        engine.cancel_namespace_grace_timer(&host.id);
+        let registration = |id: &str, observable| Message::RegisterFunction {
+            id: id.to_string(),
+            description: None,
+            request_format: None,
+            response_format: None,
+            metadata: None,
+            invocation: None,
+            args_format: None,
+            private: false,
+            observable,
+            observe: None,
+        };
+        let answer = |function_id: &str, output: &str| Message::InvocationResult {
+            invocation_id: uuid::Uuid::new_v4(),
+            function_id: function_id.to_string(),
+            result: Some(json!({ "secret": output })),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            matched: None,
+            delivered: false,
+        };
+        for (id, observable) in [("vault::read-secret", false), ("orders::echo", true)] {
+            engine
+                .router_msg_owned(&host, registration(id, observable))
+                .await
+                .unwrap();
+        }
+        let (tx, _caller_rx) = mpsc::channel::<Outbound>(8);
+        let caller = WorkerConnection::new(tx);
+
+        for (function_id, shown) in [
+            ("vault::read-secret", false),
+            ("orders::echo", true),
+            // No registration, no flag: this may be a worker that is restarting.
+            ("orders::never-registered", false),
+        ] {
+            let input = format!("input-of-{function_id}");
+            let output = format!("output-of-{function_id}");
+            engine
+                .router_msg_owned(
+                    &caller,
+                    Message::InvokeFunction {
+                        invocation_id: None,
+                        function_id: function_id.to_string(),
+                        data: json!({ "auth": input }),
+                        traceparent: None,
+                        baggage: None,
+                        action: None,
+                        metadata: None,
+                        namespace: Some("orders".to_string()),
+                        caller: None,
+                        observe_depth: None,
+                        activation: None,
+                    },
+                )
+                .await
+                .unwrap();
+            engine
+                .router_msg_owned(&host, answer(function_id, &output))
+                .await
+                .unwrap();
+            let logs = logs.contents();
+            assert_eq!(logs.contains(&input), shown, "{function_id}: {logs}");
+            assert_eq!(logs.contains(&output), shown, "{function_id}: {logs}");
+        }
+
+        // A host with a registration prefix is invoked by, and answers with, the bare id.
+        let (tx, _prefixed_rx) = mpsc::channel::<Outbound>(8);
+        let prefixed = WorkerConnection::with_session(tx, session_with_prefix("tenant"));
+        engine
+            .router_msg_owned(&prefixed, registration("read-secret", false))
+            .await
+            .unwrap();
+        engine
+            .router_msg_owned(
+                &prefixed,
+                answer("read-secret", "output-of-a-prefixed-host"),
+            )
+            .await
+            .unwrap();
+
+        let logs = logs.contents();
+        assert!(!logs.contains("output-of-a-prefixed-host"), "{logs}");
+        assert!(logs.contains(r#"payload="<not observable>""#), "{logs}");
+        assert!(logs.contains(r#"result="<not observable>""#), "{logs}");
     }
 
     /// The worker's name and SDK reach the registry after the removed frame is
@@ -9247,7 +9376,10 @@ mod tests {
             logs.contains("from worker cron (node SDK 0.25.4)"),
             "{logs}"
         );
-        assert!(logs.contains("run compose::update worker=cron"), "{logs}");
+        assert!(
+            logs.contains("run compose::update worker=cron@latest"),
+            "{logs}"
+        );
         assert!(logs.contains("`registertrigger`"), "{logs}");
         assert!(logs.contains("replacement="), "{logs}");
     }
