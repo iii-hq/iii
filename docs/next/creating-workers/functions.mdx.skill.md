@@ -338,9 +338,9 @@ use this `metadata` object to provide trigger or execution context to the receiv
 
 ## HTTP-invokable functions
 
-The `iii-http-functions` worker provides this feature. See its
-[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) for its configuration and
-security controls.
+The `iii-http-functions` worker provides this feature. It is engine-owned, so it is declared in
+the engine's `workers:` list rather than added with `compose::add`; see
+[Engine configuration](../using-iii/engine#engine-configuration).
 
 You can register an external HTTP endpoint as a function. The engine makes the HTTP call whenever
 the function is invoked; your worker only declares the endpoint.
