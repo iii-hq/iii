@@ -56,9 +56,12 @@ The landing announces the iii app (Mac, iPhone, iPad, Android) in four places: a
 "App" entry in the header, the `#app` section under the hero (`components/landing/iii-app.tsx`, copy in
 `content.ts` → `iiiApp`), and the footer. They all point at the launch page on the registry, `links.app`
 (`https://iii.dev/registry/app`), and the section's "Download for Mac" at `links.appDownloadMac`, both in
-`lib/site.ts`. The device stage draws a Mac window and two phones in CSS around screenshots listed in
+`lib/site.ts`. The Mac button links the download directly, with no "coming soon" state on this side: the website
+ships after the first DMG is published on the registry, and until then the registry answers that link with a redirect
+back to the launch page. The device stage draws a Mac window and two phones in CSS around screenshots listed in
 `components/landing/app-media.ts`, one entry per slot (file in `public/iii-app/`, size, alt text); replacing a
-screenshot is a file swap plus that entry. `pnpm test:dist` checks the links and that every screenshot ships.
+screenshot is a file swap plus that entry. `pnpm test:dist` checks each link where it is drawn (the hero pill, the
+header nav, the section's two buttons, the footer) and that every screenshot ships.
 
 ## Writing a blog post
 
