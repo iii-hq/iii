@@ -101,7 +101,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
 To install one exact version, give the version as the last argument:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.25.0
 ```
 
 ### Install without a prompt
@@ -129,7 +129,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 s
 
 | Variable              | Effect                                                                              |
 | --------------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`             | Engine version to install, for example `0.23.1`.                                    |
+| `VERSION`             | Engine version to install, for example `0.25.0`.                                    |
 | `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
 | `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
 | `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
