@@ -1397,7 +1397,10 @@ impl ObserverRegistry {
         };
         // One atomic add: `iii.observer.activations.total` follows from the
         // counters (see [`export_drops`]).
-        observer.activations.count(pending.event.delivery);
+        observer
+            .counters()
+            .activations
+            .count(pending.event.delivery);
         // Built now, from the event the observers share; the event is let go
         // (and its share of the queue budget given back) before the target
         // answers.
@@ -2236,7 +2239,7 @@ fn failure_of(outcome: &ActivationOutcome) -> Option<&'static str> {
 }
 
 fn count_failure(observer: &Observer, reason: &str) {
-    observer.failures.count(reason);
+    observer.counters().failures.count(reason);
     if let Some(metrics) = super::metrics() {
         metrics.observer_activation_failures_total.add(
             1,
@@ -2402,17 +2405,18 @@ fn project_encoded(observer: &Observer, completed: &Completed, activation_id: &s
 /// `iii.observer.dropped.total` follows from the counters (see
 /// [`ObserverRegistry::export_drops`]).
 fn drop_event(observer: &Observer, reason: &str) {
+    let drops = &observer.counters().drops;
     let counter = match reason {
-        observe_codes::LOOP_GUARD => &observer.drops.loop_guard,
-        observe_codes::MAX_FIRES => &observer.drops.max_fires,
-        observe_codes::OVERFLOW => &observer.drops.overflow,
-        observe_codes::REPORTER_NOT_OWNER => &observer.drops.reporter_not_owner,
-        CANCELLED => &observer.drops.cancelled,
-        INVALID_REPORT => &observer.drops.invalid_report,
-        observe_codes::TOO_LARGE => &observer.drops.too_large,
-        observe_codes::NOT_FUNCTION_OWNER => &observer.drops.not_function_owner,
-        observe_codes::OBSERVER_NOT_ACTIVE => &observer.drops.observer_not_active,
-        _ => &observer.drops.inactive,
+        observe_codes::LOOP_GUARD => &drops.loop_guard,
+        observe_codes::MAX_FIRES => &drops.max_fires,
+        observe_codes::OVERFLOW => &drops.overflow,
+        observe_codes::REPORTER_NOT_OWNER => &drops.reporter_not_owner,
+        CANCELLED => &drops.cancelled,
+        INVALID_REPORT => &drops.invalid_report,
+        observe_codes::TOO_LARGE => &drops.too_large,
+        observe_codes::NOT_FUNCTION_OWNER => &drops.not_function_owner,
+        observe_codes::OBSERVER_NOT_ACTIVE => &drops.observer_not_active,
+        _ => &drops.inactive,
     };
     counter.fetch_add(1, Ordering::Relaxed);
 }
@@ -2456,7 +2460,7 @@ impl TooLarge {
 /// observer.
 fn drop_too_large(observer: &Observer, size: usize, limit: usize, too_large: TooLarge) {
     drop_event(observer, observe_codes::TOO_LARGE);
-    if !once_a_minute(&observer.last_too_large_warn_ms) {
+    if !once_a_minute(&observer.counters().last_too_large_warn_ms) {
         return;
     }
     tracing::warn!(
@@ -2485,13 +2489,13 @@ fn once_a_minute(last: &AtomicU64) -> bool {
 /// `iii.observer.dropped.total`, and the activations it started to
 /// `iii.observer.activations.total`.
 pub(crate) fn export_drops(observer: &Observer) {
-    let Some(metrics) = super::metrics() else {
+    let (Some(metrics), Some(counters)) = (super::metrics(), observer.counted()) else {
         return;
     };
     // Made once, and only when there is something to export.
     let label = std::cell::OnceCell::new();
     let function_id = || label.get_or_init(|| observer.function_label()).clone();
-    for (reason, count) in observer.drops.unexported() {
+    for (reason, count) in counters.drops.unexported() {
         metrics.observer_dropped_total.add(
             count,
             &[
@@ -2500,7 +2504,7 @@ pub(crate) fn export_drops(observer: &Observer) {
             ],
         );
     }
-    for (delivery, count) in observer.activations.unexported() {
+    for (delivery, count) in counters.activations.unexported() {
         metrics.observer_activations_total.add(
             count,
             &[
@@ -2522,7 +2526,7 @@ fn evaluator_of<'a>(
 /// At most one warning per observer per minute: a loop fires as fast as it
 /// can, and the counter already has the numbers.
 fn warn_loop_guard(observer: &Observer, depth: u32, max_depth: u32) {
-    if !once_a_minute(&observer.last_loop_warn_ms) {
+    if !once_a_minute(&observer.counters().last_loop_warn_ms) {
         return;
     }
     tracing::warn!(
@@ -2745,8 +2749,15 @@ mod tests {
             .unwrap_err();
         assert_eq!(refused.code, "OBSERVER_NOT_ACTIVE");
         assert_eq!(observer.state(), crate::protocol::ObserverState::Disposed);
-        assert_eq!(observer.drops.observer_not_active.load(Ordering::SeqCst), 1);
-        assert_eq!(observer.drops.inactive.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            observer
+                .counters()
+                .drops
+                .observer_not_active
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(observer.counters().drops.inactive.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -3601,7 +3612,7 @@ mod tests {
         waiting.await.unwrap();
         assert!(started.elapsed() < super::REPORT_BACKPRESSURE_WAIT);
         assert_eq!(
-            observer.drops.snapshot().get("INACTIVE"),
+            observer.drop_snapshot().get("INACTIVE"),
             Some(&4),
             "the queue's events"
         );
@@ -3723,7 +3734,7 @@ mod tests {
                 "max_fires {max_fires:?}"
             );
             assert_eq!(observer.fires.load(Ordering::SeqCst), 2, "{max_fires:?}");
-            let drops = observer.drops.snapshot();
+            let drops = observer.drop_snapshot();
             let (reason, other) = if spent {
                 ("INACTIVE", "OVERFLOW")
             } else {
@@ -3767,7 +3778,7 @@ mod tests {
         dispose.join().unwrap();
 
         assert_eq!(observer.fires.load(Ordering::SeqCst), 0, "no fire counted");
-        assert_eq!(observer.drops.snapshot().get("INACTIVE"), Some(&1));
+        assert_eq!(observer.drop_snapshot().get("INACTIVE"), Some(&1));
     }
 
     /// `max_fires` 2: an activation took fire 1 and waits for the flow lock
@@ -3814,7 +3825,7 @@ mod tests {
         first.join().unwrap();
 
         assert_eq!(observer.fires.load(Ordering::SeqCst), 2);
-        assert_eq!(observer.drops.snapshot().get("INACTIVE"), None);
+        assert_eq!(observer.drop_snapshot().get("INACTIVE"), None);
         let delivered = tokio::time::timeout(std::time::Duration::from_secs(5), sink.recv()).await;
         assert!(
             matches!(delivered, Ok(Some(_))),
@@ -3867,8 +3878,7 @@ mod tests {
         assert_eq!(observer.fires.load(Ordering::SeqCst), 0, "fire given back");
         assert_eq!(
             observer
-                .drops
-                .snapshot()
+                .drop_snapshot()
                 .get(observe_codes::OBSERVER_NOT_ACTIVE),
             Some(&1),
             "a fire-and-forget refusal counts under its code"
@@ -3987,7 +3997,7 @@ mod tests {
             registry.activate(&observer, &event(3)),
             "the budget is full"
         );
-        let dropped = observer.drops.snapshot();
+        let dropped = observer.drop_snapshot();
         assert_eq!(dropped.get("TOO_LARGE"), Some(&1));
         assert_eq!(dropped.get("OVERFLOW"), Some(&1));
         assert_eq!(registry.in_flight("obs"), Some((1, 3)));

@@ -493,6 +493,21 @@ pub(crate) struct FailureCounters {
     pub target_error: AtomicU64,
 }
 
+/// What an observer counts once it does something: the events it dropped,
+/// the activations it started and those that failed, and when it last
+/// logged a warning. Made the first time it counts anything, so an observer
+/// that never fired nor dropped an event holds none.
+#[derive(Debug, Default)]
+pub(crate) struct Counters {
+    pub drops: DropCounters,
+    pub activations: ActivationCounters,
+    pub failures: FailureCounters,
+    pub last_loop_warn_ms: AtomicU64,
+    /// When a `TOO_LARGE` drop was last logged (see
+    /// [`super::dispatch::drop_too_large`]).
+    pub last_too_large_warn_ms: AtomicU64,
+}
+
 /// Activation failure reasons (`iii.observer.activation.failures.total`).
 pub(crate) mod failure_reasons {
     pub const TIMEOUT: &str = "TIMEOUT";
@@ -623,21 +638,17 @@ pub struct Observer {
     /// read without the lock (the routed hook reads it on every activation).
     active: AtomicBool,
     pub(crate) fires: AtomicU64,
-    pub(crate) drops: DropCounters,
-    pub(crate) activations: ActivationCounters,
+    /// Its counters, made when it first counts something (see
+    /// [`Counters`]).
+    counters: std::sync::OnceLock<Box<Counters>>,
     /// What it reads of a call's input, from its capture, deliver and
     /// filters, which never change.
     pub(crate) input_reads: InputReads,
-    pub(crate) failures: FailureCounters,
     pub(crate) flow: Lock<Flow>,
     timers: Lock<Timers>,
     /// A timer was ever set in `timers`: until then, cancelling them takes
     /// no lock.
     timed: AtomicBool,
-    pub(crate) last_loop_warn_ms: AtomicU64,
-    /// When a `TOO_LARGE` drop was last logged (see
-    /// [`super::dispatch::drop_too_large`]).
-    pub(crate) last_too_large_warn_ms: AtomicU64,
     /// Its place in its function's creation order, given when it joins the
     /// function's observers ([`ObserverRegistry::attach_to_function`]): `0`
     /// until then.
@@ -709,15 +720,11 @@ impl Observer {
             }),
             active: AtomicBool::new(false),
             fires: AtomicU64::new(0),
-            drops: DropCounters::default(),
-            activations: ActivationCounters::default(),
+            counters: std::sync::OnceLock::new(),
             input_reads,
-            failures: FailureCounters::default(),
             flow: Lock::new(Flow::default()),
             timers: Lock::new(Timers::default()),
             timed: AtomicBool::new(false),
-            last_loop_warn_ms: AtomicU64::new(0),
-            last_too_large_warn_ms: AtomicU64::new(0),
             seq: AtomicU64::new(0),
             member: AtomicBool::new(false),
             joined: std::sync::OnceLock::new(),
@@ -853,6 +860,31 @@ impl Observer {
         &self,
     ) -> Option<Arc<crate::workers::worker::rbac_session::Session>> {
         self.status.read().observing.session.clone()
+    }
+
+    /// Its counters, to count with: made the first time.
+    pub(crate) fn counters(&self) -> &Counters {
+        self.counters.get_or_init(Box::default)
+    }
+
+    /// Its counters, when it counted anything: reading them makes none.
+    pub(crate) fn counted(&self) -> Option<&Counters> {
+        self.counters.get().map(|counters| &**counters)
+    }
+
+    /// What it dropped, by reason (see [`DropCounters::snapshot`]).
+    pub(crate) fn drop_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.drops.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Its activations that failed, by reason (see
+    /// [`FailureCounters::snapshot`]).
+    pub(crate) fn failure_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.failures.snapshot())
+            .unwrap_or_default()
     }
 
     /// The worker name and namespace of its observing worker.
@@ -1235,10 +1267,13 @@ impl ObserverRegistry {
             self.withdraw_from_owner(observer);
             if !observer.reason_is(observe_codes::MAX_FIRES) {
                 let dropped = std::mem::take(&mut observer.flow.write().queue).len() as u64;
-                observer
-                    .drops
-                    .inactive
-                    .fetch_add(dropped, Ordering::Relaxed);
+                if dropped > 0 {
+                    observer
+                        .counters()
+                        .drops
+                        .inactive
+                        .fetch_add(dropped, Ordering::Relaxed);
+                }
             }
         }
         if became != ObserverState::Active {

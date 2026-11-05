@@ -2619,6 +2619,35 @@ mod tests {
         assert!(InputCounts::default().fields.is_empty());
     }
 
+    /// An observer holds no counters until it counts something, and what
+    /// reads its counts (a listing, the drop export) makes none.
+    #[tokio::test]
+    async fn an_observer_makes_its_counters_when_it_first_counts() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        registry
+            .observe_as_engine(engine_observer("a", "test::dst"))
+            .unwrap();
+        let observer = registry.get("a").unwrap();
+        registry.export_drops();
+        assert!(observer.drop_snapshot().is_empty());
+        assert!(observer.failure_snapshot().is_empty());
+        assert!(observer.counted().is_none(), "reading made no counters");
+        observer
+            .counters()
+            .drops
+            .overflow
+            .fetch_add(2, Ordering::Relaxed);
+        assert_eq!(
+            observer.drop_snapshot().get(observe_codes::OVERFLOW),
+            Some(&2)
+        );
+        assert!(observer.counted().is_some());
+    }
+
     /// A disposed observer goes with the last version of its function's
     /// active set that holds it, oldest observer included (it leaves its
     /// leaf without a copy), and the drops it counted reach
@@ -2647,6 +2676,7 @@ mod tests {
         let count_drops = |id: &str, count: u64| {
             let observer = registry.get(id).unwrap();
             observer
+                .counters()
                 .drops
                 .overflow
                 .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
