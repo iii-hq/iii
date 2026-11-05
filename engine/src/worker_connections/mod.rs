@@ -426,7 +426,7 @@ pub struct WorkerConnection {
     /// what the connection does meanwhile without saying (calls from a worker
     /// without `observe.v1`, registrations, telemetry; see
     /// [`WorkerConnection::inflight_depth`]).
-    pub inflight_depths: Arc<std::sync::Mutex<HashMap<Uuid, u32>>>,
+    pub inflight_depths: Arc<std::sync::Mutex<InflightDepths>>,
     /// The routed calls this connection answered last, when it declared
     /// `observe.v2`: its report items for them are refused (decision 38).
     pub routed_answers: Arc<crate::observer::RoutedAnswers>,
@@ -466,7 +466,7 @@ impl WorkerConnection {
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
             removed_messages_pending: Arc::default(),
-            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            inflight_depths: Arc::default(),
             routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
@@ -504,7 +504,7 @@ impl WorkerConnection {
             features: Arc::new(WorkerFeatures::default()),
             removed_messages_warned: Arc::new(AtomicU8::new(0)),
             removed_messages_pending: Arc::default(),
-            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            inflight_depths: Arc::default(),
             routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
@@ -588,13 +588,10 @@ impl WorkerConnection {
     }
 
     pub fn forget_inflight_depth(&self, invocation_id: &Uuid) {
-        let mut depths = self
-            .inflight_depths
+        self.inflight_depths
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !depths.is_empty() {
-            depths.remove(invocation_id);
-        }
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(invocation_id);
     }
 
     /// The loop guard's heuristic for what this connection does without
@@ -610,9 +607,7 @@ impl WorkerConnection {
         self.inflight_depths
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .copied()
-            .max()
+            .deepest()
     }
 
     /// Whether this is the first frame of the removed message type `index`
@@ -625,6 +620,50 @@ impl WorkerConnection {
             == 0
     }
 }
+
+/// The depths of the invocations a connection runs at a depth above 0 (see
+/// [`WorkerConnection::inflight_depth`]), and how many run at each depth: the
+/// deepest is read on every frame the connection sends without a depth, in
+/// `O(log d)` for `d` distinct depths, however many invocations are in
+/// flight.
+#[derive(Debug, Default)]
+pub struct InflightDepths {
+    by_invocation: HashMap<Uuid, u32>,
+    by_depth: std::collections::BTreeMap<u32, usize>,
+}
+
+impl InflightDepths {
+    fn insert(&mut self, invocation_id: Uuid, depth: u32) {
+        if let Some(previous) = self.by_invocation.insert(invocation_id, depth) {
+            self.uncount(previous);
+        }
+        *self.by_depth.entry(depth).or_default() += 1;
+    }
+
+    fn remove(&mut self, invocation_id: &Uuid) {
+        if self.by_invocation.is_empty() {
+            return;
+        }
+        if let Some(depth) = self.by_invocation.remove(invocation_id) {
+            self.uncount(depth);
+        }
+    }
+
+    fn deepest(&self) -> Option<u32> {
+        self.by_depth.last_key_value().map(|(depth, _)| *depth)
+    }
+
+    fn uncount(&mut self, depth: u32) {
+        if let std::collections::btree_map::Entry::Occupied(mut entry) = self.by_depth.entry(depth)
+        {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -937,5 +976,28 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<Outbound>(1);
         let worker = WorkerConnection::new(tx);
         assert!(worker.isolation.is_none());
+    }
+
+    /// The deepest in-flight depth follows the invocations in flight,
+    /// including one remembered again at another depth.
+    #[test]
+    fn the_deepest_inflight_depth_follows_what_is_in_flight() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = WorkerConnection::new(tx);
+        assert_eq!(worker.inflight_depth(), None);
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        worker.remember_inflight_depth(a, 2);
+        worker.remember_inflight_depth(b, 5);
+        worker.remember_inflight_depth(c, 5);
+        assert_eq!(worker.inflight_depth(), Some(5));
+        worker.forget_inflight_depth(&b);
+        assert_eq!(worker.inflight_depth(), Some(5));
+        worker.forget_inflight_depth(&c);
+        assert_eq!(worker.inflight_depth(), Some(2));
+        worker.remember_inflight_depth(a, 3);
+        assert_eq!(worker.inflight_depth(), Some(3));
+        worker.forget_inflight_depth(&a);
+        worker.forget_inflight_depth(&a);
+        assert_eq!(worker.inflight_depth(), None);
     }
 }
