@@ -2053,15 +2053,40 @@ mod tests {
     }
 
     #[test]
-    fn engine_advertises_observe_v1_v2_and_local_dispatch() {
+    fn engine_advertises_observe_v1_v2_capture_and_local_dispatch() {
         assert_eq!(
             super::engine_features(),
             vec![
                 "observe.v1".to_string(),
                 "observe.v2".to_string(),
+                "observe.capture".to_string(),
                 "local-dispatch.v1".to_string()
             ]
         );
+        assert_eq!(super::FEATURE_OBSERVE_CAPTURE, "observe.capture");
+    }
+
+    #[test]
+    fn an_observer_view_carries_fires_and_on_only_when_set() {
+        let view = super::ObserverView {
+            id: "o-1".to_string(),
+            args: json!({}),
+            filters: json!({}),
+            target: "sink::x".to_string(),
+            capture: vec![super::Capture::Error],
+            fires: vec!["error".to_string()],
+            on: None,
+        };
+        let wire = serde_json::to_value(&view).unwrap();
+        assert_eq!(wire["fires"], json!(["error"]), "{wire}");
+        assert!(wire.get("on").is_none(), "{wire}");
+        let legacy = super::ObserverView {
+            on: Some("error".to_string()),
+            ..view
+        };
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(wire["on"], "error", "{wire}");
+        assert_eq!(wire["fires"], json!(["error"]), "{wire}");
     }
 
     #[test]

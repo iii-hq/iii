@@ -678,6 +678,26 @@ mod tests {
     }
 
     #[test]
+    fn observe_capture_is_its_own_feature() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_capture());
+        assert!(
+            worker
+                .features
+                .set(&["observe.v2".to_string(), "observe.capture".to_string()])
+        );
+        assert!(worker.features.observe_v2() && worker.features.observe_capture());
+
+        let rc = make_worker();
+        assert!(rc.features.set(&["observe.v2".to_string()]));
+        assert!(rc.features.observe_v2() && !rc.features.observe_capture());
+
+        let capture_only = make_worker();
+        assert!(capture_only.features.set(&["observe.capture".to_string()]));
+        assert!(capture_only.features.observe_capture() && !capture_only.features.observe_v2());
+    }
+
+    #[test]
     fn worker_features_are_bounded() {
         let worker = make_worker();
         let mut features: Vec<String> = (0..40).map(|i| format!("feature.{i}")).collect();
