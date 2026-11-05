@@ -10,6 +10,8 @@
 //! connection receives each one as JSON text, so the engine encodes each
 //! payload once per event and shares the text: an activation's argument is
 //! the pieces it adds (its ids, the event's status) around the shared ones.
+//! The `invokefunction` message that carries it keeps the pieces too, until
+//! the connection's writer sends them (see [`crate::protocol::invoke_frame`]).
 
 use std::sync::Arc;
 
@@ -26,9 +28,12 @@ pub struct EncodedJson {
     len: usize,
 }
 
+/// A piece of an [`EncodedJson`]'s text.
 #[derive(Debug, Clone)]
-enum Piece {
+pub enum Piece {
+    /// Written for this value alone.
     Owned(String),
+    /// Shared with other values.
     Shared(Arc<str>),
 }
 
@@ -75,6 +80,45 @@ impl EncodedJson {
         }
     }
 
+    /// Its text, joined; its one piece as it is when that piece is its own.
+    pub fn into_text(mut self) -> String {
+        match self.pieces.as_mut_slice() {
+            [Piece::Owned(text)] => std::mem::take(text),
+            _ => {
+                let mut text = String::with_capacity(self.len);
+                self.write_to(&mut text);
+                text
+            }
+        }
+    }
+
+    /// Its pieces, in order.
+    pub fn into_pieces(self) -> std::vec::IntoIter<Piece> {
+        self.pieces.into_iter()
+    }
+
+    /// Its text between `head` and `tail`: a message that carries the value,
+    /// sharing what the value shares. `head` and `tail` join the pieces next
+    /// to them when those are the value's own, so the message is in no more
+    /// pieces than the value, and the pieces it owns hold no spare capacity
+    /// at its ends.
+    pub fn enclosed(mut self, head: String, tail: &str) -> Self {
+        self.len += head.len() + tail.len();
+        match self.pieces.as_mut_slice() {
+            [Piece::Owned(only)] => {
+                *only = joined(&[head.as_str(), only.as_str(), tail]);
+                return self;
+            }
+            [Piece::Owned(first), ..] => *first = joined(&[head.as_str(), first.as_str()]),
+            _ => self.pieces.insert(0, Piece::Owned(head)),
+        }
+        match self.pieces.last_mut() {
+            Some(Piece::Owned(last)) => *last = joined(&[last.as_str(), tail]),
+            _ => self.pieces.push(Piece::Owned(tail.to_string())),
+        }
+        self
+    }
+
     /// The value it encodes, decoded: for the rare reader that needs it as a
     /// [`Value`] (an observer of the function the text is sent to).
     pub fn to_value(&self) -> Value {
@@ -82,6 +126,15 @@ impl EncodedJson {
         self.write_to(&mut text);
         serde_json::from_str(&text).unwrap_or(Value::Null)
     }
+}
+
+/// `parts`, in order, in a string of exactly their length.
+fn joined(parts: &[&str]) -> String {
+    let mut text = String::with_capacity(parts.iter().map(|part| part.len()).sum());
+    for part in parts {
+        text.push_str(part);
+    }
+    text
 }
 
 /// Writes an [`EncodedJson`] object one field at a time, in the order given.
@@ -190,6 +243,43 @@ mod tests {
         );
         assert_eq!(encoded.to_value()["output"]["k"][1], "two");
         assert_eq!(Arc::strong_count(&payload), 3);
+    }
+
+    /// A value enclosed in a message keeps sharing its pieces: the head and
+    /// tail join the owned pieces at its ends.
+    #[test]
+    fn an_enclosed_value_shares_its_pieces() {
+        let payload: Arc<str> = Arc::from("[1,2]");
+        let mut writer = ObjectWriter::new();
+        writer.field("id", &"o-1");
+        writer.shared_field("input", &payload);
+        let message = writer.finish().enclosed("{\"data\":".to_string(), "}");
+        assert_eq!(text(&message), r#"{"data":{"id":"o-1","input":[1,2]}}"#);
+        assert_eq!(Arc::strong_count(&payload), 2);
+        let pieces: Vec<Piece> = message.clone().into_pieces().collect();
+        assert!(matches!(
+            pieces.as_slice(),
+            [Piece::Owned(head), Piece::Shared(shared), Piece::Owned(tail)]
+                if head == r#"{"data":{"id":"o-1","input":"#
+                    && head.capacity() == head.len()
+                    && Arc::ptr_eq(shared, &payload)
+                    && tail == "}}"
+                    && tail.capacity() == tail.len()
+        ));
+        assert_eq!(
+            message.into_text(),
+            r#"{"data":{"id":"o-1","input":[1,2]}}"#
+        );
+
+        // A value that starts or ends with a shared piece, or has none.
+        let shared = EncodedJson::shared(payload.clone()).enclosed("[".to_string(), "]");
+        assert_eq!(text(&shared), "[[1,2]]");
+        assert_eq!(shared.into_pieces().count(), 3);
+        let owned = EncodedJson::of(&1).enclosed("[".to_string(), "]");
+        assert_eq!(owned.clone().into_pieces().count(), 1);
+        assert_eq!(owned.into_text(), "[1]");
+        let empty = EncodedJson::default().enclosed("[".to_string(), "]");
+        assert_eq!(text(&empty), "[]");
     }
 
     #[test]
