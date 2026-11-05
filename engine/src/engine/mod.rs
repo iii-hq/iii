@@ -2909,7 +2909,7 @@ impl Engine {
                             if text.trim().is_empty() {
                                 continue;
                             }
-                            match serde_json::from_str::<Message>(&text) {
+                            match Message::from_frame(&text) {
                                 Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
                                 Err(err) => {
                                     self.undecodable_frame(&worker, peer, text.as_bytes(), &err)
@@ -2938,7 +2938,7 @@ impl Engine {
                             };
                             if !handled {
                                 // Not a telemetry frame, try to decode as regular protocol message
-                                match serde_json::from_slice::<Message>(&bytes) {
+                                match Message::from_frame_bytes(&bytes) {
                                     Ok(msg) => self.route_frame(&worker, msg, &mut report_hold).await?,
                                     Err(err) => {
                                         self.undecodable_frame(&worker, peer, &bytes, &err).await;
