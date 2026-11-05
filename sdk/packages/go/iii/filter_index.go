@@ -444,11 +444,11 @@ func sameRaw(a, b json.RawMessage) bool {
 	return len(a) == 0 || &a[0] == &b[0]
 }
 
-// matches reports whether obs's capture fires on the call's status and its filters match the
+// matches reports whether obs fires on the call's status and its filters match the
 // call. The condition obs is filed under is checked first, against the call's value at
 // its path.
 func (v *callView) matches(obs *Observer) bool {
-	if obs.filter == nil || !captureFires(obs.capture, v.succeeded) {
+	if obs.filter == nil || !obs.fires(v.succeeded) {
 		return false
 	}
 	if c := obs.cond.Load(); c != nil {
