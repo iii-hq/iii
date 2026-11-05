@@ -1649,7 +1649,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1794,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "criterion",
  "serde",
@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1824,14 +1824,14 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "iii-helpers",
 ]
 
 [[package]]
 name = "iii-sandbox-contract"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "hex",
  "hmac",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "motia-tools"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.26.0"
+version = "0.25.1-alpha.1"
 dependencies = [
  "anyhow",
  "cliclack",
