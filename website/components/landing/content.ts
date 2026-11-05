@@ -66,6 +66,13 @@ export const hero = {
  * download and the store badges live on the registry (links.app).
  */
 export const iiiApp = {
+  /* The pill above the hero headline. The short label is for phones, where the long one would not fit on one line. */
+  announcement: {
+    badge: 'New',
+    label: 'The iii app for Mac, iPhone, iPad & Android',
+    short: 'The iii app is here',
+    href: links.app,
+  },
   eyebrow: 'The iii app',
   /* Set in two lines, like the hero headline. */
   title: ['Leave the desk.', 'Keep the agents.'],
