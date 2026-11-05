@@ -5,6 +5,7 @@ import { links } from '@/lib/site'
 import { Contributors } from './contributors'
 import { FinalCta } from './final-cta'
 import { Hero } from './hero'
+import { IiiApp } from './iii-app'
 import { LiveDemo } from './live-demo'
 import { Numbers } from './numbers'
 import { Overview } from './overview'
@@ -26,6 +27,8 @@ export async function Landing() {
       <SiteHeader />
       <main>
         <Hero />
+        {/* The iii app launch (2026-11-05) sits right under the hero, before anything about the engine itself. */}
+        <IiiApp />
         {/* Use cases and Numbers lead, right under the hero: what you can build, then how fast it runs (2026-10-08). */}
         <UseCases />
         <Numbers />

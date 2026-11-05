@@ -3,6 +3,8 @@
  * Test" with the reviewer comments applied. Change words here, not inside the sections.
  */
 
+import { links } from '@/lib/site'
+
 export const hero = {
   /* Reviewer: "iii isn't just backend" → "More application. Less infrastructure." */
   headline: ['More application.', 'Less infrastructure.'],
@@ -54,6 +56,64 @@ export const hero = {
     { id: 'test', label: 'Test', fn: 'ci::test', start: 44, length: 30, kind: 'ci', depth: 1 },
     { id: 'deploy', label: 'Deploy', fn: 'deploy::ship', start: 76, length: 22, kind: 'sh', depth: 1 },
   ],
+} as const
+
+/**
+ * The iii app (2026-11-05 launch): the native app for Mac, iPhone, iPad and Android, written for people who run
+ * Claude Code and Codex in a terminal and lose them when they leave the desk. Every claim is checked against the app
+ * repository (iii-hq/app: projects/README.md, the project pages and PARITY.md); when a feature is not on every
+ * platform yet (the Worker Store browsing screen is Android only), the copy stays general. The launch page, the
+ * download and the store badges live on the registry (links.app).
+ */
+export const iiiApp = {
+  eyebrow: 'The iii app',
+  /* Set in two lines, like the hero headline. */
+  title: ['Leave the desk.', 'Keep the agents.'],
+  copy: 'Claude Code and Codex live in a terminal, and a terminal on a phone is miserable. The iii app is native on Mac, iPhone, iPad and Android: point it at the iii engine on your machine or a server, and your agents, terminals, code, databases and files are one tap away.',
+  primary: { label: 'Download for Mac', href: links.appDownloadMac },
+  secondary: { label: 'See the app', href: links.app },
+  /* PARITY.md: one SwiftUI target for macOS 14+, iPadOS 17+ and iOS 17+; the Mac DMG is universal. */
+  platforms: 'macOS 14 or later, Apple silicon and Intel. iPhone, iPad and Android on the app page.',
+  /* The five apps built in, each against the pain it answers. `tag` is a short mono detail on the card. */
+  apps: [
+    {
+      id: 'chat',
+      name: 'Chat',
+      tag: 'approvals',
+      copy: 'The agent harness in your pocket: conversations, live transcripts, approvals, the model picker and sub-agents.',
+    },
+    {
+      id: 'tmux',
+      name: 'tmux',
+      tag: 'Claude Code · Codex',
+      copy: "The engine's tmux sessions in a real terminal, with every Claude Code and Codex sub-agent and its transcript.",
+    },
+    {
+      id: 'ide',
+      name: 'IDE',
+      tag: '⌘K',
+      copy: 'Editor, terminal, git log, diffs and panes, with a command palette. A desktop IDE on any screen.',
+    },
+    {
+      id: 'database',
+      name: 'Database',
+      tag: 'SQL',
+      copy: "PostgreSQL, MySQL and SQLite, over SSL or SSH tunnels: tables, filters and queries, with the connection's agent a tap away.",
+    },
+    {
+      id: 'storage',
+      name: 'Storage',
+      tag: 'photos · video',
+      copy: 'Buckets on Local, S3, R2 or GCS: browse, download and share what your agents produce, in a native photo and video viewer.',
+    },
+  ],
+  /* docs/worker-native-ui.md in the app repository: a worker describes native screens and the app draws them. */
+  registry: {
+    title: 'Apps from the registry',
+    copy: 'Any iii worker can bring its own native app. Add one from the app and it joins the shelf.',
+    apps: ['Kanban', 'Browser'],
+    link: { label: 'Browse the registry', href: links.registry },
+  },
 } as const
 
 export const overview = {
