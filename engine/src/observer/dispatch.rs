@@ -2506,6 +2506,9 @@ async fn run_activations(
     }
 }
 
+/// Reads one of a completion's payloads as a value.
+type PayloadReader = fn(&Completed) -> Option<&Value>;
+
 /// The target's first argument (README §4.3): the `Observed` envelope, or the
 /// observed input / output alone with `deliver`.
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
@@ -2535,7 +2538,7 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
         .into(),
     );
     // Each read only when captured: a payload held as text is decoded then.
-    let parts: [(bool, &str, fn(&Completed) -> Option<&Value>); 4] = [
+    let parts: [(bool, &str, PayloadReader); 4] = [
         (capture.input, "input", Completed::input_value),
         (capture.error, "error", Completed::error_value),
         (capture.caller, "caller", Completed::caller_value),
