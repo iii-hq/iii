@@ -46,6 +46,7 @@
 
 use std::{
     collections::HashSet,
+    hash::{BuildHasher, RandomState},
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -168,40 +169,169 @@ pub struct ReportHold {
 /// answers.
 pub(crate) const ROUTED_ANSWERS_KEPT: usize = 4096;
 
+/// A free slot of [`RoutedAnswers`]' index.
+const FREE: u16 = u16::MAX;
+
+// The index never has more than 2^16 slots, so a 16-bit hash places an id
+// in it and a slot holds any position in the window, none of them `FREE`.
+const _: () = assert!((2 * ROUTED_ANSWERS_KEPT).next_power_of_two() <= 1 << 16);
+
 /// The routed calls an `observe.v2` host answered last, by invocation id,
 /// [`ROUTED_ANSWERS_KEPT`] at most, kept by its connection: a report item
 /// naming one is dropped as `INVALID_REPORT` after the answer as well as
 /// before it (decision 38).
+///
+/// Each id is held once, in a ring no larger than the window, and found
+/// through an index of 2-byte positions in the ring: 22 bytes per kept call,
+/// about 88 KiB once the host answered [`ROUTED_ANSWERS_KEPT`] calls however
+/// many more it answers, and nothing before its first answer.
 #[derive(Debug, Default)]
 pub struct RoutedAnswers {
     kept: std::sync::Mutex<KeptIds>,
 }
 
+/// The window of [`RoutedAnswers`].
 #[derive(Debug, Default)]
 struct KeptIds {
-    ids: HashSet<Uuid>,
-    /// `ids` in the order they were kept, oldest first.
-    order: std::collections::VecDeque<Uuid>,
+    /// The kept ids, oldest first until the window is full, then a ring
+    /// whose oldest is at `oldest`. It grows by doubling up to
+    /// [`ROUTED_ANSWERS_KEPT`] and no further.
+    ids: Vec<Uuid>,
+    /// The hash of the id at the same position in `ids`, cut to 16 bits:
+    /// where its probe starts in the index, which it can be moved in or
+    /// rebuilt from without hashing it again.
+    hashes: Vec<u16>,
+    /// The position in `ids` the next id takes once the window is full: the
+    /// oldest id's.
+    oldest: usize,
+    /// The positions in `ids`, each in the first free slot from its id's
+    /// hash on (open addressing, linear probing), [`FREE`] elsewhere: empty,
+    /// or a power of two of slots, at least twice as many as ids, so a probe
+    /// meets a free slot within a few steps.
+    index: Vec<u16>,
+    /// Keys the hash: callers choose invocation ids.
+    hasher: RandomState,
 }
 
 impl RoutedAnswers {
     /// Keeps `invocation_id`, forgetting the oldest past
     /// [`ROUTED_ANSWERS_KEPT`].
     pub fn record(&self, invocation_id: Uuid) {
-        let mut kept = lock(&self.kept);
-        if !kept.ids.insert(invocation_id) {
-            return;
-        }
-        kept.order.push_back(invocation_id);
-        if kept.order.len() > ROUTED_ANSWERS_KEPT
-            && let Some(oldest) = kept.order.pop_front()
-        {
-            kept.ids.remove(&oldest);
-        }
+        lock(&self.kept).record(invocation_id);
     }
 
     fn contains(&self, invocation_id: &Uuid) -> bool {
-        lock(&self.kept).ids.contains(invocation_id)
+        lock(&self.kept).contains(invocation_id)
+    }
+}
+
+impl KeptIds {
+    /// Keeps `id` unless it is kept already, forgetting the oldest past
+    /// [`ROUTED_ANSWERS_KEPT`]. A repeated id keeps its place.
+    fn record(&mut self, id: Uuid) {
+        let hash = self.hash(&id);
+        if self.find(&id, hash) {
+            return;
+        }
+        let at = if self.ids.len() < ROUTED_ANSWERS_KEPT {
+            self.grow();
+            self.ids.push(id);
+            self.hashes.push(hash);
+            self.ids.len() - 1
+        } else {
+            let at = self.oldest;
+            self.unindex(at);
+            self.ids[at] = id;
+            self.hashes[at] = hash;
+            self.oldest = (at + 1) % ROUTED_ANSWERS_KEPT;
+            at
+        };
+        self.index_at(at);
+    }
+
+    fn contains(&self, id: &Uuid) -> bool {
+        !self.ids.is_empty() && self.find(id, self.hash(id))
+    }
+
+    fn hash(&self, id: &Uuid) -> u16 {
+        self.hasher.hash_one(id.as_u128()) as u16
+    }
+
+    /// Whether `id`, whose hash is `hash`, is kept.
+    fn find(&self, id: &Uuid, hash: u16) -> bool {
+        if self.index.is_empty() {
+            return false;
+        }
+        let mask = self.index.len() - 1;
+        let mut slot = usize::from(hash) & mask;
+        loop {
+            match self.index[slot] {
+                FREE => return false,
+                at if self.ids[usize::from(at)] == *id => return true,
+                _ => slot = (slot + 1) & mask,
+            }
+        }
+    }
+
+    /// Indexes position `at` in the first free slot from its id's hash on.
+    fn index_at(&mut self, at: usize) {
+        let mask = self.index.len() - 1;
+        let mut slot = usize::from(self.hashes[at]) & mask;
+        while self.index[slot] != FREE {
+            slot = (slot + 1) & mask;
+        }
+        // `at` is below `ROUTED_ANSWERS_KEPT`, which fits in a slot.
+        self.index[slot] = at as u16;
+    }
+
+    /// Removes position `at` from the index without leaving a tombstone
+    /// (backward-shift deletion): each slot after it up to the next free one
+    /// moves back into the hole unless the hole lies before its id's hash, so
+    /// every probe still meets its id before a free slot.
+    fn unindex(&mut self, at: usize) {
+        let mask = self.index.len() - 1;
+        let mut hole = usize::from(self.hashes[at]) & mask;
+        loop {
+            match self.index[hole] {
+                FREE => return,
+                kept if usize::from(kept) == at => break,
+                _ => hole = (hole + 1) & mask,
+            }
+        }
+        let mut next = hole;
+        loop {
+            next = (next + 1) & mask;
+            let moved = self.index[next];
+            if moved == FREE {
+                break;
+            }
+            // The probe for `moved` runs from its hash to `next`: it moves
+            // back when that run crosses the hole.
+            let home = usize::from(self.hashes[usize::from(moved)]) & mask;
+            if (next.wrapping_sub(home) & mask) >= (next.wrapping_sub(hole) & mask) {
+                self.index[hole] = moved;
+                hole = next;
+            }
+        }
+        self.index[hole] = FREE;
+    }
+
+    /// Makes room for one more id while the window is not full: `ids` and
+    /// `hashes` grow by doubling, up to [`ROUTED_ANSWERS_KEPT`] and no
+    /// further, and the index doubles, rebuilt, to stay at most half full.
+    fn grow(&mut self) {
+        let len = self.ids.len();
+        if len == self.ids.capacity() {
+            let more = len.max(4).min(ROUTED_ANSWERS_KEPT - len);
+            self.ids.reserve_exact(more);
+            self.hashes.reserve_exact(more);
+        }
+        if 2 * (len + 1) > self.index.len() {
+            self.index = vec![FREE; (2 * self.index.len()).max(8)];
+            for at in 0..len {
+                self.index_at(at);
+            }
+        }
     }
 }
 
@@ -2544,6 +2674,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::super::{InvocationCtx, events::test_support};
+    use super::{ROUTED_ANSWERS_KEPT, RoutedAnswers};
     use crate::{
         engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
         function::FunctionResult,
@@ -4251,5 +4382,117 @@ mod tests {
             serde_json::from_str::<Value>(&text.unwrap()).unwrap(),
             json!({ "k": 1, "big": "x".repeat(4096) })
         );
+    }
+
+    fn fresh_ids(n: usize) -> Vec<Uuid> {
+        (0..n).map(|_| Uuid::new_v4()).collect()
+    }
+
+    /// Past its window, `RoutedAnswers` forgets the ids it kept first, one
+    /// per new id, in the order it kept them.
+    #[test]
+    fn routed_answers_forget_the_oldest_first() {
+        let answered = RoutedAnswers::default();
+        let ids = fresh_ids(ROUTED_ANSWERS_KEPT + 100);
+        for (n, id) in ids.iter().enumerate() {
+            answered.record(*id);
+            if let Some(forgotten) = n.checked_sub(ROUTED_ANSWERS_KEPT) {
+                assert!(!answered.contains(&ids[forgotten]));
+                assert!(answered.contains(&ids[forgotten + 1]));
+            }
+        }
+        assert!(ids[..100].iter().all(|id| !answered.contains(id)));
+        assert!(ids[100..].iter().all(|id| answered.contains(id)));
+    }
+
+    /// An id is kept from its answer until `ROUTED_ANSWERS_KEPT` other ids
+    /// were answered after it, and again once it is answered again.
+    #[test]
+    fn routed_answers_keep_an_id_until_the_window_passes_it() {
+        let answered = RoutedAnswers::default();
+        let id = Uuid::new_v4();
+        assert!(!answered.contains(&id));
+        answered.record(id);
+        assert!(answered.contains(&id));
+        for other in fresh_ids(ROUTED_ANSWERS_KEPT - 1) {
+            answered.record(other);
+        }
+        assert!(answered.contains(&id), "still in the window");
+        answered.record(Uuid::new_v4());
+        assert!(!answered.contains(&id), "forgotten past the window");
+        answered.record(id);
+        assert!(answered.contains(&id), "kept again");
+    }
+
+    /// A repeated id takes no second place and keeps its first: it pushes no
+    /// other id out, and it is forgotten when its first answer is the oldest.
+    #[test]
+    fn routed_answers_keep_a_repeated_id_once() {
+        let answered = RoutedAnswers::default();
+        let ids = fresh_ids(ROUTED_ANSWERS_KEPT);
+        for id in &ids {
+            answered.record(*id);
+        }
+        answered.record(ids[0]);
+        answered.record(ids[ROUTED_ANSWERS_KEPT - 1]);
+        assert!(ids.iter().all(|id| answered.contains(id)));
+        let newest = Uuid::new_v4();
+        answered.record(newest);
+        assert!(!answered.contains(&ids[0]));
+        assert!(ids[1..].iter().all(|id| answered.contains(id)));
+        assert!(answered.contains(&newest));
+    }
+
+    /// `RoutedAnswers` keeps the ids a set of the kept ids with a queue of
+    /// them in the order they were kept keeps (what it was before), through
+    /// repeats, evictions and ids answered again after their eviction.
+    #[test]
+    fn routed_answers_keep_what_a_set_and_a_queue_keep() {
+        use rand::{Rng, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(38);
+        let pool = fresh_ids(ROUTED_ANSWERS_KEPT + ROUTED_ANSWERS_KEPT / 2);
+        let answered = RoutedAnswers::default();
+        let mut set = std::collections::HashSet::new();
+        let mut order = std::collections::VecDeque::new();
+        for step in 1..=8 * ROUTED_ANSWERS_KEPT {
+            let id = pool[rng.gen_range(0..pool.len())];
+            answered.record(id);
+            if set.insert(id) {
+                order.push_back(id);
+                if order.len() > ROUTED_ANSWERS_KEPT {
+                    set.remove(&order.pop_front().unwrap());
+                }
+            }
+            if step % 1024 == 0 {
+                for id in &pool {
+                    assert_eq!(answered.contains(id), set.contains(id), "step {step}");
+                }
+            }
+        }
+        assert!(!answered.contains(&Uuid::new_v4()));
+    }
+
+    /// The window takes no room before the first answer, and never more than
+    /// `ROUTED_ANSWERS_KEPT` ids and twice as many index slots.
+    #[test]
+    fn routed_answers_never_grow_past_the_window() {
+        let room = |answered: &RoutedAnswers| {
+            let kept = super::lock(&answered.kept);
+            let ids = kept.ids.capacity().max(kept.hashes.capacity());
+            (ids, kept.index.len())
+        };
+        let answered = RoutedAnswers::default();
+        assert_eq!(room(&answered), (0, 0));
+        for id in fresh_ids(100) {
+            answered.record(id);
+        }
+        let (ids, slots) = room(&answered);
+        assert!(ids <= 128 && slots <= 256, "{ids} ids, {slots} slots");
+        for id in fresh_ids(10 * ROUTED_ANSWERS_KEPT) {
+            answered.record(id);
+            let (ids, slots) = room(&answered);
+            assert!(ids <= ROUTED_ANSWERS_KEPT && slots <= 2 * ROUTED_ANSWERS_KEPT);
+        }
     }
 }
