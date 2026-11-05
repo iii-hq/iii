@@ -2263,6 +2263,9 @@ fn warn_loop_guard(observer: &Observer, depth: u32, max_depth: u32) {
 }
 
 #[cfg(test)]
+mod metadata_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{
         Arc,
