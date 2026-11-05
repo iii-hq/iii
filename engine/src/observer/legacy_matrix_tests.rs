@@ -8,14 +8,16 @@
 //! against the machine-made matrix of the pr2471 investigation
 //! (`testdata/legacy_on_deliver_matrix.jsonl`, one row per combination).
 //!
-//! One difference is accepted and documented: on a success that reported no
-//! output, the old envelope carried `"output": null`, the new one leaves the
-//! key out (every absent field is omitted).
+//! Two differences are accepted and documented:
+//! - on a success that reported no output, the old envelope carried
+//!   `"output": null`, the new one leaves the key out (every absent field is
+//!   omitted);
+//! - the 33 rows that carry neither `on` nor `deliver` are, on the wire, new
+//!   style sources: `capture` alone decides. 19 of them behave differently by
+//!   design (a capture naming `error` fires on failures; `[caller]`,
+//!   `[metadata]`, `[caller,metadata]` are refused) and are pinned as such.
 
-use std::sync::{
-    Arc, Mutex,
-    atomic::AtomicUsize,
-};
+use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
@@ -199,6 +201,7 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
     );
 
     let mut failures = Vec::new();
+    let mut new_model = Vec::new();
     for row in &rows {
         let field = |key: &str| row[key].as_str().expect("string column").to_string();
         let (on, deliver, capture_label) = (field("on"), field("deliver"), field("capture"));
@@ -212,7 +215,11 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
 
         // The oracle agrees with the matrix the investigation produced.
         let (fires_ok, fires_err) = old_fires(on);
-        let shape = if deliver.is_empty() { "envelope" } else { deliver };
+        let shape = if deliver.is_empty() {
+            "envelope"
+        } else {
+            deliver
+        };
         let (old_ok, old_err, old_void) = (
             old_payload(shape, old_capture, &ok),
             old_payload(shape, old_capture, &err),
@@ -225,7 +232,11 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
         };
         assert_eq!(field("old_fires"), fires_label, "{label}");
         let expect_summary = |fires: bool, payload: &Value| {
-            if fires { summary(payload) } else { String::new() }
+            if fires {
+                summary(payload)
+            } else {
+                String::new()
+            }
         };
         assert_eq!(
             field("old_success_payload"),
@@ -237,6 +248,21 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             expect_summary(fires_err, &old_err),
             "{label}"
         );
+        // Without `on` and `deliver` a source is new-style, whatever SDK
+        // sent it: `capture` alone decides what fires, and the gate refuses
+        // a non-empty capture of `caller` / `metadata` alone.
+        let new_style = on.is_empty() && deliver.is_empty();
+        let (expect_ok, expect_err, expect_refused) = match (&capture, new_style) {
+            (Some(list), true) => {
+                let io = old_capture[0] || old_capture[1];
+                let refused = !list.is_empty() && !io && !old_capture[2];
+                (!refused && (list.is_empty() || io), old_capture[2], refused)
+            }
+            _ => (fires_ok, fires_err, false),
+        };
+        if (expect_ok, expect_err, expect_refused) != (fires_ok, fires_err, false) {
+            new_model.push(label.clone());
+        }
 
         // The same `observe`, as an older SDK sends it, to this engine.
         let mut source = json!({ "function_id": "test::src" });
@@ -259,14 +285,17 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             .observe(&engine, &worker, request.clone())
             .await;
         let created = results(&mut socket);
-        let Some(observer) = engine.observers.get("obs") else {
-            failures.push(format!("{label}: refused {created:?}"));
-            continue;
-        };
-        if created.iter().any(|(state, _)| *state == ObserverState::Error) {
+        let refused = created
+            .iter()
+            .any(|(state, _)| *state == ObserverState::Error);
+        let stored = engine.observers.get("obs");
+        if refused != expect_refused || stored.is_some() == refused {
             failures.push(format!("{label}: answered {created:?}"));
             continue;
         }
+        let Some(observer) = stored else {
+            continue;
+        };
 
         // Its replay (a reconnect) is the same spec.
         engine.observers.observe(&engine, &worker, request).await;
@@ -278,6 +307,7 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             failures.push(format!("{label}: replay {replayed:?}"));
         }
 
+        let (fires_ok, fires_err) = (expect_ok, expect_err);
         let mut wrong = Vec::new();
         if observer.capture.fires(true) != fires_ok {
             wrong.push(format!("fires on success: {}", !fires_ok));
@@ -310,7 +340,13 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
         }
         // The host of the observed function ships what the payload needs.
         let needs = observer.capture.with_delivered(&observer.deliver);
-        let shipped = [needs.input, needs.output, needs.error, needs.caller, needs.metadata];
+        let shipped = [
+            needs.input,
+            needs.output,
+            needs.error,
+            needs.caller,
+            needs.metadata,
+        ];
         let wanted: [bool; 5] = match shape {
             "input" => [true, false, false, false, false],
             "output" => [false, true, false, false, false],
@@ -325,6 +361,12 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             failures.push(format!("{label}: {}", wrong.join("; ")));
         }
     }
+    // The rows without `on` and `deliver` are new-style sources whichever SDK
+    // sent them: `capture` alone decides. Pinned, by design: the 16 capture
+    // shapes naming `error` fire on failures (and only on successes too with
+    // `input` / `output`), and `[caller]`, `[metadata]`, `[caller,metadata]`
+    // are refused.
+    assert_eq!(new_model.len(), 19, "{}", new_model.join("\n"));
     assert!(
         failures.is_empty(),
         "{} of {} combinations differ from v0.25:\n{}",
@@ -436,6 +478,9 @@ async fn a_translated_observer_logs_one_deprecation_warning_per_registration() {
         .with_max_level(tracing::Level::WARN)
         .finish();
     let _guard = tracing::subscriber::set_default(subscriber);
+    // Other tests on other threads may have cached the warning's callsite
+    // as uninteresting before this subscriber existed.
+    tracing::callsite::rebuild_interest_cache();
 
     let engine = Arc::new(Engine::new());
     register(&engine, "test::src");
@@ -452,7 +497,11 @@ async fn a_translated_observer_logs_one_deprecation_warning_per_registration() {
     let legacy = json!({ "function_id": "test::src", "on": "complete", "deliver": "input" });
     engine
         .observers
-        .observe(&engine, &worker, legacy_request("obs-legacy", legacy.clone()))
+        .observe(
+            &engine,
+            &worker,
+            legacy_request("obs-legacy", legacy.clone()),
+        )
         .await;
     assert_eq!(warnings("obs-legacy"), 1, "{}", text());
     let line = text();

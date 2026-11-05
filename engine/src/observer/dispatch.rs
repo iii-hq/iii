@@ -2081,11 +2081,15 @@ async fn run_activations(
 
 /// The target's first argument (README §4.3): the payload (the top-level
 /// fields plus what the observer captures that applies to the outcome) or,
-/// for the engine's own observers, the observed input alone.
+/// for the engine's own observers and an older SDK's `deliver: input`, the
+/// observed input alone; for its `deliver: output`, the observed output alone,
+/// `null` when there is none (on a failure too), as v0.25 did.
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
     let shipped = |value: &Option<Arc<Value>>| value.as_deref().cloned().unwrap_or(Value::Null);
-    if observer.deliver == Deliver::Input {
-        return shipped(&completed.input);
+    match observer.deliver {
+        Deliver::Input => return shipped(&completed.input),
+        Deliver::Output => return shipped(&completed.output),
+        Deliver::Payload => {}
     }
     let capture = observer.capture;
     let mut envelope = Map::new();

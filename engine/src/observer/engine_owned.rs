@@ -139,7 +139,17 @@ impl ObserverRegistry {
                 settings.max_queue_per_observer,
             )
         };
-        let capture = CaptureSet::DEFAULT;
+        // What it hands its target is all it captures, so all its
+        // function's host ships (CONTRACT D2).
+        let capture = match deliver {
+            Deliver::Input => CaptureSet::INPUT_ONLY,
+            Deliver::Output => CaptureSet {
+                output: true,
+                on_success: true,
+                ..CaptureSet::default()
+            },
+            Deliver::Payload => CaptureSet::DEFAULT,
+        };
 
         if let Some(existing) = self.get(&id) {
             if !existing.is_engine_owned() {
@@ -153,7 +163,7 @@ impl ObserverRegistry {
                 target: target.clone(),
                 args: args.clone(),
                 filters: filter.normalized().clone(),
-                capture: capture.to_list(),
+                capture,
                 deliver,
                 metadata: metadata.clone(),
                 max_fires: None,

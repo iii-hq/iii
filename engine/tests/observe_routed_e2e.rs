@@ -336,7 +336,7 @@ async fn capture_decides_which_outcomes_fire() {
         ))
         .await;
     }
-    // No capture: the default, input, output, caller and metadata.
+    // No capture: the default, input, output and caller (CONTRACT D1).
     sink.observe_active(observer(
         "obs-default",
         json!({ "function_id": "payments::charge" }),
@@ -513,7 +513,11 @@ async fn legacy_on_and_deliver_are_translated_on_the_wire() {
     let metadata = sink.invoked("modern::metadata").await;
     assert_eq!(metadata["data"]["metadata"], json!({ "session": "s-1" }));
     sink.reply(&metadata, Value::Null).await;
-    assert_eq!(fires(&t, "obs-on-error"), 0, "`on: error` ignores a success");
+    assert_eq!(
+        fires(&t, "obs-on-error"),
+        0,
+        "`on: error` ignores a success"
+    );
 
     let call = checkout
         .call("payments::charge", json!({ "amount": 2 }))
@@ -535,7 +539,11 @@ async fn legacy_on_and_deliver_are_translated_on_the_wire() {
     );
     sink.reply(&on_error, Value::Null).await;
     let input = sink.invoked("legacy::input-complete").await;
-    assert_eq!(input["data"], json!({ "amount": 2 }), "complete: errors too");
+    assert_eq!(
+        input["data"],
+        json!({ "amount": 2 }),
+        "complete: errors too"
+    );
     sink.reply(&input, Value::Null).await;
     assert_eq!(fires(&t, "obs-on-error"), 1);
     assert_eq!(fires(&t, "obs-output"), 1, "`on` absent: success only");
