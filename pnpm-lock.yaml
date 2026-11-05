@@ -6,6 +6,12 @@ settings:
 
 overrides:
   source-map-js: ^1.2.2
+  typedoc>minimatch: ^11.0.1
+
+patchedDependencies:
+  typedoc@0.28.20:
+    hash: 0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396
+    path: patches/typedoc@0.28.20.patch
 
 importers:
 
@@ -99,7 +105,7 @@ importers:
         version: 0.21.10(synckit@0.11.12)(typescript@5.9.3)
       typedoc:
         specifier: ^0.28.20
-        version: 0.28.20(typescript@5.9.3)
+        version: 0.28.20(patch_hash=0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396)(typescript@5.9.3)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -139,7 +145,7 @@ importers:
         version: 0.21.10(synckit@0.11.12)(typescript@5.9.3)
       typedoc:
         specifier: ^0.28.20
-        version: 0.28.20(typescript@5.9.3)
+        version: 0.28.20(patch_hash=0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396)(typescript@5.9.3)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -160,7 +166,7 @@ importers:
         version: 0.21.10(synckit@0.11.12)(typescript@5.9.3)
       typedoc:
         specifier: ^0.28.20
-        version: 0.28.20(typescript@5.9.3)
+        version: 0.28.20(patch_hash=0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396)(typescript@5.9.3)
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -975,6 +981,9 @@ packages:
     engines: {node: '>=20.9.0'}
     cpu: [x64]
     os: [win32]
+
+  '@isaacs/nonrecursive-glob-match@1.1.0':
+    resolution: {integrity: sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -3089,6 +3098,10 @@ packages:
     resolution: {integrity: sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==}
     engines: {node: 18 || 20 || >=22}
 
+  minimatch@11.0.4:
+    resolution: {integrity: sha512-/UJ1dEoVQTjPNDh6SGlUo+ueLMmoHTas4q+8yaAR/5t6nLAIiBDJtoYUh20IYleix7ehiQkgczb84PE3uzHkxg==}
+    engines: {node: 20 || >=22}
+
   minimist@1.2.8:
     resolution: {integrity: sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA==}
 
@@ -4622,6 +4635,8 @@ snapshots:
 
   '@img/sharp-win32-x64@0.35.5':
     optional: true
+
+  '@isaacs/nonrecursive-glob-match@1.1.0': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:
@@ -6864,6 +6879,11 @@ snapshots:
     dependencies:
       brace-expansion: 5.0.12
 
+  minimatch@11.0.4:
+    dependencies:
+      '@isaacs/nonrecursive-glob-match': 1.1.0
+      brace-expansion: 5.0.12
+
   minimist@1.2.8: {}
 
   module-details-from-path@1.0.4: {}
@@ -7600,12 +7620,12 @@ snapshots:
 
   type-fest@4.41.0: {}
 
-  typedoc@0.28.20(typescript@5.9.3):
+  typedoc@0.28.20(patch_hash=0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396)(typescript@5.9.3):
     dependencies:
       '@gerrit0/mini-shiki': 3.23.0
       lunr: 2.3.9
       markdown-it: 14.3.3
-      minimatch: 10.2.6
+      minimatch: 11.0.4
       typescript: 5.9.3
       yaml: 2.9.1
 
