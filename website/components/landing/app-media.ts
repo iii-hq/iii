@@ -1,9 +1,9 @@
 /**
- * Screenshots in the iii app section, one entry per device slot. The files are placeholders lifted from the app
- * repository's evidence (iii-hq/app `projects/*`) and the workers' store screenshots, converted to WebP at about
- * twice the size they are drawn (the static export serves them as they are, `images.unoptimized`). To replace one,
- * drop the new file in `public/iii-app/` and change `src`, `width`, `height` and `alt` here; the device frames crop
- * to their own shape, so a capture with a slightly different ratio still fits.
+ * Screenshots in the iii app section, one entry per device slot: launch captures of the app on one demo engine
+ * (iii-hq/app `projects/mac-app-launch/screenshots/`), as WebP at about twice the size they are drawn (the static
+ * export serves them as they are, `images.unoptimized`). To replace one, drop the new file in `public/iii-app/` and
+ * change `src`, `width`, `height` and `alt` here; the device frames crop to their own shape, so a capture with a
+ * slightly different ratio still fits.
  */
 
 export type AppShotSlot = 'mac' | 'iphone' | 'android'
@@ -31,11 +31,11 @@ export const appShots: Record<AppShotSlot, AppShot> = {
     height: 956,
     alt: 'The tmux app on an iPhone: the live transcript of a Claude Code sub-agent, with its Grep and Read calls and their results.',
   },
-  /* iii-hq/workers ide/screenshots/android-editor-terminal.webp */
+  /* iii-hq/app projects/mac-app-launch/screenshots/: android-ide-editor (1080 × 2424), resized */
   android: {
     src: '/iii-app/android-ide.webp',
     width: 440,
     height: 988,
-    alt: 'The IDE app on an Android phone: a TypeScript file in the editor above a terminal where the tests pass.',
+    alt: "The IDE app on an Android phone: the cart's pricing code in the editor above a terminal where all ten tests just passed.",
   },
 }
