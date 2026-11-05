@@ -15,7 +15,9 @@ type: "reference"
     updating, and later `iii compose --up` runs could not start the engine.
   - Local `path://` workers whose run command contains quotes start again. Compose passes the
     command text to `cmd /C` verbatim, preserving Windows shell quoting and operators, instead of
-    failing with `ERROR_BAD_NETPATH`.
+    failing with `ERROR_BAD_NETPATH`. As with `cmd /C`, when both the executable path and its
+    arguments are quoted, wrap the whole command in one more pair of quotes, for example
+    `""C:\Program Files\nodejs\node.exe" "C:\my app\main.js""`.
   - When Compose runs without a console, such as when it is detached, the engine and its workers no
     longer open empty console windows. When a console exists, including a hidden one, Compose still
     shares it, so console control events keep working.
