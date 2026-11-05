@@ -380,6 +380,20 @@ mod tests {
         let observer = engine.observers.get("engine::test-watch").unwrap();
         assert!(observer.is_engine_owned());
         assert_eq!(observer.state(), ObserverState::Active);
+        // CONTRACT D2: it hands its target the input alone, so it captures
+        // (and its function's host ships) the input alone, on success.
+        assert_eq!(
+            observer.capture,
+            CaptureSet {
+                input: true,
+                on_success: true,
+                ..CaptureSet::default()
+            }
+        );
+        assert_eq!(
+            observer.capture.with_delivered(&observer.deliver).to_list(),
+            vec![crate::protocol::Capture::Input]
+        );
         engine
             .call("test::source", json!({ "n": 1 }))
             .await

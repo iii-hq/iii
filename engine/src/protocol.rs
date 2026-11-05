@@ -1750,14 +1750,15 @@ mod tests {
         assert_eq!(source.capture(), default_capture());
         assert_eq!(
             source.capture(),
-            vec![
-                Capture::Input,
-                Capture::Output,
-                Capture::Caller,
-                Capture::Metadata
-            ]
+            vec![Capture::Input, Capture::Output, Capture::Caller],
+            "CONTRACT D1: no `metadata` unless asked for"
         );
-        assert!(source.removed_field().is_none() && !source.raw_input);
+        assert!(!source.raw_input);
+        let encoded = serde_json::to_value(&source).unwrap();
+        assert!(
+            encoded.get("on").is_none() && encoded.get("deliver").is_none(),
+            "{encoded}"
+        );
         assert!(source.namespace.is_none() && source.args.is_none() && source.filters.is_none());
         assert!(target.namespace.is_none());
         assert!(
@@ -1893,10 +1894,12 @@ mod tests {
             source.capture.as_deref(),
             Some(&[Capture::Input, Capture::Unknown("timing".into())][..])
         );
-        // A removed field decodes (so `observe` can refuse it) and re-encodes
-        // as it arrived.
-        assert_eq!(source.removed_field(), Some("on"));
-        assert_eq!(source.removed.get("deliver"), Some(&json!("both")));
+        // An older SDK's `on` / `deliver` decode into their own fields (the
+        // engine translates them at registration) and re-encode as they
+        // arrived; a key `observe` never had is dropped, as before.
+        let mut with_extra = frame.clone();
+        with_extra["source"]["timing_mode"] = json!("x");
+        let msg: Message = serde_json::from_value(with_extra).expect("decodes");
         assert_eq!(serde_json::to_value(&msg).unwrap(), frame);
 
         let state: Message = serde_json::from_value(

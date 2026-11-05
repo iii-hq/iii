@@ -2263,6 +2263,10 @@ fn warn_loop_guard(observer: &Observer, depth: u32, max_depth: u32) {
 }
 
 #[cfg(test)]
+#[path = "legacy_matrix_tests.rs"]
+mod legacy_matrix_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{
         Arc,

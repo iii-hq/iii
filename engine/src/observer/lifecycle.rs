@@ -1700,6 +1700,12 @@ mod tests {
             CaptureSet::from_list(&crate::protocol::default_capture()),
             CaptureSet::DEFAULT
         );
+        // CONTRACT D1: `[input, output, caller]`, no `metadata`.
+        assert_eq!(
+            CaptureSet::DEFAULT.to_list(),
+            vec![Capture::Input, Capture::Output, Capture::Caller]
+        );
+        assert!(!CaptureSet::DEFAULT.metadata);
     }
 
     /// `input` / `output` fire on success, `error` on error; `caller` and

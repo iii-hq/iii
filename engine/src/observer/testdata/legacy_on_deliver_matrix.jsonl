@@ -1,0 +1,528 @@
+{"on":"(absent)","deliver":"(absent)","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[error]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"(absent)","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[error]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"envelope","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"input","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"(absent)","deliver":"output","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[error]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"(absent)","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[error]","old_fires":"success","old_success_payload":"envelope{status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{input,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{caller,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"envelope","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"input","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{in}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"(absent)","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,error]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,error,caller]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,error,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"success","deliver":"output","capture":"[input,output,error,caller,metadata]","old_fires":"success","old_success_payload":"envelope{out}","old_error_payload":""}
+{"on":"error","deliver":"(absent)","capture":"(absent)","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{status}"}
+{"on":"error","deliver":"(absent)","capture":"[input]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"error","deliver":"(absent)","capture":"[metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"error","deliver":"(absent)","capture":"[input,output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"(absent)","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{status}"}
+{"on":"error","deliver":"envelope","capture":"[input]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,status}"}
+{"on":"error","deliver":"envelope","capture":"[output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,status}"}
+{"on":"error","deliver":"envelope","capture":"[error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"error","deliver":"envelope","capture":"[metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"error","deliver":"envelope","capture":"[input,output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"error","deliver":"input","capture":"(absent)","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"input","capture":"[input,output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"envelope{in}"}
+{"on":"error","deliver":"output","capture":"(absent)","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[error]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,error]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,error]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,error,caller]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,error,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"error","deliver":"output","capture":"[input,output,error,caller,metadata]","old_fires":"error","old_success_payload":"","old_error_payload":"raw null"}
+{"on":"complete","deliver":"(absent)","capture":"(absent)","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[]","old_fires":"success+error","old_success_payload":"envelope{status}","old_error_payload":"envelope{status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input]","old_fires":"success+error","old_success_payload":"envelope{input,status}","old_error_payload":"envelope{input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output]","old_fires":"success+error","old_success_payload":"envelope{output,status}","old_error_payload":"envelope{status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output]","old_fires":"success+error","old_success_payload":"envelope{input,output,status}","old_error_payload":"envelope{input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[error]","old_fires":"success+error","old_success_payload":"envelope{status}","old_error_payload":"envelope{error,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,error]","old_fires":"success+error","old_success_payload":"envelope{input,status}","old_error_payload":"envelope{error,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,error]","old_fires":"success+error","old_success_payload":"envelope{output,status}","old_error_payload":"envelope{error,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,error]","old_fires":"success+error","old_success_payload":"envelope{input,output,status}","old_error_payload":"envelope{error,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[caller]","old_fires":"success+error","old_success_payload":"envelope{caller,status}","old_error_payload":"envelope{caller,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,output,status}","old_error_payload":"envelope{caller,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,status}","old_error_payload":"envelope{caller,error,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,status}","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,output,status}","old_error_payload":"envelope{caller,error,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,status}","old_error_payload":"envelope{metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,status}","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,output,status}","old_error_payload":"envelope{metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[error,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,status}","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,status}","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,output,status}","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"complete","deliver":"(absent)","capture":"[input,output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"(absent)","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[]","old_fires":"success+error","old_success_payload":"envelope{status}","old_error_payload":"envelope{status}"}
+{"on":"complete","deliver":"envelope","capture":"[input]","old_fires":"success+error","old_success_payload":"envelope{input,status}","old_error_payload":"envelope{input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output]","old_fires":"success+error","old_success_payload":"envelope{output,status}","old_error_payload":"envelope{status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output]","old_fires":"success+error","old_success_payload":"envelope{input,output,status}","old_error_payload":"envelope{input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[error]","old_fires":"success+error","old_success_payload":"envelope{status}","old_error_payload":"envelope{error,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,error]","old_fires":"success+error","old_success_payload":"envelope{input,status}","old_error_payload":"envelope{error,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,error]","old_fires":"success+error","old_success_payload":"envelope{output,status}","old_error_payload":"envelope{error,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,error]","old_fires":"success+error","old_success_payload":"envelope{input,output,status}","old_error_payload":"envelope{error,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[caller]","old_fires":"success+error","old_success_payload":"envelope{caller,status}","old_error_payload":"envelope{caller,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,output,status}","old_error_payload":"envelope{caller,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,status}","old_error_payload":"envelope{caller,error,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,status}","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,output,status}","old_error_payload":"envelope{caller,error,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{caller,input,output,status}","old_error_payload":"envelope{caller,error,input,status}"}
+{"on":"complete","deliver":"envelope","capture":"[metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,status}","old_error_payload":"envelope{metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,status}","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,output,status}","old_error_payload":"envelope{metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":"envelope{input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[error,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,status}","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,status}","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{metadata,output,status}","old_error_payload":"envelope{error,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{input,metadata,output,status}","old_error_payload":"envelope{error,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":"envelope{caller,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":"envelope{caller,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,status}","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,status}","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,metadata,output,status}","old_error_payload":"envelope{caller,error,metadata,status}"}
+{"on":"complete","deliver":"envelope","capture":"[input,output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{caller,input,metadata,output,status}","old_error_payload":"envelope{caller,error,input,metadata,status}"}
+{"on":"complete","deliver":"input","capture":"(absent)","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[error]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,error]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,error]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,error]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[error,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,error,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[error,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"input","capture":"[input,output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{in}","old_error_payload":"envelope{in}"}
+{"on":"complete","deliver":"output","capture":"(absent)","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[error]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,error]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,error]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,error]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[error,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,error,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,error,caller]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[error,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,error,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
+{"on":"complete","deliver":"output","capture":"[input,output,error,caller,metadata]","old_fires":"success+error","old_success_payload":"envelope{out}","old_error_payload":"raw null"}
