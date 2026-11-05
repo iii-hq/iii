@@ -944,7 +944,9 @@ describe('when a hosted observer fires: the view `fires_on`, else the legacy `on
       })
     socket.open()
     socket.deliver(
-      functionRegistered('payments::charge', [observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'] })]),
+      functionRegistered('payments::charge', [
+        observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'] }),
+      ]),
     )
     await settle()
     expect(held).toMatchObject({ firesOnSuccess: true, firesOnError: false })

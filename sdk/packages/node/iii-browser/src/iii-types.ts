@@ -41,13 +41,24 @@ export const FEATURE_OBSERVE_V1 = 'observe.v1'
  * `onObservationDeliver`. Includes `observe.v1`.
  */
 export const FEATURE_OBSERVE_V2 = 'observe.v2'
+/**
+ * Observer views carry `fires_on` (the outcomes that fire the observer), and a
+ * host reads it instead of deriving them from `capture`. An engine without it
+ * (0.25, rc) is sent and announces the legacy `source.on`, deprecated.
+ */
+export const FEATURE_OBSERVE_CAPTURE = 'observe.capture'
 export const FEATURE_LOCAL_DISPATCH_V1 = 'local-dispatch.v1'
 /**
  * What this SDK declares in `engine::workers::register`. Not
  * `large-messages.v1`, unlike the other SDKs: a browser receives one 16 MiB
  * WebSocket frame at most.
  */
-export const SDK_FEATURES: readonly string[] = [FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, FEATURE_LOCAL_DISPATCH_V1]
+export const SDK_FEATURES: readonly string[] = [
+  FEATURE_OBSERVE_V1,
+  FEATURE_OBSERVE_V2,
+  FEATURE_OBSERVE_CAPTURE,
+  FEATURE_LOCAL_DISPATCH_V1,
+]
 
 /** The error body of an `InvocationResult` (and of observe errors and state reasons). */
 export type ErrorBody = {
@@ -67,6 +78,8 @@ export type OpenEnum<T extends string> = T | (string & {})
  * carries, and with them the outcomes that fire it.
  */
 export type CaptureWire = OpenEnum<'input' | 'output' | 'error' | 'caller' | 'metadata'>
+/** An outcome that fires an observer (`ObserverInfoWire.fires_on`). */
+export type FiresWire = OpenEnum<'success' | 'error'>
 /** Observer lifecycle state. */
 export type ObserverStateWire = OpenEnum<'pending' | 'active' | 'suspended' | 'error' | 'disposed'>
 
@@ -143,6 +156,14 @@ export type ObserverInfoWire = {
   filters: Record<string, unknown>
   target: string
   capture: CaptureWire[]
+  /** The outcomes that fire it, from an engine with `observe.capture`; absent from a 0.25 or rc engine. */
+  fires_on?: FiresWire[]
+  /**
+   * @deprecated The legacy outcome selector of an engine without
+   * `observe.capture`, read only when `fires_on` is absent: absent or `success`,
+   * `error`, `complete`.
+   */
+  on?: string
 }
 
 export type FunctionRegisteredMessage = {

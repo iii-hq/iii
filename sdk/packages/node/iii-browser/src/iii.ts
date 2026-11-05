@@ -20,11 +20,13 @@ import {
   type CallerWire,
   type CallRequest,
   type ErrorBody,
+  FEATURE_OBSERVE_CAPTURE,
   FEATURE_OBSERVE_V1,
   FEATURE_OBSERVE_V2,
   type IIIMessage,
   type InvocationResultMessage,
   MessageType,
+  type ObserverInfoWire,
   type RegisterFunctionMessage,
   SDK_FEATURES,
   type StreamChannelRef,
@@ -324,7 +326,7 @@ class Sdk implements ISdk {
   // The engine's features (`WorkerRegistered.features`), kept across a
   // disconnect until the next `WorkerRegistered` replaces them.
   private engineFeatures: ReadonlySet<string> = new Set()
-  /** Whether the `source.on` deprecation (engines without `observe.v2`) was logged. */
+  /** Whether the legacy `on` deprecation (engines without `observe.capture`) was logged. */
   private legacyOnWarned = false
   // `WorkerRegistered` arrived on the current connection.
   private registeredOnConnection = false
@@ -881,19 +883,29 @@ class Sdk implements ISdk {
     enterInvocation(contextFromView(invocation), fn, MAX_RUNNING_INVOCATION_MS)
 
   /**
-   * The `observe` frame for this connection's engine. One without `observe.v2`
-   * (0.25) decides the outcomes that fire from `source.on` alone, so it gets the
-   * `on` that `capture` implies; the first such frame logs that this is deprecated.
+   * The `observe` frame for this connection's engine, on the first send and on
+   * every replay. One without `observe.capture` (0.25, and rc engines that have
+   * `observe.v2`) decides the outcomes that fire from `source.on` alone, so it
+   * gets the `on` that `capture` implies; one with it never gets `on`.
    */
   private observeFrame(message: ObserverHandleImpl['message']): ObserverHandleImpl['message'] {
-    if (this.engineFeatures.has(FEATURE_OBSERVE_V2)) return message
+    if (this.engineFeatures.has(FEATURE_OBSERVE_CAPTURE)) return message
     const on = legacyOn(message.source.capture)
     if (on === undefined) return message
-    if (!this.legacyOnWarned) {
-      this.legacyOnWarned = true
-      this.logWarn(LEGACY_ON_DEPRECATION)
-    }
+    this.warnLegacyOn()
     return { ...message, source: { ...message.source, on } as typeof message.source }
+  }
+
+  /** Logs, once per client, that the engine talks the deprecated legacy `on` (no `observe.capture`). */
+  private warnLegacyOn(): void {
+    if (this.legacyOnWarned) return
+    this.legacyOnWarned = true
+    this.logWarn(LEGACY_ON_DEPRECATION)
+  }
+
+  /** Observer views without `fires_on` come from an engine without `observe.capture`: they fire from the legacy `on`. */
+  private noteLegacyViews(views: readonly ObserverInfoWire[]): void {
+    if (!this.legacyOnWarned && views.some((view) => view.fires_on === undefined)) this.warnLegacyOn()
   }
 
   private sendObserve(handle: ObserverHandleImpl): void {
@@ -1977,6 +1989,7 @@ class Sdk implements ISdk {
       })
     } else if (msgType === MessageType.FunctionRegistered) {
       const msg = decodeFunctionRegistered(message)
+      this.noteLegacyViews(msg.observers)
       const fn = this.functions.get(msg.id)
       // Only a registration sent on this connection is confirmed: not one
       // unregistered since (a match or deliver hook against an engine without observe.v2).
@@ -1986,6 +1999,7 @@ class Sdk implements ISdk {
       }
     } else if (msgType === MessageType.ObserverAdded) {
       const msg = decodeObserverAdded(message)
+      this.noteLegacyViews([msg.observer])
       const fn = this.functions.get(msg.function_id)
       // An observer of a registration this connection withdrew (or never
       // sent) is ignored, as its functionregistered is: no hook, no ack.

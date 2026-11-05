@@ -20,7 +20,7 @@ import type {
   Observer,
   RemovedHook,
 } from './observe-types'
-import { captureFires } from './observe-wire'
+import { observerFires } from './observe-wire'
 import type { Reporter, ReportInit, ReportValues } from './reporter'
 
 /** CONTRACT D11: an observer hook still running after this is `OWNER_TIMEOUT`. */
@@ -74,9 +74,16 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-/** Whether `obs` is served with the view `info` announces: its filters, target and capture. */
+/** Whether `obs` is served with the view `info` announces: its filters, target, capture and the outcomes that fire it. */
 function sameView(obs: ObserverImpl, info: ObserverInfoWire): boolean {
-  return obs.target === info.target && sameJson(obs.capture, info.capture) && sameJson(obs.filters, info.filters)
+  const fires = observerFires(info)
+  return (
+    obs.target === info.target &&
+    obs.firesOnSuccess === fires.onSuccess &&
+    obs.firesOnError === fires.onError &&
+    sameJson(obs.capture, info.capture) &&
+    sameJson(obs.filters, info.filters)
+  )
 }
 
 function rejectionBody(error: unknown): { code: string; message: string } {
@@ -193,6 +200,14 @@ export class ObserverImpl implements Observer {
   capture: Capture[]
   /** @internal */
   filter: CompiledFilter
+  /**
+   * @internal A call that succeeded fires it: computed once per view it is
+   * announced with (the view's `fires_on`, else the legacy `on`), and read by
+   * every delivery instead of its capture.
+   */
+  firesOnSuccess = true
+  /** @internal A call that failed fires it (as {@link firesOnSuccess}). */
+  firesOnError = false
   /** @internal The revision it was acked with (echoed by a late rejection). */
   revision: number
   /** @internal In the active set: delivery reaches it. */
@@ -228,6 +243,13 @@ export class ObserverImpl implements Observer {
     this.capture = info.capture as Capture[]
     this.filter = filter
     this.revision = revision
+    this.setFires(info)
+  }
+
+  private setFires(info: ObserverInfoWire): void {
+    const fires = observerFires(info)
+    this.firesOnSuccess = fires.onSuccess
+    this.firesOnError = fires.onError
   }
 
   /** @internal Takes the engine's current view of a kept observer. */
@@ -236,10 +258,11 @@ export class ObserverImpl implements Observer {
     this.filter = filter
     this.target = info.target
     this.capture = info.capture as Capture[]
+    this.setFires(info)
   }
 
   matches(call: Partial<Call>): boolean {
-    return captureFires(this.capture, call.status !== 'error') && this.filter.matches(filterDoc(call))
+    return (call.status !== 'error' ? this.firesOnSuccess : this.firesOnError) && this.filter.matches(filterDoc(call))
   }
 
   accepted(): Promise<void> {
@@ -413,8 +436,12 @@ export class FunctionObservers {
    */
   selectActive(doc: FilterDoc, ok: boolean): ObserverImpl[] {
     const index = this.filterIndex
-    if (!index.narrows) return this.compiled.filter((obs) => captureFires(obs.capture, ok) && obs.filter.matches(doc))
-    return index.matches(doc, (obs) => captureFires(obs.capture, ok))
+    if (ok) {
+      if (!index.narrows) return this.compiled.filter((obs) => obs.firesOnSuccess && obs.filter.matches(doc))
+      return index.matches(doc, (obs) => obs.firesOnSuccess)
+    }
+    if (!index.narrows) return this.compiled.filter((obs) => obs.firesOnError && obs.filter.matches(doc))
+    return index.matches(doc, (obs) => obs.firesOnError)
   }
 
   observers(): readonly Observer[] {
@@ -983,7 +1010,7 @@ export class Delivery {
     const ok = call.status !== 'error'
     const doc = filterDoc(call)
     if (matched === this.init.snapshot && matched === this.owner.compiled) return this.owner.selectActive(doc, ok)
-    return matched.filter((obs) => captureFires(obs.capture, ok) && obs.filter.matches(doc))
+    return matched.filter((obs) => (ok ? obs.firesOnSuccess : obs.firesOnError) && obs.filter.matches(doc))
   }
 
   /** The report item of a local call delivered to `selected`. */

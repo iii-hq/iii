@@ -334,7 +334,9 @@ const LEGACY_ON_CASES = [
 ] as const
 
 describe('sending observe to an engine without observe.capture (CONTRACT D6)', () => {
-  it.each(LEGACY_ENGINES)('%s gets the source.on that capture implies, and one deprecation warning', async (_name, features) => {
+  it.each(
+    LEGACY_ENGINES,
+  )('%s gets the source.on that capture implies, and one deprecation warning', async (_name, features) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { sdk, socket } = worker()
     socket.open([...features])
@@ -353,7 +355,9 @@ describe('sending observe to an engine without observe.capture (CONTRACT D6)', (
     warn.mockRestore()
   })
 
-  it.each(LEGACY_ENGINES)('%s: the reconnect replay sends the same legacy source.on, still one warning', async (_name, features) => {
+  it.each(
+    LEGACY_ENGINES,
+  )('%s: the reconnect replay sends the same legacy source.on, still one warning', async (_name, features) => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { sdk, socket } = worker()
@@ -366,8 +370,7 @@ describe('sending observe to an engine without observe.capture (CONTRACT D6)', (
     const next = fake.lastSocket()
     expect(next).not.toBe(socket)
     next.open([...features])
-    const onOf = (frames: Record<string, unknown>[]) =>
-      frames.map((f) => [f.id, (f.source as { on?: string }).on])
+    const onOf = (frames: Record<string, unknown>[]) => frames.map((f) => [f.id, (f.source as { on?: string }).on])
     expect(onOf(next.framesOf('observe'))).toEqual([
       ['err-1', 'error'],
       ['both-1', 'complete'],
@@ -432,9 +435,7 @@ describe('sending observe to an engine with observe.capture (CONTRACT D6)', () =
   it('announces observe.capture in engine::workers::register', () => {
     const { socket } = worker()
     socket.open()
-    const [register] = socket
-      .framesOf('invokefunction')
-      .filter((f) => f.function_id === 'engine::workers::register')
+    const [register] = socket.framesOf('invokefunction').filter((f) => f.function_id === 'engine::workers::register')
     expect((register.data as { features: string[] }).features).toEqual(
       expect.arrayContaining(['observe.v1', 'observe.v2', 'observe.capture']),
     )
@@ -456,7 +457,10 @@ describe('the default capture (CONTRACT D1)', () => {
 })
 
 describe('removed source fields', () => {
-  it.each(['on', 'deliver'])('refuses source.%s with INVALID_ARGS instead of dropping it: nothing sent', async (field) => {
+  it.each([
+    'on',
+    'deliver',
+  ])('refuses source.%s with INVALID_ARGS instead of dropping it: nothing sent', async (field) => {
     const { sdk, socket } = worker()
     socket.open()
     const source = { function_id: 'orders::create', [field]: 'error' }
