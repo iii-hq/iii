@@ -27,14 +27,16 @@ export async function Hero() {
   return (
     // biome-ignore lint/correctness/useUniqueElementIds: The page has one hero and this is its public anchor.
     <section id="hero" aria-labelledby="hero-title" className="relative overflow-hidden">
-      {/* The top padding makes room for the launch pill, so the headline sits about where it did without it. */}
-      <div className="mx-auto flex w-full max-w-[1240px] flex-col items-center px-5 pt-24 pb-14 sm:px-6 sm:pt-28 sm:pb-16 md:px-5 lg:pt-36 lg:pb-24">
+      {/* The launch pill (34px) and its margin come out of the top padding, so the headline's top stays exactly where it
+          was before the pill: 128px from the top on phones, 144px from sm, 176px from lg (measured on the built page,
+          2026-11-05). The pill keeps 25px or more clear of the header bar. */}
+      <div className="mx-auto flex w-full max-w-[1240px] flex-col items-center px-5 pt-18.5 pb-14 sm:px-6 sm:pt-21.5 sm:pb-16 md:px-5 lg:pt-27.5 lg:pb-24">
         {/* A 680px column centred on the page (840px on desktop, room for the headline): headline,
             paragraph and install card all share one centre line. The install card and the email row stay 680px
             everywhere (2026-10-09: narrower on desktop); the `ci` command wraps onto a second line there. */}
         <div className="flex w-full max-w-[680px] flex-col items-center text-center lg:max-w-[840px]">
           {/* 2026-11-05: the iii app launch, announced over the headline. */}
-          <Reveal className="mb-7 flex max-w-full justify-center sm:mb-8">
+          <Reveal className="mb-5 flex max-w-full justify-center sm:mb-6 lg:mb-8">
             <AppAnnouncement />
           </Reveal>
           <Reveal className="w-full">
