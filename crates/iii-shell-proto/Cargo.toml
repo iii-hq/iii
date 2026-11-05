@@ -17,4 +17,4 @@ thiserror = "2"
 schemars = "0.8"
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
