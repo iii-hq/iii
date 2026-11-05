@@ -546,8 +546,8 @@ pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
 /// Includes [`FEATURE_OBSERVE_V1`].
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
 /// Protocol feature: the host reads the outcomes that fire an observer from
-/// the `fires` of its observer views, never from `capture`, and sends no
-/// `source.on`. An engine with it announces `fires` on every view.
+/// the `fires_on` of its observer views, never from `capture`, and sends no
+/// `source.on`. An engine with it announces `fires_on` on every view.
 pub const FEATURE_OBSERVE_CAPTURE: &str = "observe.capture";
 /// Protocol feature: the SDK runs its own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
@@ -816,7 +816,7 @@ pub(crate) fn legacy_on(capture: Option<&[Capture]>) -> Option<&'static str> {
 }
 
 /// Logged once per client, the first time it reads an observer view without
-/// `fires` or sends `source.on`: the engine lacks [`FEATURE_OBSERVE_CAPTURE`].
+/// `fires_on` or sends `source.on`: the engine lacks [`FEATURE_OBSERVE_CAPTURE`].
 pub(crate) const LEGACY_ON_DEPRECATION: &str = "observe: the connected engine does not support \
     observe.capture; legacy `on` semantics are deprecated and will be removed in a future version; \
     upgrade the engine.";
@@ -919,9 +919,9 @@ pub struct ObserverView {
     /// [`FEATURE_OBSERVE_CAPTURE`]; absent from an older engine, whose
     /// observers fire as their legacy [`on`](Self::on) says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fires: Option<Vec<InvocationStatus>>,
+    pub fires_on: Option<Vec<InvocationStatus>>,
     /// The legacy `on` of an engine without [`FEATURE_OBSERVE_CAPTURE`]
-    /// (absent: success; `error`; `complete`). Read only when `fires` is
+    /// (absent: success; `error`; `complete`). Read only when `fires_on` is
     /// absent; deprecated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<Value>,
@@ -929,7 +929,7 @@ pub struct ObserverView {
 
 impl ObserverView {
     /// Whether a call that ended in success (or not) fires this observer:
-    /// from `fires`, or else from the legacy `on`, never from `capture`.
+    /// from `fires_on`, or else from the legacy `on`, never from `capture`.
     pub fn fires_on(&self, success: bool) -> bool {
         let (on_success, on_error) = self.firing();
         if success { on_success } else { on_error }
@@ -937,7 +937,7 @@ impl ObserverView {
 
     /// `(fires on success, fires on error)`.
     pub(crate) fn firing(&self) -> (bool, bool) {
-        match &self.fires {
+        match &self.fires_on {
             Some(fires) => (
                 fires.contains(&InvocationStatus::Success),
                 fires.contains(&InvocationStatus::Error),

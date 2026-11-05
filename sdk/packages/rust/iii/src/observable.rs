@@ -153,7 +153,7 @@ struct ObserverInner {
     /// conditions; one it does not is evaluated on every call.
     indexed: bool,
     mask: CaptureMask,
-    /// The outcomes that fire it, read once from the view (`fires`, or the
+    /// The outcomes that fire it, read once from the view (`fires_on`, or the
     /// legacy `on`).
     fires_on_success: bool,
     fires_on_error: bool,

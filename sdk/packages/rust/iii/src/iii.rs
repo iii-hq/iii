@@ -1951,10 +1951,10 @@ pub(crate) struct IIIInner {
     /// The last engine advertised observe: outgoing calls carry `caller`.
     engine_observe_last: AtomicBool,
     /// The legacy `on` deprecation (an engine without `observe.capture`:
-    /// observer views without `fires`, or `source.on` sent) was logged.
+    /// observer views without `fires_on`, or `source.on` sent) was logged.
     legacy_on_warned: AtomicBool,
     /// The engine on the current connection advertised `observe.capture`:
-    /// it announces `fires` and never needs `source.on`.
+    /// it announces `fires_on` and never needs `source.on`.
     engine_observe_capture: AtomicBool,
     /// Listeners of [`IIIClient::on_engine_supports_observe`].
     observe_support: Arc<Mutex<ObserveSupport>>,
@@ -2127,16 +2127,16 @@ impl IIIClient {
         }
     }
 
-    /// Warns once when an announced observer carries no `fires`: its firing
+    /// Warns once when an announced observer carries no `fires_on`: its firing
     /// is read from the legacy `on`.
     fn warn_legacy_views(&self, views: &[crate::protocol::ObserverView]) {
-        if views.iter().any(|view| view.fires.is_none()) {
+        if views.iter().any(|view| view.fires_on.is_none()) {
             self.warn_legacy_on();
         }
     }
 
     /// The entry of `function_id`, once the views announced with it are
-    /// checked for `fires`.
+    /// checked for `fires_on`.
     fn warned_function_entry(
         &self,
         function_id: &str,
@@ -6458,7 +6458,7 @@ mod observer_book_tests {
 }
 
 /// D1 / D6 of the observe.capture contract: the default capture, the
-/// `observe.capture` feature, `fires` on observer views (and the legacy `on`
+/// `observe.capture` feature, `fires_on` on observer views (and the legacy `on`
 /// when an engine sends none) and the legacy `on` this SDK sends to an engine
 /// without `observe.capture`.
 #[cfg(test)]

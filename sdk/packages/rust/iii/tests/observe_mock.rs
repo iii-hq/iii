@@ -86,12 +86,18 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
     }
 }
 
-/// The engine's hello on this connection: an `observe.v2` engine, or none.
+/// The engine's hello on this connection: a current engine (`observe.v2`
+/// and `observe.capture`), or none.
 fn hello(mock: &MockEngine, observe: bool) {
     hello_with(
         mock,
         if observe {
-            json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+            json!([
+                "observe.v1",
+                "observe.v2",
+                "observe.capture",
+                "local-dispatch.v1"
+            ])
         } else {
             json!([])
         },
@@ -115,8 +121,20 @@ fn confirm(mock: &MockEngine, id: &str, revision: u64, local_dispatch: bool, obs
     }));
 }
 
+/// An observer view as an engine with `observe.capture` announces it: with
+/// the `fires_on` its capture implies.
 fn view(id: &str, filters: Value, capture: Value) -> Value {
-    json!({ "id": id, "args": {}, "filters": filters, "target": "t::target", "capture": capture })
+    let has = |c: &str| capture.as_array().unwrap().iter().any(|v| v == c);
+    let empty = capture.as_array().unwrap().is_empty();
+    let mut fires_on = Vec::new();
+    if empty || has("input") || has("output") {
+        fires_on.push("success");
+    }
+    if has("error") {
+        fires_on.push("error");
+    }
+    json!({ "id": id, "args": {}, "filters": filters, "target": "t::target",
+            "capture": capture, "fires_on": fires_on })
 }
 
 /// Registers `id` on a connected worker and lets the engine confirm it.
@@ -1692,6 +1710,70 @@ async fn auto_functions_report_only_matching_local_calls() {
     assert!(item["started_at_ms"].as_u64().unwrap() > 1_700_000_000_000);
     assert_eq!(invocations(&mock), 0, "the calls themselves stay local");
     iii.shutdown_async().await;
+}
+
+/// An engine without `observe.capture` (an rc engine with `observe.v2`
+/// only) announces views without `fires_on`: the observer fires as its legacy
+/// `on` says (absent: success only), never as its capture implies.
+#[tokio::test]
+async fn a_view_without_fires_on_fires_as_its_legacy_on_says() {
+    for (on, want) in [
+        (None, vec!["success"]),
+        (Some("success"), vec!["success"]),
+        (Some("error"), vec!["error"]),
+        (Some("complete"), vec!["error", "success"]),
+    ] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "owner");
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(
+            &mock,
+            json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+        );
+        until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+        let charge = RegisterFunction::new(|input: Value| {
+            if input["fail"] == json!(true) {
+                Err(Error::Remote {
+                    code: "CARD_DECLINED".into(),
+                    message: "declined".into(),
+                    stacktrace: None,
+                })
+            } else {
+                Ok(json!({ "ok": true }))
+            }
+        });
+        // the capture alone would fire on both outcomes
+        let mut observer = json!({ "id": "obs", "args": {}, "filters": {},
+                                   "target": "t::target", "capture": ["input", "error"] });
+        if let Some(on) = on {
+            observer["on"] = json!(on);
+        }
+        hosted(&mock, &iii, "p::charge", charge, json!([observer])).await;
+        frame(&mock, is("observerack")).await;
+        mock.clear();
+        let call = |input: Value| iii.call(CallRequest::new("p::charge", input));
+        call(json!({ "amount": 1 })).await.unwrap();
+        let _ = call(json!({ "amount": 2, "fail": true })).await;
+        let statuses = |mock: &MockEngine| -> Vec<String> {
+            let mut statuses: Vec<String> = frames(mock, "invocationsobserved")
+                .iter()
+                .flat_map(|r| {
+                    r["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|i| i["status"].as_str().unwrap().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            statuses.sort();
+            statuses
+        };
+        until("the reports", || statuses(&mock).len() >= want.len()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(statuses(&mock), want, "on {on:?}");
+        iii.shutdown_async().await;
+    }
 }
 
 /// An observer with `capture: []` fires on success only, and is reported the
