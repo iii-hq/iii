@@ -194,6 +194,7 @@ async fn features_are_declared_on_workers_register() {
         json!([
             "observe.v1",
             "observe.v2",
+            "observe.capture",
             "local-dispatch.v1",
             "large-messages.v1"
         ])
@@ -369,27 +370,39 @@ async fn an_observer_made_after_the_hello_is_sent_at_once() {
     }
 }
 
-/// An engine without `observe.v2` (0.25) decides the outcomes that fire from
-/// `source.on` alone: it gets the `on` the capture implies. An `observe.v2`
-/// engine gets none.
+/// An engine without `observe.capture` (a 0.25 engine, and an rc engine that
+/// advertises `observe.v2` only) decides the outcomes that fire from
+/// `source.on`: it gets the `on` the capture implies, on the first observe
+/// and on the replay after a reconnect. An engine with `observe.capture`
+/// never gets one.
 #[tokio::test]
-async fn an_engine_without_observe_v2_gets_the_on_capture_implies() {
+async fn an_engine_without_observe_capture_gets_the_on_capture_implies() {
     use Capture::{Caller, Error as Failure, Input, Output};
     let cases: Vec<(Option<Vec<Capture>>, Option<&str>)> = vec![
         (None, None),
         (Some(vec![Input]), None),
         (Some(vec![]), None),
+        (Some(vec![Failure]), Some("error")),
         (Some(vec![Failure, Caller]), Some("error")),
         (Some(vec![Input, Failure]), Some("complete")),
         (Some(vec![Input, Output, Failure]), Some("complete")),
     ];
-    for (features, v2) in [
+    for (features, capture_engine) in [
         (
             fixture("workerregistered-v1.json")["features"].clone(),
             false,
         ),
         (
             json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+            false,
+        ),
+        (
+            json!([
+                "observe.v1",
+                "observe.v2",
+                "observe.capture",
+                "local-dispatch.v1"
+            ]),
             true,
         ),
     ] {
@@ -409,19 +422,49 @@ async fn an_engine_without_observe_v2_gets_the_on_capture_implies() {
                 ObserverOptions::default().id(format!("o{i}")),
             );
         }
+        let want: Vec<(String, Option<String>)> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (_, on))| {
+                (
+                    format!("o{i}"),
+                    if capture_engine {
+                        None
+                    } else {
+                        on.map(String::from)
+                    },
+                )
+            })
+            .collect();
+        let sent = |mock: &MockEngine| -> Vec<(String, Option<String>)> {
+            let mut sent: Vec<(String, Option<String>)> = frames(mock, "observe")
+                .iter()
+                .map(|f| {
+                    (
+                        f["id"].as_str().unwrap().to_string(),
+                        f["source"]["on"].as_str().map(String::from),
+                    )
+                })
+                .collect();
+            sent.sort();
+            sent
+        };
         until("the observes", || {
             frames(&mock, "observe").len() == cases.len()
         })
         .await;
-        let sent: Vec<Option<String>> = frames(&mock, "observe")
-            .iter()
-            .map(|f| f["source"]["on"].as_str().map(String::from))
-            .collect();
-        let want: Vec<Option<String>> = cases
-            .iter()
-            .map(|(_, on)| if v2 { None } else { on.map(String::from) })
-            .collect();
-        assert_eq!(sent, want, "features {features}");
+        assert_eq!(sent(&mock), want, "initial observe, features {features}");
+
+        // the replay on the next connection carries the same `on`
+        mock.clear();
+        mock.close_active_connection();
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(&mock, features.clone());
+        until("the replayed observes", || {
+            frames(&mock, "observe").len() == cases.len()
+        })
+        .await;
+        assert_eq!(sent(&mock), want, "replay, features {features}");
         iii.shutdown_async().await;
     }
 }
