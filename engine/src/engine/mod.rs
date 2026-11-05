@@ -42,7 +42,7 @@ use crate::{
             channels::ChannelManager,
             inbound::{Inbound, Oversized},
             rbac_session,
-            worker_socket::{WorkerSocket, send_json},
+            worker_socket::WorkerSocket,
         },
     },
 };
@@ -226,6 +226,9 @@ async fn handle_telemetry_frame(bytes: &[u8], peer: &SocketAddr) -> bool {
     }
     true
 }
+
+/// Messages a connection's writer queues before it flushes them together.
+const WRITER_BATCH: usize = 128;
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -753,6 +756,44 @@ impl Engine {
                 )));
         }
         worker.remove_invocation(&invocation_id).await;
+    }
+
+    /// Queues `outbound` on `sink` without flushing it: what the writer task
+    /// does with each message of a batch. A message too large for the worker
+    /// is answered for instead (see [`Self::guard_outbound`]).
+    async fn feed_outbound<S>(
+        &self,
+        worker: &WorkerConnection,
+        sink: &mut S,
+        outbound: Outbound,
+        peer: SocketAddr,
+    ) -> Result<(), S::Error>
+    where
+        S: futures_util::Sink<WsMessage> + Unpin,
+    {
+        let payload = match outbound {
+            Outbound::Protocol(msg) => {
+                let serialized = match serde_json::to_string(&msg) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        tracing::error!(peer = %peer, error = ?err, "serialize error");
+                        return Ok(());
+                    }
+                };
+                self.guard_outbound(worker, msg, serialized)
+                    .await
+                    .map(|(_msg, payload)| payload)
+            }
+            Outbound::Invoke {
+                invocation_id,
+                frame,
+            } => self.guard_invoke_frame(worker, invocation_id, frame).await,
+            Outbound::Raw(frame) => return sink.feed(frame).await,
+        };
+        match payload {
+            Some(payload) => crate::workers::worker::worker_socket::feed_json(sink, payload).await,
+            None => Ok(()),
+        }
     }
 
     /// [`Self::guard_outbound`] for an encoded `invokefunction` frame.
@@ -2763,40 +2804,29 @@ impl Engine {
         let writer_engine = self.clone();
 
         let writer = tokio::spawn(async move {
+            // The messages queued meanwhile go out with the first, up to
+            // `WRITER_BATCH`, and one flush writes them all: a burst (an
+            // event's activations, the answers to concurrent calls) costs one
+            // write, not one per message.
             while let Some(outbound) = rx.recv().await {
-                let send_result = match outbound {
-                    Outbound::Protocol(msg) => {
-                        let serialized = match serde_json::to_string(&msg) {
-                            Ok(payload) => payload,
-                            Err(err) => {
-                                tracing::error!(peer = %peer, error = ?err, "serialize error");
-                                continue;
-                            }
-                        };
-                        let Some((_msg, payload)) = writer_engine
-                            .guard_outbound(&writer_worker, msg, serialized)
-                            .await
-                        else {
-                            continue;
-                        };
-                        send_json(&mut ws_tx, payload).await
+                let mut next = Some(outbound);
+                let mut queued = 0;
+                let mut failed = false;
+                while let Some(outbound) = next.take() {
+                    if writer_engine
+                        .feed_outbound(&writer_worker, &mut ws_tx, outbound, peer)
+                        .await
+                        .is_err()
+                    {
+                        failed = true;
+                        break;
                     }
-                    Outbound::Invoke {
-                        invocation_id,
-                        frame,
-                    } => {
-                        let Some(payload) = writer_engine
-                            .guard_invoke_frame(&writer_worker, invocation_id, frame)
-                            .await
-                        else {
-                            continue;
-                        };
-                        send_json(&mut ws_tx, payload).await
+                    queued += 1;
+                    if queued < WRITER_BATCH {
+                        next = rx.try_recv().ok();
                     }
-                    Outbound::Raw(frame) => ws_tx.send(frame).await,
-                };
-
-                if send_result.is_err() {
+                }
+                if failed || ws_tx.flush().await.is_err() {
                     break;
                 }
             }

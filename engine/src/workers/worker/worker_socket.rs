@@ -151,15 +151,16 @@ pub(crate) fn json_frames(payload: String) -> Vec<Message> {
         .collect()
 }
 
-/// Writes one serialized JSON envelope as [`json_frames`]. The connection's
-/// single writer task calls it, so no other data frame can land between the
-/// fragments of a message.
-pub(crate) async fn send_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
+/// Queues one serialized JSON envelope on `sink` as [`json_frames`], without
+/// flushing: the connection's writer queues every message waiting for it,
+/// then flushes them together. That single writer task calls it, so no other
+/// data frame can land between the fragments of a message.
+pub(crate) async fn feed_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
 where
     S: Sink<Message> + Unpin,
 {
     for frame in json_frames(payload) {
-        sink.send(frame).await?;
+        sink.feed(frame).await?;
     }
     Ok(())
 }
