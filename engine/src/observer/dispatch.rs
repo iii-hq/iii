@@ -45,6 +45,7 @@
 //! when the activation starts.
 
 use std::{
+    borrow::Cow,
     collections::HashSet,
     hash::{BuildHasher, RandomState},
     sync::{
@@ -100,11 +101,10 @@ struct Tracked {
     admitted: bool,
     started: Instant,
     started_at_ms: u64,
-    /// The fields of the input the observers' filters read, when that is
-    /// all they read of it.
-    input: Option<Arc<Value>>,
-    /// The whole input as JSON text, when an observer needs all of it.
-    input_text: Option<Arc<str>>,
+    /// The input as the observers need it: the fields their filters read,
+    /// when that is all they read of it, and otherwise all of it (see
+    /// [`Payload::of`]).
+    input: Option<Payload>,
     metadata: Option<Arc<Value>>,
     traceparent: Option<String>,
     baggage: Option<String>,
@@ -611,8 +611,8 @@ pub(crate) struct Completed {
     function: Arc<FnKey>,
     invocation_id: InvocationId,
     success: bool,
-    input: Option<Arc<Value>>,
-    output: Option<Arc<Value>>,
+    input: Option<Payload>,
+    output: Option<Payload>,
     error: Option<Arc<Value>>,
     caller: Option<Arc<Value>>,
     metadata: Option<Arc<Value>>,
@@ -626,10 +626,10 @@ pub(crate) struct Completed {
     /// What it was charged when the first of them took it (or would have
     /// been, when that did not fit).
     charged: AtomicUsize,
-    /// Its payloads as JSON text, for the activations a worker connection
-    /// receives: allocated by the first of them (or with the event, for a
-    /// payload the call kept as text), so an event that only in-process
-    /// targets read holds none.
+    /// Its payloads held as values, as JSON text, for the activations a
+    /// worker connection receives (a payload held as text is sent as it
+    /// is): allocated by the first of them that encodes one, so an event
+    /// that only in-process targets read holds none.
     encoded: OnceLock<Box<EncodedParts>>,
 }
 
@@ -696,45 +696,89 @@ pub(crate) struct EncodedParts {
     metadata: OnceLock<Option<Arc<str>>>,
 }
 
-impl EncodedParts {
-    /// The parts of an event whose input or output the call kept as text,
-    /// allocated only then.
-    fn with_text(input: Option<Arc<str>>, output: Option<Arc<str>>) -> OnceLock<Box<Self>> {
-        if input.is_none() && output.is_none() {
-            return OnceLock::new();
-        }
-        let parts = Self::default();
-        if let Some(input) = input {
-            let _ = parts.input.set(Some(input));
-        }
-        if let Some(output) = output {
-            let _ = parts.output.set(Some(output));
-        }
-        OnceLock::from(Box::new(parts))
-    }
-}
-
 /// The [`approx_size`] above which a call keeps a payload an observer needs
 /// whole as its JSON text rather than as a copy: a copy allocates every node
-/// on the caller's path, the text one buffer, which the evaluator decodes and
-/// a worker's activation sends as is. Below it a copy costs less than
-/// encoding and decoding.
+/// on the caller's path, the text one buffer, which a worker's activation
+/// sends as is. Below it a copy costs less than encoding and decoding.
 const TEXT_ABOVE: usize = 2 * 1024;
 
-/// A payload a call keeps for observers that need it whole.
-enum Kept {
+/// One payload of an event (its input or its output), held once: as a value,
+/// or, when the call kept it as its JSON text (see [`TEXT_ABOVE`]), as that
+/// text alone. A value is built from the text only for what reads one: the
+/// observers' filters, for their evaluation alone (see [`Payload::filtered`]),
+/// and the activations whose target takes a value, which share the one the
+/// first of them decodes (see [`Payload::value`]).
+enum Payload {
     Value(Arc<Value>),
-    Text(Arc<str>),
+    /// Boxed, so that a payload is a pointer and a tag: most events hold
+    /// small payloads, as values.
+    Text(Box<PayloadText>),
 }
 
-impl Kept {
+/// A payload held as its JSON text.
+struct PayloadText {
+    text: Arc<str>,
+    /// Decoded from `text` when the first activation that takes a value
+    /// starts; `None` inside when the text does not decode.
+    value: OnceLock<Option<Arc<Value>>>,
+}
+
+impl Payload {
     /// `value` as observers see it (see [`unstamped`]): copied, or encoded
     /// when larger than [`TEXT_ABOVE`].
     fn of(value: &Value) -> Self {
         if approx_size(value) > TEXT_ABOVE {
-            Kept::Text(encode_unstamped(value))
+            Payload::Text(Box::new(PayloadText {
+                text: encode_unstamped(value),
+                value: OnceLock::new(),
+            }))
         } else {
-            Kept::Value(Arc::new(unstamped(value.clone())))
+            Payload::Value(Arc::new(unstamped(value.clone())))
+        }
+    }
+
+    /// Its value, for an activation whose target takes one: the value it
+    /// holds, or the one the first such activation decodes from its text,
+    /// kept from then on for the event's other activations.
+    fn value(&self) -> Option<&Arc<Value>> {
+        match self {
+            Payload::Value(value) => Some(value),
+            Payload::Text(text) => text
+                .value
+                .get_or_init(|| serde_json::from_str(&text.text).ok().map(Arc::new))
+                .as_ref(),
+        }
+    }
+
+    /// Its value, for the observers' filters: the value it holds, or, when
+    /// it holds text that a filter reads (`read`), the value an activation
+    /// already decoded, or else one decoded for the evaluation alone, which
+    /// the event does not keep. Text no filter reads is not decoded.
+    fn filtered(&self, read: bool) -> Option<Cow<'_, Value>> {
+        match self {
+            Payload::Value(value) => Some(Cow::Borrowed(value)),
+            Payload::Text(_) if !read => None,
+            Payload::Text(text) => match text.value.get() {
+                Some(decoded) => decoded.as_deref().map(Cow::Borrowed),
+                None => serde_json::from_str(&text.text).ok().map(Cow::Owned),
+            },
+        }
+    }
+
+    /// Roughly what holding it costs (see [`QUEUED_BYTES`] and
+    /// [`EVALUATOR_BYTES`]): its value's [`approx_size`], or its text's
+    /// length, plus the value decoded from it once there is one.
+    fn size(&self) -> usize {
+        match self {
+            Payload::Value(value) => approx_size(value),
+            Payload::Text(text) => {
+                24 + text.text.len()
+                    + text
+                        .value
+                        .get()
+                        .and_then(Option::as_deref)
+                        .map_or(0, approx_size)
+            }
         }
     }
 }
@@ -777,51 +821,86 @@ fn encode_once(cell: &OnceLock<Option<Arc<str>>>, value: Option<&Value>) -> Opti
 }
 
 impl Completed {
-    /// Its payloads' text, allocated the first time an activation needs one.
+    /// Its payloads' text, allocated the first time an activation encodes
+    /// one.
     fn encoded(&self) -> &EncodedParts {
         self.encoded.get_or_init(Box::default)
     }
 
+    /// The input as a value, for a target that takes one (see
+    /// [`Payload::value`]).
+    fn input_value(&self) -> Option<&Value> {
+        self.input
+            .as_ref()
+            .and_then(Payload::value)
+            .map(Arc::as_ref)
+    }
+
+    /// The output as a value, for a target that takes one.
+    fn output_value(&self) -> Option<&Value> {
+        self.output
+            .as_ref()
+            .and_then(Payload::value)
+            .map(Arc::as_ref)
+    }
+
+    /// `payload`'s JSON text: the text it holds, or its value's, encoded
+    /// into its `cell` of the event's [`EncodedParts`] the first time.
+    fn encode_payload(
+        &self,
+        payload: Option<&Payload>,
+        cell: fn(&EncodedParts) -> &OnceLock<Option<Arc<str>>>,
+    ) -> Option<Arc<str>> {
+        match payload? {
+            Payload::Text(text) => Some(text.text.clone()),
+            Payload::Value(value) => encode_once(cell(self.encoded()), Some(value)),
+        }
+    }
+
     fn encoded_input(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded().input, self.input.as_deref())
+        self.encode_payload(self.input.as_ref(), |parts| &parts.input)
     }
 
     fn encoded_output(&self) -> Option<Arc<str>> {
         // An event source's input and output are the same event: encoded
         // once.
-        if let (Some(input), Some(output)) = (&self.input, &self.output)
+        if let (Some(Payload::Value(input)), Some(Payload::Value(output))) =
+            (&self.input, &self.output)
             && Arc::ptr_eq(input, output)
         {
             return self.encoded_input();
         }
-        encode_once(&self.encoded().output, self.output.as_deref())
+        self.encode_payload(self.output.as_ref(), |parts| &parts.output)
     }
 
     fn encoded_error(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded().error, self.error.as_deref())
+        let error = self.error.as_deref()?;
+        encode_once(&self.encoded().error, Some(error))
     }
 
     fn encoded_caller(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded().caller, self.caller.as_deref())
+        let caller = self.caller.as_deref()?;
+        encode_once(&self.encoded().caller, Some(caller))
     }
 
     fn encoded_metadata(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded().metadata, self.metadata.as_deref())
+        let metadata = self.metadata.as_deref()?;
+        encode_once(&self.encoded().metadata, Some(metadata))
     }
 
-    /// Roughly what holding the event costs (see [`QUEUED_BYTES`]).
+    /// Roughly what holding the event costs (see [`QUEUED_BYTES`]): a
+    /// payload held as text counts its length (see [`Payload::size`]).
     fn cost(&self) -> usize {
-        let payloads: usize = [
-            &self.input,
-            &self.output,
-            &self.error,
-            &self.caller,
-            &self.metadata,
-        ]
-        .into_iter()
-        .filter_map(|value| value.as_deref())
-        .map(approx_size)
-        .sum();
+        let payloads = [&self.input, &self.output]
+            .into_iter()
+            .flatten()
+            .map(Payload::size)
+            .sum::<usize>()
+            + [&self.error, &self.caller, &self.metadata]
+                .into_iter()
+                .filter_map(|value| value.as_deref())
+                .map(approx_size)
+                .sum::<usize>();
         let text = [&self.traceparent, &self.baggage]
             .into_iter()
             .filter_map(|value| value.as_deref())
@@ -972,8 +1051,11 @@ impl ObserverRegistry {
                 function: set.function.clone(),
                 invocation_id: InvocationId::Uuid(super::new_uuid()),
                 success: true,
-                input: event.clone().filter(|_| set.needs.input),
-                output: event.filter(|_| set.needs.output),
+                input: event
+                    .clone()
+                    .filter(|_| set.needs.input)
+                    .map(Payload::Value),
+                output: event.filter(|_| set.needs.output).map(Payload::Value),
                 error: None,
                 caller: None,
                 metadata: None,
@@ -1004,8 +1086,8 @@ impl ObserverRegistry {
     /// Of the input it keeps the fields the observers' filters read when that
     /// is all they read of it, and otherwise all of it: a copy, or, past
     /// [`TEXT_ABOVE`], its JSON text (one buffer rather than a copy of every
-    /// node on the caller's path), which the evaluator decodes and a worker's
-    /// activation sends as is.
+    /// node on the caller's path), which the event holds alone (see
+    /// [`Payload`]) and a worker's activation sends as is.
     ///
     /// Observers see the payload as the caller sent it: a call a worker makes
     /// carries the engine's `_caller_worker_id` stamp, which what is kept
@@ -1021,23 +1103,16 @@ impl ObserverRegistry {
         let admitted = self.evaluator_has_room(&set);
         let host_delivers = self.host_delivers(&set.function);
         let needs = set.needs;
-        let mut input_text = None;
         let input = if admitted && needs.input {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
-            match set.input.projection() {
+            Some(match set.input.projection() {
                 // Observers that only filter on the input get the fields
                 // their filters read: the rest is not copied.
-                Some(fields) => Some(Arc::new(project_input(body, fields))),
+                Some(fields) => Payload::Value(Arc::new(project_input(body, fields))),
                 // One that needs all of it gets a copy, or its JSON text
                 // when it is large (see [`TEXT_ABOVE`]).
-                None => match Kept::of(body) {
-                    Kept::Value(copy) => Some(copy),
-                    Kept::Text(text) => {
-                        input_text = Some(text);
-                        None
-                    }
-                },
-            }
+                None => Payload::of(body),
+            })
         } else {
             None
         };
@@ -1055,7 +1130,6 @@ impl ObserverRegistry {
                 started: Instant::now(),
                 started_at_ms: now_ms(),
                 input,
-                input_text,
                 metadata,
                 traceparent: traceparent.clone(),
                 baggage: baggage.clone(),
@@ -1176,7 +1250,7 @@ impl ObserverRegistry {
             Ok(Ok(output)) => (
                 true,
                 if needs.output {
-                    output.as_ref().map(Kept::of)
+                    output.as_ref().map(Payload::of)
                 } else {
                     None
                 },
@@ -1191,16 +1265,12 @@ impl ObserverRegistry {
                     .then(|| ErrorBody::new("invocation_error", err.to_string())),
             ),
         };
-        let (output, output_text) = match output {
-            Some(Kept::Value(copy)) => (Some(copy), None),
-            Some(Kept::Text(text)) => (None, Some(text)),
-            None => (None, None),
-        };
-        let text_size = |text: &Option<Arc<str>>| text.as_ref().map_or(0, |text| 24 + text.len());
-        let bytes = call.input.as_deref().map_or(0, approx_size)
-            + text_size(&call.input_text)
-            + output.as_deref().map_or(0, approx_size)
-            + text_size(&output_text);
+        // A payload kept as text counts its length (see [`Payload::size`]).
+        let bytes = [&call.input, &output]
+            .into_iter()
+            .flatten()
+            .map(Payload::size)
+            .sum();
         // The set the call began with is the function's: the event shares
         // its key.
         debug_assert!(call.set.function.0 == namespace && call.set.function.1 == function_id);
@@ -1223,7 +1293,7 @@ impl ObserverRegistry {
                 baggage: call.baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: EncodedParts::with_text(call.input_text, output_text),
+                encoded: OnceLock::new(),
             },
             set: call.set,
             matching,
@@ -1406,20 +1476,6 @@ impl ObserverRegistry {
             ..
         } = evaluation;
         let needs = set.needs;
-        // The payloads the call kept as text, decoded off the caller's path.
-        let decode = |text: Option<&Option<Arc<str>>>| {
-            text.and_then(Option::as_deref)
-                .and_then(|text| serde_json::from_str(text).ok())
-                .map(Arc::new)
-        };
-        if let Some(text) = completed.encoded.get() {
-            if completed.input.is_none() {
-                completed.input = decode(text.input.get());
-            }
-            if completed.output.is_none() {
-                completed.output = decode(text.output.get());
-            }
-        }
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
@@ -1433,9 +1489,22 @@ impl ObserverRegistry {
             };
         }
         let completed = Arc::new(completed);
+        // A payload the call kept as text is decoded for the filters only
+        // when one of them reads it, and that value is let go of once they
+        // are evaluated: a queued event holds the text alone (see
+        // [`Payload`]).
+        let filtered = set.filtered;
+        let input = completed
+            .input
+            .as_ref()
+            .and_then(|input| input.filtered(filtered.input));
+        let output = completed
+            .output
+            .as_ref()
+            .and_then(|output| output.filtered(filtered.output));
         let doc = Doc {
-            input: completed.input.as_deref(),
-            output: completed.output.as_deref(),
+            input: input.as_deref(),
+            output: output.as_deref(),
             error: completed.error.as_deref(),
             caller: completed.caller.as_deref(),
             metadata: completed.metadata.as_deref(),
@@ -1907,8 +1976,8 @@ impl ObserverRegistry {
                 function: key.clone(),
                 invocation_id: InvocationId::reported(invocation_id, parsed),
                 success,
-                input,
-                output,
+                input: input.map(Payload::Value),
+                output: output.map(Payload::Value),
                 error: error.map(Arc::new),
                 caller: serde_json::to_value(&caller).ok().map(Arc::new),
                 metadata: metadata.map(Arc::new),
@@ -2514,11 +2583,14 @@ async fn run_activations(
 
 /// The target's first argument (README §4.3): the `Observed` envelope, or the
 /// observed input / output alone with `deliver`.
+///
+/// A payload the event holds as text is decoded once, for all of its
+/// activations that take a value (see [`Payload::value`]).
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
-    let shipped = |value: &Option<Arc<Value>>| value.as_deref().cloned().unwrap_or(Value::Null);
+    let shipped = |value: Option<&Value>| value.cloned().unwrap_or(Value::Null);
     match &observer.deliver {
-        Deliver::Input => return shipped(&completed.input),
-        Deliver::Output => return shipped(&completed.output),
+        Deliver::Input => return shipped(completed.input_value()),
+        Deliver::Output => return shipped(completed.output_value()),
         Deliver::Envelope | Deliver::Unknown(_) => {}
     }
     let capture = observer.capture;
@@ -2540,8 +2612,12 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
         }
         .into(),
     );
+    if capture.input
+        && let Some(value) = completed.input_value()
+    {
+        envelope.insert("input".into(), value.clone());
+    }
     for (wanted, key, value) in [
-        (capture.input, "input", &completed.input),
         (capture.error, "error", &completed.error),
         (capture.caller, "caller", &completed.caller),
         (capture.metadata, "metadata", &completed.metadata),
@@ -2551,7 +2627,7 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
         }
     }
     if capture.output && completed.success {
-        envelope.insert("output".into(), shipped(&completed.output));
+        envelope.insert("output".into(), shipped(completed.output_value()));
     }
     envelope.insert("started_at_ms".into(), completed.started_at_ms.into());
     envelope.insert(
@@ -3344,7 +3420,7 @@ mod tests {
             function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
             invocation_id: super::InvocationId::Reported(n.to_string()),
             success: true,
-            input: Some(Arc::new(json!({ "n": n }))),
+            input: Some(super::Payload::Value(Arc::new(json!({ "n": n })))),
             output: None,
             error: None,
             caller: None,
@@ -3418,9 +3494,7 @@ mod tests {
             flow.queue
                 .iter()
                 .map(|pending| {
-                    let n = pending.event.input.as_deref().unwrap()["n"]
-                        .as_u64()
-                        .unwrap();
+                    let n = pending.event.input_value().unwrap()["n"].as_u64().unwrap();
                     (n, pending.event.delivery)
                 })
                 .collect()
@@ -4209,7 +4283,9 @@ mod tests {
             .limit
             .store(3 * cost, Ordering::SeqCst);
         let mut big = Arc::into_inner(event(9)).unwrap();
-        big.input = Some(Arc::new(json!({ "big": "x".repeat(4 * cost) })));
+        big.input = Some(super::Payload::Value(Arc::new(
+            json!({ "big": "x".repeat(4 * cost) }),
+        )));
         let big = Arc::new(big);
         assert!(!registry.activate(&observer, &big), "no room to wait for");
         for n in 1..=2 {
@@ -4316,8 +4392,8 @@ mod tests {
                 function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
                 invocation_id: super::InvocationId::Reported("i-\"1\"".to_string()),
                 success,
-                input,
-                output,
+                input: input.map(super::Payload::Value),
+                output: output.map(super::Payload::Value),
                 error,
                 caller,
                 metadata,
@@ -4332,6 +4408,7 @@ mod tests {
             }
         }
 
+        let large = |n: u64| json!({ "n": n, "big": "x".repeat(4096), "_caller_worker_id": "w" });
         let event = Arc::new(json!({ "k": [1, "two \u{e9}", { "x": null, "y": 2.5 }] }));
         let caller = Arc::new(json!({ "worker_name": "iii-engine" }));
         let events = [
@@ -4361,6 +4438,13 @@ mod tests {
             ),
             // Nothing kept.
             completed(true, [None, None, None, None, None], 3.0),
+            // A call's that kept its large input and output as text.
+            {
+                let mut kept = completed(true, [None, None, None, None, None], 1.5);
+                kept.input = Some(super::Payload::of(&large(1)));
+                kept.output = Some(super::Payload::of(&large(2)));
+                kept
+            },
         ];
         let every = CaptureSet {
             input: true,
@@ -4399,6 +4483,15 @@ mod tests {
             .expect("encoded for a worker's target");
         assert!(text.input.get().is_some_and(Option::is_some));
         assert!(text.output.get().is_none());
+        // A payload kept as text is sent as it is, and decoded once for the
+        // projections that take a value.
+        for payload in [&events[3].input, &events[3].output] {
+            let Some(super::Payload::Text(text)) = payload else {
+                panic!("kept as text");
+            };
+            assert!(text.value.get().is_some_and(Option::is_some));
+        }
+        assert!(events[3].encoded.get().is_none(), "nothing to encode");
     }
 
     /// A charge refused for lack of room leaves the event's cost behind: the
@@ -4444,7 +4537,11 @@ mod tests {
                 .unwrap();
             let mut call = engine.observers.begin(set, body, &None, &None, &None);
             let kept = call.inner.take().unwrap();
-            (kept.input.as_deref().cloned(), kept.input_text.clone())
+            match kept.input {
+                Some(super::Payload::Value(value)) => (Some(Value::clone(&value)), None),
+                Some(super::Payload::Text(kept)) => (None, Some(kept.text)),
+                None => (None, None),
+            }
         };
         assert_eq!(keep(&body(1)), (Some(json!({ "k": 1 })), None));
 
@@ -4809,5 +4906,90 @@ mod tests {
             assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
             assert_eq!(envelope["input"], json!({ "n": n }));
         }
+    }
+
+    /// A payload held as text costs the queues and the evaluators its
+    /// text's length, and the value decoded from it as well once an
+    /// activation decoded one. The filters read a value decoded for them
+    /// alone, which the payload does not keep, and none when they do not
+    /// read it.
+    #[test]
+    fn a_payload_held_as_text_costs_its_length() {
+        let large = json!({ "big": "x".repeat(4096), "n": [1, 2, 3] });
+        let payload = super::Payload::of(&large);
+        let super::Payload::Text(text) = &payload else {
+            panic!("kept as text");
+        };
+        let length = 24 + text.text.len();
+        assert_eq!(payload.size(), length);
+        let mut kept = Arc::into_inner(event(0)).unwrap();
+        let small = super::approx_size(&json!({ "n": 0 }));
+        kept.input = Some(super::Payload::of(&large));
+        assert_eq!(kept.cost(), event(0).cost() - small + length);
+
+        assert!(payload.filtered(false).is_none());
+        let read = payload.filtered(true).unwrap();
+        assert!(matches!(read, std::borrow::Cow::Owned(_)));
+        assert_eq!(*read, large);
+        assert!(text.value.get().is_none(), "not kept for the filters");
+
+        assert_eq!(payload.value().map(|value| &**value), Some(&large));
+        assert_eq!(payload.size(), length + super::approx_size(&large));
+        let read = payload.filtered(true).unwrap();
+        assert!(matches!(read, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// A call that keeps a large input as its JSON text makes an event that
+    /// holds the text alone while it waits in a queue, whether the
+    /// observers' filters read the input or not: the filters match as they
+    /// would on the value, and the in-process target gets the value as the
+    /// caller sent it, without the engine's caller stamp.
+    #[tokio::test]
+    async fn a_queued_event_kept_as_text_holds_the_text_alone() {
+        let engine = Arc::new(Engine::new());
+        engine.observers.set_config(super::super::ObserversConfig {
+            default_max_in_flight: 1,
+            ..Default::default()
+        });
+        source(&engine);
+        let (gate, mut delivered) = gated(&engine, "test::held");
+        let (worker, _socket) = test_support::worker(&engine);
+        for (id, filters) in [("a", None), ("b", Some(json!({ "input.k": { "$eq": 1 } })))] {
+            let request = test_support::request(id, "test::src", "test::held", filters);
+            test_support::observe_request(&engine, &worker, request).await;
+        }
+        let body = |k: u64| json!({ "k": k, "big": "x".repeat(4096), "_caller_worker_id": "w" });
+        for k in [1, 2, 1] {
+            complete_call(&engine, body(k));
+        }
+        // Each runs the first event; `a` queues the other two, `b` the
+        // third alone, whose `input.k` matches.
+        until(|| {
+            engine.observers.in_flight("a") == Some((1, 2))
+                && engine.observers.in_flight("b") == Some((1, 1))
+        })
+        .await;
+        for id in ["a", "b"] {
+            let observer = engine.observers.get(id).unwrap();
+            for pending in &observer.flow.write().queue {
+                let Some(super::Payload::Text(text)) = &pending.event.input else {
+                    panic!("kept as text");
+                };
+                assert!(
+                    text.value.get().is_none(),
+                    "{id}: a queued event holds the text alone"
+                );
+            }
+        }
+        gate.add_permits(5);
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let input = test_support::next(&mut delivered).await;
+            let k = input["k"].as_u64().unwrap();
+            assert_eq!(input, json!({ "k": k, "big": "x".repeat(4096) }));
+            seen.push(k);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, [1, 1, 1, 1, 2]);
     }
 }
