@@ -341,7 +341,7 @@ Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo,
 
 **Triggers:** `pull_request_target` for pull request changes, `issue_comment` for PR comments
 
-Requires external contributors to acknowledge the Apache 2.0 contributor license agreement before merge. Contributors can satisfy the gate by checking the license box in the PR description or by replying with the exact acknowledgement phrase posted by the bot. iii team members with `write`, `maintain`, or `admin` repository permission are skipped.
+Requires external contributors to acknowledge the Apache 2.0 contributor license agreement before merge. Contributors can satisfy the gate by checking the license box in the PR description or by replying with the exact acknowledgement phrase posted by the bot. iii team members with `write`, `maintain`, or `admin` repository permission are skipped, but must leave the license box unchecked: an org member who checks it fails the `license-agreement` status until it is unchecked.
 
 The workflow posts a sticky PR comment and publishes the `license-agreement` commit status on the PR head SHA. Branch protection should require the `license-agreement` status context.
 
