@@ -217,6 +217,12 @@ skipped because docs are published from `main`: add the changelog entry on
 `main` separately, and make sure the fix also reaches `main` and any in-flight
 product branch.
 
+The maintenance release does not change `main`'s manifest. Automatic selection
+on `main` therefore anchors on the newer of the manifest and the latest stable
+tag: after `0.25.1` ships from `release/0.25.x`, `bump=patch` on `main` selects
+`0.25.2` (or `0.25.2-rc.1`), never the released `0.25.1`. Promoting a
+prerelease whose base is already released fails; use `version_override`.
+
 ---
 
 ### `alpha-release.yml` — Isolated Per-Branch Alpha

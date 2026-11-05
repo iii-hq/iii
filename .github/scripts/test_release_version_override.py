@@ -465,10 +465,18 @@ def test_maintenance_summary_reports_stable_channel(workflow, tmp_path):
 def test_docs_steps_run_only_for_stable_releases_from_main(workflow):
     # Docs are published from main; a tag-only maintenance release must not
     # validate or rotate a docs tree that is never deployed.
-    for name in ["Validate docs ready for stable release", "Update documentation versions"]:
-        condition = step(workflow, name)["if"]
-        assert "inputs.prerelease == 'none'" in condition
-        assert "steps.preflight.outputs.branch == 'main'" in condition
+    expected = {
+        "Validate docs ready for stable release": (
+            "inputs.target == 'iii' && inputs.prerelease == 'none' "
+            "&& steps.preflight.outputs.branch == 'main'"
+        ),
+        "Update documentation versions": (
+            "inputs.target == 'iii' && inputs.dry_run != true && inputs.prerelease == 'none' "
+            "&& steps.preflight.outputs.branch == 'main'"
+        ),
+    }
+    for name, condition in expected.items():
+        assert step(workflow, name)["if"] == condition
 
 
 @pytest.mark.parametrize("version,expected", [
