@@ -79,7 +79,8 @@ export function Footer({ container }: { container?: string } = {}) {
                 <ul className="flex flex-col">
                   {column.items.map((item) => (
                     /* A badge sits beside its link, not inside it, so the link's text stays the page's name (the
-                       llms.txt footer reads link labels). */
+                       llms.txt footer reads link labels); it is aria-hidden, so the name is the same for a screen
+                       reader as in the header. */
                     <li key={item.label} className={item.fresh ? 'flex items-center gap-2.5' : undefined}>
                       <a
                         href={item.href}
