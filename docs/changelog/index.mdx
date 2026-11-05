@@ -22,7 +22,7 @@ type: "reference"
   - `onObservationMatch` says which observers want each call of one function: a predicate
     `(obs, call) => boolean`, or `{ observer, call }` keys that iii indexes, so a call finds its
     observers with one hash lookup per key, whatever the number of observers. iii's delivery then
-    applies each matched observer's `on`, filters, policy, and `deliver`. `isObserved(call)` tells
+    applies each matched observer's `capture`, filters, and policy. `isObserved(call)` tells
     a source whether anyone would get a call before it builds the event.
   - `onObservationDeliver(call, observers)` delivers each call of one function itself: it receives the
     observers that matched, and what it returns or throws is what the caller gets back.
@@ -39,6 +39,11 @@ type: "reference"
     `iii.MatchFunc` or `iii.MatchKeys`), and `OnObservationDeliverFor`.
   - `iii.observe("fn::id", target)` is the short form of
     `iii.observe({ function_id: "fn::id" }, target)`. Go adds `client.ObserveFunction`.
+  - An observer's `capture` alone decides when it fires and what its target receives: `input` and
+    `output` fire on success, `error` fires on error, and `caller` and `metadata` only add fields.
+    The default, `input`, `output`, `caller`, `metadata`, fires on success only, so errors are not
+    observed unless `capture` includes `error`. A `capture` without `input`, `output`, or `error` is
+    refused with `INVALID_ARGS`, and so is a source that sends `on` or `deliver`.
 
   See [Observable functions](/next/creating-workers/observable-functions) and
   [Observers](/next/using-iii/observers).
