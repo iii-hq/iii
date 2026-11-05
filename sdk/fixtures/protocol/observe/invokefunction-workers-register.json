@@ -16,6 +16,7 @@
     "features": [
       "observe.v1",
       "observe.v2",
+      "observe.capture",
       "local-dispatch.v1",
       "large-messages.v1"
     ]

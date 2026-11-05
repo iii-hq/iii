@@ -1950,8 +1950,12 @@ pub(crate) struct IIIInner {
     engine_features: AtomicU8,
     /// The last engine advertised observe: outgoing calls carry `caller`.
     engine_observe_last: AtomicBool,
-    /// The `source.on` deprecation (engines without `observe.v2`) was logged.
+    /// The legacy `on` deprecation (an engine without `observe.capture`:
+    /// observer views without `fires`, or `source.on` sent) was logged.
     legacy_on_warned: AtomicBool,
+    /// The engine on the current connection advertised `observe.capture`:
+    /// it announces `fires` and never needs `source.on`.
+    engine_observe_capture: AtomicBool,
     /// Listeners of [`IIIClient::on_engine_supports_observe`].
     observe_support: Arc<Mutex<ObserveSupport>>,
     /// Functions already named in the `UNSUPPORTED` warning of an engine
@@ -2035,6 +2039,7 @@ impl IIIClient {
             engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
             engine_observe_last: AtomicBool::new(false),
             legacy_on_warned: AtomicBool::new(false),
+            engine_observe_capture: AtomicBool::new(false),
             observe_support: Arc::default(),
             warned_unsupported: Mutex::new(HashSet::new()),
             connection_epoch: AtomicU64::new(0),
@@ -2107,6 +2112,38 @@ impl IIIClient {
     /// The engine on the current connection advertised `observe.v2`.
     pub(crate) fn engine_observes_v2(&self) -> bool {
         self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITH_OBSERVE_V2
+    }
+
+    /// The engine on the current connection advertised `observe.capture`.
+    pub(crate) fn engine_observes_capture(&self) -> bool {
+        self.inner.engine_observe_capture.load(Ordering::SeqCst)
+    }
+
+    /// Logs, once per client, that the connected engine lacks
+    /// `observe.capture` and its legacy `on` semantics are deprecated.
+    fn warn_legacy_on(&self) {
+        if !self.inner.legacy_on_warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("{}", crate::protocol::LEGACY_ON_DEPRECATION);
+        }
+    }
+
+    /// Warns once when an announced observer carries no `fires`: its firing
+    /// is read from the legacy `on`.
+    fn warn_legacy_views(&self, views: &[crate::protocol::ObserverView]) {
+        if views.iter().any(|view| view.fires.is_none()) {
+            self.warn_legacy_on();
+        }
+    }
+
+    /// The entry of `function_id`, once the views announced with it are
+    /// checked for `fires`.
+    fn warned_function_entry(
+        &self,
+        function_id: &str,
+        views: &[crate::protocol::ObserverView],
+    ) -> Option<Arc<FunctionEntry>> {
+        self.warn_legacy_views(views);
+        self.function_entry(function_id)
     }
 
     /// This worker as a caller: `{ worker_id, worker_name }`.
@@ -3626,6 +3663,13 @@ impl IIIClient {
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
                 let v2 = features.iter().any(|f| f == FEATURE_OBSERVE_V2);
                 let observe = v2 || features.iter().any(|f| f == FEATURE_OBSERVE_V1);
+                // stored before the replay `on_engine_features` starts
+                self.inner.engine_observe_capture.store(
+                    features
+                        .iter()
+                        .any(|f| f == crate::protocol::FEATURE_OBSERVE_CAPTURE),
+                    Ordering::SeqCst,
+                );
                 self.on_engine_features(observe, v2);
                 self.inner.registration_changed.notify_waiters();
             }
@@ -3635,7 +3679,7 @@ impl IIIClient {
                 revision,
                 local_dispatch,
                 observers,
-            } => match self.function_entry(&id) {
+            } => match self.warned_function_entry(&id, &observers) {
                 // The answer to a registration this connection withdrew: the
                 // function stays unregistered.
                 Some(entry) if !entry.sent_on(self.connection_epoch()) => {
@@ -3661,7 +3705,7 @@ impl IIIClient {
                 namespace,
                 revision,
                 observer,
-            } => match self.function_entry(&function_id) {
+            } => match self.warned_function_entry(&function_id, std::slice::from_ref(&observer)) {
                 // An observer of a registration this connection withdrew:
                 // the function stays unregistered.
                 Some(entry) if !entry.sent_on(self.connection_epoch()) => {
@@ -4210,12 +4254,16 @@ impl IIIClient {
     /// disposing or the engine refused it. It is listed before it goes out,
     /// so its answer finds it.
     /// The `observe` envelope for this connection's engine. One without
-    /// `observe.v2` (0.25) decides the outcomes that fire from `source.on`
-    /// alone, so it gets the `on` that `capture` implies; the first such
-    /// envelope logs that this is deprecated.
+    /// `observe.capture` (0.25, or an rc engine with `observe.v2` only)
+    /// decides the outcomes that fire from `source.on` alone, so it gets the
+    /// `on` that `capture` implies; the first such envelope logs that this is
+    /// deprecated. An engine with `observe.capture` never gets `on`.
+    ///
+    /// That frame too large to send is the size error: never the frame
+    /// without `on`, which would observe other outcomes.
     fn prepare_observe(&self, message: &Message) -> Result<PreparedEnvelope, Error> {
         let on = match message {
-            Message::Observe { source, .. } if !self.engine_observes_v2() => {
+            Message::Observe { source, .. } if !self.engine_observes_capture() => {
                 crate::protocol::legacy_on(source.capture.as_deref())
             }
             _ => None,
@@ -4223,20 +4271,24 @@ impl IIIClient {
         let Some(on) = on else {
             return self.prepare_outbound(message);
         };
-        if !self.inner.legacy_on_warned.swap(true, Ordering::Relaxed) {
-            tracing::warn!("{}", crate::protocol::LEGACY_ON_DEPRECATION);
-        }
+        self.warn_legacy_on();
         let mut frame = serde_json::to_value(message)?;
         frame["source"]["on"] = Value::from(on);
         let payload = serde_json::to_string(&frame)?;
-        if payload.len() > MAX_JSON_MESSAGE_BYTES {
-            return self.prepare_outbound(message);
+        let size = payload.len();
+        if size > MAX_JSON_MESSAGE_BYTES {
+            return Err(Error::Remote {
+                code: "payload_too_large".to_string(),
+                message: format!(
+                    "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                ),
+                stacktrace: None,
+            });
         }
-        Ok(PreparedEnvelope::from_json(
-            payload,
-            Self::registration_key(message),
-            None,
-        ))
+        Ok(
+            PreparedEnvelope::from_json(payload, Self::registration_key(message), None)
+                .observe_family(),
+        )
     }
 
     fn send_observe(&self, entry: &Arc<ObserverEntry>, epoch: u64) {
@@ -4252,6 +4304,17 @@ impl IIIClient {
             Ok(envelope) => envelope,
             Err(error) => {
                 tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");
+                // a frame too large to send is this observer's error
+                if let Some(body) = error.invocation_error() {
+                    entry.set(
+                        ObserverState::Error,
+                        Some(ObserverReason {
+                            code: body.code.clone(),
+                            message: body.message.clone(),
+                        }),
+                        None,
+                    );
+                }
                 return;
             }
         };

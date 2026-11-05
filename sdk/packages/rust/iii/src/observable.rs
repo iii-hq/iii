@@ -153,6 +153,10 @@ struct ObserverInner {
     /// conditions; one it does not is evaluated on every call.
     indexed: bool,
     mask: CaptureMask,
+    /// The outcomes that fire it, read once from the view (`fires`, or the
+    /// legacy `on`).
+    fires_on_success: bool,
+    fires_on_error: bool,
     function_id: String,
     namespace: String,
     state: Arc<ObserverState>,
@@ -233,6 +237,7 @@ impl Observer {
         state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
+        let (fires_on_success, fires_on_error) = view.firing();
         let indexed = filter.is_indexable();
         Self {
             inner: Arc::new(ObserverInner {
@@ -240,6 +245,8 @@ impl Observer {
                 filter,
                 indexed,
                 mask,
+                fires_on_success,
+                fires_on_error,
                 function_id,
                 namespace,
                 state,
@@ -493,7 +500,11 @@ impl Observer {
 
     /// Whether a call that ended with `success` (or not) reaches it.
     pub(crate) fn accepts(&self, success: bool) -> bool {
-        crate::protocol::capture_fires(&self.inner.view.capture, success)
+        if success {
+            self.inner.fires_on_success
+        } else {
+            self.inner.fires_on_error
+        }
     }
 }
 
