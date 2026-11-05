@@ -1563,7 +1563,22 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
 
         // A gets the payload of every call; B the output of every call alone
         let ordinary = &got_a[1];
-        for envelope in [&got_a[0], &got_a[2]] {
+        // A captures metadata by default, so the calls that carry for_observer
+        // show it; the ordinary call carries none, so its envelope has no
+        // metadata field.
+        assert!(
+            ordinary.get("metadata").is_none(),
+            "keys {keys}: {ordinary:#?}"
+        );
+        for full in [&got_a[0], &got_a[2]] {
+            assert_eq!(
+                full["metadata"],
+                json!({ "for_observer": a.id() }),
+                "keys {keys}"
+            );
+            let mut envelope = full.clone();
+            envelope.as_object_mut().unwrap().remove("metadata");
+            let envelope = &envelope;
             let keys_of = |v: &Value| {
                 let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
                 k.sort();

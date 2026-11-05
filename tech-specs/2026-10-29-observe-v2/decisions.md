@@ -445,7 +445,9 @@ differ, this file wins, and the spec is updated to match.
     functions also file each observer under `"for_observer:<id>"` and give
     such a call that one key. iii delivers it like every call, with that
     observer's `capture`, filters and policy, so a target
-    receives every event of the function in one shape. The host makes the
+    receives every event of the function in one shape. A target that
+    captures `metadata` (the default, decision 59) also sees
+    `for_observer` there, like any other metadata. The host makes the
     call after `obs.accepted()` resolves (decision 19). A call through an
     observer (`iii.call({ observer, payload })`) belongs in a deliver hook,
     whose function documents what its targets receive.

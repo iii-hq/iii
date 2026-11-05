@@ -509,7 +509,10 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     a = watcher.observe({"function_id": source, "args": {"session": "s1"}}, fid("py-d52::envelope"))
     a.ready(timeout=10)
     exactly(got_a, 1, "A's state")
-    b = watcher.observe({"function_id": source, "args": {"session": "s1"}, "capture": ["output"]}, fid("py-d52::output"))
+    b = watcher.observe(
+        {"function_id": source, "args": {"session": "s1"}, "capture": ["output"]},
+        fid("py-d52::output"),
+    )
     b.ready(timeout=10)
     exactly(got_b, 1, "B's state")
     assert len(got_a) == 1
@@ -524,7 +527,12 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     assert len(got_b) == 2
 
     state, ordinary, for_a = (g.data for g in got_a)
-    for envelope in (state, for_a):
+    # A captures metadata by default, so the calls that carry for_observer show it;
+    # the ordinary call carries none, so its envelope has no metadata field.
+    assert "metadata" not in ordinary
+    for full in (state, for_a):
+        assert full["metadata"] == {"for_observer": a.id}
+        envelope = {key: value for key, value in full.items() if key != "metadata"}
         assert sorted(envelope) == sorted(ordinary)
         assert envelope["observer_id"] == a.id
         assert stable(envelope) == {**stable(ordinary), "input": envelope["input"], "output": envelope["output"]}

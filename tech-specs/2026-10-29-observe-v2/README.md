@@ -422,7 +422,9 @@ iii.onObservationMatch('tmux::on-changed', {
 ```
 
 iii gives `for_observer` no meaning of its own: a function without a match
-hook gives such a call to every observer.
+hook gives such a call to every observer. A target whose observer captures
+`metadata` (the default) receives `for_observer` like any other metadata, so
+it can tell a call meant for it alone from an ordinary one (decision 59).
 
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the

@@ -479,9 +479,13 @@ describe('calls for one observer (decision 52)', () => {
       await exactly(gotA, 3, 'the call for A')
       expect(gotB).toHaveLength(2)
 
-      // A receives the envelope it receives for every call: same fields, the observer's own id
+      // A receives the envelope it receives for every call: same fields, the observer's own id.
+      // A captures metadata by default, so the calls that carry for_observer show it;
+      // the ordinary call carries none, so its envelope has no metadata field.
       const [initial, ordinary, forA] = gotA.map((g) => g.data)
-      for (const envelope of [initial, forA]) {
+      expect(ordinary).not.toHaveProperty('metadata')
+      for (const { metadata, ...envelope } of [initial, forA]) {
+        expect(metadata).toEqual({ for_observer: a.id })
         expect(Object.keys(envelope).sort()).toEqual(Object.keys(ordinary).sort())
         expect(stable(envelope)).toEqual({ ...stable(ordinary), input: envelope.input, output: envelope.output })
         expect(envelope.observer_id).toBe(a.id)

@@ -768,7 +768,21 @@ func TestObserveCallForOneObserver(t *testing.T) {
 			}
 
 			ordinary := envelopes[1].Data
-			for _, env := range []map[string]any{envelopes[0].Data, envelopes[2].Data} {
+			// A captures metadata by default, so the calls that carry for_observer show it;
+			// the ordinary call carries none, so its envelope has no metadata field.
+			if metadata, ok := ordinary["metadata"]; ok {
+				t.Errorf("the ordinary call's envelope has metadata %v", metadata)
+			}
+			for _, full := range []map[string]any{envelopes[0].Data, envelopes[2].Data} {
+				if want := map[string]any{"for_observer": a.ID()}; !reflect.DeepEqual(full["metadata"], want) {
+					t.Errorf("metadata %v, want %v", full["metadata"], want)
+				}
+				env := make(map[string]any, len(full))
+				for key, value := range full {
+					if key != "metadata" {
+						env[key] = value
+					}
+				}
 				if env["observer_id"] != a.ID() {
 					t.Errorf("observer_id %v, want %s", env["observer_id"], a.ID())
 				}
