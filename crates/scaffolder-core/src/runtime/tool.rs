@@ -48,13 +48,9 @@ impl ToolManager {
         format!("curl -fsSL {} | sh", self.config.install_script_url)
     }
 
-    /// Check if the tool is installed and available in PATH
+    /// Check if the tool is available and successfully reports its version.
     pub fn is_installed(&self) -> bool {
-        std::process::Command::new("which")
-            .arg(self.config.name)
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        self.get_version().is_some()
     }
 
     /// Get the installed tool version (if available)
