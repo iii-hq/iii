@@ -1657,7 +1657,7 @@ impl ObserverRegistry {
         // when one of them reads it, and that value is let go of once they
         // are evaluated: a queued event holds the text alone (see
         // [`Payload`]).
-        let filtered = set.filtered;
+        let filtered = set.filtered();
         let input = completed
             .input
             .as_ref()

@@ -550,9 +550,6 @@ pub struct ActiveSet {
     /// What a call needs kept: what the observers' filters read, capture or
     /// deliver. The engine evaluates the filters of every routed call.
     pub(crate) needs: Needs,
-    /// What the observers' filters read: a payload a call kept as its JSON
-    /// text is decoded for their evaluation only when they read it.
-    pub(crate) filtered: Needs,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
     /// What the observers read of a call's input: a call copies only the
@@ -680,7 +677,7 @@ impl Needs {
     }
 
     /// Each part that at least one observer needs.
-    fn of_counts(counts: &[usize; 5]) -> Self {
+    fn of_counts(counts: &[u32; 5]) -> Self {
         Self {
             input: counts[0] > 0,
             output: counts[1] > 0,
@@ -692,12 +689,13 @@ impl Needs {
 }
 
 /// How many observers of an [`ActiveSet`] need each part, in
-/// [`Needs::parts`] order.
+/// [`Needs::parts`] order. Counted in 32 bits, which no function's
+/// observers outnumber: both counts take the room one took in `usize`.
 #[derive(Debug, Clone, Copy, Default)]
 struct NeedCounts {
-    evaluated: [usize; 5],
+    evaluated: [u32; 5],
     /// How many of them read each part in their filters.
-    filtered: [usize; 5],
+    filtered: [u32; 5],
 }
 
 impl NeedCounts {
@@ -769,11 +767,16 @@ impl ActiveSet {
             observers,
             filters,
             needs: Needs::of_counts(&counts.evaluated),
-            filtered: Needs::of_counts(&counts.filtered),
             counts,
             shard,
             input,
         }
+    }
+
+    /// What the observers' filters read: a payload a call kept as its JSON
+    /// text is decoded for their evaluation only when they read it.
+    pub(crate) fn filtered(&self) -> Needs {
+        Needs::of_counts(&self.counts.filtered)
     }
 
     /// This set with `observer`, filed under its seq.
@@ -3209,5 +3212,15 @@ mod tests {
             RoutedShards::shard_index(&("ab", "c") as &dyn FunctionKey),
             RoutedShards::shard_index(&("a", "bc") as &dyn FunctionKey)
         );
+    }
+
+    /// Counting what the filters read besides what the observers need
+    /// leaves an active set no larger: both counts are 32-bit, and what the
+    /// filters read follows from them.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn an_active_set_counts_what_its_filters_read_in_no_more_room() {
+        let size = std::mem::size_of::<super::ActiveSet>();
+        assert!(size <= 200, "{size} bytes");
     }
 }
