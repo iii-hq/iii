@@ -22,9 +22,9 @@ const registry: Registry = ((globalThis as Record<symbol, unknown>)[REGISTRY] as
 }
 ;(globalThis as Record<symbol, unknown>)[REGISTRY] = registry
 
-/** What a current engine advertises: it announces `fires` in observer views (`observe.capture`). */
+/** What a current engine advertises: it announces `fires_on` in observer views (`observe.capture`). */
 export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1']
-/** What an rc engine advertises: `observe.v2` without `observe.capture` (no `fires` in observer views). */
+/** What an rc engine advertises: `observe.v2` without `observe.capture` (no `fires_on` in observer views). */
 export const ENGINE_FEATURES_RC = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
 /** What a 0.25 engine advertises: observe without `observe.v2`. */
 export const ENGINE_FEATURES_V1 = ['observe.v1', 'local-dispatch.v1']
@@ -163,7 +163,7 @@ export function functionRegistered(
 }
 
 /**
- * The `fires` an engine with `observe.capture` announces for `capture`:
+ * The `fires_on` an engine with `observe.capture` announces for `capture`:
  * `input`, `output` (or `[]`) fire on success, `error` on error.
  */
 export function firesFor(capture: readonly string[]): string[] {
@@ -175,18 +175,18 @@ export function firesFor(capture: readonly string[]): string[] {
 
 /**
  * An observer as the engine pushes it to its function's host. It carries the
- * `fires` an `observe.capture` engine announces (derived from `capture` unless
- * given); `fires: null` leaves it out, as an rc or 0.25 engine does, and `on`
+ * `fires_on` an `observe.capture` engine announces (derived from `capture` unless
+ * given); `fires_on: null` leaves it out, as an rc or 0.25 engine does, and `on`
  * is that engine's legacy field.
  */
 export function observerInfo(
   id: string,
   target: string,
-  opts: { args?: Frame; filters?: Frame; capture?: string[]; fires?: string[] | null; on?: string } = {},
+  opts: { args?: Frame; filters?: Frame; capture?: string[]; fires_on?: string[] | null; on?: string } = {},
 ): Frame {
   const capture = opts.capture ?? ['input', 'output', 'caller', 'metadata']
   const info: Frame = { id, args: opts.args ?? {}, filters: opts.filters ?? {}, target, capture }
-  if (opts.fires !== null) info.fires = opts.fires ?? firesFor(capture)
+  if (opts.fires_on !== null) info.fires_on = opts.fires_on ?? firesFor(capture)
   if (opts.on !== undefined) info.on = opts.on
   return info
 }

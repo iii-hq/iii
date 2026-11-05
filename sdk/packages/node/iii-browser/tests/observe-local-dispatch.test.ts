@@ -845,7 +845,7 @@ describe('the reporter against the socket and the function registry', () => {
   })
 })
 
-describe('when a hosted observer fires: the view `fires`, else the legacy `on` (CONTRACT D6)', () => {
+describe('when a hosted observer fires: the view `fires_on`, else the legacy `on` (CONTRACT D6)', () => {
   const legacyWarnings = () =>
     vi
       .mocked(console.warn)
@@ -878,9 +878,9 @@ describe('when a hosted observer fires: the view `fires`, else the legacy `on` (
 
   it('an engine with observe.capture: fires as the view says, whatever capture says, and no warning', async () => {
     const { sdk, socket } = await hosted(fake.ENGINE_FEATURES, [
-      observerInfo('err-by-fires', 'audit::a', { capture: ['input'], fires: ['error'] }),
-      observerInfo('ok-by-fires', 'audit::b', { capture: ['error'], fires: ['success'] }),
-      observerInfo('both', 'audit::c', { capture: ['caller'], fires: ['success', 'error'] }),
+      observerInfo('err-by-fires', 'audit::a', { capture: ['input'], fires_on: ['error'] }),
+      observerInfo('ok-by-fires', 'audit::b', { capture: ['error'], fires_on: ['success'] }),
+      observerInfo('both', 'audit::c', { capture: ['caller'], fires_on: ['success', 'error'] }),
     ])
     expect(await outcomes(sdk, socket)).toEqual([
       ['error', ['err-by-fires', 'both']],
@@ -892,13 +892,13 @@ describe('when a hosted observer fires: the view `fires`, else the legacy `on` (
   it.each([
     ['a 0.25 engine', fake.ENGINE_FEATURES_V1],
     ['an rc engine', fake.ENGINE_FEATURES_RC],
-  ] as const)('%s (no fires): on absent => success only, error, complete, whatever capture says; one warning', async (_name, features) => {
+  ] as const)('%s (no fires_on): on absent => success only, error, complete, whatever capture says; one warning', async (_name, features) => {
     const { sdk, socket } = await hosted(features, [
       // capture alone would fire this one on errors only
-      observerInfo('absent', 'audit::a', { capture: ['error'], fires: null }),
-      observerInfo('error', 'audit::b', { capture: ['input', 'output'], fires: null, on: 'error' }),
-      observerInfo('complete', 'audit::c', { capture: ['input'], fires: null, on: 'complete' }),
-      observerInfo('success', 'audit::d', { capture: ['error'], fires: null, on: 'success' }),
+      observerInfo('absent', 'audit::a', { capture: ['error'], fires_on: null }),
+      observerInfo('error', 'audit::b', { capture: ['input', 'output'], fires_on: null, on: 'error' }),
+      observerInfo('complete', 'audit::c', { capture: ['input'], fires_on: null, on: 'complete' }),
+      observerInfo('success', 'audit::d', { capture: ['error'], fires_on: null, on: 'success' }),
     ])
     expect(await outcomes(sdk, socket)).toEqual([
       ['error', ['error', 'complete']],
@@ -906,19 +906,27 @@ describe('when a hosted observer fires: the view `fires`, else the legacy `on` (
     ])
     // another legacy view later: still one warning per client
     socket.deliver(
-      fake.observerAdded('payments::charge', 1, observerInfo('late', 'audit::e', { fires: null, on: 'error' })),
+      fake.observerAdded('payments::charge', 1, observerInfo('late', 'audit::e', { fires_on: null, on: 'error' })),
     )
     await settle()
     expect(legacyWarnings()).toHaveLength(1)
     expect(String(legacyWarnings()[0][0])).toMatch(/deprecated.*future version.*upgrade the engine/)
   })
 
-  it('a view with fires wins over a legacy on in the same view', async () => {
+  it('a view with fires_on wins over a legacy on in the same view', async () => {
     const { sdk, socket } = await hosted(fake.ENGINE_FEATURES, [
-      observerInfo('o', 'audit::a', { capture: ['input'], fires: ['success'], on: 'error' }),
+      observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'], on: 'error' }),
     ])
     expect(await outcomes(sdk, socket)).toEqual([['success', ['o']]])
     expect(legacyWarnings()).toHaveLength(0)
+  })
+
+  it('an array under `fires` (the activation count elsewhere) is never read as the outcomes', async () => {
+    const { sdk, socket } = await hosted(fake.ENGINE_FEATURES_RC, [
+      { ...observerInfo('o', 'audit::a', { capture: ['input'], fires_on: null }), fires: ['error'] },
+    ])
+    expect(await outcomes(sdk, socket)).toEqual([['success', ['o']]])
+    expect(legacyWarnings()).toHaveLength(1)
   })
 
   it('the hot path reads the bits computed when the observer was announced, not its capture', async () => {
@@ -936,7 +944,7 @@ describe('when a hosted observer fires: the view `fires`, else the legacy `on` (
       })
     socket.open()
     socket.deliver(
-      functionRegistered('payments::charge', [observerInfo('o', 'audit::a', { capture: ['input'], fires: ['success'] })]),
+      functionRegistered('payments::charge', [observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'] })]),
     )
     await settle()
     expect(held).toMatchObject({ firesOnSuccess: true, firesOnError: false })
@@ -952,7 +960,7 @@ describe('when a hosted observer fires: the view `fires`, else the legacy `on` (
     socket.deliver(
       functionRegistered(
         'payments::charge',
-        [observerInfo('o', 'audit::a', { capture: ['input'], fires: ['error'] })],
+        [observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['error'] })],
         { revision: 5 },
       ),
     )
