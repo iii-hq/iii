@@ -54,9 +54,14 @@ func TracePayloadsEnabled() bool {
 	return !(v == "1" || strings.ToLower(v) == "true")
 }
 
-// ResolveMaxBytesFromEnv returns the payload cap from III_TRACE_PAYLOAD_MAX_BYTES, or 0
-// (no cap) when it is unset, blank, "unlimited", not all digits or not positive (Node
-// resolveMaxBytesFromEnv, whose null is 0 here).
+// DefaultMaxBytes is the payload cap when III_TRACE_PAYLOAD_MAX_BYTES is unset: the
+// engine's default trace_storage.max_attribute_bytes. The engine cuts a payload there
+// anyway, so serializing, sending and parsing the rest only costs CPU.
+const DefaultMaxBytes = 65_536
+
+// ResolveMaxBytesFromEnv returns the payload cap from III_TRACE_PAYLOAD_MAX_BYTES,
+// DefaultMaxBytes when it is unset, or 0 (no cap) when it is blank, "unlimited", not all
+// digits or not positive (Node resolveMaxBytesFromEnv, whose null is 0 here).
 func ResolveMaxBytesFromEnv() int {
 	return resolveMaxBytes(os.LookupEnv)
 }
@@ -64,7 +69,7 @@ func ResolveMaxBytesFromEnv() int {
 func resolveMaxBytes(env LookupEnv) int {
 	raw, ok := env("III_TRACE_PAYLOAD_MAX_BYTES")
 	if !ok {
-		return 0
+		return DefaultMaxBytes
 	}
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || strings.EqualFold(trimmed, "unlimited") {

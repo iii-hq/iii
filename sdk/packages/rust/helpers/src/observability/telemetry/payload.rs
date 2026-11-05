@@ -8,9 +8,18 @@ use serde::{
 };
 use serde_json::Value;
 
+/// The cap when `III_TRACE_PAYLOAD_MAX_BYTES` is unset: the engine's default
+/// `trace_storage.max_attribute_bytes`. The engine cuts a payload there
+/// anyway, so serializing, sending and parsing the rest only costs CPU.
+pub const DEFAULT_MAX_BYTES: usize = 65_536;
+
+/// The payload cap: `III_TRACE_PAYLOAD_MAX_BYTES`, [`DEFAULT_MAX_BYTES`] when
+/// it is unset, `None` (no cap) for `unlimited`, `0`, empty or invalid.
 #[must_use]
 pub fn resolve_max_bytes_from_env() -> Option<usize> {
-    let raw = std::env::var("III_TRACE_PAYLOAD_MAX_BYTES").ok()?;
+    let Ok(raw) = std::env::var("III_TRACE_PAYLOAD_MAX_BYTES") else {
+        return Some(DEFAULT_MAX_BYTES);
+    };
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unlimited") {
         return None;

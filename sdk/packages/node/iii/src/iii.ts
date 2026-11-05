@@ -695,10 +695,14 @@ class Sdk implements IIIClient {
         message: fullMessage,
         observe,
         handler: async (input, metadata?: JsonValue, traceparent?: string, baggage?: string) => {
-          const tracePayloads = !(
-            process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
-            process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
-          )
+          // With no tracer there is no span to record to: skip the deep copy
+          // and JSON of every input and output.
+          const tracePayloads =
+            getTracer() !== null &&
+            !(
+              process.env.III_DISABLE_TRACE_PAYLOADS === '1' ||
+              process.env.III_DISABLE_TRACE_PAYLOADS?.toLowerCase() === 'true'
+            )
           const payloadMaxBytes = resolveMaxBytesFromEnv()
 
           const runHandler = async () => {

@@ -118,7 +118,7 @@ func TestResolveMaxBytes(t *testing.T) {
 		set   bool
 		want  int
 	}{
-		{set: false, want: 0},
+		{set: false, want: DefaultMaxBytes},
 		{value: "", set: true, want: 0},
 		{value: "unlimited", set: true, want: 0},
 		{value: "UNLIMITED", set: true, want: 0},

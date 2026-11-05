@@ -10,10 +10,18 @@ REDACTED_PLACEHOLDER = "[REDACTED]"
 _TRUNCATION_MARKER = '..."[TRUNCATED]"'
 
 
+# The cap when III_TRACE_PAYLOAD_MAX_BYTES is unset: the engine's default
+# trace_storage.max_attribute_bytes. The engine cuts a payload there anyway,
+# so serializing, sending and parsing the rest only costs CPU.
+DEFAULT_MAX_BYTES = 65_536
+
+
 def resolve_max_bytes_from_env() -> Optional[int]:
+    """The payload cap: DEFAULT_MAX_BYTES when unset, None (no cap) for
+    ``unlimited``, ``0``, empty or invalid."""
     raw = os.environ.get("III_TRACE_PAYLOAD_MAX_BYTES")
     if raw is None:
-        return None
+        return DEFAULT_MAX_BYTES
     trimmed = raw.strip()
     if not trimmed or trimmed.lower() == "unlimited":
         return None

@@ -912,7 +912,7 @@ func RemoveBaggageEntry(ctx context.Context, key string) context.Context
 
 ### ResolveMaxBytesFromEnv
 
-ResolveMaxBytesFromEnv returns the recorded-payload cap set by III_TRACE_PAYLOAD_MAX_BYTES, or 0 (no cap) when it is unset, blank, "unlimited", not a plain positive integer (Node resolveMaxBytesFromEnv, whose null is 0 here).
+ResolveMaxBytesFromEnv returns the recorded-payload cap set by III_TRACE_PAYLOAD_MAX_BYTES, 64 KiB (the engine's attribute cap) when it is unset, or 0 (no cap) when it is blank, "unlimited", not a plain positive integer (Node resolveMaxBytesFromEnv, whose null is 0 here).
 
 **Signature**
 

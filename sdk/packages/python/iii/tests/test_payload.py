@@ -136,9 +136,9 @@ def test_truncation_preserves_utf8_boundaries() -> None:
     json_str.encode("utf-8")
 
 
-def test_resolve_max_bytes_unset_returns_none() -> None:
+def test_resolve_max_bytes_unset_returns_the_engine_attribute_cap() -> None:
     os.environ.pop("III_TRACE_PAYLOAD_MAX_BYTES", None)
-    assert resolve_max_bytes_from_env() is None
+    assert resolve_max_bytes_from_env() == 65_536
 
 
 def test_resolve_max_bytes_zero_returns_none() -> None:

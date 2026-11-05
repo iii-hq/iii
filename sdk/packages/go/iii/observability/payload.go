@@ -25,8 +25,9 @@ func RedactAndTruncate(v any, maxBytes int) (json string, truncated bool) {
 }
 
 // ResolveMaxBytesFromEnv returns the recorded-payload cap set by
-// III_TRACE_PAYLOAD_MAX_BYTES, or 0 (no cap) when it is unset, blank, "unlimited", not
-// a plain positive integer (Node resolveMaxBytesFromEnv, whose null is 0 here).
+// III_TRACE_PAYLOAD_MAX_BYTES, 64 KiB (the engine's attribute cap) when it is unset, or
+// 0 (no cap) when it is blank, "unlimited", not a plain positive integer (Node
+// resolveMaxBytesFromEnv, whose null is 0 here).
 func ResolveMaxBytesFromEnv() int { return telemetry.ResolveMaxBytesFromEnv() }
 
 // SafeStringify serializes v to JSON, or returns "[unserializable]" when it cannot be

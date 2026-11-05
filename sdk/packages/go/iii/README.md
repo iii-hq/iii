@@ -548,7 +548,9 @@ What the SDK records:
   `iii.invocation.input` and `iii.invocation.output` events. Values of sensitive keys
   (`password`, `secret`, `authorization`, `api_key`, `access_token`, keys ending in
   `_token`, ...) are replaced by `[REDACTED]`. Set `III_DISABLE_TRACE_PAYLOADS=1` (or
-  `true`) to stop recording payloads, and `III_TRACE_PAYLOAD_MAX_BYTES` to cap their size.
+  `true`) to stop recording payloads, and `III_TRACE_PAYLOAD_MAX_BYTES` to change their
+  size cap: 64 KiB by default (the engine keeps no more of an attribute), `unlimited`
+  for none.
 - **Worker metrics.** Resource gauges (`iii.worker.memory.*`, `iii.worker.cpu.*`,
   `iii.worker.uptime_seconds`, ...) tagged with `worker.id` and `worker.name`, from the
   moment the engine acknowledges the worker. Turn them off with

@@ -136,9 +136,9 @@ describe('resolveMaxBytesFromEnv', () => {
     delete process.env[KEY]
   }
 
-  it('returns null when env var is unset', () => {
+  it("returns the engine's attribute cap when env var is unset", () => {
     restore()
-    expect(resolveMaxBytesFromEnv()).toBeNull()
+    expect(resolveMaxBytesFromEnv()).toBe(65_536)
   })
 
   it('returns null for "0"', () => {

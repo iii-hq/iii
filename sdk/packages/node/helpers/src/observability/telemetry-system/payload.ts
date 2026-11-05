@@ -4,12 +4,19 @@ export const REDACTED_PLACEHOLDER = '[REDACTED]'
 const TRUNCATION_MARKER = '..."[TRUNCATED]"'
 
 /**
- * Resolve the payload byte cap from the environment, returning undefined when
- * unset.
+ * The cap when `III_TRACE_PAYLOAD_MAX_BYTES` is unset: the engine's default
+ * `trace_storage.max_attribute_bytes`. The engine cuts a payload there anyway,
+ * so serializing, sending and parsing the rest only costs CPU.
+ */
+export const DEFAULT_MAX_BYTES = 65_536
+
+/**
+ * Resolve the payload byte cap from the environment: `DEFAULT_MAX_BYTES` when
+ * unset, null (no cap) for `unlimited`, `0`, empty or invalid.
  */
 export function resolveMaxBytesFromEnv(): number | null {
   const raw = process.env.III_TRACE_PAYLOAD_MAX_BYTES
-  if (raw === undefined) return null
+  if (raw === undefined) return DEFAULT_MAX_BYTES
   const trimmed = raw.trim()
   if (trimmed === '' || trimmed.toLowerCase() === 'unlimited') return null
   // parseInt accepts partial parses like "8192mb" → 8192; Python int()

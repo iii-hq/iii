@@ -500,8 +500,8 @@ removeBaggageEntry(key: string) => Context
 
 ### resolveMaxBytesFromEnv
 
-Resolve the payload byte cap from the environment, returning undefined when
-unset.
+Resolve the payload byte cap from the environment: `DEFAULT_MAX_BYTES` when
+unset, null (no cap) for `unlimited`, `0`, empty or invalid.
 
 **Signature**
 
