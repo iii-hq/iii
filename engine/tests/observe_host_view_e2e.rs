@@ -1,6 +1,6 @@
 //! What a function's host reads from its observers' announcements (CONTRACT
 //! D5), over real WebSockets: every `observeradded` and every observer a
-//! `functionregistered` lists carries `fires` (`["success"]`, `["error"]` or
+//! `functionregistered` lists carries `fires_on` (`["success"]`, `["error"]` or
 //! `["success", "error"]`), and a host that did not declare
 //! `observe.capture` (a 0.25 host, and an rc host that declared `observe.v2`
 //! only) also gets the legacy `on` it decides the outcomes that fire from.
@@ -11,7 +11,7 @@ use iii::observer::ObserversConfig;
 use observe_support::{Client, TestEngine, connect, connect_with, eventually, spawn_engine};
 use serde_json::{Value, json};
 
-/// A host built on a new SDK: it reads `fires`.
+/// A host built on a new SDK: it reads `fires_on`.
 const CAPTURE_HOST: &[&str] = &[
     "observe.v1",
     "observe.v2",
@@ -23,7 +23,7 @@ const RC_HOST: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
 /// A host built on a 0.25 SDK.
 const V025_HOST: &[&str] = &["observe.v1", "local-dispatch.v1"];
 
-/// One observer per outcome set: its id, `capture`, the `fires` it is
+/// One observer per outcome set: its id, `capture`, the `fires_on` it is
 /// announced with and the legacy `on` a host without `observe.capture`
 /// gets.
 fn cases() -> Vec<(&'static str, Value, Value, Option<&'static str>)> {
@@ -34,7 +34,12 @@ fn cases() -> Vec<(&'static str, Value, Value, Option<&'static str>)> {
             json!(["success"]),
             None,
         ),
-        ("obs-error", json!(["error"]), json!(["error"]), Some("error")),
+        (
+            "obs-error",
+            json!(["error"]),
+            json!(["error"]),
+            Some("error"),
+        ),
         (
             "obs-complete",
             json!(["input", "error"]),
@@ -132,7 +137,11 @@ fn assert_views(views: &[Value], legacy: bool, what: &str) {
             .iter()
             .find(|view| view["id"] == id)
             .unwrap_or_else(|| panic!("{what}: `{id}` not announced: {views:?}"));
-        assert_eq!(view["fires"], fires, "{what}: `{id}` fires: {view}");
+        assert_eq!(view["fires_on"], fires, "{what}: `{id}` fires_on: {view}");
+        assert!(
+            view.get("fires").is_none(),
+            "{what}: `{id}` no array under `fires`: {view}"
+        );
         match (legacy, on) {
             (true, Some(on)) => assert_eq!(view["on"], on, "{what}: `{id}` on: {view}"),
             _ => assert!(
@@ -205,7 +214,8 @@ async fn each_host_gets_the_view_its_own_features_call_for() {
         });
         assert_eq!(sink.observe(frame).await["state"], "pending");
         let view = added(host, &id).await["observer"].clone();
-        assert_eq!(view["fires"], json!(["error"]), "{function_id}: {view}");
+        assert_eq!(view["fires_on"], json!(["error"]), "{function_id}: {view}");
+        assert!(view.get("fires").is_none(), "{function_id}: {view}");
         if legacy {
             assert_eq!(view["on"], "error", "{function_id}: {view}");
         } else {
