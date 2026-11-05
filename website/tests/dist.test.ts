@@ -287,7 +287,10 @@ test("the shared header and footer are on every surface, roadmap included", asyn
     assert.match(html, /href="\/roadmap"/, `${page}: roadmap link missing from header`)
     assert.match(html, /<footer/, `${page}: shared site footer missing`)
     assert.match(html, /Pronounced <span[^>]*>&quot;three eye&quot;<\/span>/, `${page}: footer tagline missing`)
-    assert.match(html, /viewBox="0 0 933\.61 1050\.31"/, `${page}: iii logo SVG viewBox missing`)
+    // The iii mark as drawn since #2418: the header's (components/site/nav-graphics.tsx, room above for its dots'
+    // drop) and the footer's (components/site/logo.tsx).
+    assert.match(html, /viewBox="0 -160 1075\.74 1235\.74"/, `${page}: header iii logo SVG viewBox missing`)
+    assert.match(html, /viewBox="0 0 1075\.74 1075\.74"/, `${page}: footer iii logo SVG viewBox missing`)
   }
 })
 
