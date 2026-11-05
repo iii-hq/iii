@@ -79,8 +79,10 @@ export const iiiApp = {
   copy: 'Claude Code and Codex live in a terminal, and a terminal on a phone is miserable. The iii app is native on Mac, iPhone, iPad and Android: point it at the iii engine on your machine or a server, and your agents, terminals, code, databases and files are one tap away.',
   primary: { label: 'Download for Mac', href: links.appDownloadMac },
   secondary: { label: 'See the app', href: links.app },
-  /* PARITY.md: one SwiftUI target for macOS 14+, iPadOS 17+ and iOS 17+; the Mac DMG is universal. */
-  platforms: 'macOS 14 or later, Apple silicon and Intel. iPhone, iPad and Android on the app page.',
+  /* PARITY.md: one SwiftUI target for macOS 14+, iPadOS 17+ and iOS 17+; the Mac DMG is universal. The store
+     listings are not live yet (the launch page shows its App Store and Google Play badges as "Coming soon"). */
+  platforms:
+    'macOS 14 or later, Apple silicon and Intel. iPhone, iPad and Android: coming soon to the App Store and Google Play.',
   /* The five apps built in, each against the pain it answers. `tag` is a short mono detail on the card. */
   apps: [
     {
@@ -93,7 +95,7 @@ export const iiiApp = {
       id: 'tmux',
       name: 'tmux',
       tag: 'Claude Code · Codex',
-      copy: "The engine's tmux sessions in a real terminal, with every Claude Code and Codex sub-agent and its transcript.",
+      copy: "The engine's tmux sessions in a real terminal, with Claude Code and Codex sub-agents and their transcripts.",
     },
     {
       id: 'ide',
