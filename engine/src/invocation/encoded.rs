@@ -55,6 +55,14 @@ impl EncodedJson {
         }
     }
 
+    /// `text`, the JSON text of one value, in one piece it owns.
+    pub fn owned(text: String) -> Self {
+        Self {
+            len: text.len(),
+            pieces: vec![Piece::Owned(text)],
+        }
+    }
+
     /// `value`, encoded now; `null` if it does not encode.
     pub fn of(value: &impl Serialize) -> Self {
         let text = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());

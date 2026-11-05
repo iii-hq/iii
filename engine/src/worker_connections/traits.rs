@@ -255,14 +255,16 @@ mod tests {
         assert!(worker.invocations.read().await.contains(&inv_id));
     }
 
-    /// Activations queued with an encoded input share it: each frame holds
-    /// the input's text, not a copy, and decodes to the message.
+    /// Activations queued with an encoded input above
+    /// [`crate::protocol::INVOKE_FRAME_WHOLE_UP_TO`] share it: each frame
+    /// holds the input's text, not a copy, and decodes to the message.
     #[tokio::test]
     async fn handle_encoded_queues_frames_that_share_the_input() {
         use std::sync::Arc;
 
         let (worker, mut rx) = make_worker();
-        let input: Arc<str> = Arc::from(json!({ "key": "val" }).to_string());
+        let value = json!({ "key": "v".repeat(crate::protocol::INVOKE_FRAME_WHOLE_UP_TO) });
+        let input: Arc<str> = Arc::from(value.to_string());
         let mut ids = Vec::new();
         for _ in 0..3 {
             let id = Uuid::new_v4();
@@ -292,7 +294,7 @@ mod tests {
                         Message::InvokeFunction { invocation_id, function_id, data, .. }
                             if invocation_id == Some(id)
                                 && function_id == "fn1"
-                                && data == json!({ "key": "val" })
+                                && data == value
                     ));
                 }
                 other => panic!("expected an encoded invokefunction, got {other:?}"),

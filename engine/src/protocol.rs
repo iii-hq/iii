@@ -1502,8 +1502,9 @@ pub struct StreamChannelRef {
 /// observed event share its encoded payloads this way instead of each
 /// copying and encoding them, also while they wait for the connection's
 /// writer: the text stays in `data`'s pieces, and the writer sends the
-/// pieces without joining them. `Err` gives `data` back when a field does
-/// not encode (not expected: every one does).
+/// pieces without joining them. A frame of up to
+/// [`INVOKE_FRAME_WHOLE_UP_TO`] bytes is written whole instead. `Err` gives
+/// `data` back when a field does not encode (not expected: every one does).
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_frame(
     invocation_id: Option<Uuid>,
@@ -1555,8 +1556,21 @@ pub fn invoke_frame(
     // goes before its closing brace.
     head.pop();
     head.push_str(",\"data\":");
+    if head.len() + data.len() < INVOKE_FRAME_WHOLE_UP_TO {
+        head.reserve_exact(data.len() + 1);
+        data.write_to(&mut head);
+        head.push('}');
+        return Ok(crate::invocation::encoded::EncodedJson::owned(head));
+    }
     Ok(data.enclosed(head, "}"))
 }
+
+/// The largest `invokefunction` frame [`invoke_frame`] writes whole, in one
+/// piece, instead of sharing `data`'s pieces. The writer joins a frame of up
+/// to 1 MiB into one text when it sends it anyway, so for a small frame the
+/// pieces would only add allocations (three per activation) and a second
+/// copy while saving little memory as it waits.
+pub const INVOKE_FRAME_WHOLE_UP_TO: usize = 2 * 1024;
 
 #[cfg(test)]
 mod tests {
@@ -2729,8 +2743,45 @@ mod tests {
             "\"data\":{\"observer_id\":\"o-1\",\"input\":{\"k\":[1,\"\u{e9}\\\"two\\\"\"]},\"duration_ms\":1.5}}",
         );
         assert_eq!(frame.len(), before.len());
-        // The frame shares the event's payload instead of copying it.
-        assert_eq!(Arc::strong_count(&payload), 2);
+        // A frame this small is written whole: it holds no share of the
+        // payload (see `a_large_invoke_frame_shares_the_payload`).
+        assert_eq!(Arc::strong_count(&payload), 1);
         assert_eq!(frame.into_text(), before);
+    }
+
+    /// A frame above [`super::INVOKE_FRAME_WHOLE_UP_TO`] bytes shares the
+    /// event's payload instead of copying it; one up to that size is
+    /// written whole. Both are the same text.
+    #[test]
+    fn a_large_invoke_frame_shares_the_payload() {
+        use super::{INVOKE_FRAME_WHOLE_UP_TO, invoke_frame};
+        use crate::invocation::encoded::EncodedJson;
+        use std::sync::Arc;
+
+        let head = r#"{"type":"invokefunction","function_id":"f","data":"#;
+        // The largest payload whose frame is written whole, and one byte more.
+        let whole = INVOKE_FRAME_WHOLE_UP_TO - head.len() - 1;
+        for (len, shares) in [(whole, false), (whole + 1, true)] {
+            let payload: Arc<str> = Arc::from(format!("\"{}\"", "x".repeat(len - 2)));
+            let frame = invoke_frame(
+                None,
+                "f",
+                EncodedJson::shared(payload.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(frame.len(), head.len() + len + 1);
+            assert_eq!(
+                Arc::strong_count(&payload) == 2,
+                shares,
+                "payload of {len} bytes"
+            );
+            assert_eq!(frame.into_text(), format!("{head}{payload}}}"));
+        }
     }
 }
