@@ -806,8 +806,13 @@ impl ObserverRegistry {
                     .then(|| ErrorBody::new("invocation_error", err.to_string())),
             ),
         };
-        let bytes =
-            call.input.as_deref().map_or(0, approx_size) + output.as_deref().map_or(0, approx_size);
+        // Everything the evaluator queue holds for the call: the default capture keeps
+        // its metadata as well as its input and output.
+        let bytes = [&call.input, &output, &call.metadata]
+            .into_iter()
+            .filter_map(|value| value.as_deref())
+            .map(approx_size)
+            .sum();
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
@@ -2101,18 +2106,26 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
         }
         .into(),
     );
+    // `output` applies to a success and `error` to a failure, whatever a report
+    // carries: a payload never has both. A field with no value is left out.
     for (wanted, key, value) in [
         (capture.input, "input", &completed.input),
-        (capture.error, "error", &completed.error),
+        (
+            capture.output && completed.success,
+            "output",
+            &completed.output,
+        ),
+        (
+            capture.error && !completed.success,
+            "error",
+            &completed.error,
+        ),
         (capture.caller, "caller", &completed.caller),
         (capture.metadata, "metadata", &completed.metadata),
     ] {
         if wanted && let Some(value) = value {
             envelope.insert(key.into(), Value::clone(value));
         }
-    }
-    if capture.output && completed.success {
-        envelope.insert("output".into(), shipped(&completed.output));
     }
     envelope.insert("started_at_ms".into(), completed.started_at_ms.into());
     envelope.insert(
@@ -2837,6 +2850,44 @@ mod tests {
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
         })
+    }
+
+    /// The payload keeps to the call's outcome: `output` only on a success
+    /// that returned something, `error` only on a failure, whatever a report
+    /// carries, so a payload never has both.
+    #[tokio::test]
+    async fn the_payload_carries_only_what_applies_to_the_outcome() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut request = test_support::request("obs", "test::src", "test::dst", None);
+        request.source.capture = Some(vec![
+            crate::protocol::Capture::Output,
+            crate::protocol::Capture::Error,
+        ]);
+        request.source.raw_input = false;
+        test_support::observe_request(&engine, &worker, request).await;
+        let observer = engine.observers.get("obs").expect("observer");
+
+        let mut call = Arc::into_inner(event(1)).unwrap();
+        call.error = Some(Arc::new(json!({ "code": "x", "message": "stray" })));
+        let payload = super::project(&observer, &call, "a");
+        assert!(
+            payload.get("output").is_none(),
+            "returned nothing: {payload}"
+        );
+        assert!(payload.get("error").is_none(), "a success: {payload}");
+
+        call.output = Some(Arc::new(json!({ "ok": true })));
+        let payload = super::project(&observer, &call, "a");
+        assert_eq!(payload["output"], json!({ "ok": true }));
+        assert!(payload.get("error").is_none(), "{payload}");
+
+        call.success = false;
+        let payload = super::project(&observer, &call, "a");
+        assert!(payload.get("output").is_none(), "a failure: {payload}");
+        assert_eq!(payload["error"]["message"], "stray");
     }
 
     /// `iii.observer.activations.total` labels an activation by who chose

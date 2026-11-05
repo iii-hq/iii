@@ -243,6 +243,17 @@ def test_the_source_is_a_function_id_or_a_dict(engine: FakeEngine, connect: Any)
         client.observe(["orders::create"], "alerts::big-order")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("field", ["on", "deliver"])
+def test_refuses_a_removed_source_field_instead_of_dropping_it(engine: FakeEngine, connect: Any, field: str) -> None:
+    client = connect(engine)
+    with pytest.raises(ObserveRejection) as raised:
+        client.observe({"function_id": "f::a", field: "error"}, "t::a")
+    assert raised.value.code == "INVALID_ARGS"
+    assert f"source.{field}" in raised.value.message
+    settle(client, engine)
+    assert engine.frames_of("observe") == []
+
+
 def test_refuses_a_held_id_and_a_missing_source_or_target(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     holder = client.observe({"function_id": "f::a"}, "t::a", {"id": "fixed"})

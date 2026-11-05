@@ -555,24 +555,27 @@ The fields also decide after which calls the target runs:
 - `input` and `output` run it after a successful call.
 - `error` runs it after a failed call.
 - `caller` and `metadata` add to the payload only. A `capture` must name at least one of `input`,
-  `output`, and `error`; one with only `caller` or `metadata` fails with `INVALID_ARGS`.
+  `output`, and `error`; one with only `caller` or `metadata` fails with `INVALID_ARGS`. The
+  exception is `capture: []`, which runs the target after successful calls with no payload fields.
 - `[]` runs the target after a successful call, with the ids, `status`, and the timings only: no
   payload moves to it. An observer that only counts calls uses it.
 
-| `capture`                                 | The target runs after          |
-| ----------------------------------------- | ------------------------------ |
-| default, `["input"]`, `["output", "caller"]` | a successful call              |
-| `["error"]`, `["error", "caller"]`          | a failed call                  |
-| `["input", "error"]`, `["output", "error"]` | each call, successful or failed |
-| `[]`                                      | a successful call (no payload) |
+| `capture`                                    | The target runs after           |
+| -------------------------------------------- | ------------------------------- |
+| default, `["input"]`, `["output", "caller"]` | a successful call               |
+| `["error"]`, `["error", "caller"]`           | a failed call                   |
+| `["input", "error"]`, `["output", "error"]`  | each call, successful or failed |
+| `[]`                                         | a successful call (no payload)  |
 
 The default does not include `error`, so a default observer runs after successful calls only. A
-cancelled call (for example, its caller stopped waiting) does not run the target, for any
-`capture`. The engine counts it as a dropped call with the reason `CANCELLED` in the
-`iii.observer.dropped.total` metric.
+call the engine cancels (for example, a call it routes whose caller stopped waiting) does not run
+the target, for any `capture`. The engine counts it as a dropped call with the reason `CANCELLED`
+in the `iii.observer.dropped.total` metric. A call the hosting worker runs in its own process is
+not cancelled when its caller stops waiting: its handler runs to the end, and its outcome reaches
+the observers like any other.
 
-`capture` sets only what the target receives. A [filter](#filters) can read any field of the call,
-including the fields that `capture` leaves out.
+Once `capture` has decided which outcomes run the target, a [filter](#filters) can read any field
+of the call, including the fields that `capture` leaves out of the payload.
 
 To keep observed calls small, capture only what the target reads. See
 [Observed call size](#observed-call-size).

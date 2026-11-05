@@ -304,6 +304,18 @@ describe('iii.observe', () => {
   })
 })
 
+describe('removed source fields', () => {
+  it.each(['on', 'deliver'])('refuses source.%s with INVALID_ARGS instead of dropping it: nothing sent', async (field) => {
+    const { sdk, socket } = worker()
+    socket.open()
+    const source = { function_id: 'orders::create', [field]: 'error' }
+    const handle = sdk.observe(source as unknown as Parameters<typeof sdk.observe>[0], 'audit::record')
+    await expect(handle.ready()).rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    await fake.settle()
+    expect(socket.framesOf('observe')).toEqual([])
+  })
+})
+
 describe('observer ids (decision 56)', () => {
   it('refuses an id a handle holds, in any state, with OBSERVER_ID_CONFLICT: nothing sent, the holder untouched', async () => {
     const { sdk, socket } = worker()

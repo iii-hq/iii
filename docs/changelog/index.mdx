@@ -42,8 +42,9 @@ type: "reference"
   - An observer's `capture` alone decides when it fires and what its target receives: `input` and
     `output` fire on success, `error` fires on error, and `caller` and `metadata` only add fields.
     The default, `input`, `output`, `caller`, `metadata`, fires on success only, so errors are not
-    observed unless `capture` includes `error`. A `capture` without `input`, `output`, or `error` is
-    refused with `INVALID_ARGS`, and so is a source that sends `on` or `deliver`.
+    observed unless `capture` includes `error`. `capture: []` fires on success with the top-level
+    fields only. Any other `capture` without `input`, `output`, or `error` is refused with
+    `INVALID_ARGS`, and so is a source that sends `on` or `deliver`.
 
   See [Observable functions](/next/creating-workers/observable-functions) and
   [Observers](/next/using-iii/observers).

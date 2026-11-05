@@ -88,6 +88,40 @@ fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(code, message)
 }
 
+/// What an `observe` source may carry: known capture values, none of the
+/// removed fields, and a capture that fires on something.
+fn check_source(source: &ObserveSource) -> Result<(), ErrorBody> {
+    // Values a newer peer may send and this engine cannot honour
+    // (CONTRACT D14). Never defaulted: the observer would silently do
+    // something other than what was asked.
+    if let Some(unknown) = source
+        .capture
+        .iter()
+        .flatten()
+        .find(|capture| !capture.is_known())
+    {
+        return Err(unsupported("source.capture", unknown.as_str()));
+    }
+    // Fields an older SDK may still send: refused rather than ignored, since
+    // ignoring them would fire the target on other outcomes than the ones
+    // asked for.
+    if let Some(field) = source.removed_field() {
+        return Err(reject(
+            observe_codes::INVALID_ARGS,
+            format!(
+                "`source.{field}` was removed: `source.capture` decides which outcomes \
+                 fire the target and what it receives"
+            ),
+        ));
+    }
+    if let Some(list) = &source.capture
+        && let Err(message) = CaptureSet::resolve(list)
+    {
+        return Err(reject(observe_codes::INVALID_ARGS, message));
+    }
+    Ok(())
+}
+
 /// The engine-internal delivery an `ObserveSource` asks for.
 fn deliver_of(source: &ObserveSource) -> Deliver {
     if source.raw_input {
@@ -244,6 +278,11 @@ impl ObserverRegistry {
             ));
         }
 
+        // The source's capture, before the replay below: a replay that carries
+        // a removed field or a capture that fires on nothing is refused too,
+        // rather than answered as the observer it claims to be.
+        check_source(&request.source)?;
+
         // A replay: the same spec from the observing connection is a no-op
         // that answers with the current state.
         let spec = request.spec(self.config().default_max_in_flight);
@@ -338,35 +377,6 @@ impl ObserverRegistry {
                     ),
                 ));
             }
-        }
-
-        // Values a newer peer may send and this engine cannot honour
-        // (CONTRACT D14). Never defaulted: the observer would silently do
-        // something other than what was asked.
-        if let Some(unknown) = source
-            .capture
-            .iter()
-            .flatten()
-            .find(|capture| !capture.is_known())
-        {
-            return Err(unsupported("source.capture", unknown.as_str()));
-        }
-        // Fields an older SDK may still send: refused rather than ignored,
-        // since ignoring them would fire the target on other outcomes than
-        // the ones asked for.
-        if let Some(field) = source.removed_field() {
-            return Err(reject(
-                observe_codes::INVALID_ARGS,
-                format!(
-                    "`source.{field}` was removed: `source.capture` decides which outcomes \
-                     fire the target and what it receives"
-                ),
-            ));
-        }
-        if let Some(list) = &source.capture
-            && let Err(message) = CaptureSet::resolve(list)
-        {
-            return Err(reject(observe_codes::INVALID_ARGS, message));
         }
 
         for (field, value) in [

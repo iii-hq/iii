@@ -1608,6 +1608,24 @@ async fn observe_rejections() {
         "pending",
         "a replay"
     );
+    // A replay is checked like a new observe: one that adds a removed field or
+    // a capture that fires on nothing is refused, not answered as the observer
+    // it names.
+    for change in [
+        json!({ "on": "error" }),
+        json!({ "deliver": "input" }),
+        json!({ "capture": ["caller"] }),
+    ] {
+        let mut replay = good.clone();
+        for (key, value) in change.as_object().unwrap() {
+            replay["source"][key] = value.clone();
+        }
+        let refused = watcher.observe(replay).await;
+        assert_eq!(
+            refused["error"]["code"], "INVALID_ARGS",
+            "{change} → {refused}"
+        );
+    }
     let mut changed = good.clone();
     changed["max_fires"] = json!(5);
     let conflict = watcher.observe(changed).await;

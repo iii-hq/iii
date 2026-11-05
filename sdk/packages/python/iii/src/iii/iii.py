@@ -180,6 +180,8 @@ _UNSUPPORTED_REASON: ObserveReason = {
 }
 
 #: Rejections of one function's registration: the connection stays open.
+# Source fields removed in 0.26 that ``observe`` refuses (``INVALID_ARGS``) instead of dropping.
+_REMOVED_SOURCE_FIELDS = ("on", "deliver")
 _FUNCTION_REJECTIONS = frozenset({"FUNCTION_NAMESPACE_CONFLICT", "INVALID_ARGS_FORMAT", "UNSUPPORTED"})
 
 #: The second argument of a hook method that was not passed (``on_observer_added("id")``).
@@ -3344,6 +3346,8 @@ class III:
                 ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
 
         Raises:
+            ObserveRejection: ``INVALID_ARGS``: the source sends ``on`` or ``deliver``,
+                removed in 0.26; ``capture`` decides which outcomes fire the target.
             ObserveRejection: ``OBSERVER_ID_CONFLICT``: a handle of this
                 client holds the id. Nothing is sent, and that handle is untouched.
             ValueError: ``source["function_id"]`` or ``target`` missing.
@@ -3377,6 +3381,16 @@ class III:
             raise TypeError("observe: options.id must be a string")
         if observer_id in self._observers:
             raise _observer_id_conflict(observer_id)
+        # Removed in 0.26: refused, not dropped, as the engine refuses them. Dropped,
+        # they would leave the default capture to fire the target on other outcomes
+        # than the ones asked for.
+        for removed in _REMOVED_SOURCE_FIELDS:
+            if source.get(removed) is not None:
+                raise ObserveRejection(
+                    "INVALID_ARGS",
+                    f"observe: `source.{removed}` was removed: `source.capture` decides which outcomes "
+                    "fire the target and what it receives",
+                )
         message = build_observe_message(
             observer_id,
             cast("dict[str, Any]", source),

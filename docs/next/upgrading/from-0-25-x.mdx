@@ -1699,7 +1699,9 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
 - [ ] Replace every `registerTrigger` with `iii.observe` of the type's function, and every
       `unregister()` with `dispose()`
 - [ ] Read the event from the payload's `input` in targets that expected a trigger's event, and
-      set `capture: ["input"]` on their observers
+      set `capture: ["input"]` on their observers. A source that delivers its calls itself, such
+      as `http::on-request` or `ade::ui::asset`, decides what its targets receive: follow its
+      documentation instead
 - [ ] Move each `configuration` trigger's `configuration_id` and `event_types` to filters on
       `input.id` and `input.event_type`
 - [ ] Move `console:script`, `console:style`, and `console:module` registrations to observers of
