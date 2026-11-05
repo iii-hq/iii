@@ -493,6 +493,21 @@ pub(crate) struct FailureCounters {
     pub target_error: AtomicU64,
 }
 
+/// What an observer counts once it does something: the events it dropped,
+/// the activations it started and those that failed, and when it last
+/// logged a warning. Made the first time it counts anything, so an observer
+/// that never fired nor dropped an event holds none.
+#[derive(Debug, Default)]
+pub(crate) struct Counters {
+    pub drops: DropCounters,
+    pub activations: ActivationCounters,
+    pub failures: FailureCounters,
+    pub last_loop_warn_ms: AtomicU64,
+    /// When a `TOO_LARGE` drop was last logged (see
+    /// [`super::dispatch::drop_too_large`]).
+    pub last_too_large_warn_ms: AtomicU64,
+}
+
 /// Activation failure reasons (`iii.observer.activation.failures.total`).
 pub(crate) mod failure_reasons {
     pub const TIMEOUT: &str = "TIMEOUT";
@@ -596,12 +611,12 @@ struct Timers {
 /// One `iii.observe(source, target)`.
 pub struct Observer {
     pub id: String,
-    /// The observed function, `(namespace, function_id)`.
-    pub function: FnKey,
-    /// `function.1`, shared: the `function_id` label of its metrics.
-    function_label: Arc<str>,
-    /// The function each activation invokes.
-    pub target: FnKey,
+    /// The observed function, `(namespace, function_id)`, shared with the
+    /// function's other observers, its entry and its active set.
+    pub function: Arc<FnKey>,
+    /// The function each activation invokes, shared with the other
+    /// observers that invoke it.
+    pub target: Arc<FnKey>,
     /// The spec its observing worker asked for, kept only when it differs
     /// from what the observer's own fields give (a registration hook or a
     /// function prefix rewrote it): see [`Observer::spec_matches`].
@@ -623,21 +638,17 @@ pub struct Observer {
     /// read without the lock (the routed hook reads it on every activation).
     active: AtomicBool,
     pub(crate) fires: AtomicU64,
-    pub(crate) drops: DropCounters,
-    pub(crate) activations: ActivationCounters,
+    /// Its counters, made when it first counts something (see
+    /// [`Counters`]).
+    counters: std::sync::OnceLock<Box<Counters>>,
     /// What it reads of a call's input, from its capture, deliver and
     /// filters, which never change.
     pub(crate) input_reads: InputReads,
-    pub(crate) failures: FailureCounters,
     pub(crate) flow: Lock<Flow>,
     timers: Lock<Timers>,
     /// A timer was ever set in `timers`: until then, cancelling them takes
     /// no lock.
     timed: AtomicBool,
-    pub(crate) last_loop_warn_ms: AtomicU64,
-    /// When a `TOO_LARGE` drop was last logged (see
-    /// [`super::dispatch::drop_too_large`]).
-    pub(crate) last_too_large_warn_ms: AtomicU64,
     /// Its place in its function's creation order, given when it joins the
     /// function's observers ([`ObserverRegistry::attach_to_function`]): `0`
     /// until then.
@@ -665,8 +676,8 @@ impl Drop for Observer {
 /// Everything `Observer::new` needs; the registry builds it after validation.
 pub(crate) struct NewObserver {
     pub id: String,
-    pub function: FnKey,
-    pub target: FnKey,
+    pub function: Arc<FnKey>,
+    pub target: Arc<FnKey>,
     /// The spec its observing worker asked for; `None` when the observer's
     /// own fields are its spec.
     pub spec: Option<ObserveSpec>,
@@ -689,7 +700,6 @@ impl Observer {
         let spec = new.spec;
         let mut observer = Self {
             id: new.id,
-            function_label: Arc::from(new.function.1.as_str()),
             function: new.function,
             target: new.target,
             spec: None,
@@ -710,15 +720,11 @@ impl Observer {
             }),
             active: AtomicBool::new(false),
             fires: AtomicU64::new(0),
-            drops: DropCounters::default(),
-            activations: ActivationCounters::default(),
+            counters: std::sync::OnceLock::new(),
             input_reads,
-            failures: FailureCounters::default(),
             flow: Lock::new(Flow::default()),
             timers: Lock::new(Timers::default()),
             timed: AtomicBool::new(false),
-            last_loop_warn_ms: AtomicU64::new(0),
-            last_too_large_warn_ms: AtomicU64::new(0),
             seq: AtomicU64::new(0),
             member: AtomicBool::new(false),
             joined: std::sync::OnceLock::new(),
@@ -760,10 +766,10 @@ impl Observer {
 
     /// Whether the observer's own fields give `spec`.
     fn has_spec(&self, spec: &ObserveSpec) -> bool {
-        spec.function == self.function
-            && spec.target == self.target
+        spec.function == *self.function
+            && spec.target == *self.target
             && spec.args == self.args
-            && spec.filters == *self.filter.normalized()
+            && self.filter.normalized_eq(&spec.filters)
             && spec.capture == self.capture.to_list()
             && spec.on == self.on
             && spec.deliver == self.deliver
@@ -856,9 +862,44 @@ impl Observer {
         self.status.read().observing.session.clone()
     }
 
-    /// The `function_id` label of its metrics: its function's id, shared.
+    /// Its counters, to count with: made the first time.
+    pub(crate) fn counters(&self) -> &Counters {
+        self.counters.get_or_init(Box::default)
+    }
+
+    /// Its counters, when it counted anything: reading them makes none.
+    pub(crate) fn counted(&self) -> Option<&Counters> {
+        self.counters.get().map(|counters| &**counters)
+    }
+
+    /// What it dropped, by reason (see [`DropCounters::snapshot`]).
+    pub(crate) fn drop_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.drops.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Its activations that failed, by reason (see
+    /// [`FailureCounters::snapshot`]).
+    pub(crate) fn failure_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.failures.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// The worker name and namespace of its observing worker.
+    pub(crate) fn observing_names(&self) -> (Option<Arc<str>>, Arc<str>) {
+        let status = self.status.read();
+        (
+            status.observing.worker_name.clone(),
+            status.observing.namespace.clone(),
+        )
+    }
+
+    /// The `function_id` label of its metrics: its function's id. Made for
+    /// the records that carry it, so an observer at rest holds no copy.
     pub(crate) fn function_label(&self) -> Arc<str> {
-        self.function_label.clone()
+        Arc::from(self.function.1.as_str())
     }
 
     /// Whether the engine created this observer for one of its own modules.
@@ -1226,10 +1267,13 @@ impl ObserverRegistry {
             self.withdraw_from_owner(observer);
             if !observer.reason_is(observe_codes::MAX_FIRES) {
                 let dropped = std::mem::take(&mut observer.flow.write().queue).len() as u64;
-                observer
-                    .drops
-                    .inactive
-                    .fetch_add(dropped, Ordering::Relaxed);
+                if dropped > 0 {
+                    observer
+                        .counters()
+                        .drops
+                        .inactive
+                        .fetch_add(dropped, Ordering::Relaxed);
+                }
             }
         }
         if became != ObserverState::Active {
@@ -1393,8 +1437,9 @@ impl ObserverRegistry {
     /// that connection: the id is free for it at once (decision 56).
     pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
-        self.by_id
-            .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
+        self.by_id.remove_if(observer.id.as_str(), |current, _| {
+            Arc::ptr_eq(&current.0, observer)
+        });
         let (connection, connected, answered, tombstone, reason) = {
             let status = observer.status.read();
             (

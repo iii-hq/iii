@@ -583,7 +583,7 @@ fn collect_functions_and_observers(engine: &Engine) -> FunctionObserverData {
         .collect();
     let observable_functions: HashSet<&crate::observer::FnKey> = observers
         .iter()
-        .map(|observer| &observer.function)
+        .map(|observer| &*observer.function)
         .collect();
 
     FunctionObserverData {

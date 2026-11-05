@@ -194,6 +194,36 @@ fn lock_if_live(entry: &FunctionEntry) -> Option<dashmap::RwLockWriteGuard<'_, O
     (!entry.dead.load(Ordering::Acquire)).then_some(sync)
 }
 
+/// A function's key as its entry is looked up and made with: an observer's
+/// shared `Arc`, which a new entry keeps, or a key a caller built, which a
+/// new entry copies.
+pub(crate) trait EntryKey {
+    fn key(&self) -> &FnKey;
+
+    /// The key a new entry keeps.
+    fn shared(&self) -> Arc<FnKey>;
+}
+
+impl EntryKey for FnKey {
+    fn key(&self) -> &FnKey {
+        self
+    }
+
+    fn shared(&self) -> Arc<FnKey> {
+        Arc::new(self.clone())
+    }
+}
+
+impl EntryKey for Arc<FnKey> {
+    fn key(&self) -> &FnKey {
+        self
+    }
+
+    fn shared(&self) -> Arc<FnKey> {
+        self.clone()
+    }
+}
+
 /// One observer joining its function's active set (`true`) or leaving it.
 type Change<'a> = (&'a Arc<Observer>, bool);
 
@@ -529,10 +559,23 @@ pub struct ActiveSet {
 
 /// How many observers of an [`ActiveSet`] read the whole input, and how many
 /// read each top-level field (their filters' only, see [`InputReads`]).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct InputCounts {
     whole: usize,
     fields: Arc<std::collections::BTreeMap<Box<str>, usize>>,
+}
+
+/// No counts: the fields' map is one empty map every set shares, copied by
+/// the first count of a field.
+impl Default for InputCounts {
+    fn default() -> Self {
+        static NO_FIELDS: std::sync::LazyLock<Arc<std::collections::BTreeMap<Box<str>, usize>>> =
+            std::sync::LazyLock::new(Arc::default);
+        Self {
+            whole: 0,
+            fields: NO_FIELDS.clone(),
+        }
+    }
 }
 
 impl InputCounts {
@@ -667,7 +710,7 @@ impl Keyed for Arc<Observer> {
 impl ActiveSet {
     /// The set of `observers`, which are in creation order and have joined
     /// their function's observers.
-    fn new(key: &FnKey, observers: Vec<Arc<Observer>>) -> Self {
+    fn new(key: &Arc<FnKey>, observers: Vec<Arc<Observer>>) -> Self {
         let observers: Vec<Arc<Observer>> = observers
             .into_iter()
             .filter(|observer| observer.seq().is_some())
@@ -689,14 +732,7 @@ impl ActiveSet {
             key.hash(&mut hasher);
             hasher.finish()
         };
-        Self::of(
-            Arc::new(key.clone()),
-            observers,
-            filters,
-            counts,
-            input,
-            shard,
-        )
+        Self::of(key.clone(), observers, filters, counts, input, shard)
     }
 
     fn of(
@@ -786,7 +822,7 @@ impl ActiveSet {
     /// under that id (replaced or gone since, decision 51: a scan).
     pub(crate) fn held(&self, registry: &ObserverRegistry, id: &str) -> Option<Arc<Observer>> {
         if let Some(observer) = registry.get(id)
-            && observer.function == *self.function
+            && observer.function == self.function
             && observer
                 .seq()
                 .and_then(|seq| self.observers.get(seq))
@@ -959,6 +995,8 @@ impl ObserverRegistry {
             return;
         }
         let was_live = held.is_some_and(|held| held.is_live());
+        // The set's key, shared, when it has one.
+        let shared = active.as_ref().map(|set| set.function.clone());
         let mut next: RoutedView = HashMap::clone(current);
         // The shard's functions nobody finds go with the copy.
         next.retain(|_, routed| routed.is_live());
@@ -967,7 +1005,8 @@ impl ObserverRegistry {
             match next.get_mut(routed_key(key)) {
                 Some(held) => *held = routed,
                 None => {
-                    next.insert(RoutedKey(Arc::new(key.clone())), routed);
+                    let key = shared.unwrap_or_else(|| Arc::new(key.clone()));
+                    next.insert(RoutedKey(key), routed);
                 }
             }
         } else {
@@ -1079,17 +1118,35 @@ impl ObserverRegistry {
         self.by_function.get(key).map(|entry| entry.clone())
     }
 
+    /// `key` as the function's other observers hold it: its entry's, when it
+    /// has one, so that a function's observers share one copy of its names.
+    pub(crate) fn function_key(&self, key: FnKey) -> Arc<FnKey> {
+        match self.by_function.get(&key) {
+            Some(entry) => entry.key().clone(),
+            None => Arc::new(key),
+        }
+    }
+
+    /// `key` as the other observers that invoke it hold it, when there are
+    /// any.
+    pub(crate) fn target_key(&self, key: FnKey) -> Arc<FnKey> {
+        match self.by_target.get(&key) {
+            Some(targeting) => targeting.key().clone(),
+            None => Arc::new(key),
+        }
+    }
+
     /// `key`'s entry, created if needed (continuing its revisions).
-    fn entry_for(&self, key: &FnKey) -> Arc<FunctionEntry> {
-        if let Some(entry) = self.by_function.get(key) {
+    fn entry_for<K: EntryKey + ?Sized>(&self, key: &K) -> Arc<FunctionEntry> {
+        if let Some(entry) = self.by_function.get(key.key()) {
             return entry.clone();
         }
         self.by_function
-            .entry(key.clone())
+            .entry(key.shared())
             .or_insert_with(|| {
                 let revision = self
                     .revisions
-                    .remove(key)
+                    .remove(key.key())
                     .map(|(_, revision)| revision)
                     .unwrap_or(0);
                 Arc::new(FunctionEntry::starting_at(revision))
@@ -1140,9 +1197,9 @@ impl ObserverRegistry {
 
     /// Runs `f` with `key`'s entry (created if needed), its `sync` held, and
     /// the entry live: one dropped concurrently is never used.
-    fn with_live_entry<R>(
+    fn with_live_entry<R, K: EntryKey + ?Sized>(
         &self,
-        key: &FnKey,
+        key: &K,
         f: impl FnOnce(&Arc<FunctionEntry>, &mut OwnerSync) -> R,
     ) -> R {
         loop {
@@ -1159,9 +1216,9 @@ impl ObserverRegistry {
     /// `sync`, so waiting here could deadlock; when the shard is busy, `sync`
     /// is let go and taken again. An entry dropped as unused meanwhile is not
     /// the live one, and is not used.
-    fn with_owner_sync<R>(
+    fn with_owner_sync<R, K: EntryKey + ?Sized>(
         &self,
-        key: &FnKey,
+        key: &K,
         f: impl FnOnce(&Arc<FunctionEntry>, &mut OwnerSync, Option<Owner>) -> R,
     ) -> R {
         loop {
@@ -1169,7 +1226,7 @@ impl ObserverRegistry {
             let Some(mut sync) = lock_if_live(&entry) else {
                 continue;
             };
-            match self.try_owner_of(key) {
+            match self.try_owner_of(key.key()) {
                 Some(owner) => return f(&entry, &mut sync, owner),
                 None => {
                     drop(sync);
@@ -1314,7 +1371,7 @@ impl ObserverRegistry {
         let _serialized = self.rebuild.write();
         // What changes, by function, in the order given; `at` finds each
         // function's changes.
-        let mut changes: Vec<(&FnKey, Vec<Change<'_>>)> = Vec::new();
+        let mut changes: Vec<(&Arc<FnKey>, Vec<Change<'_>>)> = Vec::new();
         let mut at: HashMap<&FnKey, usize> = HashMap::new();
         for observer in observers {
             if observer.seq().is_none() {
@@ -1462,7 +1519,10 @@ impl ObserverRegistry {
             observer.set_in_active_set(true);
         }
         let callers = callers_in(&current, key, entry.as_deref());
-        let active = (!active.is_empty()).then(|| Arc::new(ActiveSet::new(key, active)));
+        let active = active
+            .first()
+            .map(|first| first.function.clone())
+            .map(|shared| Arc::new(ActiveSet::new(&shared, active)));
         self.store_routed(&current, key, active, callers);
     }
 
@@ -1772,7 +1832,7 @@ impl ObserverRegistry {
             namespace.unwrap_or(connection_namespace).to_string(),
             function_id.to_string(),
         );
-        let Some(observer) = self.get(id).filter(|o| o.function == key) else {
+        let Some(observer) = self.get(id).filter(|o| *o.function == key) else {
             tracing::debug!(observer_id = %id, function_id = %function_id, "observerack for an unknown observer; ignoring");
             return;
         };
@@ -1841,7 +1901,7 @@ impl ObserverRegistry {
         let mut at: HashMap<&FnKey, usize> = HashMap::new();
         for observer in observers {
             if let Some((key, withdrawn)) = by_function.last_mut()
-                && **key == observer.function
+                && **key == *observer.function
             {
                 withdrawn.push(observer);
                 continue;
@@ -1894,7 +1954,7 @@ impl ObserverRegistry {
         let mut functions: Vec<FnKey> = observers
             .iter()
             .filter(|observer| observer.with_flags(|flags| flags.returning))
-            .map(|observer| observer.function.clone())
+            .map(|observer| FnKey::clone(&observer.function))
             .collect();
         functions.sort_unstable();
         functions.dedup();
@@ -2235,7 +2295,7 @@ pub(crate) fn view(observer: &Observer) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
         args: observer.args.clone(),
-        filters: observer.filter.normalized().clone(),
+        filters: observer.filter.to_normalized(),
         target: observer.target.1.clone(),
         capture: observer.capture.with_delivered(&observer.deliver).to_list(),
         on: observer.on.clone(),
@@ -2508,6 +2568,86 @@ mod tests {
         set.observers.iter().map(|o| o.id.clone()).collect()
     }
 
+    /// A function's observers hold one copy of its names, the one its
+    /// entry, its active set and the routed view hold, and the observers of
+    /// one target one copy of its names, the one the target index holds.
+    /// `by_id` finds an observer by the id it holds.
+    #[tokio::test]
+    async fn observers_share_their_function_and_target_names() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        for id in ["a", "b", "c"] {
+            registry
+                .observe_as_engine(engine_observer(id, "test::dst"))
+                .unwrap();
+        }
+        let [a, b, c] = ["a", "b", "c"].map(|id| registry.get(id).unwrap());
+        for other in [&b, &c] {
+            assert!(
+                Arc::ptr_eq(&a.function, &other.function),
+                "one function key"
+            );
+            assert!(Arc::ptr_eq(&a.target, &other.target), "one target key");
+        }
+        let key = FnKey::clone(&a.function);
+        let entry = registry.by_function.get(&key).unwrap().key().clone();
+        assert!(Arc::ptr_eq(&entry, &a.function), "the entry's key");
+        let set = registry
+            .watch(crate::protocol::DEFAULT_NAMESPACE, "test::src")
+            .unwrap();
+        assert!(Arc::ptr_eq(&set.function, &a.function), "the set's key");
+        let shard = registry.routed.load(routed_key(&key));
+        let (routed, _) = shard.get_key_value(routed_key(&key)).unwrap();
+        assert!(Arc::ptr_eq(&routed.0, &a.function), "the view's key");
+        let targeting = registry.by_target.get(&*a.target).unwrap().key().clone();
+        assert!(Arc::ptr_eq(&targeting, &a.target), "the target index's key");
+        assert!(Arc::ptr_eq(&registry.get("b").unwrap(), &b));
+        assert!(registry.get("d").is_none());
+    }
+
+    /// Sets that count no field share one empty map; the first field
+    /// counted copies it.
+    #[test]
+    fn sets_without_field_counts_share_one_empty_map() {
+        let (a, mut b) = (InputCounts::default(), InputCounts::default());
+        assert!(Arc::ptr_eq(&a.fields, &b.fields));
+        Arc::make_mut(&mut b.fields).insert("k".into(), 1);
+        assert!(a.fields.is_empty(), "the shared map stays empty");
+        assert!(InputCounts::default().fields.is_empty());
+    }
+
+    /// An observer holds no counters until it counts something, and what
+    /// reads its counts (a listing, the drop export) makes none.
+    #[tokio::test]
+    async fn an_observer_makes_its_counters_when_it_first_counts() {
+        use super::super::events::test_support;
+        let engine = Arc::new(Engine::new());
+        let _source = test_support::capture(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let registry = &engine.observers;
+        registry
+            .observe_as_engine(engine_observer("a", "test::dst"))
+            .unwrap();
+        let observer = registry.get("a").unwrap();
+        registry.export_drops();
+        assert!(observer.drop_snapshot().is_empty());
+        assert!(observer.failure_snapshot().is_empty());
+        assert!(observer.counted().is_none(), "reading made no counters");
+        observer
+            .counters()
+            .drops
+            .overflow
+            .fetch_add(2, Ordering::Relaxed);
+        assert_eq!(
+            observer.drop_snapshot().get(observe_codes::OVERFLOW),
+            Some(&2)
+        );
+        assert!(observer.counted().is_some());
+    }
+
     /// A disposed observer goes with the last version of its function's
     /// active set that holds it, oldest observer included (it leaves its
     /// leaf without a copy), and the drops it counted reach
@@ -2536,6 +2676,7 @@ mod tests {
         let count_drops = |id: &str, count: u64| {
             let observer = registry.get(id).unwrap();
             observer
+                .counters()
                 .drops
                 .overflow
                 .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
@@ -2957,7 +3098,7 @@ mod tests {
                 !registry
                     .by_id
                     .get(&member.id)
-                    .is_some_and(|held| Arc::ptr_eq(&held, member))
+                    .is_some_and(|held| Arc::ptr_eq(&held.key().0, member))
             })
             .map(|member| format!("{} {}", member.id, member.state()))
             .collect();
