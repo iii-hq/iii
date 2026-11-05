@@ -46,7 +46,7 @@ async function sync() {
   early.splice(0).forEach(apply);
 }
 
-worker.registerFunction("ui::on_click", async (click) => {
+worker.registerFunction("ui::on_click", async ({ output: click }) => {
   received += 1;
   if (ready) apply(click);
   else early.push(click);
@@ -54,7 +54,7 @@ worker.registerFunction("ui::on_click", async (click) => {
 });
 const listener = worker.observe(
   // App.tsx names `default`; run.sh may move the project elsewhere.
-  { function_id: "click-streamer::on-click", namespace: PROJECT_NAMESPACE, deliver: "output" },
+  { function_id: "click-streamer::on-click", namespace: PROJECT_NAMESPACE, capture: ["output"] },
   "ui::on_click",
 );
 

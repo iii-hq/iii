@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 use crate::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    observer::StandingObserver,
-    protocol::{Deliver, ErrorBody},
+    observer::{Deliver, StandingObserver},
+    protocol::ErrorBody,
 };
 
 /// The function the Console hosts for its injected UI assets.

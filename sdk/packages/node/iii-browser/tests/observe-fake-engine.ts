@@ -141,15 +141,14 @@ export function functionRegistered(
 export function observerInfo(
   id: string,
   target: string,
-  opts: { args?: Frame; filters?: Frame; capture?: string[]; on?: string } = {},
+  opts: { args?: Frame; filters?: Frame; capture?: string[] } = {},
 ): Frame {
   return {
     id,
     args: opts.args ?? {},
     filters: opts.filters ?? {},
     target,
-    capture: opts.capture ?? ['input', 'output', 'caller'],
-    on: opts.on ?? 'success',
+    capture: opts.capture ?? ['input', 'output', 'caller', 'metadata'],
   }
 }
 

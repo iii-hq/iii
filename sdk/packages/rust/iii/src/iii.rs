@@ -5405,8 +5405,6 @@ mod tests {
                 args: None,
                 filters: None,
                 capture: None,
-                on: None,
-                deliver: None,
             }),
             target: crate::protocol::ObserveTarget {
                 function_id: "c::d".to_string(),

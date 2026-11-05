@@ -319,7 +319,7 @@ type InvocationResultMessage struct {
 	Baggage      *string         `json:"baggage,omitempty"`
 	// Matched lists, on an observe.v2 host's answer to a routed call of a function with
 	// a match hook, the observers the hook matched, each once ([] when it matched
-	// none): the engine evaluates the on and filters of those that are active
+	// none): the engine evaluates the capture and filters of those that are active
 	// observers of the function, with the call's input, caller and metadata and this
 	// answer. Absent (nil) when the host did not narrow the call's observers: the
 	// engine then evaluates every active observer of the function. Decoded leniently,
@@ -420,15 +420,13 @@ type ObserveMessage struct {
 }
 
 // ObserveMessageSource is what an observer observes. Capture is omitted when nil and
-// sent when empty (capture: [] is valid: ids, status and timings only).
+// sent when empty (capture: [] is valid: a success with ids, status and timings only).
 type ObserveMessageSource struct {
 	FunctionID string          `json:"function_id"`
 	Namespace  string          `json:"namespace,omitempty"`
 	Args       json.RawMessage `json:"args,omitempty"`
 	Filters    json.RawMessage `json:"filters,omitempty"`
 	Capture    []Capture       `json:"capture,omitzero"`
-	On         On              `json:"on,omitempty"`
-	Deliver    Deliver         `json:"deliver,omitempty"`
 }
 
 // ObserveMessageTarget is the function an observer invokes.
@@ -542,7 +540,6 @@ type ObserverInfo struct {
 	Filters json.RawMessage `json:"filters,omitempty"`
 	Target  string          `json:"target"`
 	Capture []Capture       `json:"capture,omitzero"`
-	On      On              `json:"on,omitempty"`
 }
 
 // ObserveResultMessage is the engine's reply to an observe (also on a replay).

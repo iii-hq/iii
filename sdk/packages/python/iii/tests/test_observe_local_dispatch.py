@@ -607,7 +607,7 @@ def test_on_error_sees_only_failures_with_the_error_and_the_caller(engine: FakeE
         return 1
 
     client.register_function("local::flaky", flaky)
-    _confirm(client, engine, "local::flaky", [observer_info("e", "t", on="error", capture=["error", "caller"])])
+    _confirm(client, engine, "local::flaky", [observer_info("e", "t", capture=["error", "caller"])])
     client.call({"function_id": "local::flaky", "payload": {"fail": False}})
     with pytest.raises(InvocationError):
         client.call({"function_id": "local::flaky", "payload": {"fail": True}})
@@ -836,7 +836,7 @@ def test_a_sync_local_handler_raising_a_base_exception_is_counted_and_reported(
         raise SystemExit("handler exited")
 
     client.register_function("exit::fn", exits)
-    _confirm(client, engine, "exit::fn", [observer_info("o", "t", on="error", capture=["error"])])
+    _confirm(client, engine, "exit::fn", [observer_info("o", "t", capture=["error"])])
     with pytest.raises(InvocationError) as raised:
         client.call({"function_id": "exit::fn", "payload": {}})
     assert raised.value.code == "invocation_failed"

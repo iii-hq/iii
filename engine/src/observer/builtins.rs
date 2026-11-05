@@ -82,8 +82,6 @@ pub struct ObserverInfo {
     pub filters: Value,
     pub target: ObserverTargetInfo,
     pub capture: Vec<String>,
-    pub on: String,
-    pub deliver: String,
     pub worker: ObservingWorkerInfo,
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,8 +131,6 @@ impl ObserverRegistry {
                 .iter()
                 .map(|c| c.to_string())
                 .collect(),
-            on: observer.on.to_string(),
-            deliver: observer.deliver.to_string(),
             worker: ObservingWorkerInfo {
                 worker_id: observing.connection.to_string(),
                 worker_name: observing.worker_name.as_deref().map(str::to_string),

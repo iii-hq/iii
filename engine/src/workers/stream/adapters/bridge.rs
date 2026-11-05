@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, Source, register_worker};
+use iii_sdk::{Capture, IIIClient, Source, register_worker};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -275,11 +275,12 @@ impl StreamAdapter for BridgeAdapter {
         let pub_sub = self.pub_sub.clone();
         self.bridge.register_function(
             handler_function_id.clone(),
-            iii_sdk::RegisterFunction::new_async(move |data| {
+            iii_sdk::RegisterFunction::new_async(move |data: Value| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
-                    match serde_json::from_value::<PublishedStreamEvent>(data) {
+                    // The payload's `input` is what `publish` was called with.
+                    match serde_json::from_value::<PublishedStreamEvent>(data["input"].clone()) {
                         Ok(PublishedStreamEvent { data }) => {
                             tracing::debug!(data = ?data.clone(), "Event: Received event");
                             pub_sub.send_msg(data);
@@ -301,7 +302,7 @@ impl StreamAdapter for BridgeAdapter {
         self.bridge.observe(
             Source::function(PUBLISH_FUNCTION_ID)
                 .filters(json!({ "input.topic": { "$eq": STREAM_EVENTS_TOPIC } }))
-                .deliver(Deliver::Input),
+                .capture([Capture::Input]),
             handler_function_id,
         );
 

@@ -25,7 +25,7 @@ import (
 const observeHookTimeout = 30 * time.Second
 
 // defaultCapture is what an absent capture means.
-var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
+var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller, CaptureMetadata}
 
 // errNotActive is what Accepted returns for an observer removed, or whose function was
 // released, before the SDK accepted it: it never became active. OBSERVER_NOT_ACTIVE is
@@ -781,16 +781,17 @@ func rejectionBody(err error) *ErrorBody {
 	return &ErrorBody{Code: "OBSERVE_REJECTED", Message: err.Error()}
 }
 
-func onAccepts(on On, ok bool) bool {
-	switch on {
-	case OnComplete:
-		return true
-	case OnSuccess:
+// captureFires is whether a call that ended in success (ok) or error fires an observer
+// with this capture, as the engine decides it: input and output fire on success, error
+// on error; caller and metadata fire on nothing. An empty capture fires on success.
+func captureFires(capture []Capture, ok bool) bool {
+	if len(capture) == 0 {
 		return ok
-	case OnError:
-		return !ok
 	}
-	return false
+	if ok {
+		return slices.Contains(capture, CaptureInput) || slices.Contains(capture, CaptureOutput)
+	}
+	return slices.Contains(capture, CaptureError)
 }
 
 func (f *functionObservers) currentNamespace() string {
@@ -800,7 +801,7 @@ func (f *functionObservers) currentNamespace() string {
 }
 
 // Observer is an observer as the worker that hosts the observed function sees it (in
-// its hooks and in [Client.Observers]): its args, filters, target, capture and on.
+// its hooks and in [Client.Observers]): its args, filters, target and capture.
 // Never its metadata, policy or the observing worker. Its fields are set when it is
 // added; the SDK keeps its own copy of what it reads, so changing them changes nothing
 // but the host's view. The pointer is stable while the engine announces the same view
@@ -808,7 +809,7 @@ func (f *functionObservers) currentNamespace() string {
 // table).
 //
 // The engine may announce an observer again with the same args and other filters,
-// target, capture or on (a replay): it stays the same observer and no hook runs. From
+// target or capture (a replay): it stays the same observer and no hook runs. From
 // then on it is served, and listed by [Client.Observers], as a new *Observer with that
 // view; Reject and Accepted act on the observer through either pointer, and pointers
 // handed out earlier keep the view they were made with.
@@ -823,17 +824,15 @@ type Observer struct {
 	// apply them.
 	Filters map[string]any
 	// Target is the target function id.
-	Target  string
+	Target string
+	// Capture is what the target's payload carries, and the outcomes that fire it.
 	Capture []Capture
-	// On selects the calls the observer receives by status.
-	On On
 
 	owner *functionObservers
 	// The SDK's own copies of what it reads: the exported fields are the host's.
 	id      string
 	target  string
 	capture []Capture
-	on      On
 	argsRaw json.RawMessage
 	filter  *filter.Filter
 	// argsKey and viewKey identify the engine's view of the observer (viewKeysOf): its
@@ -888,16 +887,15 @@ func newObserver(f *functionObservers, info ObserverInfo, revision uint64) (*Obs
 
 // observerView is the view info of an observer of f, without its state.
 func observerView(f *functionObservers, info ObserverInfo) (*Observer, error) {
-	capture, on := viewDefaults(info)
+	capture := viewDefaults(info)
 	obs := &Observer{
 		ID:         info.ID,
 		FunctionID: f.functionID,
 		Target:     info.Target,
 		Capture:    capture,
-		On:         on,
 		owner:      f,
 	}
-	obs.id, obs.target, obs.capture, obs.on = info.ID, info.Target, slices.Clone(capture), on
+	obs.id, obs.target, obs.capture = info.ID, info.Target, slices.Clone(capture)
 	obs.argsRaw = objectOrEmpty(info.Args)
 	_ = json.Unmarshal(obs.argsRaw, &obs.Args)
 	filtersRaw := objectOrEmpty(info.Filters)
@@ -912,24 +910,21 @@ func observerView(f *functionObservers, info ObserverInfo) (*Observer, error) {
 	return obs, nil
 }
 
-// viewDefaults is the capture (a copy) and on of info, an absent one the default.
-func viewDefaults(info ObserverInfo) ([]Capture, On) {
-	capture, on := slices.Clone(info.Capture), info.On
+// viewDefaults is the capture of info (a copy), an absent one the default.
+func viewDefaults(info ObserverInfo) []Capture {
+	capture := slices.Clone(info.Capture)
 	if capture == nil {
 		capture = slices.Clone(defaultCapture)
 	}
-	if on == "" {
-		on = OnSuccess
-	}
-	return capture, on
+	return capture
 }
 
 // viewKeysOf identifies the view info announces: its args, and its filters, target,
-// capture and on.
+// capture.
 func viewKeysOf(info ObserverInfo) (argsKey, viewKey string) {
-	capture, on := viewDefaults(info)
+	capture := viewDefaults(info)
 	return canonicalJSON(objectOrEmpty(info.Args)),
-		canonicalJSON(objectOrEmpty(info.Filters)) + "\x00" + info.Target + "\x00" + fmt.Sprint(capture) + "\x00" + string(on)
+		canonicalJSON(objectOrEmpty(info.Filters)) + "\x00" + info.Target + "\x00" + fmt.Sprint(capture)
 }
 
 // settle resolves Accepted, once.
@@ -943,7 +938,7 @@ func (o *Observer) settle(err error) {
 // DecodeArgs unmarshals the observer's args into v (a struct, typically).
 func (o *Observer) DecodeArgs(v any) error { return json.Unmarshal(o.argsRaw, v) }
 
-// Matches reports whether call reaches the observer: its on accepts the call's status
+// Matches reports whether call reaches the observer: its capture fires on the call's status
 // and its filters match the call. A deliver hook that calls targets itself checks it
 // before calling through the observer; iii's delivery applies it on its own. On a call
 // the SDK hands a hook, the observers share the call's decoded document and its values
@@ -958,7 +953,7 @@ func (o *Observer) Matches(call *Call) bool {
 			return v.matches(o)
 		}
 	}
-	return onAccepts(o.on, call.succeeded()) && o.filter.Matches(call.doc())
+	return captureFires(o.capture, call.succeeded()) && o.filter.Matches(call.doc())
 }
 
 // Accepted waits until the SDK has acked the observer as accepted, and returns nil. A

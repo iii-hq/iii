@@ -7,14 +7,14 @@
 //! produce the same error shape.
 //!
 //! Then the call is delivered. Filters are iii's, and run where the call's
-//! parts are: the engine evaluates the `on` and filters of every call it
+//! parts are: the engine evaluates the capture and filters of every call it
 //! routes (it holds the input, the answer, the caller and the metadata), and
 //! this host those of the calls it makes to its own functions, which the
 //! engine never sees. The host runs what is worker code for both: the
 //! function's match hook, which reads the observers' args, and its deliver
 //! hook.
 //!
-//! - A local call: iii's delivery evaluates the `on` and compiled filters of
+//! - A local call: iii's delivery evaluates the capture and compiled filters of
 //!   the function's observers and reports the matches in the batched
 //!   `invocationsobserved` frames. Without a match hook, the compiled set's
 //!   [`Plan`] for the call's outcome matches them: through an index of their
@@ -27,7 +27,7 @@
 //! - A routed call: the answer says how it is delivered. Without hooks it
 //!   carries nothing more, and the engine evaluates every active observer;
 //!   with a match hook it lists the observers the hook matched
-//!   (`invocationresult.matched`, before `on` and filters; `[]` also when
+//!   (`invocationresult.matched`, before capture and filters; `[]` also when
 //!   the host holds no observer for it to match); with a deliver hook it is
 //!   the hook's answer, with `delivered: true`.
 //!
@@ -287,7 +287,7 @@ pub(crate) enum Route {
     /// matches.
     Local,
     /// A call routed by an `observe.v2` engine, which evaluates its
-    /// observers' `on` and filters: the host runs the function's match and
+    /// observers' capture and filters: the host runs the function's match and
     /// deliver hooks, and its answer says how the call is delivered.
     Routed,
     /// A call routed by an engine without `observe.v2`, which delivers it.
@@ -298,12 +298,12 @@ pub(crate) enum Route {
 /// (decision 55).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) enum Delivery {
-    /// To every active observer whose `on` and filters match: neither
+    /// To every active observer whose capture and filters match: neither
     /// `matched` nor `delivered`.
     #[default]
     Every,
     /// To those of these observers, the ones the match hook matched, whose
-    /// `on` and filters match: `matched`, `[]` included.
+    /// capture and filters match: `matched`, `[]` included.
     Matched(Vec<String>),
     /// By the function's deliver hook: `delivered: true`.
     Delivered,
@@ -468,7 +468,7 @@ fn select(
     )
 }
 
-/// An observer of the function, active, whose `on` accepts the call.
+/// An observer of the function, active, whose `capture` fires on the call.
 fn candidate(obs: &Observer, function_id: &str, success: bool) -> bool {
     obs.function_id() == function_id && obs.is_active() && obs.accepts(success)
 }
@@ -748,7 +748,7 @@ impl IIIClient {
 
         if hook.is_none() && matcher.is_none() {
             // A local call, delivered by iii to every active observer whose
-            // `on` and filters match: the call's parts are read in place, and
+            // capture and filters match: the call's parts are read in place, and
             // the set's plan for the call's outcome scans its observers or
             // looks the call up in the outcome's index.
             let error = result.as_ref().err().map(observed_error);
@@ -798,7 +798,7 @@ impl IIIClient {
 
         let Some(hook) = hook else {
             // iii delivers the call to the observers the match hook matched
-            // whose `on` and filters match it: evaluated here for a local
+            // whose capture and filters match it: evaluated here for a local
             // call, by the engine for a routed one.
             let delivery = if local {
                 let view = CallView::of(&call);
@@ -966,7 +966,7 @@ pub(crate) async fn run_reporter(iii: IIIClient) {
 #[cfg(test)]
 mod tests {
     //! Matching of local calls against the evaluator: for seeded random
-    //! observers (filters, `on`, capture, active or not) and calls, each
+    //! observers (filters, capture, active or not) and calls, each
     //! outcome's index ([`lookup`]) and the set's plan ([`select_compiled`])
     //! select exactly what [`select`] over every observer of the set selects,
     //! in the same order and with the same capture, through adds,
@@ -991,20 +991,14 @@ mod tests {
 
     const FUNCTION: &str = "test::f";
 
-    /// `on` values, `success` the most common; `start` is one this SDK does
-    /// not know, which accepts no call.
-    const ON: [&str; 6] = [
-        "success", "success", "success", "error", "complete", "start",
-    ];
     const PARTS: [&str; 5] = ["input", "output", "error", "caller", "metadata"];
 
-    /// An observer of [`FUNCTION`] with `filters`, a random `on` and
-    /// capture, active 9 times in 10.
+    /// An observer of [`FUNCTION`] with `filters` and a random
+    /// capture (which decides its outcomes), active 9 times in 10.
     fn observer(rng: &mut Rng, id: &str, filters: &Value, seq: u64) -> Observer {
         let capture: Vec<&str> = PARTS.into_iter().filter(|_| rng.chance(40)).collect();
         Observer::test_view(
-            json!({ "id": id, "target": "t", "filters": filters, "on": *rng.pick(&ON),
-                    "capture": capture }),
+            json!({ "id": id, "target": "t", "filters": filters, "capture": capture }),
             seq,
             !rng.chance(10),
         )
@@ -1315,7 +1309,7 @@ mod tests {
         (reads, plan)
     }
 
-    /// Adds, replacements (another filter, another `on`, another capture)
+    /// Adds, replacements (another filter, another capture)
     /// and removals keep the index exact, and the roots and plan of each
     /// outcome, and every version a call may have loaded keeps selecting
     /// what it held.
@@ -1385,7 +1379,7 @@ mod tests {
         let mut set = CompiledSet::default();
         for n in 0..1_000u64 {
             set = set.with(&Observer::test_view(
-                json!({ "id": format!("tenant-{n:04}"), "target": "t", "on": "success",
+                json!({ "id": format!("tenant-{n:04}"), "target": "t",
                         "filters": { "$and": [{ "input.tenant": { "$eq": format!("t{n}") } }] } }),
                 n,
                 true,
@@ -1410,10 +1404,17 @@ mod tests {
         assert!(set.on_error.is_empty(), "no observer of failed calls");
     }
 
-    /// An active observer of [`FUNCTION`] with `filters` and `on`.
+    /// An active observer of [`FUNCTION`] with `filters`, firing on `on`
+    /// `success` (the default capture), `error` (`[error]`) or `complete`
+    /// (`[input, error]`).
     fn with_filters(id: &str, on: &str, filters: Value) -> Observer {
+        let capture = match on {
+            "error" => json!(["error"]),
+            "complete" => json!(["input", "error"]),
+            _ => json!(["input", "output", "caller", "metadata"]),
+        };
         Observer::test_view(
-            json!({ "id": id, "target": "t", "on": on, "filters": filters }),
+            json!({ "id": id, "target": "t", "capture": capture, "filters": filters }),
             0,
             true,
         )
@@ -1554,7 +1555,7 @@ mod tests {
     /// A local call builds its `error` and `caller` only when a filter of an
     /// observer of its outcome reads them: a call that succeeded does not
     /// serialize its caller for an observer of failed calls, as observers
-    /// come, change their `on` and go.
+    /// come, change their capture and go.
     #[test]
     fn a_call_builds_what_the_observers_of_its_outcome_read() {
         let by_caller = |on: &str| {

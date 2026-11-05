@@ -243,15 +243,13 @@ def observer_info(
     args: Frame | None = None,
     filters: Frame | None = None,
     capture: list[str] | None = None,
-    on: str = "success",
 ) -> Frame:
     return {
         "id": observer_id,
         "args": args or {},
         "filters": filters or {},
         "target": target,
-        "capture": capture if capture is not None else ["input", "output", "caller"],
-        "on": on,
+        "capture": capture if capture is not None else ["input", "output", "caller", "metadata"],
     }
 
 

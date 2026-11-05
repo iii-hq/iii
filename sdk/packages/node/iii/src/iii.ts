@@ -888,7 +888,8 @@ class Sdk implements IIIClient {
    * and sends nothing.
    *
    * @param source - What is observed: a function id, or `function_id`,
-   *   `args`, `filters`, and `on` / `capture` / `deliver`.
+   *   `args`, `filters`, and `capture` (what the payload carries, and with it
+   *   which outcomes fire the target).
    * @param target - The function to invoke (registered first; until then the observer is `pending`).
    * @param options - Policy and metadata: `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
@@ -896,9 +897,10 @@ class Sdk implements IIIClient {
    * ```typescript
    * iii.observe('orders::create', 'search::reindex-order')
    *
-   * iii.registerFunction('alerts::payment-failed', async ({ input, error }: Observed) => notify(input, error))
+   * iii.registerFunction('alerts::payment-failed', async ({ error, caller }: Observed) => notify(error, caller))
+   * // `error` without `input` or `output`: fires on failures only.
    * const failures = iii.observe(
-   *   { function_id: 'payments::charge', on: 'error', filters: { 'input.amount': { $gte: 500 } } },
+   *   { function_id: 'payments::charge', capture: ['error', 'caller'] },
    *   'alerts::payment-failed',
    * )
    * await failures.ready()
@@ -2123,7 +2125,7 @@ class Sdk implements IIIClient {
       if (observeFields.caller) ctx.caller = observeFields.caller
       if (observeFields.activation) ctx.activation = observeFields.activation
 
-      // The engine evaluates the `on` and filters of the calls it routes
+      // The engine evaluates the capture and filters of the calls it routes
       // (decision 55). An observe.v2 host runs the function's match and
       // deliver hooks for them, which see the input as it arrived (channel
       // refs unresolved), and its answer says how the call is delivered:

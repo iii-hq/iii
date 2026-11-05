@@ -1,6 +1,6 @@
 import type { UpdateAppend, UpdateOp } from '@iii-dev/helpers/stream'
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { ObserverHandle } from '../src/observe-types'
+import type { Observed, ObserverHandle } from '../src/observe-types'
 import { type StateEventData, StateEventType, type StateSetResult } from '../src/state'
 import type { FunctionRef } from '../src/types'
 import { execute, iii, logger } from './utils'
@@ -236,20 +236,24 @@ describe('State Operations', () => {
       let stateUpdatedFunction: FunctionRef | undefined
 
       try {
-        stateUpdatedFunction = iii.registerFunction('state.updated', async (event: StateEventData<TestData>) => {
-          logger.info('State updated', { event })
+        stateUpdatedFunction = iii.registerFunction(
+          'state.updated',
+          async ({ input }: Observed<StateEventData<TestData>>) => {
+            const event = input as StateEventData<TestData>
+            logger.info('State updated', { event })
 
-          if (event.type === 'state' && event.event_type === StateEventType.Updated) {
-            reactiveResult.data = event.new_value
-            reactiveResult.called = true
-          }
-        })
+            if (event.type === 'state' && event.event_type === StateEventType.Updated) {
+              reactiveResult.data = event.new_value
+              reactiveResult.called = true
+            }
+          },
+        )
 
         observer = iii.observe(
           {
             function_id: 'state::on-changed',
             filters: { 'input.scope': { $eq: scope }, 'input.key': { $eq: key } },
-            deliver: 'input',
+            capture: ['input'],
           },
           stateUpdatedFunction.id,
         )

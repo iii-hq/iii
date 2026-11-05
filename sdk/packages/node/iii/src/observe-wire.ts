@@ -26,8 +26,19 @@ import type {
 } from './iii-types'
 import type { ObserverOptions, ObserveSource, Target } from './observe-types'
 
-/** CONTRACT D1: what an absent `capture` means. */
-export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller']
+/** CONTRACT D1: what an absent `capture` means: every field but `error`. */
+export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller', 'metadata']
+
+/**
+ * Whether a call that ended in success (`ok`) or error fires an observer
+ * with this `capture`, as the engine decides it: `input` and `output` fire on
+ * success, `error` on error; `caller` and `metadata` fire on nothing. `[]`
+ * fires on success, with the top-level fields only.
+ */
+export function captureFires(capture: readonly string[], ok: boolean): boolean {
+  if (capture.length === 0) return ok
+  return ok ? capture.includes('input') || capture.includes('output') : capture.includes('error')
+}
 
 type Raw = Record<string, unknown>
 
@@ -85,7 +96,6 @@ export function decodeObserverInfo(v: unknown): ObserverInfoWire {
     capture: Array.isArray(raw.capture)
       ? raw.capture.filter((c): c is string => typeof c === 'string')
       : [...DEFAULT_CAPTURE],
-    on: str(raw.on) ?? 'success',
   }
   return info
 }
@@ -236,8 +246,6 @@ export function buildObserveMessage(
       args: source.args,
       filters: source.filters,
       capture: source.capture,
-      on: source.on,
-      deliver: source.deliver,
     },
     target: { function_id: targetRef.function_id, namespace: targetNamespace },
     metadata: options?.metadata,

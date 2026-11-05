@@ -57,8 +57,9 @@ class Caller(CallerParent, total=False):
 
 
 class Observed(TypedDict, total=False):
-    """What an observer's target receives with ``deliver: "envelope"`` (the
-    default). Fields not in the observer's ``capture`` are absent."""
+    """What an observer's target receives when iii delivers: the top-level
+    fields, plus whichever of the observer's ``capture`` apply to the outcome.
+    Fields not captured, or that do not apply, are absent."""
 
     observer_id: str
     activation_id: str
@@ -89,18 +90,21 @@ class ObserveSource(_ObserveSourceRequired, total=False):
             hooks; validated against the function's ``args_format``. A function
             without ``args_format`` takes none.
         filters: Which calls reach the target; ``{}`` (or absent) = every call.
-        on: ``"success"`` (default), ``"error"`` or ``"complete"``.
-        capture: Default ``["input", "output", "caller"]``.
-        deliver: What the target receives when iii delivers: ``"envelope"``
-            (default), ``"input"`` or ``"output"``.
+        capture: What the target's payload carries, and with it which
+            outcomes fire the target. Default ``["input", "output", "caller",
+            "metadata"]``. ``input`` and ``output`` fire on success, ``error``
+            fires on error; ``caller`` and ``metadata`` only add to the
+            payload, so a ``capture`` must name at least one of ``input``,
+            ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on
+            success with the top-level fields only. The default fires on
+            success, ``["error", "caller"]`` on errors, ``["input", "error"]``
+            on both.
     """
 
     namespace: str
     args: dict[str, Any]
     filters: Filter
-    on: Literal["success", "error", "complete"]
     capture: list[Capture]
-    deliver: Literal["envelope", "input", "output"]
 
 
 class ObserverOptions(TypedDict, total=False):

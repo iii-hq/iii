@@ -63,8 +63,8 @@ def test_iii_delivers_the_observers_whose_on_and_filters_match(engine: FakeEngin
         engine,
         "orders::create",
         observer_info("big", "t", filters={"$and": [{"output.total": {"$gte": 100}}]}),
-        observer_info("errors", "t", on="error", capture=["input", "error"]),
-        observer_info("all", "t", on="complete", capture=["input"]),
+        observer_info("errors", "t", capture=["error"]),
+        observer_info("all", "t", capture=["input", "error"]),
     )
     client.call({"function_id": "orders::create", "payload": {"qty": 20}})
     client.call({"function_id": "orders::create", "payload": {"qty": 1}})
@@ -118,7 +118,7 @@ def test_a_routed_call_without_hooks_answers_its_outcome_alone_and_evaluates_no_
         engine,
         "payments::charge",
         observer_info("big", "t", filters={"$and": [{"input.amount": {"$gte": 100}}]}),
-        observer_info("errors", "t", on="error"),
+        observer_info("errors", "t", capture=["error"]),
     )
     counted = _count_filters(client, "payments::charge")
     engine.deliver(invoke("payments::charge", {"amount": 500}, "r-ok"))
@@ -465,7 +465,7 @@ def test_a_deliver_hook_gets_the_call_and_the_observers_and_its_value_is_what_th
 
     client.on_observation_deliver("wrap::fn", answer)
     client.register_function("wrap::fn", lambda data: data["n"] * 2)
-    _confirm(client, engine, "wrap::fn", observer_info("a", "t"), observer_info("b", "t", on="error"))
+    _confirm(client, engine, "wrap::fn", observer_info("a", "t"), observer_info("b", "t", capture=["error"]))
     assert client.call({"function_id": "wrap::fn", "payload": {"n": 2}}) == {"wrapped": 4}
 
     async def from_a_loop() -> Any:
@@ -542,7 +542,7 @@ def test_a_handler_error_reaches_the_hook_as_an_error_call(engine: FakeEngine, c
         return {"recovered": [o.id for o in observers if o.matches(call)]}
 
     client.register_function("fail::fn", fail)
-    _confirm(client, engine, "fail::fn", observer_info("e", "t", on="error"), observer_info("ok", "t"))
+    _confirm(client, engine, "fail::fn", observer_info("e", "t", capture=["error"]), observer_info("ok", "t"))
     assert client.call({"function_id": "fail::fn", "payload": {}}) == {"recovered": ["e"]}
     engine.deliver(invoke("fail::fn", {}, "r-fail"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-fail"), what="the answer")
@@ -612,7 +612,7 @@ def test_matches_checks_on_and_filters_of_a_call_or_a_partial_one(engine: FakeEn
         engine,
         "m::fn",
         observer_info("big", "t", filters={"$and": [{"input.n": {"$gt": 1}}]}),
-        observer_info("err", "t", on="error"),
+        observer_info("err", "t", capture=["error"]),
     )
     big, err = client.observers("m::fn")
     ok_call = Call(function_id="m::fn", invocation_id="i", status="success", input={"n": 2}, output=2)

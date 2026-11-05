@@ -109,7 +109,7 @@ async fn a_deliver_hook_calls_from_the_functions_invocation_and_span() {
         "type": "functionregistered", "id": "dc::on-request", "namespace": "default",
         "revision": 1, "local_dispatch": true,
         "observers": [{ "id": "route", "args": {}, "filters": {}, "target": "t::route",
-                        "capture": ["input"], "on": "success" }]
+                        "capture": ["input"] }]
     }));
     let deadline = tokio::time::Instant::now() + WAIT;
     while !(function.is_observed() && function.local_dispatch_active()) {

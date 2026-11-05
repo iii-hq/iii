@@ -20,7 +20,7 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
-import { type IIIClient, ObserveRejection, registerWorker } from 'iii-sdk'
+import { type IIIClient, type Observed, ObserveRejection, registerWorker } from 'iii-sdk'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 // Distinct worker names per run: the engine keeps one live worker per (namespace, name).
@@ -162,7 +162,8 @@ export function startBillingWorker(tenantId: string, engineUrl = ENGINE_URL) {
   })
   const received: Array<{ event: OrderChangedEvent; metadata: unknown }> = []
 
-  iii.registerFunction('billing::on-order-changed', async (event: OrderChangedEvent, metadata) => {
+  iii.registerFunction('billing::on-order-changed', async ({ input }: Observed<OrderChangedEvent>, metadata) => {
+    const event = input as OrderChangedEvent
     received.push({ event, metadata })
     console.log(
       `[billing] ${event.event} ${event.order_id} (tenant ${event.tenant_id}) metadata=${JSON.stringify(metadata)}`,
@@ -174,7 +175,7 @@ export function startBillingWorker(tenantId: string, engineUrl = ENGINE_URL) {
     {
       function_id: ORDER_CHANGED,
       args: { tenant_id: tenantId, events: ['created', 'cancelled'] } satisfies OrderChangedArgs,
-      deliver: 'input', // the target receives the event itself
+      capture: ['input'], // the payload carries the event as `input`
     },
     'billing::on-order-changed',
     { metadata: { subscriber: 'billing' } }, // the metadata sidecar of every activation

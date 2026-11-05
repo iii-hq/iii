@@ -55,7 +55,6 @@ describe('equivalence: local and routed calls look the same to observers', () =>
     const handle = watcher.observe(
       {
         function_id: `eq::price-${RUN}`,
-        on: 'complete',
         capture: [...ALL],
         filters: { 'input.sku': { $prefix: 'A-' } },
       },
@@ -464,7 +463,7 @@ describe('calls for one observer (decision 52)', () => {
       await a.ready()
       await exactly(gotA, 1, "A's initial state")
       const b = watcher.observe(
-        { function_id: fn, args: { session: 's1' }, deliver: 'output' },
+        { function_id: fn, args: { session: 's1' }, capture: ['output'] },
         `d52::output-${form}-${RUN}`,
       )
       await b.ready()
@@ -493,7 +492,7 @@ describe('calls for one observer (decision 52)', () => {
         { session: 's1', n: 2 },
       ])
       // B receives the output, as for every call
-      expect(gotB.map((g) => g.data)).toEqual([
+      expect(gotB.map((g) => g.data.output)).toEqual([
         { session: 's1', n: 0 },
         { session: 's1', n: 1 },
       ])
@@ -501,20 +500,20 @@ describe('calls for one observer (decision 52)', () => {
   }
 })
 
-describe("deliver: 'output' and calls through an observer over max_in_flight", () => {
-  it("deliver: 'output' of a private event source's local call: the target receives the event, reported once", async () => {
+describe("capture: ['input', 'output'] and calls through an observer over max_in_flight", () => {
+  it("the output of a private event source's local call: the target receives the event, reported once", async () => {
     const owner = worker('output-owner')
     const watcher = worker('output-watcher')
     const fn = `source::on-event-${RUN}`
     owner.registerFunction(fn, (event: { id: number; kind: string }) => event, { private: true })
     const got = collector(watcher, `source::on-output-${RUN}`)
-    const handle = watcher.observe({ function_id: fn, deliver: 'output' }, `source::on-output-${RUN}`)
+    const handle = watcher.observe({ function_id: fn, capture: ['input', 'output'] }, `source::on-output-${RUN}`)
     await handle.ready()
     await localDispatchReady(owner, fn)
     const frames = frameCounter(owner)
     await owner.call({ function_id: fn, payload: { id: 1, kind: 'created' } })
     await exactly(got, 1, 'the activation')
-    expect(got[0].data).toEqual({ id: 1, kind: 'created' })
+    expect(got[0].data.output).toEqual({ id: 1, kind: 'created' })
     // the report item carried the event once: the engine filled output from input
     const items = frames.frames
       .filter((f) => f.type === 'invocationsobserved')

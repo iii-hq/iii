@@ -121,8 +121,6 @@ def build_observe_message(
             args=src.get("args"),
             filters=src.get("filters"),
             capture=src.get("capture"),
-            on=src.get("on"),
-            deliver=src.get("deliver"),
         ),
         target=FunctionTargetWire(
             function_id=target_ref["function_id"],

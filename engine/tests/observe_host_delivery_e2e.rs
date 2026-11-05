@@ -295,7 +295,7 @@ async fn each_routed_call_reaches_the_one_of_many_filtered_observers_it_matches(
     for i in 0..N {
         sink.observe_active(observer(
             &format!("k-{i}"),
-            json!({ "function_id": "echo::back", "filters": { "input.k": { "$eq": i } }, "deliver": "input" }),
+            json!({ "function_id": "echo::back", "filters": { "input.k": { "$eq": i } }, "capture": ["input"] }),
             "sink::k",
         ))
         .await;
@@ -308,7 +308,7 @@ async fn each_routed_call_reaches_the_one_of_many_filtered_observers_it_matches(
         caller.result(call).await;
         let activation = sink.invoked("sink::k").await;
         assert_eq!(activation["activation"]["observer_id"], format!("k-{k}"));
-        assert_eq!(activation["data"], json!({ "k": k }));
+        assert_eq!(activation["data"]["input"], json!({ "k": k }));
         sink.reply(&activation, Value::Null).await;
     }
     // A value no observer filters on, and a non-number spelling of one.
@@ -336,7 +336,7 @@ async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
     let mut checkout = connect(&t, "checkout", true).await;
     sink.observe_active(observer(
         "logs",
-        json!({ "function_id": "audit::log", "deliver": "input" }),
+        json!({ "function_id": "audit::log", "capture": ["input"] }),
         "sink::logs",
     ))
     .await;
@@ -353,12 +353,12 @@ async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
     assert!(invoke["invocation_id"].is_string(), "{invoke}");
     audit.reply(&invoke, Value::Null).await;
     let activation = sink.invoked("sink::logs").await;
-    assert_eq!(activation["data"], json!({ "entry": 1 }));
+    assert_eq!(activation["data"]["input"], json!({ "entry": 1 }));
     sink.reply(&activation, Value::Null).await;
 }
 
 /// An answer that carries `error` is evaluated too, `matched` or not: the
-/// engine's `on: error` observers whose filters match get an envelope with
+/// engine's error-capturing observers whose filters match get a payload with
 /// `status: error` and the host's error (decision 39), and the caller gets
 /// the error alone.
 #[tokio::test]
@@ -371,7 +371,6 @@ async fn an_error_answer_activates_the_on_error_observers_whose_filters_match() 
         "failures",
         json!({
             "function_id": "payments::charge",
-            "on": "error",
             "capture": ["input", "error"],
             "filters": { "error.code": { "$eq": "CARD_DECLINED" } }
         }),
@@ -417,7 +416,11 @@ async fn an_error_answer_activates_the_on_error_observers_whose_filters_match() 
         evaluated(&t.engine, before + 1).await;
     }
     assert_eq!(fires(&t, "failures"), 2);
-    assert_eq!(fires(&t, "successes"), 0, "`on: success`");
+    assert_eq!(
+        fires(&t, "successes"),
+        0,
+        "the default capture fires on success only"
+    );
 }
 
 /// `matched` is read from the connection that hosts the function only: an
@@ -581,8 +584,8 @@ async fn the_engine_evaluates_the_calls_of_a_host_without_observe_v2() {
 /// function's hooks narrowed or delivered the call, so a routed call that
 /// ends without its answer activates nothing (decisions 2, 55): here its
 /// caller leaves while the host runs it. The engine's `invocation_stopped` is no
-/// error of the function: its `on: error` observer counts a `CANCELLED` drop
-/// and does not fire, and the host's late answer finds nobody waiting.
+/// error of the function: its error-capturing observer counts a `CANCELLED`
+/// drop and does not fire, and the host's late answer finds nobody waiting.
 #[tokio::test]
 async fn a_call_its_caller_left_activates_nothing_for_a_host_that_delivers() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -591,7 +594,7 @@ async fn a_call_its_caller_left_activates_nothing_for_a_host_that_delivers() {
     let mut checkout = connect(&t, "checkout", true).await;
     sink.observe_active(observer(
         "failures",
-        json!({ "function_id": "orders::create", "on": "error" }),
+        json!({ "function_id": "orders::create", "capture": ["error"] }),
         "sink::failures",
     ))
     .await;
@@ -620,7 +623,7 @@ async fn a_call_never_sent_to_a_host_that_delivers_activates_nothing() {
     let mut checkout = connect(&t, "checkout", true).await;
     sink.observe_active(observer(
         "failures",
-        json!({ "function_id": "orders::create", "on": "error" }),
+        json!({ "function_id": "orders::create", "capture": ["error"] }),
         "sink::failures",
     ))
     .await;
@@ -664,7 +667,7 @@ async fn a_targets_answer_delivers_to_its_own_observers() {
     .await;
     sink.observe_active(observer(
         "second",
-        json!({ "function_id": "audit::record", "deliver": "output" }),
+        json!({ "function_id": "audit::record", "capture": ["output"] }),
         "sink::second",
     ))
     .await;
@@ -681,14 +684,14 @@ async fn a_targets_answer_delivers_to_its_own_observers() {
         .reply_matched(&activation, json!({ "recorded": 1 }), &["second"])
         .await;
     let second = sink.invoked("sink::second").await;
-    assert_eq!(second["data"], json!({ "recorded": 1 }));
+    assert_eq!(second["data"]["output"], json!({ "recorded": 1 }));
     assert_eq!(second["observe_depth"], 2, "a chain of two observers");
     sink.reply(&second, Value::Null).await;
 
     // A call through `first`, made by the host of orders::create.
     sink.observe_active(observer(
         "third",
-        json!({ "function_id": "audit::record", "deliver": "input" }),
+        json!({ "function_id": "audit::record", "capture": ["input"] }),
         "sink::third",
     ))
     .await;
@@ -708,7 +711,7 @@ async fn a_targets_answer_delivers_to_its_own_observers() {
     assert_eq!(answer["result"], json!({ "recorded": 2 }));
     assert!(answer.get("matched").is_none(), "stripped: {answer}");
     let third = sink.invoked("sink::third").await;
-    assert_eq!(third["data"], json!({ "direct": true }));
+    assert_eq!(third["data"]["input"], json!({ "direct": true }));
     sink.reply(&third, Value::Null).await;
     assert_eq!(fires(&t, "second"), 1, "not named on the second answer");
 }
@@ -855,10 +858,10 @@ async fn no_payload_an_observers_target_receives_carries_a_callers_stamp() {
     let mut orders = host(&t, "orders", &["orders::create"]).await;
     let mut sink = host(&t, "sink", &["sink::orders"]).await;
     let mut checkout = connect(&t, "checkout", true).await;
-    for (id, deliver) in [("inputs", "input"), ("outputs", "output")] {
+    for (id, part) in [("inputs", "input"), ("outputs", "output")] {
         sink.observe_active(observer(
             id,
-            json!({ "function_id": "orders::create", "deliver": deliver }),
+            json!({ "function_id": "orders::create", "capture": [part] }),
             "sink::orders",
         ))
         .await;
@@ -876,8 +879,10 @@ async fn no_payload_an_observers_target_receives_carries_a_callers_stamp() {
     let mut delivered_by = Vec::new();
     for _ in 0..2 {
         let delivered = sink.invoked("sink::orders").await;
-        assert_eq!(delivered["data"], json!({ "n": 1 }), "{delivered}");
-        delivered_by.push(delivered["activation"]["observer_id"].clone());
+        let id = delivered["activation"]["observer_id"].clone();
+        let part = if id == "inputs" { "input" } else { "output" };
+        assert_eq!(delivered["data"][part], json!({ "n": 1 }), "{delivered}");
+        delivered_by.push(id);
         sink.reply(&delivered, Value::Null).await;
     }
     delivered_by.sort_by_key(|id| id.to_string());

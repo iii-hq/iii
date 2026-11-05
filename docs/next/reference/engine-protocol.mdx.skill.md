@@ -369,8 +369,8 @@ A routed call, as the engine forwards it. To an `observe.v2` host, every routed 
 ```
 
 **Activations.** When iii delivers a call to an observer, the engine invokes its target with an
-ordinary `InvokeFunction`. `data` is the `Observed` envelope (or the observed `input` / `output`,
-per the observer's `deliver`), `metadata` is the observer's metadata sidecar, and `caller` is the
+ordinary `InvokeFunction`. `data` is the `Observed` payload (the top-level fields, plus what the
+observer's `capture` names that applies to the outcome), `metadata` is the observer's metadata sidecar, and `caller` is the
 engine (`worker_name: "iii-engine"`, with the observed function and invocation). An activation
 carries an `invocation_id` and no `action`: the target's SDK answers it with an `InvocationResult`
 like any call. The engine discards that result for the observed side, and delivers the call to the
@@ -438,7 +438,7 @@ call. The call runs as an activation of the observer: the target runs under the 
 worker that created the observer, and the payload goes as given less a top-level
 `_caller_worker_id`, so the host's identity and grants authorize nothing the target does. It is that
 worker's call: a private target takes it only when that worker hosts the target. The host is the
-call's `caller`. The deliver hook applies the observer's `on` and filters with `obs.matches(call)`
+call's `caller`. The deliver hook applies the observer's capture and filters with `obs.matches(call)`
 before it calls.
 
 ```json
@@ -544,15 +544,15 @@ the id does exist:
 ### Routed answers
 
 An `observe.v2` host's answer to a routed call says how the call is delivered. The engine evaluates
-the observers' `on` and filters itself, with the input it kept when it forwarded the call, the
+the observers' capture and filters itself, with the input it kept when it forwarded the call, the
 answer's `result` or `error`, the caller it forwarded the call with, and the call's metadata. The
 host runs what is worker code, the function's match and deliver hooks, and its answer carries one of
 three things:
 
 | The answer carries | When                                                                                                                                                                                                  | The engine                                                                                                               |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                          | Evaluates `on` and filters of every active observer of the function.                                                     |
-| `matched`          | The function has an `onObservationMatch` hook: the observers it matched, each once, before `on` and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates `on` and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
+| nothing more       | The function has no `onObservationMatch` and no `onObservationDeliver` hook.                                                                                                                          | Evaluates capture and filters of every active observer of the function.                                                     |
+| `matched`          | The function has an `onObservationMatch` hook: the observers it matched, each once, before capture and filters. `[]` when it matched none, or when the host held no active observer as the call started. | Evaluates capture and filters of those of them that are active observers of the invoked function; other ids are `INACTIVE`. |
 | `delivered: true`  | The function's `onObservationDeliver` hook delivered the call: `result` is what the hook returned.                                                                                                    | Activates nothing.                                                                                                       |
 
 The answer for a function with a match hook:
@@ -589,7 +589,7 @@ The answer for a function with a deliver hook:
   delivered the call, and `matched: []` otherwise, whatever the function's hooks. A host whose
   engine lacks `observe.v2` sends the bare error. The caller gets `payload_too_large` either way.
 - `matched` may ride an answer that carries `error`: iii's delivery rethrows the handler's error,
-  and the envelope's `status` and `error` come from the answer.
+  and the payload's `status` and `error` come from the answer.
 - The host names the observers of a routed call on its answer only. An
   [`InvocationsObserved`](#invocationsobserved) item reports a local call.
 - The engine reads `matched` and `delivered` only from `observe.v2` connections, on every routed
@@ -602,7 +602,7 @@ The answer for a function with a deliver hook:
   observer of the function does. The caller gets the answer's result.
 - A routed call whose answer never comes (its caller left, the host went away) activates nothing:
   each of the function's observers counts a `CANCELLED` drop.
-- The envelope's `input` is the input the engine routed, and its `output` is `result`. Delivery
+- The payload's `input` is the input the engine routed, and its `output` is `result`. Delivery
   costs no frame beyond the answer. The engine matches the filters through an index of their `$eq`
   and `$in` conditions, and evaluates every filter where the lookups would spare little, so a call
   costs at most about the evaluation of every filter plus one lookup per indexed path, and about one
@@ -716,18 +716,21 @@ function runs, the target runs. The **observing worker** is the connection that 
   and `metadata` keep `null` apart from absent: `"output": null` is a function that returned `null`,
   while a missing `output` was not captured, does not exist, or equals `input`
   (`"output_is_input": true`).
-- **Enums are lowercase strings.** `capture[]`: `input | output | error | caller | metadata`. `on`:
-  `success | error | complete`. `deliver`: `envelope | input | output`. `state`:
+- **Enums are lowercase strings.** `capture[]`: `input | output | error | caller | metadata`. `state`:
   `pending | active | suspended | error | disposed`. `status`: `success | error`. A decoder keeps a
   value it does not know instead of failing the frame.
-- **Defaults.** Absent `on` is `success`, absent `capture` is `["input", "output", "caller"]`,
-  absent `deliver` is `envelope`, and absent `observe_depth` is `0`. A field at its default is left
+- **Defaults.** Absent `capture` is `["input", "output", "caller", "metadata"]`, and absent
+  `observe_depth` is `0`. A field at its default is left
   out when sending: `observe_depth: 0`, `private: false` and `observable: true` on
   `RegisterFunction`, `observed: []` on `InvocationResult`, and `output_is_input: false` on
-  `InvocationsObserved` items. `capture: []` is valid: the target then gets ids, status, and timings
-  only.
-- **Unknown values are refused, never defaulted.** An `Observe` with an unknown `on`, `deliver`, or
-  `capture[]` value gets `ObserveResult` with error `UNSUPPORTED` (the message names the field). A
+  `InvocationsObserved` items.
+- **`capture` decides the outcomes.** `input` and `output` fire the target on success, `error` on
+  error; `caller` and `metadata` only add to the payload. A non-empty `capture` that names none of
+  `input`, `output`, and `error` gets `ObserveResult` with error `INVALID_ARGS`. `capture: []` fires
+  on success, and the target then gets ids, status, and timings only. A host applies the same rule
+  to the calls it evaluates.
+- **Unknown values are refused, never defaulted.** An `Observe` with an unknown `capture[]` value
+  gets `ObserveResult` with error `UNSUPPORTED` (the message names the field). A
   `RegisterFunction` whose `args_format` is not a valid JSON Schema gets `RegistrationRejected`
   `INVALID_ARGS_FORMAT`.
 - **Ids are strings.** Observer ids are client-generated UUID v4 strings, stable across replays.
@@ -746,25 +749,25 @@ function runs, the target runs. The **observing worker** is the connection that 
   form: `{}` matches every call, anything else is `{"$and": [...]}` at every level. Compile them as
   given. See [Filters](./filters).
 - **What hosts see.** A host receives an observer's `id`, `args` (`{}` when none), normalized
-  `filters`, `target` function id (its namespace is not disclosed), `capture`, and `on`. It never
-  receives `deliver`, the observer's metadata, its policy, or the observing worker.
+  `filters`, `target` function id (its namespace is not disclosed), and `capture`. It never
+  receives the observer's metadata, its policy, or the observing worker.
 
 ### Who delivers
 
 The connection that hosts a function runs the function's hooks when it declared `observe.v2`. Its
 SDK runs the handler, then matches observers to the call: every active observer by default, or those
 the function's `onObservationMatch` hook selects by predicate or by keys. iii's delivery then
-selects the matching observers whose `on` and filters match the call. A function's
+selects the matching observers whose capture and filters match the call. A function's
 `onObservationDeliver` hook takes delivery over: it receives the matching observers and calls
 through them itself. Where the filters run depends on the call:
 
 - **Local call.** The host called its own function, and the engine never sees the call. The host
-  evaluates `on` and filters and sends the observers delivered in a batched
+  evaluates capture and filters and sends the observers delivered in a batched
   [`InvocationsObserved`](#invocationsobserved) report. Nothing is sent when nothing matches, or
   when the deliver hook delivered the call.
 - **Routed call.** The engine routed the call to the host with an `invocation_id`, and holds its
   input, caller, and metadata. The host's answer names the observers the match hook matched, or says
-  that the deliver hook delivered the call, and the engine evaluates `on` and filters
+  that the deliver hook delivered the call, and the engine evaluates capture and filters
   ([Routed answers](#routed-answers)).
 - **Through an observer.** The host runs one observer's target itself with an `InvokeFunction` that
   carries `activation.observer_id` (see [Calls through an observer](#calls-through-an-observer)).
@@ -787,9 +790,7 @@ idempotently (same `id`, same spec).
     "namespace": "default",
     "args": { "expression": "0 0 9 * * Mon-Fri" },
     "filters": { "input.scheduled_time": { "$gte": "2026-11-01T00:00:00Z" } },
-    "capture": ["input"],
-    "on": "success",
-    "deliver": "envelope"
+    "capture": ["input"]
   },
   "target": { "function_id": "local::cron-handler", "namespace": "default" },
   "metadata": { "__binding": "weekday-digest" },
@@ -806,9 +807,7 @@ idempotently (same `id`, same spec).
 | `source.namespace`   | no       | Resolves like `InvokeFunction.namespace`; absent means `default`. SDKs fill in the worker's namespace.                     |
 | `source.args`        | no       | For the function's worker, which reads them in its hooks; validated against the function's `args_format` (`INVALID_ARGS`). |
 | `source.filters`     | no       | Which calls reach the target. Absent, `null`, or `{}` matches every call.                                                  |
-| `source.capture`     | no       | What travels to the target when iii delivers. Default `["input", "output", "caller"]`.                                     |
-| `source.on`          | no       | Which outcomes reach the target: `success` (default), `error`, `complete`.                                                 |
-| `source.deliver`     | no       | What the target receives when iii delivers: `envelope` (default), `input`, `output`.                                       |
+| `source.capture`     | no       | What the payload carries, and with it which outcomes fire the target (see [Wire rules](#wire-rules)). Default `["input", "output", "caller", "metadata"]`. |
 | `target.function_id` | yes      | The function each activation invokes. Until it is registered the observer stays `pending`.                                 |
 | `target.namespace`   | no       | Absent means `default`. SDKs fill in the worker's namespace.                                                               |
 | `metadata`           | no       | The metadata sidecar of every activation. Never shown to the host.                                                         |
@@ -976,8 +975,7 @@ function's full current observer set and whether the SDK may run the function in
       "args": { "expression": "0 0 9 * * Mon-Fri" },
       "filters": { "$and": [{ "input.scheduled_time": { "$gte": "2026-11-01T00:00:00Z" } }] },
       "target": "local::cron-handler",
-      "capture": ["input"],
-      "on": "success"
+      "capture": ["input"]
     }
   ]
 }
@@ -1018,15 +1016,12 @@ this connection hosts: a new observer, or one whose observing worker reattached 
     "args": { "expression": "0 0 9 * * Mon-Fri" },
     "filters": { "$and": [{ "caller.worker_name": { "$ne": "replayer" } }] },
     "target": "billing::send-reminders",
-    "capture": ["input"],
-    "on": "success"
+    "capture": ["input"]
   }
 }
 ```
 
-The engine always sends `capture` and `on` resolved. `capture` also names the part the observer's
-`deliver` hands its target (`input` under `deliver: input`, `output` under `deliver: output`), so a
-host that reports a local call sends it.
+The engine always sends `capture` resolved: an observer that named none gets the default.
 
 ### `ObserverRemoved`
 
@@ -1145,7 +1140,7 @@ under the 16 MiB frame limit.
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `function_id`, `invocation_id`            | The observed function and its local call.                                                                                                                                                                                                                                                        |
 | `namespace`                               | Optional; absent means the reporting connection's namespace.                                                                                                                                                                                                                                     |
-| `matched`                                 | The observers iii's delivery selected: those the function's match hook matched (every active observer by default) whose `on` and filters matched the call.                                                                                                                                       |
+| `matched`                                 | The observers iii's delivery selected: those the function's match hook matched (every active observer by default) whose capture and filters matched the call.                                                                                                                                       |
 | `status`                                  | `success` or `error`.                                                                                                                                                                                                                                                                            |
 | `input`, `output`, `error`, `metadata`    | The union of what the matched observers capture.                                                                                                                                                                                                                                                 |
 | `output_is_input`                         | `true` when the handler returned its input, as an event source does: the item carries `input` once and the engine fills `output` from it. Sent only to an engine that advertised `observe.v2`.                                                                                                   |
@@ -1211,7 +1206,7 @@ reason is counted as `OTHER`.
 
 | Code                   | When                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `on`, `capture`, or `deliver` value.                                                                                                                                                                                                                                                                                                                    |
+| `UNSUPPORTED`          | Raised by the SDK when the engine lacks `observe.v1`; by the engine for an unknown `capture` value.                                                                                                                                                                                                                                                                                                                    |
 | `INVALID_ARGS`         | `args` fail the function's `args_format` (a missing required argument included), or a function without `args_format` receives non-empty args. Also an `Observe` the engine cannot decode.                                                                                                                                                                                                                                                  |
 | `INVALID_FILTER`       | The filter is not valid ([Filters](./filters)), including a literal where an operator object is expected.                                                                                                                                                                                                                                                                                                                                  |
 | `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` / `response_format`.                                                                                                                                                                                                                                                                                                                                                        |
@@ -1321,7 +1316,7 @@ lifecycle. Defined in
 | `engine::workers::list`      | List every connected worker with metrics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `engine::workers::info`      | Inspect one connected worker's full surface: the `functions` it hosts and the `observers` it created. Takes `name` plus an optional `namespace`.                                                                                                                                                                                                                                                                                                                                                                              |
 | `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`, and `features`).                                                                                                                                                                                                                                                                                                                                                                                   |
-| `engine::observers::list`    | List observers. Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `args`, normalized `filters`, `target`, `capture`, `on`, `deliver`, observing worker, `state`, `reason`, `fires`, drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), and `created_at_ms`. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
+| `engine::observers::list`    | List observers. Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `args`, normalized `filters`, `target`, `capture`, observing worker, `state`, `reason`, `fires`, drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), and `created_at_ms`. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
 | `engine::observers::get`     | Inspect one observer by `id`, in the same shape. An observer the caller may not see fails with `OBSERVER_NOT_FOUND`.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `engine::observers::dispose` | Dispose an observer by `id`; returns `{ disposed: true }`. Only the observing worker or an unrestricted caller (an in-process engine call, or a connection without an `rbac` section) may dispose it; anyone else gets `FORBIDDEN`.                                                                                                                                                                                                                                                                                           |
 
@@ -1347,7 +1342,7 @@ with `FORBIDDEN`.
 | `observability::on-span`                                    | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
 | `stream::on-changed`, `stream::on-join`, `stream::on-leave` | Hosted by `iii-stream` while it runs; filter on `input.stream_name` and `input.group_id`.                                                                                                                                                                                                                                   |
 
-A call of an engine-hosted source has `caller` `{ worker_name: "iii-engine" }`, so an envelope that
+A call of an engine-hosted source has `caller` `{ worker_name: "iii-engine" }`, so a payload that
 captures `caller` carries it and a filter on `caller.worker_name` sees `iii-engine`. The
 activation's own `caller` is the engine with the source's `function_id` and `invocation_id`.
 

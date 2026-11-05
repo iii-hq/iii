@@ -59,7 +59,6 @@ def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: A
     handle = watcher.observe(
         {
             "function_id": fid("py-eq::price"),
-            "on": "complete",
             "capture": ALL,
             "filters": {"input.sku": {"$prefix": "A-"}},
         },
@@ -115,7 +114,7 @@ def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_r
     envelopes = collector(watcher, fid("py-cap::on-envelope"))
     outputs = collector(watcher, fid("py-cap::on-output"))
     bare = watcher.observe({"function_id": fid("py-cap::price"), "capture": []}, fid("py-cap::on-envelope"))
-    output = watcher.observe({"function_id": fid("py-cap::price"), "deliver": "output"}, fid("py-cap::on-output"))
+    output = watcher.observe({"function_id": fid("py-cap::price"), "capture": ["output"]}, fid("py-cap::on-output"))
     bare.ready(timeout=10)
     output.ready(timeout=10)
     local_dispatch_ready(owner, fid("py-cap::price"))
@@ -126,8 +125,9 @@ def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_r
     exactly(envelopes, 1, "the envelope")
     exactly(outputs, 1, "the output")
 
-    # A7: deliver 'output' hands the target the handler's return value
-    assert outputs[0].data == {"total": 30}
+    # A7: capture ['output'] carries the handler's return value, and no input
+    assert outputs[0].data["output"] == {"total": 30}
+    assert "input" not in outputs[0].data
     # A6: capture [] keeps ids, status and timing, and moves no payload
     envelope = envelopes[0].data
     assert not {"input", "output", "error", "caller", "metadata"} & envelope.keys()
@@ -509,7 +509,7 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     a = watcher.observe({"function_id": source, "args": {"session": "s1"}}, fid("py-d52::envelope"))
     a.ready(timeout=10)
     exactly(got_a, 1, "A's state")
-    b = watcher.observe({"function_id": source, "args": {"session": "s1"}, "deliver": "output"}, fid("py-d52::output"))
+    b = watcher.observe({"function_id": source, "args": {"session": "s1"}, "capture": ["output"]}, fid("py-d52::output"))
     b.ready(timeout=10)
     exactly(got_b, 1, "B's state")
     assert len(got_a) == 1
@@ -529,7 +529,7 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
         assert envelope["observer_id"] == a.id
         assert stable(envelope) == {**stable(ordinary), "input": envelope["input"], "output": envelope["output"]}
     assert [e["output"] for e in (state, ordinary, for_a)] == [{"session": "s1", "n": n} for n in (0, 1, 2)]
-    assert [g.data for g in got_b] == [{"session": "s1", "n": n} for n in (0, 1)]
+    assert [g.data["output"] for g in got_b] == [{"session": "s1", "n": n} for n in (0, 1)]
 
 
 def test_an_event_source_sends_each_event_once_and_its_observers_observe_the_event(worker: Any, fid: Any) -> None:

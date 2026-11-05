@@ -87,7 +87,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | trigger `type`                                                                    | the observed function, from [the table below](#trigger-types-and-their-functions)                                                                  |
 | trigger `config`                                                                  | `args` for sources that set something up (http, cron, queue, database); `filters` for sources that take no args                                    |
 | trigger `function_id`                                                             | the target, the second argument of `observe`                                                                                                       |
-| the trigger's event, as the target's payload                                      | the `Observed` envelope when iii delivers; `deliver: "input"` hands the target the call's input, as a trigger did                                  |
+| the trigger's event, as the target's payload                                      | the `Observed` payload when iii delivers: the call's input, the event a trigger handed over, is its `input` (`capture: ["input"]`) |
 | trigger `metadata`                                                                | `options.metadata`, delivered to the target as the activation's metadata sidecar                                                                   |
 | `trigger_namespace`, `namespace`                                                  | `source.namespace`, `target.namespace`                                                                                                             |
 | `condition_function_id`                                                           | `filters` for a condition you can state over the call; a condition that needs code moves to the start of the target                                |
@@ -98,7 +98,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `engine::register_trigger`, `engine::unregister_trigger`                          | `observe` from an SDK; `engine::observers::dispose`                                                                                                |
 | typed trigger configs (`IIITrigger`, `HttpTriggerConfig`, `CronTriggerConfig`, …) | `observe` with `args`                                                                                                                              |
 | `EngineTriggers`                                                                  | `EngineSources`: `FUNCTIONS_CHANGED`, `WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`                               |
-| `ObserveDoc` (Node, browser, Go) and `obs.matches(doc)`                           | `obs.matches(call)`, which takes a `Call` and also applies the observer's `on`                                                                     |
+| `ObserveDoc` (Node, browser, Go) and `obs.matches(doc)`                           | `obs.matches(call)`, which takes a `Call` and also applies the observer's `capture`                                                                |
 | Rust: `Observe`, `ObserveHandler`                                                 | none; `observe` takes `Source` and `Target`, and the hooks are `AddedHook`, `RemovedHook`, `DeliverHook`, and `Match`                              |
 | Rust, Go: `LegacyTrigger`; Go: `Observer.Legacy`                                  | none; consumers observe the function                                                                                                               |
 | `TriggerTypeRef` (Node, browser, Python, Rust, and their `runtime` modules)       | `FunctionRef`, since a trigger type is a function                                                                                                  |
@@ -439,12 +439,17 @@ config as `args`, and the same target. Register the target first; until it is re
 observer stays `pending`.
 
 A trigger handed its target the event itself. When iii delivers a call, an observer's target
-receives the `Observed` envelope (`input`, `output`, `caller`, and so on) unless the observer sets
-`deliver: "input"`, so set it to keep a trigger's handler unchanged. A source that delivers its
+receives the `Observed` payload: the ids, `status` and timings, plus the fields the observer's
+`capture` names. The event is the call's `input`, so a trigger's handler reads it from the
+payload's `input`, and `capture: ["input"]` carries the event alone. A source that delivers its
 calls itself, such as `http::on-request` or `ade::ui::asset`, decides what its targets receive.
 
+An observer runs its target after successful calls of the observed function, like a trigger. To run
+it after failed calls too, capture `error` as well; see
+[`capture`](../using-iii/observers#capture).
+
 This cron trigger runs `reports::daily-summary` every day at 09:00, with metadata for the target.
-With `deliver: "input"`, the target receives the tick itself:
+With `capture: ["input"]`, the target receives the tick as the payload's `input`:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -465,7 +470,7 @@ With `deliver: "input"`, the target receives the tick itself:
 
     ```typescript
     const observer = iii.observe(
-      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, deliver: "input" },
+      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, capture: ["input"] },
       "reports::daily-summary",
       { metadata: { team: "reports" } },
     );
@@ -493,7 +498,7 @@ With `deliver: "input"`, the target receives the tick itself:
 
     ```python
     observer = iii.observe(
-        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "deliver": "input"},
+        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "capture": ["input"]},
         "reports::daily-summary",
         {"metadata": {"team": "reports"}},
     )
@@ -525,13 +530,13 @@ With `deliver: "input"`, the target receives the tick itself:
     **After (0.26)**
 
     ```rust
-    use iii_sdk::{Deliver, ObserverOptions, Source};
+    use iii_sdk::{Capture, ObserverOptions, Source};
     use serde_json::json;
 
     let observer = iii.observe_with(
         Source::function("cron::on-tick")
             .args(json!({ "expression": "0 0 9 * * * *" }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "reports::daily-summary",
         ObserverOptions::default().metadata(json!({ "team": "reports" })),
     );
@@ -564,7 +569,7 @@ With `deliver: "input"`, the target receives the tick itself:
     observer, err := client.Observe(iii.Source{
         FunctionID: "cron::on-tick",
         Args:       iii.Args{"expression": "0 0 9 * * * *"},
-        Deliver:    iii.DeliverInput,
+        Capture:    []iii.Capture{iii.CaptureInput},
     }, "reports::daily-summary", iii.ObserverOptions{Metadata: json.RawMessage(`{"team":"reports"}`)})
     if err != nil {
         log.Fatal(err)
@@ -596,7 +601,7 @@ iii.observe(
   {
     function_id: "state::on-changed",
     filters: { "input.scope": { $eq: "orders" } },
-    deliver: "input",
+    capture: ["input"],
   },
   "orders::on-state-changed",
 );
@@ -606,7 +611,7 @@ iii.observe(
   {
     function_id: "publish",
     filters: { "input.topic": { $eq: "link.created" } },
-    deliver: "input",
+    capture: ["input"],
   },
   "search::index-link",
 );
@@ -620,7 +625,7 @@ iii.observe(
       "input.id": { $eq: "my-worker" },
       "input.event_type": { $eq: "configuration:updated" },
     },
-    deliver: "input",
+    capture: ["input"],
   },
   "my-worker::config::reload",
 );
@@ -632,7 +637,7 @@ iii.observe(
 );
 
 // engine::functions-available
-iii.observe({ function_id: "engine::on-functions-changed", deliver: "input" }, "catalog::refresh");
+iii.observe({ function_id: "engine::on-functions-changed", capture: ["input"] }, "catalog::refresh");
 ```
 
 Do not pass a `configuration` trigger's config as `args`. `configuration::on-updated` declares no
@@ -1154,7 +1159,7 @@ observes the function:
 
 ```typescript
 iii.observe(
-  { function_id: "timer::on-tick", args: { every_ms: 60_000 }, deliver: "input" },
+  { function_id: "timer::on-tick", args: { every_ms: 60_000 }, capture: ["input"] },
   "reports::refresh",
 );
 ```
@@ -1687,7 +1692,8 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
       `iii trigger` with `call`, `call_async`, `Call`, `CallRequest`, `CallAction`, and `iii call`
 - [ ] Replace every `registerTrigger` with `iii.observe` of the type's function, and every
       `unregister()` with `dispose()`
-- [ ] Set `deliver: "input"` on observers whose targets still expect a trigger's event
+- [ ] Read the event from the payload's `input` in targets that expected a trigger's event, and
+      set `capture: ["input"]` on their observers
 - [ ] Move each `configuration` trigger's `configuration_id` and `event_types` to filters on
       `input.id` and `input.event_type`
 - [ ] Move `console:script`, `console:style`, and `console:module` registrations to observers of

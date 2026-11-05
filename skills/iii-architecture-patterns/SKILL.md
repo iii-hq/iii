@@ -122,7 +122,7 @@ Observe `state::on-changed` when the requirement says "after create/update, do t
 polling", or "push live updates".
 
 ```typescript
-iii.registerFunction("todos::on-change", async (event) => {
+iii.registerFunction("todos::on-change", async ({ input: event }) => {
   await iii.call({
     function_id: "stream::send",
     payload: { stream_name: "todos-live", group_id: "default", data: event.new_value },
@@ -132,7 +132,7 @@ iii.registerFunction("todos::on-change", async (event) => {
 
 // each change in the "todos" state scope
 iii.observe(
-  { function_id: "state::on-changed", deliver: "input", filters: { "input.scope": { $eq: "todos" } } },
+  { function_id: "state::on-changed", capture: ["input"], filters: { "input.scope": { $eq: "todos" } } },
   "todos::on-change",
 );
 ```
@@ -163,12 +163,12 @@ iii.observe(
 ```
 
 ```python
-def notify(event):  # the Observed envelope: input, error, caller, ...
-    print("charge failed", event["input"], event["error"]["code"])
+def notify(event):  # the Observed payload: error and caller, as captured
+    print("charge failed", event["error"]["code"], event["caller"])
 
 iii.register_function("alerts::payment-failed", notify)
 iii.observe(
-    {"function_id": "payments::charge", "on": "error", "filters": {"input.amount": {"$gte": 500}}},
+    {"function_id": "payments::charge", "capture": ["error", "caller"], "filters": {"input.amount": {"$gte": 500}}},
     "alerts::payment-failed",
 )
 ```
@@ -212,9 +212,9 @@ iii.registerFunction("cmd::add-inventory-item", async (input) => {
   return event; // what observers observe
 });
 
-// each projection receives the event every successful command returned
-iii.observe({ function_id: "cmd::add-inventory-item", deliver: "output" }, "proj::inventory-list");
-iii.observe({ function_id: "cmd::add-inventory-item", deliver: "output" }, "proj::inventory-totals");
+// each projection receives the event every successful command returned, as the payload's `output`
+iii.observe({ function_id: "cmd::add-inventory-item", capture: ["output"] }, "proj::inventory-list");
+iii.observe({ function_id: "cmd::add-inventory-item", capture: ["output"] }, "proj::inventory-totals");
 ```
 
 When a projection must process every event with retries, publish the event to a queue topic

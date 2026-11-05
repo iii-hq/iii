@@ -15,7 +15,7 @@ import (
 	"github.com/iii-hq/iii/sdk/packages/go/iii/internal/filterlink"
 )
 
-// The filter index selects exactly the observers an evaluation of every observer's on
+// The filter index selects exactly the observers an evaluation of every observer's capture
 // and filters selects, in the same order (decision 55): random filters over every
 // operator and random documents (types, numbers spelled differently, null and missing
 // paths, arrays, nested paths), an equality-heavy corpus with shared paths and
@@ -37,11 +37,18 @@ func newIndexed() *indexed {
 	return &indexed{f: newFunctionObservers(New("ws://unused.invalid"), "idx::fn", true, false)}
 }
 
-// add files an observer with filters (JSON text) and on; false when the filters do not
-// compile.
-func (x *indexed) add(t testing.TB, id, filters string, on On) bool {
+// The captures the tests file observers with, by the outcomes they fire on.
+var (
+	capSuccess  []Capture // the default: input, output, caller, metadata
+	capError    = []Capture{CaptureError}
+	capComplete = []Capture{CaptureInput, CaptureError}
+)
+
+// add files an observer with filters (JSON text) and capture; false when the filters
+// do not compile.
+func (x *indexed) add(t testing.TB, id, filters string, capture []Capture) bool {
 	t.Helper()
-	obs, err := newObserver(x.f, ObserverInfo{ID: id, Target: "x::y", Filters: json.RawMessage(filters), On: on}, 1)
+	obs, err := newObserver(x.f, ObserverInfo{ID: id, Target: "x::y", Filters: json.RawMessage(filters), Capture: capture}, 1)
 	if err != nil {
 		return false
 	}
@@ -64,7 +71,7 @@ func (x *indexed) remove(i int) {
 func viaIndex(index *filterIndex, doc filter.Doc, ok bool) (ids []string, candidates int) {
 	index.each(doc, func(obs *Observer) {
 		candidates++
-		if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+		if captureFires(obs.capture, ok) && obs.filter.Matches(doc) {
 			ids = append(ids, obs.id)
 		}
 	})
@@ -76,18 +83,18 @@ func viaIndex(index *filterIndex, doc filter.Doc, ok bool) (ids []string, candid
 func viaSelecting(x *indexed, doc filter.Doc, ok bool) (ids []string, evaluated int) {
 	x.index.selecting(doc, x.observers, func(obs *Observer) {
 		evaluated++
-		if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+		if captureFires(obs.capture, ok) && obs.filter.Matches(doc) {
 			ids = append(ids, obs.id)
 		}
 	})
 	return ids, evaluated
 }
 
-// byScan is the ids of the observers whose on and filters match doc.
+// byScan is the ids of the observers whose capture and filters match doc.
 func byScan(observers []*Observer, doc filter.Doc, ok bool) []string {
 	var ids []string
 	for _, obs := range observers {
-		if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+		if captureFires(obs.capture, ok) && obs.filter.Matches(doc) {
 			ids = append(ids, obs.id)
 		}
 	}
@@ -266,7 +273,9 @@ func (g gen) call() *Call {
 	return call
 }
 
-func (g gen) on() On { return []On{OnSuccess, OnError, OnComplete}[g.r.IntN(3)] }
+func (g gen) capture() []Capture {
+	return [][]Capture{capSuccess, capError, capComplete}[g.r.IntN(3)]
+}
 
 // handOver is call as the SDK hands it to a hook of a function whose filter index is
 // filters: a copy of its fields, with a view.
@@ -317,7 +326,7 @@ func TestFilterIndexMatchesAScanOfRandomFilters(t *testing.T) {
 		}
 		compiled := 0
 		for i := range 60 {
-			if x.add(t, fmt.Sprintf("o-%d", i), g.filter(1, equality), g.on()) {
+			if x.add(t, fmt.Sprintf("o-%d", i), g.filter(1, equality), g.capture()) {
 				compiled++
 			}
 		}
@@ -354,7 +363,7 @@ func TestFilterIndexEqualityCorpus(t *testing.T) {
 				clauses = append(clauses, fmt.Sprintf(`{%q:{"$eq":%s}}`, path, g.pick(values...)))
 			}
 		}
-		if !x.add(t, fmt.Sprintf("e-%d", i), `{"$and":[`+strings.Join(clauses, ",")+`]}`, OnComplete) {
+		if !x.add(t, fmt.Sprintf("e-%d", i), `{"$and":[`+strings.Join(clauses, ",")+`]}`, capComplete) {
 			t.Fatalf("filter %d did not compile", i)
 		}
 	}
@@ -391,7 +400,7 @@ func TestFilterIndexChurnKeepsEveryVersion(t *testing.T) {
 			x.remove(g.r.IntN(len(x.observers)))
 		} else {
 			next++
-			x.add(t, fmt.Sprintf("c-%d", next), g.filter(1, 7), g.on())
+			x.add(t, fmt.Sprintf("c-%d", next), g.filter(1, 7), g.capture())
 		}
 		versions = append(versions, version{x.index, x.observers})
 	}
@@ -459,7 +468,7 @@ func TestFilterIndexConformanceVectors(t *testing.T) {
 	for _, file := range files {
 		vec := readFilterJSON(t, file)
 		id := filepath.Base(file)
-		if !x.add(t, id, rawJSON(t, vec["filters"]), OnComplete) {
+		if !x.add(t, id, rawJSON(t, vec["filters"]), capComplete) {
 			t.Fatalf("%s: filter rejected", id)
 		}
 		for _, raw := range vec["cases"].([]any) {
@@ -490,7 +499,7 @@ func TestFilterIndexDiffCorpus(t *testing.T) {
 		var expect []bool
 		for i, raw := range run["cases"].([]any) {
 			c := raw.(map[string]any)
-			if !x.add(t, fmt.Sprint(i), rawJSON(t, c["filters"]), OnComplete) {
+			if !x.add(t, fmt.Sprint(i), rawJSON(t, c["filters"]), capComplete) {
 				t.Fatalf("seed %v case %d: filter rejected", run["seed"], i)
 			}
 			docs = append(docs, filter.Map(c["doc"].(map[string]any)))
@@ -541,7 +550,7 @@ func TestFilterIndexFilesEqualityConditions(t *testing.T) {
 		{`{}`, false},
 	} {
 		id := tc.filters
-		if !x.add(t, id, tc.filters, OnComplete) {
+		if !x.add(t, id, tc.filters, capComplete) {
 			t.Fatalf("%s did not compile", tc.filters)
 		}
 		obs := x.observers[len(x.observers)-1]
@@ -579,7 +588,7 @@ func TestFilterIndexFilesEqualityConditions(t *testing.T) {
 	// 1,000 observers on their own tenant: a call evaluates one
 	many := newIndexed()
 	for i := range 1000 {
-		many.add(t, fmt.Sprint(i), fmt.Sprintf(`{"$and":[{"input.tenant":{"$eq":"tenant-%d"}}]}`, i), OnSuccess)
+		many.add(t, fmt.Sprint(i), fmt.Sprintf(`{"$and":[{"input.tenant":{"$eq":"tenant-%d"}}]}`, i), capSuccess)
 	}
 	ids, n := viaIndex(many.index, (&Call{Status: "success", Input: json.RawMessage(`{"tenant":"tenant-500"}`)}).doc(), true)
 	if !slices.Equal(ids, []string{"500"}) || n != 1 {
@@ -597,7 +606,7 @@ func TestFilterIndexFilesEqualityConditions(t *testing.T) {
 func TestFilterIndexFilesUnderTheLeastSharedCondition(t *testing.T) {
 	x := newIndexed()
 	for i := range 50 {
-		x.add(t, fmt.Sprint(i), fmt.Sprintf(`{"$and":[{"input.kind":{"$eq":"order"}},{"input.tenant":{"$eq":%d}}]}`, i), OnSuccess)
+		x.add(t, fmt.Sprint(i), fmt.Sprintf(`{"$and":[{"input.kind":{"$eq":"order"}},{"input.tenant":{"$eq":%d}}]}`, i), capSuccess)
 	}
 	_, n := viaIndex(x.index, (&Call{Status: "success", Input: json.RawMessage(`{"kind":"order","tenant":7}`)}).doc(), true)
 	if n > 2 {
@@ -607,7 +616,7 @@ func TestFilterIndexFilesUnderTheLeastSharedCondition(t *testing.T) {
 
 	filedUnder := func(id, filters string) (path string, values []filterlink.Scalar) {
 		t.Helper()
-		if !x.add(t, id, filters, OnSuccess) {
+		if !x.add(t, id, filters, capSuccess) {
 			t.Fatalf("%s did not compile", filters)
 		}
 		cond := x.observers[len(x.observers)-1].cond.Load()
@@ -649,9 +658,9 @@ func TestALocalCallEvaluatesEveryObserverWhereLookupsSpareLittle(t *testing.T) {
 	}
 	sparse := newIndexed()
 	for i := range 8 {
-		sparse.add(t, fmt.Sprintf("p-%d", i), fmt.Sprintf(`{"input.p%d":{"$eq":1}}`, i), OnSuccess)
+		sparse.add(t, fmt.Sprintf("p-%d", i), fmt.Sprintf(`{"input.p%d":{"$eq":1}}`, i), capSuccess)
 	}
-	sparse.add(t, "exists", `{"input.p0":{"$exists":true}}`, OnSuccess)
+	sparse.add(t, "exists", `{"input.p0":{"$exists":true}}`, capSuccess)
 	ids, evaluated := viaSelecting(sparse, call(`{"p0":1,"p3":1,"p5":2}`), true)
 	if want := []string{"p-0", "p-3", "exists"}; !slices.Equal(ids, want) || evaluated != 9 {
 		t.Fatalf("eight paths for nine observers: %v (%d evaluated), want %v and all 9", ids, evaluated, want)
@@ -659,7 +668,7 @@ func TestALocalCallEvaluatesEveryObserverWhereLookupsSpareLittle(t *testing.T) {
 
 	half := newIndexed()
 	for i := range 10 {
-		half.add(t, fmt.Sprintf("k-%d", i), fmt.Sprintf(`{"input.k":{"$eq":%d}}`, min(i/5, 1)), OnSuccess)
+		half.add(t, fmt.Sprintf("k-%d", i), fmt.Sprintf(`{"input.k":{"$eq":%d}}`, min(i/5, 1)), capSuccess)
 	}
 	if ids, evaluated := viaSelecting(half, call(`{"k":1}`), true); len(ids) != 5 || evaluated != 10 {
 		t.Fatalf("a lookup leaving half: %v (%d evaluated), want 5 of all 10", ids, evaluated)
@@ -678,14 +687,14 @@ func TestALocalCallEvaluatesEveryObserverWhereLookupsSpareLittle(t *testing.T) {
 			id := fmt.Sprintf("o-%d", key)
 			if key%13 == 12 {
 				want = append(want, id)
-				x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$gte":1}}`, path), OnSuccess)
+				x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$gte":1}}`, path), capSuccess)
 				continue
 			}
 			value := (key/paths)%4 + 1
 			if value == 1 {
 				want = append(want, id)
 			}
-			x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$eq":%d}}`, path, value), OnSuccess)
+			x.add(t, id, fmt.Sprintf(`{"input.p%d":{"$eq":%d}}`, path, value), capSuccess)
 		}
 		encoded, _ := json.Marshal(input)
 		ids, evaluated := viaSelecting(x, call(string(encoded)), true)

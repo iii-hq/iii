@@ -20,7 +20,6 @@
     "target": "billing::send-reminders",
     "capture": [
       "input"
-    ],
-    "on": "success"
+    ]
   }
 }

@@ -1,5 +1,5 @@
 // Derived from sdk/packages/node/iii/src/observe-types.ts by scripts/sync-browser-observe.py; edit those, not this file.
-/** What an observer ships to its target. Default `['input', 'output', 'caller']`. */
+/** A field an observer captures. Default `['input', 'output', 'caller', 'metadata']`. */
 export type Capture = 'input' | 'output' | 'error' | 'caller' | 'metadata'
 
 /**
@@ -44,9 +44,9 @@ export interface Caller {
 export type CallerInfo = Partial<Omit<Caller, 'parent'>> & { parent?: Partial<Omit<Caller, 'parent'>> }
 
 /**
- * What an observer's target receives when iii delivers with
- * `deliver: 'envelope'` (the default). Fields not in the observer's
- * `capture` are absent.
+ * What an observer's target receives when iii delivers: the top-level
+ * fields, plus whichever of the observer's `capture` apply to the outcome.
+ * Fields not captured, or that do not apply, are absent.
  */
 export interface Observed<I = unknown, O = unknown> {
   observer_id: string
@@ -78,15 +78,20 @@ export interface ObserveSource {
   args?: Record<string, unknown>
   /** Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. */
   filters?: Filter
-  /** Which outcomes reach the target; default `'success'`. */
-  on?: 'success' | 'error' | 'complete'
-  /** What the envelope carries; default `['input', 'output', 'caller']`. */
-  capture?: Capture[]
   /**
-   * What the target receives when iii delivers: the {@link Observed} envelope
-   * (default), the call's `input`, or its `output`.
+   * What the target's payload carries, and with it which outcomes fire the
+   * target. Default `['input', 'output', 'caller', 'metadata']`.
+   *
+   * - `input` and `output` fire on success, `error` fires on error.
+   * - `caller` and `metadata` only add to the payload: a `capture` must name
+   *   at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise).
+   * - `[]` fires on success, with the top-level fields only.
+   *
+   * So the default fires on success, `['error', 'caller']` on errors, and
+   * `['input', 'error']` on both. A success's payload never has `error`, an
+   * error's never has `output`.
    */
-  deliver?: 'envelope' | 'input' | 'output'
+  capture?: Capture[]
 }
 
 /** The observer itself: its id, policy and metadata. */
@@ -159,7 +164,7 @@ export interface Call<I = unknown, O = unknown> {
 
 /**
  * An observer as the worker that hosts its function sees it (the hooks,
- * `FunctionRef.observers()`): its args, filters, target, capture and `on`.
+ * `FunctionRef.observers()`): its args, filters, target and capture.
  * Who observes, the observer's metadata and its policy stay with the engine.
  */
 export interface Observer {
@@ -172,10 +177,9 @@ export interface Observer {
   readonly filters: Filter
   /** The target function id. */
   readonly target: string
-  readonly on: 'success' | 'error' | 'complete'
   readonly capture: Capture[]
   /**
-   * Whether `call` reaches this observer: its `on` accepts the call's
+   * Whether `call` reaches this observer: its `capture` fires on the call's
    * `status` (absent reads as `'success'`) and its filters match the call.
    */
   matches(call: Partial<Call>): boolean
@@ -248,7 +252,7 @@ export interface MatchKeys<I = unknown, O = unknown> {
  * observation: for every call, once for each active observer (a throw
  * counts as no match for that observer). Keys are computed
  * once per observer, when it is accepted, and once per call. The observers'
- * `on`, filters, policy and `deliver` still apply. Setting it to `null`
+ * capture, filters and policy still apply. Setting it to `null`
  * removes it: every observer gets every call again.
  */
 export type MatchHook<I = unknown, O = unknown> = MatchPredicate<I, O> | MatchKeys<I, O>

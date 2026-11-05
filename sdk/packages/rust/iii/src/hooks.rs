@@ -2,7 +2,7 @@
 //! observed.
 //!
 //! Every function is observable, and iii delivers each of its calls to the
-//! observers whose `on` and filters match. iii evaluates them where the
+//! observers whose capture and filters match. iii evaluates them where the
 //! call's parts are: the engine for the calls it routes, and this SDK for the
 //! calls a worker makes to its own functions. Four hooks override that
 //! default, and the worker that hosts the function runs them: the added and
@@ -374,7 +374,7 @@ type CallKeys = dyn for<'a> Fn(&'a Call) -> Keys<'a> + Send + Sync;
 /// Which calls of a function each observer wants: the function's match hook
 /// ([`IIIClient::on_observation_match_for`]). A worker sets it when its
 /// observers' args say which calls they want; iii does everything else as
-/// usual: the observers' filters, `on`, policy and `deliver` still apply.
+/// usual: the observers' capture, filters and policy still apply.
 /// [`IIIClient::clear_observation_match_for`] removes it: every observer
 /// wants every call again.
 #[derive(Clone)]

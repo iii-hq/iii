@@ -4354,7 +4354,7 @@ mod tests {
                 args: serde_json::json!({}),
                 filters: None,
                 target: (default, target.to_string()),
-                deliver: crate::protocol::Deliver::Input,
+                deliver: crate::observer::Deliver::Input,
                 metadata: None,
             })
             .expect("observe observability::on-span");

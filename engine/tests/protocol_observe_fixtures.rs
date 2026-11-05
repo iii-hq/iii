@@ -306,7 +306,7 @@ fn fixtures_carry_the_documented_variants() {
         panic!("observe");
     };
     assert!(source.namespace.is_some() && source.args.is_some() && source.filters.is_some());
-    assert!(source.capture.is_some() && source.on.is_some() && source.deliver.is_some());
+    assert!(source.capture.is_some() && source.removed.is_empty());
     assert!(
         metadata.is_some()
             && max_fires.is_some()
@@ -589,10 +589,7 @@ fn fixtures_use_only_known_enum_values() {
                 for capture in source.capture.iter().flatten() {
                     assert!(capture.is_known(), "{name}: {capture}");
                 }
-                assert!(
-                    source.on().is_known() && source.deliver().is_known(),
-                    "{name}"
-                );
+                assert!(source.removed_field().is_none(), "{name}");
             }
             Message::ObserveResult { state, .. } | Message::ObserverStateChanged { state, .. } => {
                 assert!(state.is_known(), "{name}: {state}");
@@ -600,12 +597,10 @@ fn fixtures_use_only_known_enum_values() {
             Message::FunctionRegistered { observers, .. } => {
                 for observer in observers {
                     assert!(observer.capture.iter().all(Capture::is_known), "{name}");
-                    assert!(observer.on.is_known(), "{name}");
                 }
             }
             Message::ObserverAdded { observer, .. } => {
                 assert!(observer.capture.iter().all(Capture::is_known), "{name}");
-                assert!(observer.on.is_known(), "{name}");
             }
             Message::InvocationsObserved { items } => {
                 assert!(items.items.iter().all(|i| i.status.is_known()), "{name}");

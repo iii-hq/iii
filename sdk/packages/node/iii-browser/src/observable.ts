@@ -21,6 +21,7 @@ import type {
   Observer,
   RemovedHook,
 } from './observe-types'
+import { captureFires } from './observe-wire'
 import type { Reporter, ReportInit, ReportValues } from './reporter'
 import { unrefTimer } from './utils'
 
@@ -75,23 +76,14 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
-/** Whether `obs` is served with the view `info` announces: its filters, target, capture and `on`. */
+/** Whether `obs` is served with the view `info` announces: its filters, target and capture. */
 function sameView(obs: ObserverImpl, info: ObserverInfoWire): boolean {
-  return (
-    obs.target === info.target &&
-    obs.on === info.on &&
-    sameJson(obs.capture, info.capture) &&
-    sameJson(obs.filters, info.filters)
-  )
+  return obs.target === info.target && sameJson(obs.capture, info.capture) && sameJson(obs.filters, info.filters)
 }
 
 function rejectionBody(error: unknown): { code: string; message: string } {
   if (error instanceof ObserveRejection) return { code: error.code, message: error.message }
   return { code: 'OBSERVE_REJECTED', message: error instanceof Error ? error.message : String(error) }
-}
-
-function onAccepts(on: string, ok: boolean): boolean {
-  return on === 'complete' || (on === 'success' ? ok : on === 'error' ? !ok : false)
 }
 
 /**
@@ -172,7 +164,6 @@ export class ObserverImpl implements Observer {
   args: Record<string, unknown>
   filters: Filter
   target: string
-  on: 'success' | 'error' | 'complete'
   capture: Capture[]
   /** @internal */
   filter: CompiledFilter
@@ -208,7 +199,6 @@ export class ObserverImpl implements Observer {
     this.args = info.args
     this.filters = info.filters
     this.target = info.target
-    this.on = info.on as Observer['on']
     this.capture = info.capture as Capture[]
     this.filter = filter
     this.revision = revision
@@ -219,12 +209,11 @@ export class ObserverImpl implements Observer {
     this.filters = info.filters
     this.filter = filter
     this.target = info.target
-    this.on = info.on as Observer['on']
     this.capture = info.capture as Capture[]
   }
 
   matches(call: Partial<Call>): boolean {
-    return onAccepts(this.on, call.status !== 'error') && this.filter.matches(filterDoc(call))
+    return captureFires(this.capture, call.status !== 'error') && this.filter.matches(filterDoc(call))
   }
 
   accepted(): Promise<void> {
@@ -260,7 +249,6 @@ export class ObserverImpl implements Observer {
       args: this.args,
       filters: this.filters,
       target: this.target,
-      on: this.on,
       capture: this.capture,
     }
   }
@@ -389,7 +377,7 @@ export class FunctionObservers {
   }
 
   /**
-   * The active observers whose `on` accepts a call that succeeded (`ok`) or
+   * The active observers whose capture fires on a call that succeeded (`ok`) or
    * failed and whose filters match `doc`, in the order of `compiled`. Matched
    * through the index of their filters' equality conditions when it narrows
    * them (`FilterIndex.narrows`): the call evaluates the filters of the
@@ -399,8 +387,8 @@ export class FunctionObservers {
    */
   selectActive(doc: FilterDoc, ok: boolean): ObserverImpl[] {
     const index = this.filterIndex
-    if (!index.narrows) return this.compiled.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
-    return index.matches(doc, (obs) => onAccepts(obs.on, ok))
+    if (!index.narrows) return this.compiled.filter((obs) => captureFires(obs.capture, ok) && obs.filter.matches(doc))
+    return index.matches(doc, (obs) => captureFires(obs.capture, ok))
   }
 
   observers(): readonly Observer[] {
@@ -649,7 +637,7 @@ export class FunctionObservers {
   /**
    * Acks again, at `revision` and without running any hook, an observer this
    * SDK holds that the engine announced again (decision 44): one with the
-   * same args, served from now on with the filters, target, capture and `on`
+   * same args, served from now on with the filters, target and capture
    * it was announced with (its keys computed again when they changed), or,
    * when `listed` by `functionregistered`, one rejected late, whose rejection
    * is sent again. `false` for an observer to add as a new one after removing
@@ -900,7 +888,7 @@ export type DeliveryInit = {
   traceparent?: string
   baggage?: string
   /**
-   * A routed call: the engine evaluates its observers' `on` and filters, and
+   * A routed call: the engine evaluates its observers' capture and filters, and
    * its answer says how it is delivered (`matched`, `delivered`); a local
    * call is delivered here and reported.
    */
@@ -911,15 +899,15 @@ export type DeliveryInit = {
  * The delivery of one call (v2 §4.4–§4.6, decisions 20, 36, 38, 45, 55): the
  * observers are matched (`onObservationMatch`), then the function's
  * `onObservationDeliver` delivers the call itself, or iii delivers it to the
- * matched observers whose `on` and filters accept it. For a local call the
- * host evaluates `on` and filters and reports the observers delivered in
+ * matched observers whose capture and filters accept it. For a local call the
+ * host evaluates capture and filters and reports the observers delivered in
  * one report item. For a routed call the engine evaluates them: the answer
  * carries the observers the match hook matched (`matched`), or says that
  * the deliver hook delivered the call (`delivered`), or neither for a
  * function with no match hook and no deliver hook.
  */
 export class Delivery {
-  /** A routed call's answer: the ids of the observers its match hook matched, before `on` and filters. */
+  /** A routed call's answer: the ids of the observers its match hook matched, before capture and filters. */
   matched?: readonly string[]
   /** A routed call's answer: its deliver hook delivered it. */
   delivered = false
@@ -958,7 +946,7 @@ export class Delivery {
   }
 
   /**
-   * The matched observers whose `on` and filters accept `call`, in the order
+   * The matched observers whose capture and filters accept `call`, in the order
    * of `matched`. Without a match hook `matched` is the call's snapshot; while
    * it is also the active set (no observer joined or left since the call
    * started), {@link FunctionObservers.selectActive} selects them, through
@@ -969,7 +957,7 @@ export class Delivery {
     const ok = call.status !== 'error'
     const doc = filterDoc(call)
     if (matched === this.init.snapshot && matched === this.owner.compiled) return this.owner.selectActive(doc, ok)
-    return matched.filter((obs) => onAccepts(obs.on, ok) && obs.filter.matches(doc))
+    return matched.filter((obs) => captureFires(obs.capture, ok) && obs.filter.matches(doc))
   }
 
   /** The report item of a local call delivered to `selected`. */

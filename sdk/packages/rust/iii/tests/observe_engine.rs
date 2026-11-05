@@ -18,7 +18,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, Filter, IIIClient,
-    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On,
+    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState,
     RegisterFunction, RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker,
     scope,
 };
@@ -215,9 +215,7 @@ async fn on_error_delivers_the_error_with_its_capture() {
     let inbox = Inbox::default();
     owner.register_function(&target, inbox.function());
     let handle = owner.observe_with(
-        Source::function(&charge)
-            .on(On::Error)
-            .capture([Capture::Input, Capture::Error]),
+        Source::function(&charge).capture([Capture::Input, Capture::Error]),
         &target,
         ObserverOptions::default().metadata(json!({ "team": "oncall" })),
     );
@@ -678,7 +676,6 @@ async fn local_and_remote_calls_deliver_the_same_envelope() {
     observer.register_function(&target, inbox.function());
     let handle = observer.observe_with(
         Source::function(&source)
-            .on(On::Complete)
             .filters(json!({ "input.n": { "$gte": 10 }, "caller.worker_name": { "$eq": format!("owner-{id}") } }))
             .capture([
                 Capture::Input,
@@ -1529,7 +1526,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let b = watcher.observe(
             Source::function(&source)
                 .args(json!({ "session": "s1" }))
-                .deliver(iii_sdk::Deliver::Output),
+                .capture([Capture::Output]),
             &to_b,
         );
         tokio::time::timeout(WAIT, b.ready())
@@ -1564,7 +1561,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
             "keys {keys}: the call for A did not reach B"
         );
 
-        // A gets the envelope of every call; B the output of every call
+        // A gets the payload of every call; B the output of every call alone
         let ordinary = &got_a[1];
         for envelope in [&got_a[0], &got_a[2]] {
             let keys_of = |v: &Value| {
@@ -1590,7 +1587,11 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
             "keys {keys}"
         );
         assert_eq!(
-            inbox_b.inputs(),
+            inbox_b
+                .inputs()
+                .iter()
+                .map(|p| p["output"].clone())
+                .collect::<Vec<_>>(),
             [0, 1].map(|n| json!({ "session": "s1", "n": n })),
             "keys {keys}"
         );

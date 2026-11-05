@@ -30,7 +30,7 @@ async fn on_functions_changed_lists_the_functions_after_a_change() {
     let mut sink = host(&t, "sink", &["sink::functions"]).await;
     sink.observe_active(observer(
         "obs-functions",
-        json!({ "function_id": "engine::on-functions-changed", "deliver": "input" }),
+        json!({ "function_id": "engine::on-functions-changed", "capture": ["input"] }),
         "sink::functions",
     ))
     .await;
@@ -41,7 +41,7 @@ async fn on_functions_changed_lists_the_functions_after_a_change() {
     loop {
         let activation = sink.invoked("sink::functions").await;
         sink.reply(&activation, Value::Null).await;
-        let event = &activation["data"];
+        let event = &activation["data"]["input"];
         assert_eq!(event["event"], "functions_changed");
         let listed = event["functions"]
             .as_array()
@@ -62,7 +62,7 @@ async fn on_workers_changed_reports_a_worker_announcing_itself() {
         "obs-workers",
         json!({
             "function_id": "engine::on-workers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.event": { "$eq": "worker_metadata_updated" } }
         }),
         "sink::workers",
@@ -72,7 +72,7 @@ async fn on_workers_changed_reports_a_worker_announcing_itself() {
     let newcomer = connect(&t, "newcomer", true).await;
     let activation = sink.invoked("sink::workers").await;
     assert_eq!(
-        activation["data"],
+        activation["data"]["input"],
         json!({ "event": "worker_metadata_updated", "worker_id": newcomer.worker_id.to_string() })
     );
     assert_eq!(activation["caller"]["worker_name"], "iii-engine");
@@ -97,7 +97,7 @@ async fn on_observers_changed_reports_each_state_change() {
         "obs-changes",
         json!({
             "function_id": "engine::on-observers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.observer_id": { "$eq": "watched" } }
         }),
         "sink::changes",
@@ -115,11 +115,14 @@ async fn on_observers_changed_reports_each_state_change() {
 
     // Created pending: its host has not acked it yet.
     let created = next_change(&mut sink).await;
-    assert_eq!(created["data"]["state"], "pending");
-    assert!(created["data"].get("reason").is_none(), "{created}");
+    assert_eq!(created["data"]["input"]["state"], "pending");
+    assert!(
+        created["data"]["input"].get("reason").is_none(),
+        "{created}"
+    );
     let active = next_change(&mut sink).await;
     assert_eq!(
-        active["data"],
+        active["data"]["input"],
         json!({
             "observer_id": "watched",
             "function_id": "orders::create",
@@ -131,15 +134,18 @@ async fn on_observers_changed_reports_each_state_change() {
 
     orders.disconnect().await;
     let pending = next_change(&mut sink).await;
-    assert_eq!(pending["data"]["state"], "pending");
-    assert_eq!(pending["data"]["reason"]["code"], "OWNER_UNAVAILABLE");
+    assert_eq!(pending["data"]["input"]["state"], "pending");
+    assert_eq!(
+        pending["data"]["input"]["reason"]["code"],
+        "OWNER_UNAVAILABLE"
+    );
 
     watcher
         .send(json!({ "type": "unobserve", "id": "watched" }))
         .await;
     let disposed = next_change(&mut sink).await;
-    assert_eq!(disposed["data"]["state"], "disposed");
-    assert_eq!(disposed["data"]["reason"]["code"], "UNOBSERVED");
+    assert_eq!(disposed["data"]["input"]["state"], "disposed");
+    assert_eq!(disposed["data"]["input"]["reason"]["code"], "UNOBSERVED");
 }
 
 #[tokio::test]
@@ -162,7 +168,7 @@ async fn an_event_source_is_observed_not_called() {
 
     sink.observe_active(observer(
         "obs-every",
-        json!({ "function_id": "engine::on-workers-changed", "on": "complete" }),
+        json!({ "function_id": "engine::on-workers-changed", "capture": ["input", "error"] }),
         "sink::any",
     ))
     .await;
@@ -191,7 +197,7 @@ async fn a_worker_cannot_host_an_engine_hosted_source() {
         "obs-connects",
         json!({
             "function_id": "engine::on-workers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.event": { "$eq": "worker_connected" } }
         }),
         "sink::workers",
@@ -247,8 +253,8 @@ async fn a_worker_cannot_host_an_engine_hosted_source() {
     loop {
         let event = sink.invoked("sink::workers").await;
         sink.reply(&event, Value::Null).await;
-        assert_ne!(event["data"]["worker_id"], "forged", "{event}");
-        if event["data"]["worker_id"] == visitor_id.as_str() {
+        assert_ne!(event["data"]["input"]["worker_id"], "forged", "{event}");
+        if event["data"]["input"]["worker_id"] == visitor_id.as_str() {
             break;
         }
     }
@@ -266,7 +272,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
         "obs-lifecycle",
         json!({
             "function_id": "engine::on-workers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.event": { "$ne": "worker_metadata_updated" } }
         }),
         "sink::workers",
@@ -277,7 +283,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
     let id = visitor.worker_id.to_string();
     let connected = sink.invoked("sink::workers").await;
     assert_eq!(
-        connected["data"],
+        connected["data"]["input"],
         json!({ "event": "worker_connected", "worker_id": id })
     );
     sink.reply(&connected, Value::Null).await;
@@ -285,7 +291,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
     visitor.disconnect().await;
     let disconnected = sink.invoked("sink::workers").await;
     assert_eq!(
-        disconnected["data"],
+        disconnected["data"]["input"],
         json!({ "event": "worker_disconnected", "worker_id": id })
     );
     sink.reply(&disconnected, Value::Null).await;

@@ -126,20 +126,20 @@ def setup(iii: IIIClient) -> None:
     iii.register_function("example::scheduled_cleanup", handle_cleanup)
     iii.observe({"function_id": "cron::on-tick", "args": {"expression": "0 * * * * *"}}, "example::scheduled_cleanup")
 
-    async def handle_user_updated(change: dict[str, Any]) -> dict[str, Any]:
-        return {"processed": True, "key": change.get("key")}
+    async def handle_user_updated(observed: dict[str, Any]) -> dict[str, Any]:
+        return {"processed": True, "key": observed["input"].get("key")}
 
     iii.register_function("example::on_user_updated", handle_user_updated)
     iii.observe(
-        {"function_id": "state::on-changed", "filters": {"input.scope": {"$eq": "users"}}, "deliver": "input"},
+        {"function_id": "state::on-changed", "filters": {"input.scope": {"$eq": "users"}}, "capture": ["input"]},
         "example::on_user_updated",
     )
 
-    async def handle_order(published: dict[str, Any]) -> dict[str, Any]:
-        return {"processed": True, "order": published["data"]}
+    async def handle_order(observed: dict[str, Any]) -> dict[str, Any]:
+        return {"processed": True, "order": observed["input"]["data"]}
 
     iii.register_function("example::on_order_created", handle_order)
     iii.observe(
-        {"function_id": "publish", "filters": {"input.topic": {"$eq": "orders.created"}}, "deliver": "input"},
+        {"function_id": "publish", "filters": {"input.topic": {"$eq": "orders.created"}}, "capture": ["input"]},
         "example::on_order_created",
     )

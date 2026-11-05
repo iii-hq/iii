@@ -1,5 +1,10 @@
 # Protocol and engine internals
 
+> **Superseded in part by observe v2.** `capture` alone decides which outcomes
+> run a target and what it receives
+> ([decision 59](../2026-10-29-observe-v2/decisions.md)); the `on` and
+> `deliver` fields and the default `capture` here describe 0.25.
+
 Everything here is **additive** until phase 6:
 
 - new message variants, sent only to peers that declared the matching feature;

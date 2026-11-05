@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -312,8 +312,9 @@ impl ConfigurationAdapter for BridgeAdapter {
                 let sender_lookup = sender_lookup.clone();
                 let raw_reader = raw_reader.clone();
                 async move {
-                    let event: ConfigurationEventData = serde_json::from_value(payload)
-                        .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
+                    let event: ConfigurationEventData =
+                        serde_json::from_value(payload["input"].clone())
+                            .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
                         // Events carry applied values. Re-read raw before updating
                         // the local store, or migration's template would become a secret.
@@ -366,7 +367,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         let observer = self.bridge.observe(
             Source::function(CONFIGURATION_ON_UPDATED)
                 .namespace(DEFAULT_NAMESPACE)
-                .deliver(Deliver::Input),
+                .capture([Capture::Input]),
             RELAY_FUNCTION_ID,
         );
         *self.relay_observer.lock().expect("relay observer lock") = Some(observer);

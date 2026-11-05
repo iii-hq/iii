@@ -478,9 +478,9 @@ Push every click to listeners in real time.
   three fields. Its observers receive that value. Cap its listeners at 256 with an onObserverAdded
   hook on the function that throws an ObserveRejection (exported by iii-sdk) when
   observers().length is already 256. Add click-streamer::announce, which calls
-  click-streamer::on-click with the click it receives, and observe link::record_click with it:
-  worker.observe({ function_id: "link::record_click", deliver: "output" },
-  "click-streamer::announce"). Add it with compose.
+  click-streamer::on-click with the click it receives as the payload's output, and observe
+  link::record_click with it: worker.observe({ function_id: "link::record_click", capture:
+  ["output"] }, "click-streamer::announce"). Add it with compose.
 - Add link::click_summary, which returns { total, last_id } from that clicks table (SELECT COUNT(*)
   AS total, MAX(id) AS last_id FROM clicks), so a listener that joins late can start from the current
   count. We will make the listeners in a later step.

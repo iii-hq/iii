@@ -48,7 +48,8 @@ A filter reads one document per call, with five roots:
 
 - A filter may reference any root, whatever the observer captures. `capture` only decides what is
   shipped to the target.
-- `on` (`success`, `error`, `complete`) is checked before the filter.
+- `capture` decides the outcomes first: `input` and `output` fire on success, `error` on error. It
+  is checked before the filter.
 - `output` is the handler's return value, which is what observers observe. An event source's handler
   returns the event it is called with, so its `input` and `output` are the same value.
 
@@ -276,7 +277,7 @@ explicit operators only:
 
 ## Evaluate a filter in code
 
-A worker evaluates an observer's filters, with its `on`, through `obs.matches(call)` (`Matches` in
+A worker evaluates an observer's filters, with its `capture`, through `obs.matches(call)` (`Matches` in
 Go). An `onObservationDeliver` hook that runs a target itself with `iii.call({ observer, payload })`
 checks the call this way first, for example to answer a request differently when the filters reject
 it. The Python, Rust, and Go SDKs also expose the evaluator itself, which is handy in tests:

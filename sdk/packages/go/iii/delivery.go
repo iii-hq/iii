@@ -13,7 +13,7 @@ import (
 // local or routed, runs its handler and is then delivered here to the observers active
 // when it started. The function's match hook narrows them. Its deliver hook, when set,
 // delivers the call itself, and what the hook returns is the caller's answer. Otherwise
-// iii delivers the call to the matched observers whose on and filters accept it. For a
+// iii delivers the call to the matched observers whose capture and filters accept it. For a
 // local call, which the engine never sees, this worker evaluates them (filter_index.go)
 // and reports the observers delivered in one report item. For a routed call the engine
 // evaluates them (decision 55): it holds the input, the caller, the metadata and the
@@ -43,7 +43,7 @@ func (st *callState) delivering() bool { return st.deliver != nil || len(st.obse
 
 // hooked reports whether the function has a match hook or a deliver hook. Its hooks see
 // its calls, and to an engine with observe.v2 this worker delivers its routed calls; the
-// engine delivers every other routed call to every active observer whose on and filters
+// engine delivers every other routed call to every active observer whose capture and filters
 // accept it.
 func (st *callState) hooked() bool { return st.deliver != nil || st.match != nil }
 
@@ -63,7 +63,7 @@ type callDelivery struct {
 }
 
 // deliverLocal delivers a local call: the deliver hook delivers it, or iii delivers it to
-// each matched observer whose on and filters accept it, in one report item. It returns
+// each matched observer whose capture and filters accept it, in one report item. It returns
 // the caller's outcome: the deliver hook's answer, or the handler's own.
 func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) outcome {
 	st, call := d.state, d.call
@@ -78,7 +78,7 @@ func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) o
 	if st.match == nil {
 		ok, doc := call.succeeded(), call.doc()
 		st.filters.selecting(doc, st.observers, func(obs *Observer) {
-			if onAccepts(obs.on, ok) && obs.filter.Matches(doc) {
+			if captureFires(obs.capture, ok) && obs.filter.Matches(doc) {
 				selected = append(selected, obs)
 			}
 		})
@@ -97,7 +97,7 @@ func (f *functionObservers) deliverLocal(ctx context.Context, d *callDelivery) o
 
 // routedAnswer is what an observe.v2 host's answer to a routed call says about its
 // delivery (decision 55): with neither field, the engine evaluates every active observer
-// of the function; matched lists the observers the match hook matched, before their on
+// of the function; matched lists the observers the match hook matched, before their capture
 // and filters, which the engine evaluates ([] when it matched none); delivered says the
 // deliver hook delivered the call, and the engine activates nothing.
 type routedAnswer struct {

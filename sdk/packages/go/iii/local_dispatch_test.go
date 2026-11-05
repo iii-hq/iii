@@ -494,8 +494,8 @@ func TestMatchedLocalCallsAreReported(t *testing.T) {
 	})
 	big := observerInfo("big", "x::y", "", `{"$and":[{"input.amount":{"$gte":500}}]}`, CaptureInput)
 	caller := observerInfo("by-worker", "x::y", "", `{"$and":[{"caller.worker_name":{"$eq":"observe-test"}},{"output.charged":{"$gt":0}}]}`, CaptureOutput, CaptureMetadata)
-	failures := observerInfo("failures", "x::y", "", "", CaptureInput, CaptureError, CaptureCaller)
-	failures.On = OnError
+	// error without input or output: fires on failures only
+	failures := observerInfo("failures", "x::y", "", "", CaptureError, CaptureCaller)
 	for _, o := range []ObserverInfo{big, caller, failures} {
 		addObserver(t, fe, "pay::charge", o)
 	}
@@ -547,8 +547,8 @@ func TestCaptureNoneReportsNoPayloads(t *testing.T) {
 		return data, nil
 	})
 	for _, info := range []ObserverInfo{
-		{ID: "none", Target: "x::y", On: OnComplete, Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
-		{ID: "none-too", Target: "x::y", On: OnComplete, Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
+		{ID: "none", Target: "x::y", Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
+		{ID: "none-too", Target: "x::y", Capture: []Capture{}, Args: json.RawMessage(`{}`), Filters: json.RawMessage(`{}`)},
 	} {
 		addObserver(t, fe, "bare::fn", info)
 	}
@@ -559,8 +559,13 @@ func TestCaptureNoneReportsNoPayloads(t *testing.T) {
 	if _, err := c.Call(context.Background(), CallRequest{FunctionID: "bare::fn", Payload: json.RawMessage(`{"fail":true}`)}); err == nil {
 		t.Fatal("no error")
 	}
-	items := fe.waitItems(2)
-	for i, status := range []string{"success", "error"} {
+	// capture: [] fires on success only
+	items := fe.waitItems(1)
+	time.Sleep(30 * time.Millisecond)
+	if n := len(fe.reportItems()); n != 1 {
+		t.Errorf("%d items, want 1 (the success)", n)
+	}
+	for i, status := range []string{"success"} {
 		it := items[i]
 		if it.Input != nil || it.Output != nil || it.Error != nil || it.Caller != nil || it.Metadata != nil || it.OutputIsInput {
 			t.Errorf("item %d carries a payload: %+v", i, it)

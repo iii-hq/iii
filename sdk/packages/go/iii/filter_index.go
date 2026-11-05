@@ -15,12 +15,12 @@ import (
 )
 
 // This file is where filters run on this worker (decision 55). The engine evaluates the
-// on and filters of the routed calls it holds; a host evaluates its local calls, which
+// capture and filters of the routed calls it holds; a host evaluates its local calls, which
 // the engine never sees, and Observer.Matches in its hooks. Both match through an index
 // of the observers' equality conditions: each active observer of a function is filed
 // under one $eq (or $in) condition of a scalar on a path of its filter's top-level $and,
 // path -> value -> observers, and the observers without one are kept in a list. A call
-// resolves each indexed path once and looks its value up; on and the whole filter are
+// resolves each indexed path once and looks its value up; capture and the whole filter are
 // evaluated for the observers filed there and those of the list only. Every other
 // observer has a condition the call fails, so the observers a call selects are exactly
 // those an evaluation of every observer selects, in the same order (the order of the
@@ -444,11 +444,11 @@ func sameRaw(a, b json.RawMessage) bool {
 	return len(a) == 0 || &a[0] == &b[0]
 }
 
-// matches reports whether obs's on accepts the call's status and its filters match the
+// matches reports whether obs's capture fires on the call's status and its filters match the
 // call. The condition obs is filed under is checked first, against the call's value at
 // its path.
 func (v *callView) matches(obs *Observer) bool {
-	if obs.filter == nil || !onAccepts(obs.on, v.succeeded) {
+	if obs.filter == nil || !captureFires(obs.capture, v.succeeded) {
 		return false
 	}
 	if c := obs.cond.Load(); c != nil {

@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::{
     Departed, FnKey, Held, ObserverRegistry,
     lifecycle::{
-        CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy, Tombstone,
-        Transition,
+        CaptureSet, Deliver, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy,
+        Tombstone, Transition,
     },
     owner::check_options,
 };
@@ -75,8 +75,7 @@ impl ObserveRequest {
             },
             filters,
             capture: CaptureSet::from_list(&self.source.capture()).to_list(),
-            on: self.source.on(),
-            deliver: self.source.deliver(),
+            deliver: deliver_of(&self.source),
             metadata: self.metadata.clone(),
             max_fires: self.max_fires,
             expires_in_ms: self.expires_in_ms,
@@ -87,6 +86,15 @@ impl ObserveRequest {
 
 fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(code, message)
+}
+
+/// The engine-internal delivery an `ObserveSource` asks for.
+fn deliver_of(source: &ObserveSource) -> Deliver {
+    if source.raw_input {
+        Deliver::Input
+    } else {
+        Deliver::Payload
+    }
 }
 
 /// The input of `rbac.on_observer_registration_function_id`: the
@@ -335,16 +343,6 @@ impl ObserverRegistry {
         // Values a newer peer may send and this engine cannot honour
         // (CONTRACT D14). Never defaulted: the observer would silently do
         // something other than what was asked.
-        if let Some(on) = &source.on
-            && !on.is_known()
-        {
-            return Err(unsupported("source.on", on.as_str()));
-        }
-        if let Some(deliver) = &source.deliver
-            && !deliver.is_known()
-        {
-            return Err(unsupported("source.deliver", deliver.as_str()));
-        }
         if let Some(unknown) = source
             .capture
             .iter()
@@ -352,6 +350,23 @@ impl ObserverRegistry {
             .find(|capture| !capture.is_known())
         {
             return Err(unsupported("source.capture", unknown.as_str()));
+        }
+        // Fields an older SDK may still send: refused rather than ignored,
+        // since ignoring them would fire the target on other outcomes than
+        // the ones asked for.
+        if let Some(field) = source.removed_field() {
+            return Err(reject(
+                observe_codes::INVALID_ARGS,
+                format!(
+                    "`source.{field}` was removed: `source.capture` decides which outcomes \
+                     fire the target and what it receives"
+                ),
+            ));
+        }
+        if let Some(list) = &source.capture
+            && let Err(message) = CaptureSet::resolve(list)
+        {
+            return Err(reject(observe_codes::INVALID_ARGS, message));
         }
 
         for (field, value) in [
@@ -531,8 +546,7 @@ impl ObserverRegistry {
             args,
             filter,
             capture: CaptureSet::from_list(&capture),
-            on: source.on(),
-            deliver: source.deliver(),
+            deliver: deliver_of(&source),
             metadata: activation_metadata,
             policy: Policy {
                 max_fires,
@@ -2023,8 +2037,9 @@ mod tests {
     fn index_entries_are_live_observers_under_random_interleavings() {
         use std::sync::atomic::{AtomicBool, AtomicU64};
 
+        use super::super::Deliver;
         use super::super::{EngineObserver, interleave};
-        use crate::protocol::{DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::DEFAULT_NAMESPACE;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

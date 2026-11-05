@@ -1915,7 +1915,7 @@ class III:
             task.add_done_callback(self._log_task_exception)
             return
 
-        # The engine evaluates the observers' `on` and filters of every call it
+        # The engine evaluates the observers' capture and filters of every call it
         # routes (decision 55). On an observe.v2 engine the host runs the
         # function's match hook, and its answer names the observers the hook
         # matched, or its deliver hook, and its answer says it delivered the
@@ -2004,7 +2004,7 @@ class III:
         deliver hook, on an ``observe.v2`` engine: the handler, then its
         delivery, then the answer. The handler gets ``resolved_data`` (channel
         refs as readers and writers); its delivery sees ``data``, the input as
-        it arrived. The engine evaluates ``on`` and filters (decision 55): the
+        it arrived. The engine evaluates capture and filters (decision 55): the
         answer of a function with a deliver hook carries ``delivered: true``,
         that of a function with a match hook the ids it matched in
         ``matched``, and that of any other function neither."""
@@ -2504,7 +2504,7 @@ class III:
     ) -> Any:
         """Sets which observers want each call of one function. By default
         every observer wants every call; iii's delivery then applies their
-        ``on`` and filters, and an ``on_observation_deliver`` receives only the
+        capture and filters, and an ``on_observation_deliver`` receives only the
         observers that matched.
 
         As a predicate, ``hook(obs, call) -> bool`` is asked once per
@@ -2575,7 +2575,7 @@ class III:
         the call started, and what it returns (or raises) is what the caller
         gets back. iii delivers nothing for that function: the hook calls
         through observers (``iii.call({"observer": obs, ...})``) and applies
-        their ``on`` and filters with ``obs.matches(call)``. Works as a
+        their capture and filters with ``obs.matches(call)``. Works as a
         decorator (``@iii.on_observation_deliver("fn::id")``) and returns the
         hook; ``None`` restores iii's delivery.
 
@@ -3310,10 +3310,11 @@ class III:
     ) -> ObserverHandle:
         """Observes a function: when ``source`` runs, ``target`` runs. Every
         call of the source function that passes ``source["filters"]`` invokes
-        ``target``, a registered function, with the ``Observed`` envelope
-        (``input``, ``output`` or ``error``, ``caller``, ...);
-        ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
-        value instead. The worker that hosts the source can decide otherwise
+        ``target``, a registered function, with the ``Observed`` payload:
+        the top-level fields plus what ``source["capture"]`` names that applies
+        to the outcome (``input``, ``output`` or ``error``, ``caller``,
+        ``metadata``). ``capture`` also decides which outcomes fire the target.
+        The worker that hosts the source can decide otherwise
         in its ``on_observation_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
@@ -3335,7 +3336,7 @@ class III:
             source: What is observed: a function id, or ``function_id``,
                 ``namespace``, ``args`` (read by the worker that hosts the
                 function, validated against its ``args_format``),
-                ``filters``, and ``on`` / ``capture`` / ``deliver``.
+                ``filters``, and ``capture``.
             target: The function to invoke: its id, or
                 ``{"function_id": ..., "namespace": ...}``. Register it first;
                 until then the observer stays ``pending``.
@@ -3352,7 +3353,7 @@ class III:
             >>> iii.observe("orders::create", "alerts::big-order")
             >>> iii.register_function("alerts::payment-failed", notify)
             >>> failures = iii.observe(
-            ...     {"function_id": "payments::charge", "on": "error",
+            ...     {"function_id": "payments::charge", "capture": ["error", "caller"],
             ...      "filters": {"input.amount": {"$gte": 500}}},
             ...     "alerts::payment-failed",
             ...     {"max_in_flight": 4},

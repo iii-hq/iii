@@ -10,13 +10,14 @@ describe('engine::on-functions-changed (an engine-hosted source)', () => {
     let callCount = 0
 
     const handlerFunctionId = `browser.test.fna.handler.${crypto.randomUUID()}`
-    const handlerFn = iii.registerFunction(handlerFunctionId, async ({ functions }: { functions: FunctionRow[] }) => {
+    const handlerFn = iii.registerFunction(handlerFunctionId, async ({ input }: { input: { functions: FunctionRow[] } }) => {
+      const { functions } = input
       latestFunctions = functions
       callCount++
       return null
     })
 
-    const changes = iii.observe({ function_id: EngineSources.FUNCTIONS_CHANGED, deliver: 'input' }, handlerFunctionId)
+    const changes = iii.observe({ function_id: EngineSources.FUNCTIONS_CHANGED, capture: ['input'] }, handlerFunctionId)
     await changes.ready()
 
     const fn = iii.registerFunction('browser.test.fna.dynamic', async () => ({ ok: true }))
@@ -38,12 +39,12 @@ describe('engine::on-functions-changed (an engine-hosted source)', () => {
     let callCount = 0
 
     const handlerFunctionId = `browser.test.fna.handler.${crypto.randomUUID()}`
-    const handlerFn = iii.registerFunction(handlerFunctionId, async (_: { functions: FunctionRow[] }) => {
+    const handlerFn = iii.registerFunction(handlerFunctionId, async (_: { input: { functions: FunctionRow[] } }) => {
       callCount++
       return null
     })
 
-    const changes = iii.observe({ function_id: EngineSources.FUNCTIONS_CHANGED, deliver: 'input' }, handlerFunctionId)
+    const changes = iii.observe({ function_id: EngineSources.FUNCTIONS_CHANGED, capture: ['input'] }, handlerFunctionId)
     await changes.ready()
 
     const fn1 = iii.registerFunction('browser.test.fna.before-unsub', async () => ({}))

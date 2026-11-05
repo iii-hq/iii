@@ -383,7 +383,7 @@ func waitUntil(t testing.TB, what string, cond func() bool) {
 
 // observerInfo is an observer as the engine pushes it to the host.
 func observerInfo(id, target string, args, filters string, capture ...Capture) ObserverInfo {
-	info := ObserverInfo{ID: id, Target: target, On: OnSuccess, Capture: capture}
+	info := ObserverInfo{ID: id, Target: target, Capture: capture}
 	if capture == nil {
 		info.Capture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 	}

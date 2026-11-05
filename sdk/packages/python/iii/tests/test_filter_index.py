@@ -543,9 +543,9 @@ def _tenant_observers(n: int) -> list[dict[str, Any]]:
     observers = [observer_info(f"t{i}", "t", filters={"input.tenant": {"$eq": f"tenant-{i}"}}) for i in range(n)]
     observers += [
         observer_info("big", "t", filters={"input.total": {"$gte": 100}}),
-        observer_info("errors", "t", on="error", filters={"input.tenant": {"$in": ["tenant-1", "tenant-2"]}}),
+        observer_info("errors", "t", filters={"input.tenant": {"$in": ["tenant-1", "tenant-2"]}}, capture=["error"]),
         observer_info("eu", "t", filters={"input.tenant": {"$eq": "tenant-3"}, "caller.worker_name": {"$eq": "x"}}),
-        observer_info("all", "t", on="complete"),
+        observer_info("all", "t", capture=["input", "output", "caller", "error"]),
     ]
     return observers
 

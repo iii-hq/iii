@@ -18,8 +18,8 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | A3 | What observers observe is the handler's return value (`output`); `response_format` describes it. | test |
 | A4 | `args` belong to the function's worker: validated against `args_format`, handed to the hooks, never interpreted by iii. `args_format` is allowed on any function. | test |
 | A5 | `filters` belong to iii and are evaluated wherever the call is delivered (host or engine). | test |
-| A6 | `capture` stays: it picks which of `input`, `output`/`error`, `caller` and `metadata` (the observed call's metadata, in the envelope's `metadata` field) the envelope carries; the default is `input`, `output`, `caller`; ids, status and timing are always present; `capture: []` moves no payloads. | test |
-| A7 | `deliver: 'envelope' \| 'input' \| 'output'` picks what the target receives from iii's delivery. | test |
+| A6 | `capture` picks which of `input`, `output`/`error`, `caller` and `metadata` (the observed call's metadata) the payload carries, and with them the outcomes that run the target (decision 59): `input`/`output` on success, `error` on error; a non-empty `capture` without any of `input`, `output`, `error` is refused `INVALID_ARGS`; the default is `input`, `output`, `caller`, `metadata` (success only); ids, status and timing are always present; `capture: []` fires on success and moves no payloads. | test |
+| A7 | The target always receives the `Observed` payload from iii's delivery; a field that is not captured or does not apply to the outcome is absent, and `output` and `error` never appear together. A `source` with `on` or `deliver` is refused `INVALID_ARGS`. | test |
 | A8 | `observe('fn::id', target)` shorthand in every SDK (Go: `ObserveFunction`). | test |
 
 ## B. The four hooks
@@ -35,12 +35,12 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | B7 | A hook set by id before registration (every SDK), or chained on `registerFunction` (Node and browser), sees every observer; in Node and the browser the SDK acks no observer before the registration call returned. A hook set later is caught up and logs one warning. | test |
 | B8 | Hooks stored by id survive `unregister()` and re-registration; a hook id never registered logs a warning after the connection registers. | test |
 | B9 | `null` / `None` / `clear_*` removes a hook. | test |
-| B10 | `onObservationMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with filters, `on`, policy and `deliver` applied. Default: every observer matches. | test |
+| B10 | `onObservationMatch` exists per function, as a predicate `(obs, call) => boolean` or keys `{ observer, call }`. iii delivers to matched observers with capture, filters and policy applied. Default: every observer matches. | test |
 | B11 | Keys: computed once per accepted observer and once per call; a call matches observers under any of its keys, each once; wildcards by listing; the index rebuilds when the hook is set while observers are active; a throwing predicate is no match (logged once); a throwing observer key function rejects the observer. | test |
 | B12 | `isObserved()` is one atomic load; `isObserved(call)` on a key-matched function looks up the call's keys. | test, bench |
 | B13 | `onObservationDeliver` exists per function, takes `(call, observers)` (the matched observers, a snapshot from call start), has no `next`, runs in the function's invocation context and span, and its return/throw is what the caller gets. iii delivers nothing for that function. | test |
 | B14 | No hook takes a `next` parameter or calls `next`, and no `keyed(`, `Keyed`, `as_keyed` or `defaultDeliver` identifier exists anywhere. The grep matches identifiers and hook signatures (`\bkeyed\(\|\bKeyed\b\|\bas_keyed\b\|\bdefaultDeliver\b`, `(onObserver\|on_observer_\|OnObserver)\w*\(.*\bnext\b`), not the English words "next" and "keyed" in prose. | grep |
-| B15 | Calls for one observer (decision 52): a call of a function with metadata `{ for_observer: <observer id> }` reaches that observer alone under a match hook that honors it (a predicate comparing `call.metadata.for_observer` with `obs.id`, or keys filing each observer under `"for_observer:<id>"`), local or routed, and its target receives what it receives for every call of the function (its `deliver`, `capture`, filters, `on`, policy); an ordinary call reaches every matching observer. A local call's metadata reaches the handler, the match hook and the report. Hosts send initial state this way once `obs.accepted()` resolves; docs, examples, skills and READMEs call through an observer only in a deliver hook. | test, read |
+| B15 | Calls for one observer (decision 52): a call of a function with metadata `{ for_observer: <observer id> }` reaches that observer alone under a match hook that honors it (a predicate comparing `call.metadata.for_observer` with `obs.id`, or keys filing each observer under `"for_observer:<id>"`), local or routed, and its target receives what it receives for every call of the function (its `capture`, filters, policy); an ordinary call reaches every matching observer. A local call's metadata reaches the handler, the match hook and the report. Hosts send initial state this way once `obs.accepted()` resolves; docs, examples, skills and READMEs call through an observer only in a deliver hook. | test, read |
 
 ## C. Calls
 
@@ -69,7 +69,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 | # | Requirement | Verify |
 |---|---|---|
 | E1 | Features `observe.v1`, `observe.v2`, `local-dispatch.v1` advertised; v2 SDKs declare v1 and v2. | test |
-| E2 | The host runs every call of its functions with their hooks. Local calls: the host evaluates `on` and filters and sends a batched report. Routed calls: the engine evaluates them (decision 55), among the observers `invocationresult.matched` names when the host sends it, and none when it sends `delivered: true`; both fields are stripped before forwarding and the ids are checked. Hosts without `observe.v2`, engine-hosted sources and HTTP-invoked functions: every active observer. | test |
+| E2 | The host runs every call of its functions with their hooks. Local calls: the host evaluates capture and filters and sends a batched report. Routed calls: the engine evaluates them (decision 55), among the observers `invocationresult.matched` names when the host sends it, and none when it sends `delivered: true`; both fields are stripped before forwarding and the ids are checked. Hosts without `observe.v2`, engine-hosted sources and HTTP-invoked functions: every active observer. | test |
 | E3 | A routed call to an unobserved function costs one load and no copy; 1M unobserved local calls send zero frames. | test, bench |
 | E4 | `output_is_input` on report items when the handler returned its input, only to `observe.v2` engines; an event source's event is serialized once. | test, bench |
 | E5 | No host-reported items for routed calls (`INVALID_REPORT`). | test |
@@ -103,7 +103,7 @@ measures it), **read** (a reviewer confirms it in the code or docs).
 |---|---|---|
 | G1 | Every worker builds and passes its own test suite against the v2 engine and SDKs. | test |
 | G2 | database, cron, http, queue, state match spec §10 (match hooks, deliver hooks, changeFeed setup, `isObserved(call)` gates). | read, test |
-| G3 | Harness: `harness::observe` / `harness::unobserve` agent tools; stored bindings translated at boot or retired with a notice; `harness::on-*` private sources; `observer_fired` records (readers accept `trigger_fired`); envelope deliveries; `expires_in_ms` backstop. | test |
+| G3 | Harness: `harness::observe` / `harness::unobserve` agent tools; stored bindings translated at boot or retired with a notice; `harness::on-*` private sources; `observer_fired` records (readers accept `trigger_fired`); `Observed` payload deliveries; `expires_in_ms` backstop. | test |
 | G4 | ADE: Observers screen (`ext:observers`, migrated state), `ade::ui::asset` with `{ kind, path }`, initial sync through `accepted()`, injectable-UI `functionCalls` / `function-call` with old role accepted. | test, read |
 | G5 | rbac-proxy: observe.v1/v2 forwarded, `local-dispatch.v1` only without middleware or for a function the session hosts privately (decision 46), removed frames dropped with warn-once, observer discovery filtered by access. | test |
 | G6 | SDK pins `=0.26.0` / `0.26.0` / `>=0.26.0` / `v0.26.0`; no committed path overrides. | grep |

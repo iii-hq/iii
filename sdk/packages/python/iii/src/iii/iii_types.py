@@ -51,8 +51,20 @@ SDK_FEATURES: tuple[str, ...] = (
     FEATURE_LARGE_MESSAGES_V1,
 )
 
-#: What an absent ``capture`` means (CONTRACT D1).
-DEFAULT_CAPTURE: tuple[str, ...] = ("input", "output", "caller")
+#: What an absent ``capture`` means (CONTRACT D1): every field but ``error``.
+DEFAULT_CAPTURE: tuple[str, ...] = ("input", "output", "caller", "metadata")
+
+
+def capture_fires(capture: "list[str] | tuple[str, ...]", ok: bool) -> bool:
+    """Whether a call that ended in success (``ok``) or error fires an observer
+    with this ``capture``, as the engine decides it: ``input`` and ``output``
+    fire on success, ``error`` on error; ``caller`` and ``metadata`` fire on
+    nothing. ``[]`` fires on success, with the top-level fields only."""
+    if not capture:
+        return ok
+    if ok:
+        return "input" in capture or "output" in capture
+    return "error" in capture
 
 
 class _WireModel(BaseModel):
@@ -188,8 +200,6 @@ class ObserveSourceWire(_WireModel):
     args: dict[str, Any] | None = None
     filters: dict[str, Any] | None = None
     capture: list[str] | None = None
-    on: str | None = None
-    deliver: str | None = None
 
 
 class FunctionTargetWire(_WireModel):
@@ -249,7 +259,6 @@ class ObserverInfoWire(_WireModel):
     filters: Any = Field(default_factory=dict)
     target: str = ""
     capture: list[str] = Field(default_factory=lambda: list(DEFAULT_CAPTURE))
-    on: str = "success"
 
     @field_validator("args", mode="before")
     @classmethod
@@ -574,7 +583,7 @@ class InvocationResultMessage(BaseModel):
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
     #: A routed call of a function with a match hook (``observe.v2``, decision 55): the
-    #: observers the hook matched, before ``on`` and filters, which the engine evaluates.
+    #: observers the hook matched, before capture and filters, which the engine evaluates.
     #: ``[]`` when it matched none; left out for a function without a match hook.
     matched: list[str] | None = Field(default=None)
     #: A routed call of a function with a deliver hook (``observe.v2``, decision 55): the hook

@@ -737,7 +737,8 @@ class Sdk implements ISdk {
    * and sends nothing.
    *
    * @param source - What is observed: a function id, or `function_id`,
-   *   `args`, `filters`, and `on` / `capture` / `deliver`.
+   *   `args`, `filters`, and `capture` (what the payload carries, and with it
+   *   which outcomes fire the target).
    * @param target - The function to invoke (registered first; until then the observer is `pending`).
    * @param options - Policy and metadata: `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
@@ -1803,7 +1804,7 @@ class Sdk implements ISdk {
       if (traceparent !== undefined) ctx.traceparent = traceparent
       if (baggage !== undefined) ctx.baggage = baggage
 
-      // The engine evaluates the `on` and filters of the calls it routes
+      // The engine evaluates the capture and filters of the calls it routes
       // (decision 55). An observe.v2 host runs the function's match and
       // deliver hooks for them, which see the input as it arrived (channel
       // refs unresolved), and its answer says how the call is delivered:

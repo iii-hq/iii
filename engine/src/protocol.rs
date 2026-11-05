@@ -670,36 +670,15 @@ wire_string_enum! {
     }
 }
 
-/// CONTRACT D1: `["input", "output", "caller"]`.
+/// CONTRACT D1: `["input", "output", "caller", "metadata"]`: every field
+/// but `error`, so the default fires on success only.
 pub fn default_capture() -> Vec<Capture> {
-    vec![Capture::Input, Capture::Output, Capture::Caller]
-}
-
-wire_string_enum! {
-    /// Which outcomes of a function's invocation activate an observer.
-    /// Defaults to `success` (CONTRACT D1).
-    #[derive(Default)]
-    pub enum On {
-        #[default]
-        Success => "success",
-        Error => "error",
-        Complete => "complete",
-    }
-}
-
-wire_string_enum! {
-    /// What the target's first argument is. Defaults to `envelope`
-    /// (CONTRACT D1).
-    #[derive(Default)]
-    pub enum Deliver {
-        /// The `Observed` envelope.
-        #[default]
-        Envelope => "envelope",
-        /// The observed invocation's input alone.
-        Input => "input",
-        /// The observed invocation's output alone.
-        Output => "output",
-    }
+    vec![
+        Capture::Input,
+        Capture::Output,
+        Capture::Caller,
+        Capture::Metadata,
+    ]
 }
 
 wire_string_enum! {
@@ -758,7 +737,8 @@ impl ObserveDescriptor {
 }
 
 /// The left side of `iii.observe`: the observed function, its args and filters,
-/// and the facet (`on`, `capture`, `deliver`). Absent fields stay absent; the
+/// and what to `capture`. `capture` alone decides which outcomes fire the
+/// target and what its payload carries. Absent fields stay absent; the
 /// accessors apply the defaults (CONTRACT D1).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserveSource {
@@ -775,23 +755,30 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deliver: Option<Deliver>,
+    /// The fields `observe` no longer takes (`on`, `deliver`), as they
+    /// arrived: decoded only so the engine refuses them with
+    /// `INVALID_ARGS` instead of silently doing something else.
+    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub removed: serde_json::Map<String, Value>,
+    /// Engine-internal, never on the wire: the target receives the observed
+    /// input alone instead of the payload (the engine's own observers).
+    #[serde(skip)]
+    pub raw_input: bool,
 }
 
-impl ObserveSource {
-    pub fn on(&self) -> On {
-        self.on.clone().unwrap_or_default()
-    }
+/// The `source` fields `observe` no longer takes.
+pub const REMOVED_SOURCE_FIELDS: [&str; 2] = ["on", "deliver"];
 
+impl ObserveSource {
     pub fn capture(&self) -> Vec<Capture> {
         self.capture.clone().unwrap_or_else(default_capture)
     }
 
-    pub fn deliver(&self) -> Deliver {
-        self.deliver.clone().unwrap_or_default()
+    /// The first removed field this source carries, if any.
+    pub fn removed_field(&self) -> Option<&'static str> {
+        REMOVED_SOURCE_FIELDS
+            .into_iter()
+            .find(|field| self.removed.contains_key(*field))
     }
 }
 
@@ -805,9 +792,9 @@ pub struct ObserveTarget {
 }
 
 /// An observer as its function's host sees it (`functionregistered`,
-/// `observeradded`; CONTRACT D15): never its `deliver`, metadata, policy or
-/// observing connection. The engine always sends `capture` and `on` resolved,
-/// so the defaults here only matter when decoding a sparse frame.
+/// `observeradded`; CONTRACT D15): never its metadata, policy or observing
+/// connection. The engine always sends `capture` resolved, so the default
+/// here only matters when decoding a sparse frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserverView {
     pub id: String,
@@ -821,8 +808,6 @@ pub struct ObserverView {
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
-    #[serde(default)]
-    pub on: On,
 }
 
 /// Who made an invocation (README §4.3). Every field is optional on the wire:
@@ -1541,8 +1526,8 @@ mod tests {
     // ── observe (0.25) wire compatibility ─────────────────────────────────
 
     use super::{
-        Activation, Caller, Capture, Deliver, InvocationStatus, ObserveDescriptor, ObserverState,
-        On, default_capture,
+        Activation, Caller, Capture, InvocationStatus, ObserveDescriptor, ObserverState,
+        default_capture,
     };
     use serde_json::{Value, json};
 
@@ -1757,13 +1742,17 @@ mod tests {
         else {
             panic!("expected Observe");
         };
-        assert_eq!(source.on(), On::Success);
         assert_eq!(source.capture(), default_capture());
         assert_eq!(
             source.capture(),
-            vec![Capture::Input, Capture::Output, Capture::Caller]
+            vec![
+                Capture::Input,
+                Capture::Output,
+                Capture::Caller,
+                Capture::Metadata
+            ]
         );
-        assert_eq!(source.deliver(), Deliver::Envelope);
+        assert!(source.removed_field().is_none() && !source.raw_input);
         assert!(source.namespace.is_none() && source.args.is_none() && source.filters.is_none());
         assert!(target.namespace.is_none());
         assert!(
@@ -1899,9 +1888,10 @@ mod tests {
             source.capture.as_deref(),
             Some(&[Capture::Input, Capture::Unknown("timing".into())][..])
         );
-        assert_eq!(source.on, Some(On::Unknown("start".into())));
-        assert!(!source.on().is_known());
-        assert_eq!(source.deliver, Some(Deliver::Unknown("both".into())));
+        // A removed field decodes (so `observe` can refuse it) and re-encodes
+        // as it arrived.
+        assert_eq!(source.removed_field(), Some("on"));
+        assert_eq!(source.removed.get("deliver"), Some(&json!("both")));
         assert_eq!(serde_json::to_value(&msg).unwrap(), frame);
 
         let state: Message = serde_json::from_value(
@@ -1919,8 +1909,6 @@ mod tests {
     fn wire_enums_spell_their_values_in_lowercase() {
         for (value, wire) in [
             (serde_json::to_value(Capture::Metadata).unwrap(), "metadata"),
-            (serde_json::to_value(On::Complete).unwrap(), "complete"),
-            (serde_json::to_value(Deliver::Output).unwrap(), "output"),
             (
                 serde_json::to_value(ObserverState::Suspended).unwrap(),
                 "suspended",

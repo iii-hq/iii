@@ -21,7 +21,7 @@ a `function_id`.
 
 <Note>
   A function that is an observer's target receives what the observed function's documentation
-  describes. For example, a target of `cron::on-tick` with `deliver: "input"` receives the tick, and
+  describes. For example, a target of `cron::on-tick` receives the tick as its payload's `input`, and
   a target of `http::on-request` receives an HTTP request with `body`, `headers`, and other
   properties. Each worker's page at [workers.iii.dev](https://workers.iii.dev/) lists its functions,
   their input, and their `args`.

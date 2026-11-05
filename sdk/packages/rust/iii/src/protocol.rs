@@ -345,9 +345,9 @@ pub enum Message {
         baggage: Option<String>,
         /// Host → engine, from an `observe.v2` host's answer to a routed
         /// call of a function with a match hook: the observers the hook
-        /// matched, before `on` and filters, each once; `[]` when it matched
+        /// matched, before capture and filters, each once; `[]` when it matched
         /// none, and when the host holds no observer of the function for it
-        /// to match (the hook does not run). The engine evaluates `on` and
+        /// to match (the hook does not run). The engine evaluates capture and
         /// filters of those of them that are active observers of the
         /// function. Absent when the function has no match hook: the engine
         /// evaluates every active observer of the function. The
@@ -777,33 +777,31 @@ wire_string_enum! {
     }
 }
 
-/// The default `capture`: `["input", "output", "caller"]`.
+/// The default `capture`: `["input", "output", "caller", "metadata"]`, every
+/// field but `error`, so the default fires on success only.
 pub fn default_capture() -> Vec<Capture> {
-    vec![Capture::Input, Capture::Output, Capture::Caller]
+    vec![
+        Capture::Input,
+        Capture::Output,
+        Capture::Caller,
+        Capture::Metadata,
+    ]
 }
 
-wire_string_enum! {
-    /// Which outcomes of a call activate an observer.
-    #[derive(Default)]
-    pub enum On {
-        #[default]
-        Success => "success",
-        Error => "error",
-        Complete => "complete",
+/// Whether a call that ended in success (or not) fires an observer with this
+/// `capture`, as the engine decides it: `input` and `output` fire on success,
+/// `error` on error; `caller` and `metadata` fire on nothing. `[]` fires on
+/// success, with the top-level fields only.
+pub fn capture_fires(capture: &[Capture], success: bool) -> bool {
+    if capture.is_empty() {
+        return success;
     }
-}
-
-wire_string_enum! {
-    /// What the target's first argument is.
-    #[derive(Default)]
-    pub enum Deliver {
-        /// The [`Observed`](crate::Observed) envelope.
-        #[default]
-        Envelope => "envelope",
-        /// The observed call's input alone.
-        Input => "input",
-        /// The observed call's output alone.
-        Output => "output",
+    if success {
+        capture
+            .iter()
+            .any(|c| matches!(c, Capture::Input | Capture::Output))
+    } else {
+        capture.contains(&Capture::Error)
     }
 }
 
@@ -848,10 +846,6 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deliver: Option<Deliver>,
 }
 
 /// The right side of `iii.observe` on the wire: a registered function.
@@ -881,8 +875,6 @@ pub struct ObserverView {
         deserialize_with = "null_as_default_capture"
     )]
     pub capture: Vec<Capture>,
-    #[serde(default, deserialize_with = "null_as_default")]
-    pub on: On,
 }
 
 /// Who made an invocation. `worker_id` / `worker_name` are stamped by the

@@ -76,13 +76,13 @@ onClick.onObserverAdded(() => {
   }
 });
 
-// Runs each time link::record_click runs, with the click it returned.
-worker.registerFunction("click-streamer::announce", async (click: Click) => {
+// Runs each time link::record_click runs, with the click it returned as `output`.
+worker.registerFunction("click-streamer::announce", async ({ output: click }: { output: Click }) => {
   await worker.call({ function_id: "click-streamer::on-click", payload: click });
   return null;
 });
 worker.observe(
-  { function_id: "link::record_click", deliver: "output" },
+  { function_id: "link::record_click", capture: ["output"] },
   "click-streamer::announce",
 );
 
@@ -101,8 +101,8 @@ Each part of that file has one job:
   feed, and overrides iii's default of accepting every one: past 256 listeners it throws, and the
   observer is rejected.
 - **`announce` connects the feed to `link`.** It observes `link::record_click` with
-  `deliver: "output"`, so it runs after each successful call of `link::record_click` and receives
-  what that call returned. It then calls the feed with the click.
+  `capture: ["output"]`, so it runs after each successful call of `link::record_click` and receives
+  what that call returned as the payload's `output`. It then calls the feed with the click.
 
 ## Return the click from `link`
 
@@ -186,15 +186,15 @@ const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134", {
 
 type Click = { id: number; code: string; clicked_at: string };
 
-worker.registerFunction("click-watcher::print", async (click: Click) => {
+worker.registerFunction("click-watcher::print", async ({ output: click }: { output: Click }) => {
   console.log(`click #${click.id}: ${click.code} at ${click.clicked_at}`);
   return null;
 });
 
 // Observe first, then read the total, so no click falls between the two.
-// deliver: "output" hands click-watcher::print the click the feed returned.
+// capture: ["output"] hands click-watcher::print the click the feed returned, as `output`.
 await worker
-  .observe({ function_id: "click-streamer::on-click", deliver: "output" }, "click-watcher::print")
+  .observe({ function_id: "click-streamer::on-click", capture: ["output"] }, "click-watcher::print")
   .ready();
 
 const summary = await worker.call<Record<string, never>, { total: number; last_id: number }>({
@@ -243,7 +243,7 @@ worker.observe(
   {
     function_id: "click-streamer::on-click",
     filters: { "input.code": { $eq: "stream-1" } },
-    deliver: "output",
+    capture: ["output"],
   },
   "click-watcher::print",
 );

@@ -36,8 +36,8 @@ Find yours by its `target` and read its `state`:
   (`INVALID_ARGS`, or a code from the worker such as `INVALID_CRON_EXPRESSION`). See
   [Observer states](./using-iii/observers#observer-states).
 - `active` with `fires` and `dropped` at 0: no call has reached it. Check these:
-  - Only calls that start after the observer turned `active`, end with the outcome its `on` asks for
-    (`success` by default), and pass its filters run the target. A call already running when the
+  - Only calls that start after the observer turned `active`, end with an outcome its `capture` fires
+    on (success by default), and pass its filters run the target. A call already running when the
     observer turned `active` does not, so call the function again.
   - A function whose worker matches observers to calls (with `onObservationMatch` or
     `onObservationDeliver`) gives a call only to the observers its `args` select. Compare the

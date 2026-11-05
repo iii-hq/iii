@@ -21,6 +21,11 @@ status: live
 > the trigger compatibility shim are replaced by
 > [observe v2](../2026-10-29-observe-v2/README.md). The rest of this design
 > still applies where observe v2 says nothing.
+>
+> Observe v2 also folds `on` and `deliver` into `capture`, which alone
+> decides which outcomes run a target and what it receives
+> ([decision 59](../2026-10-29-observe-v2/decisions.md)): the `on`,
+> `deliver` and default-`capture` rules below describe 0.25.
 
 A trigger type is a function whose owner wants to know who observes it. A
 trigger is an observer.

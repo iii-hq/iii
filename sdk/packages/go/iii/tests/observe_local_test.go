@@ -87,7 +87,7 @@ func TestObserveEquivalenceLocalAndRemote(t *testing.T) {
 	})
 	got := collector(t, watcher, target)
 	h, _ := watcher.Observe(iii.Source{
-		FunctionID: price, On: iii.OnComplete, Capture: allCaptures,
+		FunctionID: price, Capture: allCaptures,
 		Filters: iii.Filters{"input.sku": iii.Op{"$prefix": "A-"}},
 	}, target, iii.ObserverOptions{Metadata: raw(map[string]string{"observer": "eq"})})
 	ready(t, h)
@@ -745,7 +745,7 @@ func TestObserveCallForOneObserver(t *testing.T) {
 			a, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}}, toA)
 			ready(t, a)
 			exactly(t, gotA, 1, "A's state", 10*time.Second)
-			b, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Deliver: iii.DeliverOutput}, toB)
+			b, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Capture: []iii.Capture{iii.CaptureOutput}}, toB)
 			ready(t, b)
 			exactly(t, gotB, 1, "B's state", 10*time.Second)
 			if n := gotA.len(); n != 1 {
@@ -784,8 +784,8 @@ func TestObserveCallForOneObserver(t *testing.T) {
 				}
 			}
 			for i, got := range gotB.all() {
-				if want := map[string]any{"session": "s1", "n": float64(i)}; !reflect.DeepEqual(got.Data, want) {
-					t.Errorf("B's activation %d: %v, want %v", i, got.Data, want)
+				if want := map[string]any{"session": "s1", "n": float64(i)}; !reflect.DeepEqual(got.Data["output"], want) {
+					t.Errorf("B's activation %d: output %v, want %v", i, got.Data["output"], want)
 				}
 			}
 		})

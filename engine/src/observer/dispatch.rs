@@ -63,14 +63,15 @@ use super::{
     FnKey, ObserverRegistry,
     context::{ENGINE_CALLER_NAME, InvocationCtx},
     lifecycle::{
-        CANCELLED, INVALID_REPORT, Observer, PendingActivation, failure_reasons, lock, now_ms,
+        CANCELLED, Deliver, INVALID_REPORT, Observer, PendingActivation, failure_reasons, lock,
+        now_ms,
     },
     owner::{ActiveSet, Needs},
 };
 use crate::{
     protocol::{
-        Activation, Caller, Deliver, DroppedReportStats, ErrorBody, InvocationStatus,
-        LocalFunctionStats, ObservedItem, ObservedItems, On, observe_codes,
+        Activation, Caller, DroppedReportStats, ErrorBody, InvocationStatus, LocalFunctionStats,
+        ObservedItem, ObservedItems, observe_codes,
     },
     worker_connections::WorkerConnection,
 };
@@ -1032,7 +1033,7 @@ impl ObserverRegistry {
             Matching::Filters => match &set.filters {
                 Some(filters) => {
                     for (_, observer) in filters.matches(&doc) {
-                        if accepts(&observer.on, completed.success) {
+                        if observer.capture.fires(completed.success) {
                             self.activate_within(observer, &completed, max_depth);
                         }
                     }
@@ -1041,7 +1042,7 @@ impl ObserverRegistry {
                 None => {
                     for leaf in set.observers.leaves() {
                         for observer in leaf {
-                            if accepts(&observer.on, completed.success)
+                            if observer.capture.fires(completed.success)
                                 && observer.filter.matches(&doc)
                             {
                                 self.activate_within(observer, &completed, max_depth);
@@ -1062,7 +1063,7 @@ impl ObserverRegistry {
                 }
                 held.sort_by_key(|observer| observer.seq());
                 for observer in &held {
-                    if accepts(&observer.on, completed.success) && observer.filter.matches(&doc) {
+                    if observer.capture.fires(completed.success) && observer.filter.matches(&doc) {
                         self.activate_within(observer, &completed, max_depth);
                     }
                 }
@@ -1494,7 +1495,7 @@ impl ObserverRegistry {
             });
             for id in &matched {
                 match self.get(id).filter(|o| o.function == key) {
-                    Some(observer) if !accepts(&observer.on, success) => {}
+                    Some(observer) if !observer.capture.fires(success) => {}
                     Some(observer) => {
                         if self.activate(&observer, &completed)
                             && !full.iter().any(|o| Arc::ptr_eq(o, &observer))
@@ -1946,16 +1947,6 @@ pub struct ObserverCall {
     pub fire_and_forget: bool,
 }
 
-/// Whether `on` takes an invocation that ended in success (or not).
-fn accepts(on: &On, success: bool) -> bool {
-    match on {
-        On::Success => success,
-        On::Error => !success,
-        On::Complete => true,
-        On::Unknown(_) => false,
-    }
-}
-
 /// An SDK-side drop reason as a metric label: the reasons SDKs report
 /// (protocol.md §4), anything else as `OTHER`, so a peer cannot mint labels.
 fn sdk_drop_reason(reason: &str) -> &'static str {
@@ -2083,14 +2074,13 @@ async fn run_activations(
     }
 }
 
-/// The target's first argument (README §4.3): the `Observed` envelope, or the
-/// observed input / output alone with `deliver`.
+/// The target's first argument (README §4.3): the payload (the top-level
+/// fields plus what the observer captures that applies to the outcome) or,
+/// for the engine's own observers, the observed input alone.
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
     let shipped = |value: &Option<Arc<Value>>| value.as_deref().cloned().unwrap_or(Value::Null);
-    match &observer.deliver {
-        Deliver::Input => return shipped(&completed.input),
-        Deliver::Output => return shipped(&completed.output),
-        Deliver::Envelope | Deliver::Unknown(_) => {}
+    if observer.deliver == Deliver::Input {
+        return shipped(&completed.input);
     }
     let capture = observer.capture;
     let mut envelope = Map::new();

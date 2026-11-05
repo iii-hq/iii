@@ -409,8 +409,11 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
         filters: { $and: [{ 'input.amount': { $gte: 500 } }] },
         capture: ['input'],
       }),
-      observerInfo('out', 'audit::out', { filters: { $and: [{ 'output.charged': { $gt: 0 } }] }, capture: ['output'] }),
-      observerInfo('errors', 'alerts::err', { on: 'error' }),
+      observerInfo('out', 'audit::out', {
+        filters: { $and: [{ 'output.charged': { $gt: 0 } }] },
+        capture: ['output'],
+      }),
+      observerInfo('errors', 'alerts::err', { capture: ['error'] }),
     ])
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 750 }, metadata: { tenant: 'acme' } })
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 0 } })
@@ -431,16 +434,20 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
     })
   })
 
-  it("on: 'error' sees only failures, with the error and the caller", async () => {
+  it('capture decides the outcomes: error without input or output sees only failures; [] only successes', async () => {
     const { sdk, socket } = await observed([
-      observerInfo('errors', 'alerts::err', { on: 'error', capture: ['input', 'error', 'caller'] }),
-      observerInfo('all', 'audit::all', { on: 'complete', capture: [] }),
+      observerInfo('errors', 'alerts::err', { capture: ['error', 'caller'] }),
+      observerInfo('all', 'audit::all', { capture: ['input', 'error'] }),
+      observerInfo('empty', 'audit::count', { capture: [] }),
     ])
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 1, fail: true } }).catch(() => undefined)
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 2 } })
     await fake.elapse(10)
     const items = reportedItems(socket)
-    expect(items.map((i) => i.matched)).toEqual([['errors', 'all'], ['all']])
+    expect(items.map((i) => i.matched)).toEqual([
+      ['errors', 'all'],
+      ['all', 'empty'],
+    ])
     expect(items[0]).toMatchObject({
       status: 'error',
       input: { amount: 1, fail: true },
@@ -448,12 +455,12 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
     })
     // made outside any handler: no caller (the engine stamps the worker)
     expect(items[0]).not.toHaveProperty('caller')
-    expect(items[1]).not.toHaveProperty('input')
+    expect(items[1]).toMatchObject({ status: 'success', input: { amount: 2 } })
     expect(items[1]).not.toHaveProperty('output')
   })
 
   it('the caller of a call made inside a handler: that invocation, never worker_id / worker_name', async () => {
-    const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['caller'] })])
+    const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['input', 'caller'] })])
     sdk.registerFunction('checkout::confirm', async () =>
       sdk.call({ function_id: 'payments::charge', payload: { amount: 5 } }),
     )

@@ -62,12 +62,11 @@ export type ErrorBody = {
  */
 export type OpenEnum<T extends string> = T | (string & {})
 
-/** What an observer ships to its target (`capture`). */
+/**
+ * What an observer captures (`capture`): the fields its target's payload
+ * carries, and with them the outcomes that fire it.
+ */
 export type CaptureWire = OpenEnum<'input' | 'output' | 'error' | 'caller' | 'metadata'>
-/** Which outcomes of a call reach the observer (`on`). */
-export type ObserveOnWire = OpenEnum<'success' | 'error' | 'complete'>
-/** What the target receives (`deliver`). */
-export type ObserveDeliverWire = OpenEnum<'envelope' | 'input' | 'output'>
 /** Observer lifecycle state. */
 export type ObserverStateWire = OpenEnum<'pending' | 'active' | 'suspended' | 'error' | 'disposed'>
 
@@ -98,8 +97,6 @@ export type ObserveSourceWire = {
   args?: Record<string, unknown>
   filters?: Record<string, unknown>
   capture?: CaptureWire[]
-  on?: ObserveOnWire
-  deliver?: ObserveDeliverWire
 }
 
 export type ObserveMessage = {
@@ -146,7 +143,6 @@ export type ObserverInfoWire = {
   filters: Record<string, unknown>
   target: string
   capture: CaptureWire[]
-  on: ObserveOnWire
 }
 
 export type FunctionRegisteredMessage = {
@@ -607,7 +603,7 @@ export type InvocationResultMessage = {
   baggage?: string
   /**
    * Host → engine (`observe.v2`): the observers the function's match hook
-   * (`onObservationMatch`) matched for this routed call, before their `on` and
+   * (`onObservationMatch`) matched for this routed call, before their capture and
    * filters, which the engine evaluates; `[]` when it matched none. Left out
    * by a function without a match hook: the engine then evaluates every
    * active observer of the function.

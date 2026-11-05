@@ -213,13 +213,13 @@ def test_on_observer_added_runs_once_per_add_and_the_observer_is_active_before_t
     assert seen == [("o1", False)]
     assert ref.is_observed() is True
     [obs] = ref.observers()
-    assert (obs.id, obs.function_id, obs.target, obs.capture, obs.on) == (
+    assert (obs.id, obs.function_id, obs.target, obs.capture) == (
         "o1",
         "orders::create",
         "t::a",
-        ["input", "output", "caller"],
-        "success",
+        ["input", "output", "caller", "metadata"],
     )
+    assert not hasattr(obs, "on")
 
     engine.deliver(
         observer_added("orders::create", 4, observer_info("o2", "t::b", filters={"$and": [{"input.a": {"$eq": 1}}]}))

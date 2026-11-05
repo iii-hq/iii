@@ -936,7 +936,7 @@ observers get it: a predicate that returns a boolean.
 #### `onObservationDeliver(call, observers)`
 
 By default, iii carries out each observation: it runs the target of every matched observer whose
-`on` and filters match the call, and gives the caller the handler's return value. Override it to
+capture and filters match the call, and gives the caller the handler's return value. Override it to
 deliver the call yourself and change what is returned to the caller.
 
 <Tabs>
@@ -1049,9 +1049,9 @@ deliver the call yourself and change what is returned to the caller.
 `onObservationMatch` selects, for each call, which observers get it, so a function can route its
 calls by the args of its observers. The predicate receives the observer and the call, and returns a
 boolean: `true` when that observer gets this call, `false` when it does not. The SDK calls it once
-for each active observer, before that observer's `on` and filters; a predicate that throws counts as
-no match for that observer. iii does everything else as usual: each observer's `on`, filters, policy
-and `deliver` still apply.
+for each active observer, before that observer's capture and filters; a predicate that throws counts as
+no match for that observer. iii does everything else as usual: each observer's capture, filters
+and policy still apply.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1903,8 +1903,8 @@ observer, so the worker can keep it, for example in a map.
 | `args`                  | The observer's args, already validated against `args_format` by the engine.                                                         |
 | `filters`               | The observer's filters in [normal form](../reference/filters#normal-form).                                                          |
 | `target`                | The target function id.                                                                                                             |
-| `on`, `capture`         | Which calls the observer gets (`success`, `error` or `complete`), and which parts of the call its envelope carries.                 |
-| `matches(call)`         | Evaluates the observer's `on` and filters on a call.                                                                                |
+| `capture`               | Which parts of the call its payload carries, and with them which calls the observer gets (see [`capture`](../using-iii/observers#capture)). |
+| `matches(call)`         | Evaluates the observer's capture and filters on a call.                                                                             |
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |
 

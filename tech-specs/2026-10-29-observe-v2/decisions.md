@@ -23,7 +23,7 @@ differ, this file wins, and the spec is updated to match.
    the `result` and, from a host that declared `observe.v2`, how the call is
    delivered (decision 55: every observer, the ids its match hook matched, or
    delivered by its deliver hook). The `InvocationResult` arm fills it; the
-   routed hook evaluates the observers' `on` and filters against the input it
+   routed hook evaluates the observers' capture and filters against the input it
    kept (the routed hook keeps the input exactly when the function is
    observed, as in 0.25) and the answer.
 4. **`output_is_input`** exists on `invocationsobserved` items only. An
@@ -134,11 +134,12 @@ differ, this file wins, and the spec is updated to match.
 39. **Errors on routed answers.** `matched` may ride an `invocationresult`
     that carries `error`, and the engine evaluates the observers of an answer
     that carries `error` like any other: iii's delivery rethrows the handler's
-    error, and the envelope's `status` and `error` come from the answer.
+    error, and the payload's `status` and `error` come from the answer.
 40. **`_caller_worker_id`.** The engine removes the top-level
     `_caller_worker_id` from every observed `input` and `output` it delivers:
-    the envelope's fields, and the bare value under `deliver: input` or
-    `deliver: output`, whether it kept the value itself or a host reported it.
+    the payload's fields, and the bare input an engine-internal observer
+    receives (decision 59), whether it kept the value itself or a host
+    reported it.
 41. **Holding registrations.** An SDK sends a `registerfunction` that needs
     `observe.v2` (decision 18) only after the current connection's
     `workerregistered` advertised `observe.v2`, and decides again on every
@@ -184,8 +185,8 @@ differ, this file wins, and the spec is updated to match.
     object answer keeps the observer as it is, since a rewrite applies to a
     registration being created.
 48. **The announced `capture`** (`observeradded`, `functionregistered`) also
-    names the part `deliver` hands the target: `input` under `deliver: input`,
-    `output` under `deliver: output`. A host's report of a local call carries
+    names the input an engine-internal observer hands its target (decision
+    59). A host's report of a local call carries
     the parts its matched observers' announced `capture` names, so the engine
     has what it delivers.
 49. **A call through an observer runs as an activation of the observer.**
@@ -227,7 +228,7 @@ differ, this file wins, and the spec is updated to match.
     read: its input (it forwarded the invocation and keeps the input when an
     observer needs it), its output or error (the `invocationresult`,
     decision 36), its caller and its metadata. So the engine evaluates the
-    observers' `on` and filters of every routed call, at no extra frame, and
+    observers' capture and filters of every routed call, at no extra frame, and
     the host keeps what is worker code: the function's match hook, which
     reads the observers' args, and its deliver hook. An `observe.v2` host's
     `invocationresult` to a routed call says which of three cases the call
@@ -236,7 +237,7 @@ differ, this file wins, and the spec is updated to match.
     | The answer carries | The function | The engine |
     |---|---|---|
     | neither field | has no match hook and no deliver hook | evaluates every active observer of the function |
-    | `"matched": [ids]` | has a match hook: the observers it matched, before `on` and filters, each once; `[]` when it matched none, or when the host held no active observer of the function as the call started (the hook then has none to match and does not run) | evaluates those of them that are active observers of the invoked function; any other id counts `INACTIVE` |
+    | `"matched": [ids]` | has a match hook: the observers it matched, before capture and filters, each once; `[]` when it matched none, or when the host held no active observer of the function as the call started (the hook then has none to match and does not run) | evaluates those of them that are active observers of the invoked function; any other id counts `INACTIVE` |
     | `"delivered": true` | has a deliver hook, which delivered the call; the answer is what the hook returned or threw | activates nothing |
 
     A host sends at most one of the two fields, and `delivered` outweighs
@@ -273,7 +274,7 @@ differ, this file wins, and the spec is updated to match.
     host's and an engine-hosted function's included.
 
     The engine never sees a host's calls of its own functions, so the host
-    evaluates `on` and filters of its local calls and reports the observers
+    evaluates capture and filters of its local calls and reports the observers
     delivered (`invocationsobserved`, decisions 4, 38, 48).
 
     The engine matches every evaluation through `iii_filter::FilterIndex`,
@@ -315,7 +316,7 @@ differ, this file wins, and the spec is updated to match.
 
     Under decision 12, an activation of a routed call its host did not narrow
     is labelled `engine`, and one its match hook named `host`.
-    `isObserved(call)`, `capture`, `deliver`, `on`, policy (`max_fires`,
+    `isObserved(call)`, `capture`, policy (`max_fires`,
     expiry, `max_in_flight`), the loop guard, the caller stamps (decisions
     40, 49), the reports of local calls, match keys and `for_observer`
     (decision 52) behave as their own decisions say, and every observer
@@ -331,6 +332,26 @@ differ, this file wins, and the spec is updated to match.
     §6: `FORBIDDEN` at `observe`, and an observer whose target registers as
     private goes to `error`), so the check decides the calls that arrive
     while such a registration reaches the observer.
+
+59. **`capture` alone decides.** An observer's `capture` decides both which
+    outcomes run its target and what the `Observed` payload carries; the
+    `observe` source has no other facet. `input` and `output` fire the target
+    on success, `error` on error; `caller` and `metadata` only add to the
+    payload. A non-empty `capture` must name at least one of `input`,
+    `output`, `error`: the engine refuses one with only `caller` or
+    `metadata` (`INVALID_ARGS`). `[]` is resolved before that check to a
+    success carrying the top-level fields only (ids, `status`, timing). The
+    default is `input`, `output`, `caller`, `metadata`, so a default
+    observer runs on success only. The payload carries the captured fields
+    that apply to the outcome: `output` only on success, `error` only on
+    error, and a field that does not apply is absent, never `null`. Hosts
+    evaluate the same rule for the calls they deliver. A `source` that
+    carries `on` or `deliver` is refused (`INVALID_ARGS`) rather than read
+    as something else. The engine's own observers (the configuration, stream
+    and telemetry workers, engine-owned observers) still hand their targets
+    the observed input alone, through an engine-internal setting that never
+    reaches the wire; their announced `capture` names `input`, so a host
+    reports it.
 
 ## SDKs (all five)
 
@@ -423,7 +444,7 @@ differ, this file wins, and the spec is updated to match.
     predicate compares `call.metadata.for_observer` with `obs.id`; key
     functions also file each observer under `"for_observer:<id>"` and give
     such a call that one key. iii delivers it like every call, with that
-    observer's `deliver`, `capture`, filters, `on` and policy, so a target
+    observer's `capture`, filters and policy, so a target
     receives every event of the function in one shape. The host makes the
     call after `obs.accepted()` resolves (decision 19). A call through an
     observer (`iii.call({ observer, payload })`) belongs in a deliver hook,
@@ -572,7 +593,7 @@ differ, this file wins, and the spec is updated to match.
     an untranslatable one is retired with an owner notice. Harness events
     become private functions `harness::on-<event>`. `harness::triggers::*`
     becomes `harness::observers::*`; new records use `observer_fired`, and
-    readers accept `trigger_fired`. Deliveries use the `Observed` envelope.
+    readers accept `trigger_fired`. Deliveries use the `Observed` payload.
     Observers carry `expires_in_ms` as a backstop; never `max_fires` (the
     harness counts fires itself).
 31. **rbac-proxy.** Advertises `observe.v1`, `observe.v2`; forwards the

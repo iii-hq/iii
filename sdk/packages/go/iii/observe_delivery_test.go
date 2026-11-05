@@ -742,7 +742,7 @@ func TestRoutedErrorAnswerCarriesMatched(t *testing.T) {
 	})
 	registerHost(t, c, "payments::soft", failing)
 	onError := ObserverInfo{ID: "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60", Target: "alerts::payment-failed", Filters: json.RawMessage(`{}`), Args: json.RawMessage(`{}`),
-		Capture: []Capture{CaptureInput, CaptureError, CaptureCaller}, On: OnError}
+		Capture: []Capture{CaptureError, CaptureCaller}}
 	for _, fn := range []string{"payments::charge", "payments::refund", "payments::soft"} {
 		addObserver(t, fe, fn, onError)
 	}
@@ -1000,11 +1000,11 @@ func TestIsObservedAndObserversFollowTheActiveSet(t *testing.T) {
 	}
 }
 
-// Observer.Matches applies on and the filters to a call, a partial one included: an
+// Observer.Matches applies the capture and the filters to a call, a partial one included: an
 // empty Status reads as error when Error is set.
 func TestObserverMatchesACall(t *testing.T) {
 	f := newFunctionObservers(New("ws://unused.invalid"), "pay::fn", true, false)
-	onError, err := newObserver(f, ObserverInfo{ID: "e", Target: "x", On: OnError, Filters: json.RawMessage(`{"$and":[{"input.amount":{"$gte":500}}]}`)}, 1)
+	onError, err := newObserver(f, ObserverInfo{ID: "e", Target: "x", Capture: []Capture{CaptureError}, Filters: json.RawMessage(`{"$and":[{"input.amount":{"$gte":500}}]}`)}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

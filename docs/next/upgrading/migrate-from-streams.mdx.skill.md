@@ -186,16 +186,16 @@ export async function emitOrderEvent(event: OrderEvent): Promise<void> {
 Consumer:
 
 ```typescript
-worker.registerFunction("notify::order-shipped", async (event: OrderEvent) => {
+worker.registerFunction("notify::order-shipped", async ({ input }: Observed<OrderEvent>) => {
   // Idempotent: the producer may announce the same change twice.
-  return { notified: event.order_id };
+  return { notified: input?.order_id };
 });
 
 worker.observe(
   {
     function_id: "orders::on-event",
     filters: { "input.status": { $eq: "shipped" } },
-    deliver: "input",
+    capture: ["input"],
   },
   "notify::order-shipped",
 );
@@ -264,7 +264,8 @@ function apply(order: Order) {
 
 worker.registerFunction(
   "dashboard::order-changed",
-  async (change: { order_id: string; revision: number }) => {
+  async ({ input }: Observed<{ order_id: string; revision: number }>) => {
+    const change = input as { order_id: string; revision: number };
     if ((applied.get(change.order_id) ?? 0) >= change.revision) return; // already have it
     const order = await worker.call<{ order_id: string }, Order>({
       function_id: "orders::get",
@@ -276,7 +277,7 @@ worker.registerFunction(
 
 // 1. Observe first so no change between the read and the observer is missed.
 const changes = worker.observe(
-  { function_id: "orders::on-changed", deliver: "input" },
+  { function_id: "orders::on-changed", capture: ["input"] },
   "dashboard::order-changed",
 );
 await changes.ready();
@@ -432,9 +433,10 @@ Recipe 3.
 
 Things to check while migrating:
 
-- **Payload envelope.** `pubsub` and `queue::on-message` deliver the published `data` as-is. An
-  observable function defines its own payload, and its observers receive the `Observed` envelope
-  unless they set `deliver: "input"` or `deliver: "output"`, so update consumer handlers.
+- **Payload.** `pubsub` and `queue::on-message` deliver the published `data` as-is. An observable
+  function defines its own payload, and its observers receive the `Observed` payload, with the
+  call's input as its `input` and its return value as its `output` per their `capture`, so update
+  consumer handlers.
 - **Namespaces.** `pubsub` ignored namespaces: topics were global and subscriber functions resolved
   in the `default` namespace. Observers name the namespace of the function they observe and of their
   target, so a consumer in another namespace names it.

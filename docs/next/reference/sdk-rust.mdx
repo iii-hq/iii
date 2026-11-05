@@ -308,10 +308,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
     <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
-      What travels to the target. Default `[input, output, caller]`.
-    </ParamField>
-    <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
-      What the target receives when iii delivers: the `Observed` envelope (default), or the observed input or output alone. A function whose deliver hook calls targets itself documents what they receive.
+      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`.
     </ParamField>
     <ParamField body="filters" type="fn(filters: Value) -> Self" required>
       Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
@@ -324,9 +321,6 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
       The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
-    </ParamField>
-    <ParamField body="on" type="fn(on: On) -> Self" required>
-      Which outcomes reach the target. Default `On::Success`.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -656,10 +650,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
     <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
-      What travels to the target. Default `[input, output, caller]`.
-    </ParamField>
-    <ParamField body="deliver" type="fn(deliver: Deliver) -> Self" required>
-      What the target receives when iii delivers: the `Observed` envelope (default), or the observed input or output alone. A function whose deliver hook calls targets itself documents what they receive.
+      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`.
     </ParamField>
     <ParamField body="filters" type="fn(filters: Value) -> Self" required>
       Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
@@ -672,9 +663,6 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
     </ParamField>
     <ParamField body="namespace" type="fn(namespace: impl Into<String>) -> Self" required>
       The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`).
-    </ParamField>
-    <ParamField body="on" type="fn(on: On) -> Self" required>
-      Which outcomes reach the target. Default `On::Success`.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -1053,6 +1041,49 @@ async wait_until_registered(timeout: Duration) -> Result<(), Error>
 
 
 ## Functions
+
+### capture_fires
+
+Whether a call that ended in success (or not) fires an observer with this
+`capture`, as the engine decides it: `input` and `output` fire on success,
+`error` on error; `caller` and `metadata` fire on nothing. `[]` fires on
+success, with the top-level fields only.
+
+**Signature**
+
+```rust
+capture_fires(capture: &[Capture], success: bool) -> bool
+```
+
+#### Parameters
+
+<ParamField body="capture" type="&[Capture]" required>
+
+  <Expandable title="`Capture` fields">
+    <ParamField body="Input" type="unit" required>
+    </ParamField>
+    <ParamField body="Output" type="unit" required>
+    </ParamField>
+    <ParamField body="Error" type="unit" required>
+    </ParamField>
+    <ParamField body="Caller" type="unit" required>
+    </ParamField>
+    <ParamField body="Metadata" type="unit" required>
+    </ParamField>
+    <ParamField body="Unknown" type="(String)" required>
+      A value this SDK does not know, kept verbatim.
+    </ParamField>
+    <ParamField body="as_str" type="fn() -> &str" required>
+      The wire spelling.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="success" type="bool" required>
+</ParamField>
+
+
+---
 
 ### current_invocation
 
@@ -1464,7 +1495,7 @@ cost no allocation.
 Which calls of a function each observer wants: the function's match hook
 (`IIIClient::on_observation_match_for`). A worker sets it when its
 observers' args say which calls they want; iii does everything else as
-usual: the observers' filters, `on`, policy and `deliver` still apply.
+usual: the observers' capture, filters and policy still apply.
 `IIIClient::clear_observation_match_for` removes it: every observer
 wants every call again.
 
@@ -1500,14 +1531,14 @@ dyn-compatible; pass a concrete hook to `IIIClient::on_observer_removed`.
 #### Observer
 
 One observer of a function this worker hosts, as its host sees it: its
-id, args, filters, target, capture and `on`. Never its metadata, policy or
+id, args, filters, target and capture. Never its metadata, policy or
 observing worker.
 
 Cheap to clone (an `Arc`), so hooks take it by value and a worker keeps it
 in its own index. Two `Observer`s are equal when their ids are.
 
 The engine may announce an observer again with the same args and other
-filters, target, capture or `on`: it stays the same observer and no hook
+filters, target or capture: it stays the same observer and no hook
 runs. Handles given out earlier keep the view they were made with, and
 `IIIClient::observers` returns the announced one.
 
@@ -1521,9 +1552,8 @@ runs. Handles given out earlier keep the view they were made with, and
 | `function_id` | `fn() -> &str` | Yes | The observed function: the one this worker registered. |
 | `id` | `fn() -> &str` | Yes | The observer's id (client-generated, stable across replays). |
 | `is_active` | `fn() -> bool` | Yes | Whether it is still delivered to: accepted, and neither removed nor rejected since. |
-| `matches` | fn(call: &[`Call`](#call)) -&gt; bool | Yes | Whether `call` reaches this observer: its `on` accepts the call's status and its filters match the call. A deliver hook that calls targets itself applies them with this. |
+| `matches` | fn(call: &[`Call`](#call)) -&gt; bool | Yes | Whether `call` reaches this observer: its `capture` fires on the call's status and its filters match the call. A deliver hook that calls targets itself applies them with this. |
 | `namespace` | `fn() -> &str` | Yes | The observed function's namespace. |
-| `on` | fn() -&gt; &[`On`](#on) | Yes | Which outcomes of a call reach it. |
 | `reject` | `fn(code: impl Into<String>, message: impl Into<String>)` | Yes | Rejects this observer after it was accepted (a config reload removed what it needs). It stops receiving calls now, and its removed hooks run next on the function's hook task, connected or not; the engine moves it to `error` with this code, and its `observerremoved` that follows runs none again. The rejection holds across a reconnect: the SDK sends it again whenever the engine lists the observer, until a fresh `observeradded` brings it back. Called while the observer's added hooks run, it rejects the observer once they return, and the removed hook of each level whose added hook resolved runs. |
 | `target` | `fn() -> &str` | Yes | The function each delivery invokes. |
 
@@ -1546,8 +1576,8 @@ the observer's `ready()` fails with. Any other error is `OBSERVE_REJECTED`.
 
 #### Observed
 
-What an observer's target receives with the default `deliver: envelope`:
-the observed call, per the observer's `capture`.
+What an observer's target receives when iii delivers: the observed
+call, per the observer's `capture`.
 
 ```rust,no_run
 iii.register_function(
@@ -1653,13 +1683,11 @@ The left side of an observer: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `fn(args: Value) -> Self` | Yes | Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean. |
-| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What travels to the target. Default `[input, output, caller]`. |
-| `deliver` | fn(deliver: [`Deliver`](#deliver)) -&gt; Self | Yes | What the target receives when iii delivers: the `Observed` envelope (default), or the observed input or output alone. A function whose deliver hook calls targets itself documents what they receive. |
+| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`. |
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
 | `function_id` | `fn() -> &str` | Yes | The observed function id. |
 | `namespace` | `fn(namespace: impl Into<String>) -> Self` | Yes | The namespace the function is in. Unset, it resolves like a `call`: this worker's namespace (`default` for `engine::*` and `configuration::*`). |
-| `on` | fn(on: [`On`](#on)) -&gt; Self | Yes | Which outcomes reach the target. Default `On::Success`. |
 
 ---
 
@@ -1684,7 +1712,7 @@ The right side of an observer: a registered function.
 
 ### iii_sdk::protocol
 
-[`Activation`](#activation) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallRequest`](#callrequest) · [`CallRequestWithMetadata`](#callrequestwithmetadata) · [`Capture`](#capture) · [`Deliver`](#deliver) · [`Dispatch`](#dispatch) · [`DroppedReportStats`](#droppedreportstats) · [`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`InvocationStatus`](#invocationstatus) · [`LocalFunctionStats`](#localfunctionstats) · [`Message`](#message) · [`ObservedItem`](#observeditem) · [`ObserverState`](#observerstate) · [`ObserverView`](#observerview) · [`ObserveSource`](#observesource) · [`ObserveTarget`](#observetarget) · [`On`](#on) · [`ParentCaller`](#parentcaller) · [`RegisterFunctionMessage`](#registerfunctionmessage)
+[`Activation`](#activation) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallRequest`](#callrequest) · [`CallRequestWithMetadata`](#callrequestwithmetadata) · [`Capture`](#capture) · [`Dispatch`](#dispatch) · [`DroppedReportStats`](#droppedreportstats) · [`ErrorBody`](#errorbody) · [`FunctionMessage`](#functionmessage) · [`InvocationStatus`](#invocationstatus) · [`LocalFunctionStats`](#localfunctionstats) · [`Message`](#message) · [`ObservedItem`](#observeditem) · [`ObserverState`](#observerstate) · [`ObserverView`](#observerview) · [`ObserveSource`](#observesource) · [`ObserveTarget`](#observetarget) · [`ParentCaller`](#parentcaller) · [`RegisterFunctionMessage`](#registerfunctionmessage)
 
 #### Activation
 
@@ -1795,20 +1823,6 @@ whatever is captured.
 | `Error` | `unit` | Yes | - |
 | `Caller` | `unit` | Yes | - |
 | `Metadata` | `unit` | Yes | - |
-| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
-| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
-
----
-
-#### Deliver
-
-What the target's first argument is.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Envelope` | `unit` | Yes | The `Observed` envelope. |
-| `Input` | `unit` | Yes | The observed call's input alone. |
-| `Output` | `unit` | Yes | The observed call's output alone. |
 | `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
 | `as_str` | `fn() -> &str` | Yes | The wire spelling. |
 
@@ -1986,7 +2000,6 @@ worker.
 | `filters` | `Value` | Yes | The observer's filters in normal form; `{}` matches every call. |
 | `target` | `String` | Yes | Target function id (its namespace is not disclosed). |
 | `capture` | Vec&lt;[`Capture`](#capture)&gt; | Yes | - |
-| `on` | [`On`](#on) | Yes | - |
 
 ---
 
@@ -2002,8 +2015,6 @@ engine applies the defaults.
 | `args` | `Option<Value>` | No | - |
 | `filters` | `Option<Value>` | No | - |
 | `capture` | Option&lt;Vec&lt;[`Capture`](#capture)&gt;&gt; | No | - |
-| `on` | Option&lt;[`On`](#on)&gt; | No | - |
-| `deliver` | Option&lt;[`Deliver`](#deliver)&gt; | No | - |
 
 ---
 
@@ -2015,20 +2026,6 @@ The right side of `iii.observe` on the wire: a registered function.
 | --- | --- | --- | --- |
 | `function_id` | `String` | Yes | - |
 | `namespace` | `Option<String>` | No | - |
-
----
-
-#### On
-
-Which outcomes of a call activate an observer.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Success` | `unit` | Yes | - |
-| `Error` | `unit` | Yes | - |
-| `Complete` | `unit` | Yes | - |
-| `Unknown` | `(String)` | Yes | A value this SDK does not know, kept verbatim. |
-| `as_str` | `fn() -> &str` | Yes | The wire spelling. |
 
 ---
 

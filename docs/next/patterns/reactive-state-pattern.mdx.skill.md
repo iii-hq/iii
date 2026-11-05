@@ -23,7 +23,7 @@ when a user record updates, propagate a calculated value into another scope when
 ## Example
 
 When the `status` key in the `orders` scope changes, run `orders::notify-status-change` with the
-change. `deliver: "input"` gives the target the change document alone.
+change. `capture: ["input"]` gives the target the change document as the payload's `input`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -36,8 +36,8 @@ change. `deliver: "input"` gives the target the change document alone.
       new_value: unknown;
     };
 
-    worker.registerFunction("orders::notify-status-change", async (change: StateChange) => {
-      await notifyCustomer(change.new_value);
+    worker.registerFunction("orders::notify-status-change", async ({ input }: Observed<StateChange>) => {
+      await notifyCustomer(input.new_value);
       return null;
     });
 
@@ -46,7 +46,7 @@ change. `deliver: "input"` gives the target the change document alone.
       {
         function_id: "state::on-changed",
         filters: { "input.scope": { $eq: "orders" }, "input.key": { $eq: "status" } },
-        deliver: "input",
+        capture: ["input"],
       },
       "orders::notify-status-change",
     );
@@ -55,8 +55,8 @@ change. `deliver: "input"` gives the target the change document alone.
   </Tab>
   <Tab title="Python">
     ```python
-    def notify_status_change(change: dict) -> None:
-        notify_customer(change["new_value"])
+    def notify_status_change(observed: dict) -> None:
+        notify_customer(observed["input"]["new_value"])
 
     worker.register_function("orders::notify-status-change", notify_status_change)
 
@@ -65,7 +65,7 @@ change. `deliver: "input"` gives the target the change document alone.
         {
             "function_id": "state::on-changed",
             "filters": {"input.scope": {"$eq": "orders"}, "input.key": {"$eq": "status"}},
-            "deliver": "input",
+            "capture": ["input"],
         },
         "orders::notify-status-change",
     )
@@ -74,12 +74,13 @@ change. `deliver: "input"` gives the target the change document alone.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Deliver, Error, RegisterFunction, Source};
+    use iii_sdk::{Capture, Error, Observed, RegisterFunction, Source};
     use serde_json::{Value, json};
 
     worker.register_function(
         "orders::notify-status-change",
-        RegisterFunction::new(|change: Value| {
+        RegisterFunction::new(|observed: Observed<Value>| {
+            let change = observed.input.unwrap_or_default();
             notify_customer(&change["new_value"]);
             Ok::<_, Error>(())
         }),
@@ -89,7 +90,7 @@ change. `deliver: "input"` gives the target the change document alone.
     worker.observe(
         Source::function("state::on-changed")
             .filters(json!({ "input.scope": { "$eq": "orders" }, "input.key": { "$eq": "status" } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "orders::notify-status-change",
     );
     ```
@@ -98,13 +99,15 @@ change. `deliver: "input"` gives the target the change document alone.
   <Tab title="Go">
     ```go
     worker.RegisterFunction("orders::notify-status-change", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var change struct {
-            NewValue json.RawMessage `json:"new_value"`
+        var observed struct {
+            Input struct {
+                NewValue json.RawMessage `json:"new_value"`
+            } `json:"input"`
         }
-        if err := json.Unmarshal(data, &change); err != nil {
+        if err := json.Unmarshal(data, &observed); err != nil {
             return nil, err
         }
-        return nil, notifyCustomer(ctx, change.NewValue)
+        return nil, notifyCustomer(ctx, observed.Input.NewValue)
     })
 
     // When orders/status changes, run orders::notify-status-change with the change.
@@ -114,7 +117,7 @@ change. `deliver: "input"` gives the target the change document alone.
             "input.scope": iii.Op{"$eq": "orders"},
             "input.key":   iii.Op{"$eq": "status"},
         },
-        Deliver: iii.DeliverInput,
+        Capture: []iii.Capture{iii.CaptureInput},
     }, "orders::notify-status-change"); err != nil {
         log.Fatal(err)
     }

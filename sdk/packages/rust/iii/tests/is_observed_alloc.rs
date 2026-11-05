@@ -129,8 +129,7 @@ async fn a_key_miss_does_not_allocate() {
         "type": "functionregistered", "id": "cron::on-tick", "namespace": "default",
         "revision": 1, "local_dispatch": true,
         "observers": [{ "id": "nine", "args": { "expression": "0 0 9 * * * *" },
-                        "filters": {}, "target": "reports::daily", "capture": ["input"],
-                        "on": "success" }]
+                        "filters": {}, "target": "reports::daily", "capture": ["input"] }]
     }));
     let deadline = Instant::now() + Duration::from_secs(5);
     while !on_tick.is_observed() {

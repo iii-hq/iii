@@ -37,12 +37,12 @@ def use_functions_available(
 ) -> Callable[[], None]:
     handler_fn_id = f"iii_example.functions_available_listener.{uuid.uuid4()}"
 
-    async def handler(event: dict[str, Any]) -> None:
-        # the rows of `engine::functions::list`, as plain dicts
-        callback(event.get("functions", []))
+    async def handler(observed: dict[str, Any]) -> None:
+        # the event is the payload's `input`: the rows of `engine::functions::list`, as plain dicts
+        callback(observed["input"].get("functions", []))
 
     fn_ref = iii.register_function(handler_fn_id, handler)
-    observer = iii.observe({"function_id": EngineSources.FUNCTIONS_CHANGED, "deliver": "input"}, handler_fn_id)
+    observer = iii.observe({"function_id": EngineSources.FUNCTIONS_CHANGED, "capture": ["input"]}, handler_fn_id)
 
     def unsubscribe() -> None:
         observer.dispose()

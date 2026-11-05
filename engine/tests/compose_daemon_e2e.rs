@@ -22,7 +22,7 @@ use iii_compose::{
     remote,
 };
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, InitOptions, RegisterFunction, Source, register_worker};
+use iii_sdk::{Capture, InitOptions, RegisterFunction, Source, register_worker};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
@@ -939,8 +939,8 @@ async fn an_observer_filtered_on_one_operation_receives_its_terminal_progress() 
     let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel::<Value>();
     follower.register_function(
         "test::operation-progress",
-        RegisterFunction::new(move |event: Value| {
-            let _ = events_tx.send(event);
+        RegisterFunction::new(move |payload: Value| {
+            let _ = events_tx.send(payload["input"].clone());
             Ok::<_, iii_sdk::Error>(Value::Null)
         }),
     );
@@ -951,7 +951,7 @@ async fn an_observer_filtered_on_one_operation_receives_its_terminal_progress() 
                 "input.operation_id": { "$eq": operation_id },
                 "input.terminal": { "$eq": true },
             }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "test::operation-progress",
     );
     tokio::time::timeout(Duration::from_secs(5), observer.ready())

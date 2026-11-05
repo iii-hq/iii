@@ -336,7 +336,7 @@ pub(crate) mod test_support {
         engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
         function::FunctionResult,
         observer::ObserveRequest,
-        protocol::{Deliver, ObserveSource, ObserveTarget, ObserverState},
+        protocol::{ObserveSource, ObserveTarget, ObserverState},
         worker_connections::WorkerConnection,
     };
 
@@ -384,8 +384,8 @@ pub(crate) mod test_support {
                 args: None,
                 filters,
                 capture: None,
-                on: None,
-                deliver: Some(Deliver::Input),
+                removed: Default::default(),
+                raw_input: true,
             },
             target: ObserveTarget {
                 function_id: target.to_string(),
@@ -449,7 +449,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Deliver;
 
     /// An engine-hosted source's events reach its observers (with the
     /// engine's depth), are not built while nothing observes it, and a direct
@@ -524,7 +523,7 @@ mod tests {
             "test::workers",
             Some(json!({ "output.event": { "$eq": "worker_connected" } })),
         );
-        request.source.deliver = Some(Deliver::Envelope);
+        request.source.raw_input = false;
         test_support::observe_request(&engine, &worker, request).await;
 
         let event = json!({ "event": "worker_connected", "worker_id": "w-1" });

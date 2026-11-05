@@ -437,10 +437,10 @@ pub(crate) struct Needs {
 impl Needs {
     /// What `observer` captures or delivers.
     fn delivered(observer: &Observer) -> Self {
-        let capture = observer.capture;
+        let capture = observer.capture.with_delivered(&observer.deliver);
         Self {
-            input: capture.input || observer.deliver == crate::protocol::Deliver::Input,
-            output: capture.output || observer.deliver == crate::protocol::Deliver::Output,
+            input: capture.input,
+            output: capture.output,
             error: capture.error,
             caller: capture.caller,
             metadata: capture.metadata,
@@ -2054,8 +2054,8 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
 }
 
 /// An observer as its function's owner sees it (CONTRACT D15). `capture`
-/// also names the part `deliver` gives the target, so the host's report of
-/// a local call carries it.
+/// also names the input an engine-internal observer gives its target, so
+/// the host's report of a local call carries it.
 pub(crate) fn view(observer: &Observer) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
@@ -2063,7 +2063,6 @@ pub(crate) fn view(observer: &Observer) -> ObserverView {
         filters: observer.filter.normalized().clone(),
         target: observer.target.1.clone(),
         capture: observer.capture.with_delivered(&observer.deliver).to_list(),
-        on: observer.on.clone(),
     }
 }
 
@@ -2210,15 +2209,15 @@ mod tests {
     #[tokio::test]
     async fn a_call_keeps_what_its_observers_need() {
         use super::super::events::test_support;
-        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE};
         let engine = Arc::new(crate::engine::Engine::new());
         let _source = test_support::capture(&engine, "test::src");
         let _target = test_support::capture(&engine, "test::dst");
         let (worker, _socket) = test_support::worker(&engine);
-        let observe = |id: &str, filters: Option<Value>, capture: Vec<Capture>, deliver| {
+        let observe = |id: &str, filters: Option<Value>, capture: Vec<Capture>| {
             let mut request = test_support::request(id, "test::src", "test::dst", filters);
             request.source.capture = Some(capture);
-            request.source.deliver = Some(deliver);
+            request.source.raw_input = false;
             request
         };
         let needs = |engine: &crate::engine::Engine| {
@@ -2229,12 +2228,7 @@ mod tests {
                 .needs
         };
 
-        test_support::observe_request(
-            &engine,
-            &worker,
-            observe("count", None, vec![], Deliver::Envelope),
-        )
-        .await;
+        test_support::observe_request(&engine, &worker, observe("count", None, vec![])).await;
         assert_eq!(needs(&engine), Needs::default());
 
         test_support::observe_request(
@@ -2244,7 +2238,6 @@ mod tests {
                 "filtered",
                 Some(json!({ "input.n": { "$eq": 1 }, "caller.worker_name": { "$ne": "x" } })),
                 vec![],
-                Deliver::Envelope,
             ),
         )
         .await;
@@ -2258,7 +2251,7 @@ mod tests {
         test_support::observe_request(
             &engine,
             &worker,
-            observe("outputs", None, vec![Capture::Error], Deliver::Output),
+            observe("outputs", None, vec![Capture::Output, Capture::Error]),
         )
         .await;
         let delivered = Needs {
@@ -2322,7 +2315,7 @@ mod tests {
                 crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 target.to_string(),
             ),
-            deliver: crate::protocol::Deliver::Input,
+            deliver: crate::observer::Deliver::Input,
             metadata: None,
         }
     }
@@ -2673,7 +2666,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_call_keeps_goes_with_the_observers_that_need_it() {
         use super::super::events::test_support;
-        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE};
         let engine = Arc::new(crate::engine::Engine::new());
         let _source = test_support::capture(&engine, "test::src");
         let _target = test_support::capture(&engine, "test::dst");
@@ -2681,7 +2674,7 @@ mod tests {
         let observe = |id: &str, filters: Option<Value>| {
             let mut request = test_support::request(id, "test::src", "test::dst", filters);
             request.source.capture = Some(vec![]);
-            request.source.deliver = Some(Deliver::Envelope);
+            request.source.raw_input = false;
             request
         };
         let needs = || {
@@ -2699,7 +2692,7 @@ mod tests {
         }
         let mut errors = test_support::request("errors", "test::src", "test::dst", None);
         errors.source.capture = Some(vec![Capture::Error]);
-        errors.source.deliver = Some(Deliver::Envelope);
+        errors.source.raw_input = false;
         test_support::observe_request(&engine, &worker, errors).await;
         let reads = Needs {
             input: true,

@@ -22,7 +22,7 @@ import (
 // Features this SDK declares in its engine::workers::register payload. The engine
 // advertises the first three in WorkerRegistered: observe.v2 includes observe.v1, and
 // with it this worker runs the match and deliver hooks of the functions it hosts for
-// their routed calls, whose observers' on and filters the engine evaluates.
+// their routed calls, whose observers' capture and filters the engine evaluates.
 // FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to
 // 64 MiB, so the engine sends it messages of that size whatever version it reports.
 const (
@@ -73,7 +73,7 @@ var unsupportedReason = &ObserveReason{
 //	client.RegisterFunction("alerts::payment-failed", notify)
 //	failures, err := client.Observe(iii.Source{
 //	    FunctionID: "payments::charge",
-//	    On:         iii.OnError,
+//	    Capture:    []iii.Capture{iii.CaptureError, iii.CaptureCaller}, // fires on errors only
 //	    Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
 //	}, "alerts::payment-failed")
 //	if err == nil {
@@ -109,8 +109,6 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 			FunctionID: source.FunctionID,
 			Namespace:  invocationNamespace(source.FunctionID, source.Namespace, c.namespace),
 			Capture:    slices.Clone(source.Capture),
-			On:         source.On,
-			Deliver:    source.Deliver,
 		},
 		Target: ObserveMessageTarget{FunctionID: target, Namespace: invocationNamespace(target, o.TargetNamespace, c.namespace)},
 	}
