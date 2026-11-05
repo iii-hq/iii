@@ -245,7 +245,7 @@ fn payload(len: usize) -> String {
             "name": format!("row-{i:05}"),
             "tags": ["a", "b"],
             "price": i as f64 * 1.5,
-            "active": i % 2 == 0,
+            "active": i.is_multiple_of(2),
         });
         size += row.to_string().len() + 1;
         rows.push(row);
