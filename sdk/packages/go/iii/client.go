@@ -759,10 +759,11 @@ type CallRequest struct {
 	// guard. The call goes out on the current connection, after the acks already sent
 	// on it; FunctionID, Namespace and an enqueue action do not apply. It takes no
 	// Metadata: the target's metadata is the observer's registration metadata, and Call
-	// refuses a request with Metadata before anything is sent. A host calls
-	// through an observer in the function's [DeliverHook], which applies the observer's
-	// filters with [Observer.Matches], or to send one observer something of its own, such
-	// as its initial state once it is accepted (see [Observer.Accepted]).
+	// refuses a request with Metadata before anything is sent. A call through
+	// an observer belongs in the function's [DeliverHook], which applies the observer's
+	// filters with [Observer.Matches]; to send one observer something outside delivery
+	// (its initial state), call the function with metadata {"for_observer": <obs.ID>}
+	// (see [Observer.Accepted]).
 	Observer *Observer
 	// Payload is the JSON input of the function (payload in the Node, Python and Rust
 	// SDKs). Nil is sent as {}.

@@ -2360,7 +2360,21 @@ mod adapter_restart_tests {
             vm.state = Some(State::Running);
             vm.name_held = true;
         }
-        let pid = alive(dir, "own").unwrap();
+        // The command writes its pid once it has started, and a restarted one only after
+        // the supervisor knows its pid: wait for both to name the same live process
+        // instead of racing a slow start.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            let running = own_status(project).await.pid;
+            match alive(dir, "own") {
+                Some(pid) if Some(pid) == running => break pid,
+                written => assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "own's command never wrote the pid the supervisor runs: {written:?} vs {running:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGKILL,

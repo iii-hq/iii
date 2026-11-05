@@ -75,7 +75,6 @@ pub fn setup(iii: &IIIClient) {
             .deliver(Deliver::Input),
         "example::on_error_log",
     );
-
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────

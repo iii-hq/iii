@@ -1266,6 +1266,12 @@ mod tests {
         }
     }
 
+    /// The exit code a run that ends on `signal` reports: 128 + signal, as a unix shell
+    /// reports a child's; Windows has no signals, and `vm_exit` reads one as exit code 1.
+    fn exit_code_on_signal(signal: i32) -> i32 {
+        if cfg!(unix) { 128 + signal } else { 1 }
+    }
+
     #[tokio::test]
     async fn a_signal_while_running_stops_the_vm_within_the_grace() {
         let (client, mut called) = fake_engine(adapter(|_, _| None)).await;
@@ -1274,7 +1280,7 @@ mod tests {
         let status = run_vm(&context(), &client, &shutdown, printer)
             .await
             .unwrap();
-        assert_eq!(exit_code(status), 128 + 15);
+        assert_eq!(exit_code(status), exit_code_on_signal(15));
         let grace = payload(&calls(&mut called), "worker::stop")["grace_ms"]
             .as_u64()
             .unwrap();
@@ -1296,7 +1302,7 @@ mod tests {
         let status = run_vm(&context(), &client, &shutdown, printer)
             .await
             .unwrap();
-        assert_eq!(exit_code(status), 128 + 15);
+        assert_eq!(exit_code(status), exit_code_on_signal(15));
         assert!(begun.elapsed() < Duration::from_secs(2));
         let calls = calls(&mut called);
         assert!(payloads(&calls, "worker::start").is_empty(), "{calls:?}");
@@ -1316,7 +1322,7 @@ mod tests {
         let status = run_vm(&context(), &client, &shutdown, printer)
             .await
             .unwrap();
-        assert_eq!(exit_code(status), 128 + 15);
+        assert_eq!(exit_code(status), exit_code_on_signal(15));
         assert_eq!(payload(&calls(&mut called), "worker::stop")["instance"], 7);
     }
 
@@ -1338,7 +1344,7 @@ mod tests {
             took >= Duration::from_millis(1750),
             "gave up early: {took:?}"
         );
-        assert_eq!(exit_code(status), 128 + 9);
+        assert_eq!(exit_code(status), exit_code_on_signal(9));
     }
 
     #[tokio::test]

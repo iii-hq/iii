@@ -285,7 +285,12 @@ impl Project {
     /// SIGKILLs the host command of `key`, then waits for `state`.
     fn kill_command(&self, key: &str, state: &str) {
         let command = self.pid(key).expect("a running command");
-        sigkill(command);
+        // Compose runs a script as `sh -c <script>` in a process group of its own. A shell
+        // that does not exec its last command (dash, Ubuntu's sh) is the pid compose reports,
+        // so SIGKILL the group: the whole command dies at once, as in a crash, rather than
+        // leaving `iii sandbox run` to be stopped gracefully by compose's group SIGTERM.
+        nix::sys::signal::killpg(Pid::from_raw(command as i32), Signal::SIGKILL)
+            .expect("SIGKILL the command's process group");
         wait_for(SHORT, &format!("{key} to read {state}"), || {
             (self.pid(key) != Some(command) && self.state(key).as_deref() == Some(state))
                 .then_some(())
