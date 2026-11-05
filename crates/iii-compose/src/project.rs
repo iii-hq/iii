@@ -2360,21 +2360,10 @@ mod adapter_restart_tests {
             vm.state = Some(State::Running);
             vm.name_held = true;
         }
-        // The command writes its pid once it has started, and a restarted one only after
-        // the supervisor knows its pid: wait for both to name the same live process
-        // instead of racing a slow start.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        let pid = loop {
-            let running = own_status(project).await.pid;
-            match alive(dir, "own") {
-                Some(pid) if Some(pid) == running => break pid,
-                written => assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "own's command never wrote the pid the supervisor runs: {written:?} vs {running:?}"
-                ),
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        // The command writes its own pid once it has started: wait for a live one rather
+        // than race a slow start (a killed command's file reads as none). It is not the
+        // pid the supervisor runs where `sh -c` stays the command's parent (dash).
+        let pid = own_command_pid(dir).await;
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGKILL,
@@ -2383,6 +2372,21 @@ mod adapter_restart_tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         project.reap_unexpected_exits().await;
         pid
+    }
+
+    /// The pid `own`'s running command wrote, once it has written one.
+    async fn own_command_pid(dir: &Path) -> u32 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pid) = alive(dir, "own") {
+                return pid;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "own's command never wrote its pid"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     async fn own_status(project: &Project) -> ContainerStatus {
@@ -2421,9 +2425,7 @@ mod adapter_restart_tests {
                     crash
                 );
                 // The pid the next crash kills, written once the command has started.
-                while alive(dir.path(), "own") != own_status(&project).await.pid {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
+                own_command_pid(dir.path()).await;
             }
             assert_eq!(vm.lock().unwrap().stops, Vec::<serde_json::Value>::new());
             project.shutdown().await;
