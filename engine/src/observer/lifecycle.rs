@@ -596,12 +596,12 @@ struct Timers {
 /// One `iii.observe(source, target)`.
 pub struct Observer {
     pub id: String,
-    /// The observed function, `(namespace, function_id)`.
-    pub function: FnKey,
-    /// `function.1`, shared: the `function_id` label of its metrics.
-    function_label: Arc<str>,
-    /// The function each activation invokes.
-    pub target: FnKey,
+    /// The observed function, `(namespace, function_id)`, shared with the
+    /// function's other observers, its entry and its active set.
+    pub function: Arc<FnKey>,
+    /// The function each activation invokes, shared with the other
+    /// observers that invoke it.
+    pub target: Arc<FnKey>,
     /// The spec its observing worker asked for, kept only when it differs
     /// from what the observer's own fields give (a registration hook or a
     /// function prefix rewrote it): see [`Observer::spec_matches`].
@@ -665,8 +665,8 @@ impl Drop for Observer {
 /// Everything `Observer::new` needs; the registry builds it after validation.
 pub(crate) struct NewObserver {
     pub id: String,
-    pub function: FnKey,
-    pub target: FnKey,
+    pub function: Arc<FnKey>,
+    pub target: Arc<FnKey>,
     /// The spec its observing worker asked for; `None` when the observer's
     /// own fields are its spec.
     pub spec: Option<ObserveSpec>,
@@ -689,7 +689,6 @@ impl Observer {
         let spec = new.spec;
         let mut observer = Self {
             id: new.id,
-            function_label: Arc::from(new.function.1.as_str()),
             function: new.function,
             target: new.target,
             spec: None,
@@ -760,10 +759,10 @@ impl Observer {
 
     /// Whether the observer's own fields give `spec`.
     fn has_spec(&self, spec: &ObserveSpec) -> bool {
-        spec.function == self.function
-            && spec.target == self.target
+        spec.function == *self.function
+            && spec.target == *self.target
             && spec.args == self.args
-            && spec.filters == *self.filter.normalized()
+            && self.filter.normalized_eq(&spec.filters)
             && spec.capture == self.capture.to_list()
             && spec.on == self.on
             && spec.deliver == self.deliver
@@ -856,9 +855,19 @@ impl Observer {
         self.status.read().observing.session.clone()
     }
 
-    /// The `function_id` label of its metrics: its function's id, shared.
+    /// The worker name and namespace of its observing worker.
+    pub(crate) fn observing_names(&self) -> (Option<Arc<str>>, Arc<str>) {
+        let status = self.status.read();
+        (
+            status.observing.worker_name.clone(),
+            status.observing.namespace.clone(),
+        )
+    }
+
+    /// The `function_id` label of its metrics: its function's id. Made for
+    /// the records that carry it, so an observer at rest holds no copy.
     pub(crate) fn function_label(&self) -> Arc<str> {
-        self.function_label.clone()
+        Arc::from(self.function.1.as_str())
     }
 
     /// Whether the engine created this observer for one of its own modules.
@@ -1393,8 +1402,9 @@ impl ObserverRegistry {
     /// that connection: the id is free for it at once (decision 56).
     pub(super) fn forget(&self, observer: &Arc<Observer>) {
         observer.cancel_timers();
-        self.by_id
-            .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
+        self.by_id.remove_if(observer.id.as_str(), |current, _| {
+            Arc::ptr_eq(&current.0, observer)
+        });
         let (connection, connected, answered, tombstone, reason) = {
             let status = observer.status.read();
             (

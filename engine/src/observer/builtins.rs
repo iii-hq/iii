@@ -122,7 +122,7 @@ impl ObserverRegistry {
             function_id: observer.function.1.clone(),
             namespace: observer.function.0.clone(),
             args: observer.args.clone(),
-            filters: observer.filter.normalized().clone(),
+            filters: observer.filter.to_normalized(),
             target: ObserverTargetInfo {
                 function_id: observer.target.1.clone(),
                 namespace: observer.target.0.clone(),

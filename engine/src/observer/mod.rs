@@ -61,7 +61,9 @@ use crate::{
     worker_connections::WorkerConnectionRegistry, workers::observability::metrics::EngineMetrics,
 };
 
-/// `(namespace, function_id)`.
+/// `(namespace, function_id)`. The registry shares one per function, in an
+/// `Arc`, between the observers of the function, its entry and its active
+/// set, and one per target between the observers that invoke it.
 pub type FnKey = (String, String);
 
 /// The engine parts the registry works through. Set once by `Engine::new`;
@@ -93,6 +95,37 @@ impl Eq for Held {}
 impl Hash for Held {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_usize(Arc::as_ptr(&self.0) as usize);
+    }
+}
+
+/// An observer in `by_id`, found by the id it holds itself: the index keeps
+/// no copy of the id.
+pub(crate) struct ById(pub(crate) Arc<Observer>);
+
+impl PartialEq for ById {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl Eq for ById {}
+
+/// As its id hashes, so that `by_id` finds it by `&str`.
+impl Hash for ById {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.id.as_str().hash(state);
+    }
+}
+
+impl std::borrow::Borrow<str> for ById {
+    fn borrow(&self) -> &str {
+        &self.0.id
+    }
+}
+
+impl std::borrow::Borrow<String> for ById {
+    fn borrow(&self) -> &String {
+        &self.0.id
     }
 }
 
@@ -255,14 +288,14 @@ pub struct ObserverRegistry {
     /// is at hand (an engine-hosted source's event, a standing observer).
     this: OnceLock<Weak<ObserverRegistry>>,
     runtime: OnceLock<tokio::runtime::Handle>,
-    by_id: DashMap<String, Arc<Observer>>,
+    by_id: DashMap<ById, ()>,
     /// Each live observer under its observing connection, and under its
     /// target, by identity. An observer is filed in both in the same step
     /// that gives it its id in `by_id`, under its status lock, so whoever
     /// finds it by id (to dispose of it) finds it here too.
     by_connection: ByConnection<HeldSet>,
-    by_function: DashMap<FnKey, Arc<owner::FunctionEntry>>,
-    by_target: DashMap<FnKey, HeldSet>,
+    by_function: DashMap<Arc<FnKey>, Arc<owner::FunctionEntry>>,
+    by_target: DashMap<Arc<FnKey>, HeldSet>,
     /// The routed hook's view (see [`ObserverRegistry::route`]): functions
     /// with active observers and private functions a connection hosts, each
     /// with its active set, and the functions anyone may call whose last
@@ -518,17 +551,17 @@ impl ObserverRegistry {
     /// drop for what is left when it goes.
     pub fn export_drops(&self) {
         for observer in self.by_id.iter() {
-            dispatch::export_drops(observer.value());
+            dispatch::export_drops(&observer.key().0);
         }
         self.state_counts.record();
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Observer>> {
-        self.by_id.get(id).map(|o| o.clone())
+        self.by_id.get(id).map(|o| o.key().0.clone())
     }
 
     pub fn observers(&self) -> Vec<Arc<Observer>> {
-        self.by_id.iter().map(|o| o.value().clone()).collect()
+        self.by_id.iter().map(|o| o.key().0.clone()).collect()
     }
 
     /// Live observers in `state` (the `iii.observers` gauge).

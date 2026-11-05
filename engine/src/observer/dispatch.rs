@@ -1387,7 +1387,7 @@ impl ObserverRegistry {
         let Some(invocations) = deps.invocations.upgrade() else {
             return;
         };
-        let (target_namespace, target_function) = &observer.target;
+        let (target_namespace, target_function) = &*observer.target;
         let Some((handler, encoded_handler)) = deps
             .functions
             .get_handlers(target_namespace, target_function)
@@ -1697,7 +1697,7 @@ impl ObserverRegistry {
                 encoded: EncodedParts::default(),
             });
             for id in &matched {
-                match self.get(id).filter(|o| o.function == key) {
+                match self.get(id).filter(|o| *o.function == key) {
                     Some(observer) if !accepts(&observer.on, success) => {}
                     Some(observer) => {
                         if self.activate(&observer, &completed)
@@ -1718,7 +1718,7 @@ impl ObserverRegistry {
     fn hosts_target(&self, connection: Uuid, observer: &Observer) -> bool {
         self.deps
             .get()
-            .and_then(|deps| deps.function_owners.get(&observer.target).map(|o| o.0))
+            .and_then(|deps| deps.function_owners.get(&*observer.target).map(|o| o.0))
             == Some(connection)
     }
 
@@ -1776,7 +1776,7 @@ impl ObserverRegistry {
             count_function_drop(&key.1, reason, 1);
         }
         for id in matched {
-            match self.get(id).filter(|o| o.function == *key) {
+            match self.get(id).filter(|o| *o.function == *key) {
                 Some(observer) => drop_event(&observer, reason),
                 None => count_function_drop(&key.1, reason, 1),
             }
@@ -1990,7 +1990,7 @@ impl ObserverRegistry {
                 "the engine is shutting down",
             ));
         };
-        let (target_namespace, target_function) = &observer.target;
+        let (target_namespace, target_function) = &*observer.target;
         let Some(handler) = deps
             .functions
             .get_handler(target_namespace, target_function)
@@ -2488,11 +2488,14 @@ pub(crate) fn export_drops(observer: &Observer) {
     let Some(metrics) = super::metrics() else {
         return;
     };
+    // Made once, and only when there is something to export.
+    let label = std::cell::OnceCell::new();
+    let function_id = || label.get_or_init(|| observer.function_label()).clone();
     for (reason, count) in observer.drops.unexported() {
         metrics.observer_dropped_total.add(
             count,
             &[
-                KeyValue::new("function_id", observer.function_label()),
+                KeyValue::new("function_id", function_id()),
                 KeyValue::new("reason", reason),
             ],
         );
@@ -2501,7 +2504,7 @@ pub(crate) fn export_drops(observer: &Observer) {
         metrics.observer_activations_total.add(
             count,
             &[
-                KeyValue::new("function_id", observer.function_label()),
+                KeyValue::new("function_id", function_id()),
                 KeyValue::new("delivery", delivery),
             ],
         );
@@ -4030,8 +4033,8 @@ mod tests {
         fn observer(deliver: Deliver, capture: CaptureSet) -> Observer {
             Observer::new(NewObserver {
                 id: "o-1".to_string(),
-                function: (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
-                target: (DEFAULT_NAMESPACE.to_string(), "test::sink".to_string()),
+                function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
+                target: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::sink".to_string())),
                 spec: None,
                 args: json!({}),
                 filter: iii_filter::Filter::match_all(),
