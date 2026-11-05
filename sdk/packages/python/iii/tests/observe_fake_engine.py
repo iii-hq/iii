@@ -26,7 +26,10 @@ from iii.iii_constants import InitOptions
 
 Frame = dict[str, Any]
 
-ENGINE_FEATURES = ["observe.v1", "observe.v2", "local-dispatch.v1"]
+#: A current engine: it announces ``fires_on`` on every observer view (``with_fires_on``).
+ENGINE_FEATURES = ["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1"]
+#: An rc engine: observe.v2 without observe.capture (views without ``fires_on``).
+RC_FEATURES = ["observe.v1", "observe.v2", "local-dispatch.v1"]
 #: A 0.25 engine: observe, without observe.v2.
 V1_FEATURES = ["observe.v1", "local-dispatch.v1"]
 
@@ -109,7 +112,7 @@ class FakeEngine:
                 if self.on_frame is not None:
                     replies.extend(self.on_frame(frame) or [])
                 for reply in replies:
-                    await ws.send(json.dumps(reply))
+                    await ws.send(json.dumps(self._announce(reply)))
         except websockets.ConnectionClosed:
             pass
 
@@ -119,7 +122,15 @@ class FakeEngine:
         """Sends one engine → worker frame on a connection (the last by default)."""
         assert self._loop is not None
         ws = self.sockets[connection]
-        asyncio.run_coroutine_threadsafe(ws.send(json.dumps(frame)), self._loop).result(5)
+        asyncio.run_coroutine_threadsafe(ws.send(json.dumps(self._announce(frame))), self._loop).result(5)
+
+    def _announce(self, frame: Frame) -> Frame:
+        """``frame`` as this engine sends it: an engine with observe.capture
+        announces each observer view with the ``fires_on`` its capture implies
+        (``with_fires_on``)."""
+        if isinstance(self.features, list) and "observe.capture" in self.features:
+            return with_fires_on(frame)
+        return frame
 
     def drop(self, connection: int = -1) -> None:
         """Drops a connection the way a network failure does; the SDK reconnects."""
@@ -216,6 +227,31 @@ def wait_until(predicate: Callable[[], Any], timeout: float = 5.0, what: str = "
         if time.monotonic() > deadline:
             raise AssertionError(f"timed out after {timeout}s waiting for {what}")
         time.sleep(0.005)
+
+
+def _fires_on(view: Frame) -> Frame:
+    if not isinstance(view, dict) or "fires_on" in view or "on" in view:
+        return view
+    capture = view.get("capture")
+    if not isinstance(capture, list):
+        capture = ["input", "output", "caller"]
+    fires_on = []
+    if not capture or "input" in capture or "output" in capture:
+        fires_on.append("success")
+    if "error" in capture:
+        fires_on.append("error")
+    return {**view, "fires_on": fires_on}
+
+
+def with_fires_on(frame: Frame) -> Frame:
+    """``frame`` with each observer view (``observer``, ``observers[]``) carrying
+    the ``fires_on`` its capture implies, as an engine with observe.capture
+    announces it; a view with its own ``fires_on`` or a legacy ``on`` is kept."""
+    if isinstance(frame.get("observer"), dict):
+        frame = {**frame, "observer": _fires_on(frame["observer"])}
+    if isinstance(frame.get("observers"), list):
+        frame = {**frame, "observers": [_fires_on(v) for v in frame["observers"]]}
+    return frame
 
 
 def function_registered(

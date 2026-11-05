@@ -272,7 +272,9 @@ def test_an_engine_without_observe_v2_gets_the_on_capture_implies(engine_factory
         sent = _observe_each(client, engine)
     assert sent == [on for _, on in LEGACY_ON_CASES]
     deprecations = [
-        w for w in caught if issubclass(w.category, FutureWarning) and "`source.on` is deprecated" in str(w.message)
+        w
+        for w in caught
+        if issubclass(w.category, FutureWarning) and "does not support observe.capture" in str(w.message)
     ]
     assert len(deprecations) == 1
 
