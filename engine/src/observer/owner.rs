@@ -520,6 +520,9 @@ pub struct ActiveSet {
     /// What a call needs kept: what the observers' filters read, capture or
     /// deliver. The engine evaluates the filters of every routed call.
     pub(crate) needs: Needs,
+    /// What the observers' filters read: a payload a call kept as its JSON
+    /// text is decoded for their evaluation only when they read it.
+    pub(crate) filtered: Needs,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
     /// What the observers read of a call's input: a call copies only the
@@ -587,6 +590,18 @@ impl Needs {
         }
     }
 
+    /// What `observer`'s filters read.
+    fn filtered(observer: &Observer) -> Self {
+        let roots = observer.filter.roots();
+        Self {
+            input: roots.input,
+            output: roots.output,
+            error: roots.error,
+            caller: roots.caller,
+            metadata: roots.metadata,
+        }
+    }
+
     /// What `observer`'s filters read, captures or delivers.
     fn evaluated(observer: &Observer) -> Self {
         let roots = observer.filter.roots();
@@ -638,17 +653,23 @@ impl Needs {
 #[derive(Debug, Clone, Copy, Default)]
 struct NeedCounts {
     evaluated: [usize; 5],
+    /// How many of them read each part in their filters.
+    filtered: [usize; 5],
 }
 
 impl NeedCounts {
     fn count(&mut self, observer: &Observer, joined: bool) {
-        let needs = Needs::evaluated(observer);
-        for (count, needed) in self.evaluated.iter_mut().zip(needs.parts()) {
-            if needed {
-                if joined {
-                    *count += 1;
-                } else {
-                    *count -= 1;
+        for (counts, needs) in [
+            (&mut self.evaluated, Needs::evaluated(observer)),
+            (&mut self.filtered, Needs::filtered(observer)),
+        ] {
+            for (count, needed) in counts.iter_mut().zip(needs.parts()) {
+                if needed {
+                    if joined {
+                        *count += 1;
+                    } else {
+                        *count -= 1;
+                    }
                 }
             }
         }
@@ -712,6 +733,7 @@ impl ActiveSet {
             observers,
             filters,
             needs: Needs::of_counts(&counts.evaluated),
+            filtered: Needs::of_counts(&counts.filtered),
             counts,
             shard,
             input,
