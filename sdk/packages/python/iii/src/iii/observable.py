@@ -38,7 +38,7 @@ from typing import Any, Literal, Protocol, Union, cast
 from .errors import ObserveRejection
 from .filter import CompiledFilter, compile_filter
 from .filter._index import FilterIndex
-from .iii_types import ObserverInfoWire, capture_fires
+from .iii_types import ObserverInfoWire
 from .invocation_context import run_in_thread
 from .observe_types import AddedHook, Call, DeliverHook, MatchHook, MatchKeys, MatchPredicate, RemovedHook
 from .observe_wire import report_caller
@@ -177,6 +177,7 @@ def _same_view(obs: Observer, info: ObserverInfoWire) -> bool:
     return (
         obs.target == info.target
         and obs.capture == list(info.capture)
+        and (obs._fires_on_success, obs._fires_on_error) == info.firing()
         and _same_json(obs.filters, info.filters)
     )
 
@@ -264,6 +265,8 @@ class Observer:
         self.filters: dict[str, Any] = info.filters
         self.target: str = info.target
         self.capture: list[str] = list(info.capture)
+        #: The outcomes that fire it, read once from the view (``fires_on``, or the legacy ``on``).
+        self._fires_on_success, self._fires_on_error = info.firing()
         self._filter = filter_
         #: The revision it was acked with (echoed by a late rejection).
         self._revision = revision
@@ -290,6 +293,11 @@ class Observer:
         self._filter = filter_
         self.target = info.target
         self.capture = list(info.capture)
+        self._fires_on_success, self._fires_on_error = info.firing()
+
+    def _fires(self, ok: bool) -> bool:
+        """Whether a call that ended in success (``ok``) or error fires it."""
+        return self._fires_on_success if ok else self._fires_on_error
 
     def matches(self, call: CallLike) -> bool:
         """Whether ``call`` passes this observer's capture and filters: what
@@ -299,7 +307,7 @@ class Observer:
         its capture is checked against its ``status`` when it has one.
         """
         status = call.get("status") if isinstance(call, Mapping) else call.status
-        if status is not None and not capture_fires(self.capture, status == "success"):
+        if status is not None and not self._fires(status == "success"):
             return False
         return self._filter.matches(call_doc(call))
 
@@ -1209,14 +1217,14 @@ class Delivery:
         active = self._active
         index = active.filter_index(len(matched)) if len(matched) > SCAN_MAX else None
         if index is None:
-            return [obs for obs in matched if capture_fires(obs.capture, ok) and obs._filter.matches(doc)]
+            return [obs for obs in matched if obs._fires(ok) and obs._filter.matches(doc)]
         if matched is active.observers:
             return [
                 entry.key
                 for entry in index.candidate_entries(doc)
-                if capture_fires(entry.key.capture, ok) and entry.filter.matches(doc)
+                if entry.key._fires(ok) and entry.filter.matches(doc)
             ]
-        return index.select(matched, doc, lambda obs: capture_fires(obs.capture, ok))
+        return index.select(matched, doc, lambda obs: obs._fires(ok))
 
     def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
         """The report item of a local call delivered to ``selected``."""

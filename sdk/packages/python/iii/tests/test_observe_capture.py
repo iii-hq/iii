@@ -137,7 +137,7 @@ def test_a_view_without_fires_on_fires_as_its_legacy_on_says(
 
 
 def test_a_view_without_fires_on_warns_once(engine_factory: Any, connect: Any) -> None:
-    engine = engine_factory(CAPTURE_ENGINE)
+    engine = engine_factory(RC_ENGINE)  # views as sent: no fires_on added
     client = connect(engine)
     client.register_function("f::fn", lambda d: d)
     with warnings.catch_warnings(record=True) as caught:
