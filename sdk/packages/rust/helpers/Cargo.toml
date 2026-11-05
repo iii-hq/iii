@@ -26,7 +26,7 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 opentelemetry = { version = "0.32" }
 opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "logs", "metrics", "trace"] }
-sysinfo = { version = "0.38" }
+sysinfo = { version = "0.39" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 opentelemetry-http = { version = "0.32" }
 
