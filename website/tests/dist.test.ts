@@ -103,6 +103,7 @@ test("landing page keeps its section anchors, llms hooks and structured data", a
   const html = await read("index.html")
   const sections = [
     "hero",
+    "app",
     "overview",
     "ownership",
     "demo",
@@ -132,6 +133,29 @@ test("landing page keeps its section anchors, llms hooks and structured data", a
     /<link rel="canonical" href="https:\/\/iii\.dev"\/>|<link rel="canonical" href="https:\/\/iii\.dev\/"\/>/,
   )
   assert.match(html, /property="og:type" content="website"/)
+})
+
+test("the landing links the iii app launch from the hero, the header, its section and the footer", async () => {
+  const html = await read("index.html")
+  const hero = html.slice(
+    html.indexOf('<section id="hero"'),
+    html.indexOf("</section>", html.indexOf('<section id="hero"')),
+  )
+  assert.match(hero, /href="https:\/\/iii\.dev\/registry\/app"/, "the hero announcement should link the app page")
+  const appLinks = html.match(/href="https:\/\/iii\.dev\/registry\/app"/g) ?? []
+  assert.ok(
+    appLinks.length >= 4,
+    `expected the app page in the hero, the nav, the section and the footer, saw ${appLinks.length}`,
+  )
+  assert.match(
+    html,
+    /href="https:\/\/iii\.dev\/registry\/app\/download\/mac"/,
+    "the app section should offer the Mac download",
+  )
+  // Every device screenshot the section draws ships in dist (copied from public/iii-app/).
+  const shots = new Set([...html.matchAll(/src="(\/iii-app\/[^"]+\.webp)"/g)].map((m) => m[1]))
+  assert.ok(shots.size >= 3, "the app section should draw a Mac and two phones")
+  for (const shot of shots) assert.ok(has(shot.slice(1)), `app screenshot missing from dist: ${shot}`)
 })
 
 test("/a, the retired test variant, refreshes to the homepage and stays out of the index", async () => {
@@ -320,6 +344,11 @@ test("llms.txt and AGENTS.md are generated from the built homepage and read as p
     llms,
     /### Hero\n\*\*More application\. Less infrastructure\.\*\*\n/,
     "hero headline should read as one sentence pair",
+  )
+  assert.match(
+    llms,
+    /### The iii app\n\*\*Leave the desk\. Keep the agents\.\*\*\n/,
+    "the app section head should be extracted",
   )
   assert.match(llms, /### Questions\n\*\*What is iii\?\*\*\n/, "FAQ should read as question / answer pairs")
   assert.match(llms, /### Footer \/ links\n/)

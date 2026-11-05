@@ -15,7 +15,7 @@ iii.dev** into `dist/`: prerendered HTML, nothing rendered at request time. Depl
 | `/roadmap/<slug>/deck/` | the interactive presentation for a spec, from `roadmap/<slug>/src/App.tsx` ([roadmap/README.md](./roadmap/README.md)) |
 | `/a` | the retired A/B test route; refreshes to `/` |
 | `/sitemap.xml`, `/llms.txt`, `/AGENTS.md` | generated into `dist/` by `scripts/` after the Next build |
-| `/robots.txt`, `/favicon.svg`, `/og-image.png`, `/posthog-consent.js`, `/blog/<slug>/*`, `/console-demo/*`, `/fonts/*` | `public/` (copied verbatim) |
+| `/robots.txt`, `/favicon.svg`, `/og-image.png`, `/posthog-consent.js`, `/blog/<slug>/*`, `/console-demo/*`, `/fonts/*`, `/iii-app/*` | `public/` (copied verbatim) |
 
 `app/(site)` and `app/(deck)` are two root layouts: the site (fonts, analytics, cookie banner) and the decks (their
 own Tailwind theme, `roadmap/src/index.css`). `app/not-found.tsx` carries its own document for the export's
@@ -49,6 +49,16 @@ content-only change. Do not change these shapes; they are the site's canonical U
 `scripts/generate-llms-agents.ts` reads the homepage copy from the built `dist/index.html`: the hero `<h1>` and its
 paragraph, each section's head (eyebrow, `<h2>`, lede), the FAQ from the page's FAQPage JSON-LD, and the footer.
 Keep those shapes when editing the landing; `pnpm test` checks the extractor against the built page.
+
+## The iii app section
+
+The landing announces the iii app (Mac, iPhone, iPad, Android) in four places: a pill over the hero headline, an
+"App" entry in the header, the `#app` section under the hero (`components/landing/iii-app.tsx`, copy in
+`content.ts` → `iiiApp`), and the footer. They all point at the launch page on the registry, `links.app`
+(`https://iii.dev/registry/app`), and the section's "Download for Mac" at `links.appDownloadMac`, both in
+`lib/site.ts`. The device stage draws a Mac window and two phones in CSS around screenshots listed in
+`components/landing/app-media.ts`, one entry per slot (file in `public/iii-app/`, size, alt text); replacing a
+screenshot is a file swap plus that entry. `pnpm test:dist` checks the links and that every screenshot ships.
 
 ## Writing a blog post
 
