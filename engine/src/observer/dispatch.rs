@@ -45,6 +45,7 @@
 //! when the activation starts.
 
 use std::{
+    borrow::Cow,
     collections::HashSet,
     sync::{
         Arc, OnceLock,
@@ -55,7 +56,7 @@ use std::{
 
 use iii_filter::Doc;
 use opentelemetry::KeyValue;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot::error::RecvError};
 use uuid::Uuid;
 
@@ -74,7 +75,7 @@ use crate::{
     },
     protocol::{
         Activation, Caller, Deliver, DroppedReportStats, ErrorBody, InvocationStatus,
-        LocalFunctionStats, ObservedItem, ObservedItems, On, observe_codes,
+        LocalFunctionStats, ObservedItem, ObservedItems, On, RawJson, observe_codes,
     },
     worker_connections::WorkerConnection,
 };
@@ -352,6 +353,111 @@ fn unstamped(mut value: Value) -> Value {
     value
 }
 
+/// `text` as observers receive it (see [`unstamped`]): the same text, unless
+/// it is an object with a top-level caller stamp, which then goes, the other
+/// members kept as they were written. Text that does not spell the stamp, and
+/// has no `\u` escape that could, is not read.
+fn unstamped_text(text: Arc<str>) -> Arc<str> {
+    let may_be_stamped =
+        text.starts_with('{') && (text.contains(CALLER_STAMP) || text.contains("\\u"));
+    match may_be_stamped
+        .then(|| without_caller_stamp(&text))
+        .flatten()
+    {
+        Some(unstamped) => Arc::from(unstamped),
+        None => text,
+    }
+}
+
+/// The JSON object `text` holds, without its top-level caller stamp; `None`
+/// when it has none.
+fn without_caller_stamp(text: &str) -> Option<String> {
+    let Members(members) = serde_json::from_str(text).ok()?;
+    if !members.iter().any(|(key, _)| *key == CALLER_STAMP) {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    out.push('{');
+    for (key, value) in members.iter().filter(|(key, _)| *key != CALLER_STAMP) {
+        if out.len() > 1 {
+            out.push(',');
+        }
+        match key {
+            // Read without an escape: written back as it was.
+            Cow::Borrowed(key) => {
+                out.push('"');
+                out.push_str(key);
+                out.push('"');
+            }
+            Cow::Owned(key) => out.push_str(&serde_json::to_string(key).ok()?),
+        }
+        out.push(':');
+        out.push_str(value.get());
+    }
+    out.push('}');
+    Some(out)
+}
+
+/// A JSON object's members, in order, each value its raw text.
+struct Members<'a>(Vec<(Cow<'a, str>, &'a RawValue)>);
+
+impl<'de> serde::Deserialize<'de> for Members<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Object;
+
+        impl<'de> serde::de::Visitor<'de> for Object {
+            type Value = Members<'de>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut members = Vec::new();
+                while let Some(key) = map.next_key_seed(Key)? {
+                    members.push((key, map.next_value()?));
+                }
+                Ok(Members(members))
+            }
+        }
+
+        deserializer.deserialize_map(Object)
+    }
+}
+
+/// An object's key: borrowed from the text when it has no escape.
+struct Key;
+
+impl<'de> serde::de::DeserializeSeed<'de> for Key {
+    type Value = Cow<'de, str>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Key {
+    type Value = Cow<'de, str>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a key")
+    }
+
+    fn visit_borrowed_str<E: serde::de::Error>(self, key: &'de str) -> Result<Self::Value, E> {
+        Ok(Cow::Borrowed(key))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Self::Value, E> {
+        Ok(Cow::Owned(key.to_owned()))
+    }
+}
+
 /// The top-level `fields` of `value` that observers' filters read, without
 /// the engine's caller stamp; all of a `value` that is not an object (a
 /// filter path into it resolves to nothing either way).
@@ -456,7 +562,10 @@ fn is_listed(ids: &[String], id: &str) -> bool {
 }
 
 /// A completed observed invocation (or a reported one), as its activations
-/// see it. Payloads are shared: each activation clones what it ships.
+/// see it. Payloads are shared: each activation clones what it ships. Each is
+/// held as a value, as JSON text (`encoded`), or both: a report's stay the
+/// text its host sent, which a worker's activation sends as is and which is
+/// decoded, once, for a target that takes a value (`decoded`).
 pub(crate) struct Completed {
     /// Who matched it, as the `delivery` label of
     /// `iii.observer.activations.total`: [`ENGINE_DELIVERY`] or
@@ -484,6 +593,8 @@ pub(crate) struct Completed {
     /// Its payloads as JSON text, for the activations a worker connection
     /// receives.
     encoded: EncodedParts,
+    /// The values of the payloads it holds as text only.
+    decoded: OnceLock<Box<DecodedParts>>,
 }
 
 /// A completion's payloads as JSON text, each encoded the first time an
@@ -510,6 +621,34 @@ impl EncodedParts {
         }
         parts
     }
+
+    /// A report's payloads, as the JSON text it carried.
+    fn reported(
+        input: Option<Arc<str>>,
+        output: Option<Arc<str>>,
+        error: Option<Arc<str>>,
+        metadata: Option<Arc<str>>,
+    ) -> Self {
+        let parts = Self::with_text(input, output);
+        for (cell, text) in [(&parts.error, error), (&parts.metadata, metadata)] {
+            if let Some(text) = text {
+                let _ = cell.set(Some(text));
+            }
+        }
+        parts
+    }
+}
+
+/// The values of a completion's payloads held as text only (a report's),
+/// each decoded the first time an activation whose target takes a value
+/// needs it, then shared by all of them; `None` when the text does not
+/// decode into one. Allocated only then.
+#[derive(Default)]
+struct DecodedParts {
+    input: OnceLock<Option<Value>>,
+    output: OnceLock<Option<Value>>,
+    error: OnceLock<Option<Value>>,
+    metadata: OnceLock<Option<Value>>,
 }
 
 /// The [`approx_size`] above which a call keeps a payload an observer needs
@@ -602,19 +741,87 @@ impl Completed {
         encode_once(&self.encoded.metadata, self.metadata.as_deref())
     }
 
+    /// The input as a value: the one held, or the one its text decodes to.
+    fn input_value(&self) -> Option<&Value> {
+        self.value_of(self.input.as_deref(), &self.encoded.input, |parts| {
+            &parts.input
+        })
+    }
+
+    fn output_value(&self) -> Option<&Value> {
+        // A report's `output_is_input`: the input's text, decoded once.
+        if self.output_is_input_text() {
+            return self.input_value();
+        }
+        self.value_of(self.output.as_deref(), &self.encoded.output, |parts| {
+            &parts.output
+        })
+    }
+
+    fn error_value(&self) -> Option<&Value> {
+        self.value_of(self.error.as_deref(), &self.encoded.error, |parts| {
+            &parts.error
+        })
+    }
+
+    fn caller_value(&self) -> Option<&Value> {
+        self.caller.as_deref()
+    }
+
+    fn metadata_value(&self) -> Option<&Value> {
+        self.value_of(self.metadata.as_deref(), &self.encoded.metadata, |parts| {
+            &parts.metadata
+        })
+    }
+
+    /// Whether the output is held as the input's text, shared: a report's
+    /// `output_is_input`.
+    fn output_is_input_text(&self) -> bool {
+        self.output.is_none()
+            && matches!(
+                (self.encoded.input.get(), self.encoded.output.get()),
+                (Some(Some(input)), Some(Some(output))) if Arc::ptr_eq(input, output)
+            )
+    }
+
+    /// `value`, or else the value `text` decodes to, decoded into `cell` of
+    /// [`DecodedParts`] the first time.
+    fn value_of<'a>(
+        &'a self,
+        value: Option<&'a Value>,
+        text: &'a OnceLock<Option<Arc<str>>>,
+        cell: fn(&DecodedParts) -> &OnceLock<Option<Value>>,
+    ) -> Option<&'a Value> {
+        if value.is_some() {
+            return value;
+        }
+        let text = text.get()?.as_deref()?;
+        cell(self.decoded.get_or_init(Box::default))
+            .get_or_init(|| serde_json::from_str(text).ok())
+            .as_ref()
+    }
+
     /// Roughly what holding the event costs (see [`QUEUED_BYTES`]).
     fn cost(&self) -> usize {
-        let payloads: usize = [
-            &self.input,
-            &self.output,
-            &self.error,
-            &self.caller,
-            &self.metadata,
-        ]
-        .into_iter()
-        .filter_map(|value| value.as_deref())
-        .map(approx_size)
-        .sum();
+        // A payload held as text only (a report's) costs its text, once even
+        // when it is the output too.
+        let cost = |value: &Option<Arc<Value>>, text: &OnceLock<Option<Arc<str>>>| match value {
+            Some(value) => approx_size(value),
+            None => text
+                .get()
+                .and_then(Option::as_deref)
+                .map_or(0, |text| 24 + text.len()),
+        };
+        let output = if self.output_is_input_text() {
+            0
+        } else {
+            cost(&self.output, &self.encoded.output)
+        };
+        let payloads = cost(&self.input, &self.encoded.input)
+            + output
+            + cost(&self.error, &self.encoded.error)
+            + self.caller.as_deref().map_or(0, approx_size)
+            + cost(&self.metadata, &self.encoded.metadata);
         let text = [&self.traceparent, &self.baggage]
             .into_iter()
             .filter_map(|value| value.as_deref())
@@ -777,6 +984,7 @@ impl ObserverRegistry {
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
                 encoded: EncodedParts::default(),
+                decoded: OnceLock::new(),
             },
             set,
             matching: Matching::Filters,
@@ -1014,6 +1222,7 @@ impl ObserverRegistry {
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
                 encoded: EncodedParts::with_text(call.input_text, output_text),
+                decoded: OnceLock::new(),
             },
             set: call.set,
             matching,
@@ -1568,7 +1777,9 @@ impl ObserverRegistry {
     /// authoritative for its own function's calls. An item with
     /// `output_is_input` carries its value once, as `input`, which is also
     /// its `output`. Observers receive `input` and `output` without the
-    /// engine's `_caller_worker_id` stamp.
+    /// engine's `_caller_worker_id` stamp. The payloads stay the JSON text
+    /// the item carried ([`RawJson`]): a target a worker connection hosts
+    /// receives that text, any other the value it decodes to.
     ///
     /// A routed call's host names its observers on the call's answer
     /// (`invocationresult.matched`) only: an item for a call the engine
@@ -1670,11 +1881,13 @@ impl ObserverRegistry {
             let mut caller = caller.unwrap_or_default();
             caller.worker_id = Some(connection.to_string());
             caller.worker_name = worker_name.clone();
-            let input = input.map(|input| Arc::new(unstamped(input)));
+            // The payloads stay the text the host sent: a worker's activation
+            // sends it as is, a target that takes a value decodes it, once.
+            let input = input.map(|input| unstamped_text(input.into_shared()));
             let output = if output_is_input {
                 input.clone()
             } else {
-                output.map(|output| Arc::new(unstamped(output)))
+                output.map(|output| unstamped_text(output.into_shared()))
             };
             let completed = Arc::new(Completed {
                 delivery: HOST_DELIVERY,
@@ -1682,11 +1895,11 @@ impl ObserverRegistry {
                 function_id: key.1.clone(),
                 invocation_id,
                 success,
-                input,
-                output,
-                error: error.map(Arc::new),
+                input: None,
+                output: None,
+                error: None,
                 caller: serde_json::to_value(&caller).ok().map(Arc::new),
-                metadata: metadata.map(Arc::new),
+                metadata: None,
                 started_at_ms,
                 duration_ms,
                 depth: observe_depth,
@@ -1694,7 +1907,13 @@ impl ObserverRegistry {
                 baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: EncodedParts::default(),
+                encoded: EncodedParts::reported(
+                    input,
+                    output,
+                    error.map(RawJson::into_shared),
+                    metadata.map(RawJson::into_shared),
+                ),
+                decoded: OnceLock::new(),
             });
             for id in &matched {
                 match self.get(id).filter(|o| o.function == key) {
@@ -2290,10 +2509,10 @@ async fn run_activations(
 /// The target's first argument (README §4.3): the `Observed` envelope, or the
 /// observed input / output alone with `deliver`.
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
-    let shipped = |value: &Option<Arc<Value>>| value.as_deref().cloned().unwrap_or(Value::Null);
+    let shipped = |value: Option<&Value>| value.cloned().unwrap_or(Value::Null);
     match &observer.deliver {
-        Deliver::Input => return shipped(&completed.input),
-        Deliver::Output => return shipped(&completed.output),
+        Deliver::Input => return shipped(completed.input_value()),
+        Deliver::Output => return shipped(completed.output_value()),
         Deliver::Envelope | Deliver::Unknown(_) => {}
     }
     let capture = observer.capture;
@@ -2315,18 +2534,20 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
         }
         .into(),
     );
-    for (wanted, key, value) in [
-        (capture.input, "input", &completed.input),
-        (capture.error, "error", &completed.error),
-        (capture.caller, "caller", &completed.caller),
-        (capture.metadata, "metadata", &completed.metadata),
-    ] {
-        if wanted && let Some(value) = value {
-            envelope.insert(key.into(), Value::clone(value));
+    // Each read only when captured: a payload held as text is decoded then.
+    let parts: [(bool, &str, fn(&Completed) -> Option<&Value>); 4] = [
+        (capture.input, "input", Completed::input_value),
+        (capture.error, "error", Completed::error_value),
+        (capture.caller, "caller", Completed::caller_value),
+        (capture.metadata, "metadata", Completed::metadata_value),
+    ];
+    for (wanted, key, value) in parts {
+        if wanted && let Some(value) = value(completed) {
+            envelope.insert(key.into(), value.clone());
         }
     }
     if capture.output && completed.success {
-        envelope.insert("output".into(), shipped(&completed.output));
+        envelope.insert("output".into(), shipped(completed.output_value()));
     }
     envelope.insert("started_at_ms".into(), completed.started_at_ms.into());
     envelope.insert(
@@ -2536,7 +2757,7 @@ fn warn_loop_guard(observer: &Observer, depth: u32, max_depth: u32) {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicUsize, Ordering},
     };
 
@@ -3121,6 +3342,7 @@ mod tests {
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
             encoded: super::EncodedParts::default(),
+            decoded: OnceLock::new(),
         })
     }
 
@@ -3158,7 +3380,7 @@ mod tests {
                 invocation_id: Uuid::new_v4().to_string(),
                 matched: vec!["obs".to_string()],
                 status: crate::protocol::InvocationStatus::Success,
-                input: Some(json!({ "n": 3 })),
+                input: Some(crate::protocol::RawJson::from_value(&json!({ "n": 3 }))),
                 output: None,
                 error: None,
                 caller: None,
@@ -3182,9 +3404,7 @@ mod tests {
             flow.queue
                 .iter()
                 .map(|pending| {
-                    let n = pending.event.input.as_deref().unwrap()["n"]
-                        .as_u64()
-                        .unwrap();
+                    let n = pending.event.input_value().unwrap()["n"].as_u64().unwrap();
                     (n, pending.event.delivery)
                 })
                 .collect()
@@ -4095,6 +4315,7 @@ mod tests {
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
                 encoded: super::EncodedParts::default(),
+                decoded: OnceLock::new(),
             }
         }
 
@@ -4251,5 +4472,193 @@ mod tests {
             serde_json::from_str::<Value>(&text.unwrap()).unwrap(),
             json!({ "k": 1, "big": "x".repeat(4096) })
         );
+    }
+
+    /// A report's payloads stay the text its host sent: the queued event
+    /// holds no value, a worker's activation sends that text (less a
+    /// top-level caller stamp, the other members as written) and an
+    /// in-process target gets the value it decodes to, decoded once and
+    /// shared with `output_is_input`'s output. The queues charge the text,
+    /// once. An item that does not decode is set aside alone.
+    #[tokio::test]
+    async fn a_reports_payloads_stay_the_text_its_host_sent() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let (gate, mut delivered) = gated(&engine, "test::held");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut request = test_support::request("obs", "test::src", "test::held", None);
+        request.max_in_flight = Some(1);
+        // The envelope: the input and the output.
+        request.source.deliver = None;
+        test_support::observe_request(&engine, &worker, request).await;
+        let host = Uuid::new_v4();
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host, crate::engine::InvocationKind::Regular),
+        );
+        let report = |items: &[String]| {
+            let frame = format!(
+                r#"{{"type":"invocationsobserved","items":[{}]}}"#,
+                items.join(",")
+            );
+            let Ok(crate::protocol::Message::InvocationsObserved { items }) =
+                crate::protocol::Message::from_frame(&frame)
+            else {
+                panic!("expected InvocationsObserved");
+            };
+            items
+        };
+        let item = |fields: &str| {
+            format!(
+                r#"{{"function_id":"test::src","invocation_id":"{}","matched":["obs"],"status":"success","started_at_ms":1,"duration_ms":0.5,{fields}}}"#,
+                Uuid::new_v4()
+            )
+        };
+        let answered = super::RoutedAnswers::default();
+        // The first takes the observer's only slot: the rest queue.
+        let first = report(&[item(r#""input":{"n":0}"#)]);
+        assert!(
+            engine
+                .observers
+                .report(host, DEFAULT_NAMESPACE, &answered, first)
+                .is_empty()
+        );
+        until(|| engine.observers.in_flight("obs") == Some((1, 0))).await;
+
+        let stamped = r#"{"table": "orders", "_caller_worker_id": "w-9", "op": "insert"}"#;
+        let raw = r#"{"z": [1.50, null], "a": "\u00e9"}"#;
+        let items = report(&[
+            item(&format!(r#""input":{stamped},"output_is_input":true"#)),
+            item(&format!(
+                r#""input":{raw},"output":{{"ok": true}},"metadata":{{"tenant": "t"}}"#
+            )),
+            r#""not an item""#.to_string(),
+        ]);
+        assert_eq!(items.rejected.len(), 1, "set aside alone");
+        assert!(
+            engine
+                .observers
+                .report(host, DEFAULT_NAMESPACE, &answered, items)
+                .is_empty()
+        );
+        until(|| engine.observers.in_flight("obs") == Some((1, 2))).await;
+
+        let observer = engine.observers.get("obs").unwrap();
+        let events: Vec<Arc<super::Completed>> = observer
+            .flow
+            .write()
+            .queue
+            .iter()
+            .map(|pending| pending.event.clone())
+            .collect();
+        let text = |cell: &OnceLock<Option<Arc<str>>>| cell.get().cloned().flatten();
+        let held = |needle: &str| {
+            events
+                .iter()
+                .find(|event| text(&event.encoded.input).is_some_and(|t| t.contains(needle)))
+                .unwrap()
+                .clone()
+        };
+        let (echoed, plain) = (held("table"), held("\\u00e9"));
+        for event in [&echoed, &plain] {
+            assert!(event.input.is_none() && event.output.is_none(), "no value");
+            assert!(event.decoded.get().is_none(), "nothing decoded yet");
+        }
+        let input = text(&echoed.encoded.input).unwrap();
+        assert_eq!(&*input, r#"{"table":"orders","op":"insert"}"#);
+        assert!(Arc::ptr_eq(&input, &text(&echoed.encoded.output).unwrap()));
+        assert_eq!(text(&plain.encoded.input).as_deref(), Some(raw));
+        assert_eq!(
+            text(&plain.encoded.metadata).as_deref(),
+            Some(r#"{"tenant": "t"}"#)
+        );
+        let caller = echoed.caller.as_deref().map_or(0, super::approx_size);
+        assert_eq!(
+            echoed.cost(),
+            super::EVENT_OVERHEAD
+                + echoed.namespace.len()
+                + echoed.function_id.len()
+                + echoed.invocation_id.len()
+                + caller
+                + 24
+                + input.len(),
+            "its text, once"
+        );
+
+        for event in [&echoed, &plain] {
+            let mut sent = String::new();
+            super::project_encoded(&observer, event, "a-1").write_to(&mut sent);
+            assert_eq!(
+                serde_json::from_str::<Value>(&sent).unwrap(),
+                super::project(&observer, event, "a-1")
+            );
+            if Arc::ptr_eq(event, &plain) {
+                assert!(sent.contains(&format!(r#""input":{raw}"#)), "{sent}");
+            }
+        }
+        assert!(echoed.decoded.get().is_some());
+        assert!(std::ptr::eq(
+            echoed.input_value().unwrap(),
+            echoed.output_value().unwrap()
+        ));
+        drop(events);
+
+        gate.add_permits(3);
+        let mut envelopes = Vec::new();
+        for _ in 0..3 {
+            envelopes.push(test_support::next(&mut delivered).await);
+        }
+        let row = json!({ "table": "orders", "op": "insert" });
+        assert!(
+            envelopes
+                .iter()
+                .any(|e| e["input"] == row && e["output"] == row),
+            "{envelopes:?}"
+        );
+        assert!(
+            envelopes
+                .iter()
+                .any(|e| e["input"] == json!({ "z": [1.5, null], "a": "\u{e9}" })
+                    && e["output"] == json!({ "ok": true })),
+            "{envelopes:?}"
+        );
+    }
+
+    /// A payload's text loses a top-level caller stamp however its key is
+    /// written, and nothing else, as its value would; text that cannot hold
+    /// one is not read.
+    #[test]
+    fn the_caller_stamp_is_cut_from_a_payloads_text() {
+        for (stamped, cut) in [
+            (
+                r#"{"a":1,"_caller_worker_id":"w","b":{"_caller_worker_id":"x"}}"#,
+                r#"{"a":1,"b":{"_caller_worker_id":"x"}}"#,
+            ),
+            (
+                r#"{"_caller\u005fworker_id":"w","\u00e9": [1, 2]}"#,
+                "{\"\u{e9}\":[1, 2]}",
+            ),
+            (r#"{"_caller_worker_id":1,"_caller_worker_id":2}"#, "{}"),
+        ] {
+            let unstamped = super::unstamped_text(Arc::from(stamped));
+            assert_eq!(&*unstamped, cut);
+            assert_eq!(
+                serde_json::from_str::<Value>(&unstamped).unwrap(),
+                super::unstamped(serde_json::from_str(stamped).unwrap())
+            );
+        }
+        for kept in [
+            r#"{"b":{"_caller_worker_id":"x"}}"#,
+            r#""_caller_worker_id""#,
+            r#"["_caller_worker_id"]"#,
+            r#"{"a": "\u00e9"}"#,
+            r#"{"a": 1}"#,
+        ] {
+            let text: Arc<str> = Arc::from(kept);
+            assert!(
+                Arc::ptr_eq(&super::unstamped_text(text.clone()), &text),
+                "{kept}"
+            );
+        }
     }
 }

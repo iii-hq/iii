@@ -4,11 +4,11 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use uuid::Uuid;
 
 use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
@@ -136,6 +136,14 @@ where
     D: serde::Deserializer<'de>,
 {
     Value::deserialize(deserializer).map(Some)
+}
+
+/// [`deserialize_present`] for a payload kept as its JSON text.
+fn deserialize_present_raw<'de, D>(deserializer: D) -> Result<Option<RawJson>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    RawJson::deserialize(deserializer).map(Some)
 }
 
 /// Reads `null` as `true`, like an absent field defaulting to `true`.
@@ -873,6 +881,7 @@ pub struct Activation {
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent: a
 /// function that returned `null` is not one whose output was not captured.
+/// They stay the JSON text the host sent ([`RawJson`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservedItem {
     pub function_id: String,
@@ -886,31 +895,31 @@ pub struct ObservedItem {
     pub status: InvocationStatus,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub input: Option<Value>,
+    pub input: Option<RawJson>,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub output: Option<Value>,
+    pub output: Option<RawJson>,
     /// `{ code, message, stacktrace? }`, as in `InvocationResult.error`.
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub error: Option<Value>,
+    pub error: Option<RawJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<Caller>,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub metadata: Option<Value>,
+    pub metadata: Option<RawJson>,
     pub started_at_ms: u64,
     pub duration_ms: f64,
     #[serde(default)]
@@ -929,10 +938,10 @@ pub struct ObservedItem {
     pub output_is_input: bool,
 }
 
-/// The items of one `invocationsobserved`. Each is decoded on its own, in one
-/// pass (payload fields are moved, never re-parsed): an item a newer or buggy
-/// SDK got wrong lands in `rejected` instead of failing the batch. Only
-/// `items` is on the wire.
+/// The items of one `invocationsobserved`. Each is decoded on its own, its
+/// payloads kept as JSON text ([`RawJson`]): an item a newer or buggy SDK got
+/// wrong lands in `rejected` instead of failing the batch. Only `items` is on
+/// the wire.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObservedItems {
     pub items: Vec<ObservedItem>,
@@ -964,6 +973,9 @@ impl Serialize for ObservedItems {
 
 impl<'de> Deserialize<'de> for ObservedItems {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Through `Message`, whose tag buffers the frame first, there is no
+        // raw text left to lend: each item is decoded, then encoded again
+        // for `ObservedItem::from_value_lenient` (see `Message::from_frame`).
         let mut out = ObservedItems::default();
         match Value::deserialize(deserializer)? {
             Value::Null => {}
@@ -985,17 +997,24 @@ impl<'de> Deserialize<'de> for ObservedItems {
 }
 
 impl ObservedItem {
-    /// Builds an item from its JSON, moving the payload fields out instead of
-    /// decoding them again. Unknown fields are ignored; an unknown `status`
-    /// is kept (as [`InvocationStatus::Unknown`]) for the engine to drop.
+    /// Builds an item from its JSON value: encoded once and read as
+    /// [`ObservedItem::from_raw_lenient`] reads an item off a frame.
     pub fn from_value_lenient(value: Value) -> Result<ObservedItem, RejectedItem> {
-        let Value::Object(mut map) = value else {
+        Self::from_raw_lenient(&value.to_string())
+    }
+
+    /// Builds an item from its JSON text, each payload field left the raw
+    /// text it is. Unknown fields are ignored and a field given twice reads
+    /// as its last value, as in a decoded object; an unknown `status` is kept
+    /// (as [`InvocationStatus::Unknown`]) for the engine to drop.
+    pub fn from_raw_lenient(text: &str) -> Result<ObservedItem, RejectedItem> {
+        let Ok(fields) = serde_json::from_str::<RawItemFields>(text) else {
             return Err(RejectedItem {
                 function_id: None,
                 reason: "not an object".to_string(),
             });
         };
-        let Some(Value::String(function_id)) = map.remove("function_id") else {
+        let Some(function_id) = fields.function_id.and_then(decode_raw::<String>) else {
             return Err(RejectedItem {
                 function_id: None,
                 reason: "`function_id` is missing or not a string".to_string(),
@@ -1005,59 +1024,47 @@ impl ObservedItem {
             function_id: Some(function_id.clone()),
             reason: format!("`{field}` is missing or malformed"),
         };
-        let optional_string = |value: Option<Value>| match value {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) => Ok(Some(s)),
-            Some(_) => Err(()),
-        };
 
-        let namespace =
-            optional_string(map.remove("namespace")).map_err(|_| reject("namespace"))?;
-        let Some(Value::String(invocation_id)) = map.remove("invocation_id") else {
+        let namespace = optional_string(fields.namespace).map_err(|_| reject("namespace"))?;
+        let Some(invocation_id) = fields.invocation_id.and_then(decode_raw::<String>) else {
             return Err(reject("invocation_id"));
         };
-        let matched = match map.remove("matched") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(ids)) => ids
-                .into_iter()
-                .map(|id| match id {
-                    Value::String(id) => Ok(id),
-                    _ => Err(()),
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| reject("matched"))?,
-            Some(_) => return Err(reject("matched")),
+        let matched = match present(fields.matched) {
+            None => Vec::new(),
+            Some(ids) => decode_raw::<Vec<String>>(ids).ok_or_else(|| reject("matched"))?,
         };
-        let status = match map.remove("status") {
-            Some(Value::String(status)) => InvocationStatus::from(status.as_str()),
-            _ => return Err(reject("status")),
+        let Some(status) = fields.status.and_then(decode_raw::<String>) else {
+            return Err(reject("status"));
         };
-        let caller = match map.remove("caller") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(serde_json::from_value(value).map_err(|_| reject("caller"))?),
+        let caller = match present(fields.caller) {
+            None => None,
+            // Through a value, as a decoded item reads it: a key given twice
+            // keeps its last value.
+            Some(caller) => Some(
+                decode_raw::<Value>(caller)
+                    .and_then(|caller| serde_json::from_value(caller).ok())
+                    .ok_or_else(|| reject("caller"))?,
+            ),
         };
-        let started_at_ms = map
-            .remove("started_at_ms")
-            .and_then(|v| v.as_u64())
+        let started_at_ms = fields
+            .started_at_ms
+            .and_then(decode_raw::<u64>)
             .ok_or_else(|| reject("started_at_ms"))?;
-        let duration_ms = map
-            .remove("duration_ms")
-            .and_then(|v| v.as_f64())
+        let duration_ms = fields
+            .duration_ms
+            .and_then(decode_raw::<f64>)
             .ok_or_else(|| reject("duration_ms"))?;
-        let observe_depth = match map.remove("observe_depth") {
-            None | Some(Value::Null) => 0,
-            Some(value) => value
-                .as_u64()
+        let observe_depth = match present(fields.observe_depth) {
+            None => 0,
+            Some(depth) => decode_raw::<u64>(depth)
                 .and_then(|depth| u32::try_from(depth).ok())
                 .ok_or_else(|| reject("observe_depth"))?,
         };
-        let traceparent =
-            optional_string(map.remove("traceparent")).map_err(|_| reject("traceparent"))?;
-        let baggage = optional_string(map.remove("baggage")).map_err(|_| reject("baggage"))?;
-        let output_is_input = match map.remove("output_is_input") {
-            None | Some(Value::Null) => false,
-            Some(Value::Bool(flag)) => flag,
-            Some(_) => return Err(reject("output_is_input")),
+        let traceparent = optional_string(fields.traceparent).map_err(|_| reject("traceparent"))?;
+        let baggage = optional_string(fields.baggage).map_err(|_| reject("baggage"))?;
+        let output_is_input = match present(fields.output_is_input) {
+            None => false,
+            Some(flag) => decode_raw::<bool>(flag).ok_or_else(|| reject("output_is_input"))?,
         };
 
         Ok(ObservedItem {
@@ -1065,12 +1072,12 @@ impl ObservedItem {
             namespace,
             invocation_id,
             matched,
-            status,
-            input: map.remove("input"),
-            output: map.remove("output"),
-            error: map.remove("error"),
+            status: InvocationStatus::from(status.as_str()),
+            input: fields.input.map(RawJson::of),
+            output: fields.output.map(RawJson::of),
+            error: fields.error.map(RawJson::of),
             caller,
-            metadata: map.remove("metadata"),
+            metadata: fields.metadata.map(RawJson::of),
             started_at_ms,
             duration_ms,
             observe_depth,
@@ -1078,6 +1085,308 @@ impl ObservedItem {
             baggage,
             output_is_input,
         })
+    }
+}
+
+/// A JSON value kept as its text: an `invocationsobserved` payload, read off
+/// the frame without being decoded, sent on as is, and decoded only for a
+/// reader that needs a [`Value`]. Always valid JSON; two are equal when their
+/// texts are.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawJson(Arc<str>);
+
+impl RawJson {
+    /// `value`'s JSON text.
+    pub fn from_value(value: &Value) -> Self {
+        Self(Arc::from(value.to_string()))
+    }
+
+    fn of(raw: &RawValue) -> Self {
+        Self(Arc::from(raw.get()))
+    }
+
+    /// Its JSON text.
+    pub fn get(&self) -> &str {
+        &self.0
+    }
+
+    /// Its JSON text, shared.
+    pub fn into_shared(self) -> Arc<str> {
+        self.0
+    }
+
+    /// The value it encodes; `None` for valid JSON a [`Value`] cannot hold
+    /// (a number out of range, nesting past the decoder's limit).
+    pub fn to_value(&self) -> Option<Value> {
+        serde_json::from_str(&self.0).ok()
+    }
+}
+
+impl fmt::Debug for RawJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for RawJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Valid JSON: written as it is.
+        let raw: &RawValue = serde_json::from_str(&self.0).map_err(serde::ser::Error::custom)?;
+        raw.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Box::<RawValue>::deserialize(deserializer).map(|raw| Self::of(&raw))
+    }
+}
+
+/// A raw field unless absent or `null`, which an optional field reads alike.
+fn present(raw: Option<&RawValue>) -> Option<&RawValue> {
+    raw.filter(|raw| raw.get() != "null")
+}
+
+/// A raw field decoded as a `T`; `None` when it is not one.
+fn decode_raw<'a, T: Deserialize<'a>>(raw: &'a RawValue) -> Option<T> {
+    serde_json::from_str(raw.get()).ok()
+}
+
+/// An optional string field: `Err` when present and not a string.
+fn optional_string(raw: Option<&RawValue>) -> Result<Option<String>, ()> {
+    match present(raw) {
+        None => Ok(None),
+        Some(raw) => decode_raw(raw).map(Some).ok_or(()),
+    }
+}
+
+/// The fields of one `invocationsobserved` item, each the raw JSON text it
+/// was given, for [`ObservedItem::from_raw_lenient`] to read.
+#[derive(Default)]
+struct RawItemFields<'a> {
+    function_id: Option<&'a RawValue>,
+    namespace: Option<&'a RawValue>,
+    invocation_id: Option<&'a RawValue>,
+    matched: Option<&'a RawValue>,
+    status: Option<&'a RawValue>,
+    input: Option<&'a RawValue>,
+    output: Option<&'a RawValue>,
+    error: Option<&'a RawValue>,
+    caller: Option<&'a RawValue>,
+    metadata: Option<&'a RawValue>,
+    started_at_ms: Option<&'a RawValue>,
+    duration_ms: Option<&'a RawValue>,
+    observe_depth: Option<&'a RawValue>,
+    traceparent: Option<&'a RawValue>,
+    baggage: Option<&'a RawValue>,
+    output_is_input: Option<&'a RawValue>,
+}
+
+/// The fields of an `invocationsobserved` item the engine reads.
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum ItemField {
+    FunctionId,
+    Namespace,
+    InvocationId,
+    Matched,
+    Status,
+    Input,
+    Output,
+    Error,
+    Caller,
+    Metadata,
+    StartedAtMs,
+    DurationMs,
+    ObserveDepth,
+    Traceparent,
+    Baggage,
+    OutputIsInput,
+    #[serde(other)]
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for RawItemFields<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Fields;
+
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = RawItemFields<'de>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an invocationsobserved item")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut fields = RawItemFields::default();
+                while let Some(field) = map.next_key()? {
+                    let slot = match field {
+                        ItemField::FunctionId => &mut fields.function_id,
+                        ItemField::Namespace => &mut fields.namespace,
+                        ItemField::InvocationId => &mut fields.invocation_id,
+                        ItemField::Matched => &mut fields.matched,
+                        ItemField::Status => &mut fields.status,
+                        ItemField::Input => &mut fields.input,
+                        ItemField::Output => &mut fields.output,
+                        ItemField::Error => &mut fields.error,
+                        ItemField::Caller => &mut fields.caller,
+                        ItemField::Metadata => &mut fields.metadata,
+                        ItemField::StartedAtMs => &mut fields.started_at_ms,
+                        ItemField::DurationMs => &mut fields.duration_ms,
+                        ItemField::ObserveDepth => &mut fields.observe_depth,
+                        ItemField::Traceparent => &mut fields.traceparent,
+                        ItemField::Baggage => &mut fields.baggage,
+                        ItemField::OutputIsInput => &mut fields.output_is_input,
+                        ItemField::Unknown => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                            continue;
+                        }
+                    };
+                    // A field given twice: its last value, as in a decoded
+                    // object.
+                    *slot = Some(map.next_value()?);
+                }
+                Ok(fields)
+            }
+        }
+
+        deserializer.deserialize_map(Fields)
+    }
+}
+
+/// The text an `invocationsobserved` frame starts with as the SDKs write it.
+const OBSERVED_FRAME_HEAD: &[u8] = br#"{"type":"invocationsobserved""#;
+
+/// The fields of an `invocationsobserved` frame [`Message::from_frame`]
+/// reads.
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum FrameField {
+    Type,
+    Items,
+    #[serde(other)]
+    Unknown,
+}
+
+/// An `invocationsobserved` frame's items, read in the one pass that scans
+/// the frame (see [`Message::from_frame`]).
+struct ObservedFrame(ObservedItems);
+
+impl<'de> Deserialize<'de> for ObservedFrame {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Frame;
+
+        impl<'de> serde::de::Visitor<'de> for Frame {
+            type Value = ObservedFrame;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an invocationsobserved frame")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let (mut tagged, mut items) = (false, None);
+                while let Some(field) = map.next_key()? {
+                    match field {
+                        FrameField::Type if !tagged => {
+                            tagged = map.next_value::<&str>()? == "invocationsobserved";
+                            if !tagged {
+                                return Err(A::Error::custom("another type"));
+                            }
+                        }
+                        FrameField::Items if items.is_none() => {
+                            items = Some(map.next_value::<RawItems>()?.0);
+                        }
+                        // Given twice: what `Message` makes of it.
+                        FrameField::Type | FrameField::Items => {
+                            return Err(A::Error::custom("a field given twice"));
+                        }
+                        FrameField::Unknown => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                if !tagged {
+                    return Err(A::Error::custom("no type"));
+                }
+                Ok(ObservedFrame(items.unwrap_or_default()))
+            }
+        }
+
+        deserializer.deserialize_map(Frame)
+    }
+}
+
+/// An `invocationsobserved` frame's `items`: `null` as none, an array as its
+/// items, each decoded on its own off its raw text. Anything else is refused,
+/// for `Message` to read it as one rejected item.
+struct RawItems(ObservedItems);
+
+impl<'de> Deserialize<'de> for RawItems {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Items;
+
+        impl<'de> serde::de::Visitor<'de> for Items {
+            type Value = RawItems;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an array of items, or null")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(RawItems(ObservedItems::default()))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = ObservedItems::default();
+                while let Some(item) = seq.next_element::<&'de RawValue>()? {
+                    match ObservedItem::from_raw_lenient(item.get()) {
+                        Ok(item) => out.items.push(item),
+                        Err(rejected) => out.rejected.push(rejected),
+                    }
+                }
+                Ok(RawItems(out))
+            }
+        }
+
+        deserializer.deserialize_any(Items)
+    }
+}
+
+impl Message {
+    /// Decodes a frame a worker sent, as `serde_json::from_str::<Message>`
+    /// does. An `invocationsobserved` frame written as the SDKs write it
+    /// (`type` first) is read in one pass instead, its items' payloads kept as
+    /// the raw text they came in ([`RawJson`]): through `Message`, its tag
+    /// buffers the whole frame as a tree, which is then decoded again into
+    /// values. What that pass does not take (a field given twice, malformed
+    /// JSON) decodes as any other frame does, to the same result.
+    pub fn from_frame(text: &str) -> serde_json::Result<Message> {
+        if text.as_bytes().starts_with(OBSERVED_FRAME_HEAD)
+            && let Ok(ObservedFrame(items)) = serde_json::from_str(text)
+        {
+            return Ok(Message::InvocationsObserved { items });
+        }
+        serde_json::from_str(text)
+    }
+
+    /// [`Message::from_frame`] for a binary frame.
+    pub fn from_frame_bytes(bytes: &[u8]) -> serde_json::Result<Message> {
+        if bytes.starts_with(OBSERVED_FRAME_HEAD)
+            && let Ok(text) = std::str::from_utf8(bytes)
+        {
+            return Self::from_frame(text);
+        }
+        serde_json::from_slice(bytes)
     }
 }
 
@@ -1602,8 +1911,8 @@ mod tests {
     // ── observe (0.25) wire compatibility ─────────────────────────────────
 
     use super::{
-        Activation, Caller, Capture, Deliver, InvocationStatus, ObserveDescriptor, ObserverState,
-        On, default_capture,
+        Activation, Caller, Capture, Deliver, InvocationStatus, ObserveDescriptor, ObservedItem,
+        ObserverState, On, RawJson, default_capture,
     };
     use serde_json::{Value, json};
 
@@ -2016,11 +2325,15 @@ mod tests {
         };
         let item = &items.items[0];
         assert_eq!(
-            item.input,
-            Some(Value::Null),
+            item.input.as_ref().map(RawJson::get),
+            Some("null"),
             "the function was called with null"
         );
-        assert_eq!(item.output, Some(Value::Null), "the function returned null");
+        assert_eq!(
+            item.output.as_ref().map(RawJson::get),
+            Some("null"),
+            "the function returned null"
+        );
         assert_eq!(item.error, None);
         assert_eq!(item.metadata, None);
         assert_eq!(item.observe_depth, 0);
@@ -2100,6 +2413,142 @@ mod tests {
             panic!("expected InvocationsObserved");
         };
         assert!(items.items.is_empty() && items.rejected.is_empty());
+    }
+
+    /// A report written as the SDKs write it keeps its payloads as the text
+    /// they came in, `null` apart from absent; read through `Message`, the
+    /// same frame gives the same values.
+    #[test]
+    fn a_reports_payloads_stay_the_text_they_came_in() {
+        let frame = r#"{"type":"invocationsobserved","items":[{"function_id":"orders::archive","invocation_id":"i-1","matched":["o-1"],"status":"error","input":{"z": 1, "a": [1.50, "\u00e9"]},"output":null,"error":{"code":"E","message":"m"},"started_at_ms":1,"duration_ms":0.5}]}"#;
+        let Message::InvocationsObserved { items } = Message::from_frame(frame).unwrap() else {
+            panic!("expected InvocationsObserved");
+        };
+        let item = &items.items[0];
+        let text = |part: &Option<RawJson>| part.as_ref().map(|raw| raw.get().to_string());
+        assert_eq!(
+            text(&item.input).as_deref(),
+            Some(r#"{"z": 1, "a": [1.50, "\u00e9"]}"#)
+        );
+        assert_eq!(text(&item.output).as_deref(), Some("null"));
+        assert_eq!(
+            text(&item.error).as_deref(),
+            Some(r#"{"code":"E","message":"m"}"#)
+        );
+        assert_eq!(item.metadata, None);
+
+        let Message::InvocationsObserved { items: through } =
+            serde_json::from_str::<Message>(frame).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        let value = |item: &ObservedItem| item.input.as_ref().and_then(RawJson::to_value);
+        assert_eq!(value(&through.items[0]), value(item));
+        assert_eq!(value(item), Some(json!({ "z": 1, "a": [1.5, "\u{e9}"] })));
+    }
+
+    /// `Message::from_frame` reads every frame as `Message` does: the same
+    /// items, field by field and payload by payload value, the same rejected
+    /// items, the same errors.
+    #[test]
+    fn a_frame_reads_alike_through_from_frame() {
+        // Over a valid item: a field given here is given twice, and its last
+        // value counts.
+        let with = |field: &str| {
+            format!(
+                r#"{{"function_id":"f","invocation_id":"i-9","status":"success","started_at_ms":5,"duration_ms":0.5,{field}}}"#
+            )
+        };
+        let mut items = vec![
+            r#"{"function_id":"f","namespace":"ns","invocation_id":"i-1","matched":["o-1","o-2"],"status":"success","input":{"n":1,"_caller_worker_id":"w"},"output":[1,2.5,null],"error":null,"caller":{"worker_name":"w","worker_name":"x"},"metadata":{"t":1},"started_at_ms":5,"duration_ms":1,"observe_depth":2,"traceparent":"00-ab","baggage":"k=v","output_is_input":false,"unknown":{"x":[1]}}"#.to_string(),
+            r#"{"function_id":"f","invocation_id":"i-2","\u006fbserve_depth":3,"status":"error","started_at_ms":5,"duration_ms":0.5,"matched":null,"output_is_input":null,"traceparent":null}"#.to_string(),
+            r#"{"function_id":"f","invocation_id":"i-3","status":"paused","started_at_ms":5,"duration_ms":0.5}"#.to_string(),
+            r#""not an item""#.to_string(),
+            "[1]".to_string(),
+            r#"{"invocation_id":"i-4"}"#.to_string(),
+            r#"{"function_id":7}"#.to_string(),
+            r#"{"function_id":"f","status":"success","started_at_ms":5,"duration_ms":0.5}"#.to_string(),
+        ];
+        items.extend(
+            [
+                r#""namespace":7"#,
+                r#""invocation_id":"i-10""#,
+                r#""matched":[1]"#,
+                r#""matched":"o-1""#,
+                r#""status":7"#,
+                r#""caller":"w""#,
+                r#""started_at_ms":1.5"#,
+                r#""started_at_ms":-1"#,
+                r#""duration_ms":"1""#,
+                r#""observe_depth":4294967296"#,
+                r#""observe_depth":1.0"#,
+                r#""traceparent":1"#,
+                r#""baggage":false"#,
+                r#""output_is_input":"yes""#,
+                r#""output_is_input":true,"input":{"op":"insert"}"#,
+            ]
+            .map(with),
+        );
+        let items = format!("[{}]", items.join(","));
+        let frames = [
+            format!(r#"{{"type":"invocationsobserved","items":{items}}}"#),
+            format!(r#"{{"items":{items},"type":"invocationsobserved"}}"#),
+            r#"{"type":"invocationsobserved","items":null}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":"nope"}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":{"a":1}}"#.to_string(),
+            r#"{"type":"invocationsobserved"}"#.to_string(),
+            r#"{"type":"invocationsobserved","extra":{"x":[1]},"items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[],"items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","type":"invocationsobserved","items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[{"function_id":"f"}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[]} trailing"#.to_string(),
+            r#"{"type":"invocationsobservedx","items":[]}"#.to_string(),
+            r#"{"type":"unobserve","id":"o-1"}"#.to_string(),
+        ];
+        for frame in &frames {
+            match (
+                Message::from_frame(frame),
+                serde_json::from_str::<Message>(frame),
+            ) {
+                (Ok(fast), Ok(slow)) => {
+                    assert_eq!(
+                        serde_json::to_value(&fast).unwrap(),
+                        serde_json::to_value(&slow).unwrap(),
+                        "{frame}"
+                    );
+                    if let (
+                        Message::InvocationsObserved { items: fast },
+                        Message::InvocationsObserved { items: slow },
+                    ) = (&fast, &slow)
+                    {
+                        assert_eq!(fast.rejected, slow.rejected, "{frame}");
+                    }
+                }
+                (Err(fast), Err(slow)) => assert_eq!(fast.to_string(), slow.to_string(), "{frame}"),
+                (fast, slow) => panic!("{frame}: {fast:?} / {slow:?}"),
+            }
+        }
+        let Message::InvocationsObserved { items } = Message::from_frame(&frames[0]).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        assert_eq!((items.items.len(), items.rejected.len()), (5, 18));
+        assert_eq!(
+            items.items[1].observe_depth, 3,
+            "an escaped key reads as its name"
+        );
+        assert_eq!(
+            items.items[3].invocation_id, "i-10",
+            "the last value counts"
+        );
+        assert!(items.items[4].output_is_input);
+        // The binary path reads it alike.
+        let Message::InvocationsObserved { items: binary } =
+            Message::from_frame_bytes(frames[0].as_bytes()).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        assert_eq!(binary, items);
     }
 
     #[test]
