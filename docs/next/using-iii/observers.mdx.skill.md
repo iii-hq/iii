@@ -163,8 +163,13 @@ message (`queue::on-message`) or a row change (`database::on-row-changed`). The 
 registered function. Any worker can observe any function, private ones included, unless the function
 is registered with `observable: false` or RBAC restricts it (see [Authorization](#authorization)).
 
-What an observer receives is typically the function's return value, unless the worker that hosts the
-function overrides it. If unsure, refer to that worker's documentation.
+By default, an observer is accepted as soon as it is added, and its target runs on every call its
+`capture` fires on and its filters match. The worker that hosts the function can override each part
+of that with a hook: `onObserverAdded` sets something up for the observer, or rejects it;
+`onObservationMatch` decides which calls reach which observer; and `onObservationDeliver` delivers
+the calls itself and decides what the caller gets back (see
+[Hooks](../creating-workers/observable-functions#hooks)). If unsure, refer to that worker's
+documentation.
 
 ### Defaults
 
