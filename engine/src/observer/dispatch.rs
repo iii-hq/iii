@@ -482,6 +482,20 @@ fn unstamped(mut value: Value) -> Value {
     value
 }
 
+/// `{ "worker_name": "iii-engine" }`, the caller of every engine-hosted
+/// source's event (what [`InvocationCtx::engine_source`] resolves to): built
+/// once and shared by the events, which never change it.
+fn engine_source_caller() -> Arc<Value> {
+    static CALLER: OnceLock<Arc<Value>> = OnceLock::new();
+    CALLER
+        .get_or_init(|| {
+            let ctx = InvocationCtx::engine_source(0);
+            let caller = ctx.caller().and_then(|c| serde_json::to_value(c).ok());
+            Arc::new(caller.unwrap_or(Value::Null))
+        })
+        .clone()
+}
+
 /// The top-level `fields` of `value` that observers' filters read, without
 /// the engine's caller stamp; all of a `value` that is not an object (a
 /// filter path into it resolves to nothing either way).
@@ -592,9 +606,10 @@ pub(crate) struct Completed {
     /// `iii.observer.activations.total`: [`ENGINE_DELIVERY`] or
     /// [`HOST_DELIVERY`].
     delivery: &'static str,
-    namespace: String,
-    function_id: String,
-    invocation_id: String,
+    /// The observed function, `(namespace, function_id)`: the key its active
+    /// set holds, shared rather than copied.
+    function: Arc<FnKey>,
+    invocation_id: InvocationId,
     success: bool,
     input: Option<Arc<Value>>,
     output: Option<Arc<Value>>,
@@ -612,8 +627,61 @@ pub(crate) struct Completed {
     /// been, when that did not fit).
     charged: AtomicUsize,
     /// Its payloads as JSON text, for the activations a worker connection
-    /// receives.
-    encoded: EncodedParts,
+    /// receives: allocated by the first of them (or with the event, for a
+    /// payload the call kept as text), so an event that only in-process
+    /// targets read holds none.
+    encoded: OnceLock<Box<EncodedParts>>,
+}
+
+/// A completion's `invocation_id`: the engine's own id kept as a [`Uuid`]
+/// until an activation writes it, or the id a report gave, as it gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InvocationId {
+    Uuid(Uuid),
+    Reported(String),
+}
+
+impl InvocationId {
+    /// The id a report gave: kept as a [`Uuid`] when it is one written the
+    /// way the engine writes it (hyphenated, lowercase), which gives back the
+    /// same text, and as given otherwise. `parsed` is the id as a [`Uuid`],
+    /// when it parses as one.
+    fn reported(id: String, parsed: Option<Uuid>) -> Self {
+        match parsed {
+            Some(uuid) if *uuid.hyphenated().encode_lower(&mut Uuid::encode_buffer()) == *id => {
+                Self::Uuid(uuid)
+            }
+            _ => Self::Reported(id),
+        }
+    }
+
+    /// Its length as text.
+    fn len(&self) -> usize {
+        match self {
+            Self::Uuid(_) => uuid::fmt::Hyphenated::LENGTH,
+            Self::Reported(id) => id.len(),
+        }
+    }
+}
+
+impl std::fmt::Display for InvocationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uuid(uuid) => std::fmt::Display::fmt(&uuid.hyphenated(), f),
+            Self::Reported(id) => f.write_str(id),
+        }
+    }
+}
+
+impl serde::Serialize for InvocationId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Uuid(uuid) => {
+                serializer.serialize_str(uuid.hyphenated().encode_lower(&mut Uuid::encode_buffer()))
+            }
+            Self::Reported(id) => serializer.serialize_str(id),
+        }
+    }
 }
 
 /// A completion's payloads as JSON text, each encoded the first time an
@@ -629,8 +697,12 @@ pub(crate) struct EncodedParts {
 }
 
 impl EncodedParts {
-    /// With the input's and output's text already known.
-    fn with_text(input: Option<Arc<str>>, output: Option<Arc<str>>) -> Self {
+    /// The parts of an event whose input or output the call kept as text,
+    /// allocated only then.
+    fn with_text(input: Option<Arc<str>>, output: Option<Arc<str>>) -> OnceLock<Box<Self>> {
+        if input.is_none() && output.is_none() {
+            return OnceLock::new();
+        }
         let parts = Self::default();
         if let Some(input) = input {
             let _ = parts.input.set(Some(input));
@@ -638,7 +710,7 @@ impl EncodedParts {
         if let Some(output) = output {
             let _ = parts.output.set(Some(output));
         }
-        parts
+        OnceLock::from(Box::new(parts))
     }
 }
 
@@ -705,8 +777,13 @@ fn encode_once(cell: &OnceLock<Option<Arc<str>>>, value: Option<&Value>) -> Opti
 }
 
 impl Completed {
+    /// Its payloads' text, allocated the first time an activation needs one.
+    fn encoded(&self) -> &EncodedParts {
+        self.encoded.get_or_init(Box::default)
+    }
+
     fn encoded_input(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded.input, self.input.as_deref())
+        encode_once(&self.encoded().input, self.input.as_deref())
     }
 
     fn encoded_output(&self) -> Option<Arc<str>> {
@@ -717,19 +794,19 @@ impl Completed {
         {
             return self.encoded_input();
         }
-        encode_once(&self.encoded.output, self.output.as_deref())
+        encode_once(&self.encoded().output, self.output.as_deref())
     }
 
     fn encoded_error(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded.error, self.error.as_deref())
+        encode_once(&self.encoded().error, self.error.as_deref())
     }
 
     fn encoded_caller(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded.caller, self.caller.as_deref())
+        encode_once(&self.encoded().caller, self.caller.as_deref())
     }
 
     fn encoded_metadata(&self) -> Option<Arc<str>> {
-        encode_once(&self.encoded.metadata, self.metadata.as_deref())
+        encode_once(&self.encoded().metadata, self.metadata.as_deref())
     }
 
     /// Roughly what holding the event costs (see [`QUEUED_BYTES`]).
@@ -751,8 +828,8 @@ impl Completed {
             .map(str::len)
             .sum::<usize>();
         EVENT_OVERHEAD
-            + self.namespace.len()
-            + self.function_id.len()
+            + self.function.0.len()
+            + self.function.1.len()
             + self.invocation_id.len()
             + text
             + payloads
@@ -770,7 +847,9 @@ pub(crate) struct Evaluation {
     /// Turned into the document's `error` only when an observer needs it.
     error: Option<ErrorBody>,
     /// Resolved into the document's `caller` only when an observer needs it.
-    ctx: Arc<InvocationCtx>,
+    /// `None` for an engine-hosted source's event, whose caller is the engine
+    /// (see [`engine_source_caller`]).
+    ctx: Option<Arc<InvocationCtx>>,
 }
 
 impl Evaluation {
@@ -890,9 +969,8 @@ impl ObserverRegistry {
             bytes: event.as_deref().map_or(0, approx_size),
             completed: Completed {
                 delivery: ENGINE_DELIVERY,
-                namespace: namespace.to_string(),
-                function_id: function_id.to_string(),
-                invocation_id: super::new_uuid().to_string(),
+                function: set.function.clone(),
+                invocation_id: InvocationId::Uuid(super::new_uuid()),
                 success: true,
                 input: event.clone().filter(|_| set.needs.input),
                 output: event.filter(|_| set.needs.output),
@@ -906,12 +984,12 @@ impl ObserverRegistry {
                 baggage: None,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: EncodedParts::default(),
+                encoded: OnceLock::new(),
             },
             set,
             matching: Matching::Filters,
             error: None,
-            ctx: Arc::new(InvocationCtx::engine_source(depth)),
+            ctx: None,
         })
     }
 
@@ -1123,13 +1201,15 @@ impl ObserverRegistry {
             + text_size(&call.input_text)
             + output.as_deref().map_or(0, approx_size)
             + text_size(&output_text);
+        // The set the call began with is the function's: the event shares
+        // its key.
+        debug_assert!(call.set.function.0 == namespace && call.set.function.1 == function_id);
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
                 delivery: matching.delivery(),
-                namespace: namespace.to_string(),
-                function_id: function_id.to_string(),
-                invocation_id: invocation_id.to_string(),
+                function: call.set.function.clone(),
+                invocation_id: InvocationId::Uuid(invocation_id),
                 success,
                 input: call.input,
                 output,
@@ -1148,7 +1228,7 @@ impl ObserverRegistry {
             set: call.set,
             matching,
             error,
-            ctx: ctx.clone(),
+            ctx: Some(ctx.clone()),
         };
         self.enqueue(evaluation);
     }
@@ -1332,20 +1412,25 @@ impl ObserverRegistry {
                 .and_then(|text| serde_json::from_str(text).ok())
                 .map(Arc::new)
         };
-        if completed.input.is_none() {
-            completed.input = decode(completed.encoded.input.get());
-        }
-        if completed.output.is_none() {
-            completed.output = decode(completed.encoded.output.get());
+        if let Some(text) = completed.encoded.get() {
+            if completed.input.is_none() {
+                completed.input = decode(text.input.get());
+            }
+            if completed.output.is_none() {
+                completed.output = decode(text.output.get());
+            }
         }
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
         if needs.caller {
-            completed.caller = ctx
-                .caller()
-                .and_then(|c| serde_json::to_value(c).ok())
-                .map(Arc::new);
+            completed.caller = match &ctx {
+                Some(ctx) => ctx
+                    .caller()
+                    .and_then(|c| serde_json::to_value(c).ok())
+                    .map(Arc::new),
+                None => Some(engine_source_caller()),
+            };
         }
         let completed = Arc::new(completed);
         let doc = Doc {
@@ -1385,7 +1470,7 @@ impl ObserverRegistry {
                     match set.held(self, id) {
                         Some(observer) => held.push(observer),
                         None => {
-                            self.drop_not_held(&completed.namespace, &completed.function_id, id)
+                            self.drop_not_held(&completed.function.0, &completed.function.1, id)
                         }
                     }
                 }
@@ -1553,8 +1638,8 @@ impl ObserverRegistry {
         let ctx = InvocationCtx::activation(
             Caller {
                 worker_name: Some(ENGINE_CALLER_NAME.to_string()),
-                function_id: Some(event.function_id.clone()),
-                invocation_id: Some(event.invocation_id.clone()),
+                function_id: Some(event.function.1.clone()),
+                invocation_id: Some(event.invocation_id.to_string()),
                 ..Caller::default()
             },
             event.depth.saturating_add(1),
@@ -1775,7 +1860,8 @@ impl ObserverRegistry {
                 self.drop_matched(&key, &matched, observe_codes::REPORTER_NOT_OWNER);
                 continue;
             }
-            let routed = Uuid::parse_str(&invocation_id).is_ok_and(|id| {
+            let parsed = Uuid::parse_str(&invocation_id).ok();
+            let routed = parsed.is_some_and(|id| {
                 answered.contains(&id)
                     || invocations
                         .as_ref()
@@ -1809,11 +1895,17 @@ impl ObserverRegistry {
             } else {
                 output.map(|output| Arc::new(unstamped(output)))
             };
+            // The function's key as its active set holds it, shared with the
+            // event; moved into one of its own only when none of its
+            // observers is active.
+            let key = match self.watch(&key.0, &key.1) {
+                Some(set) => set.function.clone(),
+                None => Arc::new(key),
+            };
             let completed = Arc::new(Completed {
                 delivery: HOST_DELIVERY,
-                namespace: key.0.clone(),
-                function_id: key.1.clone(),
-                invocation_id,
+                function: key.clone(),
+                invocation_id: InvocationId::reported(invocation_id, parsed),
                 success,
                 input,
                 output,
@@ -1827,10 +1919,10 @@ impl ObserverRegistry {
                 baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: EncodedParts::default(),
+                encoded: OnceLock::new(),
             });
             for id in &matched {
-                match self.get(id).filter(|o| *o.function == key) {
+                match self.get(id).filter(|o| o.function == key) {
                     Some(observer) if !accepts(&observer.on, success) => {}
                     Some(observer) => {
                         if self.activate(&observer, &completed)
@@ -2433,11 +2525,11 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
     let mut envelope = Map::new();
     envelope.insert("observer_id".into(), observer.id.clone().into());
     envelope.insert("activation_id".into(), activation_id.into());
-    envelope.insert("function_id".into(), completed.function_id.clone().into());
-    envelope.insert("namespace".into(), completed.namespace.clone().into());
+    envelope.insert("function_id".into(), completed.function.1.clone().into());
+    envelope.insert("namespace".into(), completed.function.0.clone().into());
     envelope.insert(
         "invocation_id".into(),
-        completed.invocation_id.clone().into(),
+        completed.invocation_id.to_string().into(),
     );
     envelope.insert(
         "status".into(),
@@ -2488,8 +2580,8 @@ fn project_encoded(observer: &Observer, completed: &Completed, activation_id: &s
     let mut envelope = ObjectWriter::new();
     envelope.field("observer_id", &observer.id);
     envelope.field("activation_id", &activation_id);
-    envelope.field("function_id", &completed.function_id);
-    envelope.field("namespace", &completed.namespace);
+    envelope.field("function_id", &completed.function.1);
+    envelope.field("namespace", &completed.function.0);
     envelope.field("invocation_id", &completed.invocation_id);
     envelope.field(
         "status",
@@ -3249,9 +3341,8 @@ mod tests {
     fn event(n: u64) -> Arc<super::Completed> {
         Arc::new(super::Completed {
             delivery: super::ENGINE_DELIVERY,
-            namespace: DEFAULT_NAMESPACE.to_string(),
-            function_id: "test::src".to_string(),
-            invocation_id: n.to_string(),
+            function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
+            invocation_id: super::InvocationId::Reported(n.to_string()),
             success: true,
             input: Some(Arc::new(json!({ "n": n }))),
             output: None,
@@ -3265,7 +3356,7 @@ mod tests {
             baggage: None,
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
-            encoded: super::EncodedParts::default(),
+            encoded: std::sync::OnceLock::new(),
         })
     }
 
@@ -4222,9 +4313,8 @@ mod tests {
             let [input, output, error, caller, metadata] = parts;
             super::Completed {
                 delivery: super::ENGINE_DELIVERY,
-                namespace: DEFAULT_NAMESPACE.to_string(),
-                function_id: "test::src".to_string(),
-                invocation_id: "i-\"1\"".to_string(),
+                function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
+                invocation_id: super::InvocationId::Reported("i-\"1\"".to_string()),
                 success,
                 input,
                 output,
@@ -4238,7 +4328,7 @@ mod tests {
                 baggage: None,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: super::EncodedParts::default(),
+                encoded: std::sync::OnceLock::new(),
             }
         }
 
@@ -4303,8 +4393,12 @@ mod tests {
             }
         }
         // The event source's value was encoded once, as its input.
-        assert!(events[0].encoded.input.get().is_some_and(Option::is_some));
-        assert!(events[0].encoded.output.get().is_none());
+        let text = events[0]
+            .encoded
+            .get()
+            .expect("encoded for a worker's target");
+        assert!(text.input.get().is_some_and(Option::is_some));
+        assert!(text.output.get().is_none());
     }
 
     /// A charge refused for lack of room leaves the event's cost behind: the
@@ -4506,6 +4600,214 @@ mod tests {
             answered.record(id);
             let (ids, slots) = room(&answered);
             assert!(ids <= ROUTED_ANSWERS_KEPT && slots <= 2 * ROUTED_ANSWERS_KEPT);
+        }
+    }
+
+    /// An event's invocation id is written as the engine wrote it, or as the
+    /// report gave it: a reported id is kept as a `Uuid` only when that
+    /// writes back the same text.
+    #[test]
+    fn an_invocation_id_is_written_as_it_was_given() {
+        use super::InvocationId;
+        let written =
+            |id: &InvocationId| (id.to_string(), serde_json::to_string(id).unwrap(), id.len());
+        let uuid = Uuid::new_v4();
+        let engine = InvocationId::Uuid(uuid);
+        assert_eq!(
+            written(&engine),
+            (uuid.to_string(), format!("\"{uuid}\""), 36)
+        );
+        assert_eq!(InvocationId::reported(uuid.to_string(), Some(uuid)), engine);
+        for given in [
+            uuid.to_string().to_uppercase(),
+            uuid.simple().to_string(),
+            uuid.urn().to_string(),
+        ] {
+            let parsed = Uuid::parse_str(&given).ok();
+            assert_eq!(parsed, Some(uuid), "{given}");
+            let id = InvocationId::reported(given.clone(), parsed);
+            assert_eq!(id, InvocationId::Reported(given.clone()));
+            assert_eq!(
+                written(&id),
+                (given.clone(), format!("\"{given}\""), given.len())
+            );
+        }
+        let odd = InvocationId::reported("i-\"1\"".to_string(), None);
+        assert_eq!(serde_json::to_string(&odd).unwrap(), r#""i-\"1\"""#);
+        assert_eq!(odd.len(), 5);
+    }
+
+    /// An observer of `test::src` (or `source`) delivering the envelope to
+    /// the gated `test::held`, one activation at a time.
+    async fn one_at_a_time(
+        engine: &Arc<Engine>,
+        source: &str,
+    ) -> (
+        Arc<tokio::sync::Semaphore>,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+        tokio::sync::mpsc::Receiver<crate::engine::Outbound>,
+    ) {
+        let (gate, delivered) = gated(engine, "test::held");
+        let (worker, socket) = test_support::worker(engine);
+        let mut request = test_support::request("obs", source, "test::held", None);
+        request.source.deliver = Some(crate::protocol::Deliver::Envelope);
+        request.max_in_flight = Some(1);
+        test_support::observe_request(engine, &worker, request).await;
+        (gate, delivered, socket)
+    }
+
+    /// A routed call's event shares the key its function's active set holds,
+    /// keeps the engine's invocation id as a `Uuid` and holds no JSON text
+    /// while only in-process targets read it; the envelope names the
+    /// function and the call as before.
+    #[tokio::test]
+    async fn an_event_shares_its_functions_key_and_encodes_nothing_for_in_process_targets() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let (gate, mut delivered, _socket) = one_at_a_time(&engine, "test::src").await;
+        let registry = &engine.observers;
+        let set = registry
+            .watch(DEFAULT_NAMESPACE, "test::src")
+            .expect("observed");
+        let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
+        let ids = [Uuid::new_v4(), Uuid::new_v4()];
+        for id in ids {
+            let call = registry.begin(set.clone(), &json!({ "n": 1 }), &None, &None, &None);
+            registry.complete(
+                call,
+                DEFAULT_NAMESPACE,
+                "test::src",
+                id,
+                &Ok(Ok(None)),
+                None,
+                &ctx,
+            );
+        }
+        // The first holds the observer's only slot: the second queues.
+        until(|| registry.in_flight("obs") == Some((1, 1))).await;
+        {
+            let observer = registry.get("obs").unwrap();
+            let flow = observer.flow.write();
+            let event = &flow.queue[0].event;
+            assert!(Arc::ptr_eq(&event.function, &set.function));
+            assert_eq!(event.invocation_id, super::InvocationId::Uuid(ids[1]));
+            assert!(
+                event.encoded.get().is_none(),
+                "no text for in-process targets"
+            );
+        }
+        gate.add_permits(2);
+        for id in ids {
+            let envelope = test_support::next(&mut delivered).await;
+            assert_eq!(envelope["invocation_id"], id.to_string());
+            assert_eq!(envelope["function_id"], "test::src");
+            assert_eq!(envelope["namespace"], DEFAULT_NAMESPACE);
+        }
+    }
+
+    /// A reported event shares its function's key with the active set too,
+    /// keeps a reported id written as the engine writes one as a `Uuid`, and
+    /// delivers every id as the report gave it.
+    #[tokio::test]
+    async fn a_reported_event_shares_the_key_and_keeps_the_id_it_was_given() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let (gate, mut delivered, _socket) = one_at_a_time(&engine, "test::src").await;
+        let host = Uuid::new_v4();
+        engine.function_owners.insert(
+            (DEFAULT_NAMESPACE.to_string(), "test::src".to_string()),
+            (host, crate::engine::InvocationKind::Regular),
+        );
+        let set = engine
+            .observers
+            .watch(DEFAULT_NAMESPACE, "test::src")
+            .expect("observed");
+        let uuid = Uuid::new_v4();
+        let given = [
+            "local-1".to_string(),
+            uuid.to_string(),
+            uuid.to_string().to_uppercase(),
+        ];
+        let item = |invocation_id: &String| crate::protocol::ObservedItem {
+            function_id: "test::src".to_string(),
+            namespace: None,
+            invocation_id: invocation_id.clone(),
+            matched: vec!["obs".to_string()],
+            status: crate::protocol::InvocationStatus::Success,
+            input: Some(json!({ "n": 1 })),
+            output: None,
+            error: None,
+            caller: None,
+            metadata: None,
+            started_at_ms: 1,
+            duration_ms: 0.5,
+            observe_depth: 0,
+            traceparent: None,
+            baggage: None,
+            output_is_input: false,
+        };
+        let full = engine.observers.report(
+            host,
+            DEFAULT_NAMESPACE,
+            &super::RoutedAnswers::default(),
+            given.iter().map(item).collect::<Vec<_>>().into(),
+        );
+        assert!(full.is_empty());
+        until(|| engine.observers.in_flight("obs") == Some((1, 2))).await;
+        {
+            let observer = engine.observers.get("obs").unwrap();
+            let flow = observer.flow.write();
+            for pending in &flow.queue {
+                assert!(Arc::ptr_eq(&pending.event.function, &set.function));
+            }
+            assert_eq!(
+                flow.queue[0].event.invocation_id,
+                super::InvocationId::Uuid(uuid)
+            );
+            assert_eq!(
+                flow.queue[1].event.invocation_id,
+                super::InvocationId::Reported(given[2].clone())
+            );
+        }
+        gate.add_permits(3);
+        for id in &given {
+            let envelope = test_support::next(&mut delivered).await;
+            assert_eq!(envelope["invocation_id"], id.as_str());
+            assert_eq!(envelope["function_id"], "test::src");
+        }
+    }
+
+    /// The events of an engine-hosted source share one `caller`, the
+    /// engine's, built once rather than for each event.
+    #[tokio::test]
+    async fn an_engine_sources_events_share_the_engines_caller() {
+        let engine = Arc::new(Engine::new());
+        super::super::events::register_event_source(&engine, "test::events", "events", json!({}));
+        let (gate, mut delivered, _socket) = one_at_a_time(&engine, "test::events").await;
+        for n in 0..3 {
+            engine
+                .observers
+                .emit(DEFAULT_NAMESPACE, "test::events", || {
+                    Some(json!({ "n": n }))
+                });
+        }
+        until(|| engine.observers.in_flight("obs") == Some((1, 2))).await;
+        {
+            let observer = engine.observers.get("obs").unwrap();
+            let flow = observer.flow.write();
+            let callers: Vec<Arc<Value>> = flow
+                .queue
+                .iter()
+                .map(|pending| pending.event.caller.clone().expect("captured"))
+                .collect();
+            assert!(Arc::ptr_eq(&callers[0], &callers[1]));
+            assert_eq!(*callers[0], json!({ "worker_name": "iii-engine" }));
+        }
+        gate.add_permits(3);
+        for n in 0..3 {
+            let envelope = test_support::next(&mut delivered).await;
+            assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
+            assert_eq!(envelope["input"], json!({ "n": n }));
         }
     }
 }
