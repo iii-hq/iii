@@ -17,19 +17,19 @@ export type AppShot = {
 }
 
 export const appShots: Record<AppShotSlot, AppShot> = {
-  /* projects/home-widgets/evidence/apple/apple-mac-1280-all.png */
+  /* iii-hq/app projects/mac-app-launch/screenshots/: mac-home (2880 × 1896, a 1440 × 948 pt window), resized */
   mac: {
     src: '/iii-app/mac-home.webp',
     width: 1280,
-    height: 800,
-    alt: "The iii app on a Mac: an engine's Home, with one approval waiting in Chat, the apps shelf and live widgets.",
+    height: 843,
+    alt: "The iii app on a Mac: an engine's Home, with one approval waiting in Chat, the apps shelf and the Chat, tmux, recent folders, connections, buckets and engine widgets.",
   },
-  /* projects/tmux-subagents/evidence/apple/iphone-transcript.png */
+  /* iii-hq/app projects/mac-app-launch/screenshots/: iphone-tmux-transcript (1320 × 2868), resized */
   iphone: {
     src: '/iii-app/iphone-tmux-subagent.webp',
     width: 440,
-    height: 957,
-    alt: 'The tmux app on an iPhone: the live transcript of a Claude Code sub-agent, with each Bash call and its result.',
+    height: 956,
+    alt: 'The tmux app on an iPhone: the live transcript of a Claude Code sub-agent, with its Grep and Read calls and their results.',
   },
   /* iii-hq/workers ide/screenshots/android-editor-terminal.webp */
   android: {
