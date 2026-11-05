@@ -46,8 +46,7 @@ A filter reads one document per call, with five roots:
 }
 ```
 
-- A filter may reference any root, whatever the observer captures. `capture` only decides what is
-  shipped to the target.
+- A filter may reference any root, whatever the observer captures in its payload.
 - `capture` decides the outcomes first: `input` and `output` fire on success, `error` on error. It
   is checked before the filter.
 - `output` is the handler's return value, which is what observers observe. An event source's handler

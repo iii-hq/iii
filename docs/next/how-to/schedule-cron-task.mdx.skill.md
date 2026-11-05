@@ -11,6 +11,8 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import type { Observed } from "iii-sdk";
+
     worker.registerFunction("reports::daily-summary", async ({ input }: Observed<{ scheduled_time: string }>) => {
       // build the report for input.scheduled_time
       return null;
