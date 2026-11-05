@@ -79,6 +79,27 @@ impl Node {
     /// `@`), its `$eq` operand, or its `$in` operands, as `(path, operands)`.
     /// A document whose value at `path` equals none of `operands` does not
     /// match (an absent path equals nothing).
+    /// Adds the first key of every `input` path the node reads to `fields`;
+    /// `false` when a path reads `input` whole. A `$any` filter reads the
+    /// elements of its clause's path, which names the field.
+    pub(crate) fn input_fields(&self, fields: &mut Vec<Box<str>>) -> bool {
+        match self {
+            Node::And(nodes) | Node::Or(nodes) => {
+                nodes.iter().all(|node| node.input_fields(fields))
+            }
+            Node::Not(node) => node.input_fields(fields),
+            Node::Path(clause) => {
+                if clause.path.root == Root::Input {
+                    match clause.path.segments.first() {
+                        Some(segment) => fields.push(segment.key.clone()),
+                        None => return false,
+                    }
+                }
+                true
+            }
+        }
+    }
+
     pub fn equality_terms(&self) -> impl Iterator<Item = (&Path, &[Value])> {
         let clauses: &[Node] = match self {
             Node::And(nodes) => nodes,

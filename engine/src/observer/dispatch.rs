@@ -99,7 +99,11 @@ struct Tracked {
     admitted: bool,
     started: Instant,
     started_at_ms: u64,
+    /// The fields of the input the observers' filters read, when that is
+    /// all they read of it.
     input: Option<Arc<Value>>,
+    /// The whole input as JSON text, when an observer needs all of it.
+    input_text: Option<Arc<str>>,
     metadata: Option<Arc<Value>>,
     traceparent: Option<String>,
     baggage: Option<String>,
@@ -248,7 +252,13 @@ impl QueueBudget {
         if event.queues.fetch_add(1, Ordering::AcqRel) > 0 {
             return true;
         }
-        let cost = event.cost();
+        // A refused charge leaves the cost behind: while the queues are full,
+        // each further observer of the event reads it instead of walking the
+        // payloads again.
+        let cost = match event.charged.load(Ordering::Acquire) {
+            0 => event.cost(),
+            charged => charged,
+        };
         let limit = self.limit.load(Ordering::Relaxed);
         let fits = self
             .bytes
@@ -340,6 +350,25 @@ fn unstamped(mut value: Value) -> Value {
         map.remove(CALLER_STAMP);
     }
     value
+}
+
+/// The top-level `fields` of `value` that observers' filters read, without
+/// the engine's caller stamp; all of a `value` that is not an object (a
+/// filter path into it resolves to nothing either way).
+fn project_input(value: &Value, fields: &std::collections::BTreeMap<Box<str>, usize>) -> Value {
+    let Value::Object(map) = value else {
+        return value.clone();
+    };
+    Value::Object(
+        fields
+            .keys()
+            .filter(|field| &***field != CALLER_STAMP)
+            .filter_map(|field| {
+                map.get(&**field)
+                    .map(|value| (field.to_string(), value.clone()))
+            })
+            .collect(),
+    )
 }
 
 /// What a host that declared `observe.v2` answered a routed call with besides
@@ -467,6 +496,72 @@ pub(crate) struct EncodedParts {
     error: OnceLock<Option<Arc<str>>>,
     caller: OnceLock<Option<Arc<str>>>,
     metadata: OnceLock<Option<Arc<str>>>,
+}
+
+impl EncodedParts {
+    /// With the input's and output's text already known.
+    fn with_text(input: Option<Arc<str>>, output: Option<Arc<str>>) -> Self {
+        let parts = Self::default();
+        if let Some(input) = input {
+            let _ = parts.input.set(Some(input));
+        }
+        if let Some(output) = output {
+            let _ = parts.output.set(Some(output));
+        }
+        parts
+    }
+}
+
+/// The [`approx_size`] above which a call keeps a payload an observer needs
+/// whole as its JSON text rather than as a copy: a copy allocates every node
+/// on the caller's path, the text one buffer, which the evaluator decodes and
+/// a worker's activation sends as is. Below it a copy costs less than
+/// encoding and decoding.
+const TEXT_ABOVE: usize = 2 * 1024;
+
+/// A payload a call keeps for observers that need it whole.
+enum Kept {
+    Value(Arc<Value>),
+    Text(Arc<str>),
+}
+
+impl Kept {
+    /// `value` as observers see it (see [`unstamped`]): copied, or encoded
+    /// when larger than [`TEXT_ABOVE`].
+    fn of(value: &Value) -> Self {
+        if approx_size(value) > TEXT_ABOVE {
+            Kept::Text(encode_unstamped(value))
+        } else {
+            Kept::Value(Arc::new(unstamped(value.clone())))
+        }
+    }
+}
+
+/// A payload as observers see it (see [`unstamped`]), as JSON text.
+fn encode_unstamped(value: &Value) -> Arc<str> {
+    Arc::from(serde_json::to_string(&Unstamped(value)).unwrap_or_else(|_| "null".to_string()))
+}
+
+/// A value as observers see it, serialized: without the engine's top-level
+/// caller stamp, and without copying the value to drop it.
+struct Unstamped<'a>(&'a Value);
+
+impl serde::Serialize for Unstamped<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self.0 {
+            Value::Object(map) if map.contains_key(CALLER_STAMP) => {
+                let mut out = serializer.serialize_map(Some(map.len() - 1))?;
+                for (key, value) in map {
+                    if key != CALLER_STAMP {
+                        out.serialize_entry(key, value)?;
+                    }
+                }
+                out.end()
+            }
+            value => value.serialize(serializer),
+        }
+    }
 }
 
 /// `value`'s JSON text, encoded into `cell` the first time.
@@ -690,7 +785,7 @@ impl ObserverRegistry {
         })
     }
 
-    /// Starts tracking an observed invocation: copies the input and metadata
+    /// Starts tracking an observed invocation: keeps the input and metadata
     /// only when an active observer needs them (its filters read them, or it
     /// captures or delivers them), and only when the evaluator has room
     /// (otherwise the call counts an `OVERFLOW` drop when it completes,
@@ -698,9 +793,15 @@ impl ObserverRegistry {
     /// how the call is delivered is decided when the call begins, from the
     /// host it goes to.
     ///
+    /// Of the input it keeps the fields the observers' filters read when that
+    /// is all they read of it, and otherwise all of it: a copy, or, past
+    /// [`TEXT_ABOVE`], its JSON text (one buffer rather than a copy of every
+    /// node on the caller's path), which the evaluator decodes and a worker's
+    /// activation sends as is.
+    ///
     /// Observers see the payload as the caller sent it: a call a worker makes
-    /// carries the engine's `_caller_worker_id` stamp, which the copy leaves
-    /// out (the caller is `caller.worker_id`).
+    /// carries the engine's `_caller_worker_id` stamp, which what is kept
+    /// leaves out (the caller is `caller.worker_id`).
     pub fn begin(
         &self,
         set: Arc<ActiveSet>,
@@ -712,10 +813,26 @@ impl ObserverRegistry {
         let admitted = self.evaluator_has_room(&set);
         let host_delivers = self.host_delivers(&set.function);
         let needs = set.needs;
-        let input = (admitted && needs.input).then(|| {
+        let mut input_text = None;
+        let input = if admitted && needs.input {
             self.payload_copies.fetch_add(1, Ordering::Relaxed);
-            Arc::new(unstamped(body.clone()))
-        });
+            match set.input.projection() {
+                // Observers that only filter on the input get the fields
+                // their filters read: the rest is not copied.
+                Some(fields) => Some(Arc::new(project_input(body, fields))),
+                // One that needs all of it gets a copy, or its JSON text
+                // when it is large (see [`TEXT_ABOVE`]).
+                None => match Kept::of(body) {
+                    Kept::Value(copy) => Some(copy),
+                    Kept::Text(text) => {
+                        input_text = Some(text);
+                        None
+                    }
+                },
+            }
+        } else {
+            None
+        };
         let metadata = if admitted && needs.metadata {
             metadata.clone().map(Arc::new)
         } else {
@@ -730,6 +847,7 @@ impl ObserverRegistry {
                 started: Instant::now(),
                 started_at_ms: now_ms(),
                 input,
+                input_text,
                 metadata,
                 traceparent: traceparent.clone(),
                 baggage: baggage.clone(),
@@ -845,11 +963,12 @@ impl ObserverRegistry {
             return;
         }
         let needs = call.needs;
+        // The output as the input: a copy, or its JSON text when it is large.
         let (success, output, error) = match result {
             Ok(Ok(output)) => (
                 true,
                 if needs.output {
-                    output.clone().map(|output| Arc::new(unstamped(output)))
+                    output.as_ref().map(Kept::of)
                 } else {
                     None
                 },
@@ -864,8 +983,16 @@ impl ObserverRegistry {
                     .then(|| ErrorBody::new("invocation_error", err.to_string())),
             ),
         };
-        let bytes =
-            call.input.as_deref().map_or(0, approx_size) + output.as_deref().map_or(0, approx_size);
+        let (output, output_text) = match output {
+            Some(Kept::Value(copy)) => (Some(copy), None),
+            Some(Kept::Text(text)) => (None, Some(text)),
+            None => (None, None),
+        };
+        let text_size = |text: &Option<Arc<str>>| text.as_ref().map_or(0, |text| 24 + text.len());
+        let bytes = call.input.as_deref().map_or(0, approx_size)
+            + text_size(&call.input_text)
+            + output.as_deref().map_or(0, approx_size)
+            + text_size(&output_text);
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
@@ -886,7 +1013,7 @@ impl ObserverRegistry {
                 baggage: call.baggage,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: EncodedParts::default(),
+                encoded: EncodedParts::with_text(call.input_text, output_text),
             },
             set: call.set,
             matching,
@@ -1069,6 +1196,18 @@ impl ObserverRegistry {
             ..
         } = evaluation;
         let needs = set.needs;
+        // The payloads the call kept as text, decoded off the caller's path.
+        let decode = |text: Option<&Option<Arc<str>>>| {
+            text.and_then(Option::as_deref)
+                .and_then(|text| serde_json::from_str(text).ok())
+                .map(Arc::new)
+        };
+        if completed.input.is_none() {
+            completed.input = decode(completed.encoded.input.get());
+        }
+        if completed.output.is_none() {
+            completed.output = decode(completed.encoded.output.get());
+        }
         completed.error = error
             .and_then(|e| serde_json::to_value(e).ok())
             .map(Arc::new);
@@ -1256,15 +1395,9 @@ impl ObserverRegistry {
             count_failure(observer, failure_reasons::TARGET_UNAVAILABLE);
             return;
         };
-        if let Some(metrics) = super::metrics() {
-            metrics.observer_activations_total.add(
-                1,
-                &[
-                    KeyValue::new("function_id", observer.function_label()),
-                    KeyValue::new("delivery", pending.event.delivery),
-                ],
-            );
-        }
+        // One atomic add: `iii.observer.activations.total` follows from the
+        // counters (see [`export_drops`]).
+        observer.activations.count(pending.event.delivery);
         // Built now, from the event the observers share; the event is let go
         // (and its share of the queue budget given back) before the target
         // answers.
@@ -2349,7 +2482,8 @@ fn once_a_minute(last: &AtomicU64) -> bool {
 }
 
 /// Adds what `observer` dropped since its last export to
-/// `iii.observer.dropped.total`.
+/// `iii.observer.dropped.total`, and the activations it started to
+/// `iii.observer.activations.total`.
 pub(crate) fn export_drops(observer: &Observer) {
     let Some(metrics) = super::metrics() else {
         return;
@@ -2360,6 +2494,15 @@ pub(crate) fn export_drops(observer: &Observer) {
             &[
                 KeyValue::new("function_id", observer.function_label()),
                 KeyValue::new("reason", reason),
+            ],
+        );
+    }
+    for (delivery, count) in observer.activations.unexported() {
+        metrics.observer_activations_total.add(
+            count,
+            &[
+                KeyValue::new("function_id", observer.function_label()),
+                KeyValue::new("delivery", delivery),
             ],
         );
     }
@@ -3080,7 +3223,9 @@ mod tests {
             test_support::request("obs", "test::src", "test::dst", None),
         )
         .await;
+        // The counters reach the metric when the registry exports them.
         let count = |delivery: &str| {
+            engine.observers.export_drops();
             recorded.sum(
                 "iii.observer.activations.total",
                 &[("function_id", "test::src"), ("delivery", delivery)],
@@ -3131,6 +3276,7 @@ mod tests {
             ],
             [2, 1, 1]
         );
+        engine.observers.export_drops();
         assert_eq!(
             recorded.sum(
                 "iii.observer.activations.total",
@@ -4015,5 +4161,95 @@ mod tests {
         // The event source's value was encoded once, as its input.
         assert!(events[0].encoded.input.get().is_some_and(Option::is_some));
         assert!(events[0].encoded.output.get().is_none());
+    }
+
+    /// A charge refused for lack of room leaves the event's cost behind: the
+    /// next observer's charge reads it rather than walking the payloads.
+    #[test]
+    fn a_refused_charge_keeps_the_events_cost() {
+        let budget = super::QueueBudget::default();
+        budget.limit.store(1, Ordering::SeqCst);
+        let event = event(0);
+        assert!(!budget.charge(&event));
+        let cost = event.charged.load(Ordering::SeqCst);
+        assert_eq!(cost, event.cost());
+        assert!(!budget.charge(&event));
+        assert_eq!(event.charged.load(Ordering::SeqCst), cost);
+        assert_eq!(event.queues.load(Ordering::SeqCst), 0);
+        assert_eq!(budget.too_large(&event), Some((cost, 1)));
+    }
+
+    /// A call keeps of its input what its observers read: the fields their
+    /// filters read when that is all they read, its JSON text when one of
+    /// them captures or delivers it; never the engine's caller stamp. The
+    /// filters still match as they would on the whole input.
+    #[tokio::test]
+    async fn a_call_keeps_what_its_observers_read_of_the_input() {
+        let engine = Arc::new(Engine::new());
+        source(&engine);
+        let mut delivered = test_support::capture(&engine, "test::dst");
+        let (worker, _socket) = test_support::worker(&engine);
+        let mut filtered = test_support::request(
+            "filtered",
+            "test::src",
+            "test::dst",
+            Some(json!({ "input.k": { "$eq": 1 } })),
+        );
+        filtered.source.capture = Some(vec![crate::protocol::Capture::Output]);
+        filtered.source.deliver = None;
+        test_support::observe_request(&engine, &worker, filtered).await;
+        let body = |k: u64| json!({ "k": k, "big": [1, 2, 3], "_caller_worker_id": "w-1" });
+        let keep = |body: &Value| {
+            let set = engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .unwrap();
+            let mut call = engine.observers.begin(set, body, &None, &None, &None);
+            let kept = call.inner.take().unwrap();
+            (kept.input.as_deref().cloned(), kept.input_text.clone())
+        };
+        assert_eq!(keep(&body(1)), (Some(json!({ "k": 1 })), None));
+
+        // The filter reads `input.k` of the fields kept.
+        let ctx = Arc::new(InvocationCtx::engine_internal_at(0));
+        for k in [2, 1] {
+            let set = engine
+                .observers
+                .watch(DEFAULT_NAMESPACE, "test::src")
+                .unwrap();
+            let call = engine.observers.begin(set, &body(k), &None, &None, &None);
+            engine.observers.complete(
+                call,
+                DEFAULT_NAMESPACE,
+                "test::src",
+                Uuid::new_v4(),
+                &Ok(Ok(Some(json!({ "seen": k })))),
+                None,
+                &ctx,
+            );
+        }
+        let envelope = test_support::next(&mut delivered).await;
+        assert_eq!(envelope["output"], json!({ "seen": 1 }));
+        assert!(envelope.get("input").is_none());
+
+        // An observer that captures the input: all of it, a copy when it is
+        // small, its text when it is large.
+        test_support::observe_request(
+            &engine,
+            &worker,
+            test_support::request("whole", "test::src", "test::dst", None),
+        )
+        .await;
+        assert_eq!(
+            keep(&body(1)),
+            (Some(json!({ "k": 1, "big": [1, 2, 3] })), None)
+        );
+        let large = json!({ "k": 1, "big": "x".repeat(4096), "_caller_worker_id": "w-1" });
+        let (input, text) = keep(&large);
+        assert_eq!(input, None);
+        assert_eq!(
+            serde_json::from_str::<Value>(&text.unwrap()).unwrap(),
+            json!({ "k": 1, "big": "x".repeat(4096) })
+        );
     }
 }

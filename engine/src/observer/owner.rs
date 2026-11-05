@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use super::{
     FnKey, ObserverRegistry,
-    lifecycle::{Announcement, Flags, Lock, Observer, lock},
+    lifecycle::{Announcement, Flags, InputReads, Lock, Observer, lock},
     persistent::{Keyed, PersistentSet},
 };
 use crate::{
@@ -522,6 +522,46 @@ pub struct ActiveSet {
     pub(crate) needs: Needs,
     /// The function's hash: which evaluator shard takes its completions.
     pub(crate) shard: u64,
+    /// What the observers read of a call's input: a call copies only the
+    /// fields their filters read when none needs more.
+    pub(crate) input: InputCounts,
+}
+
+/// How many observers of an [`ActiveSet`] read the whole input, and how many
+/// read each top-level field (their filters' only, see [`InputReads`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct InputCounts {
+    whole: usize,
+    fields: Arc<std::collections::BTreeMap<Box<str>, usize>>,
+}
+
+impl InputCounts {
+    fn count(&mut self, observer: &Observer, joined: bool) {
+        match &observer.input_reads {
+            InputReads::Nothing => {}
+            InputReads::Whole if joined => self.whole += 1,
+            InputReads::Whole => self.whole -= 1,
+            InputReads::Fields(fields) => {
+                let counts = Arc::make_mut(&mut self.fields);
+                for field in fields.iter() {
+                    if joined {
+                        *counts.entry(field.clone()).or_default() += 1;
+                    } else if let Some(count) = counts.get_mut(field) {
+                        *count -= 1;
+                        if *count == 0 {
+                            counts.remove(field);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The top-level fields a call copies of its input, when no observer
+    /// needs all of it.
+    pub(crate) fn projection(&self) -> Option<&std::collections::BTreeMap<Box<str>, usize>> {
+        (self.whole == 0).then_some(&*self.fields)
+    }
 }
 
 /// Which parts of an invocation the hook must keep.
@@ -633,8 +673,10 @@ impl ActiveSet {
             .filter(|observer| observer.seq().is_some())
             .collect();
         let mut counts = NeedCounts::default();
+        let mut input = InputCounts::default();
         for observer in &observers {
             counts.count(observer, true);
+            input.count(observer, true);
         }
         let filters = observers
             .iter()
@@ -647,7 +689,14 @@ impl ActiveSet {
             key.hash(&mut hasher);
             hasher.finish()
         };
-        Self::of(Arc::new(key.clone()), observers, filters, counts, shard)
+        Self::of(
+            Arc::new(key.clone()),
+            observers,
+            filters,
+            counts,
+            input,
+            shard,
+        )
     }
 
     fn of(
@@ -655,6 +704,7 @@ impl ActiveSet {
         observers: PersistentSet<Arc<Observer>>,
         filters: Option<FilterIndex<u64, Arc<Observer>>>,
         counts: NeedCounts,
+        input: InputCounts,
         shard: u64,
     ) -> Self {
         Self {
@@ -664,6 +714,7 @@ impl ActiveSet {
             needs: Needs::of_counts(&counts.evaluated),
             counts,
             shard,
+            input,
         }
     }
 
@@ -674,6 +725,8 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, true);
+        let mut input = self.input.clone();
+        input.count(observer, true);
         let filters = match &self.filters {
             Some(filters) => {
                 let mut filters = filters.clone();
@@ -688,6 +741,7 @@ impl ActiveSet {
             observers,
             filters,
             counts,
+            input,
             self.shard,
         )
     }
@@ -699,6 +753,8 @@ impl ActiveSet {
         };
         let mut counts = self.counts;
         counts.count(observer, false);
+        let mut input = self.input.clone();
+        input.count(observer, false);
         let filters = self.filters.as_ref().map(|filters| {
             let mut filters = filters.clone();
             filters.remove(&seq);
@@ -709,6 +765,7 @@ impl ActiveSet {
             observers,
             filters,
             counts,
+            input,
             self.shard,
         )
     }
@@ -719,6 +776,7 @@ impl ActiveSet {
             self.observers.clone(),
             self.filters.clone(),
             self.counts,
+            self.input.clone(),
             self.shard,
         )
     }

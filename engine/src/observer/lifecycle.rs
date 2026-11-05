@@ -338,6 +338,70 @@ pub(crate) struct ExpiredOrder {
     pub held: usize,
 }
 
+/// Activations started for one observer, by `delivery` label, and what was
+/// last exported of each: `iii.observer.activations.total` follows from them
+/// as it does from the drop counters (see [`DropCounters::unexported`]), one
+/// atomic add per activation instead of a metric record.
+#[derive(Debug, Default)]
+pub(crate) struct ActivationCounters {
+    counts: [AtomicU64; 3],
+    exported: [AtomicU64; 3],
+}
+
+impl ActivationCounters {
+    const DELIVERIES: [&'static str; 3] = ["engine", "host", "observer_call"];
+
+    pub(crate) fn count(&self, delivery: &str) {
+        let at = Self::DELIVERIES
+            .iter()
+            .position(|known| *known == delivery)
+            .unwrap_or(0);
+        self.counts[at].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The activations counted since the last call, by delivery. One caller
+    /// at a time, as for the drops.
+    pub(crate) fn unexported(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+        Self::DELIVERIES
+            .into_iter()
+            .zip(self.counts.iter().zip(&self.exported))
+            .filter_map(|(delivery, (count, exported))| {
+                let total = count.load(Ordering::Relaxed);
+                let before = exported.swap(total, Ordering::Relaxed);
+                (total > before).then_some((delivery, total - before))
+            })
+    }
+}
+
+/// What an observer reads of the input of the calls it observes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputReads {
+    /// Nothing: it neither captures nor delivers the input, nor filters on
+    /// it.
+    Nothing,
+    /// The top-level fields its filters read (sorted, each once), and no
+    /// more: it neither captures nor delivers the input.
+    Fields(Box<[Box<str>]>),
+    /// All of it.
+    Whole,
+}
+
+impl InputReads {
+    pub(crate) fn of(capture: CaptureSet, deliver: &Deliver, filter: &Filter) -> Self {
+        if capture.input || *deliver == Deliver::Input {
+            return Self::Whole;
+        }
+        if !filter.roots().input {
+            return Self::Nothing;
+        }
+        match filter.input_fields() {
+            Some(fields) if !fields.is_empty() => Self::Fields(fields.into()),
+            Some(_) => Self::Nothing,
+            None => Self::Whole,
+        }
+    }
+}
+
 /// Events dropped for one observer, by drop reason (protocol.md §4).
 #[derive(Debug, Default)]
 pub(crate) struct DropCounters {
@@ -560,6 +624,10 @@ pub struct Observer {
     active: AtomicBool,
     pub(crate) fires: AtomicU64,
     pub(crate) drops: DropCounters,
+    pub(crate) activations: ActivationCounters,
+    /// What it reads of a call's input, from its capture, deliver and
+    /// filters, which never change.
+    pub(crate) input_reads: InputReads,
     pub(crate) failures: FailureCounters,
     pub(crate) flow: Lock<Flow>,
     timers: Lock<Timers>,
@@ -616,6 +684,7 @@ pub(crate) struct NewObserver {
 
 impl Observer {
     pub(crate) fn new(new: NewObserver) -> Self {
+        let input_reads = InputReads::of(new.capture, &new.deliver, &new.filter);
         let engine_owned = new.observing.connection == super::ENGINE_CONNECTION;
         let spec = new.spec;
         let mut observer = Self {
@@ -642,6 +711,8 @@ impl Observer {
             active: AtomicBool::new(false),
             fires: AtomicU64::new(0),
             drops: DropCounters::default(),
+            activations: ActivationCounters::default(),
+            input_reads,
             failures: FailureCounters::default(),
             flow: Lock::new(Flow::default()),
             timers: Lock::new(Timers::default()),

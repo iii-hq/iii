@@ -177,6 +177,18 @@ impl Filter {
         self.inner.roots
     }
 
+    /// The top-level `input` fields the filter reads, sorted, each once:
+    /// `None` when it reads `input` whole, empty when it reads none of it.
+    pub fn input_fields(&self) -> Option<Vec<Box<str>>> {
+        let mut fields = Vec::new();
+        if !self.inner.node.input_fields(&mut fields) {
+            return None;
+        }
+        fields.sort();
+        fields.dedup();
+        Some(fields)
+    }
+
     /// Evaluates the filter. Total: never fails, never panics.
     #[inline]
     pub fn matches(&self, doc: &Doc<'_>) -> bool {
@@ -371,5 +383,28 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidFilter);
         assert_eq!(err.code.as_str(), "INVALID_FILTER");
         assert!(err.to_string().starts_with("INVALID_FILTER: "));
+    }
+
+    #[test]
+    fn input_fields_are_the_first_keys_of_the_input_paths() {
+        let f = Filter::parse(&serde_json::json!({
+            "input.k": { "$eq": 1 },
+            "$or": [
+                { "input.a.b": { "$exists": true } },
+                { "output.x": { "$eq": 2 } }
+            ],
+            "$not": { "input.k": { "$eq": 3 } },
+            "input.items": { "$any": { "@.sku": { "$eq": "a" } } }
+        }))
+        .unwrap();
+        let fields = f.input_fields().unwrap();
+        let fields: Vec<&str> = fields.iter().map(|f| &**f).collect();
+        assert_eq!(fields, ["a", "items", "k"]);
+        let output_only = Filter::parse(&serde_json::json!({ "output.x": { "$eq": 1 } })).unwrap();
+        assert_eq!(output_only.input_fields(), Some(Vec::new()));
+        // `input` itself, when the language takes it, is read whole.
+        if let Ok(whole) = Filter::parse(&serde_json::json!({ "input": { "$exists": true } })) {
+            assert_eq!(whole.input_fields(), None);
+        }
     }
 }
