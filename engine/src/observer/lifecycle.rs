@@ -115,6 +115,18 @@ impl CaptureSet {
         Ok(set)
     }
 
+    /// The `on` a host without `observe.v2` (0.25) reads from an observer's
+    /// announcement, since it decides the outcomes that fire from it alone:
+    /// `error` or `complete`, or none for success, its default. Deprecated
+    /// with those hosts.
+    pub fn legacy_on(self) -> Option<&'static str> {
+        match (self.on_success, self.on_error) {
+            (_, false) => None,
+            (true, true) => Some("complete"),
+            (false, true) => Some("error"),
+        }
+    }
+
     /// Whether an invocation that ended in success (or not) fires the target.
     pub fn fires(self, success: bool) -> bool {
         if success {

@@ -165,6 +165,8 @@ type Client struct {
 	// engineFeatures are the last WorkerRegistered's features, kept across a
 	// disconnect until the next WorkerRegistered replaces them.
 	engineFeatures map[string]bool
+	// legacyOnWarned: the source.on deprecation (engines without observe.v2) was logged.
+	legacyOnWarned bool
 	// registeredOnConnection: WorkerRegistered arrived on the current connection.
 	registeredOnConnection bool
 	// observers this worker created, replayed (same id) on every connection: each

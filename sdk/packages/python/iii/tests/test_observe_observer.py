@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import warnings
 from typing import Any
 
 import pytest
 from iii_helpers.observability import ReconnectionConfig
-from observe_fake_engine import FakeEngine, function_registered, loop_barrier, settle, wait_until
+from observe_fake_engine import V1_FEATURES, FakeEngine, function_registered, loop_barrier, settle, wait_until
 
 from iii import ObserveRejection
 from iii.iii import III
@@ -241,6 +242,48 @@ def test_the_source_is_a_function_id_or_a_dict(engine: FakeEngine, connect: Any)
     assert {**short, "id": "long"} == long
     with pytest.raises(TypeError):
         client.observe(["orders::create"], "alerts::big-order")  # type: ignore[arg-type]
+
+
+LEGACY_ON_CASES: list[tuple[list[str] | None, str | None]] = [
+    (None, None),
+    (["input"], None),
+    ([], None),
+    (["error", "caller"], "error"),
+    (["input", "error"], "complete"),
+    (["input", "output", "error"], "complete"),
+]
+
+
+def _observe_each(client: Any, engine: FakeEngine) -> list[Any]:
+    for capture, _ in LEGACY_ON_CASES:
+        source: dict[str, Any] = {"function_id": "f::a"}
+        if capture is not None:
+            source["capture"] = capture
+        client.observe(source, "t::a")
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == len(LEGACY_ON_CASES), what="the observes")
+    return [frame["source"].get("on") for frame in engine.frames_of("observe")]
+
+
+def test_an_engine_without_observe_v2_gets_the_on_capture_implies(engine_factory: Any, connect: Any) -> None:
+    engine = engine_factory(V1_FEATURES)
+    client = connect(engine)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sent = _observe_each(client, engine)
+    assert sent == [on for _, on in LEGACY_ON_CASES]
+    deprecations = [
+        w for w in caught if issubclass(w.category, FutureWarning) and "`source.on` is deprecated" in str(w.message)
+    ]
+    assert len(deprecations) == 1
+
+
+def test_an_engine_with_observe_v2_gets_no_on_and_no_warning(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        sent = _observe_each(client, engine)
+    assert sent == [None] * len(LEGACY_ON_CASES)
+    assert [w for w in caught if "source.on" in str(w.message)] == []
 
 
 @pytest.mark.parametrize("field", ["on", "deliver"])

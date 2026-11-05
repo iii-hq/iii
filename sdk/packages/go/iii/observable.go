@@ -784,6 +784,47 @@ func rejectionBody(err error) *ErrorBody {
 // captureFires is whether a call that ended in success (ok) or error fires an observer
 // with this capture, as the engine decides it: input and output fire on success, error
 // on error; caller and metadata fire on nothing. An empty capture fires on success.
+// legacyOn is the source.on an engine without observe.v2 (0.25) needs for capture (nil:
+// the default), since it decides the outcomes that fire from on alone: "error" or
+// "complete", or "" for an observer that fires on success, its default. Deprecated with
+// those engines.
+func legacyOn(capture []Capture) string {
+	if capture == nil {
+		capture = defaultCapture
+	}
+	if !captureFires(capture, false) {
+		return ""
+	}
+	if captureFires(capture, true) {
+		return "complete"
+	}
+	return "error"
+}
+
+// legacyOnDeprecation is logged once per client, the first time it sends source.on to an
+// engine without observe.v2.
+const legacyOnDeprecation = "iii: observe: this engine lacks observe.v2 (0.25), so observers are sent with " +
+	"`source.on`, derived from `capture`. `source.on` is deprecated and will be removed in a future release: " +
+	"upgrade the engine to 0.26 or later."
+
+// withSourceOn is the observe frame with source.on set.
+func withSourceOn(frame []byte, on string) ([]byte, error) {
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(frame, &message); err != nil {
+		return nil, err
+	}
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(message["source"], &source); err != nil {
+		return nil, err
+	}
+	source["on"], _ = json.Marshal(on)
+	var err error
+	if message["source"], err = json.Marshal(source); err != nil {
+		return nil, err
+	}
+	return json.Marshal(message)
+}
+
 func captureFires(capture []Capture, ok bool) bool {
 	if len(capture) == 0 {
 		return ok

@@ -304,6 +304,44 @@ describe('iii.observe', () => {
   })
 })
 
+describe('engines without observe.v2 (0.25)', () => {
+  it('get the source.on that capture implies, and a deprecation warning once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open(['observe.v1'])
+    const cases = [
+      [undefined, undefined],
+      [['input'], undefined],
+      [[], undefined],
+      [['error', 'caller'], 'error'],
+      [['input', 'error'], 'complete'],
+      [['input', 'output', 'error'], 'complete'],
+    ] as const
+    for (const [capture] of cases) {
+      sdk.observe({ function_id: 'orders::create', ...(capture ? { capture: [...capture] } : {}) }, 'audit::record')
+    }
+    await fake.settle()
+    const sent = socket.framesOf('observe').map((frame) => (frame.source as { on?: string }).on)
+    expect(sent).toEqual(cases.map(([, on]) => on))
+    const deprecations = warn.mock.calls.filter(([message]) => String(message).includes('`source.on` is deprecated'))
+    expect(deprecations).toHaveLength(1)
+    warn.mockRestore()
+  })
+
+  it('an engine with observe.v2 gets no source.on and no warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    sdk.observe({ function_id: 'orders::create', capture: ['error', 'caller'] }, 'audit::record')
+    await fake.settle()
+    expect(socket.framesOf('observe').map((frame) => frame.source)).toEqual([
+      expect.not.objectContaining({ on: expect.anything() }),
+    ])
+    expect(warn.mock.calls.filter(([message]) => String(message).includes('`source.on`'))).toHaveLength(0)
+    warn.mockRestore()
+  })
+})
+
 describe('removed source fields', () => {
   it.each(['on', 'deliver'])('refuses source.%s with INVALID_ARGS instead of dropping it: nothing sent', async (field) => {
     const { sdk, socket } = worker()

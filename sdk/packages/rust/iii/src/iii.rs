@@ -1950,6 +1950,8 @@ pub(crate) struct IIIInner {
     engine_features: AtomicU8,
     /// The last engine advertised observe: outgoing calls carry `caller`.
     engine_observe_last: AtomicBool,
+    /// The `source.on` deprecation (engines without `observe.v2`) was logged.
+    legacy_on_warned: AtomicBool,
     /// Listeners of [`IIIClient::on_engine_supports_observe`].
     observe_support: Arc<Mutex<ObserveSupport>>,
     /// Functions already named in the `UNSUPPORTED` warning of an engine
@@ -2032,6 +2034,7 @@ impl IIIClient {
             observers: Mutex::new(ObserverBook::default()),
             engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
             engine_observe_last: AtomicBool::new(false),
+            legacy_on_warned: AtomicBool::new(false),
             observe_support: Arc::default(),
             warned_unsupported: Mutex::new(HashSet::new()),
             connection_epoch: AtomicU64::new(0),
@@ -4206,6 +4209,36 @@ impl IIIClient {
     /// that connection is gone (the next one replays it), the handle is
     /// disposing or the engine refused it. It is listed before it goes out,
     /// so its answer finds it.
+    /// The `observe` envelope for this connection's engine. One without
+    /// `observe.v2` (0.25) decides the outcomes that fire from `source.on`
+    /// alone, so it gets the `on` that `capture` implies; the first such
+    /// envelope logs that this is deprecated.
+    fn prepare_observe(&self, message: &Message) -> Result<PreparedEnvelope, Error> {
+        let on = match message {
+            Message::Observe { source, .. } if !self.engine_observes_v2() => {
+                crate::protocol::legacy_on(source.capture.as_deref())
+            }
+            _ => None,
+        };
+        let Some(on) = on else {
+            return self.prepare_outbound(message);
+        };
+        if !self.inner.legacy_on_warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("{}", crate::protocol::LEGACY_ON_DEPRECATION);
+        }
+        let mut frame = serde_json::to_value(message)?;
+        frame["source"]["on"] = Value::from(on);
+        let payload = serde_json::to_string(&frame)?;
+        if payload.len() > MAX_JSON_MESSAGE_BYTES {
+            return self.prepare_outbound(message);
+        }
+        Ok(PreparedEnvelope::from_json(
+            payload,
+            Self::registration_key(message),
+            None,
+        ))
+    }
+
     fn send_observe(&self, entry: &Arc<ObserverEntry>, epoch: u64) {
         let _order = entry.send_lock.lock_or_recover();
         if entry.disposing.load(Ordering::Acquire)
@@ -4215,7 +4248,7 @@ impl IIIClient {
         {
             return;
         }
-        let envelope = match self.prepare_outbound(&entry.message) {
+        let envelope = match self.prepare_observe(&entry.message) {
             Ok(envelope) => envelope,
             Err(error) => {
                 tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");

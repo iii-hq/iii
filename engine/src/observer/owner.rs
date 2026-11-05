@@ -1065,7 +1065,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer),
+                    observer: view(observer, !self.speaks_observe_v2(announced_to)),
                 },
             );
             true
@@ -1450,6 +1450,16 @@ impl ObserverRegistry {
         }
     }
 
+    /// Whether `connection` declared `observe.v2`. A host without it (0.25)
+    /// reads the outcomes that fire from `on` in an observer's announcement.
+    fn speaks_observe_v2(&self, connection: Uuid) -> bool {
+        self.deps.get().is_some_and(|deps| {
+            deps.workers
+                .get_worker(&connection)
+                .is_some_and(|worker| worker.features.observe_v2())
+        })
+    }
+
     fn owner(&self, connection: Uuid, kind: InvocationKind) -> Owner {
         let speaks_observe = kind == InvocationKind::Regular
             && self.deps.get().is_some_and(|deps| {
@@ -1544,7 +1554,10 @@ impl ObserverRegistry {
                     namespace: namespace.to_string(),
                     revision,
                     local_dispatch,
-                    observers: observers.iter().map(|o| view(o)).collect(),
+                    observers: observers
+                        .iter()
+                        .map(|o| view(o, !self.speaks_observe_v2(worker.id)))
+                        .collect(),
                 },
             );
             Some((revision, observers.len()))
@@ -1780,7 +1793,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer),
+                    observer: view(observer, !self.speaks_observe_v2(announced_to)),
                 },
             );
         });
@@ -2055,14 +2068,20 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
 
 /// An observer as its function's owner sees it (CONTRACT D15). `capture`
 /// also names the input an engine-internal observer gives its target, so
-/// the host's report of a local call carries it.
-pub(crate) fn view(observer: &Observer) -> ObserverView {
+/// the host's report of a local call carries it. A host without
+/// `observe.v2` (`legacy_host`, 0.25) decides the outcomes that fire from
+/// `on` alone, so it also gets the `on` the observer fires on.
+pub(crate) fn view(observer: &Observer, legacy_host: bool) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
         args: observer.args.clone(),
         filters: observer.filter.normalized().clone(),
         target: observer.target.1.clone(),
         capture: observer.capture.with_delivered(&observer.deliver).to_list(),
+        on: legacy_host
+            .then(|| observer.capture.legacy_on())
+            .flatten()
+            .map(str::to_string),
     }
 }
 

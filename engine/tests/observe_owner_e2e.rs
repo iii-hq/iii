@@ -12,8 +12,8 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, Setup, TestEngine, connect, eventually, in_process, registered, spawn, spawn_engine,
-    spawn_engine_with,
+    Client, OBSERVE_V1, OBSERVE_V2, Setup, TestEngine, connect, connect_with, eventually,
+    in_process, registered, spawn, spawn_engine, spawn_engine_with,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -2945,4 +2945,44 @@ async fn a_void_call_cannot_reach_a_private_function() {
     assert!(
         !http.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "http::on-request")
     );
+}
+
+/// A host without `observe.v2` (0.25) decides the outcomes that fire from
+/// `on` alone: its announcements carry the `on` each observer's capture
+/// implies (deprecated). A host with `observe.v2` gets none.
+#[tokio::test]
+async fn a_host_without_observe_v2_is_told_the_on_each_observer_fires_on() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_V2).await;
+    for (name, features, v2) in [("legacy", OBSERVE_V1, false), ("modern", OBSERVE_V2, true)] {
+        let mut host = connect_with(&t, name, features).await;
+        let function = format!("{name}::charge");
+        host.register_function(&function).await;
+        registered(&t.engine, "default", &function).await;
+        for (kind, capture, on) in [
+            ("errors", json!(["error", "caller"]), Some("error")),
+            ("both", json!(["input", "error"]), Some("complete")),
+            ("success", json!(["input"]), None),
+        ] {
+            let id = format!("{name}-{kind}");
+            watcher
+                .observe(json!({
+                    "id": id,
+                    "source": { "function_id": function, "capture": capture },
+                    "target": { "function_id": "sink::x" }
+                }))
+                .await;
+            let added = host
+                .expect("observeradded", |f| {
+                    f["type"] == "observeradded" && f["observer"]["id"] == id.as_str()
+                })
+                .await;
+            let want = if v2 { None } else { on };
+            assert_eq!(
+                added["observer"].get("on").and_then(Value::as_str),
+                want,
+                "{name}: {added}"
+            );
+        }
+    }
 }

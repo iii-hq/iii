@@ -40,6 +40,23 @@ export function captureFires(capture: readonly string[], ok: boolean): boolean {
   return ok ? capture.includes('input') || capture.includes('output') : capture.includes('error')
 }
 
+/**
+ * The `source.on` an engine without `observe.v2` (0.25) needs for this
+ * `capture`, since it decides the outcomes that fire from `on` alone:
+ * `error` or `complete`, or none for an observer that fires on success, its
+ * default. Deprecated with those engines.
+ */
+export function legacyOn(capture: readonly string[] | undefined): 'error' | 'complete' | undefined {
+  const list = capture ?? DEFAULT_CAPTURE
+  if (!captureFires(list, false)) return undefined
+  return captureFires(list, true) ? 'complete' : 'error'
+}
+
+/** Logged once per client, the first time it derives `source.on` for an engine without `observe.v2`. */
+export const LEGACY_ON_DEPRECATION =
+  'observe: this engine lacks observe.v2 (0.25), so observers are sent with `source.on`, derived from `capture`. ' +
+  '`source.on` is deprecated and will be removed in a future release: upgrade the engine to 0.26 or later.'
+
 type Raw = Record<string, unknown>
 
 function isRecord(v: unknown): v is Raw {

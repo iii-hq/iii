@@ -103,6 +103,8 @@ import {
   decodeObserverStateChanged,
   decodeRegistrationRejected,
   decodeWorkerRegistered,
+  LEGACY_ON_DEPRECATION,
+  legacyOn,
   stripCaller,
 } from './observe-wire'
 import { ObserverHandleImpl, toObserverState } from './observer-handle'
@@ -391,6 +393,8 @@ class Sdk implements IIIClient {
   // The engine's features (`WorkerRegistered.features`), kept across a
   // disconnect until the next `WorkerRegistered` replaces them.
   private engineFeatures: ReadonlySet<string> = new Set()
+  /** Whether the `source.on` deprecation (engines without `observe.v2`) was logged. */
+  private legacyOnWarned = false
   // `WorkerRegistered` arrived on the current connection.
   private registeredOnConnection = false
   // Bumped on every connection: `functionregistered` confirms a function on one.
@@ -993,8 +997,24 @@ class Sdk implements IIIClient {
    */
   currentInvocation = (): InvocationContext | undefined => publicContext(currentContext())
 
+  /**
+   * The `observe` frame for this connection's engine. One without `observe.v2`
+   * (0.25) decides the outcomes that fire from `source.on` alone, so it gets the
+   * `on` that `capture` implies; the first such frame logs that this is deprecated.
+   */
+  private observeFrame(message: ObserverHandleImpl['message']): ObserverHandleImpl['message'] {
+    if (this.engineFeatures.has(FEATURE_OBSERVE_V2)) return message
+    const on = legacyOn(message.source.capture)
+    if (on === undefined) return message
+    if (!this.legacyOnWarned) {
+      this.legacyOnWarned = true
+      this.logWarn(LEGACY_ON_DEPRECATION)
+    }
+    return { ...message, source: { ...message.source, on } as typeof message.source }
+  }
+
   private sendObserve(handle: ObserverHandleImpl): void {
-    this.sendMessage(MessageType.Observe, handle.message, true)
+    this.sendMessage(MessageType.Observe, this.observeFrame(handle.message), true)
     handle.sent = true
     handle.answered = false
     const sent = this.observesSent.get(handle.id)

@@ -146,6 +146,12 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	if err != nil {
 		return nil, err
 	}
+	var legacyFrame []byte
+	if on := legacyOn(msg.Source.Capture); on != "" {
+		if legacyFrame, err = withSourceOn(frame, on); err != nil {
+			return nil, err
+		}
+	}
 
 	c.mu.Lock()
 	if _, held := c.observers[id]; held {
@@ -154,6 +160,7 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	}
 	c.observerSeq++
 	h := newObserverHandle(c, id, frame, c.observerSeq)
+	h.legacyFrame = legacyFrame
 	c.observers[id] = h
 	live := c.state == StateConnected && c.registeredOnConnection
 	supported, epoch := c.engineFeatures[FeatureObserveV1], c.epoch
@@ -233,18 +240,29 @@ func (c *Client) sendObserve(h *ObserverHandle, epoch uint64) {
 func (c *Client) sendObserveLocked(h *ObserverHandle, epoch uint64) {
 	c.mu.Lock()
 	live := c.registeredLocked(epoch) && c.engineFeatures[FeatureObserveV1] && c.observers[h.id] == h && !h.refused
+	data, warn := h.frame, false
 	if live {
 		if c.observeSent == nil {
 			c.observeSent = map[string][]sentObserve{}
 		}
 		c.observeSent[h.id] = append(c.observeSent[h.id], sentObserve{handle: h})
+		// An engine without observe.v2 (0.25) decides the outcomes that fire from
+		// source.on alone: it gets the on the capture implies, deprecated with it.
+		if !c.engineFeatures[FeatureObserveV2] && h.legacyFrame != nil {
+			data = h.legacyFrame
+			warn = !c.legacyOnWarned
+			c.legacyOnWarned = true
+		}
 	}
 	c.mu.Unlock()
 	if !live {
 		return
 	}
+	if warn {
+		log.Print(legacyOnDeprecation)
+	}
 	h.markSent()
-	c.queueObserveFrameLocked(observeFrame{data: h.frame, epoch: epoch})
+	c.queueObserveFrameLocked(observeFrame{data: data, epoch: epoch})
 }
 
 // registeredLocked: connection epoch is the current one, and WorkerRegistered arrived

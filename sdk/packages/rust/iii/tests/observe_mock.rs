@@ -369,6 +369,63 @@ async fn an_observer_made_after_the_hello_is_sent_at_once() {
     }
 }
 
+/// An engine without `observe.v2` (0.25) decides the outcomes that fire from
+/// `source.on` alone: it gets the `on` the capture implies. An `observe.v2`
+/// engine gets none.
+#[tokio::test]
+async fn an_engine_without_observe_v2_gets_the_on_capture_implies() {
+    use Capture::{Caller, Error as Failure, Input, Output};
+    let cases: Vec<(Option<Vec<Capture>>, Option<&str>)> = vec![
+        (None, None),
+        (Some(vec![Input]), None),
+        (Some(vec![]), None),
+        (Some(vec![Failure, Caller]), Some("error")),
+        (Some(vec![Input, Failure]), Some("complete")),
+        (Some(vec![Input, Output, Failure]), Some("complete")),
+    ];
+    for (features, v2) in [
+        (
+            fixture("workerregistered-v1.json")["features"].clone(),
+            false,
+        ),
+        (
+            json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+            true,
+        ),
+    ] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "observer");
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(&mock, features.clone());
+        until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+        for (i, (capture, _)) in cases.iter().enumerate() {
+            let mut source = Source::function("a::b");
+            if let Some(capture) = capture.clone() {
+                source = source.capture(capture);
+            }
+            iii.observe_with(
+                source,
+                "c::d",
+                ObserverOptions::default().id(format!("o{i}")),
+            );
+        }
+        until("the observes", || {
+            frames(&mock, "observe").len() == cases.len()
+        })
+        .await;
+        let sent: Vec<Option<String>> = frames(&mock, "observe")
+            .iter()
+            .map(|f| f["source"]["on"].as_str().map(String::from))
+            .collect();
+        let want: Vec<Option<String>> = cases
+            .iter()
+            .map(|(_, on)| if v2 { None } else { on.map(String::from) })
+            .collect();
+        assert_eq!(sent, want, "features {features}");
+        iii.shutdown_async().await;
+    }
+}
+
 /// A second observer with a taken id is refused without a frame, and
 /// disposing either handle never touches the live observer.
 #[tokio::test]

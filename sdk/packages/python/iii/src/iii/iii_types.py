@@ -67,6 +67,26 @@ def capture_fires(capture: "list[str] | tuple[str, ...]", ok: bool) -> bool:
     return "error" in capture
 
 
+
+def legacy_on(capture: "list[str] | tuple[str, ...] | None") -> str | None:
+    """The ``source.on`` an engine without ``observe.v2`` (0.25) needs for this
+    ``capture``, since it decides the outcomes that fire from ``on`` alone:
+    ``"error"`` or ``"complete"``, or ``None`` for an observer that fires on
+    success, its default. Deprecated with those engines."""
+    capture = DEFAULT_CAPTURE if capture is None else capture
+    if not capture_fires(capture, False):
+        return None
+    return "complete" if capture_fires(capture, True) else "error"
+
+
+#: Warned once per client, the first time it derives ``source.on`` for an engine without ``observe.v2``.
+LEGACY_ON_DEPRECATION = (
+    "observe: this engine lacks observe.v2 (0.25), so observers are sent with `source.on`, derived from "
+    "`capture`. `source.on` is deprecated and will be removed in a future release: upgrade the engine to "
+    "0.26 or later."
+)
+
+
 class _WireModel(BaseModel):
     """A protocol message or part of one.
 

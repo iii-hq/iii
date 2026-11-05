@@ -792,6 +792,35 @@ pub fn default_capture() -> Vec<Capture> {
 /// `capture`, as the engine decides it: `input` and `output` fire on success,
 /// `error` on error; `caller` and `metadata` fire on nothing. `[]` fires on
 /// success, with the top-level fields only.
+/// The `source.on` an engine without [`FEATURE_OBSERVE_V2`] (0.25) needs for
+/// `capture` (`None`: the default), since it decides the outcomes that fire
+/// from `on` alone: `"error"` or `"complete"`, or `None` for an observer that
+/// fires on success, its default. Deprecated with those engines.
+pub(crate) fn legacy_on(capture: Option<&[Capture]>) -> Option<&'static str> {
+    let default;
+    let capture = match capture {
+        Some(capture) => capture,
+        None => {
+            default = default_capture();
+            &default
+        }
+    };
+    if !capture_fires(capture, false) {
+        return None;
+    }
+    Some(if capture_fires(capture, true) {
+        "complete"
+    } else {
+        "error"
+    })
+}
+
+/// Logged once per client, the first time it sends `source.on` to an engine
+/// without [`FEATURE_OBSERVE_V2`].
+pub(crate) const LEGACY_ON_DEPRECATION: &str = "observe: this engine lacks observe.v2 (0.25), so observers \
+    are sent with `source.on`, derived from `capture`. `source.on` is deprecated and will be removed in \
+    a future release: upgrade the engine to 0.26 or later.";
+
 pub fn capture_fires(capture: &[Capture], success: bool) -> bool {
     if capture.is_empty() {
         return success;

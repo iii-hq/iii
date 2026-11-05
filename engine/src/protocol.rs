@@ -808,6 +808,11 @@ pub struct ObserverView {
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
+    /// For a host without `observe.v2` (0.25) only, which decides the outcomes
+    /// that fire from it alone: `error` or `complete` as `capture` implies,
+    /// absent for success. Deprecated with those hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 /// Who made an invocation (README §4.3). Every field is optional on the wire:
