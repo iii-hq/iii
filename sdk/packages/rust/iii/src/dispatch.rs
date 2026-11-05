@@ -1407,7 +1407,7 @@ mod tests {
     /// An active observer of [`FUNCTION`] with `filters`, firing on `on`:
     /// `success` (the default capture), `error` (`[error]`) or `complete`
     /// (`[input, error]`), announced as an engine with `observe.capture`
-    /// announces it, with its `fires`.
+    /// announces it, with its `fires_on`.
     fn with_filters(id: &str, on: &str, filters: Value) -> Observer {
         let (capture, fires) = match on {
             "error" => (json!(["error"]), json!(["error"])),
@@ -1418,7 +1418,7 @@ mod tests {
             ),
         };
         Observer::test_view(
-            json!({ "id": id, "target": "t", "capture": capture, "fires": fires, "filters": filters }),
+            json!({ "id": id, "target": "t", "capture": capture, "fires_on": fires, "filters": filters }),
             0,
             true,
         )

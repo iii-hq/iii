@@ -6584,29 +6584,29 @@ mod observe_capture_tests {
     fn an_observer_fires_on_the_outcomes_its_view_announces() {
         // (view fields beyond id/target, fires on success, fires on error)
         let cases = [
-            // an engine with observe.capture: `fires` is all that counts
+            // an engine with observe.capture: `fires_on` is all that counts
             (
-                json!({ "fires": ["error"], "capture": ["input", "output"] }),
+                json!({ "fires_on": ["error"], "capture": ["input", "output"] }),
                 false,
                 true,
             ),
             (
-                json!({ "fires": ["success"], "capture": ["error"] }),
+                json!({ "fires_on": ["success"], "capture": ["error"] }),
                 true,
                 false,
             ),
             (
-                json!({ "fires": ["success", "error"], "capture": [] }),
+                json!({ "fires_on": ["success", "error"], "capture": [] }),
                 true,
                 true,
             ),
             (
-                json!({ "fires": ["error"], "capture": ["input"], "on": "complete" }),
+                json!({ "fires_on": ["error"], "capture": ["input"], "on": "complete" }),
                 false,
                 true,
             ),
-            (json!({ "fires": ["success"] }), true, false),
-            // no `fires` (rc or 0.25 engine): `on` alone, never the capture
+            (json!({ "fires_on": ["success"] }), true, false),
+            // no `fires_on` (rc or 0.25 engine): `on` alone, never the capture
             (
                 json!({ "capture": ["input", "output", "error"] }),
                 true,
@@ -6628,6 +6628,13 @@ mod observe_capture_tests {
             (json!({ "capture": ["error"], "on": "error" }), false, true),
             (json!({ "capture": [] , "on": "complete" }), true, true),
             (json!({}), true, false),
+            // `fires` is not the outcome list (AMENDMENT 1): ignored
+            (
+                json!({ "fires": ["error"], "capture": ["input"] }),
+                true,
+                false,
+            ),
+            (json!({ "fires": 3, "fires_on": ["error"] }), false, true),
         ];
         for (i, (extra, on_success, on_error)) in cases.into_iter().enumerate() {
             let mut view = json!({ "id": format!("o{i}"), "target": "t", "filters": {} });
@@ -6640,16 +6647,16 @@ mod observe_capture_tests {
         }
     }
 
-    /// A view announced without `fires` warns once per client, whatever
-    /// carries it; one with `fires` never does.
+    /// A view announced without `fires_on` warns once per client, whatever
+    /// carries it; one with `fires_on` never does.
     #[test]
     #[tracing_test::traced_test]
-    fn a_view_without_fires_warns_once() {
+    fn a_view_without_fires_on_warns_once() {
         let iii = client_with(capture_engine());
         let added = |id: &str, fires: Option<Value>| {
             let mut observer = json!({ "id": id, "target": "t", "capture": ["input"] });
             if let Some(fires) = fires {
-                observer["fires"] = fires;
+                observer["fires_on"] = fires;
             }
             json!({ "type": "observeradded", "function_id": "x::f", "namespace": "default",
                     "revision": 1, "observer": observer })
@@ -6661,7 +6668,7 @@ mod observe_capture_tests {
             .unwrap();
         logs_assert(|lines| match warnings(lines) {
             0 => Ok(()),
-            n => Err(format!("{n} warnings for views with fires")),
+            n => Err(format!("{n} warnings for views with fires_on")),
         });
         iii.handle_message(&added("c", None)).unwrap();
         iii.handle_message(&added("d", None)).unwrap();
@@ -6674,7 +6681,7 @@ mod observe_capture_tests {
         .unwrap();
         logs_assert(|lines| match warnings(lines) {
             1 => Ok(()),
-            n => Err(format!("{n} warnings for views without fires, want 1")),
+            n => Err(format!("{n} warnings for views without fires_on, want 1")),
         });
     }
 
