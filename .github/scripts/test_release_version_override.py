@@ -290,6 +290,16 @@ def preflight(workflow, repo, tmp_path, *, branch="main", channel="rc",
     ("0.25.0", "alpha", "0.25.0-alpha.1", "Only RC releases"),
     ("0.25.0", "rc", "", "require version_override"),
     ("main", "none", "", "requires the rc pre-release label"),
+    ("release/0.25.x", "none", "0.25.1", None),
+    ("release/0.25.x", "rc", "0.25.1-rc.1", None),
+    ("release/10.0.x", "none", "10.0.3", None),
+    ("release/0.25.x", "none", "", "require version_override 0.25.N"),
+    ("release/0.25.x", "none", "0.26.0", "require version_override 0.25.N"),
+    ("release/0.25.x", "none", "0.250.1", "require version_override 0.25.N"),
+    ("release/0.25.x", "alpha", "0.25.1-alpha.1", "only stable or RC"),
+    ("release/0.25", "none", "0.25.1", "Only RC releases"),
+    ("release/0.25.1", "none", "0.25.1", "Only RC releases"),
+    ("release/00.25.x", "none", "0.25.1", "Only RC releases"),
 ])
 def test_branch_release_policy(workflow, branch_repo, tmp_path, branch, channel, override, error):
     before = git(branch_repo, "rev-parse", "HEAD")
@@ -324,11 +334,17 @@ def test_missing_manifest_still_blocks_branch_rc(workflow, branch_repo, tmp_path
     assert "package.json not found" in result.stdout
 
 
-@pytest.mark.parametrize("branch,dry_run", [
-    ("0.25.0", False), ("main", False), ("0.25.0", True),
+@pytest.mark.parametrize("branch,dry_run,channel,override", [
+    ("0.25.0", False, "rc", "0.25.0-rc.2"),
+    ("main", False, "rc", "0.25.0-rc.2"),
+    ("0.25.0", True, "rc", "0.25.0-rc.2"),
+    # A stable maintenance patch also pushes only its tag.
+    ("release/0.24.x", False, "none", "0.24.1"),
 ])
-def test_release_pushes_only_intended_refs(workflow, branch_repo, tmp_path, branch, dry_run):
-    result, output = preflight(workflow, branch_repo, tmp_path, branch=branch)
+def test_release_pushes_only_intended_refs(workflow, branch_repo, tmp_path, branch, dry_run,
+                                           channel, override):
+    result, output = preflight(workflow, branch_repo, tmp_path, branch=branch,
+                               channel=channel, override=override)
     assert result.returncode == 0, result.stderr
     source = dict(line.split("=", 1) for line in output.read_text().splitlines())
     git(branch_repo, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
@@ -337,7 +353,7 @@ def test_release_pushes_only_intended_refs(workflow, branch_repo, tmp_path, bran
     main_sha = git(remote, "rev-parse", "main")
     calc_output = tmp_path / "calculation-output"
     calculated = calculate_step(workflow, branch_repo, calc_output,
-                                override="0.25.0-rc.2", channel="rc", dry_run=dry_run)
+                                override=override, channel=channel, dry_run=dry_run)
     assert calculated.returncode == 0, calculated.stderr
     selected = dict(line.split("=", 1) for line in calc_output.read_text().splitlines())
     tag = selected["tag"]
@@ -428,6 +444,31 @@ def test_branch_summary_explains_source_and_shared_channel(workflow, tmp_path):
     text = summary.read_text()
     assert "`0.25.0`" in text and "`abcdef`" in text
     assert "Only the tag is pushed" in text and "shared rc channel, never latest" in text
+
+
+def test_maintenance_summary_reports_stable_channel(workflow, tmp_path):
+    summary = tmp_path / "summary"
+    result = run_step(workflow, "Summarize selected release", ROOT,
+                      CURRENT_VERSION="0.25.0", SELECTED_VERSION="0.25.1",
+                      SELECTED_TAG="iii/v0.25.1", VERSION_OVERRIDE="0.25.1",
+                      SOURCE_BRANCH="release/0.25.x", SOURCE_SHA="abcdef", DRY_RUN="false",
+                      PRERELEASE="none", GITHUB_STEP_SUMMARY=str(summary))
+    assert result.returncode == 0, result.stderr
+    text = summary.read_text()
+    assert "`release/0.25.x`" in text and "Only the tag is pushed" in text
+    assert "updates latest" in text and "rc channel" not in text
+    assert step(workflow, "Summarize selected release")["env"]["PRERELEASE"] == (
+        "${{ inputs.prerelease }}"
+    )
+
+
+def test_docs_steps_run_only_for_stable_releases_from_main(workflow):
+    # Docs are published from main; a tag-only maintenance release must not
+    # validate or rotate a docs tree that is never deployed.
+    for name in ["Validate docs ready for stable release", "Update documentation versions"]:
+        condition = step(workflow, name)["if"]
+        assert "inputs.prerelease == 'none'" in condition
+        assert "steps.preflight.outputs.branch == 'main'" in condition
 
 
 @pytest.mark.parametrize("version,expected", [

@@ -85,18 +85,18 @@ Entry point for stable and RC releases. Provides a form with:
 | `target` | `iii` |
 | `bump` | `patch`, `minor`, `major`, `none` (ignored with a nonempty override) |
 | `prerelease` | `none`, `rc` |
-| `version_override` | Exact version, e.g. `0.25.0-rc.1`; required outside `main`; blank on `main` keeps automatic calculation |
+| `version_override` | Exact version, e.g. `0.25.0-rc.1`; required outside `main` (`X.Y.N` or `X.Y.N-rc.M` on `release/X.Y.x`); blank on `main` keeps automatic calculation |
 | `dry_run` | boolean |
 
 **What it does:**
 
-1. Validates the selected source is a branch and all required manifests exist. Stable releases require `main`; other branches require `prerelease=rc` and an explicit `version_override`
+1. Validates the selected source is a branch and all required manifests exist. Stable releases require `main` or a `release/MAJOR.MINOR.x` maintenance branch (see [Patch release from a maintenance branch](#patch-release-from-a-maintenance-branch)); other branches require `prerelease=rc` and an explicit `version_override`
 2. Reads the current version from the canonical manifest
 3. Calculates the next version, or validates and uses `version_override` when supplied; dry-run suffixes are applied afterward
-4. **Stable releases only** — validates docs are ready (`pin_docs.py validate`): `docs/docs.json` must have a `Next` block and the `docs/next/` folder must be non-empty (stable releases pull their docs from `docs/next/`). If not, the workflow posts a Slack alert and aborts **before** bumping or tagging. Runs even on dry runs.
+4. **Stable releases from `main` only** — validates docs are ready (`pin_docs.py validate`): `docs/docs.json` must have a `Next` block and the `docs/next/` folder must be non-empty (stable releases pull their docs from `docs/next/`). If not, the workflow posts a Slack alert and aborts **before** bumping or tagging. Runs even on dry runs.
 5. Converts to PEP 440 format for Python packages (e.g., `1.0.0-alpha.1` becomes `1.0.0a1`)
 6. Updates all manifest files in lockstep (Cargo.toml, package.json, pyproject.toml)
-7. Updates docs from `docs/next/` on stable releases (`pin_docs.py rotate`, which dispatches on the version):
+7. Updates docs from `docs/next/` on stable releases from `main` (`pin_docs.py rotate`, which dispatches on the version):
    - **minor/major** — rotates: archives the old Latest into `docs/OLD-MINOR-0/` (its `Latest` block becomes archived), promotes `docs/next/` into the root as a new `Latest` block labeled with the **tag version** (the official version comes from the tag and can be anything), relabels the `Next` block to `MINOR + 1` (reusing the `docs/next/` folder), and reorders the dropdown (Next, Latest, archived newest-first — Mintlify's own ordering does not work).
    - **patch** — syncs in place: replaces the root content with `docs/next/`. No archive, no `Next` bump, no version-block changes — it just refreshes the current Latest's docs.
    - **release candidates** (`rc`) leave docs untouched.
@@ -130,8 +130,9 @@ the Actions form. On `main`, it publishes the checked-out `main` code, updates
 the release manifests and lockfile, and uses the normal documentation flow. It does **not** select an older source revision, backport
 changes, delete earlier packages, or preserve the previous manifest version on
 `main` after the release bump commits. Review the current code and `docs/next/`
-before using a maintenance-looking version number. Stable releases from
-maintenance branches remain unsupported; other branches can publish RCs only.
+before using a maintenance-looking version number. To publish only selected
+fixes, use a `release/MAJOR.MINOR.x` maintenance branch (below); any other
+branch can publish RCs only.
 
 A dry run retains the existing behavior: an override of `0.24.1` produces
 `iii/v0.24.1-dry-run.N`, builds without publishing packages, but still creates
@@ -178,6 +179,43 @@ Release preparation is serialized across branches to reduce tag-allocation races
 After the product branch is approved and merged, publish stable from `main`
 with `prerelease=none` and `version_override=0.25.0`. Branch RC preparation does
 not change `main`'s manifest, so do not rely on implicit prerelease promotion.
+
+#### Patch release from a maintenance branch
+
+To ship a fix without the rest of `main` (e.g. `0.25.1` while `main` already
+carries unreleased work), cut `release/MAJOR.MINOR.x` from the last stable tag
+and cherry-pick only the fix:
+
+```bash
+git switch -c release/0.25.x iii/v0.25.0
+git cherry-pick -x <fix-sha>
+git push origin release/0.25.x
+```
+
+Then run `Create Tag` with:
+
+```text
+Use workflow from: release/0.25.x
+ target: iii
+ prerelease: none
+ version_override: 0.25.1
+ dry_run: false
+```
+
+The workflow runs from the selected branch, so the branch must carry a
+`create-tag.yml` that allows maintenance releases; cherry-pick it when the
+branch starts from an older tag. A `release/X.Y.x` branch accepts only `X.Y.N`
+or `X.Y.N-rc.M` overrides, and the usual selection rules still apply: the base
+must be newer than the latest stable tag, so a maintenance line can ship only
+while it is the newest stable line.
+
+As with a branch RC, only the tag is pushed; `main` and the maintenance branch
+are not updated. Unlike an RC, the tag runs the full **stable** pipeline:
+`latest` on npm, PyPI, crates.io and Go, Docker, Homebrew, the builtin-worker
+registry and the templates version bump. Docs validation and rotation are
+skipped because docs are published from `main`: add the changelog entry on
+`main` separately, and make sure the fix also reaches `main` and any in-flight
+product branch.
 
 ---
 
