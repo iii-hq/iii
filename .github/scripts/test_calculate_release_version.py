@@ -468,11 +468,11 @@ class TestAdversarial:
             == "0.13.0-next.1"
         )
 
-    def test_current_older_than_stable_treated_as_no_level(self):
-        """Pathological: cargo says 0.10.0-next.1 but stable has moved to 0.11.6."""
+    def test_current_older_than_stable_bumps_from_stable(self):
+        """Cargo says 0.10.0-next.1 but stable has moved to 0.11.6."""
         assert (
             calculate_version("0.10.0-next.1", "minor", "next", "0.11.6", [], "iii")
-            == "0.11.0-next.1"
+            == "0.12.0-next.1"
         )
 
     # -- Zero-component edge cases --
@@ -648,28 +648,28 @@ class TestPromotionFootguns:
 
 
 class TestCurrentBehindLatestStable:
-    """If engine/Cargo.toml falls behind the latest stable tag (manual
-    downgrade, bad merge), the algorithm anchors from the *current* base
-    rather than `latest_stable`. That can produce a tag that overlaps an
-    earlier train. Locked in here so we notice if the behavior changes.
+    """If engine/Cargo.toml falls behind the latest stable tag (a release/X.Y.x
+    maintenance release, a manual downgrade, a bad merge), bumps anchor on
+    `latest_stable` instead of the stale manifest, so a new version never
+    lands at or below a released stable or overlaps an earlier train.
     """
 
-    def test_minor_below_stable_anchors_from_current(self):
+    def test_minor_below_stable_anchors_from_stable(self):
         assert (
             calculate_version(
                 "0.12.0-next.5", "minor", "next", "0.15.0", ["iii/v0.15.0"], "iii"
             )
-            == "0.13.0-next.1"
+            == "0.16.0-next.1"
         )
 
-    def test_major_jump_when_current_minor_below_stable_major(self):
+    def test_minor_when_current_major_below_stable_major(self):
         # Current's major < stable's major → detect_current_level returns None
-        # → falls into the "no level" branch → bumps the current base.
+        # → "no level" branch → bumps the newer of current and stable.
         assert (
             calculate_version(
                 "0.5.0-next.1", "minor", "next", "1.2.0", ["iii/v1.2.0"], "iii"
             )
-            == "0.6.0-next.1"
+            == "1.3.0-next.1"
         )
 
     def test_current_equals_stable_no_level_minor(self):
@@ -1041,6 +1041,26 @@ class TestCalculateVersionBumpNone:
         assert step("0.19.5-next.1", "none", "next") == "0.19.5-next.2"  # iterate
         assert step("0.19.5-next.2", "none", "next") == "0.19.5-next.3"  # iterate
         assert step("0.19.5-next.3", "patch", "none") == "0.19.5"  # promote
+
+
+@pytest.mark.parametrize("current,bump,pre,expected", [
+    ("0.25.0", "patch", "none", "0.25.2"),  # not the released 0.25.1
+    ("0.25.0", "patch", "rc", "0.25.2-rc.1"),  # never an RC below a stable
+    ("0.25.0", "minor", "none", "0.26.0"),
+    ("0.25.0", "major", "rc", "1.0.0-rc.1"),
+    ("0.25.1-rc.2", "minor", "rc", "0.26.0-rc.1"),
+])
+def test_bumps_anchor_on_a_newer_maintenance_stable(current, bump, pre, expected):
+    # release/0.25.x published 0.25.1 while main's manifest still reads 0.25.0.
+    tags = ["iii/v0.25.0", "iii/v0.25.1"]
+    assert calculate_version(current, bump, pre, "0.25.1", tags, "iii") == expected
+
+
+@pytest.mark.parametrize("current", ["0.25.1-rc.1", "0.25.0-rc.3"])
+def test_promotion_rejects_an_already_released_base(current):
+    tags = ["iii/v0.25.0", "iii/v0.25.1"]
+    with pytest.raises(ValueError, match="not newer than the latest stable 0.25.1"):
+        calculate_version(current, "patch", "none", "0.25.1", tags, "iii")
 
 
 @pytest.mark.parametrize("inflight,expected", [
