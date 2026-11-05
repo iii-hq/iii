@@ -135,25 +135,42 @@ test("landing page keeps its section anchors, llms hooks and structured data", a
   assert.match(html, /property="og:type" content="website"/)
 })
 
+/** The markup from the first match of `open` (an opening tag) up to the next `</tag>`; fails when `open` is absent. */
+function element(html: string, open: RegExp, tag: string): string {
+  const start = html.search(open)
+  assert.ok(start >= 0, `${open} missing from the page`)
+  return html.slice(start, html.indexOf(`</${tag}>`, start))
+}
+
 test("the landing links the iii app launch from the hero, the header, its section and the footer", async () => {
   const html = await read("index.html")
-  const hero = html.slice(
-    html.indexOf('<section id="hero"'),
-    html.indexOf("</section>", html.indexOf('<section id="hero"')),
-  )
-  assert.match(hero, /href="https:\/\/iii\.dev\/registry\/app"/, "the hero announcement should link the app page")
-  const appLinks = html.match(/href="https:\/\/iii\.dev\/registry\/app"/g) ?? []
-  assert.ok(
-    appLinks.length >= 4,
-    `expected the app page in the hero, the nav, the section and the footer, saw ${appLinks.length}`,
-  )
+  const app = 'href="https://iii\\.dev/registry/app"'
+  const link = (attrs: string, text: string) => new RegExp(`<a[^>]*${attrs}[^>]*>(?:(?!</a>).)*${text}`)
+
+  // The pill over the headline: the New badge and the platforms line, in one link to the launch page.
+  const hero = element(html, /<section id="hero"/, "section")
+  assert.match(hero, link(app, "New(?:(?!</a>).)*The iii app for Mac, iPhone, iPad &amp; Android"), "hero pill")
+
+  // The header's desktop nav. The mobile menu is rendered only once it is opened, so it is not in the static HTML;
+  // it lists the same entries (components/site/header.tsx, plainLinks).
+  const header = element(html, /<header class="[^"]*\bfixed\b/, "header")
+  assert.match(header, link(app, ">App<"), "header nav entry")
+
+  // The section's two calls to action.
+  const section = element(html, /<section id="app"/, "section")
   assert.match(
-    html,
-    /href="https:\/\/iii\.dev\/registry\/app\/download\/mac"/,
-    "the app section should offer the Mac download",
+    section,
+    link('href="https://iii\\.dev/registry/app/download/mac"', "Download for Mac"),
+    "section: Download for Mac",
   )
+  assert.match(section, link(app, "See the app"), "section: See the app")
+
+  // The footer's Product column.
+  const footer = element(html, /<footer/, "footer")
+  assert.match(footer, link(app, "iii app"), "footer link")
+
   // Every device screenshot the section draws ships in dist (copied from public/iii-app/).
-  const shots = new Set([...html.matchAll(/src="(\/iii-app\/[^"]+\.webp)"/g)].map((m) => m[1]))
+  const shots = new Set([...section.matchAll(/src="(\/iii-app\/[^"]+\.webp)"/g)].map((m) => m[1]))
   assert.ok(shots.size >= 3, "the app section should draw a Mac and two phones")
   for (const shot of shots) assert.ok(has(shot.slice(1)), `app screenshot missing from dist: ${shot}`)
 })
