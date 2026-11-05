@@ -24,8 +24,31 @@ use serde_json::Value;
 /// value's JSON text.
 #[derive(Debug, Clone, Default)]
 pub struct EncodedJson {
-    pieces: Vec<Piece>,
+    pieces: Pieces,
     len: usize,
+}
+
+/// The pieces of an [`EncodedJson`]: most values are one piece, held without
+/// a list (an activation's small frame, an event's encoded payload).
+#[derive(Debug, Clone)]
+enum Pieces {
+    One(Piece),
+    Many(Vec<Piece>),
+}
+
+impl Default for Pieces {
+    fn default() -> Self {
+        Pieces::Many(Vec::new())
+    }
+}
+
+impl Pieces {
+    fn as_slice(&self) -> &[Piece] {
+        match self {
+            Pieces::One(piece) => std::slice::from_ref(piece),
+            Pieces::Many(pieces) => pieces,
+        }
+    }
 }
 
 /// A piece of an [`EncodedJson`]'s text.
@@ -51,7 +74,7 @@ impl EncodedJson {
     pub fn shared(text: Arc<str>) -> Self {
         Self {
             len: text.len(),
-            pieces: vec![Piece::Shared(text)],
+            pieces: Pieces::One(Piece::Shared(text)),
         }
     }
 
@@ -59,7 +82,7 @@ impl EncodedJson {
     pub fn owned(text: String) -> Self {
         Self {
             len: text.len(),
-            pieces: vec![Piece::Owned(text)],
+            pieces: Pieces::One(Piece::Owned(text)),
         }
     }
 
@@ -68,7 +91,7 @@ impl EncodedJson {
         let text = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
         Self {
             len: text.len(),
-            pieces: vec![Piece::Owned(text)],
+            pieces: Pieces::One(Piece::Owned(text)),
         }
     }
 
@@ -83,15 +106,15 @@ impl EncodedJson {
 
     /// Appends its text to `out`.
     pub fn write_to(&self, out: &mut String) {
-        for piece in &self.pieces {
+        for piece in self.pieces.as_slice() {
             out.push_str(piece.as_str());
         }
     }
 
     /// Its text, joined; its one piece as it is when that piece is its own.
-    pub fn into_text(mut self) -> String {
-        match self.pieces.as_mut_slice() {
-            [Piece::Owned(text)] => std::mem::take(text),
+    pub fn into_text(self) -> String {
+        match self.pieces {
+            Pieces::One(Piece::Owned(text)) => text,
             _ => {
                 let mut text = String::with_capacity(self.len);
                 self.write_to(&mut text);
@@ -102,7 +125,10 @@ impl EncodedJson {
 
     /// Its pieces, in order.
     pub fn into_pieces(self) -> std::vec::IntoIter<Piece> {
-        self.pieces.into_iter()
+        match self.pieces {
+            Pieces::One(piece) => vec![piece].into_iter(),
+            Pieces::Many(pieces) => pieces.into_iter(),
+        }
     }
 
     /// Its text between `head` and `tail`: a message that carries the value,
@@ -112,18 +138,32 @@ impl EncodedJson {
     /// at its ends.
     pub fn enclosed(mut self, head: String, tail: &str) -> Self {
         self.len += head.len() + tail.len();
-        match self.pieces.as_mut_slice() {
+        let mut pieces = match std::mem::take(&mut self.pieces) {
+            Pieces::One(Piece::Owned(only)) => {
+                self.pieces = Pieces::One(Piece::Owned(joined(&[&head, &only, tail])));
+                return self;
+            }
+            Pieces::One(shared) => {
+                let mut pieces = Vec::with_capacity(3);
+                pieces.push(shared);
+                pieces
+            }
+            Pieces::Many(pieces) => pieces,
+        };
+        match pieces.as_mut_slice() {
             [Piece::Owned(only)] => {
-                *only = joined(&[head.as_str(), only.as_str(), tail]);
+                let text = joined(&[head.as_str(), only.as_str(), tail]);
+                self.pieces = Pieces::One(Piece::Owned(text));
                 return self;
             }
             [Piece::Owned(first), ..] => *first = joined(&[head.as_str(), first.as_str()]),
-            _ => self.pieces.insert(0, Piece::Owned(head)),
+            _ => pieces.insert(0, Piece::Owned(head)),
         }
-        match self.pieces.last_mut() {
+        match pieces.last_mut() {
             Some(Piece::Owned(last)) => *last = joined(&[last.as_str(), tail]),
-            _ => self.pieces.push(Piece::Owned(tail.to_string())),
+            _ => pieces.push(Piece::Owned(tail.to_string())),
         }
+        self.pieces = Pieces::Many(pieces);
         self
     }
 
@@ -212,8 +252,12 @@ impl ObjectWriter {
     pub fn finish(mut self) -> EncodedJson {
         self.current.push('}');
         self.flush();
+        let pieces = match <[Piece; 1]>::try_from(self.pieces) {
+            Ok([only]) => Pieces::One(only),
+            Err(pieces) => Pieces::Many(pieces),
+        };
         EncodedJson {
-            pieces: self.pieces,
+            pieces,
             len: self.len,
         }
     }
@@ -288,6 +332,22 @@ mod tests {
         assert_eq!(owned.into_text(), "[1]");
         let empty = EncodedJson::default().enclosed("[".to_string(), "]");
         assert_eq!(text(&empty), "[]");
+    }
+
+    /// A value in one piece holds it without a list.
+    #[test]
+    fn a_value_in_one_piece_holds_no_list() {
+        let one = |encoded: &EncodedJson| matches!(encoded.pieces, Pieces::One(_));
+        assert!(one(&EncodedJson::of(&json!({ "k": 1 }))));
+        assert!(one(&EncodedJson::shared(Arc::from("[1]"))));
+        assert!(one(&EncodedJson::owned("[1]".to_string())));
+        assert!(one(&ObjectWriter::new().finish()));
+        let mut writer = ObjectWriter::new();
+        writer.field("k", &1);
+        assert!(one(&writer.finish()));
+        let small = EncodedJson::of(&1).enclosed("[".to_string(), "]");
+        assert!(one(&small));
+        assert_eq!(small.into_text(), "[1]");
     }
 
     #[test]
