@@ -237,10 +237,13 @@ pub enum Outbound {
     /// An engine-to-worker `invokefunction` frame, already encoded (see
     /// [`crate::protocol::invoke_frame`]): an observer activation whose
     /// argument shares the event's encoded payloads with its other
-    /// activations.
+    /// activations. The frame stays in pieces while it is queued, and the
+    /// writer sends them as they are (see
+    /// [`crate::workers::worker::worker_socket::encoded_frames`]), so the
+    /// activations queued to a connection hold the payloads once.
     Invoke {
         invocation_id: Option<Uuid>,
-        frame: String,
+        frame: crate::invocation::encoded::EncodedJson,
     },
     Raw(WsMessage),
 }
@@ -251,7 +254,7 @@ impl Outbound {
     pub fn into_message(self) -> Option<Message> {
         match self {
             Outbound::Protocol(message) => Some(message),
-            Outbound::Invoke { frame, .. } => serde_json::from_str(&frame).ok(),
+            Outbound::Invoke { frame, .. } => serde_json::from_str(&frame.into_text()).ok(),
             Outbound::Raw(_) => None,
         }
     }
@@ -771,7 +774,8 @@ impl Engine {
     where
         S: futures_util::Sink<WsMessage> + Unpin,
     {
-        let payload = match outbound {
+        use crate::workers::worker::worker_socket::{feed_encoded, feed_json};
+        match outbound {
             Outbound::Protocol(msg) => {
                 let serialized = match serde_json::to_string(&msg) {
                     Ok(payload) => payload,
@@ -780,19 +784,19 @@ impl Engine {
                         return Ok(());
                     }
                 };
-                self.guard_outbound(worker, msg, serialized)
-                    .await
-                    .map(|(_msg, payload)| payload)
+                match self.guard_outbound(worker, msg, serialized).await {
+                    Some((_msg, payload)) => feed_json(sink, payload).await,
+                    None => Ok(()),
+                }
             }
             Outbound::Invoke {
                 invocation_id,
                 frame,
-            } => self.guard_invoke_frame(worker, invocation_id, frame).await,
-            Outbound::Raw(frame) => return sink.feed(frame).await,
-        };
-        match payload {
-            Some(payload) => crate::workers::worker::worker_socket::feed_json(sink, payload).await,
-            None => Ok(()),
+            } => match self.guard_invoke_frame(worker, invocation_id, frame).await {
+                Some(frame) => feed_encoded(sink, frame).await,
+                None => Ok(()),
+            },
+            Outbound::Raw(frame) => sink.feed(frame).await,
         }
     }
 
@@ -801,8 +805,8 @@ impl Engine {
         &self,
         worker: &WorkerConnection,
         invocation_id: Option<Uuid>,
-        frame: String,
-    ) -> Option<String> {
+        frame: crate::invocation::encoded::EncodedJson,
+    ) -> Option<crate::invocation::encoded::EncodedJson> {
         let size = frame.len();
         let limit = Self::receive_limit(worker);
         if size <= limit {
@@ -8887,7 +8891,10 @@ mod tests {
                         return engine
                             .guard_invoke_frame(target, invocation_id, frame)
                             .await
-                            .map(|frame| (serde_json::from_str(&frame).unwrap(), frame));
+                            .map(|frame| {
+                                let text = frame.into_text();
+                                (serde_json::from_str(&text).unwrap(), text)
+                            });
                     }
                     _ => {}
                 }

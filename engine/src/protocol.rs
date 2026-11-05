@@ -1191,19 +1191,22 @@ pub struct StreamChannelRef {
 /// with `data` written last (and no `action` or `namespace`, which no
 /// invocation the engine sends a worker carries). The activations of one
 /// observed event share its encoded payloads this way instead of each
-/// copying and encoding them.
+/// copying and encoding them, also while they wait for the connection's
+/// writer: the text stays in `data`'s pieces, and the writer sends the
+/// pieces without joining them. `Err` gives `data` back when a field does
+/// not encode (not expected: every one does).
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_frame(
     invocation_id: Option<Uuid>,
     function_id: &str,
-    data: &crate::invocation::encoded::EncodedJson,
+    data: crate::invocation::encoded::EncodedJson,
     traceparent: Option<&str>,
     baggage: Option<&str>,
     metadata: Option<&Value>,
     caller: Option<&Caller>,
     observe_depth: Option<u32>,
     activation: Option<&Activation>,
-) -> Result<String, serde_json::Error> {
+) -> Result<crate::invocation::encoded::EncodedJson, crate::invocation::encoded::EncodedJson> {
     /// Every field of `Message::InvokeFunction` but `data`, written as it
     /// writes them.
     #[derive(Serialize)]
@@ -1226,7 +1229,7 @@ pub fn invoke_frame(
         #[serde(skip_serializing_if = "Option::is_none")]
         activation: Option<&'a Activation>,
     }
-    let head = serde_json::to_string(&Head {
+    let Ok(mut head) = serde_json::to_string(&Head {
         kind: "invokefunction",
         invocation_id,
         function_id,
@@ -1236,15 +1239,14 @@ pub fn invoke_frame(
         caller,
         observe_depth,
         activation,
-    })?;
+    }) else {
+        return Err(data);
+    };
     // `head` is an object with at least `type` and `function_id`: `data`
     // goes before its closing brace.
-    let mut frame = String::with_capacity(head.len() + data.len() + 9);
-    frame.push_str(&head[..head.len() - 1]);
-    frame.push_str(",\"data\":");
-    data.write_to(&mut frame);
-    frame.push('}');
-    Ok(frame)
+    head.pop();
+    head.push_str(",\"data\":");
+    Ok(data.enclosed(head, "}"))
 }
 
 #[cfg(test)]
@@ -2191,7 +2193,7 @@ mod tests {
         let frame = invoke_frame(
             Some(invocation_id),
             "audit::record",
-            &EncodedJson::of(&data),
+            EncodedJson::of(&data),
             Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
             Some("k=v"),
             Some(&metadata),
@@ -2199,7 +2201,8 @@ mod tests {
             Some(2),
             Some(&activation),
         )
-        .unwrap();
+        .unwrap()
+        .into_text();
         assert_eq!(
             serde_json::from_str::<Value>(&frame).unwrap(),
             serde_json::to_value(&message).unwrap()
@@ -2213,7 +2216,7 @@ mod tests {
         let bare = invoke_frame(
             None,
             "f",
-            &EncodedJson::of(&Value::Null),
+            EncodedJson::of(&Value::Null),
             None,
             None,
             None,
@@ -2221,10 +2224,64 @@ mod tests {
             None,
             None,
         )
-        .unwrap();
+        .unwrap()
+        .into_text();
         assert_eq!(
             serde_json::from_str::<Value>(&bare).unwrap(),
             json!({ "type": "invokefunction", "function_id": "f", "data": null })
         );
+    }
+
+    /// The exact text of an encoded `invokefunction` frame, the message a
+    /// worker reassembles: the same whichever pieces the engine keeps it in.
+    #[test]
+    fn an_invoke_frame_is_this_exact_text() {
+        use super::{Activation, Caller, invoke_frame};
+        use crate::invocation::encoded::ObjectWriter;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let payload: Arc<str> = Arc::from(json!({ "k": [1, "\u{e9}\"two\""] }).to_string());
+        let mut writer = ObjectWriter::new();
+        writer.field("observer_id", &"o-1");
+        writer.shared_field("input", &payload);
+        writer.field("duration_ms", &1.5);
+        let data = writer.finish();
+        let caller = Caller {
+            worker_name: Some("iii-engine".to_string()),
+            function_id: Some("orders::create".to_string()),
+            ..Caller::default()
+        };
+        let activation = Activation {
+            observer_id: "o-1".to_string(),
+            activation_id: Some("a-1".to_string()),
+        };
+        let invocation_id: uuid::Uuid = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f".parse().unwrap();
+        let frame = invoke_frame(
+            Some(invocation_id),
+            "audit::record",
+            data,
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            Some("k=v"),
+            Some(&json!({ "tenant": "t" })),
+            Some(&caller),
+            Some(2),
+            Some(&activation),
+        )
+        .unwrap();
+        // The text the engine wrote before it kept frames in pieces.
+        let before = concat!(
+            r#"{"type":"invokefunction","invocation_id":"8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f","#,
+            r#""function_id":"audit::record","#,
+            r#""traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","#,
+            r#""baggage":"k=v","metadata":{"tenant":"t"},"#,
+            r#""caller":{"worker_name":"iii-engine","function_id":"orders::create"},"#,
+            r#""observe_depth":2,"activation":{"observer_id":"o-1","activation_id":"a-1"},"#,
+            "\"data\":{\"observer_id\":\"o-1\",\"input\":{\"k\":[1,\"\u{e9}\\\"two\\\"\"]},\"duration_ms\":1.5}}",
+        );
+        assert_eq!(frame.len(), before.len());
+        // The frame shares the event's payload instead of copying it.
+        assert_eq!(Arc::strong_count(&payload), 2);
+        assert_eq!(frame.into_text(), before);
     }
 }
