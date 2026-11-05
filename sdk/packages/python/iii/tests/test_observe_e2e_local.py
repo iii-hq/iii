@@ -599,3 +599,68 @@ def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff
     wait_for(lambda: gone.id in removed, "on_observer_removed from the diff", timeout=10)
     assert removed == [gone.id]
     assert added.count(stays.id) == 1  # kept: no second add
+
+
+# capture alone decides which outcomes fire (the observers guide, row by row): the
+# payload fields each outcome carries, or None when it does not fire the target.
+CAPTURE_ROWS: list[tuple[str, list[str] | None, list[str] | None, list[str] | None]] = [
+    ("default", None, ["caller", "input", "metadata", "output"], None),
+    ("errors-only", ["error", "caller"], None, ["caller", "error"]),
+    ("full", ["input", "output", "error"], ["input", "output"], ["error", "input"]),
+    ("empty", [], [], None),
+    ("input-error", ["input", "error"], ["input"], ["error", "input"]),
+]
+
+
+# local: the hosting worker calls its function, and this SDK decides what fires;
+# routed: another worker's call goes through the engine, which decides.
+@pytest.mark.parametrize("path", ["local", "routed"])
+def test_each_capture_fires_on_its_outcomes_with_its_fields(worker: Any, fid: Any, path: str) -> None:
+    owner = worker(f"capture-{path}-owner")
+    watcher = worker(f"capture-{path}-watcher")
+    fn = fid("py-capture::charge")
+
+    def charge(payload: dict[str, Any]) -> dict[str, Any]:
+        if payload["amount"] < 0:
+            raise RuntimeError(f"cannot charge {payload['amount']}")
+        return {"charged": payload["amount"]}
+
+    owner.register_function(fn, charge)
+    got = []
+    handles = []
+    for name, capture, _, _ in CAPTURE_ROWS:
+        target = fid(f"py-capture::on-{name}")
+        got.append(collector(watcher, target))
+        source: dict[str, Any] = {"function_id": fn}
+        if capture is not None:
+            source["capture"] = capture
+        handles.append(watcher.observe(source, target))
+    for handle in handles:
+        handle.ready(timeout=10)
+    local_dispatch_ready(owner, fn)
+
+    caller = owner if path == "local" else watcher
+    caller.call({"function_id": fn, "payload": {"amount": 10}, "metadata": {"request_id": "req-1"}})
+    with pytest.raises(InvocationError):
+        caller.call({"function_id": fn, "payload": {"amount": -5}, "metadata": {"request_id": "req-2"}})
+
+    for (name, _, success, error), activations in zip(CAPTURE_ROWS, got):
+        expected = (success is not None) + (error is not None)
+        exactly(activations, expected, f"{name}'s activations")
+        for status, fields in (("success", success), ("error", error)):
+            found = [a for a in activations if a.data["status"] == status]
+            if fields is None:
+                assert found == [], f"{name} fired on {status}"
+                continue
+            assert len(found) == 1, f"{name} on {status}"
+            assert sorted(k for k in ALL if k in found[0].data) == fields, f"{name} on {status}"
+
+
+def test_a_capture_that_names_no_outcome_is_refused(worker: Any, fid: Any) -> None:
+    watcher = worker("capture-refused")
+    for capture in (["caller"], ["metadata"], ["caller", "metadata"]):
+        source = {"function_id": fid("py-capture::anything"), "capture": capture}
+        handle = watcher.observe(source, fid("py-capture::nowhere"))
+        with pytest.raises(ObserveRejection) as raised:
+            handle.ready(timeout=10)
+        assert raised.value.code == "INVALID_ARGS", capture

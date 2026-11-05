@@ -1615,3 +1615,165 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         }
     }
 }
+
+/// One row of the observers guide: the payload fields each outcome carries,
+/// or `None` when the outcome does not fire the target.
+struct CaptureRow {
+    name: &'static str,
+    capture: Option<Vec<Capture>>,
+    success: Option<&'static [&'static str]>,
+    error: Option<&'static [&'static str]>,
+}
+
+fn capture_rows() -> Vec<CaptureRow> {
+    use Capture::{Caller, Error as Failure, Input, Output};
+    vec![
+        CaptureRow {
+            name: "default",
+            capture: None,
+            success: Some(&["caller", "input", "metadata", "output"]),
+            error: None,
+        },
+        CaptureRow {
+            name: "errors-only",
+            capture: Some(vec![Failure, Caller]),
+            success: None,
+            error: Some(&["caller", "error"]),
+        },
+        CaptureRow {
+            name: "full",
+            capture: Some(vec![Input, Output, Failure]),
+            success: Some(&["input", "output"]),
+            error: Some(&["error", "input"]),
+        },
+        CaptureRow {
+            name: "empty",
+            capture: Some(vec![]),
+            success: Some(&[]),
+            error: None,
+        },
+        CaptureRow {
+            name: "input-error",
+            capture: Some(vec![Input, Failure]),
+            success: Some(&["input"]),
+            error: Some(&["error", "input"]),
+        },
+    ]
+}
+
+/// `capture` alone decides which outcomes fire. Local: the hosting worker
+/// calls its function, and this SDK decides what fires; routed: another
+/// worker's call goes through the engine, which decides.
+#[tokio::test]
+async fn each_capture_fires_on_its_outcomes_with_its_fields() {
+    for local in [true, false] {
+        let id = uid();
+        let charge = format!("it{id}::charge");
+        let owner = client(&format!("capture-owner-{id}")).await;
+        let function = owner.register_function(
+            &charge,
+            RegisterFunction::new(|v: Value| {
+                let amount = v["amount"].as_i64().unwrap_or(0);
+                if amount < 0 {
+                    return Err(Error::Remote {
+                        code: "invocation_failed".into(),
+                        message: format!("cannot charge {amount}"),
+                        stacktrace: None,
+                    });
+                }
+                Ok(json!({ "charged": amount }))
+            }),
+        );
+        let watcher = client(&format!("capture-watcher-{id}")).await;
+        let rows = capture_rows();
+        let mut inboxes = Vec::new();
+        for row in &rows {
+            let target = format!("it{id}::on-{}", row.name);
+            let inbox = Inbox::default();
+            watcher.register_function(&target, inbox.function());
+            let mut source = Source::function(&charge);
+            if let Some(capture) = row.capture.clone() {
+                source = source.capture(capture);
+            }
+            let handle = watcher.observe(source, &target);
+            tokio::time::timeout(WAIT, handle.ready())
+                .await
+                .unwrap()
+                .unwrap();
+            inboxes.push(inbox);
+        }
+        until("local dispatch", || function.local_dispatch_active()).await;
+
+        let caller = if local { &owner } else { &watcher };
+        caller
+            .call(
+                call_req(&charge, json!({ "amount": 10 }))
+                    .metadata(json!({ "request_id": "req-1" })),
+            )
+            .await
+            .expect("the call with 10");
+        caller
+            .call(
+                call_req(&charge, json!({ "amount": -5 }))
+                    .metadata(json!({ "request_id": "req-2" })),
+            )
+            .await
+            .expect_err("the call with -5");
+
+        for (row, inbox) in rows.iter().zip(&inboxes) {
+            let want = usize::from(row.success.is_some()) + usize::from(row.error.is_some());
+            inbox.wait(want).await;
+            settle().await;
+            let got = inbox.inputs();
+            assert_eq!(got.len(), want, "local {local}: {}: {got:#?}", row.name);
+            for (status, fields) in [("success", row.success), ("error", row.error)] {
+                let found: Vec<&Value> = got.iter().filter(|p| p["status"] == status).collect();
+                let Some(fields) = fields else {
+                    assert!(
+                        found.is_empty(),
+                        "local {local}: {} fired on {status}",
+                        row.name
+                    );
+                    continue;
+                };
+                assert_eq!(found.len(), 1, "local {local}: {} on {status}", row.name);
+                let mut carried: Vec<&str> = ["input", "output", "error", "caller", "metadata"]
+                    .into_iter()
+                    .filter(|key| found[0].get(*key).is_some())
+                    .collect();
+                carried.sort();
+                assert_eq!(carried, fields, "local {local}: {} on {status}", row.name);
+            }
+        }
+        watcher.shutdown_async().await;
+        owner.shutdown_async().await;
+    }
+}
+
+/// A capture that names no outcome would never fire: refused with
+/// `INVALID_ARGS`.
+#[tokio::test]
+async fn a_capture_that_names_no_outcome_is_refused() {
+    let id = uid();
+    let watcher = client(&format!("capture-refused-{id}")).await;
+    for capture in [
+        vec![Capture::Caller],
+        vec![Capture::Metadata],
+        vec![Capture::Caller, Capture::Metadata],
+    ] {
+        let handle = watcher.observe(
+            Source::function(format!("it{id}::anything")).capture(capture.clone()),
+            format!("it{id}::nowhere"),
+        );
+        let err = tokio::time::timeout(WAIT, handle.ready())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err.invocation_error().unwrap().code,
+            "INVALID_ARGS",
+            "{capture:?}"
+        );
+    }
+    watcher.shutdown_async().await;
+}

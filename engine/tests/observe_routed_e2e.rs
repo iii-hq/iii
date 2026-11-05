@@ -308,7 +308,13 @@ async fn capture_decides_which_outcomes_fire() {
         &t,
         "sink",
         true,
-        &["alerts::raise", "metrics::record", "metrics::count"],
+        &[
+            "alerts::raise",
+            "metrics::record",
+            "metrics::count",
+            "audit::default",
+            "audit::full",
+        ],
     )
     .await;
     let mut checkout = connect(&t, "checkout", true).await;
@@ -317,6 +323,11 @@ async fn capture_decides_which_outcomes_fire() {
         ("obs-error", json!(["error", "caller"]), "alerts::raise"),
         ("obs-both", json!(["input", "error"]), "metrics::record"),
         ("obs-empty", json!([]), "metrics::count"),
+        (
+            "obs-full",
+            json!(["input", "output", "error"]),
+            "audit::full",
+        ),
     ] {
         sink.observe_active(observer(
             id,
@@ -325,6 +336,13 @@ async fn capture_decides_which_outcomes_fire() {
         ))
         .await;
     }
+    // No capture: the default, input, output, caller and metadata.
+    sink.observe_active(observer(
+        "obs-default",
+        json!({ "function_id": "payments::charge" }),
+        "audit::default",
+    ))
+    .await;
 
     round_trip(
         &t,
@@ -350,6 +368,22 @@ async fn capture_decides_which_outcomes_fire() {
     assert_eq!(success["data"]["input"], json!({ "amount": 1 }));
     assert!(success["data"].get("error").is_none() && success["data"].get("output").is_none());
     sink.reply(&success, Value::Null).await;
+    let default = sink.invoked("audit::default").await;
+    assert_eq!(default["data"]["status"], "success");
+    assert_eq!(default["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert_eq!(default["data"]["caller"]["worker_name"], "checkout");
+    assert!(default["data"].get("error").is_none(), "{default}");
+    sink.reply(&default, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "success");
+    assert_eq!(full["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(full["data"]["output"], json!({ "ok": true }));
+    assert!(
+        full["data"].get("error").is_none(),
+        "never with output: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
     assert_eq!(
         fires(&t, "obs-error"),
         0,
@@ -376,7 +410,21 @@ async fn capture_decides_which_outcomes_fire() {
     assert_eq!(failure["data"]["input"], json!({ "amount": 2 }));
     assert_eq!(failure["data"]["error"]["code"], "CARD_DECLINED");
     sink.reply(&failure, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "error");
+    assert_eq!(full["data"]["input"], json!({ "amount": 2 }));
+    assert_eq!(full["data"]["error"]["code"], "CARD_DECLINED");
+    assert!(
+        full["data"].get("output").is_none(),
+        "never with error: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
     assert_eq!(fires(&t, "obs-empty"), 1, "capture: [] ignores an error");
+    assert_eq!(
+        fires(&t, "obs-default"),
+        1,
+        "the default capture ignores an error: errors are not observed by default"
+    );
 }
 
 #[tokio::test]
@@ -1541,6 +1589,14 @@ async fn observe_rejections() {
         (
             "INVALID_ARGS",
             json!({ "source": source(json!({ "capture": ["caller", "metadata"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["caller"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["metadata"] })), "target": { "function_id": "sink::x" } }),
         ),
         (
             "UNSUPPORTED",

@@ -805,3 +805,118 @@ func TestObserveCallForOneObserver(t *testing.T) {
 		})
 	}
 }
+
+// captureRow is one row of the observers guide: the payload fields each outcome
+// carries, or nil when the outcome does not fire the target.
+type captureRow struct {
+	name           string
+	capture        []iii.Capture
+	success, error []string
+}
+
+var captureRows = []captureRow{
+	{"default", nil, []string{"caller", "input", "metadata", "output"}, nil},
+	{"errors-only", []iii.Capture{iii.CaptureError, iii.CaptureCaller}, nil, []string{"caller", "error"}},
+	{"full", []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureError}, []string{"input", "output"}, []string{"error", "input"}},
+	{"empty", []iii.Capture{}, []string{}, nil},
+	{"input-error", []iii.Capture{iii.CaptureInput, iii.CaptureError}, []string{"input"}, []string{"error", "input"}},
+}
+
+// capture alone decides which outcomes fire. local: the hosting worker calls its
+// function, and this SDK decides what fires; routed: another worker's call goes
+// through the engine, which decides.
+func TestEachCaptureFiresOnItsOutcomesWithItsFields(t *testing.T) {
+	for _, path := range []string{"local", "routed"} {
+		t.Run(path, func(t *testing.T) {
+			owner := observeWorker(t, "capture-"+path+"-owner", nil)
+			watcher := observeWorker(t, "capture-"+path+"-watcher", nil)
+			fn := fnID(t, "go-capture::charge")
+			_, _ = owner.RegisterFunction(fn, func(_ context.Context, data json.RawMessage) (any, error) {
+				var p struct{ Amount int }
+				_ = json.Unmarshal(data, &p)
+				if p.Amount < 0 {
+					return nil, fmt.Errorf("cannot charge %d", p.Amount)
+				}
+				return map[string]int{"charged": p.Amount}, nil
+			})
+			got := make([]*collected, len(captureRows))
+			for i, row := range captureRows {
+				target := fnID(t, "go-capture::on-"+row.name)
+				got[i] = collector(t, watcher, target)
+				h, err := watcher.Observe(iii.Source{FunctionID: fn, Capture: row.capture}, target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ready(t, h)
+			}
+			localDispatchReady(t, owner, fn)
+
+			caller := watcher
+			if path == "local" {
+				caller = owner
+			}
+			call(t, caller, iii.CallRequest{FunctionID: fn, Payload: raw(map[string]int{"amount": 10}), Metadata: raw(map[string]string{"request_id": "req-1"})})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := caller.Call(ctx, iii.CallRequest{FunctionID: fn, Payload: raw(map[string]int{"amount": -5}), Metadata: raw(map[string]string{"request_id": "req-2"})}); err == nil {
+				t.Fatal("the call with -5 succeeded")
+			}
+
+			for i, row := range captureRows {
+				want := 0
+				if row.success != nil {
+					want++
+				}
+				if row.error != nil {
+					want++
+				}
+				activations := exactly(t, got[i], want, row.name+"'s activations", 10*time.Second)
+				for _, outcome := range []struct {
+					status string
+					fields []string
+				}{{"success", row.success}, {"error", row.error}} {
+					var found []map[string]any
+					for _, a := range activations {
+						if a.Data["status"] == outcome.status {
+							found = append(found, a.Data)
+						}
+					}
+					if outcome.fields == nil {
+						if len(found) != 0 {
+							t.Errorf("%s fired on %s: %v", row.name, outcome.status, found)
+						}
+						continue
+					}
+					if len(found) != 1 {
+						t.Errorf("%s on %s: %d activations", row.name, outcome.status, len(found))
+						continue
+					}
+					carried := []string{}
+					for _, key := range []string{"input", "output", "error", "caller", "metadata"} {
+						if _, ok := found[0][key]; ok {
+							carried = append(carried, key)
+						}
+					}
+					slices.Sort(carried)
+					if !slices.Equal(carried, outcome.fields) {
+						t.Errorf("%s on %s carries %v, want %v", row.name, outcome.status, carried, outcome.fields)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A capture that names no outcome would never fire: refused with INVALID_ARGS.
+func TestACaptureThatNamesNoOutcomeIsRefused(t *testing.T) {
+	watcher := observeWorker(t, "capture-refused", nil)
+	for _, capture := range [][]iii.Capture{{iii.CaptureCaller}, {iii.CaptureMetadata}, {iii.CaptureCaller, iii.CaptureMetadata}} {
+		h, err := watcher.Observe(iii.Source{FunctionID: fnID(t, "go-capture::anything"), Capture: capture}, fnID(t, "go-capture::nowhere"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rej := readyFails(t, h); rej.Code != "INVALID_ARGS" {
+			t.Errorf("capture %v: %s, want INVALID_ARGS", capture, rej.Code)
+		}
+	}
+}

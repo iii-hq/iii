@@ -664,3 +664,70 @@ describe('reconnect', () => {
     expect(ref.isObserved()).toBe(false)
   })
 })
+
+describe('capture alone decides which outcomes fire (the observers guide, row by row)', () => {
+  type Field = (typeof ALL)[number]
+  // The payload fields each outcome carries, or null when it does not fire the target.
+  const ROWS: { name: string; capture?: Field[]; success: Field[] | null; error: Field[] | null }[] = [
+    { name: 'default', success: ['caller', 'input', 'metadata', 'output'], error: null },
+    { name: 'errors-only', capture: ['error', 'caller'], success: null, error: ['caller', 'error'] },
+    { name: 'full', capture: ['input', 'output', 'error'], success: ['input', 'output'], error: ['error', 'input'] },
+    { name: 'empty', capture: [], success: [], error: null },
+    { name: 'input-error', capture: ['input', 'error'], success: ['input'], error: ['error', 'input'] },
+  ]
+
+  // local: the hosting worker calls its function, and this SDK decides what fires;
+  // routed: another worker's call goes through the engine, which decides.
+  for (const path of ['local', 'routed'] as const) {
+    it(`${path}: each capture fires on its outcomes with its fields; the default ignores errors`, async () => {
+      const owner = worker(`capture-${path}-owner`)
+      const watcher = worker(`capture-${path}-watcher`)
+      const fn = `e2e::charge-${path}-${RUN}`
+      owner.registerFunction(fn, async (input: { amount: number }) => {
+        if (input.amount < 0) throw new Error(`cannot charge ${input.amount}`)
+        return { charged: input.amount }
+      })
+      const targets = ROWS.map((row) => `e2e::on-${row.name}-${path}-${RUN}`)
+      const got = targets.map((target) => collector(watcher, target))
+      const handles = ROWS.map((row, i) =>
+        watcher.observe({ function_id: fn, ...(row.capture ? { capture: row.capture } : {}) }, targets[i]),
+      )
+      await Promise.all(handles.map((handle) => handle.ready()))
+      await localDispatchReady(owner, fn)
+
+      const caller = path === 'local' ? owner : watcher
+      await caller.call({ function_id: fn, payload: { amount: 10 }, metadata: { request_id: 'req-1' } })
+      await caller
+        .call({ function_id: fn, payload: { amount: -5 }, metadata: { request_id: 'req-2' } })
+        .catch(() => undefined)
+      const expected = ROWS.map((row) => (row.success ? 1 : 0) + (row.error ? 1 : 0))
+      await waitFor(() => got.every((activations, i) => activations.length >= expected[i]), 'the activations')
+      await sleep(200)
+
+      ROWS.forEach((row, i) => {
+        expect(got[i], row.name).toHaveLength(expected[i])
+        for (const [status, fields] of [
+          ['success', row.success],
+          ['error', row.error],
+        ] as const) {
+          const activation = got[i].find((a) => a.data.status === status)
+          if (fields === null) {
+            expect(activation, `${row.name} fired on ${status}`).toBeUndefined()
+            continue
+          }
+          expect(activation, `${row.name} on ${status}`).toBeDefined()
+          const carried = ALL.filter((key) => activation && key in activation.data).sort()
+          expect(carried, `${row.name} on ${status}`).toEqual(fields)
+        }
+      })
+    })
+  }
+
+  it('a capture that names no outcome is refused with INVALID_ARGS', async () => {
+    const watcher = worker('capture-refused')
+    for (const capture of [['caller'], ['metadata'], ['caller', 'metadata']] as Field[][]) {
+      const handle = watcher.observe({ function_id: `e2e::anything-${RUN}`, capture }, `e2e::nowhere-${RUN}`)
+      await expect(handle.ready(), JSON.stringify(capture)).rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    }
+  })
+})
