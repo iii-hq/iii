@@ -56,6 +56,7 @@ use std::{
 };
 
 use iii_filter::Doc;
+use once_cell::race::OnceBox;
 use opentelemetry::KeyValue;
 use serde_json::{Map, Value, value::RawValue};
 use tokio::sync::{mpsc, oneshot::error::RecvError};
@@ -465,6 +466,26 @@ const HOST_DELIVERY: &str = "host";
 /// `delivery` label: a call through an observer.
 const OBSERVER_CALL_DELIVERY: &str = "observer_call";
 
+/// Who matched an event, the `delivery` label of its activations: one byte
+/// in the event rather than the label's pointer and length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Delivery {
+    /// [`ENGINE_DELIVERY`].
+    Engine,
+    /// [`HOST_DELIVERY`].
+    Host,
+}
+
+impl Delivery {
+    /// Its `delivery` label.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Engine => ENGINE_DELIVERY,
+            Self::Host => HOST_DELIVERY,
+        }
+    }
+}
+
 /// The `function_id` label of a drop that names no observer the engine
 /// knows, so no observed function.
 const UNKNOWN_FUNCTION: &str = "<unknown>";
@@ -681,10 +702,10 @@ enum Matching {
 impl Matching {
     /// The `delivery` label of the activations it starts: who chose the
     /// observers it evaluates.
-    fn delivery(&self) -> &'static str {
+    fn delivery(&self) -> Delivery {
         match self {
-            Self::Filters => ENGINE_DELIVERY,
-            Self::Matched(_) => HOST_DELIVERY,
+            Self::Filters => Delivery::Engine,
+            Self::Matched(_) => Delivery::Host,
         }
     }
 
@@ -713,7 +734,7 @@ pub(crate) struct Completed {
     /// Who matched it, as the `delivery` label of
     /// `iii.observer.activations.total`: [`ENGINE_DELIVERY`] or
     /// [`HOST_DELIVERY`].
-    delivery: &'static str,
+    delivery: Delivery,
     /// The observed function, `(namespace, function_id)`: the key its active
     /// set holds, shared rather than copied.
     function: Arc<FnKey>,
@@ -730,8 +751,9 @@ pub(crate) struct Completed {
     started_at_ms: u64,
     duration_ms: f64,
     depth: u32,
-    traceparent: Option<String>,
-    baggage: Option<String>,
+    /// The call's trace context, boxed: no spare capacity to hold.
+    traceparent: Option<Box<str>>,
+    baggage: Option<Box<str>>,
     /// Queues holding it now (see [`QueueBudget`]).
     queues: AtomicUsize,
     /// What it was charged when the first of them took it (or would have
@@ -740,8 +762,9 @@ pub(crate) struct Completed {
     /// Its payloads held as values, as JSON text, for the activations a
     /// worker connection receives (a payload held as text is sent as it
     /// is): allocated by the first of them that encodes one, so an event
-    /// that only in-process targets read holds none.
-    encoded: OnceLock<Box<EncodedParts>>,
+    /// that only in-process targets read holds none. One pointer: two first
+    /// activations racing may both allocate it, and the loser's is dropped.
+    encoded: OnceBox<EncodedParts>,
 }
 
 /// A completion's `invocation_id`: the engine's own id kept as a [`Uuid`]
@@ -1186,7 +1209,7 @@ impl ObserverRegistry {
         Some(Evaluation {
             bytes: event.as_deref().map_or(0, approx_size),
             completed: Completed {
-                delivery: ENGINE_DELIVERY,
+                delivery: Delivery::Engine,
                 function: set.function.clone(),
                 invocation_id: InvocationId::Uuid(super::new_uuid()),
                 success: true,
@@ -1202,11 +1225,11 @@ impl ObserverRegistry {
                 started_at_ms: now_ms(),
                 duration_ms: 0.0,
                 depth,
-                traceparent: emission.traceparent,
+                traceparent: emission.traceparent.map(String::into_boxed_str),
                 baggage: None,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: OnceLock::new(),
+                encoded: OnceBox::new(),
             },
             set,
             matching: Matching::Filters,
@@ -1430,11 +1453,11 @@ impl ObserverRegistry {
                 started_at_ms: call.started_at_ms,
                 duration_ms: call.started.elapsed().as_secs_f64() * 1000.0,
                 depth: ctx.observe_depth,
-                traceparent: call.traceparent,
-                baggage: call.baggage,
+                traceparent: call.traceparent.map(String::into_boxed_str),
+                baggage: call.baggage.map(String::into_boxed_str),
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: OnceLock::new(),
+                encoded: OnceBox::new(),
             },
             set: call.set,
             matching,
@@ -1828,7 +1851,7 @@ impl ObserverRegistry {
         observer
             .counters()
             .activations
-            .count(pending.event.delivery);
+            .count(pending.event.delivery.label());
         // Built now, from the event the observers share; the event is let go
         // (and its share of the queue budget given back) before the target
         // answers.
@@ -1861,7 +1884,10 @@ impl ObserverRegistry {
                 activation_id: Some(activation_id),
             },
         );
-        let (traceparent, baggage) = (event.traceparent.clone(), event.baggage.clone());
+        let (traceparent, baggage) = (
+            event.traceparent.as_deref().map(String::from),
+            event.baggage.as_deref().map(String::from),
+        );
         drop(event);
         let invocation_id = super::new_uuid();
         let call = invocations.handle_activation(
@@ -2124,7 +2150,7 @@ impl ObserverRegistry {
                 None => Arc::new(key),
             };
             let completed = Arc::new(Completed {
-                delivery: HOST_DELIVERY,
+                delivery: Delivery::Host,
                 function: key.clone(),
                 invocation_id: InvocationId::reported(invocation_id, parsed),
                 success,
@@ -2137,11 +2163,11 @@ impl ObserverRegistry {
                 started_at_ms,
                 duration_ms,
                 depth: observe_depth,
-                traceparent,
-                baggage,
+                traceparent: traceparent.map(String::into_boxed_str),
+                baggage: baggage.map(String::into_boxed_str),
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: OnceLock::new(),
+                encoded: OnceBox::new(),
             });
             for id in &matched {
                 match self.get(id).filter(|o| o.function == key) {
@@ -3570,7 +3596,7 @@ mod tests {
 
     fn event(n: u64) -> Arc<super::Completed> {
         Arc::new(super::Completed {
-            delivery: super::ENGINE_DELIVERY,
+            delivery: super::Delivery::Engine,
             function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
             invocation_id: super::InvocationId::Reported(n.to_string()),
             success: true,
@@ -3587,7 +3613,7 @@ mod tests {
             baggage: None,
             queues: AtomicUsize::new(0),
             charged: AtomicUsize::new(0),
-            encoded: std::sync::OnceLock::new(),
+            encoded: once_cell::race::OnceBox::new(),
         })
     }
 
@@ -3650,7 +3676,7 @@ mod tests {
                 .iter()
                 .map(|pending| {
                     let n = pending.event.input_value().unwrap()["n"].as_u64().unwrap();
-                    (n, pending.event.delivery)
+                    (n, pending.event.delivery.label())
                 })
                 .collect()
         };
@@ -4543,7 +4569,7 @@ mod tests {
         ) -> super::Completed {
             let [input, output, error, caller, metadata] = parts;
             super::Completed {
-                delivery: super::ENGINE_DELIVERY,
+                delivery: super::Delivery::Engine,
                 function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
                 invocation_id: super::InvocationId::Reported("i-\"1\"".to_string()),
                 success,
@@ -4560,7 +4586,7 @@ mod tests {
                 baggage: None,
                 queues: AtomicUsize::new(0),
                 charged: AtomicUsize::new(0),
-                encoded: std::sync::OnceLock::new(),
+                encoded: once_cell::race::OnceBox::new(),
             }
         }
 
@@ -4670,6 +4696,17 @@ mod tests {
             events[4].input_value().unwrap(),
             events[4].output_value().unwrap()
         ));
+    }
+
+    /// An event holds each of its payloads as a `Payload` (a tag and a
+    /// pointer) in no more room than it took with each a pointer: its
+    /// delivery label is one byte, its trace context boxed and its encoded
+    /// parts behind one pointer.
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn an_event_holds_its_payloads_in_no_more_room() {
+        let size = std::mem::size_of::<super::Completed>();
+        assert!(size <= 184, "{size} bytes");
     }
 
     /// A charge refused for lack of room leaves the event's cost behind: the
