@@ -10,7 +10,10 @@ import type { IIIConnectionState } from '../src/iii-constants'
 import type { ISdk } from '../src/types'
 import { MockWebSocket } from './mock-websocket'
 
-export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
+/** What a current engine advertises: it announces `fires` in observer views (`observe.capture`). */
+export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1']
+/** What an rc engine advertises: `observe.v2` without `observe.capture` (no `fires` in observer views). */
+export const ENGINE_FEATURES_RC = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
 /** What a 0.25 engine advertises: observe without `observe.v2`. */
 export const ENGINE_FEATURES_V1 = ['observe.v1', 'local-dispatch.v1']
 
@@ -141,15 +144,24 @@ export function functionRegistered(
 export function observerInfo(
   id: string,
   target: string,
-  opts: { args?: Frame; filters?: Frame; capture?: string[] } = {},
+  opts: { args?: Frame; filters?: Frame; capture?: string[]; fires?: string[] | null; on?: string } = {},
 ): Frame {
-  return {
-    id,
-    args: opts.args ?? {},
-    filters: opts.filters ?? {},
-    target,
-    capture: opts.capture ?? ['input', 'output', 'caller', 'metadata'],
-  }
+  const capture = opts.capture ?? ['input', 'output', 'caller', 'metadata']
+  const info: Frame = { id, args: opts.args ?? {}, filters: opts.filters ?? {}, target, capture }
+  if (opts.fires !== null) info.fires = opts.fires ?? firesFor(capture)
+  if (opts.on !== undefined) info.on = opts.on
+  return info
+}
+
+/**
+ * The `fires` an engine with `observe.capture` announces for `capture`:
+ * `input`, `output` (or `[]`) fire on success, `error` on error.
+ */
+export function firesFor(capture: readonly string[]): string[] {
+  const fires: string[] = []
+  if (capture.length === 0 || capture.includes('input') || capture.includes('output')) fires.push('success')
+  if (capture.includes('error')) fires.push('error')
+  return fires.length > 0 ? fires : ['success']
 }
 
 export function observerAdded(functionId: string, revision: number, observer: Frame, namespace = 'default'): Frame {

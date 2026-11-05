@@ -528,11 +528,17 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(frame.namespace).toBe('default')
     const { namespace: _, ...rest } = frame
     const want = expected.data as Json
+    // `features` is checked on its own: the fixture is shared by every SDK and
+    // gains `observe.capture` as each one announces it (CONTRACT D6).
+    const features = data.features
+    delete data.features
+    const { features: wantFeatures, ...wantRest } = want
     expect(asJson({ ...rest, data })).toEqual({
       ...expected,
-      data: { ...want, version: data.version, os: data.os, pid: data.pid },
+      data: { ...wantRest, version: data.version, os: data.os, pid: data.pid },
     })
-    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(expect.arrayContaining(wantFeatures as string[]))
   })
 })
 

@@ -483,7 +483,7 @@ PROTOCOL_FIXTURES = UNIT + [
     (
         re.compile(
             r'    const data = \{ \.\.\.\(frame\.data as Json\) \}\n.*?'
-            r"    expect\(data\.features\)\.toEqual\(\['observe\.v1', 'observe\.v2', 'local-dispatch\.v1', 'large-messages\.v1'\]\)\n",
+            r"    expect\(features\)\.toEqual\(expect\.arrayContaining\(wantFeatures as string\[\]\)\)\n",
             re.S,
         ),
         """    const data = frame.data as Json
@@ -495,9 +495,13 @@ PROTOCOL_FIXTURES = UNIT + [
     expect(Object.keys(data).filter((k) => !(k in want))).toEqual([])
     expect(data).toMatchObject({ runtime: 'browser', name: 'billing', namespace: 'default' })
     // The fixture is a native SDK's. A browser receives one 16 MiB frame at
-    // most, so it declares every feature but `large-messages.v1`.
-    expect(want.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
-    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1'])
+    // most, so it declares every feature but `large-messages.v1`; it also
+    // announces `observe.capture` (CONTRACT D6), which the shared fixture
+    // gains as each SDK does.
+    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1'])
+    expect([...(data.features as string[]), 'large-messages.v1']).toEqual(
+      expect.arrayContaining(want.features as string[]),
+    )
     expect(typeof data.os).toBe('string')
 """,
         1,

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ObserveRejection } from '../src/errors'
 import { registerWorker } from '../src/index'
+import * as wire from '../src/observe-wire'
 import type { ISdk } from '../src/types'
 import * as fake from './observe-fake-engine'
 
@@ -304,41 +305,147 @@ describe('iii.observe', () => {
   })
 })
 
-describe('engines without observe.v2 (0.25)', () => {
-  it('get the source.on that capture implies, and a deprecation warning once', async () => {
+/** The one-time deprecation logged against an engine without `observe.capture` (CONTRACT D6). */
+const legacyWarnings = (warn: { mock: { calls: unknown[][] } }) =>
+  warn.mock.calls.filter(([message]) => String(message).includes('does not support observe.capture'))
+
+const LEGACY_ENGINES = [
+  ['a 0.25 engine (observe.v1 only)', fake.ENGINE_FEATURES_V1],
+  ['an rc engine (observe.v2 without observe.capture)', fake.ENGINE_FEATURES_RC],
+] as const
+
+/** capture -> the legacy `source.on` it implies. */
+const LEGACY_ON_CASES = [
+  [undefined, undefined],
+  [['input'], undefined],
+  [['input', 'output', 'caller'], undefined],
+  [[], undefined],
+  [['error'], 'error'],
+  [['error', 'caller'], 'error'],
+  [['input', 'error'], 'complete'],
+  [['output', 'error'], 'complete'],
+  [['input', 'output', 'error'], 'complete'],
+] as const
+
+describe('sending observe to an engine without observe.capture (CONTRACT D6)', () => {
+  it.each(LEGACY_ENGINES)('%s gets the source.on that capture implies, and one deprecation warning', async (_name, features) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { sdk, socket } = worker()
-    socket.open(['observe.v1'])
-    const cases = [
-      [undefined, undefined],
-      [['input'], undefined],
-      [[], undefined],
-      [['error', 'caller'], 'error'],
-      [['input', 'error'], 'complete'],
-      [['input', 'output', 'error'], 'complete'],
-    ] as const
-    for (const [capture] of cases) {
+    socket.open([...features])
+    for (const [capture] of LEGACY_ON_CASES) {
       sdk.observe({ function_id: 'orders::create', ...(capture ? { capture: [...capture] } : {}) }, 'audit::record')
     }
     await fake.settle()
     const sent = socket.framesOf('observe').map((frame) => (frame.source as { on?: string }).on)
-    expect(sent).toEqual(cases.map(([, on]) => on))
-    const deprecations = warn.mock.calls.filter(([message]) => String(message).includes('`source.on` is deprecated'))
-    expect(deprecations).toHaveLength(1)
+    expect(sent).toEqual(LEGACY_ON_CASES.map(([, on]) => on))
+    // only the frames that need `on` carry it: a success-only observer is sent as is
+    for (const frame of socket.framesOf('observe')) {
+      if ((frame.source as { on?: string }).on === undefined) expect(frame.source).not.toHaveProperty('on')
+    }
+    expect(legacyWarnings(warn)).toHaveLength(1)
+    expect(String(legacyWarnings(warn)[0][0])).toMatch(/deprecated.*future version.*upgrade the engine/)
     warn.mockRestore()
   })
 
-  it('an engine with observe.v2 gets no source.on and no warning', async () => {
+  it.each(LEGACY_ENGINES)('%s: the reconnect replay sends the same legacy source.on, still one warning', async (_name, features) => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open([...features])
+    sdk.observe({ function_id: 'orders::create', capture: ['error', 'caller'] }, 'audit::record', { id: 'err-1' })
+    sdk.observe({ function_id: 'orders::create', capture: ['input', 'error'] }, 'audit::record', { id: 'both-1' })
+    sdk.observe({ function_id: 'orders::create', capture: ['input'] }, 'audit::record', { id: 'ok-1' })
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    expect(next).not.toBe(socket)
+    next.open([...features])
+    const onOf = (frames: Record<string, unknown>[]) =>
+      frames.map((f) => [f.id, (f.source as { on?: string }).on])
+    expect(onOf(next.framesOf('observe'))).toEqual([
+      ['err-1', 'error'],
+      ['both-1', 'complete'],
+      ['ok-1', undefined],
+    ])
+    expect(next.framesOf('observe')).toEqual(socket.framesOf('observe'))
+    expect(legacyWarnings(warn)).toHaveLength(1)
+    warn.mockRestore()
+  })
+
+  it('an observer queued before the first connection is sent with source.on once the rc engine registers', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    sdk.observe({ function_id: 'orders::create', capture: ['error'] }, 'audit::record')
+    socket.open([...fake.ENGINE_FEATURES_RC])
+    expect(socket.framesOf('observe').map((f) => (f.source as { on?: string }).on)).toEqual(['error'])
+    warn.mockRestore()
+  })
+
+  it('a replay to an engine that gained observe.capture drops source.on; one that lost it gets it back', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open([...fake.ENGINE_FEATURES_RC])
+    sdk.observe({ function_id: 'orders::create', capture: ['error'] }, 'audit::record', { id: 'err-1' })
+    expect((socket.framesOf('observe')[0].source as { on?: string }).on).toBe('error')
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const upgraded = fake.lastSocket()
+    upgraded.open()
+    expect(upgraded.framesOf('observe')[0].source).not.toHaveProperty('on')
+    upgraded.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const downgraded = fake.lastSocket()
+    downgraded.open([...fake.ENGINE_FEATURES_V1])
+    expect((downgraded.framesOf('observe')[0].source as { on?: string }).on).toBe('error')
+    warn.mockRestore()
+  })
+})
+
+describe('sending observe to an engine with observe.capture (CONTRACT D6)', () => {
+  it('gets no source.on for any capture, on the first send or the replay, and no warning', async () => {
+    vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const { sdk, socket } = worker()
     socket.open()
-    sdk.observe({ function_id: 'orders::create', capture: ['error', 'caller'] }, 'audit::record')
-    await fake.settle()
-    expect(socket.framesOf('observe').map((frame) => frame.source)).toEqual([
-      expect.not.objectContaining({ on: expect.anything() }),
-    ])
-    expect(warn.mock.calls.filter(([message]) => String(message).includes('`source.on`'))).toHaveLength(0)
+    for (const [capture] of LEGACY_ON_CASES) {
+      sdk.observe({ function_id: 'orders::create', ...(capture ? { capture: [...capture] } : {}) }, 'audit::record')
+    }
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    for (const s of [socket, next]) {
+      expect(s.framesOf('observe')).toHaveLength(LEGACY_ON_CASES.length)
+      for (const frame of s.framesOf('observe')) expect(frame.source).not.toHaveProperty('on')
+    }
+    expect(legacyWarnings(warn)).toHaveLength(0)
     warn.mockRestore()
+  })
+
+  it('announces observe.capture in engine::workers::register', () => {
+    const { socket } = worker()
+    socket.open()
+    const [register] = socket
+      .framesOf('invokefunction')
+      .filter((f) => f.function_id === 'engine::workers::register')
+    expect((register.data as { features: string[] }).features).toEqual(
+      expect.arrayContaining(['observe.v1', 'observe.v2', 'observe.capture']),
+    )
+  })
+})
+
+describe('the default capture (CONTRACT D1)', () => {
+  it('is input, output and caller: no metadata, no error', () => {
+    expect([...wire.DEFAULT_CAPTURE]).toEqual(['input', 'output', 'caller'])
+  })
+
+  it('is what an observer view without capture decodes to', () => {
+    expect(wire.decodeObserverInfo({ id: 'o', target: 't' }).capture).toEqual(['input', 'output', 'caller'])
+  })
+
+  it('implies no legacy source.on: an observer without capture fires on success only', () => {
+    expect(wire.legacyOn(undefined)).toBeUndefined()
   })
 })
 
