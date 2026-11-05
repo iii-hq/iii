@@ -35,7 +35,7 @@
   <a href="#添加-worker">添加 Worker</a> ·
   <a href="#sdk">SDK</a> ·
   <a href="#面向第三方-harness-的-agent-skills">Agent Skills</a> ·
-  <a href="#控制台-console">Console</a> ·
+  <a href="#控制台-ade">Console</a> ·
   <a href="#资源">资源</a>
 </p>
 
@@ -136,10 +136,16 @@ npx skills add iii-hq/workers --all         # 所有 worker skill
 
 引擎自带的 Worker（`configuration`、`iii-worker-manager`、`iii-http-functions`、`iii-stream` 和 `iii-sandbox`），以及由引擎自动提供的函数、遥测与可观测性 Worker，都在本仓库中。HTTP、cron、队列、状态、pubsub 和 bridge 则是独立的 Compose Worker。使用 `npx skills add iii-hq/iii --full-depth --skill <name>` 安装某个引擎 skill；独立 Worker 会在 [iii-hq/workers](https://github.com/iii-hq/workers) 中随自身分发各自的 skills。
 
-## 控制台 (Console)
+## 控制台 (ADE)
 
-[iii-console](console/) 是面向开发者与运维的控制台，用于检查 Worker、函数、Trigger、队列、链路追踪、日志以及实时状态。安装与用法见
-[Console 文档](https://iii.dev/docs/using-iii/console)。
+控制台现在是独立的 `ade` worker：它提供 Web UI，并在同一端口上代理引擎 WebSocket。添加后打开
+`http://127.0.0.1:3113`：
+
+```bash
+iii trigger compose::add worker=ade
+```
+
+安装与用法见 [Console 文档](https://iii.dev/docs/using-iii/console)。
 
 ## 仓库结构
 
@@ -147,7 +153,6 @@ npx skills add iii-hq/workers --all         # 所有 worker skill
 | ---------- | ------------------------------------------------------- | -------------------------------------- |
 | `engine/`  | iii 引擎（Rust）——核心运行时、模块与协议 | [engine/README.md](engine/README.md)   |
 | `sdk/`     | 面向 Node.js、Python、Rust 与 Go 的 SDK                  | [sdk/README.md](sdk/README.md)         |
-| `console/` | 开发者控制台（React + Rust）                        | [console/README.md](console/README.md) |
 | `skills/`  | 供 agent 阅读的参考材料                       | [skills/README.md](skills/README.md)   |
 | `website/` | iii 官网                                             | [website/](website/)                   |
 | `docs/`    | 文档站点（Mintlify/MDX）                       | [docs/README.md](docs/README.md)       |
@@ -158,7 +163,6 @@ npx skills add iii-hq/workers --all         # 所有 worker skill
 
 - [文档](https://iii.dev/docs)
 - [CLI 与引擎](https://github.com/iii-hq/iii)
-- [Console](console/)
 - [示例](https://github.com/iii-hq/iii-examples)
 - [贡献指南](CONTRIBUTING.md)
 
@@ -182,7 +186,6 @@ iii 按如下方式授权：
 | ---------- | ------------------------------------- |
 | `engine/`  | [Elastic License 2.0](engine/LICENSE) |
 | `sdk/`     | [Apache License 2.0](sdk/LICENSE)     |
-| `console/` | [Apache License 2.0](console/LICENSE) |
 | `docs/`    | [Apache License 2.0](docs/LICENSE)    |
 | `website/` | [Apache License 2.0](docs/LICENSE) |
 
