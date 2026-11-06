@@ -41,10 +41,25 @@ type: "reference"
     `iii.observe({ function_id: "fn::id" }, target)`. Go adds `client.ObserveFunction`.
   - An observer's `capture` alone decides when it fires and what its target receives: `input` and
     `output` fire on success, `error` fires on error, and `caller` and `metadata` only add fields.
-    The default, `input`, `output`, `caller`, `metadata`, fires on success only, so errors are not
-    observed unless `capture` includes `error`. `capture: []` fires on success with the top-level
-    fields only. Any other `capture` without `input`, `output`, or `error` is refused with
-    `INVALID_ARGS`, and so is a source that sends `on` or `deliver`.
+    The default, `input`, `output`, `caller`, fires on success only, so errors are not observed
+    unless `capture` includes `error`. `capture: []` fires on success with the top-level fields
+    only. Any other `capture` without `input`, `output`, or `error` is refused with `INVALID_ARGS`.
+  - `metadata` is opt-in: the default `capture` leaves the call's metadata out of the payload. This
+    reverts earlier 0.26 release candidates of this change, which added `metadata` to the default.
+    Route on call metadata in `onObservationMatch` or `onObservationDeliver`, which receive it
+    whatever the observers capture; a filter can read `metadata.*` without capturing it.
+  - To observe failed calls only and keep their input, capture `["input", "error"]` and filter on
+    `{ "error": { "$exists": true } }`. The filter runs in the hosting worker's SDK, or in the
+    engine for the calls it routes, so successful calls never reach the observing worker.
+  - `on` and `deliver` in an observer's source are deprecated, not refused. The engine translates
+    them to their exact 0.25 behavior, including `deliver: "output"` (the bare output, `null` after
+    a failure), and logs one `warn` per registration naming the `capture` to use instead. An
+    observer from a worker without the `observe.capture` feature (a 0.25 SDK or a 0.26 release
+    candidate SDK) always gets the 0.25 semantics. Only invalid values are refused, with
+    `INVALID_ARGS`. Support will be removed in a future release.
+  - The `Observed` payload omits a field the call does not have instead of sending `null`: on 0.25,
+    an observer that captured `output` got `"output": null` after a successful call that reported
+    no output.
 
   See [Observable functions](/next/creating-workers/observable-functions) and
   [Observers](/next/using-iii/observers).
@@ -71,6 +86,22 @@ type: "reference"
     delivers its calls: it evaluates observers' filters once per call, and the matches of a routed
     call ride its `invocationresult` (`observed`), so an observed routed call costs no extra frame.
     An event source whose handler returns its input sends each event once (`output_is_input`).
+  - The new `observe.capture` feature, which the 0.26 engine and SDKs declare, means a host reads
+    the outcomes that fire each observer from `fires_on` (`success`, `error`, or both) in its
+    observer views. Hosts without it, 0.25 SDKs and 0.26 release candidate SDKs, also receive the
+    legacy `on`, so their error observers see failures. `engine::observers::list` reports `capture`
+    and `fires_on`; its numeric `fires` is still the number of activations.
+  - A 0.26 SDK connected to an engine without `observe.capture` (0.25, or a 0.26 release
+    candidate) sends each observer with the legacy `on` its `capture` implies, reads the outcomes
+    from `on`, and logs once that this is deprecated. Upgrade the engine.
+  - The engine's own observers that hand their target the bare input (the configuration and stream
+    bridges, telemetry, observability) capture `input` only, and announce `["input"]` to hosts.
+  - Call metadata is shared between the observers that capture it instead of copied per call and
+    per activation.
+  - **Breaking for Rust code that embeds the engine library:** `FunctionHandler::handle_function`,
+    the `HandlerFn` type, `Function::call_handler`, and `Message::InvokeFunction` take the call's
+    metadata as `Option<Arc<serde_json::Value>>` instead of `Option<Value>`. Wrap a value with
+    `Arc::new`, and read it with `as_deref()`.
   - The new engine-hosted source `engine::on-observers-changed` is called once per observer state
     change. Engine-hosted sources are private functions whose handler returns the event, so their
     `input` and `output` are both the event. `iii-stream` hosts `stream::on-changed`,

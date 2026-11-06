@@ -98,11 +98,13 @@ Observers, host delivery, and local dispatch are negotiated per connection, so S
 different releases work together.
 
 - **Engine to worker.** `WorkerRegistered` carries `features`. This engine sends
-  `["observe.v1", "observe.v2", "local-dispatch.v1"]`, in that order. A 0.25 engine sends
-  `["observe.v1", "local-dispatch.v1"]`; engines before 0.25 omit the field.
+  `["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1"]`, in that order. A 0.26
+  release candidate sends `["observe.v1", "observe.v2", "local-dispatch.v1"]`, a 0.25 engine sends
+  `["observe.v1", "local-dispatch.v1"]`, and engines before 0.25 omit the field.
 - **Worker to engine.** The worker lists the features it supports in the `features` array of its
-  `engine::workers::register` payload. Every 0.26 SDK declares `observe.v1`, `observe.v2`, and
-  `local-dispatch.v1`. The Node, Python, Rust, and Go SDKs also declare `large-messages.v1`, which
+  `engine::workers::register` payload. Every 0.26 SDK declares `observe.v1`, `observe.v2`,
+  `observe.capture`, and `local-dispatch.v1` (a 0.26 release candidate SDK declares no
+  `observe.capture`). The Node, Python, Rust, and Go SDKs also declare `large-messages.v1`, which
   the engine never advertises (see the rules below). A pre-0.25 SDK sends none.
 
 ```json
@@ -110,7 +112,7 @@ different releases work together.
   "type": "workerregistered",
   "worker_id": "7c1e0b52-93d4-4f0e-8a3b-6d2f1c9e4a70",
   "reattach_token": "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f",
-  "features": ["observe.v1", "observe.v2", "local-dispatch.v1"]
+  "features": ["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1"]
 }
 ```
 
@@ -125,7 +127,7 @@ different releases work together.
     "os": "linux 6.8.0",
     "pid": 4242,
     "namespace": "default",
-    "features": ["observe.v1", "observe.v2", "local-dispatch.v1", "large-messages.v1"]
+    "features": ["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1", "large-messages.v1"]
   },
   "action": { "type": "void" }
 }
@@ -137,6 +139,7 @@ What each feature turns on:
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `observe.v1`        | The observer messages: `Observe` and its replies, `FunctionRegistered`, `ObserverAdded`, `ObserverRemoved`, `ObserverAck`, `InvocationsObserved`, and the `caller`, `observe_depth`, and `activation` fields.      |
 | `observe.v2`        | Includes `observe.v1`. The host runs its functions' observation match and deliver hooks for every call ([Who delivers](#who-delivers)), and `RegisterFunction` carries `args_format`, `private`, and `observable`. |
+| `observe.capture`   | `capture` decides the outcomes that fire an observer. A host reads them from `fires_on` in the observer views it receives and never derives them from `capture` or `on`; an observing worker gets the capture model for its `Observe`. A connection without it gets the deprecated legacy `on` semantics ([Legacy `on` and `deliver`](#legacy-on-and-deliver)). |
 | `local-dispatch.v1` | The SDK may run calls to its own functions in-process once `FunctionRegistered` confirms it.                                                                                                                       |
 | `large-messages.v1` | Declared by a worker only: it accepts JSON messages up to 64 MiB.                                                                                                                                                  |
 
@@ -170,6 +173,24 @@ Rules:
   and `observe` work: the SDK reports matches of local calls only, sends no `matched` and no
   `delivered`, and sends `output` where it would set `output_is_input`, and the engine evaluates
   every active observer of a routed call.
+- `observe.capture` is negotiated on its own, not implied by `observe.v2`. The engine sends every
+  observer view (`FunctionRegistered`, `ObserverAdded`) with `fires_on`. To a host that did not
+  declare `observe.capture` (a 0.25 SDK, or a 0.26 release candidate SDK that declares
+  `observe.v2`), it also sends the legacy `on` those outcomes imply, which is how such a host
+  decides the outcomes. The engine reads each host's features once per `FunctionRegistered`, not
+  once per observer.
+- An `Observe` from a connection that did not declare `observe.capture` gets the 0.25 semantics,
+  whether or not it carries `on` or `deliver` (see
+  [Legacy `on` and `deliver`](#legacy-on-and-deliver)).
+- Against an engine that did not advertise `observe.capture` (0.25, or a 0.26 release candidate), a
+  0.26 SDK sends each `Observe` with the legacy `on` its `capture` implies (`error` for a capture
+  that fires on errors only, `complete` for one that fires on both, none for successes), on the
+  first send and on every replay, and never sends `on` to an engine that advertised
+  `observe.capture`. It reads observer views without `fires_on` the 0.25 way: the outcomes come
+  from `on` (absent means success), not from `capture`. It logs a deprecation warning once per
+  client: the connected engine does not support `observe.capture`, legacy `on` semantics are
+  deprecated and will be removed in a future version, and the engine must be upgraded. Support for
+  engines without `observe.capture` will be removed in a future release.
 - If the namespace grace timer drains before `engine::workers::register` arrives, the connection is
   treated as legacy until it does; the engine then sends `FunctionRegistered` for the functions the
   connection already registered.
@@ -721,7 +742,7 @@ function runs, the target runs. The **observing worker** is the connection that 
 - **Enums are lowercase strings.** `capture[]`: `input | output | error | caller | metadata`. `state`:
   `pending | active | suspended | error | disposed`. `status`: `success | error`. A decoder keeps a
   value it does not know instead of failing the frame.
-- **Defaults.** Absent `capture` is `["input", "output", "caller", "metadata"]`, and absent
+- **Defaults.** Absent `capture` is `["input", "output", "caller"]`, and absent
   `observe_depth` is `0`. A field at its default is left
   out when sending: `observe_depth: 0`, `private: false` and `observable: true` on
   `RegisterFunction`, `observed: []` on `InvocationResult`, and `output_is_input: false` on
@@ -730,7 +751,13 @@ function runs, the target runs. The **observing worker** is the connection that 
   error; `caller` and `metadata` only add to the payload. A non-empty `capture` that names none of
   `input`, `output`, and `error` gets `ObserveResult` with error `INVALID_ARGS`. `capture: []` fires
   on success, and the target then gets ids, status, and timings only. A host applies the same rule
-  to the calls it evaluates.
+  to the calls it evaluates, reading the outcomes from the view's `fires_on`. These rules apply to
+  an `Observe` from a connection that declared `observe.capture` and that carries neither `on` nor
+  `deliver`; every other `Observe` follows [Legacy `on` and `deliver`](#legacy-on-and-deliver).
+- **Engine-owned observers capture `input` only.** An observer the engine creates for itself and
+  that hands its target the bare input (the configuration and stream bridges, telemetry on
+  `queue::on-message`, observability on `ade::ui::asset`) keeps and announces `capture: ["input"]`,
+  so a host reports no `output`, `caller`, or `metadata` for it.
 - **Unknown values are refused, never defaulted.** An `Observe` with an unknown `capture[]` value
   gets `ObserveResult` with error `UNSUPPORTED` (the message names the field). A
   `RegisterFunction` whose `args_format` is not a valid JSON Schema gets `RegistrationRejected`
@@ -751,8 +778,12 @@ function runs, the target runs. The **observing worker** is the connection that 
   form: `{}` matches every call, anything else is `{"$and": [...]}` at every level. Compile them as
   given. See [Filters](./filters).
 - **What hosts see.** A host receives an observer's `id`, `args` (`{}` when none), normalized
-  `filters`, `target` function id (its namespace is not disclosed), and `capture`. It never
-  receives the observer's metadata, its policy, or the observing worker.
+  `filters`, `target` function id (its namespace is not disclosed), `capture`, and `fires_on`: the
+  outcomes that fire the observer, `["success"]`, `["error"]`, or `["success", "error"]`. A host
+  without `observe.capture` also receives `on` (`"error"` or `"complete"`; absent means success).
+  It never receives the observer's metadata, its policy, or the observing worker. `capture` alone
+  does not tell the outcomes: a translated legacy observer can capture `["error"]` and fire on
+  success.
 
 ### Who delivers
 
@@ -809,7 +840,9 @@ idempotently (same `id`, same spec).
 | `source.namespace`   | no       | Resolves like `InvokeFunction.namespace`; absent means `default`. SDKs fill in the worker's namespace.                     |
 | `source.args`        | no       | For the function's worker, which reads them in its hooks; validated against the function's `args_format` (`INVALID_ARGS`). |
 | `source.filters`     | no       | Which calls reach the target. Absent, `null`, or `{}` matches every call.                                                  |
-| `source.capture`     | no       | What the payload carries, and with it which outcomes fire the target (see [Wire rules](#wire-rules)). Default `["input", "output", "caller", "metadata"]`. |
+| `source.capture`     | no       | What the payload carries, and with it which outcomes fire the target (see [Wire rules](#wire-rules)). Default `["input", "output", "caller"]`. |
+| `source.on`          | no       | Deprecated. `success`, `error`, or `complete`: which outcomes fire the target. Translated with a warning ([Legacy `on` and `deliver`](#legacy-on-and-deliver)). |
+| `source.deliver`     | no       | Deprecated. `envelope`, `input`, or `output`: what the target receives. Translated with a warning ([Legacy `on` and `deliver`](#legacy-on-and-deliver)). |
 | `target.function_id` | yes      | The function each activation invokes. Until it is registered the observer stays `pending`.                                 |
 | `target.namespace`   | no       | Absent means `default`. SDKs fill in the worker's namespace.                                                               |
 | `metadata`           | no       | The metadata sidecar of every activation. Never shown to the host.                                                         |
@@ -859,6 +892,37 @@ The takeover needs a worker name that stays the same across restarts: `III_WORKE
 supervisor sets, or the SDK's worker name option. The SDKs default the name to `hostname:pid` (the
 browser SDK to a random name), which changes when the process restarts, so a restarted worker under
 the default name gets `OBSERVER_ID_CONFLICT` until the grace period ends.
+
+### Legacy `on` and `deliver`
+
+0.25 SDKs and 0.26 release candidate SDKs can send `source.on` and `source.deliver`. Both are
+deprecated, and support will be removed in a future release. The engine does not refuse them: it
+translates them when it registers the observer, on the first `Observe` and on every replay, to the
+0.25 behavior, and logs one `warn` per registration that names the observer id, the fields, and the
+`source.capture` to use instead.
+
+- **Outcomes come from `on` alone.** Absent or `success` fires the target after a successful call,
+  `error` after a failed one, and `complete` after both. `capture` does not change the outcomes,
+  and the rule that a `capture` must name `input`, `output`, or `error` does not apply:
+  `capture: ["caller"]` is accepted and fires on success.
+- **The payload carries the `capture` list exactly.** An absent `capture` is
+  `["input", "output", "caller"]`.
+- **`deliver` picks the payload.** Absent or `envelope`: the `Observed` payload. `input`: the
+  call's input alone, `null` when the call has none. `output`: the call's output alone, `null` when
+  it has none, so the target gets `null` after every failed call.
+- **Invalid values are refused.** An `on` or `deliver` value the engine does not know, or one that
+  is not a string, gets `ObserveResult` with error `INVALID_ARGS`. `null` counts as absent.
+- **Replays are stable.** The translation is part of the observer's spec: a replay with the same
+  fields is idempotent, and one that changes them fails with `OBSERVER_ID_CONFLICT`.
+- **Connections without `observe.capture`.** An `Observe` from a connection that did not declare
+  `observe.capture` (a 0.25 SDK, or a 0.26 release candidate SDK) gets these semantics even when it
+  carries neither `on` nor `deliver`. Its outcomes come from `on`, so `capture: ["error"]` without
+  `on` fires on success, as it did on 0.25.
+
+The translated payload differs from 0.25 in one way: the `Observed` payload omits a field it does
+not have instead of sending it as `null`. On 0.25, an observer that captured `output` got
+`"output": null` after a successful call that reported no output; on 0.26 that payload has no
+`output`.
 
 ### `Unobserve`
 
@@ -977,7 +1041,8 @@ function's full current observer set and whether the SDK may run the function in
       "args": { "expression": "0 0 9 * * Mon-Fri" },
       "filters": { "$and": [{ "input.scheduled_time": { "$gte": "2026-11-01T00:00:00Z" } }] },
       "target": "local::cron-handler",
-      "capture": ["input"]
+      "capture": ["input"],
+      "fires_on": ["success"]
     }
   ]
 }
@@ -1018,12 +1083,17 @@ this connection hosts: a new observer, or one whose observing worker reattached 
     "args": { "expression": "0 0 9 * * Mon-Fri" },
     "filters": { "$and": [{ "caller.worker_name": { "$ne": "replayer" } }] },
     "target": "billing::send-reminders",
-    "capture": ["input"]
+    "capture": ["input"],
+    "fires_on": ["success"]
   }
 }
 ```
 
-The engine always sends `capture` resolved: an observer that named none gets the default.
+The engine always sends `capture` resolved: an observer that named none gets the default. Every view
+carries `fires_on`; a view sent to a host without `observe.capture` also carries the legacy `on`
+when the observer fires on errors (`"error"`) or on both outcomes (`"complete"`). A view from an
+engine without `observe.capture` has no `fires_on`, and a 0.26 SDK then reads the outcomes from
+`on`.
 
 ### `ObserverRemoved`
 
@@ -1318,7 +1388,7 @@ lifecycle. Defined in
 | `engine::workers::list`      | List every connected worker with metrics.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `engine::workers::info`      | Inspect one connected worker's full surface: the `functions` it hosts and the `observers` it created. Takes `name` plus an optional `namespace`.                                                                                                                                                                                                                                                                                                                                                                              |
 | `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, isolation, optional `namespace`, optional `description`, and `features`).                                                                                                                                                                                                                                                                                                                                                                                   |
-| `engine::observers::list`    | List observers. Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `args`, normalized `filters`, `target`, `capture`, observing worker, `state`, `reason`, `fires`, drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), and `created_at_ms`. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
+| `engine::observers::list`    | List observers. Optional filters: `function_id`, `namespace`, and `worker` (the observing worker's name or connection id). Returns `{ observers: [...] }`: id, function, `args`, normalized `filters`, `target`, `capture`, `fires_on` (the outcomes that fire it), observing worker, `state`, `reason`, `fires` (the number of activations), drops and activation failures by reason, the policy (`max_fires`, `expires_in_ms`, `max_in_flight`), and `created_at_ms`. Never the observer's metadata. Under RBAC, only observers of functions the caller may invoke are listed. |
 | `engine::observers::get`     | Inspect one observer by `id`, in the same shape. An observer the caller may not see fails with `OBSERVER_NOT_FOUND`.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `engine::observers::dispose` | Dispose an observer by `id`; returns `{ disposed: true }`. Only the observing worker or an unrestricted caller (an in-process engine call, or a connection without an `rbac` section) may dispose it; anyone else gets `FORBIDDEN`.                                                                                                                                                                                                                                                                                           |
 
