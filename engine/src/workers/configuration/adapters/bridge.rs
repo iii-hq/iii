@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -312,7 +312,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                 let sender_lookup = sender_lookup.clone();
                 let raw_reader = raw_reader.clone();
                 async move {
-                    let event: ConfigurationEventData = serde_json::from_value(payload)
+                    let event = decode_relayed(payload)
                         .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
                         // Events carry applied values. Re-read raw before updating
@@ -344,12 +344,12 @@ impl ConfigurationAdapter for BridgeAdapter {
                                 }
                             };
                         let entry = ConfigurationEntry {
-                            id: event.id.clone(),
-                            name: event.name.clone(),
-                            description: event.description.clone(),
-                            schema: event.schema.clone(),
+                            id: event.id,
+                            name: event.name,
+                            description: event.description,
+                            schema: event.schema,
                             value: raw_value,
-                            metadata: event.metadata.clone(),
+                            metadata: event.metadata,
                         };
                         let change = match event.event_type {
                             ConfigurationEventType::Registered => ExternalChange::Registered(entry),
@@ -366,7 +366,7 @@ impl ConfigurationAdapter for BridgeAdapter {
         let observer = self.bridge.observe(
             Source::function(CONFIGURATION_ON_UPDATED)
                 .namespace(DEFAULT_NAMESPACE)
-                .deliver(Deliver::Input),
+                .capture([Capture::Input]),
             RELAY_FUNCTION_ID,
         );
         *self.relay_observer.lock().expect("relay observer lock") = Some(observer);
@@ -392,6 +392,17 @@ impl ConfigurationAdapter for BridgeAdapter {
         self.bridge.shutdown_async().await;
         Ok(())
     }
+}
+
+/// The `configuration::on-updated` event an activation of the relay carries:
+/// the payload's `input`, taken out of the payload the relay owns rather than
+/// copied.
+fn decode_relayed(mut payload: Value) -> serde_json::Result<ConfigurationEventData> {
+    let input = payload
+        .get_mut("input")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(input)
 }
 
 /// Build the remote `configuration::ensure` input from a delegated candidate,
@@ -429,6 +440,44 @@ crate::register_adapter!(<ConfigurationAdapterRegistration> name: "bridge", make
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The relay decodes the `configuration::on-updated` event out of the
+    /// envelope it receives (the input is taken, not cloned).
+    #[test]
+    fn the_relay_decodes_the_configuration_event_from_the_envelope() {
+        let payload = json!({
+            "observer_id": "o",
+            "activation_id": "a",
+            "function_id": CONFIGURATION_ON_UPDATED,
+            "invocation_id": "i",
+            "status": "success",
+            "input": {
+                "type": "configuration",
+                "event_type": "configuration:updated",
+                "id": "iii-stream",
+                "name": "Stream",
+                "description": "desc",
+                "schema": { "type": "object" },
+                "metadata": { "owner": "team" },
+            },
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        let event = decode_relayed(payload).expect("decoded");
+        assert_eq!(event.event_type, ConfigurationEventType::Updated);
+        assert_eq!(event.id, "iii-stream");
+        assert_eq!(event.name, "Stream");
+        assert_eq!(event.description, "desc");
+        assert_eq!(event.schema, json!({ "type": "object" }));
+        assert_eq!(event.metadata, Some(json!({ "owner": "team" })));
+    }
+
+    /// An envelope without the event is an error, as before.
+    #[test]
+    fn the_relay_refuses_an_envelope_without_an_event() {
+        assert!(decode_relayed(json!({ "observer_id": "o" })).is_err());
+        assert!(decode_relayed(json!({ "input": { "id": "x" } })).is_err());
+    }
 
     #[test]
     /// Preserve the candidate and metadata without substituting a cached local value.

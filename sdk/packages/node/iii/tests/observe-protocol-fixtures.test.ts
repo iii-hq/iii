@@ -5,7 +5,7 @@ import type { Observer } from '../src/observe-types'
 import type { IIIClient } from '../src/types'
 
 /**
- * The observe wire contract (`sdk/fixtures/protocol/observe`, CONTRACT D5):
+ * The observe wire contract (`sdk/fixtures/protocol/observe`):
  * every worker → engine message the SDK builds equals its fixture as a JSON
  * value given the same inputs, and every engine → worker message decodes
  * without loss and encodes back to the same value.
@@ -93,6 +93,7 @@ const HANDLED = {
     'workerregistered.json',
     'workerregistered-v1.json',
     'workerregistered-legacy.json',
+    'workerregistered-capture.json',
     'registrationrejected-unsupported.json',
     'registrationrejected-invalid-args-format.json',
     'invocationresult.json',
@@ -125,8 +126,6 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
           args: { expression: '0 0 9 * * Mon-Fri' },
           filters: { 'input.scheduled_time': { $gte: '2026-11-01T00:00:00Z' } },
           capture: ['input'],
-          on: 'success',
-          deliver: 'envelope',
         },
         target: { function_id: 'local::cron-handler', namespace: 'default' },
         options: {
@@ -153,8 +152,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         source: {
           function_id: 'payments::charge',
           filters: { 'input.amount': { $gte: 500 } },
-          capture: ['input', 'error', 'caller'],
-          on: 'error',
+          capture: ['error', 'caller'],
         },
         target: 'alerts::payment-failed',
         options: {
@@ -331,14 +329,16 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
         fake.observerInfo('8b2d4f6a-0c1e-4a3b-9d5f-7a9c1e3b5d70', 'alerts::big-order', {
           filters: { 'input.qty': { $gte: 1 } },
         }),
-        fake.observerInfo('9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81', 'alerts::failed-order', { on: 'error' }),
+        fake.observerInfo('9c3e5a7b-1d2f-4b4c-8e6a-8b0d2f4a6c81', 'alerts::failed-order', {
+          capture: ['error'],
+        }),
       ],
       (sdk) => sdk.registerFunction('orders::create', () => expected.result),
     )
     expect(frames).toEqual([expected])
   })
 
-  it('invocationresult-matched.json (the match hook ran: the observers it matched, before on and filters)', async () => {
+  it('invocationresult-matched.json (the match hook ran: the observers it matched, before capture and filters)', async () => {
     const expected = fixture('invocationresult-matched.json')
     const [first, second] = expected.matched as string[]
     const frames = await routedAnswer(
@@ -346,11 +346,13 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
       'orders::create',
       [
         fake.observerInfo(first, 'alerts::big-order', { args: { team: 'sales' } }),
-        fake.observerInfo('d0e1f2a3-b4c5-4d6e-8f70-81a2b3c4d5e6', 'audit::order', { args: { team: 'audit' } }),
-        // matched by the hook; its `on` and filters are the engine's to evaluate
+        fake.observerInfo('d0e1f2a3-b4c5-4d6e-8f70-81a2b3c4d5e6', 'audit::order', {
+          args: { team: 'audit' },
+        }),
+        // matched by the hook; its capture and filters are the engine's to evaluate
         fake.observerInfo(second, 'alerts::failed-order', {
           args: { team: 'sales' },
-          on: 'error',
+          capture: ['error'],
           filters: { 'input.qty': { $gte: 100 } },
         }),
       ],
@@ -527,11 +529,17 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(frame.namespace).toBe('default')
     const { namespace: _, ...rest } = frame
     const want = expected.data as Json
+    // `features` is checked on its own: the fixture is shared by every SDK and
+    // gains `observe.capture` as each one announces it (decision 61).
+    const features = data.features
+    delete data.features
+    const { features: wantFeatures, ...wantRest } = want
     expect(asJson({ ...rest, data })).toEqual({
       ...expected,
-      data: { ...want, version: data.version, os: data.os, pid: data.pid },
+      data: { ...wantRest, version: data.version, os: data.os, pid: data.pid },
     })
-    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(expect.arrayContaining(wantFeatures as string[]))
   })
 })
 
@@ -540,6 +548,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
     'workerregistered.json': wire.decodeWorkerRegistered,
     'workerregistered-v1.json': wire.decodeWorkerRegistered,
     'workerregistered-legacy.json': wire.decodeWorkerRegistered,
+    'workerregistered-capture.json': wire.decodeWorkerRegistered,
     'registrationrejected-unsupported.json': wire.decodeRegistrationRejected,
     'registrationrejected-invalid-args-format.json': wire.decodeRegistrationRejected,
     'invocationresult.json': (v) => wire.buildInvocationResult(wire.decodeInvocationResult(v) as never),
@@ -632,7 +641,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
       filters: null,
       target: 't',
       capture: ['input', 'telemetry'],
-      on: 'start',
+      on: 'start', // the legacy field, read only without `fires_on` (decision 61): kept, an unknown value included
     })
     // `filters: null` is kept as sent: compiling it fails (INVALID_FILTER), it is never read as match-all
     expect(info).toEqual({
@@ -643,11 +652,34 @@ describe('engine → worker: the SDK decodes without loss', () => {
       capture: ['input', 'telemetry'],
       on: 'start',
     })
-    expect(wire.decodeObserverInfo({ id: 'o', target: 't' })).toMatchObject({
+    const sparse = wire.decodeObserverInfo({ id: 'o', target: 't' })
+    expect(sparse).toMatchObject({
       filters: {},
       capture: ['input', 'output', 'caller'],
-      on: 'success',
     })
+    expect(sparse).not.toHaveProperty('on')
+    expect(sparse).not.toHaveProperty('fires_on')
+    // `fires_on` (decision 61) is kept with its unknown values; `fires` (the activation count) is never read
+    const announced = wire.decodeObserverInfo({ id: 'o', target: 't', fires_on: ['error', 'timeout', 3], fires: 2 })
+    expect(announced.fires_on).toEqual(['error', 'timeout'])
+    expect(announced).not.toHaveProperty('fires')
+    expect(wire.observerFires(announced)).toEqual({ onSuccess: false, onError: true, legacy: false })
+    expect(wire.observerFires(wire.decodeObserverInfo({ id: 'o', target: 't', fires: ['error'] }))).toEqual({
+      onSuccess: true,
+      onError: false,
+      legacy: true,
+    })
+    expect(
+      [undefined, 'success', 'error', 'complete'].map((on) => {
+        const { onSuccess, onError } = wire.observerFires(wire.decodeObserverInfo({ id: 'o', target: 't', on }))
+        return [onSuccess, onError]
+      }),
+    ).toEqual([
+      [true, false],
+      [true, false],
+      [false, true],
+      [true, true],
+    ])
     const invoke = wire.decodeInvokeFunction({
       function_id: 'f',
       data: 1,

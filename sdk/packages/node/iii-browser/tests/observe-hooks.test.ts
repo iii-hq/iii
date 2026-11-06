@@ -79,8 +79,8 @@ describe('onObserverAdded / onObserverRemoved', () => {
       filters: { $and: [{ 'input.n': { $gt: 1 } }] },
       target: 'local::cron-handler',
       capture: ['input'],
-      on: 'success',
     })
+    expect(added[0]).not.toHaveProperty('on')
     expect(added[0]).not.toHaveProperty('deliver')
     expect(acks(socket)).toEqual([
       { type: 'observerack', function_id: 'cron::on-tick', namespace: 'default', id: 'o-1', revision: 2 },

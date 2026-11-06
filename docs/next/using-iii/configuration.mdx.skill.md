@@ -227,7 +227,7 @@ with `NOT_OBSERVABLE`.
 worker.observe(
   {
     function_id: "configuration::on-updated",
-    deliver: "input",
+    capture: ["input"], // the change is the payload's `input`
     filters: {
       "input.id": { $eq: "my-worker" },
       "input.event_type": { $eq: "configuration:updated" },

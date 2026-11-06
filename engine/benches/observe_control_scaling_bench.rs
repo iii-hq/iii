@@ -19,7 +19,7 @@ use std::{
 use iii::engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest};
 use iii::function::FunctionResult;
 use iii::observer::{ObserveRequest, ObserversConfig};
-use iii::protocol::{Deliver, ObserveSource, ObserveTarget, ObserverState};
+use iii::protocol::{ObserveSource, ObserveTarget, ObserverState};
 use iii::worker_connections::WorkerConnection;
 use iii::workers::observability::metrics::ensure_default_meter;
 use tokio::sync::mpsc;
@@ -57,7 +57,8 @@ fn request(i: usize, distinct: bool) -> ObserveRequest {
             filters: None,
             capture: None,
             on: None,
-            deliver: Some(Deliver::Input),
+            deliver: None,
+            raw_input: true,
         },
         target: ObserveTarget {
             function_id: SINK.to_string(),

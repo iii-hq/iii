@@ -262,7 +262,7 @@ get the current state of the registry. Each returns a list:
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
-      import { registerWorker } from "iii-sdk";
+      import { type Observed, registerWorker } from "iii-sdk";
 
       const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134");
 
@@ -419,7 +419,7 @@ cancellation. Retrying will fail until the worker that owns this function reconn
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
-      import { registerWorker } from "iii-sdk";
+      import { type Observed, registerWorker } from "iii-sdk";
       import { InvocationError } from "iii-sdk/errors";
 
       type Worker = ReturnType<typeof registerWorker>;
@@ -539,40 +539,40 @@ topology changes as they happen, for example to continue work when a worker come
 `event` on `engine::on-workers-changed` is `worker_connected`, `worker_disconnected`, or
 `worker_metadata_updated`.
 
-With `deliver: "input"`, the target receives the event itself. See
+With `capture: ["input"]`, the target receives the event as the payload's `input`. See
 [Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
 
 <Accordion title="React to registry changes">
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
-      import { registerWorker } from "iii-sdk";
+      import { type Observed, registerWorker } from "iii-sdk";
 
       const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134");
 
       worker.registerFunction(
         "math::refresh-workers",
-        async (data: { event: string; worker_id: string }) => {
-          if (data.event === "worker_connected") {
+        async ({ input }: Observed<{ event: string; worker_id: string }>) => {
+          if (input?.event === "worker_connected") {
             // The worker joined the registry; its functions are callable now.
           }
         },
       );
       worker.observe(
-        { function_id: "engine::on-workers-changed", deliver: "input" },
+        { function_id: "engine::on-workers-changed", capture: ["input"] },
         "math::refresh-workers",
       );
 
       worker.registerFunction(
         "math::refresh-functions",
-        async (data: { event: string; functions: { function_id: string }[] }) => {
+        async ({ input }: Observed<{ event: string; functions: { function_id: string }[] }>) => {
           // `functions` is the full snapshot after the change.
-          const ids = data.functions.map((f) => f.function_id);
+          const ids = (input?.functions ?? []).map((f) => f.function_id);
           console.log(ids);
         },
       );
       worker.observe(
-        { function_id: "engine::on-functions-changed", deliver: "input" },
+        { function_id: "engine::on-functions-changed", capture: ["input"] },
         "math::refresh-functions",
       );
       ```
@@ -586,35 +586,35 @@ With `deliver: "input"`, the target receives the event itself. See
       worker = register_worker(os.environ.get("III_URL", "ws://127.0.0.1:49134"))
 
 
-      async def refresh_workers(data: dict) -> None:
-          if data["event"] == "worker_connected":
+      async def refresh_workers(observed: dict) -> None:
+          if observed["input"]["event"] == "worker_connected":
               # The worker joined the registry; its functions are callable now.
               pass
 
 
       worker.register_function("math::refresh-workers", refresh_workers)
       worker.observe(
-          {"function_id": "engine::on-workers-changed", "deliver": "input"},
+          {"function_id": "engine::on-workers-changed", "capture": ["input"]},
           "math::refresh-workers",
       )
 
 
-      async def refresh_functions(data: dict) -> None:
+      async def refresh_functions(observed: dict) -> None:
           # `functions` is the full snapshot after the change.
-          ids = [f["function_id"] for f in data.get("functions", [])]
+          ids = [f["function_id"] for f in observed["input"].get("functions", [])]
           print(ids)
 
 
       worker.register_function("math::refresh-functions", refresh_functions)
       worker.observe(
-          {"function_id": "engine::on-functions-changed", "deliver": "input"},
+          {"function_id": "engine::on-functions-changed", "capture": ["input"]},
           "math::refresh-functions",
       )
       ```
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::{Deliver, IIIClient, RegisterFunction, Source};
+      use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
       use schemars::JsonSchema;
       use serde::Deserialize;
       use serde_json::Value;
@@ -634,28 +634,29 @@ With `deliver: "input"`, the target receives the event itself. See
       async fn wire(worker: &IIIClient) -> Result<(), iii_sdk::Error> {
           worker.register_function(
               "math::refresh-workers",
-              RegisterFunction::new_async(|input: WorkersChanged| async move {
-                  if input.event == "worker_connected" {
+              RegisterFunction::new_async(|observed: Observed<WorkersChanged>| async move {
+                  if observed.input.is_some_and(|input| input.event == "worker_connected") {
                       // The worker joined the registry; its functions are callable now.
                   }
                   Ok::<_, iii_sdk::Error>(())
               }),
           );
           worker.observe(
-              Source::function("engine::on-workers-changed").deliver(Deliver::Input),
+              Source::function("engine::on-workers-changed").capture([Capture::Input]),
               "math::refresh-workers",
           );
 
           worker.register_function(
               "math::refresh-functions",
-              RegisterFunction::new_async(|input: FunctionsChanged| async move {
+              RegisterFunction::new_async(|observed: Observed<FunctionsChanged>| async move {
                   // `functions` is the full snapshot after the change.
-                  println!("{} functions", input.functions.len());
+                  let count = observed.input.map_or(0, |input| input.functions.len());
+                  println!("{count} functions");
                   Ok::<_, iii_sdk::Error>(())
               }),
           );
           worker.observe(
-              Source::function("engine::on-functions-changed").deliver(Deliver::Input),
+              Source::function("engine::on-functions-changed").capture([Capture::Input]),
               "math::refresh-functions",
           );
 
@@ -680,13 +681,16 @@ With `deliver: "input"`, the target receives the event itself. See
           client := iii.RegisterWorker(os.Getenv("III_URL"))
 
           if _, err := client.RegisterFunction("math::refresh-workers", func(ctx context.Context, data json.RawMessage) (any, error) {
-              var event struct {
-                  Event    string `json:"event"`
-                  WorkerID string `json:"worker_id"`
+              var observed struct {
+                  Input struct {
+                      Event    string `json:"event"`
+                      WorkerID string `json:"worker_id"`
+                  } `json:"input"`
               }
-              if err := json.Unmarshal(data, &event); err != nil {
+              if err := json.Unmarshal(data, &observed); err != nil {
                   return nil, err
               }
+              event := observed.Input
               if event.Event == "worker_connected" {
                   // The worker joined the registry; its functions are callable now.
                   log.Printf("worker %s connected", event.WorkerID)
@@ -697,21 +701,24 @@ With `deliver: "input"`, the target receives the event itself. See
           }
           if _, err := client.Observe(iii.Source{
               FunctionID: "engine::on-workers-changed",
-              Deliver:    iii.DeliverInput,
+              Capture:    []iii.Capture{iii.CaptureInput},
           }, "math::refresh-workers"); err != nil {
               log.Fatal(err)
           }
 
           if _, err := client.RegisterFunction("math::refresh-functions", func(ctx context.Context, data json.RawMessage) (any, error) {
-              var event struct {
-                  Event     string `json:"event"`
-                  Functions []struct {
-                      FunctionID string `json:"function_id"`
-                  } `json:"functions"`
+              var observed struct {
+                  Input struct {
+                      Event     string `json:"event"`
+                      Functions []struct {
+                          FunctionID string `json:"function_id"`
+                      } `json:"functions"`
+                  } `json:"input"`
               }
-              if err := json.Unmarshal(data, &event); err != nil {
+              if err := json.Unmarshal(data, &observed); err != nil {
                   return nil, err
               }
+              event := observed.Input
               // `functions` is the full snapshot after the change.
               ids := make([]string, 0, len(event.Functions))
               for _, f := range event.Functions {
@@ -724,7 +731,7 @@ With `deliver: "input"`, the target receives the event itself. See
           }
           if _, err := client.Observe(iii.Source{
               FunctionID: "engine::on-functions-changed",
-              Deliver:    iii.DeliverInput,
+              Capture:    []iii.Capture{iii.CaptureInput},
           }, "math::refresh-functions"); err != nil {
               log.Fatal(err)
           }

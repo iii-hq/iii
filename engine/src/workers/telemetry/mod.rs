@@ -22,8 +22,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
+use crate::observer::Deliver;
 use crate::observer::StandingObserver;
-use crate::protocol::Deliver;
 use crate::worker_connections::WorkerConnectionTelemetryMeta;
 use crate::workers::traits::Worker;
 
@@ -2090,7 +2090,7 @@ mod tests {
                 args: serde_json::json!({}),
                 filters: None,
                 target: (default, "audit::log".to_string()),
-                deliver: crate::protocol::Deliver::Input,
+                deliver: crate::observer::Deliver::Input,
                 metadata: None,
             })
             .unwrap();

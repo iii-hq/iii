@@ -42,6 +42,15 @@ pub const OBSERVE_V1: &[&str] = &["observe.v1", "local-dispatch.v1"];
 /// listing the observers it matched on each routed answer.
 pub const OBSERVE_V2: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
 
+/// What a current SDK declares: `observe.capture` too, so its observers
+/// follow the capture model (decision 60) and it reads `fires_on` (decision 61).
+pub const OBSERVE_CAPTURE: &[&str] = &[
+    "observe.v1",
+    "observe.v2",
+    "observe.capture",
+    "local-dispatch.v1",
+];
+
 type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 type Sink = Arc<tokio::sync::Mutex<SplitSink<Ws, WsMessage>>>;

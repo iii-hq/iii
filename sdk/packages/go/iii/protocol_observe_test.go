@@ -215,8 +215,6 @@ func TestObserveFixturesBuiltBySDK(t *testing.T) {
 			Args:       Args{"expression": "0 0 9 * * Mon-Fri"},
 			Filters:    Filters{"input.scheduled_time": Op{"$gte": "2026-11-01T00:00:00Z"}},
 			Capture:    []Capture{CaptureInput},
-			On:         OnSuccess,
-			Deliver:    DeliverEnvelope,
 		}, "local::cron-handler", ObserverOptions{
 			ID:              "5b0c3e1a-8f2d-4c6b-9a7e-1d2f3a4b5c6d",
 			Metadata:        json.RawMessage(`{"__binding":"weekday-digest"}`),
@@ -241,9 +239,8 @@ func TestObserveFixturesBuiltBySDK(t *testing.T) {
 	t.Run("observe-on-error.json", func(t *testing.T) {
 		h, err := c.Observe(Source{
 			FunctionID: "payments::charge",
-			On:         OnError,
 			Filters:    Filters{"input.amount": Op{"$gte": 500}},
-			Capture:    []Capture{CaptureInput, CaptureError, CaptureCaller},
+			Capture:    []Capture{CaptureError, CaptureCaller},
 		}, "alerts::payment-failed", ObserverOptions{
 			ID:          "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60",
 			Metadata:    json.RawMessage(`{"team":"payments-oncall"}`),
@@ -265,16 +262,16 @@ func TestObserveFixturesBuiltBySDK(t *testing.T) {
 			t.Errorf("capture = %s, want []", msg["source"]["capture"])
 		}
 	})
-	t.Run("deliver: input and output are sent", func(t *testing.T) {
-		for _, deliver := range []Deliver{DeliverInput, DeliverOutput} {
-			h, err := c.Observe(Source{FunctionID: "a::b", Deliver: deliver}, "c::d")
-			if err != nil {
-				t.Fatal(err)
-			}
-			var msg map[string]map[string]json.RawMessage
-			_ = json.Unmarshal(h.frame, &msg)
-			if want := `"` + string(deliver) + `"`; string(msg["source"]["deliver"]) != want {
-				t.Errorf("deliver = %s, want %s", msg["source"]["deliver"], want)
+	t.Run("neither on nor deliver is sent", func(t *testing.T) {
+		h, err := c.Observe(Source{FunctionID: "a::b", Capture: []Capture{CaptureError}}, "c::d")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg map[string]map[string]json.RawMessage
+		_ = json.Unmarshal(h.frame, &msg)
+		for _, key := range []string{"on", "deliver"} {
+			if _, ok := msg["source"][key]; ok {
+				t.Errorf("source has %q: %s", key, h.frame)
 			}
 		}
 	})
@@ -494,16 +491,13 @@ func TestObserveFixturesLenientDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := dec.FunctionRegistered.Observers[0]
-	if info.On != "someday" {
-		t.Errorf("decoded %+v", info)
-	}
 	f := newFunctionObservers(New("ws://unused.invalid"), "f", true, false)
 	obs, err := newObserver(f, info, 3)
 	if err != nil {
 		t.Fatalf("null filters compile as {}: %v", err)
 	}
-	if len(obs.Capture) != 3 || obs.On != "someday" || obs.Args == nil {
-		t.Errorf("defaults: capture %v on %q args %v", obs.Capture, obs.On, obs.Args)
+	if len(obs.Capture) != 3 || obs.Args == nil { // D1: [input output caller]
+		t.Errorf("defaults: capture %v args %v", obs.Capture, obs.Args)
 	}
 	if _, err := newObserver(f, ObserverInfo{ID: "o2", Target: "t", Filters: json.RawMessage(`[1]`)}, 3); err == nil {
 		t.Error("a present non-object filters must be INVALID_FILTER")

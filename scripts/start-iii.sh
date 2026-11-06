@@ -37,6 +37,13 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
+# The engine under test takes its identity from --config / --engine only. A
+# shell started from an iii worker inherits that worker's session (III_URL,
+# III_COMPOSE_*), which would make this engine join the caller's compose
+# daemon instead of starting its own. Unset here, for this script and the
+# engine it starts only: nothing outside it is touched.
+unset III_URL III_CONFIG_NAME III_COMPOSE_NAMESPACE III_COMPOSE_FILE III_COMPOSE_DIR
+
 if grep -Eq '^engine:[[:space:]]*' "$CONFIG"; then
   COMPOSE_FILE="$CONFIG"
 elif [[ -z "$COMPOSE_FILE" ]]; then

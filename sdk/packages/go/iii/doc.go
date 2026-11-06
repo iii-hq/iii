@@ -98,7 +98,7 @@
 // it as their caller. A function this worker registered runs in-process once the
 // engine confirmed it for local dispatch.
 //
-// Filters run where the call is. The engine evaluates the observers' on and filters for
+// Filters run where the call is. The engine evaluates the observers' capture and filters for
 // every call it routes: it holds the call's input, its output or error, its caller and
 // its metadata. The worker that hosts a function evaluates them for the calls it makes
 // to that function in-process, which the engine never sees, and in [Observer.Matches].
@@ -114,7 +114,7 @@
 // each overriding a default: [AddedHook] (accept the observer; set something up from
 // its Args, or reject it with [ObserveRejection]), [RemovedHook] (forget it; tear
 // down), [MatchHook] (every observer wants every call; say which observers want each
-// call) and [DeliverHook] (iii delivers each call to the matched observers whose on and
+// call) and [DeliverHook] (iii delivers each call to the matched observers whose capture and
 // filters match it, and the caller gets the handler's result; deliver the call yourself
 // to the matched observers and decide what the caller gets back).
 // [Client.OnObserverAdded] and [Client.OnObserverRemoved] set the first two for every

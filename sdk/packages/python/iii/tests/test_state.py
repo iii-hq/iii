@@ -314,7 +314,8 @@ async def test_reactive_state(iii_client: III):
         }
     )
 
-    async def state_updated_handler(event):
+    async def state_updated_handler(payload):
+        event = payload["input"]
         if event.get("type") == "state" and event.get("event_type") == "state:updated":
             reactive_result["data"] = event.get("new_value")
             reactive_result["called"] = True
@@ -325,7 +326,7 @@ async def test_reactive_state(iii_client: III):
         {
             "function_id": "state::on-changed",
             "filters": {"input.scope": {"$eq": SCOPE}, "input.key": {"$eq": reactive_key}},
-            "deliver": "input",
+            "capture": ["input"],
         },
         fn.id,
     )

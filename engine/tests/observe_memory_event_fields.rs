@@ -41,7 +41,7 @@ use std::{
 use iii::engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest};
 use iii::function::FunctionResult;
 use iii::observer::{ObserveRequest, ObserversConfig, events::register_event_source};
-use iii::protocol::{DEFAULT_NAMESPACE, Deliver, ObserveSource, ObserveTarget, ObserverState};
+use iii::protocol::{DEFAULT_NAMESPACE, ObserveSource, ObserveTarget, ObserverState};
 use iii::worker_connections::WorkerConnection;
 use iii::workers::observability::metrics::ensure_default_meter;
 use serde_json::{Value, json};
@@ -264,7 +264,8 @@ impl Run {
                             filters: None,
                             capture: None,
                             on: None,
-                            deliver: Some(Deliver::Envelope),
+                            deliver: None,
+                            raw_input: false,
                         },
                         target: ObserveTarget {
                             function_id: SINK.to_string(),

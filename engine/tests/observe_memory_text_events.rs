@@ -217,6 +217,7 @@ async fn run(target: Target, size: usize, filters: Option<Value>) -> PerEvent {
                     capture: None,
                     on: None,
                     deliver: None,
+                    raw_input: false,
                 },
                 target: ObserveTarget {
                     function_id: target_id.to_string(),

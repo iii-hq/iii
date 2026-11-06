@@ -11,13 +11,15 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    worker.registerFunction("reports::daily-summary", async (tick: { scheduled_time: string }) => {
-      // build the report for tick.scheduled_time
+    import type { Observed } from "iii-sdk";
+
+    worker.registerFunction("reports::daily-summary", async ({ input }: Observed<{ scheduled_time: string }>) => {
+      // build the report for input.scheduled_time
       return null;
     });
 
     worker.observe(
-      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, deliver: "input" },
+      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, capture: ["input"] },
       "reports::daily-summary",
     );
     ```
@@ -25,14 +27,14 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
   </Tab>
   <Tab title="Python">
     ```python
-    def daily_summary(tick: dict) -> None:
-        # build the report for tick["scheduled_time"]
+    def daily_summary(observed: dict) -> None:
+        # build the report for observed["input"]["scheduled_time"]
         return None
 
     worker.register_function("reports::daily-summary", daily_summary)
 
     worker.observe(
-        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "deliver": "input"},
+        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "capture": ["input"]},
         "reports::daily-summary",
     )
     ```
@@ -40,13 +42,13 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Deliver, Error, RegisterFunction, Source};
+    use iii_sdk::{Capture, Error, Observed, RegisterFunction, Source};
     use serde_json::{json, Value};
 
     worker.register_function(
         "reports::daily-summary",
-        RegisterFunction::new(|_tick: Value| {
-            // build the report for tick["scheduled_time"]
+        RegisterFunction::new(|_observed: Observed<Value>| {
+            // build the report for observed.input["scheduled_time"]
             Ok::<_, Error>(())
         }),
     );
@@ -54,7 +56,7 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
     worker.observe(
         Source::function("cron::on-tick")
             .args(json!({ "expression": "0 0 9 * * * *" }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "reports::daily-summary",
     );
     ```
@@ -63,21 +65,21 @@ This observer runs `reports::daily-summary` every day at 09:00:00:
   <Tab title="Go">
     ```go
     client.RegisterFunction("reports::daily-summary", func(ctx context.Context, data json.RawMessage) (any, error) {
-        // build the report for the tick's scheduled_time
+        // build the report for the tick's scheduled_time: data is an iii.Observed, the tick its Input
         return nil, nil
     })
 
     client.Observe(iii.Source{
         FunctionID: "cron::on-tick",
         Args:       iii.Args{"expression": "0 0 9 * * * *"},
-        Deliver:    iii.DeliverInput,
+        Capture:    []iii.Capture{iii.CaptureInput},
     }, "reports::daily-summary")
     ```
 
   </Tab>
 </Tabs>
 
-With `deliver: "input"`, the target receives the tick:
+With `capture: ["input"]`, the target receives the tick as the payload's `input`:
 `{ expression, scheduled_time, actual_time }`. An expression the cron worker cannot parse rejects
 the observer with `INVALID_CRON_EXPRESSION`.
 

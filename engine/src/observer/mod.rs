@@ -28,6 +28,7 @@ mod context;
 mod dispatch;
 pub mod engine_owned;
 pub mod events;
+mod host_view;
 mod lifecycle;
 mod owner;
 mod persistent;
@@ -52,7 +53,7 @@ pub use dispatch::{
     Emission, HostDelivery, ObservedCall, ObserverCall, ReportHold, RoutedAnswers, RoutedDelivery,
 };
 pub use engine_owned::{ENGINE_CONNECTION, EngineObserver, StandingObserver};
-pub use lifecycle::Observer;
+pub use lifecycle::{Deliver, Observer};
 pub use owner::{ActiveSet, FunctionOptions, validate_args_format};
 pub use registry::ObserveRequest;
 

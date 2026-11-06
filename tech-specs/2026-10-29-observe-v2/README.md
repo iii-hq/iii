@@ -102,8 +102,7 @@ iii.observe(
     function_id: 'database::on-row-changed',
     args: { db: 'primary', table: 'orders', ops: ['insert', 'update'] },  // for the database worker
     filters: { 'caller.parent.worker_name': { $ne: 'order-projector' } },   // for iii
-    capture: ['input', 'caller'],
-    deliver: 'output',
+    capture: ['output', 'caller'],
   },
   'orders::project',
   { max_in_flight: 1 },
@@ -114,14 +113,15 @@ iii.observe(
   says what they mean; the database worker reads `{ db, table, ops }` to
   capture that table and to deliver only its changes.
 - **`filters`** select which calls reach the target, by anything in the call.
-- **`capture`** chooses which parts of the call the envelope carries:
-  `input`, `output` (or `error`), `caller`, and `metadata` (the observed
-  call's metadata, in the envelope's `metadata` field); default `input`,
-  `output` and `caller`. Ids, status and timing are always there. An observer
-  that only counts calls or records errors uses `capture: []` and never moves
-  the payloads.
-- **`deliver`** is what the target receives when iii delivers: the `Observed`
-  envelope (default), the call's `input`, or its `output`. A function whose
+- **`capture`** chooses which parts of the call the `Observed` payload
+  carries, `input`, `output`, `error`, `caller`, and `metadata` (the observed
+  call's metadata), and with them which outcomes run the target (decision
+  59): `input` and `output` fire on success, `error` on error; `caller` and
+  `metadata` only add to the payload, so a non-empty `capture` names at least
+  one of `input`, `output`, `error` (`INVALID_ARGS`). The default is `input`,
+  `output`, and `caller` (`metadata` is opt-in, decision 62): successes only. `capture: []` fires on
+  success with ids, status and timing only, which are always there. A success
+  never carries `error`, an error never carries `output`. A function whose
   `onObservationDeliver` calls targets itself documents what they receive
   (`http::on-request` targets receive the `HttpRequest`).
 - The handle (`ready()`, `state`, `onStateChange`, `dispose()`) and the
@@ -188,7 +188,7 @@ iii.registerFunction<I, O>(id: string, handler: (input: I) => O | Promise<O>, op
 ```
 
 **The handler's return value is what observers observe.** It is the `output`
-in their envelope and in their filters. An event source's handler returns the
+in their payload and in their filters. An event source's handler returns the
 event:
 
 ```ts
@@ -357,7 +357,7 @@ in three steps, with iii's part of the third in the engine for a routed call:
 
 iii's delivery:
 
-1. selects, among the matching observers, those whose `on` matches
+1. selects, among the matching observers, those whose `capture` fires on
    `call.status` and whose filters match the call. The engine does it for a
    routed call, with the input it forwarded and the result the worker
    answers; the worker does it for a call it makes to its own function
@@ -366,8 +366,8 @@ iii's delivery:
    conditions once it narrows them, so a call costs at most about a scan
    plus one lookup per indexed path, and about one lookup however many
    observers filter on their own value of one path (decision 55);
-2. the engine runs each target with the observer's `deliver` choice,
-   policy, metadata sidecar and loop guard;
+2. the engine runs each target with the `Observed` payload its `capture`
+   names, its policy, metadata sidecar and loop guard;
 3. gives the caller the handler's return value, or rethrows its error.
 
 It does not wait for targets. A call with no observers costs one atomic load.
@@ -377,8 +377,8 @@ The caller and the observers see the same value.
 
 `onObservationMatch` answers one question: does this observer want this call? A
 worker sets it when its args say which calls an observer wants. iii does
-everything else as usual: the observer's filters, `on`, policy and `deliver`
-still apply.
+everything else as usual: the observer's capture, filters and policy still
+apply.
 
 As a predicate:
 
@@ -422,7 +422,9 @@ iii.onObservationMatch('tmux::on-changed', {
 ```
 
 iii gives `for_observer` no meaning of its own: a function without a match
-hook gives such a call to every observer.
+hook gives such a call to every observer. A target whose observer captures
+`metadata` (opt-in, decision 62) receives `for_observer` like any other metadata, so
+it can tell a call meant for it alone from an ordinary one (decision 59).
 
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
 can skip building an event nobody wants. Without a call it is true when the
@@ -500,9 +502,8 @@ interface Observer {
   readonly args: Record<string, unknown>      // validated against args_format
   readonly filters: Filter                    // normalized
   readonly target: string                     // function id
-  readonly on: 'success' | 'error' | 'complete'
   readonly capture: Capture[]
-  matches(call: Partial<Call>): boolean       // `on` and filters
+  matches(call: Partial<Call>): boolean       // capture and filters
   accepted(): Promise<void>                   // resolves once the SDK has acked the observer
   reject(code: string, message: string): void // late rejection
 }
@@ -517,8 +518,8 @@ after it resolves reaches an active observer, since the engine handles a
 connection's frames in order. The provider calls its own function with
 `metadata: { for_observer: obs.id }`, and its match hook gives that call to
 that observer alone (§4.5), so the target receives its initial state in the
-shape it receives every call of the function, with the observer's `deliver`,
-`capture`, filters, `on` and policy:
+shape it receives every call of the function, with the observer's
+`capture`, filters and policy:
 
 ```ts
 iii.onObserverAdded('tmux::on-changed', (obs) => {
@@ -751,7 +752,7 @@ SDKs and the engine advertise `observe.v2`. §8 applies between two
 ### 8.2 Who delivers
 
 The worker that hosts a function runs its handler and hooks for every call,
-and iii's delivery evaluates the observers' `on` and filters where the call
+and iii's delivery evaluates the observers' capture and filters where the call
 is (decision 55):
 
 - **Local call.** The worker evaluates them, and the matches go to the
@@ -759,7 +760,7 @@ is (decision 55):
   sent when nothing matches.
 - **Routed call.** The engine always sends an `invocation_id` to the host, so
   every routed call has an `invocationresult`. The SDK runs the handler and
-  the function's hooks. The engine evaluates the observers' `on` and filters:
+  the function's hooks. The engine evaluates the observers' capture and filters:
   it already holds the call's input, caller and metadata, and the result is
   the handler's return value, so delivery costs no extra frame (decision
   55). The answer says among which observers:
@@ -776,7 +777,7 @@ is (decision 55):
 ```
 
   With `matched`, the engine evaluates only the named observers that are
-  active observers of the invoked function. The envelope carries the call's
+  active observers of the invoked function. The payload carries the call's
   input and, as `output`, the handler's return value. Only the function's
   host answers for its observers: an answer from another connection
   activates nothing (`REPORTER_NOT_OWNER`, decision 55). `matched` is absent
@@ -1016,8 +1017,10 @@ connection and message type, naming the replacement, and drops the frame.
 
 | | 0.25 engine | v2 engine |
 |---|---|---|
-| **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. |
-| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
+| **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. Observers keep the 0.25 semantics: `on`/`deliver` are translated with a deprecation warning, and hosts get the legacy `on` (decisions 60, 61). |
+| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. Observers are sent with the legacy `on` their capture implies, with a one-time deprecation warning (decision 61). | full |
+
+A 0.26 release candidate (rc) engine or SDK lacks `observe.capture` and behaves like the 0.25 column or row for observers: an rc SDK on a v2 engine gets the 0.25 semantics (decision 60) and its hosts get the legacy `on`; a v2 SDK on an rc engine sends the legacy `on` and warns. The user-facing matrix is in the 0.25 upgrade guide.
 
 Migrating:
 
@@ -1065,7 +1068,7 @@ The 0.25 guarantees (§6 there) hold, with these:
   function and reason. A function that calls targets itself delivers as its
   `onObservationDeliver` does: one call per HTTP request; retries and dead letters
   per queue subscriber.
-- **Filters.** iii's delivery applies the observers' `on` and filters. An
+- **Filters.** iii's delivery applies the observers' capture and filters. An
   `onObservationDeliver` hook applies them with `obs.matches(call)`.
 - **Hooks once.** A function has one host per namespace, so each observer's
   hooks run once per host registration (§7).

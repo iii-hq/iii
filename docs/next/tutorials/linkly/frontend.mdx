@@ -324,7 +324,7 @@ useEffect(() => {
     early.splice(0).forEach(apply);
   }
 
-  const fn = worker.registerFunction("ui::on_click", async (click: Click) => {
+  const fn = worker.registerFunction("ui::on_click", async ({ output: click }: { output: Click }) => {
     if (ready) apply(click);
     else early.push(click);
     return null;
@@ -332,7 +332,7 @@ useEffect(() => {
   // The feed lives in `default`. The target, ui::on_click, lives in this tab's
   // namespace, which observe fills in from the worker's namespace.
   const listener = worker.observe(
-    { function_id: "click-streamer::on-click", namespace: "default", deliver: "output" },
+    { function_id: "click-streamer::on-click", namespace: "default", capture: ["output"] },
     "ui::on_click",
   );
   // ready() rejects when the observe is refused, for example FORBIDDEN when

@@ -34,8 +34,9 @@ use std::{
 use iii::{
     engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
     function::FunctionResult,
+    observer::Deliver,
     observer::{EngineObserver, ObserveRequest, ObserversConfig, engine_owned::no_args},
-    protocol::{Deliver, ObserveSource, ObserveTarget, ObserverState},
+    protocol::{ObserveSource, ObserveTarget, ObserverState},
     worker_connections::WorkerConnection,
     workers::observability::metrics::ensure_default_meter,
 };
@@ -230,7 +231,8 @@ async fn run(scenario: Scenario) -> Reading {
                                 filters,
                                 capture: None,
                                 on: None,
-                                deliver: Some(Deliver::Input),
+                                deliver: None,
+                                raw_input: true,
                             },
                             target: ObserveTarget {
                                 function_id: SINK.to_string(),

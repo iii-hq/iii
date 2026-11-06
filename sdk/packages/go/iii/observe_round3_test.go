@@ -143,7 +143,7 @@ func TestOverBudgetItemWaitsWhileFramesAreInFlight(t *testing.T) {
 // with it does not change the report.
 func TestHandlerMetadataEditsDoNotReachTheReport(t *testing.T) {
 	fe := newFakeEngine(t)
-	fe.setObservers("md::fn", 1, observerInfo("o1", "x::y", "", "", CaptureMetadata))
+	fe.setObservers("md::fn", 1, observerInfo("o1", "x::y", "", "", CaptureInput, CaptureMetadata))
 	c := fe.client()
 	registerLocal(t, c, "md::fn", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		md, _ := MetadataFromContext(ctx)

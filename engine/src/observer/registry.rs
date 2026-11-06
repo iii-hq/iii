@@ -19,8 +19,8 @@ use uuid::Uuid;
 use super::{
     ById, Departed, FnKey, Held, ObserverRegistry,
     lifecycle::{
-        CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy, Tombstone,
-        Transition,
+        CaptureSet, Deliver, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy,
+        Tombstone, Transition, capture_replacing, translate_legacy,
     },
     owner::check_options,
 };
@@ -28,13 +28,13 @@ use crate::{
     engine::Engine,
     protocol::{
         DEFAULT_NAMESPACE, ErrorBody, INVALID_NAMESPACE, Message, ObserveSource, ObserveTarget,
-        ObserverState, default_capture, is_blank_namespace, observe_codes,
+        ObserverState, is_blank_namespace, observe_codes,
     },
     worker_connections::WorkerConnection,
 };
 
-/// Longest observer id accepted. Ids are client-generated UUIDs (CONTRACT
-/// D3); the bound only keeps a misbehaving client from filling memory.
+/// Longest observer id accepted. Ids are client-generated UUIDs; the
+/// bound only keeps a misbehaving client from filling memory.
 const MAX_OBSERVER_ID_LEN: usize = 128;
 
 /// A decoded `observe` message.
@@ -51,7 +51,7 @@ pub struct ObserveRequest {
 
 impl ObserveRequest {
     /// The spec a replay is compared on (see [`ObserveSpec`]).
-    fn spec(&self, default_max_in_flight: u32) -> ObserveSpec {
+    fn spec(&self, default_max_in_flight: u32, resolved: Resolved) -> ObserveSpec {
         let namespace =
             |ns: &Option<String>| ns.clone().unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
         let filters = match &self.source.filters {
@@ -74,9 +74,8 @@ impl ObserveRequest {
                 Some(args) => args.clone(),
             },
             filters,
-            capture: CaptureSet::from_list(&self.source.capture()).to_list(),
-            on: self.source.on(),
-            deliver: self.source.deliver(),
+            capture: resolved.capture,
+            deliver: resolved.deliver,
             metadata: self.metadata.clone(),
             max_fires: self.max_fires,
             expires_in_ms: self.expires_in_ms,
@@ -87,6 +86,107 @@ impl ObserveRequest {
 
 fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
     ErrorBody::new(code, message)
+}
+
+/// What an `observe` source makes of its observer.
+#[derive(Debug, Clone, Copy)]
+struct Resolved {
+    capture: CaptureSet,
+    deliver: Deliver,
+    /// Translated to the old semantics, and why.
+    legacy: Option<Legacy>,
+}
+
+/// Why an observer keeps the v0.25 semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Legacy {
+    /// Its source carries `on` / `deliver` (decision 60).
+    Fields,
+    /// Its worker did not declare `observe.capture`: an rc or 0.25 SDK
+    /// (decision 60).
+    Worker,
+}
+
+/// What an `observe` source may carry, and what it makes of the observer:
+/// known capture values; an older SDK's `on` / `deliver`, translated
+/// (decision 60); otherwise a capture that fires on something. A worker that
+/// did not declare `observe.capture` (`observe_capture` unset: an rc or 0.25
+/// SDK) keeps the old semantics for every source, through the same
+/// translation (decision 60).
+fn resolve_source(source: &ObserveSource, observe_capture: bool) -> Result<Resolved, ErrorBody> {
+    // Values a newer peer may send and this engine cannot honour.
+    // Never defaulted: the observer would silently do
+    // something other than what was asked.
+    if let Some(unknown) = source
+        .capture
+        .iter()
+        .flatten()
+        .find(|capture| !capture.is_known())
+    {
+        return Err(unsupported("source.capture", unknown.as_str()));
+    }
+    match translate_legacy(
+        source.on.as_ref(),
+        source.deliver.as_ref(),
+        source.capture.as_deref(),
+        !observe_capture,
+    ) {
+        Err(message) => return Err(reject(observe_codes::INVALID_ARGS, message)),
+        Ok(Some((capture, deliver))) => {
+            let legacy = if source.on.is_some() || source.deliver.is_some() {
+                Legacy::Fields
+            } else {
+                Legacy::Worker
+            };
+            return Ok(Resolved {
+                capture,
+                deliver,
+                legacy: Some(legacy),
+            });
+        }
+        Ok(None) => {}
+    }
+    let capture = match &source.capture {
+        Some(list) => CaptureSet::resolve(list)
+            .map_err(|message| reject(observe_codes::INVALID_ARGS, message))?,
+        None => CaptureSet::DEFAULT,
+    };
+    Ok(Resolved {
+        capture,
+        deliver: if source.raw_input {
+            Deliver::Input
+        } else {
+            Deliver::Payload
+        },
+        legacy: None,
+    })
+}
+
+/// The deprecation warning of a translated observer, once per registration.
+fn warn_legacy(id: &str, source: &ObserveSource, resolved: Resolved, legacy: Legacy) {
+    let fields = source.legacy_fields().join(", ");
+    let capture = capture_replacing(resolved.capture, resolved.deliver)
+        .iter()
+        .map(|capture| format!("\"{capture}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if legacy == Legacy::Worker {
+        tracing::warn!(
+            observer_id = %id,
+            "observer `{id}` comes from a worker that does not declare `observe.capture` \
+             (an older SDK): it keeps the deprecated v0.25 semantics (it fires on successes \
+             only and its payload carries exactly `source.capture`); they will be removed. \
+             Upgrade the SDK and use `source.capture: [{capture}]`"
+        );
+        return;
+    }
+    tracing::warn!(
+        observer_id = %id,
+        fields = %fields,
+        "observer `{id}` uses the deprecated `source.on` / `source.deliver` ({fields}): \
+         translated for now; they will be removed. Use `source.capture: [{capture}]` \
+         instead (`capture` decides which outcomes fire and what the payload carries)"
+    );
 }
 
 /// The input of `rbac.on_observer_registration_function_id`: the
@@ -240,9 +340,18 @@ impl ObserverRegistry {
             ));
         }
 
+        // The source's capture, before the replay below: a replay that carries
+        // an invalid `on` / `deliver` or a capture that fires on nothing is
+        // refused too, rather than answered as the observer it claims to be.
+        // A translated one warns on every registration, replays included.
+        let resolved = resolve_source(&request.source, worker.features.observe_capture())?;
+        if let Some(legacy) = resolved.legacy {
+            warn_legacy(&request.id, &request.source, resolved, legacy);
+        }
+
         // A replay: the same spec from the observing connection is a no-op
         // that answers with the current state.
-        let spec = request.spec(self.config().default_max_in_flight);
+        let spec = request.spec(self.config().default_max_in_flight, resolved);
         let existing = self.get(&request.id);
         if let Some(existing) = &existing
             && existing.observing_connection() == worker.id
@@ -334,28 +443,6 @@ impl ObserverRegistry {
                     ),
                 ));
             }
-        }
-
-        // Values a newer peer may send and this engine cannot honour
-        // (CONTRACT D14). Never defaulted: the observer would silently do
-        // something other than what was asked.
-        if let Some(on) = &source.on
-            && !on.is_known()
-        {
-            return Err(unsupported("source.on", on.as_str()));
-        }
-        if let Some(deliver) = &source.deliver
-            && !deliver.is_known()
-        {
-            return Err(unsupported("source.deliver", deliver.as_str()));
-        }
-        if let Some(unknown) = source
-            .capture
-            .iter()
-            .flatten()
-            .find(|capture| !capture.is_known())
-        {
-            return Err(unsupported("source.capture", unknown.as_str()));
         }
 
         for (field, value) in [
@@ -526,7 +613,6 @@ impl ObserverRegistry {
             ));
         }
 
-        let capture = source.capture.clone().unwrap_or_else(default_capture);
         let target_available = self.is_registered(&target_key);
         let observer = Arc::new(Observer::new(NewObserver {
             id,
@@ -534,9 +620,8 @@ impl ObserverRegistry {
             spec: Some(spec),
             args,
             filter,
-            capture: CaptureSet::from_list(&capture),
-            on: source.on(),
-            deliver: source.deliver(),
+            capture: resolved.capture,
+            deliver: resolved.deliver,
             metadata: activation_metadata,
             policy: Policy {
                 max_fires,
@@ -2088,8 +2173,9 @@ mod tests {
     fn index_entries_are_live_observers_under_random_interleavings() {
         use std::sync::atomic::{AtomicBool, AtomicU64};
 
+        use super::super::Deliver;
         use super::super::{EngineObserver, interleave};
-        use crate::protocol::{DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::DEFAULT_NAMESPACE;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

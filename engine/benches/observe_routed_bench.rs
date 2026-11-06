@@ -18,6 +18,13 @@
 //!   value of `input.k`, the answer the result alone: every call matches one
 //!   observer, found through the function's filter index (the load test's
 //!   `filters` scenario).
+//! - `observe_routed/metadata_60b/<n>` and `observe_routed/metadata_4k/<n>`:
+//!   `n` observers without filters capturing
+//!   `[input, output, caller, metadata]`, every call carrying call metadata
+//!   of about 60 bytes (a routing key) or 4 KB (an opaque context blob):
+//!   what keeping the metadata for the observers and handing it to each
+//!   activation costs (decision 62). The caller's own copy of the metadata
+//!   (the call API takes it by value) is in the measured time of both.
 //!
 //! The host counts what crosses its socket while the bench runs, and each
 //! measurement asserts it: one `invokefunction` in and one
@@ -58,6 +65,8 @@ struct Bench {
     frames: Arc<Frames>,
     /// Calls the bench made.
     calls: AtomicU64,
+    /// The metadata each call carries, if any.
+    metadata: Option<Value>,
     // Keeps the observing connection, and with it the observers, alive.
     _observer: observe_support::Client,
 }
@@ -72,9 +81,12 @@ enum Case {
     /// Observer `i` filters on `input.k == i`; the answer carries the result
     /// alone.
     Filtered,
+    /// No filters, every observer capturing the call's metadata; the answer
+    /// carries the result alone.
+    Metadata,
 }
 
-async fn setup(observers: usize, case: Case) -> Bench {
+async fn setup(observers: usize, case: Case, metadata: Option<Value>) -> Bench {
     let t = spawn_engine(ObserversConfig {
         // Room for every activation: the bench measures work, not the drop
         // policy.
@@ -103,6 +115,11 @@ async fn setup(observers: usize, case: Case) -> Bench {
     for (i, id) in ids.iter().enumerate() {
         let source = if case == Case::Filtered {
             json!({ "function_id": OBSERVED, "filters": { "input.k": { "$eq": i } } })
+        } else if case == Case::Metadata {
+            json!({
+                "function_id": OBSERVED,
+                "capture": ["input", "output", "caller", "metadata"],
+            })
         } else {
             json!({ "function_id": OBSERVED })
         };
@@ -144,6 +161,7 @@ async fn setup(observers: usize, case: Case) -> Bench {
         delivered,
         frames,
         calls: AtomicU64::new(0),
+        metadata,
         _observer: observer,
     }
 }
@@ -159,7 +177,14 @@ async fn run(b: &Bench, iters: u64, per_call: u64, keys: u64) -> Duration {
     let start = Instant::now();
     for i in 0..iters {
         let k = if keys > 0 { i % keys } else { i };
-        let out = b.t.engine.call(OBSERVED, json!({ "k": k })).await;
+        let out = match &b.metadata {
+            Some(metadata) => {
+                b.t.engine
+                    .call_with_metadata(OBSERVED, json!({ "k": k }), Some(metadata.clone()))
+                    .await
+            }
+            None => b.t.engine.call(OBSERVED, json!({ "k": k })).await,
+        };
         assert!(out.is_ok(), "call failed: {out:?}");
     }
     while b.delivered.load(Ordering::Relaxed) < expected {
@@ -192,13 +217,27 @@ fn observe_routed(c: &mut Criterion) {
         (Case::Observed, "observed", &[0usize, 1, 8, 64][..]),
         (Case::Matched, "matched", &[1, 8, 64][..]),
         (Case::Filtered, "filtered", &[16, 256, 1024, 4000][..]),
+        (Case::Metadata, "metadata_60b", &[1, 8][..]),
+        (Case::Metadata, "metadata_4k", &[1, 8][..]),
     ];
     for (case, name, sizes) in cases {
+        let metadata = match name {
+            "metadata_60b" => {
+                Some(json!({ "for_observer": "0d1f5c2e-6a4b-4f7e-9c3d-2b8a7e6f5d4c" }))
+            }
+            "metadata_4k" => Some(json!({
+                "for_observer": "0d1f5c2e-6a4b-4f7e-9c3d-2b8a7e6f5d4c",
+                "context": (0..64)
+                    .map(|i| (format!("key-{i:02}"), json!("v".repeat(48))))
+                    .collect::<serde_json::Map<_, _>>(),
+            })),
+            _ => None,
+        };
         for &n in sizes {
-            let bench = rt.block_on(setup(n, case));
+            let bench = rt.block_on(setup(n, case, metadata.clone()));
             let (per_call, keys) = match case {
                 Case::Filtered => (1, n as u64),
-                Case::Observed | Case::Matched => (n as u64, 0),
+                Case::Observed | Case::Matched | Case::Metadata => (n as u64, 0),
             };
             group.bench_with_input(BenchmarkId::new(name, n), &n, |b, _| {
                 b.to_async(&rt)

@@ -12,8 +12,8 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, Setup, TestEngine, connect, eventually, in_process, registered, spawn, spawn_engine,
-    spawn_engine_with,
+    Client, OBSERVE_CAPTURE, OBSERVE_V1, OBSERVE_V2, Setup, TestEngine, connect, connect_with,
+    eventually, in_process, registered, spawn, spawn_engine, spawn_engine_with,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -33,7 +33,12 @@ async fn owner(t: &TestEngine, name: &str, functions: &[&str]) -> (Client, Vec<V
 
 /// A host for `functions` that acks like an accepting SDK.
 async fn host(t: &TestEngine, name: &str, functions: &[&str]) -> Client {
-    let mut client = connect(t, name, true).await;
+    host_with(t, name, OBSERVE_V1, functions).await
+}
+
+/// As [`host`], declaring `features`.
+async fn host_with(t: &TestEngine, name: &str, features: &[&str], functions: &[&str]) -> Client {
+    let mut client = connect_with(t, name, features).await;
     for function in functions {
         client.register_function(function).await;
     }
@@ -162,24 +167,22 @@ async fn the_announced_capture_names_the_part_the_target_receives() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
     let mut sink = host(&t, "sink", &["sink::orders"]).await;
-    for (id, deliver, capture, announced) in [
+    for (id, capture, announced) in [
         (
             "obs-output",
-            "output",
-            json!(["input"]),
+            json!(["input", "output"]),
             json!(["input", "output"]),
         ),
-        ("obs-input", "input", json!([]), json!(["input"])),
+        ("obs-input", json!(["input"]), json!(["input"])),
         (
-            "obs-envelope",
-            "envelope",
-            json!(["caller"]),
-            json!(["caller"]),
+            "obs-errors",
+            json!(["caller", "error"]),
+            json!(["error", "caller"]),
         ),
     ] {
         let frame = observer(
             id,
-            json!({ "function_id": "orders::create", "deliver": deliver, "capture": capture }),
+            json!({ "function_id": "orders::create", "capture": capture }),
             "sink::orders",
         );
         assert_eq!(sink.observe(frame).await["state"], "pending");
@@ -200,7 +203,11 @@ async fn the_announced_capture_names_the_part_the_target_receives() {
     reported.as_object_mut().unwrap().remove("input");
     orders.send(report(vec![reported])).await;
     let activation = sink.invoked("sink::orders").await;
-    assert_eq!(activation["data"], json!({ "ok": true }), "{activation}");
+    assert_eq!(
+        activation["data"]["output"],
+        json!({ "ok": true }),
+        "{activation}"
+    );
     sink.reply(&activation, Value::Null).await;
 
     // A new registration announces the same.
@@ -221,8 +228,8 @@ async fn the_announced_capture_names_the_part_the_target_receives() {
         registrations[0]
     );
     assert_eq!(
-        announced(&registrations[0], "obs-envelope"),
-        Some(json!(["caller"]))
+        announced(&registrations[0], "obs-errors"),
+        Some(json!(["error", "caller"]))
     );
 }
 
@@ -260,9 +267,19 @@ async fn an_observer_waits_for_its_owners_ack() {
         json!({ "$and": [{ "input.n": { "$gt": 1 } }] })
     );
     assert_eq!(view["args"], json!({}));
-    assert_eq!(view["on"], "success");
-    assert_eq!(view["capture"], json!(["input", "output", "caller"]));
-    for key in ["metadata", "deliver", "worker", "max_in_flight", "legacy"] {
+    assert_eq!(
+        view["capture"],
+        json!(["input", "output", "caller"]),
+        "decision 62: the default captures no metadata"
+    );
+    for key in [
+        "metadata",
+        "on",
+        "deliver",
+        "worker",
+        "max_in_flight",
+        "legacy",
+    ] {
         assert!(
             view.get(key).is_none(),
             "`{key}` is not the owner's business: {view}"
@@ -1205,7 +1222,7 @@ async fn a_hosts_call_of_its_private_function_skips_the_middleware() {
     let mut sink = host(&t, "sink", &["sink::ticks"]).await;
     sink.observe_active(observer(
         "obs-ticks",
-        json!({ "function_id": "cron::on-tick", "deliver": "input" }),
+        json!({ "function_id": "cron::on-tick", "capture": ["input"] }),
         "sink::ticks",
     ))
     .await;
@@ -1217,7 +1234,7 @@ async fn a_hosts_call_of_its_private_function_skips_the_middleware() {
     let answer = cron.result(call).await;
     assert_eq!(answer["result"], tick, "{answer}");
     let delivered = sink.invoked("sink::ticks").await;
-    assert_eq!(delivered["data"], tick);
+    assert_eq!(delivered["data"]["input"], tick);
     sink.reply(&delivered, Value::Null).await;
 
     let call = cron.call("cron::status", json!({})).await;
@@ -2570,16 +2587,17 @@ async fn a_re_announcement_restarts_the_ack_timeout() {
 }
 
 #[tokio::test]
-async fn reports_apply_on_for_auto_functions_and_count_invalid_items() {
+async fn reports_apply_capture_for_auto_functions_and_count_invalid_items() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
-    let mut sink = host(&t, "sink", &["sink::errors"]).await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut sink = host_with(&t, "sink", OBSERVE_CAPTURE, &["sink::errors"]).await;
     acked_observer(
         &mut orders,
         &mut sink,
         observer(
             "obs-errors",
-            json!({ "function_id": "orders::create", "on": "error" }),
+            json!({ "function_id": "orders::create", "capture": ["error", "caller"] }),
             "sink::errors",
         ),
         "orders::create",
@@ -2593,7 +2611,10 @@ async fn reports_apply_on_for_auto_functions_and_count_invalid_items() {
         ]))
         .await;
     let info = get(&mut orders, "obs-errors").await;
-    assert_eq!(info["fires"], 0, "on: error does not take a success");
+    assert_eq!(
+        info["fires"], 0,
+        "capturing error without input or output does not take a success"
+    );
     assert_eq!(info["dropped"]["INVALID_REPORT"], 1, "{info}");
 
     let mut failed = item("orders::create", &["obs-errors"], "error");
@@ -2931,4 +2952,68 @@ async fn a_void_call_cannot_reach_a_private_function() {
     assert!(
         !http.has_seen(|f| f["type"] == "invokefunction" && f["function_id"] == "http::on-request")
     );
+}
+
+/// A host without `observe.capture` (0.25, and an rc host that declared
+/// `observe.v2` only) decides the outcomes that fire from `on` alone: its
+/// announcements carry the `on` each observer's capture implies
+/// (deprecated). A host with `observe.capture` gets none. Every host gets
+/// `fires_on` (decision 61).
+#[tokio::test]
+async fn a_host_without_observe_capture_is_told_the_on_each_observer_fires_on() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
+    let capture_host: &[&str] = &[
+        "observe.v1",
+        "observe.v2",
+        "observe.capture",
+        "local-dispatch.v1",
+    ];
+    for (name, features, reads_fires_on) in [
+        ("legacy", OBSERVE_V1, false),
+        ("rc", OBSERVE_V2, false),
+        ("modern", capture_host, true),
+    ] {
+        let mut host = connect_with(&t, name, features).await;
+        let function = format!("{name}::charge");
+        host.register_function(&function).await;
+        registered(&t.engine, "default", &function).await;
+        for (kind, capture, on, fires_on) in [
+            (
+                "errors",
+                json!(["error", "caller"]),
+                Some("error"),
+                json!(["error"]),
+            ),
+            (
+                "both",
+                json!(["input", "error"]),
+                Some("complete"),
+                json!(["success", "error"]),
+            ),
+            ("success", json!(["input"]), None, json!(["success"])),
+        ] {
+            let id = format!("{name}-{kind}");
+            watcher
+                .observe(json!({
+                    "id": id,
+                    "source": { "function_id": function, "capture": capture },
+                    "target": { "function_id": "sink::x" }
+                }))
+                .await;
+            let added = host
+                .expect("observeradded", |f| {
+                    f["type"] == "observeradded" && f["observer"]["id"] == id.as_str()
+                })
+                .await;
+            assert_eq!(added["observer"]["fires_on"], fires_on, "{name}: {added}");
+            let want = if reads_fires_on { None } else { on };
+            assert_eq!(
+                added["observer"].get("on").and_then(Value::as_str),
+                want,
+                "{name}: {added}"
+            );
+        }
+    }
 }

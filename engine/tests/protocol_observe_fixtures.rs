@@ -10,8 +10,9 @@ use std::{
 };
 
 use iii::protocol::{
-    Capture, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_V1,
-    FEATURE_OBSERVE_V2, InvocationStatus, Message, ObserverState, engine_features,
+    Capture, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_CAPTURE,
+    FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, InvocationStatus, Message, ObserverState,
+    engine_features,
 };
 use iii::workers::engine_fn::RegisterWorkerInput;
 use serde_json::{Value, json};
@@ -306,7 +307,7 @@ fn fixtures_carry_the_documented_variants() {
         panic!("observe");
     };
     assert!(source.namespace.is_some() && source.args.is_some() && source.filters.is_some());
-    assert!(source.capture.is_some() && source.on.is_some() && source.deliver.is_some());
+    assert!(source.capture.is_some() && source.legacy_fields().is_empty());
     assert!(
         metadata.is_some()
             && max_fires.is_some()
@@ -569,6 +570,19 @@ fn fixtures_carry_the_documented_variants() {
             FEATURE_OBSERVE_V1,
             FEATURE_OBSERVE_V2,
             FEATURE_LOCAL_DISPATCH_V1
+        ],
+        "an rc engine: no observe.capture"
+    );
+    let Message::WorkerRegistered { features, .. } = message("workerregistered-capture") else {
+        panic!("workerregistered-capture");
+    };
+    assert_eq!(
+        features,
+        [
+            FEATURE_OBSERVE_V1,
+            FEATURE_OBSERVE_V2,
+            FEATURE_OBSERVE_CAPTURE,
+            FEATURE_LOCAL_DISPATCH_V1
         ]
     );
     assert_eq!(features, engine_features(), "what this engine advertises");
@@ -597,8 +611,8 @@ fn fixtures_use_only_known_enum_values() {
                     assert!(capture.is_known(), "{name}: {capture}");
                 }
                 assert!(
-                    source.on().is_known() && source.deliver().is_known(),
-                    "{name}"
+                    source.legacy_fields().is_empty(),
+                    "{name}: no deprecated `on` / `deliver`"
                 );
             }
             Message::ObserveResult { state, .. } | Message::ObserverStateChanged { state, .. } => {
@@ -607,12 +621,10 @@ fn fixtures_use_only_known_enum_values() {
             Message::FunctionRegistered { observers, .. } => {
                 for observer in observers {
                     assert!(observer.capture.iter().all(Capture::is_known), "{name}");
-                    assert!(observer.on.is_known(), "{name}");
                 }
             }
             Message::ObserverAdded { observer, .. } => {
                 assert!(observer.capture.iter().all(Capture::is_known), "{name}");
-                assert!(observer.on.is_known(), "{name}");
             }
             Message::InvocationsObserved { items } => {
                 assert!(items.items.iter().all(|i| i.status.is_known()), "{name}");
@@ -623,7 +635,9 @@ fn fixtures_use_only_known_enum_values() {
 }
 
 /// SDKs declare their features in the `engine::workers::register` payload:
-/// `observe.v1`, `observe.v2`, `local-dispatch.v1`, plus `large-messages.v1`,
+/// `observe.v1`, `observe.v2`, `observe.capture` (decisions 60 and 61: it reads
+/// `fires_on`, and its observers follow the capture model),
+/// `local-dispatch.v1`, plus `large-messages.v1`,
 /// which only workers declare. The engine reads them from what the fixture
 /// sends (plus the `_caller_worker_id` it injects into every forwarded
 /// payload).
@@ -645,6 +659,7 @@ fn workers_register_fixture_declares_features() {
         [
             FEATURE_OBSERVE_V1,
             FEATURE_OBSERVE_V2,
+            FEATURE_OBSERVE_CAPTURE,
             FEATURE_LOCAL_DISPATCH_V1,
             FEATURE_LARGE_MESSAGES_V1
         ]

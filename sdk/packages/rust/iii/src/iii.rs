@@ -1950,6 +1950,12 @@ pub(crate) struct IIIInner {
     engine_features: AtomicU8,
     /// The last engine advertised observe: outgoing calls carry `caller`.
     engine_observe_last: AtomicBool,
+    /// The legacy `on` deprecation (an engine without `observe.capture`:
+    /// observer views without `fires_on`, or `source.on` sent) was logged.
+    legacy_on_warned: AtomicBool,
+    /// The engine on the current connection advertised `observe.capture`:
+    /// it announces `fires_on` and never needs `source.on`.
+    engine_observe_capture: AtomicBool,
     /// Listeners of [`IIIClient::on_engine_supports_observe`].
     observe_support: Arc<Mutex<ObserveSupport>>,
     /// Functions already named in the `UNSUPPORTED` warning of an engine
@@ -2032,6 +2038,8 @@ impl IIIClient {
             observers: Mutex::new(ObserverBook::default()),
             engine_features: AtomicU8::new(ENGINE_FEATURES_UNKNOWN),
             engine_observe_last: AtomicBool::new(false),
+            legacy_on_warned: AtomicBool::new(false),
+            engine_observe_capture: AtomicBool::new(false),
             observe_support: Arc::default(),
             warned_unsupported: Mutex::new(HashSet::new()),
             connection_epoch: AtomicU64::new(0),
@@ -2104,6 +2112,38 @@ impl IIIClient {
     /// The engine on the current connection advertised `observe.v2`.
     pub(crate) fn engine_observes_v2(&self) -> bool {
         self.inner.engine_features.load(Ordering::SeqCst) == ENGINE_WITH_OBSERVE_V2
+    }
+
+    /// The engine on the current connection advertised `observe.capture`.
+    pub(crate) fn engine_observes_capture(&self) -> bool {
+        self.inner.engine_observe_capture.load(Ordering::SeqCst)
+    }
+
+    /// Logs, once per client, that the connected engine lacks
+    /// `observe.capture` and its legacy `on` semantics are deprecated.
+    fn warn_legacy_on(&self) {
+        if !self.inner.legacy_on_warned.swap(true, Ordering::Relaxed) {
+            tracing::warn!("{}", crate::protocol::LEGACY_ON_DEPRECATION);
+        }
+    }
+
+    /// Warns once when an announced observer carries no `fires_on`: its firing
+    /// is read from the legacy `on`.
+    fn warn_legacy_views(&self, views: &[crate::protocol::ObserverView]) {
+        if views.iter().any(|view| view.fires_on.is_none()) {
+            self.warn_legacy_on();
+        }
+    }
+
+    /// The entry of `function_id`, once the views announced with it are
+    /// checked for `fires_on`.
+    fn warned_function_entry(
+        &self,
+        function_id: &str,
+        views: &[crate::protocol::ObserverView],
+    ) -> Option<Arc<FunctionEntry>> {
+        self.warn_legacy_views(views);
+        self.function_entry(function_id)
     }
 
     /// This worker as a caller: `{ worker_id, worker_name }`.
@@ -3623,6 +3663,13 @@ impl IIIClient {
                 *self.inner.reattach_token.lock_or_recover() = reattach_token;
                 let v2 = features.iter().any(|f| f == FEATURE_OBSERVE_V2);
                 let observe = v2 || features.iter().any(|f| f == FEATURE_OBSERVE_V1);
+                // stored before the replay `on_engine_features` starts
+                self.inner.engine_observe_capture.store(
+                    features
+                        .iter()
+                        .any(|f| f == crate::protocol::FEATURE_OBSERVE_CAPTURE),
+                    Ordering::SeqCst,
+                );
                 self.on_engine_features(observe, v2);
                 self.inner.registration_changed.notify_waiters();
             }
@@ -3632,7 +3679,7 @@ impl IIIClient {
                 revision,
                 local_dispatch,
                 observers,
-            } => match self.function_entry(&id) {
+            } => match self.warned_function_entry(&id, &observers) {
                 // The answer to a registration this connection withdrew: the
                 // function stays unregistered.
                 Some(entry) if !entry.sent_on(self.connection_epoch()) => {
@@ -3658,7 +3705,7 @@ impl IIIClient {
                 namespace,
                 revision,
                 observer,
-            } => match self.function_entry(&function_id) {
+            } => match self.warned_function_entry(&function_id, std::slice::from_ref(&observer)) {
                 // An observer of a registration this connection withdrew:
                 // the function stays unregistered.
                 Some(entry) if !entry.sent_on(self.connection_epoch()) => {
@@ -4206,6 +4253,44 @@ impl IIIClient {
     /// that connection is gone (the next one replays it), the handle is
     /// disposing or the engine refused it. It is listed before it goes out,
     /// so its answer finds it.
+    /// The `observe` envelope for this connection's engine. One without
+    /// `observe.capture` (0.25, or an rc engine with `observe.v2` only)
+    /// decides the outcomes that fire from `source.on` alone, so it gets the
+    /// `on` that `capture` implies; the first such envelope logs that this is
+    /// deprecated. An engine with `observe.capture` never gets `on`.
+    ///
+    /// That frame too large to send is the size error: never the frame
+    /// without `on`, which would observe other outcomes.
+    fn prepare_observe(&self, message: &Message) -> Result<PreparedEnvelope, Error> {
+        let on = match message {
+            Message::Observe { source, .. } if !self.engine_observes_capture() => {
+                crate::protocol::legacy_on(source.capture.as_deref())
+            }
+            _ => None,
+        };
+        let Some(on) = on else {
+            return self.prepare_outbound(message);
+        };
+        self.warn_legacy_on();
+        let mut frame = serde_json::to_value(message)?;
+        frame["source"]["on"] = Value::from(on);
+        let payload = serde_json::to_string(&frame)?;
+        let size = payload.len();
+        if size > MAX_JSON_MESSAGE_BYTES {
+            return Err(Error::Remote {
+                code: "payload_too_large".to_string(),
+                message: format!(
+                    "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                ),
+                stacktrace: None,
+            });
+        }
+        Ok(
+            PreparedEnvelope::from_json(payload, Self::registration_key(message), None)
+                .observe_family(),
+        )
+    }
+
     fn send_observe(&self, entry: &Arc<ObserverEntry>, epoch: u64) {
         let _order = entry.send_lock.lock_or_recover();
         if entry.disposing.load(Ordering::Acquire)
@@ -4215,10 +4300,21 @@ impl IIIClient {
         {
             return;
         }
-        let envelope = match self.prepare_outbound(&entry.message) {
+        let envelope = match self.prepare_observe(&entry.message) {
             Ok(envelope) => envelope,
             Err(error) => {
                 tracing::warn!(observer_id = %entry.id, error = %error, "observe not sent");
+                // a frame too large to send is this observer's error
+                if let Some(body) = error.invocation_error() {
+                    entry.set(
+                        ObserverState::Error,
+                        Some(ObserverReason {
+                            code: body.code.clone(),
+                            message: body.message.clone(),
+                        }),
+                        None,
+                    );
+                }
                 return;
             }
         };
@@ -5405,8 +5501,6 @@ mod tests {
                 args: None,
                 filters: None,
                 capture: None,
-                on: None,
-                deliver: None,
             }),
             target: crate::protocol::ObserveTarget {
                 function_id: "c::d".to_string(),
@@ -6360,5 +6454,309 @@ mod observer_book_tests {
         assert!(is(book.route("x", 3, Result, false), &new));
         assert_eq!(book.routes["x"].len(), 1);
         assert!(book.route("z", 3, Result, false).is_none());
+    }
+}
+
+/// D1 / D6 of the observe.capture contract: the default capture, the
+/// `observe.capture` feature, `fires_on` on observer views (and the legacy `on`
+/// when an engine sends none) and the legacy `on` this SDK sends to an engine
+/// without `observe.capture`.
+#[cfg(test)]
+mod observe_capture_tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::observable::Observer;
+    use crate::protocol::{Capture, ObserveSource, ObserveTarget, ObserverView};
+
+    /// A distinctive part of the one-time deprecation warning.
+    const DEPRECATION: &str = "does not support observe.capture";
+
+    fn capture_engine() -> Value {
+        json!([
+            "observe.v1",
+            "observe.v2",
+            "observe.capture",
+            "local-dispatch.v1"
+        ])
+    }
+
+    fn rc_engine() -> Value {
+        json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+    }
+
+    fn engine_025() -> Value {
+        json!(["observe.v1"])
+    }
+
+    fn client_with(features: Value) -> IIIClient {
+        let iii = IIIClient::new("ws://localhost:1234");
+        iii.handle_message(
+            &json!({ "type": "workerregistered", "worker_id": "w-1",
+                     "reattach_token": "t", "features": features })
+            .to_string(),
+        )
+        .unwrap();
+        iii
+    }
+
+    fn observe_message(capture: Option<Vec<Capture>>, args: Option<Value>) -> Message {
+        Message::Observe {
+            id: "o".to_string(),
+            source: Box::new(ObserveSource {
+                function_id: "a::b".to_string(),
+                namespace: None,
+                args,
+                filters: None,
+                capture,
+            }),
+            target: ObserveTarget {
+                function_id: "c::d".to_string(),
+                namespace: None,
+            },
+            metadata: None,
+            max_fires: None,
+            expires_in_ms: None,
+            max_in_flight: None,
+        }
+    }
+
+    fn sent_on(iii: &IIIClient, capture: Option<Vec<Capture>>) -> Option<String> {
+        let envelope = iii
+            .prepare_observe(&observe_message(capture, None))
+            .expect("an envelope");
+        let frame: Value = serde_json::from_str(&envelope.payload).unwrap();
+        frame["source"]
+            .get("on")
+            .map(|on| on.as_str().expect("a string on").to_string())
+    }
+
+    fn warnings(lines: &[&str]) -> usize {
+        lines.iter().filter(|l| l.contains(DEPRECATION)).count()
+    }
+
+    fn legacy_cases() -> Vec<(Option<Vec<Capture>>, Option<&'static str>)> {
+        use Capture::{Caller, Error as Failure, Input, Metadata, Output};
+        vec![
+            (None, None),
+            (Some(vec![]), None),
+            (Some(vec![Input]), None),
+            (Some(vec![Input, Output, Caller, Metadata]), None),
+            (Some(vec![Failure]), Some("error")),
+            (Some(vec![Failure, Caller]), Some("error")),
+            (Some(vec![Input, Failure]), Some("complete")),
+            (Some(vec![Input, Output, Failure]), Some("complete")),
+        ]
+    }
+
+    // ── D1: default capture ────────────────────────────────────────────────
+
+    #[test]
+    fn the_default_capture_is_input_output_caller() {
+        use Capture::{Caller, Input, Output};
+        assert_eq!(
+            crate::protocol::default_capture(),
+            vec![Input, Output, Caller]
+        );
+        for view in [
+            json!({ "id": "o", "target": "t" }),
+            json!({ "id": "o", "target": "t", "capture": null }),
+        ] {
+            let view: ObserverView = serde_json::from_value(view).unwrap();
+            assert_eq!(view.capture, vec![Input, Output, Caller]);
+        }
+    }
+
+    // ── D6: the feature ────────────────────────────────────────────────────
+
+    #[test]
+    fn the_sdk_announces_observe_capture() {
+        assert!(
+            crate::protocol::SDK_FEATURES.contains(&"observe.capture"),
+            "{:?}",
+            crate::protocol::SDK_FEATURES
+        );
+    }
+
+    // ── D6: firing from the view ───────────────────────────────────────────
+
+    #[test]
+    fn an_observer_fires_on_the_outcomes_its_view_announces() {
+        // (view fields beyond id/target, fires on success, fires on error)
+        let cases = [
+            // an engine with observe.capture: `fires_on` is all that counts
+            (
+                json!({ "fires_on": ["error"], "capture": ["input", "output"] }),
+                false,
+                true,
+            ),
+            (
+                json!({ "fires_on": ["success"], "capture": ["error"] }),
+                true,
+                false,
+            ),
+            (
+                json!({ "fires_on": ["success", "error"], "capture": [] }),
+                true,
+                true,
+            ),
+            (
+                json!({ "fires_on": ["error"], "capture": ["input"], "on": "complete" }),
+                false,
+                true,
+            ),
+            (json!({ "fires_on": ["success"] }), true, false),
+            // no `fires_on` (rc or 0.25 engine): `on` alone, never the capture
+            (
+                json!({ "capture": ["input", "output", "error"] }),
+                true,
+                false,
+            ),
+            (json!({ "capture": ["error"] }), true, false),
+            (json!({ "capture": ["error"], "on": null }), true, false),
+            (
+                json!({ "capture": ["input"], "on": "success" }),
+                true,
+                false,
+            ),
+            (json!({ "capture": ["input"], "on": "error" }), false, true),
+            (
+                json!({ "capture": ["input"], "on": "complete" }),
+                true,
+                true,
+            ),
+            (json!({ "capture": ["error"], "on": "error" }), false, true),
+            (json!({ "capture": [] , "on": "complete" }), true, true),
+            (json!({}), true, false),
+            // `fires` is not the outcome list (decision 61): ignored
+            (
+                json!({ "fires": ["error"], "capture": ["input"] }),
+                true,
+                false,
+            ),
+            (json!({ "fires": 3, "fires_on": ["error"] }), false, true),
+        ];
+        for (i, (extra, on_success, on_error)) in cases.into_iter().enumerate() {
+            let mut view = json!({ "id": format!("o{i}"), "target": "t", "filters": {} });
+            for (key, value) in extra.as_object().unwrap() {
+                view[key] = value.clone();
+            }
+            let obs = Observer::test_view(view.clone(), i as u64, true);
+            assert_eq!(obs.accepts(true), on_success, "success: {view}");
+            assert_eq!(obs.accepts(false), on_error, "error: {view}");
+        }
+    }
+
+    /// A view announced without `fires_on` warns once per client, whatever
+    /// carries it; one with `fires_on` never does.
+    #[test]
+    #[tracing_test::traced_test]
+    fn a_view_without_fires_on_warns_once() {
+        let iii = client_with(capture_engine());
+        let added = |id: &str, fires: Option<Value>| {
+            let mut observer = json!({ "id": id, "target": "t", "capture": ["input"] });
+            if let Some(fires) = fires {
+                observer["fires_on"] = fires;
+            }
+            json!({ "type": "observeradded", "function_id": "x::f", "namespace": "default",
+                    "revision": 1, "observer": observer })
+            .to_string()
+        };
+        iii.handle_message(&added("a", Some(json!(["success"]))))
+            .unwrap();
+        iii.handle_message(&added("b", Some(json!(["error"]))))
+            .unwrap();
+        logs_assert(|lines| match warnings(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} warnings for views with fires_on")),
+        });
+        iii.handle_message(&added("c", None)).unwrap();
+        iii.handle_message(&added("d", None)).unwrap();
+        iii.handle_message(
+            &json!({ "type": "functionregistered", "id": "x::g", "namespace": "default",
+                     "revision": 1, "local_dispatch": false,
+                     "observers": [{ "id": "e", "target": "t" }] })
+            .to_string(),
+        )
+        .unwrap();
+        logs_assert(|lines| match warnings(lines) {
+            1 => Ok(()),
+            n => Err(format!("{n} warnings for views without fires_on, want 1")),
+        });
+    }
+
+    // ── D6: the `on` sent ──────────────────────────────────────────────────
+
+    #[test]
+    #[tracing_test::traced_test]
+    fn an_engine_with_observe_capture_gets_no_on_and_no_warning() {
+        let iii = client_with(capture_engine());
+        for (capture, _) in legacy_cases() {
+            assert_eq!(sent_on(&iii, capture.clone()), None, "{capture:?}");
+        }
+        logs_assert(|lines| match warnings(lines) {
+            0 => Ok(()),
+            n => Err(format!("{n} warnings")),
+        });
+    }
+
+    /// An rc engine (observe.v2 without observe.capture) and a 0.25 engine
+    /// (observe.v1 only) get the `on` the capture implies, with one warning.
+    #[test]
+    #[tracing_test::traced_test]
+    fn engines_without_observe_capture_get_the_legacy_on_and_one_warning() {
+        for features in [rc_engine(), engine_025()] {
+            let iii = client_with(features.clone());
+            for (capture, on) in legacy_cases() {
+                assert_eq!(
+                    sent_on(&iii, capture.clone()).as_deref(),
+                    on,
+                    "{features} {capture:?}"
+                );
+            }
+        }
+        logs_assert(|lines| match warnings(lines) {
+            2 => Ok(()),
+            n => Err(format!("{n} warnings for two clients, want one each")),
+        });
+    }
+
+    /// The frame with `on` larger than a message is a size error: never the
+    /// frame without `on`, which would observe the wrong outcomes.
+    #[test]
+    fn an_oversized_legacy_observe_is_a_size_error() {
+        use Capture::Error as Failure;
+        let base = serde_json::to_string(&observe_message(Some(vec![Failure]), Some(json!(""))))
+            .unwrap()
+            .len();
+        // fits without `on` (`,"on":"error"` is 13 bytes), not with it
+        let fill = MAX_JSON_MESSAGE_BYTES - base - 4;
+        let message = observe_message(Some(vec![Failure]), Some(Value::String("x".repeat(fill))));
+        assert!(serde_json::to_string(&message).unwrap().len() <= MAX_JSON_MESSAGE_BYTES);
+        for features in [rc_engine(), engine_025()] {
+            let iii = client_with(features.clone());
+            let error = match iii.prepare_observe(&message) {
+                Ok(envelope) => panic!(
+                    "{features}: sent a frame of {} bytes, `on` {}",
+                    envelope.payload.len(),
+                    if envelope.payload.contains("\"on\":") {
+                        "present"
+                    } else {
+                        "MISSING"
+                    }
+                ),
+                Err(error) => error,
+            };
+            let text = error.to_string();
+            assert!(
+                text.contains("Serialized JSON envelope is")
+                    && text.contains(&format!("limit is {MAX_JSON_MESSAGE_BYTES} bytes")),
+                "{features}: {text}"
+            );
+        }
+        // an engine with observe.capture gets it without `on`: it fits
+        let iii = client_with(capture_engine());
+        let envelope = iii.prepare_observe(&message).expect("fits");
+        assert!(!envelope.payload.contains("\"on\":"));
     }
 }

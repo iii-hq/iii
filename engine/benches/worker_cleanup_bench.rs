@@ -89,6 +89,7 @@ fn observe_request(idx: usize) -> ObserveRequest {
             capture: None,
             on: None,
             deliver: None,
+            raw_input: false,
         },
         target: ObserveTarget {
             function_id: "bench.target".to_string(),

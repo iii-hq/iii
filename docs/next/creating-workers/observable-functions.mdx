@@ -15,7 +15,11 @@ type: "how-to"
 
 Every function your worker registers can be observed unless you specify otherwise (see
 [Registration options](#registration-options)). By default, iii runs each observer's target after
-each call of the function, with the call's input and the handler's return value. This page describes
+each successful call of the function, with what the observer captures: the call's input, the
+handler's return value, and the caller unless its `capture` says otherwise (the call's metadata only
+when `capture` names it; see [Observers](../using-iii/observers)). Your hooks receive the call's
+metadata whatever the observers capture, so route on it in `onObservationMatch` or
+`onObservationDeliver`. This page describes
 how to manage this: what the observers of its functions receive, which calls reach which observer,
 what each observer sets up, and what the caller gets back. To observe a function, see
 [Observers](../using-iii/observers).
@@ -23,8 +27,19 @@ what each observer sets up, and what the caller gets back. To observe a function
 ## Hooks
 
 Your worker defines function observation with four hooks, two are observer specific, and two are
-specific to each individual observation. The observer lifecycle hooks add your own set-up and
-teardown per observer. The observation lifecycle hooks replace how iii matches and delivers calls.
+specific to each individual observation. Every hook is optional. Without it, iii's default applies;
+setting it overrides that default for the function, or, set at the worker level, for every function
+the worker hosts.
+
+| Hook                   | Default, without the hook                                                            | Setting the hook overrides it                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
+| `onObserverAdded`      | Every observer is accepted as soon as it is added.                                   | Your set-up runs first; the observer is accepted when it returns, rejected if it throws. |
+| `onObserverRemoved`    | Nothing runs.                                                                        | Your teardown runs.                                                                      |
+| `onObservationMatch`   | Every call is observed by every observer.                                            | Your hook selects which observers get each call.                                         |
+| `onObservationDeliver` | iii runs each matched observer's target; the caller gets the handler's return value. | You deliver the call yourself and decide what the caller gets back.                      |
+
+Each observer's `capture` and filters still decide what its target receives, whichever hooks are
+set, unless `onObservationDeliver` runs the targets itself.
 
 Both observer lifecycle hooks can be set for one function or for every function the worker hosts,
 and both levels run. When an observer is added, the worker's hook runs, then the function's. When an
@@ -38,7 +53,8 @@ These hooks run once per observer, when it starts and stops observing the functi
 
 #### `onObserverAdded(obs)`
 
-Runs before the observer is accepted. Use it to set something up from the observer's args. When it
+By default, every observer is accepted as soon as it is added. Setting this hook overrides that: it
+runs before the observer is accepted. Use it to set something up from the observer's args. When it
 returns, the observer becomes active and receives the function's calls. Throw to reject the observer
 instead. A hook that runs past 30 seconds (`observers.owner_ack_timeout_ms`) fails the observer with
 `OWNER_TIMEOUT`; a removed hook that runs past it is only logged.
@@ -883,8 +899,9 @@ for, one observer.
 
 #### `onObservationMatch(obs, call)`
 
-By default, every call is observed by every observer. Override it to select, for one call, which
-observers get it: a predicate that returns a boolean.
+By default, every call is observed by every observer. Setting this hook overrides that: it selects,
+for one call, which observers get it, as a predicate that returns a boolean. iii then applies each
+matched observer's `capture` and filters as usual.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -942,8 +959,8 @@ observers get it: a predicate that returns a boolean.
 #### `onObservationDeliver(call, observers)`
 
 By default, iii carries out each observation: it runs the target of every matched observer whose
-`on` and filters match the call, and gives the caller the handler's return value. Override it to
-deliver the call yourself and change what is returned to the caller.
+capture and filters match the call, and gives the caller the handler's return value. Setting this
+hook overrides that: you deliver the call yourself and decide what is returned to the caller.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1055,9 +1072,9 @@ deliver the call yourself and change what is returned to the caller.
 `onObservationMatch` selects, for each call, which observers get it, so a function can route its
 calls by the args of its observers. The predicate receives the observer and the call, and returns a
 boolean: `true` when that observer gets this call, `false` when it does not. The SDK calls it once
-for each active observer, before that observer's `on` and filters; a predicate that throws counts as
-no match for that observer. iii does everything else as usual: each observer's `on`, filters, policy
-and `deliver` still apply.
+for each active observer, before that observer's capture and filters; a predicate that throws counts as
+no match for that observer. iii does everything else as usual: each observer's capture, filters
+and policy still apply.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -1909,8 +1926,8 @@ observer, so the worker can keep it, for example in a map.
 | `args`                  | The observer's args, already validated against `args_format` by the engine.                                                         |
 | `filters`               | The observer's filters in [normal form](../reference/filters#normal-form).                                                          |
 | `target`                | The target function id.                                                                                                             |
-| `on`, `capture`         | Which calls the observer gets (`success`, `error` or `complete`), and which parts of the call its envelope carries.                 |
-| `matches(call)`         | Evaluates the observer's `on` and filters on a call.                                                                                |
+| `capture`               | Which parts of the call its payload carries, and with them which calls the observer gets (see [`capture`](../using-iii/observers#capture)). |
+| `matches(call)`         | Evaluates the observer's capture and filters on a call. The outcomes that fire it come from the engine's `fires_on`, or, from an engine without `observe.capture`, from the deprecated legacy `on`. |
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |
 

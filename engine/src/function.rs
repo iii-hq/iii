@@ -32,11 +32,12 @@ type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, E
 /// the per-invocation sidecar carried alongside the payload (set by the caller
 /// or by the observer that activated the call) — it travels as a distinct
 /// channel rather than being folded into `data`.
-pub type HandlerFn =
-    dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Value>) -> HandlerFuture + Send + Sync;
+pub type HandlerFn = dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Arc<Value>>) -> HandlerFuture
+    + Send
+    + Sync;
 /// [`HandlerFn`] for a handler that sends its input on as JSON text (a
 /// worker connection): the input comes already encoded, and is sent as is.
-pub type EncodedHandlerFn = dyn Fn(Option<Uuid>, EncodedJson, Option<Arc<Session>>, Option<Value>) -> HandlerFuture
+pub type EncodedHandlerFn = dyn Fn(Option<Uuid>, EncodedJson, Option<Arc<Session>>, Option<Arc<Value>>) -> HandlerFuture
     + Send
     + Sync;
 
@@ -77,7 +78,7 @@ impl Function {
         invocation_id: Option<Uuid>,
         data: Value,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         (self.handler)(invocation_id, data, session, metadata).await
     }
@@ -89,7 +90,7 @@ pub trait FunctionHandler {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
 
     /// Whether [`Self::handle_encoded`] sends the encoded input on as is,
@@ -105,7 +106,7 @@ pub trait FunctionHandler {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: EncodedJson,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         self.handle_function(invocation_id, function_id, input.to_value(), metadata)
     }

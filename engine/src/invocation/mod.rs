@@ -40,7 +40,7 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     invocation_id: Option<Uuid>,
     data: Value,
     session: Option<Arc<Session>>,
-    metadata: Option<Value>,
+    metadata: Option<Arc<Value>>,
 ) -> FunctionResult<Option<Value>, ErrorBody> {
     (handler.as_ref())(invocation_id, data, session, metadata).await
 }
@@ -161,7 +161,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         self.handle_invocation_inner(
             invocation_id,
@@ -197,7 +197,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         let worker_id = caller.map(|worker| worker.id);
@@ -233,7 +233,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         self.handle_invocation_inner(
@@ -271,7 +271,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         self.handle_invocation_inner(
@@ -310,7 +310,7 @@ impl InvocationHandler {
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         ctx: InvocationCtx,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
         // The routed observer hook (protocol.md §3.2). Unobserved — the usual

@@ -29,13 +29,14 @@ use iii_filter::Filter;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
+use super::lifecycle::Deliver;
 use super::{
     FnKey, ObserverRegistry,
     context::ENGINE_CALLER_NAME,
     lifecycle::{CaptureSet, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy},
     owner::check_options,
 };
-use crate::protocol::{DEFAULT_NAMESPACE, Deliver, ErrorBody, ObserverState, On, observe_codes};
+use crate::protocol::{DEFAULT_NAMESPACE, ErrorBody, ObserverState, observe_codes};
 
 /// The observing "connection" of every engine-owned observer.
 pub const ENGINE_CONNECTION: Uuid = Uuid::nil();
@@ -93,7 +94,7 @@ impl StandingObserver {
             args: self.args.clone(),
             filters: None,
             target: (DEFAULT_NAMESPACE.to_string(), self.target_id.clone()),
-            deliver: self.deliver.clone(),
+            deliver: self.deliver,
             metadata: self.metadata.clone(),
         }
     }
@@ -143,7 +144,17 @@ impl ObserverRegistry {
                 settings.max_queue_per_observer,
             )
         };
-        let capture = CaptureSet::DEFAULT;
+        // What it hands its target is all it captures, so all its
+        // function's host ships (decision 59).
+        let capture = match deliver {
+            Deliver::Input => CaptureSet::INPUT_ONLY,
+            Deliver::Output => CaptureSet {
+                output: true,
+                on_success: true,
+                ..CaptureSet::default()
+            },
+            Deliver::Payload => CaptureSet::DEFAULT,
+        };
 
         if let Some(existing) = self.get(&id) {
             if !existing.is_engine_owned() {
@@ -157,9 +168,8 @@ impl ObserverRegistry {
                 target: target.clone(),
                 args: args.clone(),
                 filters: filter.to_normalized(),
-                capture: capture.to_list(),
-                on: On::default(),
-                deliver: deliver.clone(),
+                capture,
+                deliver,
                 metadata: metadata.clone(),
                 max_fires: None,
                 expires_in_ms: None,
@@ -186,7 +196,6 @@ impl ObserverRegistry {
             args,
             filter,
             capture,
-            on: On::default(),
             deliver,
             metadata,
             policy: Policy {
@@ -386,6 +395,20 @@ mod tests {
         let observer = engine.observers.get("engine::test-watch").unwrap();
         assert!(observer.is_engine_owned());
         assert_eq!(observer.state(), ObserverState::Active);
+        // Decision 59: it hands its target the input alone, so it captures
+        // (and its function's host ships) the input alone, on success.
+        assert_eq!(
+            observer.capture,
+            CaptureSet {
+                input: true,
+                on_success: true,
+                ..CaptureSet::default()
+            }
+        );
+        assert_eq!(
+            observer.capture.with_delivered(&observer.deliver).to_list(),
+            vec![crate::protocol::Capture::Input]
+        );
         engine
             .call("test::source", json!({ "n": 1 }))
             .await

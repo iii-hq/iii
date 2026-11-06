@@ -264,7 +264,7 @@ pub enum Message {
         /// omitted when absent, so older peers that don't send/expect it stay
         /// wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
+        metadata: Option<std::sync::Arc<Value>>,
         /// Target namespace for routing. Optional and additive: absent means
         /// [`DEFAULT_NAMESPACE`], so older peers that don't send it stay
         /// wire-compatible.
@@ -516,14 +516,20 @@ pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
 /// (`invocationresult.matched` and `delivered`, `output_is_input`) and the
 /// function options `args_format`, `private` and `observable`.
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
+/// Feature: the connection reads the outcomes an observer fires on from
+/// `fires_on` in its announcement, never from `capture` or the legacy `on`. A
+/// host without it (0.25, and an rc host that declares `observe.v2`) also
+/// gets `on`.
+pub const FEATURE_OBSERVE_CAPTURE: &str = "observe.capture";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
 /// What this engine advertises in [`Message::WorkerRegistered`], in this
 /// order.
-pub const ENGINE_FEATURES: [&str; 3] = [
+pub const ENGINE_FEATURES: [&str; 4] = [
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_LOCAL_DISPATCH_V1,
 ];
 /// Worker feature, declared on `engine::workers::register` and never
@@ -678,36 +684,10 @@ wire_string_enum! {
     }
 }
 
-/// CONTRACT D1: `["input", "output", "caller"]`.
+/// Decision 62: `["input", "output", "caller"]`, so the default fires on
+/// success only and carries the call's `metadata` only when asked for.
 pub fn default_capture() -> Vec<Capture> {
     vec![Capture::Input, Capture::Output, Capture::Caller]
-}
-
-wire_string_enum! {
-    /// Which outcomes of a function's invocation activate an observer.
-    /// Defaults to `success` (CONTRACT D1).
-    #[derive(Default)]
-    pub enum On {
-        #[default]
-        Success => "success",
-        Error => "error",
-        Complete => "complete",
-    }
-}
-
-wire_string_enum! {
-    /// What the target's first argument is. Defaults to `envelope`
-    /// (CONTRACT D1).
-    #[derive(Default)]
-    pub enum Deliver {
-        /// The `Observed` envelope.
-        #[default]
-        Envelope => "envelope",
-        /// The observed invocation's input alone.
-        Input => "input",
-        /// The observed invocation's output alone.
-        Output => "output",
-    }
 }
 
 wire_string_enum! {
@@ -766,8 +746,9 @@ impl ObserveDescriptor {
 }
 
 /// The left side of `iii.observe`: the observed function, its args and filters,
-/// and the facet (`on`, `capture`, `deliver`). Absent fields stay absent; the
-/// accessors apply the defaults (CONTRACT D1).
+/// and what to `capture`. `capture` alone decides which outcomes fire the
+/// target and what its payload carries. Absent fields stay absent; the
+/// accessors apply the defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserveSource {
     pub function_id: String,
@@ -783,23 +764,35 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
+    /// Deprecated: an older SDK's `on` (`success` | `error` | `complete`),
+    /// kept as it arrived. The engine translates it at registration
+    /// (decision 60) and refuses any other value with `INVALID_ARGS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
+    pub on: Option<Value>,
+    /// Deprecated: an older SDK's `deliver` (`envelope` | `input` |
+    /// `output`), translated like `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deliver: Option<Deliver>,
+    pub deliver: Option<Value>,
+    /// Engine-internal, never on the wire: the target receives the observed
+    /// input alone instead of the payload (the engine's own observers).
+    #[serde(skip)]
+    pub raw_input: bool,
 }
 
 impl ObserveSource {
-    pub fn on(&self) -> On {
-        self.on.clone().unwrap_or_default()
-    }
-
     pub fn capture(&self) -> Vec<Capture> {
         self.capture.clone().unwrap_or_else(default_capture)
     }
 
-    pub fn deliver(&self) -> Deliver {
-        self.deliver.clone().unwrap_or_default()
+    /// The deprecated fields this source carries, as `source.<field>`.
+    pub fn legacy_fields(&self) -> Vec<&'static str> {
+        [
+            (self.on.is_some(), "source.on"),
+            (self.deliver.is_some(), "source.deliver"),
+        ]
+        .into_iter()
+        .filter_map(|(present, field)| present.then_some(field))
+        .collect()
     }
 }
 
@@ -813,9 +806,9 @@ pub struct ObserveTarget {
 }
 
 /// An observer as its function's host sees it (`functionregistered`,
-/// `observeradded`; CONTRACT D15): never its `deliver`, metadata, policy or
-/// observing connection. The engine always sends `capture` and `on` resolved,
-/// so the defaults here only matter when decoding a sparse frame.
+/// `observeradded`): never its metadata, policy or observing
+/// connection. The engine always sends `capture` resolved, so the default
+/// here only matters when decoding a sparse frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserverView {
     pub id: String,
@@ -825,12 +818,19 @@ pub struct ObserverView {
     /// The observer's filters, normalized (filters.md §5).
     #[serde(default = "empty_object")]
     pub filters: Value,
-    /// Target function id; its namespace is not disclosed (CONTRACT D6).
+    /// Target function id; its namespace is not disclosed.
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
-    #[serde(default)]
-    pub on: On,
+    /// The outcomes the observer fires on: `success`, `error` or both.
+    /// Never empty from this engine; absent from an older one's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fires_on: Vec<String>,
+    /// For a host without `observe.capture` (0.25, rc) only, which decides the outcomes
+    /// that fire from it alone: `error` or `complete` as `capture` implies,
+    /// absent for success. Deprecated with those hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
 }
 
 /// Who made an invocation (README §4.3). Every field is optional on the wire:
@@ -1832,7 +1832,9 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
-            metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+            metadata: Some(std::sync::Arc::new(
+                serde_json::json!({ "session_id": "s_1" }),
+            )),
             namespace: None,
             caller: None,
             observe_depth: None,
@@ -1842,7 +1844,10 @@ mod tests {
         assert!(json.contains("\"metadata\""));
         match serde_json::from_str::<Message>(&json).expect("deserialize") {
             Message::InvokeFunction { metadata, data, .. } => {
-                assert_eq!(metadata, Some(serde_json::json!({ "session_id": "s_1" })));
+                assert_eq!(
+                    metadata.as_deref(),
+                    Some(&serde_json::json!({ "session_id": "s_1" }))
+                );
                 // Payload is untouched — metadata is not folded into `data`.
                 assert_eq!(data, serde_json::json!({ "k": 1 }));
             }
@@ -1927,8 +1932,8 @@ mod tests {
     // ── observe (0.25) wire compatibility ─────────────────────────────────
 
     use super::{
-        Activation, Caller, Capture, Deliver, InvocationStatus, ObserveDescriptor, ObservedItem,
-        ObserverState, On, RawJson, default_capture,
+        Activation, Caller, Capture, InvocationStatus, ObserveDescriptor, ObservedItem,
+        ObserverState, RawJson, default_capture,
     };
     use serde_json::{Value, json};
 
@@ -2143,13 +2148,18 @@ mod tests {
         else {
             panic!("expected Observe");
         };
-        assert_eq!(source.on(), On::Success);
         assert_eq!(source.capture(), default_capture());
         assert_eq!(
             source.capture(),
-            vec![Capture::Input, Capture::Output, Capture::Caller]
+            vec![Capture::Input, Capture::Output, Capture::Caller],
+            "decision 62: no `metadata` unless asked for"
         );
-        assert_eq!(source.deliver(), Deliver::Envelope);
+        assert!(!source.raw_input);
+        let encoded = serde_json::to_value(&source).unwrap();
+        assert!(
+            encoded.get("on").is_none() && encoded.get("deliver").is_none(),
+            "{encoded}"
+        );
         assert!(source.namespace.is_none() && source.args.is_none() && source.filters.is_none());
         assert!(target.namespace.is_none());
         assert!(
@@ -2285,9 +2295,12 @@ mod tests {
             source.capture.as_deref(),
             Some(&[Capture::Input, Capture::Unknown("timing".into())][..])
         );
-        assert_eq!(source.on, Some(On::Unknown("start".into())));
-        assert!(!source.on().is_known());
-        assert_eq!(source.deliver, Some(Deliver::Unknown("both".into())));
+        // An older SDK's `on` / `deliver` decode into their own fields (the
+        // engine translates them at registration) and re-encode as they
+        // arrived; a key `observe` never had is dropped, as before.
+        let mut with_extra = frame.clone();
+        with_extra["source"]["timing_mode"] = json!("x");
+        let msg: Message = serde_json::from_value(with_extra).expect("decodes");
         assert_eq!(serde_json::to_value(&msg).unwrap(), frame);
 
         let state: Message = serde_json::from_value(
@@ -2305,8 +2318,6 @@ mod tests {
     fn wire_enums_spell_their_values_in_lowercase() {
         for (value, wire) in [
             (serde_json::to_value(Capture::Metadata).unwrap(), "metadata"),
-            (serde_json::to_value(On::Complete).unwrap(), "complete"),
-            (serde_json::to_value(Deliver::Output).unwrap(), "output"),
             (
                 serde_json::to_value(ObserverState::Suspended).unwrap(),
                 "suspended",
@@ -2586,15 +2597,42 @@ mod tests {
     }
 
     #[test]
-    fn engine_advertises_observe_v1_v2_and_local_dispatch() {
+    fn engine_advertises_observe_v1_v2_capture_and_local_dispatch() {
         assert_eq!(
             super::engine_features(),
             vec![
                 "observe.v1".to_string(),
                 "observe.v2".to_string(),
+                "observe.capture".to_string(),
                 "local-dispatch.v1".to_string()
             ]
         );
+        assert_eq!(super::FEATURE_OBSERVE_CAPTURE, "observe.capture");
+    }
+
+    #[test]
+    fn an_observer_view_carries_fires_on_and_on_only_when_set() {
+        let view = super::ObserverView {
+            id: "o-1".to_string(),
+            args: json!({}),
+            filters: json!({}),
+            target: "sink::x".to_string(),
+            capture: vec![super::Capture::Error],
+            fires_on: vec!["error".to_string()],
+            on: None,
+        };
+        let wire = serde_json::to_value(&view).unwrap();
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
+        assert!(wire.get("on").is_none(), "{wire}");
+        let legacy = super::ObserverView {
+            on: Some("error".to_string()),
+            ..view
+        };
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(wire["on"], "error", "{wire}");
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
     }
 
     #[test]
@@ -2647,7 +2685,7 @@ mod tests {
             ),
             baggage: Some("k=v".to_string()),
             action: None,
-            metadata: Some(metadata.clone()),
+            metadata: Some(std::sync::Arc::new(metadata.clone())),
             namespace: None,
             caller: Some(Box::new(caller.clone())),
             observe_depth: Some(2),

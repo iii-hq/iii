@@ -142,7 +142,7 @@ async fn a_local_call_of_a_private_function_copies_nothing() {
         (
             &counted,
             json!([{ "id": "count", "args": {}, "filters": {}, "target": "stats::count",
-                     "capture": [], "on": "success" }]),
+                     "capture": [] }]),
         ),
         (&typed, json!([])),
     ] {

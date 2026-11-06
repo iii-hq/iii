@@ -26,7 +26,7 @@ type RemovedHook func(ctx context.Context, obs *Observer)
 // MatchHook says which observers want each call of one function; without one, every
 // observer wants every call. Build it with [MatchFunc] (a predicate) or [MatchKeys]
 // (keys the SDK indexes). The observers it matches are what iii delivers the call to,
-// after their on and filters, or what the function's [DeliverHook] receives. A nil
+// after their capture and filters, or what the function's [DeliverHook] receives. A nil
 // MatchHook, and the zero one, match every observer.
 //
 // A host that sends one observer something of its own (its initial state) calls the
@@ -92,7 +92,7 @@ func (m *MatchHook) byKeys() bool {
 // the call started. What it returns is the caller's result, encoded as a handler's is;
 // the error it returns is the caller's error. iii delivers nothing for the function:
 // the hook calls a target through its observer ([CallRequest].Observer) and applies the
-// observer's on and filters with [Observer.Matches]. It runs inside the function's
+// observer's capture and filters with [Observer.Matches]. It runs inside the function's
 // invocation, so calls made with ctx have that invocation as their caller.
 type DeliverHook func(ctx context.Context, call *Call, observers []*Observer) (any, error)
 
@@ -259,7 +259,7 @@ func (c *Client) OnObservationMatchFor(functionID string, m *MatchHook) *Client 
 }
 
 // OnObservationDeliverFor sets the hook that delivers each call of functionID itself; nil
-// restores iii's delivery, which delivers each call to every matched observer whose on
+// restores iii's delivery, which delivers each call to every matched observer whose capture
 // and filters accept it, and gives the caller the handler's result. It is stored by id,
 // as [Client.OnObserverAddedFor] is. A function with a deliver hook needs an engine with
 // observe.v2: against an older one it stays unregistered, and the SDK logs UNSUPPORTED

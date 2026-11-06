@@ -1,5 +1,5 @@
 /**
- * The reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for the local
+ * The reporter (sdk.md §4.4): one bounded buffer for the local
  * calls of hosted functions that observers matched, flushed as
  * `invocationsobserved` batches; plus the periodic `localinvocationstats`.
  *
@@ -131,7 +131,7 @@ class ReportItem {
 }
 
 /**
- * Replaces lone surrogates with U+FFFD (CONTRACT parity 32): `JSON.stringify`
+ * Replaces lone surrogates with U+FFFD: `JSON.stringify`
  * writes one as `\ud800`, which the engine's strict decoder refuses, and it
  * would take the whole batch down with it. `JSON.stringify` escapes nothing
  * else in that range (a valid pair is written as is), so every `\udXXX`

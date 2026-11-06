@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,7 +41,7 @@ func newFakeEngine(t testing.TB) *fakeEngine {
 	fe := &fakeEngine{
 		t:             t,
 		m:             newMockEngine(t),
-		features:      []string{FeatureObserveV1, FeatureObserveV2, FeatureLocalDispatchV1},
+		features:      []string{FeatureObserveV1, FeatureObserveV2, "observe.capture", FeatureLocalDispatchV1},
 		confirm:       true,
 		localDispatch: true,
 		sets:          map[string][]ObserverInfo{},
@@ -140,9 +141,72 @@ func (fe *fakeEngine) confirmFunction(conn *websocket.Conn, id string, localDisp
 	set := append([]ObserverInfo{}, fe.sets[id]...)
 	rev := fe.revisions[id]
 	fe.mu.Unlock()
-	_ = fe.m.send(context.Background(), conn, &FunctionRegisteredMessage{
+	frame, err := fe.encode(&FunctionRegisteredMessage{
 		ID: id, Namespace: "default", Revision: rev, LocalDispatch: localDispatch, Observers: set,
 	})
+	if err == nil {
+		_ = fe.m.sendRaw(context.Background(), conn, frame)
+	}
+}
+
+// encode is msg's frame, its observer views announced as an engine with
+// observe.capture announces them: with the fires_on their capture implies, unless a
+// view carries its own fires_on or a legacy on. Other engines' frames are unchanged.
+func (fe *fakeEngine) encode(msg any) ([]byte, error) {
+	frame, err := MarshalMessage(msg)
+	if err != nil {
+		return nil, err
+	}
+	fe.mu.Lock()
+	announces := slices.Contains(fe.features, "observe.capture")
+	fe.mu.Unlock()
+	var m map[string]json.RawMessage
+	if !announces || json.Unmarshal(frame, &m) != nil {
+		return frame, nil
+	}
+	patch := func(raw json.RawMessage) json.RawMessage {
+		var view map[string]json.RawMessage
+		if json.Unmarshal(raw, &view) != nil {
+			return raw
+		}
+		if _, ok := view["fires_on"]; ok {
+			return raw
+		}
+		if _, ok := view["on"]; ok {
+			return raw
+		}
+		capture := []Capture{CaptureInput, CaptureOutput, CaptureCaller}
+		if c, ok := view["capture"]; ok {
+			capture = nil
+			_ = json.Unmarshal(c, &capture)
+		}
+		firesOn := []string{}
+		if len(capture) == 0 || slices.Contains(capture, CaptureInput) || slices.Contains(capture, CaptureOutput) {
+			firesOn = append(firesOn, "success")
+		}
+		if slices.Contains(capture, CaptureError) {
+			firesOn = append(firesOn, "error")
+		}
+		view["fires_on"], _ = json.Marshal(firesOn)
+		out, err := json.Marshal(view)
+		if err != nil {
+			return raw
+		}
+		return out
+	}
+	if view, ok := m["observer"]; ok {
+		m["observer"] = patch(view)
+	}
+	if views, ok := m["observers"]; ok {
+		var list []json.RawMessage
+		if json.Unmarshal(views, &list) == nil {
+			for i := range list {
+				list[i] = patch(list[i])
+			}
+			m["observers"], _ = json.Marshal(list)
+		}
+	}
+	return json.Marshal(m)
 }
 
 // send writes a message to the current connection.
@@ -154,7 +218,11 @@ func (fe *fakeEngine) send(msg any) {
 	if conn == nil {
 		fe.t.Fatalf("fake engine: no connection to send %T on", msg)
 	}
-	if err := fe.m.send(context.Background(), conn, msg); err != nil {
+	frame, err := fe.encode(msg)
+	if err == nil {
+		err = fe.m.sendRaw(context.Background(), conn, frame)
+	}
+	if err != nil {
 		fe.t.Fatalf("fake engine: send %T: %v", msg, err)
 	}
 }
@@ -383,7 +451,7 @@ func waitUntil(t testing.TB, what string, cond func() bool) {
 
 // observerInfo is an observer as the engine pushes it to the host.
 func observerInfo(id, target string, args, filters string, capture ...Capture) ObserverInfo {
-	info := ObserverInfo{ID: id, Target: target, On: OnSuccess, Capture: capture}
+	info := ObserverInfo{ID: id, Target: target, Capture: capture}
 	if capture == nil {
 		info.Capture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 	}

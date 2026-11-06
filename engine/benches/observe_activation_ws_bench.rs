@@ -26,8 +26,9 @@ use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::{SinkExt, StreamExt};
+use iii::observer::Deliver;
 use iii::observer::{EngineObserver, ObserversConfig, events::register_event_source};
-use iii::protocol::{DEFAULT_NAMESPACE, Deliver};
+use iii::protocol::DEFAULT_NAMESPACE;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
@@ -212,7 +213,7 @@ async fn setup(fanout: usize, deliver: Deliver) -> Bench {
                 args: json!({}),
                 filters: None,
                 target: (DEFAULT_NAMESPACE.to_string(), id.clone()),
-                deliver: deliver.clone(),
+                deliver,
                 metadata: None,
             })
             .expect("observe the source");
@@ -269,9 +270,9 @@ fn observe_activation_ws(c: &mut Criterion) {
         .iter()
         .map(|(label, size)| (*label, payload(*size)))
         .collect();
-    for (label, deliver) in [("envelope", Deliver::Envelope), ("input", Deliver::Input)] {
+    for (label, deliver) in [("envelope", Deliver::Payload), ("input", Deliver::Input)] {
         for fanout in FANOUTS {
-            let bench = rt.block_on(setup(fanout, deliver.clone()));
+            let bench = rt.block_on(setup(fanout, deliver));
             for (size, payload) in &payloads {
                 group.throughput(Throughput::Elements(BURST * fanout as u64));
                 group.bench_with_input(

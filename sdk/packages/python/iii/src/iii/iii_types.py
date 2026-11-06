@@ -38,6 +38,10 @@ FEATURE_OBSERVE_V1 = "observe.v1"
 #: report items, and the top-level ``args_format``, ``private`` and ``observable`` of
 #: ``registerfunction``.
 FEATURE_OBSERVE_V2 = "observe.v2"
+#: The host reads the outcomes that fire an observer from the ``fires_on`` of its observer
+#: views, never from ``capture``, and sends no ``source.on``. An engine with it announces
+#: ``fires_on`` on every view.
+FEATURE_OBSERVE_CAPTURE = "observe.capture"
 #: The engine confirms functions for in-process calls (``functionregistered.local_dispatch``).
 FEATURE_LOCAL_DISPATCH_V1 = "local-dispatch.v1"
 #: Declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it
@@ -47,12 +51,57 @@ FEATURE_LARGE_MESSAGES_V1 = "large-messages.v1"
 SDK_FEATURES: tuple[str, ...] = (
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_LOCAL_DISPATCH_V1,
     FEATURE_LARGE_MESSAGES_V1,
 )
 
-#: What an absent ``capture`` means (CONTRACT D1).
+#: What an absent ``capture`` means (decision 62): ``input``, ``output`` and ``caller``
+#: (no ``error``, so it fires on success only, and no ``metadata``).
 DEFAULT_CAPTURE: tuple[str, ...] = ("input", "output", "caller")
+
+
+def capture_fires(capture: "list[str] | tuple[str, ...]", ok: bool) -> bool:
+    """Whether a call that ended in success (``ok``) or error fires an observer
+    with this ``capture``, as the engine decides it: ``input`` and ``output``
+    fire on success, ``error`` on error; ``caller`` and ``metadata`` fire on
+    nothing. ``[]`` fires on success, with the top-level fields only."""
+    if not capture:
+        return ok
+    if ok:
+        return "input" in capture or "output" in capture
+    return "error" in capture
+
+
+
+def legacy_on(capture: "list[str] | tuple[str, ...] | None") -> str | None:
+    """The ``source.on`` an engine without ``observe.v2`` (0.25) needs for this
+    ``capture``, since it decides the outcomes that fire from ``on`` alone:
+    ``"error"`` or ``"complete"``, or ``None`` for an observer that fires on
+    success, its default. Deprecated with those engines."""
+    capture = DEFAULT_CAPTURE if capture is None else capture
+    if not capture_fires(capture, False):
+        return None
+    return "complete" if capture_fires(capture, True) else "error"
+
+
+#: Warned once per client, the first time it reads an observer view without ``fires_on`` or
+#: sends ``source.on``: the engine lacks ``observe.capture``.
+LEGACY_ON_DEPRECATION = (
+    "observe: the connected engine does not support observe.capture; legacy `on` semantics are "
+    "deprecated and will be removed in a future version; upgrade the engine."
+)
+
+
+def legacy_firing(on: Any) -> tuple[bool, bool]:
+    """``(fires on success, fires on error)`` for a legacy ``on``: absent (or
+    ``"success"``, or a value this SDK does not know) fires on success,
+    ``"error"`` on error, ``"complete"`` on both."""
+    if on == "error":
+        return False, True
+    if on == "complete":
+        return True, True
+    return True, False
 
 
 class _WireModel(BaseModel):
@@ -188,8 +237,6 @@ class ObserveSourceWire(_WireModel):
     args: dict[str, Any] | None = None
     filters: dict[str, Any] | None = None
     capture: list[str] | None = None
-    on: str | None = None
-    deliver: str | None = None
 
 
 class FunctionTargetWire(_WireModel):
@@ -249,7 +296,24 @@ class ObserverInfoWire(_WireModel):
     filters: Any = Field(default_factory=dict)
     target: str = ""
     capture: list[str] = Field(default_factory=lambda: list(DEFAULT_CAPTURE))
-    on: str = "success"
+    #: The outcomes that fire it (``"success"``, ``"error"``), from an engine with
+    #: ``observe.capture``; ``None`` from an older one, whose observers fire as ``on`` says.
+    fires_on: list[str] | None = None
+    #: The legacy ``on`` of an engine without ``observe.capture`` (absent: success;
+    #: ``"error"``; ``"complete"``), read only when ``fires_on`` is ``None``. Deprecated.
+    on: Any = None
+
+    @field_validator("fires_on", mode="before")
+    @classmethod
+    def _outcomes(cls, v: Any) -> Any:
+        return [s for s in v if isinstance(s, str)] if isinstance(v, list) else None
+
+    def firing(self) -> tuple[bool, bool]:
+        """``(fires on success, fires on error)``: from ``fires_on``, or else
+        from the legacy ``on``, never from ``capture``."""
+        if self.fires_on is not None:
+            return "success" in self.fires_on, "error" in self.fires_on
+        return legacy_firing(self.on)
 
     @field_validator("args", mode="before")
     @classmethod
@@ -574,7 +638,7 @@ class InvocationResultMessage(BaseModel):
     traceparent: str | None = Field(default=None)
     baggage: str | None = Field(default=None)
     #: A routed call of a function with a match hook (``observe.v2``, decision 55): the
-    #: observers the hook matched, before ``on`` and filters, which the engine evaluates.
+    #: observers the hook matched, before capture and filters, which the engine evaluates.
     #: ``[]`` when it matched none; left out for a function without a match hook.
     matched: list[str] | None = Field(default=None)
     #: A routed call of a function with a deliver hook (``observe.v2``, decision 55): the hook

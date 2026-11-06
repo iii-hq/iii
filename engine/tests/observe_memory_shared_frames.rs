@@ -70,6 +70,7 @@ fn request(i: usize) -> ObserveRequest {
             capture: None,
             on: None,
             deliver: None,
+            raw_input: false,
         },
         target: ObserveTarget {
             function_id: SINK.to_string(),

@@ -19,8 +19,9 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, Setup, TestEngine, connect, connect_query, evaluated, eventually, in_process,
-    registered, spawn, spawn_engine, spawn_engine_with, unrestricted_listener,
+    Client, OBSERVE_CAPTURE, OBSERVE_V2, Setup, TestEngine, connect, connect_query, connect_with,
+    evaluated, eventually, in_process, registered, spawn, spawn_engine, spawn_engine_with,
+    unrestricted_listener,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -40,6 +41,18 @@ fn fixture_keys(name: &str) -> Vec<String> {
 /// A host for `functions`, connected and registered.
 async fn host(t: &TestEngine, name: &str, features: bool, functions: &[&str]) -> Client {
     let mut client = connect(t, name, features).await;
+    for function in functions {
+        client.register_function(function).await;
+    }
+    for function in functions {
+        registered(&t.engine, "default", function).await;
+    }
+    client
+}
+
+/// As [`host`], for a worker running a current SDK (`observe.capture`).
+async fn capture_host(t: &TestEngine, name: &str, functions: &[&str]) -> Client {
+    let mut client = connect_with(t, name, OBSERVE_CAPTURE).await;
     for function in functions {
         client.register_function(function).await;
     }
@@ -297,24 +310,50 @@ async fn filters_on_output_and_caller() {
     assert_eq!(fires(&t, "obs-paid"), 1);
 }
 
+/// `capture` alone decides which outcomes fire: `input` / `output` fire on
+/// success and `error` on error, `caller` / `metadata` only add to the
+/// payload, and `[]` fires on success with the top-level fields only.
 #[tokio::test]
-async fn lang_error_and_completion_facets() {
-    // payments::charge.error ~> alerts::raise, and .completion ~> metrics::record.
+async fn capture_decides_which_outcomes_fire() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
-    let mut sink = host(&t, "sink", true, &["alerts::raise", "metrics::record"]).await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut sink = capture_host(
+        &t,
+        "sink",
+        &[
+            "alerts::raise",
+            "metrics::record",
+            "metrics::count",
+            "audit::default",
+            "audit::full",
+        ],
+    )
+    .await;
     let mut checkout = connect(&t, "checkout", true).await;
 
+    for (id, capture, target) in [
+        ("obs-error", json!(["error", "caller"]), "alerts::raise"),
+        ("obs-both", json!(["input", "error"]), "metrics::record"),
+        ("obs-empty", json!([]), "metrics::count"),
+        (
+            "obs-full",
+            json!(["input", "output", "error"]),
+            "audit::full",
+        ),
+    ] {
+        sink.observe_active(observer(
+            id,
+            json!({ "function_id": "payments::charge", "capture": capture }),
+            target,
+        ))
+        .await;
+    }
+    // No capture: the default, input, output and caller (decision 62).
     sink.observe_active(observer(
-        "obs-error",
-        json!({ "function_id": "payments::charge", "on": "error", "capture": ["input", "error"] }),
-        "alerts::raise",
-    ))
-    .await;
-    sink.observe_active(observer(
-        "obs-complete",
-        json!({ "function_id": "payments::charge", "on": "complete", "capture": [] }),
-        "metrics::record",
+        "obs-default",
+        json!({ "function_id": "payments::charge" }),
+        "audit::default",
     ))
     .await;
 
@@ -327,17 +366,42 @@ async fn lang_error_and_completion_facets() {
         json!({ "ok": true }),
     )
     .await;
-    let completion = sink.invoked("metrics::record").await;
-    assert_eq!(completion["data"]["status"], "success");
+    let empty = sink.invoked("metrics::count").await;
+    assert_eq!(empty["data"]["status"], "success");
     for key in ["input", "output", "error", "caller", "metadata"] {
         assert!(
-            completion["data"].get(key).is_none(),
-            "capture: [] ships ids, status and timings only (D14): {completion}"
+            empty["data"].get(key).is_none(),
+            "capture: [] ships ids, status and timings only (D14): {empty}"
         );
     }
-    assert!(completion["data"]["duration_ms"].as_f64().is_some());
-    sink.reply(&completion, Value::Null).await;
-    assert_eq!(fires(&t, "obs-error"), 0, "on: error ignores a success");
+    assert!(empty["data"]["duration_ms"].as_f64().is_some());
+    sink.reply(&empty, Value::Null).await;
+    let success = sink.invoked("metrics::record").await;
+    assert_eq!(success["data"]["status"], "success");
+    assert_eq!(success["data"]["input"], json!({ "amount": 1 }));
+    assert!(success["data"].get("error").is_none() && success["data"].get("output").is_none());
+    sink.reply(&success, Value::Null).await;
+    let default = sink.invoked("audit::default").await;
+    assert_eq!(default["data"]["status"], "success");
+    assert_eq!(default["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert_eq!(default["data"]["caller"]["worker_name"], "checkout");
+    assert!(default["data"].get("error").is_none(), "{default}");
+    sink.reply(&default, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "success");
+    assert_eq!(full["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(full["data"]["output"], json!({ "ok": true }));
+    assert!(
+        full["data"].get("error").is_none(),
+        "never with output: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
+    assert_eq!(
+        fires(&t, "obs-error"),
+        0,
+        "error and caller ignore a success"
+    );
 
     let call = checkout
         .call("payments::charge", json!({ "amount": 2 }))
@@ -351,18 +415,265 @@ async fn lang_error_and_completion_facets() {
     let alert = sink.invoked("alerts::raise").await;
     assert_eq!(alert["data"]["status"], "error");
     assert_eq!(alert["data"]["error"]["code"], "CARD_DECLINED");
-    assert_eq!(alert["data"]["input"], json!({ "amount": 2 }));
-    assert!(alert["data"].get("output").is_none());
+    assert_eq!(alert["data"]["caller"]["worker_name"], "checkout");
+    assert!(alert["data"].get("input").is_none() && alert["data"].get("output").is_none());
     sink.reply(&alert, Value::Null).await;
-    let completion = sink.invoked("metrics::record").await;
-    assert_eq!(completion["data"]["status"], "error");
-    sink.reply(&completion, Value::Null).await;
+    let failure = sink.invoked("metrics::record").await;
+    assert_eq!(failure["data"]["status"], "error");
+    assert_eq!(failure["data"]["input"], json!({ "amount": 2 }));
+    assert_eq!(failure["data"]["error"]["code"], "CARD_DECLINED");
+    sink.reply(&failure, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "error");
+    assert_eq!(full["data"]["input"], json!({ "amount": 2 }));
+    assert_eq!(full["data"]["error"]["code"], "CARD_DECLINED");
+    assert!(
+        full["data"].get("output").is_none(),
+        "never with error: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
+    assert_eq!(fires(&t, "obs-empty"), 1, "capture: [] ignores an error");
+    assert_eq!(
+        fires(&t, "obs-default"),
+        1,
+        "the default capture ignores an error: errors are not observed by default"
+    );
+}
+
+/// Decision 60: an older SDK's `source.on` / `source.deliver` are translated,
+/// not refused: `on` alone decides the outcomes that fire, the `capture`
+/// (default `[input, output, caller]`) exactly what the payload carries, and
+/// `deliver: input` / `output` hand the target the raw input / output. Its
+/// replay is the same spec. Decision 62: the default captures no `metadata`.
+#[tokio::test]
+async fn legacy_on_and_deliver_are_translated_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let targets = [
+        "legacy::on-error",
+        "legacy::output",
+        "legacy::input-complete",
+        "legacy::caller",
+        "modern::default",
+        "modern::metadata",
+    ];
+    let mut sink = host(&t, "sink", true, &targets).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+
+    for (id, extra, target) in [
+        ("obs-on-error", json!({ "on": "error" }), targets[0]),
+        ("obs-output", json!({ "deliver": "output" }), targets[1]),
+        (
+            "obs-input-complete",
+            json!({ "on": "complete", "deliver": "input" }),
+            targets[2],
+        ),
+        (
+            "obs-caller",
+            json!({ "on": "success", "deliver": "envelope", "capture": ["caller"] }),
+            targets[3],
+        ),
+        ("obs-default", json!({}), targets[4]),
+        (
+            "obs-metadata",
+            json!({ "capture": ["input", "metadata"] }),
+            targets[5],
+        ),
+    ] {
+        let mut source = json!({ "function_id": "payments::charge" });
+        for (key, value) in extra.as_object().unwrap() {
+            source[key] = value.clone();
+        }
+        let result = sink
+            .observe_active(observer(id, source.clone(), target))
+            .await;
+        assert!(result.get("error").is_none(), "{id}: {result}");
+        let replay = sink.observe(observer(id, source, target)).await;
+        assert_eq!(replay["state"], "active", "{id} replay: {replay}");
+    }
+
+    let call = checkout
+        .call_with(
+            "payments::charge",
+            json!({ "amount": 1 }),
+            json!({ "metadata": { "session": "s-1" } }),
+        )
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+
+    let output = sink.invoked("legacy::output").await;
+    assert_eq!(output["data"], json!({ "ok": true }), "the raw output");
+    sink.reply(&output, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(input["data"], json!({ "amount": 1 }), "the raw input");
+    sink.reply(&input, Value::Null).await;
+    let caller = sink.invoked("legacy::caller").await;
+    assert_eq!(caller["data"]["status"], "success");
+    assert_eq!(caller["data"]["caller"]["worker_name"], "checkout");
+    for key in ["input", "output", "error", "metadata"] {
+        assert!(caller["data"].get(key).is_none(), "{caller}");
+    }
+    sink.reply(&caller, Value::Null).await;
+    let default = sink.invoked("modern::default").await;
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert!(
+        default["data"].get("metadata").is_none(),
+        "D1: no metadata by default: {default}"
+    );
+    sink.reply(&default, Value::Null).await;
+    let metadata = sink.invoked("modern::metadata").await;
+    assert_eq!(metadata["data"]["metadata"], json!({ "session": "s-1" }));
+    sink.reply(&metadata, Value::Null).await;
+    assert_eq!(
+        fires(&t, "obs-on-error"),
+        0,
+        "`on: error` ignores a success"
+    );
+
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+
+    let on_error = sink.invoked("legacy::on-error").await;
+    let envelope = &on_error["data"];
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["input"], json!({ "amount": 2 }));
+    assert_eq!(envelope["caller"]["worker_name"], "checkout");
+    assert!(
+        envelope.get("error").is_none() && envelope.get("output").is_none(),
+        "the old default capture has neither on a failure: {on_error}"
+    );
+    sink.reply(&on_error, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(
+        input["data"],
+        json!({ "amount": 2 }),
+        "complete: errors too"
+    );
+    sink.reply(&input, Value::Null).await;
+    assert_eq!(fires(&t, "obs-on-error"), 1);
+    assert_eq!(fires(&t, "obs-output"), 1, "`on` absent: success only");
+    assert_eq!(fires(&t, "obs-caller"), 1);
+    assert_eq!(fires(&t, "obs-input-complete"), 2);
+}
+
+/// Decision 60: an `observe` from a worker that did not declare
+/// `observe.capture` (an rc SDK, `observe.v2` only; a 0.25 SDK, no features)
+/// keeps the v0.25 semantics even without `on` / `deliver`: it fires on
+/// successes alone, its payload carries exactly its capture, and a capture
+/// the new gate refuses (`[caller]`) is accepted. A worker that declared it
+/// gets the capture model: `[error]` fires on failures only, `[caller]` is
+/// refused. The replay of each is the same observer.
+#[tokio::test]
+async fn a_worker_without_observe_capture_keeps_the_old_semantics_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let kinds: [(&str, &[&str]); 3] = [
+        ("rc", OBSERVE_V2),
+        ("v025", &[]),
+        ("capture", OBSERVE_CAPTURE),
+    ];
+    let mut sinks = Vec::new();
+    for (kind, features) in kinds {
+        let mut sink = connect_with(&t, &format!("sink-{kind}"), features).await;
+        for target in ["error", "caller"] {
+            sink.register_function(&format!("{kind}::{target}")).await;
+            registered(&t.engine, "default", &format!("{kind}::{target}")).await;
+        }
+        for (name, capture) in [("error", json!(["error"])), ("caller", json!(["caller"]))] {
+            let id = format!("obs-{name}-{kind}");
+            let source = json!({ "function_id": "payments::charge", "capture": capture });
+            let target = format!("{kind}::{name}");
+            let first = sink.observe(observer(&id, source.clone(), &target)).await;
+            let replay = sink.observe(observer(&id, source, &target)).await;
+            let refused = kind == "capture" && name == "caller";
+            for (when, answer) in [("observe", &first), ("replay", &replay)] {
+                assert_eq!(
+                    answer["state"] == "error",
+                    refused,
+                    "[{kind}] {id} {when}: {answer}"
+                );
+            }
+        }
+        sinks.push((kind, sink));
+    }
+
+    // A success: the legacy SDKs' observers fire, carrying their capture.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 1 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+    for (kind, sink) in sinks.iter_mut().filter(|(kind, _)| *kind != "capture") {
+        let error = sink.invoked(&format!("{kind}::error")).await;
+        assert_eq!(error["data"]["status"], "success", "[{kind}] {error}");
+        for key in ["input", "output", "error", "caller"] {
+            assert!(
+                error["data"].get(key).is_none(),
+                "[{kind}] capture [error]: {error}"
+            );
+        }
+        sink.reply(&error, Value::Null).await;
+        let caller = sink.invoked(&format!("{kind}::caller")).await;
+        assert_eq!(
+            caller["data"]["caller"]["worker_name"], "checkout",
+            "[{kind}]"
+        );
+        for key in ["input", "output", "error"] {
+            assert!(
+                caller["data"].get(key).is_none(),
+                "[{kind}] capture [caller]: {caller}"
+            );
+        }
+        sink.reply(&caller, Value::Null).await;
+    }
+
+    // A failure: only the current SDK's `[error]` observer fires.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+    let (_, capture) = sinks
+        .iter_mut()
+        .find(|(kind, _)| *kind == "capture")
+        .unwrap();
+    let error = capture.invoked("capture::error").await;
+    assert_eq!(error["data"]["status"], "error");
+    assert_eq!(error["data"]["error"]["code"], "CARD_DECLINED", "{error}");
+    capture.reply(&error, Value::Null).await;
+
+    assert_eq!(
+        fires(&t, "obs-error-capture"),
+        1,
+        "the capture model: failures only"
+    );
+    for kind in ["rc", "v025"] {
+        assert_eq!(
+            fires(&t, &format!("obs-error-{kind}")),
+            1,
+            "[{kind}] v0.25: successes only"
+        );
+        assert_eq!(fires(&t, &format!("obs-caller-{kind}")), 1, "[{kind}]");
+    }
 }
 
 #[tokio::test]
 async fn lang_default_payload_and_invocation_facet() {
-    // orders::complete ~> (order) => ...: the target gets the output itself;
-    // orders::complete.invocation ~> ...: the full envelope.
+    // `capture: ["output"]` / `["input"]` carry that part alone in the
+    // payload; every field gives the full payload.
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut orders = host(&t, "orders", true, &["orders::complete"]).await;
     let mut sink = host(
@@ -376,13 +687,13 @@ async fn lang_default_payload_and_invocation_facet() {
 
     sink.observe_active(observer(
         "obs-output",
-        json!({ "function_id": "orders::complete", "deliver": "output" }),
+        json!({ "function_id": "orders::complete", "capture": ["output"] }),
         "receipts::render",
     ))
     .await;
     sink.observe_active(observer(
         "obs-input",
-        json!({ "function_id": "orders::complete", "deliver": "input" }),
+        json!({ "function_id": "orders::complete", "capture": ["input"] }),
         "audit::input",
     ))
     .await;
@@ -412,13 +723,17 @@ async fn lang_default_payload_and_invocation_facet() {
     checkout.result(call).await;
 
     let render = sink.invoked("receipts::render").await;
-    assert_eq!(render["data"], json!({ "order_id": "o-1", "total": 42 }));
+    assert_eq!(
+        render["data"]["output"],
+        json!({ "order_id": "o-1", "total": 42 })
+    );
+    assert!(render["data"].get("input").is_none());
     sink.reply(&render, Value::Null).await;
     let input = sink.invoked("audit::input").await;
     assert_eq!(
-        input["data"],
+        input["data"]["input"],
         json!({ "order_id": "o-1" }),
-        "deliver: input, as the caller sent it"
+        "the input, as the caller sent it"
     );
     sink.reply(&input, Value::Null).await;
     let audit = sink.invoked("audit::write").await;
@@ -1492,7 +1807,8 @@ async fn observe_rejections() {
         .await;
     registered(&t.engine, "default", "vault::read").await;
     registered(&t.engine, "default", "vault::secret").await;
-    let mut watcher = connect(&t, "watcher", true).await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
 
     let source = |extra: Value| {
         let mut source = json!({ "function_id": "orders::create" });
@@ -1507,12 +1823,24 @@ async fn observe_rejections() {
             json!({ "source": source(json!({})), "target": { "function_id": "orders::create" } }),
         ),
         (
-            "UNSUPPORTED",
-            json!({ "source": source(json!({ "on": "start" })), "target": { "function_id": "sink::x" } }),
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "on": "bogus" })), "target": { "function_id": "sink::x" } }),
         ),
         (
-            "UNSUPPORTED",
-            json!({ "source": source(json!({ "deliver": "both" })), "target": { "function_id": "sink::x" } }),
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "deliver": 7 })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["caller", "metadata"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["caller"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["metadata"] })), "target": { "function_id": "sink::x" } }),
         ),
         (
             "UNSUPPORTED",
@@ -1569,7 +1897,7 @@ async fn observe_rejections() {
     let explicit = json!({
         "id": "good",
         "source": source(json!({
-            "namespace": "default", "on": "success", "deliver": "envelope",
+            "namespace": "default",
             "capture": ["caller", "input", "output"], "args": {}, "filters": {}
         })),
         "target": { "function_id": "sink::x", "namespace": "default" },
@@ -1580,6 +1908,34 @@ async fn observe_rejections() {
         "pending",
         "a replay"
     );
+    // An older SDK's replay spelling out the defaults (`on: success`,
+    // `deliver: envelope`) is translated to the same spec (decision 60).
+    let mut legacy = good.clone();
+    legacy["source"]["on"] = json!("success");
+    legacy["source"]["deliver"] = json!("envelope");
+    assert_eq!(watcher.observe(legacy).await["state"], "pending");
+    // A replay is checked like a new observe: a capture that fires on nothing
+    // is refused, not answered as the observer it names; `on` / `deliver`
+    // that change what fires or what is delivered, and the `metadata` the
+    // default no longer captures (decision 62), are another spec.
+    for (change, code) in [
+        (json!({ "capture": ["caller"] }), "INVALID_ARGS"),
+        (json!({ "on": "bogus" }), "INVALID_ARGS"),
+        (json!({ "on": "error" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "input" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "output" }), "OBSERVER_ID_CONFLICT"),
+        (
+            json!({ "capture": ["input", "output", "caller", "metadata"] }),
+            "OBSERVER_ID_CONFLICT",
+        ),
+    ] {
+        let mut replay = good.clone();
+        for (key, value) in change.as_object().unwrap() {
+            replay["source"][key] = value.clone();
+        }
+        let refused = watcher.observe(replay).await;
+        assert_eq!(refused["error"]["code"], code, "{change} → {refused}");
+    }
     let mut changed = good.clone();
     changed["max_fires"] = json!(5);
     let conflict = watcher.observe(changed).await;
@@ -1927,8 +2283,8 @@ async fn rbac_gates_the_source_and_the_target() {
 }
 
 /// An activation runs under the session of the worker that created the
-/// observer, not unrestricted: a restricted worker cannot use `deliver: input`
-/// on `engine::observers::dispose` to dispose another worker's observer.
+/// observer, not unrestricted: a restricted worker cannot point its observer
+/// at `engine::observers::dispose` to dispose another worker's observer.
 #[tokio::test]
 async fn an_activation_cannot_dispose_another_workers_observer_under_rbac() {
     let rbac = json!({
@@ -1948,7 +2304,7 @@ async fn an_activation_cannot_dispose_another_workers_observer_under_rbac() {
     attacker
         .observe_active(observer(
             "attack",
-            json!({ "function_id": "api::orders", "deliver": "input" }),
+            json!({ "function_id": "api::orders", "capture": ["input"] }),
             "engine::observers::dispose",
         ))
         .await;
@@ -2000,7 +2356,7 @@ async fn a_call_through_an_observer_runs_under_the_observing_workers_session() {
     attacker
         .observe_active(observer(
             "attack",
-            json!({ "function_id": "h::fanout", "deliver": "input" }),
+            json!({ "function_id": "h::fanout", "capture": ["input"] }),
             "engine::observers::dispose",
         ))
         .await;
@@ -2050,7 +2406,7 @@ async fn a_call_through_an_observer_does_not_act_with_the_hosts_identity() {
     attacker
         .observe_active(observer(
             "attack",
-            json!({ "function_id": "api::orders", "deliver": "input" }),
+            json!({ "function_id": "api::orders", "capture": ["input"] }),
             "engine::observers::dispose",
         ))
         .await;

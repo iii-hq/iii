@@ -793,7 +793,7 @@ async fn functions_info_counts_only_the_observers_in_its_own_namespace() {
                 DEFAULT_NAMESPACE.to_string(),
                 "engine::functions::list".to_string(),
             ),
-            deliver: iii::protocol::Deliver::Input,
+            deliver: iii::observer::Deliver::Input,
             metadata: None,
         })
         .expect("observe the orders svc::f");

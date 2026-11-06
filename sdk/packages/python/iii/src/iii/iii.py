@@ -14,6 +14,7 @@ import threading
 import time
 import traceback
 import uuid
+import warnings
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -48,8 +49,10 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
+    LEGACY_ON_DEPRECATION,
     SDK_FEATURES,
     ActivationWire,
     CallActionEnqueue,
@@ -60,8 +63,10 @@ from .iii_types import (
     InvocationResultMessage,
     InvokeFunctionMessage,
     MessageType,
+    ObserveMessage,
     ObserverAddedMessage,
     ObserveResultMessage,
+    ObserverInfoWire,
     ObserverRemovedMessage,
     ObserverStateChangedMessage,
     RegisterFunctionFormat,
@@ -72,6 +77,7 @@ from .iii_types import (
     UnobserveMessage,
     UnregisterFunctionMessage,
     WorkerRegisteredMessage,
+    legacy_on,
 )
 from .invocation_context import (
     ActiveInvocation,
@@ -179,6 +185,10 @@ _UNSUPPORTED_REASON: ObserveReason = {
     "message": "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
 }
 
+#: Source fields that are not part of the 0.26 SDK API: ``observe`` refuses them
+#: (``INVALID_ARGS``) instead of dropping them. A 0.26 engine still translates them
+#: from 0.25 and release candidate SDKs; this SDK never sends them.
+_REMOVED_SOURCE_FIELDS = ("on", "deliver")
 #: Rejections of one function's registration: the connection stays open.
 _FUNCTION_REJECTIONS = frozenset({"FUNCTION_NAMESPACE_CONFLICT", "INVALID_ARGS_FORMAT", "UNSUPPORTED"})
 
@@ -632,6 +642,7 @@ class III:
         # The engine's features (`WorkerRegistered.features`), kept across a
         # disconnect until the next `WorkerRegistered` replaces them.
         self._engine_features: frozenset[str] = frozenset()
+        self._legacy_on_warned = False
         # `WorkerRegistered` arrived on the current connection.
         self._registered_on_connection = False
         # Bumped on every connection: `functionregistered` confirms a function on one.
@@ -1180,6 +1191,7 @@ class III:
             )
         elif msg_type == MessageType.FUNCTION_REGISTERED.value:
             registered = FunctionRegisteredMessage.model_validate(data)
+            self._warn_legacy_views(registered.observers)
             state = self._observe_state(registered.id)
             if state is not None and state.sent_epoch != self._connection_epoch:
                 # The answer to a registration this connection withdrew (a
@@ -1199,6 +1211,7 @@ class III:
             self._reporter.flush()
         elif msg_type == MessageType.OBSERVER_ADDED.value:
             added = ObserverAddedMessage.model_validate(data)
+            self._warn_legacy_views([added.observer])
             state = self._observe_state(added.function_id)
             if state is not None and state.sent_epoch != self._connection_epoch:
                 # An observer of a registration this connection withdrew: no hook runs, no ack goes out.
@@ -1520,13 +1533,42 @@ class III:
                     del self._observe_sent[handle.id]
         handle._set_state(state, cast(ObserveReason, body) if body else None)
 
+    def _warn_legacy_on(self) -> None:
+        """Warns, once per client, that the connected engine lacks
+        ``observe.capture`` and its legacy ``on`` semantics are deprecated."""
+        if not self._legacy_on_warned:
+            self._legacy_on_warned = True
+            warnings.warn(LEGACY_ON_DEPRECATION, FutureWarning, stacklevel=3)
+
+    def _warn_legacy_views(self, views: list[ObserverInfoWire]) -> None:
+        """A view without ``fires_on`` fires as its legacy ``on`` says: warns once."""
+        if any(view.fires_on is None for view in views):
+            self._warn_legacy_on()
+
+    def _observe_frame(self, message: ObserveMessage) -> Any:
+        """The ``observe`` frame for this connection's engine. One without
+        ``observe.capture`` (0.25, or an rc engine with ``observe.v2`` only)
+        decides the outcomes that fire from ``source.on`` alone, so it gets the
+        ``on`` that ``capture`` implies (initial observe and replay alike); the
+        first such frame warns that this is deprecated. An engine with
+        ``observe.capture`` never gets ``on``."""
+        if FEATURE_OBSERVE_CAPTURE in self._engine_features:
+            return message
+        on = legacy_on(message.source.capture)
+        if on is None:
+            return message
+        self._warn_legacy_on()
+        frame = self._to_dict(message)
+        frame["source"] = {**frame["source"], "on": on}
+        return frame
+
     def _send_observe(self, handle: ObserverHandle) -> None:
         """SDK loop: sends (or replays) a held observer once per connection,
         when the socket is open, and lists it for its id's answers."""
         epoch = self._connection_epoch
         if handle._sent_epoch == epoch or handle._refused or self._observers.get(handle.id) is not handle:
             return
-        if self._send_frame(self._prepare_json(handle._message)):
+        if self._send_frame(self._prepare_json(self._observe_frame(handle._message))):
             handle._sent = True
             handle._sent_epoch = epoch
             handle._answered = False
@@ -1915,7 +1957,7 @@ class III:
             task.add_done_callback(self._log_task_exception)
             return
 
-        # The engine evaluates the observers' `on` and filters of every call it
+        # The engine evaluates the observers' capture and filters of every call it
         # routes (decision 55). On an observe.v2 engine the host runs the
         # function's match hook, and its answer names the observers the hook
         # matched, or its deliver hook, and its answer says it delivered the
@@ -2004,7 +2046,7 @@ class III:
         deliver hook, on an ``observe.v2`` engine: the handler, then its
         delivery, then the answer. The handler gets ``resolved_data`` (channel
         refs as readers and writers); its delivery sees ``data``, the input as
-        it arrived. The engine evaluates ``on`` and filters (decision 55): the
+        it arrived. The engine evaluates capture and filters (decision 55): the
         answer of a function with a deliver hook carries ``delivered: true``,
         that of a function with a match hook the ids it matched in
         ``matched``, and that of any other function neither."""
@@ -2504,7 +2546,7 @@ class III:
     ) -> Any:
         """Sets which observers want each call of one function. By default
         every observer wants every call; iii's delivery then applies their
-        ``on`` and filters, and an ``on_observation_deliver`` receives only the
+        capture and filters, and an ``on_observation_deliver`` receives only the
         observers that matched.
 
         As a predicate, ``hook(obs, call) -> bool`` is asked once per
@@ -2575,7 +2617,7 @@ class III:
         the call started, and what it returns (or raises) is what the caller
         gets back. iii delivers nothing for that function: the hook calls
         through observers (``iii.call({"observer": obs, ...})``) and applies
-        their ``on`` and filters with ``obs.matches(call)``. Works as a
+        their capture and filters with ``obs.matches(call)``. Works as a
         decorator (``@iii.on_observation_deliver("fn::id")``) and returns the
         hook; ``None`` restores iii's delivery.
 
@@ -3310,10 +3352,11 @@ class III:
     ) -> ObserverHandle:
         """Observes a function: when ``source`` runs, ``target`` runs. Every
         call of the source function that passes ``source["filters"]`` invokes
-        ``target``, a registered function, with the ``Observed`` envelope
-        (``input``, ``output`` or ``error``, ``caller``, ...);
-        ``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
-        value instead. The worker that hosts the source can decide otherwise
+        ``target``, a registered function, with the ``Observed`` payload:
+        the top-level fields plus what ``source["capture"]`` names that applies
+        to the outcome (``input``, ``output`` or ``error``, ``caller``,
+        ``metadata``). ``capture`` also decides which outcomes fire the target.
+        The worker that hosts the source can decide otherwise
         in its ``on_observation_deliver``.
 
         Returns synchronously, also before the connection is up; the observer
@@ -3335,7 +3378,7 @@ class III:
             source: What is observed: a function id, or ``function_id``,
                 ``namespace``, ``args`` (read by the worker that hosts the
                 function, validated against its ``args_format``),
-                ``filters``, and ``on`` / ``capture`` / ``deliver``.
+                ``filters``, and ``capture``.
             target: The function to invoke: its id, or
                 ``{"function_id": ..., "namespace": ...}``. Register it first;
                 until then the observer stays ``pending``.
@@ -3343,6 +3386,8 @@ class III:
                 ``max_in_flight``, ``metadata`` (the activation's metadata sidecar).
 
         Raises:
+            ObserveRejection: ``INVALID_ARGS``: the source sends ``on`` or ``deliver``,
+                removed in 0.26; ``capture`` decides which outcomes fire the target.
             ObserveRejection: ``OBSERVER_ID_CONFLICT``: a handle of this
                 client holds the id. Nothing is sent, and that handle is untouched.
             ValueError: ``source["function_id"]`` or ``target`` missing.
@@ -3352,7 +3397,7 @@ class III:
             >>> iii.observe("orders::create", "alerts::big-order")
             >>> iii.register_function("alerts::payment-failed", notify)
             >>> failures = iii.observe(
-            ...     {"function_id": "payments::charge", "on": "error",
+            ...     {"function_id": "payments::charge", "capture": ["error", "caller"],
             ...      "filters": {"input.amount": {"$gte": 500}}},
             ...     "alerts::payment-failed",
             ...     {"max_in_flight": 4},
@@ -3376,6 +3421,16 @@ class III:
             raise TypeError("observe: options.id must be a string")
         if observer_id in self._observers:
             raise _observer_id_conflict(observer_id)
+        # Removed in 0.26: refused, not dropped, as the engine refuses them. Dropped,
+        # they would leave the default capture to fire the target on other outcomes
+        # than the ones asked for.
+        for removed in _REMOVED_SOURCE_FIELDS:
+            if source.get(removed) is not None:
+                raise ObserveRejection(
+                    "INVALID_ARGS",
+                    f"observe: `source.{removed}` was removed: `source.capture` decides which outcomes "
+                    "fire the target and what it receives",
+                )
         message = build_observe_message(
             observer_id,
             cast("dict[str, Any]", source),

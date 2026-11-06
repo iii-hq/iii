@@ -205,7 +205,13 @@ func TestMatchesOnAModifiedCopyOfTheCall(t *testing.T) {
 	registerHost(t, c, fn, echoHandler)
 	for _, id := range slices.Sorted(maps.Keys(observers)) {
 		info := observerInfo(id, "x::y", "", observers[id])
-		info.On = OnComplete
+		// fires on both outcomes: an input or output, and the error
+		if !slices.Contains(info.Capture, CaptureInput) && !slices.Contains(info.Capture, CaptureOutput) {
+			info.Capture = append(info.Capture, CaptureInput)
+		}
+		if !slices.Contains(info.Capture, CaptureError) {
+			info.Capture = append(info.Capture, CaptureError)
+		}
 		addObserver(t, fe, fn, info)
 	}
 	call(t, c, CallRequest{FunctionID: fn, Payload: json.RawMessage(`{"k":1,"n":1}`), Metadata: json.RawMessage(`{"tag":"x"}`)})

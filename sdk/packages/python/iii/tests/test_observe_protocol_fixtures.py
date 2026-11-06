@@ -195,8 +195,6 @@ def test_engine_only_fixtures_carry_the_0_25_observe_object_no_registration_here
                 "args": {"expression": "0 0 9 * * Mon-Fri"},
                 "filters": {"input.scheduled_time": {"$gte": "2026-11-01T00:00:00Z"}},
                 "capture": ["input"],
-                "on": "success",
-                "deliver": "envelope",
             },
             {"function_id": "local::cron-handler", "namespace": "default"},
             {
@@ -219,8 +217,7 @@ def test_engine_only_fixtures_carry_the_0_25_observe_object_no_registration_here
             {
                 "function_id": "payments::charge",
                 "filters": {"input.amount": {"$gte": 500}},
-                "capture": ["input", "error", "caller"],
-                "on": "error",
+                "capture": ["error", "caller"],
             },
             "alerts::payment-failed",
             {"id": "c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60", "metadata": {"team": "payments-oncall"}, "max_in_flight": 4},
@@ -406,7 +403,7 @@ def test_invokefunction_workers_register_json_features_in_the_payload(engine: Fa
     assert frame["action"] == {"type": "void"}
     assert "invocation_id" not in frame  # a void call
     assert data["features"] == expected["data"]["features"]
-    assert data["features"] == ["observe.v1", "observe.v2", "local-dispatch.v1", "large-messages.v1"]
+    assert data["features"] == ["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1", "large-messages.v1"]
     assert "isolation" not in data  # unset: left out, never null
     assert (data["runtime"], data["name"], data["namespace"]) == ("python", "billing", "default")
     assert set(expected["data"]["telemetry"]) <= set(data["telemetry"])
@@ -499,8 +496,8 @@ def test_invocationresult_matched_error_json_an_error_answer_keeps_matched(engin
         client,
         engine,
         "payments::charge",
-        [observer_info(o, "t", on="error", args={"currency": "eur"}) for o in expected["matched"]]
-        + [observer_info("usd", "t", on="error", args={"currency": "usd"})],
+        [observer_info(o, "t", args={"currency": "eur"}, capture=["error"]) for o in expected["matched"]]
+        + [observer_info("usd", "t", args={"currency": "usd"}, capture=["error"])],
     )
     answer = _routed_answer(engine, expected, {"amount": 1250, "currency": "eur"})
     assert answer["matched"] == expected["matched"]
@@ -704,9 +701,11 @@ def test_accepts_null_for_optional_fields_and_keeps_unknown_enum_values() -> Non
     info = ObserverInfoWire.model_validate(
         {"id": "o", "args": None, "filters": None, "target": "t", "capture": ["input", "telemetry"], "on": "start"}
     )
-    assert (info.args, info.filters, info.capture, info.on) == ({}, {}, ["input", "telemetry"], "start")
+    assert (info.args, info.filters, info.capture) == ({}, {}, ["input", "telemetry"])
+    # a legacy on is kept (D6): an unknown value fires on success, as absent does
+    assert info.on == "start" and info.firing() == (True, False)
     defaults = ObserverInfoWire.model_validate({"id": "o", "target": "t"})
-    assert (defaults.capture, defaults.on) == (["input", "output", "caller"], "success")
+    assert defaults.capture == ["input", "output", "caller"]  # D1
     registered = FunctionRegisteredMessage.model_validate(
         {"id": "f", "namespace": "default", "revision": None, "observers": None}
     )

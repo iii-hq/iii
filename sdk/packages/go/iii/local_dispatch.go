@@ -12,7 +12,7 @@ import (
 
 // This file is the local path of Call: a function this worker hosts, confirmed by the
 // engine for in-process calls, runs here without touching the wire, and is delivered
-// here: this worker evaluates its observers' on and filters, which the engine never
+// here: this worker evaluates its observers' capture and filters, which the engine never
 // sees. Nobody observing it means zero frames; matched observers mean one report item.
 
 // localTarget returns the function Call may run in-process, with the call state it

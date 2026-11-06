@@ -94,7 +94,7 @@ export interface ISdk {
    * Every call of the function, local or routed, runs the handler and then
    * goes to the observers that want it (`onObservationMatch`; by default all of
    * them): the function's `onObservationDeliver` hook delivers it, or iii does,
-   * to those whose `on` and filters match. iii evaluates `on` and filters
+   * to those whose capture and filters match. iii evaluates capture and filters
    * where the call is: the engine for a call it routes to this worker, and
    * the SDK for a call this worker makes to its own function in-process,
    * through an index of the filters' equality conditions. What the worker
@@ -201,7 +201,7 @@ export interface ISdk {
    * holds no observer for it, it is not replayed, and its `dispose()` sends
    * nothing.
    *
-   * @param source - What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `on`, `capture`, `deliver`.
+   * @param source - What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `capture`.
    * @param target - The function to invoke.
    * @param options - `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
@@ -260,7 +260,7 @@ export interface ISdk {
    * `{ observer, call }` key functions are computed once per observer, when
    * it is accepted, and once per call, and an
    * observer wants a call when they share a key (the SDK keeps an index). The
-   * observers' `on`, filters, policy and `deliver` still apply. A hook set
+   * observers' capture, filters and policy still apply. A hook set
    * while observers are active rebuilds the index from them. `null` removes
    * the hook, predicate or keys: every observer gets every call again.
    *
@@ -292,7 +292,7 @@ export interface ISdk {
    * what it returns (or throws) is what the caller gets back. iii delivers
    * nothing for that function: the hook calls through observers and applies
    * their filters with `obs.matches(call)`. Without it, iii delivers every
-   * call to the matching observers whose `on` and filters accept it, and the
+   * call to the matching observers whose capture and filters accept it, and the
    * caller gets the handler's result. `null` removes the hook.
    *
    * A function with a deliver hook needs an engine with `observe.v2`: against

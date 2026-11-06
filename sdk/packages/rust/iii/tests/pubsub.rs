@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
-use iii_sdk::{CallRequest, Deliver, IIIClient, ObserverHandle, RegisterFunction, Source};
+use iii_sdk::{CallRequest, Capture, IIIClient, ObserverHandle, RegisterFunction, Source};
 
 fn unique_topic(prefix: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,12 +23,12 @@ fn unique_topic(prefix: &str) -> String {
 }
 
 /// Observes the messages published to `topic`: the target gets each call's
-/// input, `{ topic, data }`.
+/// input, `{ topic, data }`, as the payload's `input`.
 async fn subscribe(iii: &IIIClient, topic: &str, target: &str) -> ObserverHandle {
     let observer = iii.observe(
         Source::function("publish")
             .filters(json!({ "input.topic": { "$eq": topic } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         target,
     );
     // An observer of a function nobody hosts stays pending: bound the wait so a
@@ -57,7 +57,7 @@ async fn subscribe_and_receive_published_messages() {
             let received = received_clone.clone();
             let tx = tx.clone();
             async move {
-                received.lock().await.push(data);
+                received.lock().await.push(data["input"].clone());
                 if let Some(sender) = tx.lock().await.take() {
                     let _ = sender.send(());
                 }
@@ -116,7 +116,7 @@ async fn topic_isolation() {
             let received = received_a_clone.clone();
             let tx = tx_a.clone();
             async move {
-                received.lock().await.push(data);
+                received.lock().await.push(data["input"].clone());
                 if let Some(sender) = tx.lock().await.take() {
                     let _ = sender.send(());
                 }
@@ -130,7 +130,7 @@ async fn topic_isolation() {
         RegisterFunction::new_async(move |data: Value| {
             let received = received_b_clone.clone();
             async move {
-                received.lock().await.push(data);
+                received.lock().await.push(data["input"].clone());
                 Ok(json!({}))
             }
         }),

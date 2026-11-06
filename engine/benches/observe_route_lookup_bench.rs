@@ -9,8 +9,9 @@ use std::{hint::black_box, sync::Arc, time::Duration};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use iii::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
 use iii::function::FunctionResult;
+use iii::observer::Deliver;
 use iii::observer::{EngineObserver, ObserversConfig};
-use iii::protocol::{DEFAULT_NAMESPACE, Deliver};
+use iii::protocol::DEFAULT_NAMESPACE;
 use iii::workers::observability::metrics::ensure_default_meter;
 
 fn register(engine: &Engine, id: &str) {

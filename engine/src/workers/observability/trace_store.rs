@@ -29,6 +29,8 @@ use super::otel::StoredSpan;
 
 const BATCH_MAX_SPANS: usize = 512;
 const BATCH_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Longest the writer sleeps between ticks, and the shortest gap between two
+/// ticks while less than a batch waits (see `writer_loop`).
 const BATCH_INTERVAL: Duration = Duration::from_millis(250);
 const CAP_HIGH_WATERMARK: f64 = 0.90;
 const CAP_LOW_WATERMARK: f64 = 0.80;
@@ -437,6 +439,12 @@ impl TraceDiskStore {
             return directory;
         }
         std::env::temp_dir()
+    }
+
+    /// Whether a whole batch of finalized spans waits for the writer.
+    fn has_full_batch(&self) -> bool {
+        self.hot_storage()
+            .is_some_and(|hot| hot.dirty_len() >= BATCH_MAX_SPANS)
     }
 
     fn hot_storage(&self) -> Option<Arc<InMemorySpanStorage>> {
@@ -1596,6 +1604,7 @@ fn writer_loop(
     control_rx: mpsc::Receiver<ControlMessage>,
 ) {
     let mut writer = WriterState::default();
+    let mut last_tick = Instant::now();
     loop {
         let Some(store) = weak.upgrade() else { break };
         while let Ok(control) = control_rx.try_recv() {
@@ -1606,7 +1615,25 @@ fn writer_loop(
 
         match wake_rx.recv_timeout(BATCH_INTERVAL) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {
+                // Ingest wakes the writer for every batch it stores, often a
+                // few spans, and each tick pays a commit and a checkpoint.
+                // Ticking at most once per interval lets one commit carry what
+                // arrived meanwhile. A full batch does not wait, and control
+                // messages (flush, shutdown) are served during the wait.
+                let wait = BATCH_INTERVAL.saturating_sub(last_tick.elapsed());
+                if !wait.is_zero() && !store.has_full_batch() {
+                    match control_rx.recv_timeout(wait) {
+                        Ok(control) => {
+                            if handle_control(&store, &mut connection, &mut writer, control) {
+                                return;
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
                 archive_tick(&store, &mut connection, &mut writer);
+                last_tick = Instant::now();
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -3377,6 +3404,10 @@ fn add_image_bytes_column(connection: &Connection) -> rusqlite::Result<()> {
 // initializes the database header, and auto_vacuum declared after that point
 // is a silent no-op on the file (while reading the pragma back on the same
 // connection still reports the wished value).
+//
+// The writer's page cache is 16 MiB instead of SQLite's 2 MiB: span ids and
+// attribute values land at random places in the indexes, and with 2 MiB most
+// inserts read a page back from the file or spill one mid-transaction.
 fn configure_connection(connection: &mut Connection) -> Result<(), String> {
     connection
         .execute_batch(
@@ -3384,7 +3415,8 @@ fn configure_connection(connection: &mut Connection) -> Result<(), String> {
              PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=1000;",
+             PRAGMA busy_timeout=1000;
+             PRAGMA cache_size=-16384;",
         )
         .and_then(|()| connection.execute_batch(SCHEMA_SQL))
         .and_then(|()| add_image_bytes_column(connection))

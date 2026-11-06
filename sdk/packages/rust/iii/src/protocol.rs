@@ -345,9 +345,9 @@ pub enum Message {
         baggage: Option<String>,
         /// Host → engine, from an `observe.v2` host's answer to a routed
         /// call of a function with a match hook: the observers the hook
-        /// matched, before `on` and filters, each once; `[]` when it matched
+        /// matched, before capture and filters, each once; `[]` when it matched
         /// none, and when the host holds no observer of the function for it
-        /// to match (the hook does not run). The engine evaluates `on` and
+        /// to match (the hook does not run). The engine evaluates capture and
         /// filters of those of them that are active observers of the
         /// function. Absent when the function has no match hook: the engine
         /// evaluates every active observer of the function. The
@@ -545,6 +545,10 @@ pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
 /// registers functions with `args_format`, `private` and `observable`.
 /// Includes [`FEATURE_OBSERVE_V1`].
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
+/// Protocol feature: the host reads the outcomes that fire an observer from
+/// the `fires_on` of its observer views, never from `capture`, and sends no
+/// `source.on`. An engine with it announces `fires_on` on every view.
+pub const FEATURE_OBSERVE_CAPTURE: &str = "observe.capture";
 /// Protocol feature: the SDK runs its own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
@@ -553,9 +557,10 @@ pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
 /// [`WorkerMetadata::version`](crate::iii::WorkerMetadata::version) reports.
 pub const FEATURE_LARGE_MESSAGES_V1: &str = "large-messages.v1";
 /// What this SDK declares in the `engine::workers::register` payload.
-pub const SDK_FEATURES: [&str; 4] = [
+pub const SDK_FEATURES: [&str; 5] = [
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_LOCAL_DISPATCH_V1,
     FEATURE_LARGE_MESSAGES_V1,
 ];
@@ -777,33 +782,66 @@ wire_string_enum! {
     }
 }
 
-/// The default `capture`: `["input", "output", "caller"]`.
+/// The default `capture`: `["input", "output", "caller"]` (no `error`, so
+/// the default fires on success only, and no `metadata`).
 pub fn default_capture() -> Vec<Capture> {
     vec![Capture::Input, Capture::Output, Capture::Caller]
 }
 
-wire_string_enum! {
-    /// Which outcomes of a call activate an observer.
-    #[derive(Default)]
-    pub enum On {
-        #[default]
-        Success => "success",
-        Error => "error",
-        Complete => "complete",
+/// Whether a call that ended in success (or not) fires an observer with this
+/// `capture`, as the engine decides it: `input` and `output` fire on success,
+/// `error` on error; `caller` and `metadata` fire on nothing. `[]` fires on
+/// success, with the top-level fields only.
+/// The `source.on` an engine without [`FEATURE_OBSERVE_V2`] (0.25) needs for
+/// `capture` (`None`: the default), since it decides the outcomes that fire
+/// from `on` alone: `"error"` or `"complete"`, or `None` for an observer that
+/// fires on success, its default. Deprecated with those engines.
+pub(crate) fn legacy_on(capture: Option<&[Capture]>) -> Option<&'static str> {
+    let default;
+    let capture = match capture {
+        Some(capture) => capture,
+        None => {
+            default = default_capture();
+            &default
+        }
+    };
+    if !capture_fires(capture, false) {
+        return None;
+    }
+    Some(if capture_fires(capture, true) {
+        "complete"
+    } else {
+        "error"
+    })
+}
+
+/// Logged once per client, the first time it reads an observer view without
+/// `fires_on` or sends `source.on`: the engine lacks [`FEATURE_OBSERVE_CAPTURE`].
+pub(crate) const LEGACY_ON_DEPRECATION: &str = "observe: the connected engine does not support \
+    observe.capture; legacy `on` semantics are deprecated and will be removed in a future version; \
+    upgrade the engine.";
+
+/// The outcomes a legacy `on` fires on, `(success, error)`: absent (or
+/// `success`, or a value this SDK does not know) fires on success,
+/// `error` on error, `complete` on both.
+pub(crate) fn legacy_firing(on: Option<&str>) -> (bool, bool) {
+    match on {
+        Some("error") => (false, true),
+        Some("complete") => (true, true),
+        _ => (true, false),
     }
 }
 
-wire_string_enum! {
-    /// What the target's first argument is.
-    #[derive(Default)]
-    pub enum Deliver {
-        /// The [`Observed`](crate::Observed) envelope.
-        #[default]
-        Envelope => "envelope",
-        /// The observed call's input alone.
-        Input => "input",
-        /// The observed call's output alone.
-        Output => "output",
+pub fn capture_fires(capture: &[Capture], success: bool) -> bool {
+    if capture.is_empty() {
+        return success;
+    }
+    if success {
+        capture
+            .iter()
+            .any(|c| matches!(c, Capture::Input | Capture::Output))
+    } else {
+        capture.contains(&Capture::Error)
     }
 }
 
@@ -848,10 +886,6 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deliver: Option<Deliver>,
 }
 
 /// The right side of `iii.observe` on the wire: a registered function.
@@ -881,8 +915,36 @@ pub struct ObserverView {
         deserialize_with = "null_as_default_capture"
     )]
     pub capture: Vec<Capture>,
-    #[serde(default, deserialize_with = "null_as_default")]
-    pub on: On,
+    /// The outcomes that fire it, from an engine with
+    /// [`FEATURE_OBSERVE_CAPTURE`]; absent from an older engine, whose
+    /// observers fire as their legacy [`on`](Self::on) says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fires_on: Option<Vec<InvocationStatus>>,
+    /// The legacy `on` of an engine without [`FEATURE_OBSERVE_CAPTURE`]
+    /// (absent: success; `error`; `complete`). Read only when `fires_on` is
+    /// absent; deprecated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Value>,
+}
+
+impl ObserverView {
+    /// Whether a call that ended in success (or not) fires this observer:
+    /// from `fires_on`, or else from the legacy `on`, never from `capture`.
+    pub fn fires_on(&self, success: bool) -> bool {
+        let (on_success, on_error) = self.firing();
+        if success { on_success } else { on_error }
+    }
+
+    /// `(fires on success, fires on error)`.
+    pub(crate) fn firing(&self) -> (bool, bool) {
+        match &self.fires_on {
+            Some(fires) => (
+                fires.contains(&InvocationStatus::Success),
+                fires.contains(&InvocationStatus::Error),
+            ),
+            None => legacy_firing(self.on.as_ref().and_then(Value::as_str)),
+        }
+    }
 }
 
 /// Who made an invocation. `worker_id` / `worker_name` are stamped by the

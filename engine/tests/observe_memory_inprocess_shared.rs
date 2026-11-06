@@ -31,8 +31,9 @@ use std::{
 use iii::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
 use iii::function::FunctionResult;
 use iii::invocation::{http_function::HttpFunctionConfig, method::HttpMethod};
+use iii::observer::Deliver;
 use iii::observer::EngineObserver;
-use iii::protocol::{DEFAULT_NAMESPACE, Deliver, ObserverState};
+use iii::protocol::{DEFAULT_NAMESPACE, ObserverState};
 use iii::workers::http_functions::HttpFunctionsWorker;
 use iii::workers::observability::metrics::ensure_default_meter;
 use iii::workers::traits::Worker;
@@ -252,7 +253,7 @@ async fn add_observers(engine: &Arc<Engine>, from: usize, to: usize, deliver: &D
                 args: json!({}),
                 filters: None,
                 target: (DEFAULT_NAMESPACE.to_string(), TARGET.to_string()),
-                deliver: deliver.clone(),
+                deliver: *deliver,
                 metadata: None,
             })
             .expect("observe");
@@ -314,7 +315,7 @@ async fn measure(name: &str, target: Target) {
         "{:<8} {:<8} {:>6} {:>3} | {:>10} {:>8} | {:>10} {:>8} | {:>9}",
         "target", "deliver", "size", "n", "held B", "blocks", "B/activ.", "blk/act.", "allocs"
     );
-    for deliver in [Deliver::Envelope, Deliver::Input] {
+    for deliver in [Deliver::Payload, Deliver::Input] {
         let gate = Gate::new();
         let engine = setup(target, &gate).await;
         let mut observers = 0;
@@ -333,7 +334,11 @@ async fn measure(name: &str, target: Target) {
                 println!(
                     "{:<8} {:<8} {:>6} {:>3} | {:>10} {:>8} | {:>10} {:>8} | {:>9}",
                     name,
-                    deliver.as_str(),
+                    match deliver {
+                        Deliver::Input => "input",
+                        Deliver::Output => "output",
+                        Deliver::Payload => "envelope",
+                    },
                     size,
                     n,
                     bytes,

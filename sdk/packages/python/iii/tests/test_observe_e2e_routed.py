@@ -98,10 +98,10 @@ def test_on_error_sees_failures_only_capture_limits_what_travels_deliver_input_s
     errors = collector(watcher, fid("py-e2e::on-error"))
     inputs = collector(watcher, fid("py-e2e::on-input"))
     a = watcher.observe(
-        {"function_id": fid("py-e2e::flaky"), "on": "error", "capture": ["error"]}, fid("py-e2e::on-error")
+        {"function_id": fid("py-e2e::flaky"), "capture": ["error"]}, fid("py-e2e::on-error")
     )
     b = watcher.observe(
-        {"function_id": fid("py-e2e::flaky"), "on": "complete", "deliver": "input"}, fid("py-e2e::on-input")
+        {"function_id": fid("py-e2e::flaky"), "capture": ["input", "error"]}, fid("py-e2e::on-input")
     )
     a.ready(timeout=10)
     b.ready(timeout=10)
@@ -114,7 +114,11 @@ def test_on_error_sees_failures_only_capture_limits_what_travels_deliver_input_s
     assert errors[0].data["error"]["code"] == "invocation_failed"
     assert errors[0].data["error"]["message"] == "flaky failed"
     assert "input" not in errors[0].data
-    assert sorted((x.data for x in inputs), key=lambda d: d["n"]) == [{"fail": False, "n": 1}, {"fail": True, "n": 2}]
+    assert sorted((x.data["input"] for x in inputs), key=lambda d: d["n"]) == [
+        {"fail": False, "n": 1},
+        {"fail": True, "n": 2},
+    ]
+    assert all("output" not in x.data for x in inputs if x.data["status"] == "error")
 
 
 def test_a_target_that_is_not_registered_keeps_the_observer_pending_until_it_is(worker: Any, fid: Any) -> None:

@@ -81,7 +81,7 @@ fn observers_for(function_id: &str) -> Value {
                     json!({
                         "id": format!("obs-{i}"), "args": {}, "target": "bench::target",
                         "filters": { "$and": [{ "input.n": { "$eq": -1 - i } }] },
-                        "capture": ["input"], "on": "success"
+                        "capture": ["input"]
                     })
                 })
                 .collect(),
@@ -89,7 +89,7 @@ fn observers_for(function_id: &str) -> Value {
         "bench::one-match" => json!([{
             "id": "obs-all", "args": {}, "target": "bench::target",
             "filters": { "$and": [{ "input.n": { "$gte": 0 } }] },
-            "capture": ["input", "output"], "on": "success"
+            "capture": ["input", "output"]
         }]),
         "bench::match-keys" => Value::Array(
             (0..MATCH_KEY_OBSERVERS)
@@ -102,7 +102,7 @@ fn observers_for(function_id: &str) -> Value {
                     json!({
                         "id": format!("match-key-{i}"), "args": { "expression": expression },
                         "target": "bench::target", "filters": {},
-                        "capture": ["input"], "on": "success"
+                        "capture": ["input"]
                     })
                 })
                 .collect(),
@@ -113,30 +113,30 @@ fn observers_for(function_id: &str) -> Value {
                     json!({
                         "id": format!("tenant-obs-{i:04}"), "args": {}, "target": "bench::target",
                         "filters": { "$and": [{ "input.tenant": { "$eq": format!("tenant-{i}") } }] },
-                        "capture": ["input"], "on": "success"
+                        "capture": ["input"]
                     })
                 })
                 .collect(),
         ),
         "bench::two-paths" => json!([
             { "id": "by-op", "args": {}, "target": "bench::target", "capture": ["input"],
-              "filters": { "$and": [{ "input.op": { "$eq": "insert" } }] }, "on": "success" },
+              "filters": { "$and": [{ "input.op": { "$eq": "insert" } }] } },
             { "id": "by-table", "args": {}, "target": "bench::target", "capture": ["input"],
-              "filters": { "$and": [{ "input.table": { "$eq": "orders" } }] }, "on": "success" },
+              "filters": { "$and": [{ "input.table": { "$eq": "orders" } }] } },
             { "id": "every", "args": {}, "target": "bench::target", "capture": ["input"],
-              "filters": {}, "on": "success" }
+              "filters": {} }
         ]),
         "bench::error-caller" => json!([
             { "id": "failed-here", "args": {}, "target": "bench::target", "capture": ["error"],
-              "filters": { "$and": [{ "caller.worker_name": { "$eq": "bench" } }] }, "on": "error" },
+              "filters": { "$and": [{ "caller.worker_name": { "$eq": "bench" } }] } },
             { "id": "n-minus-1", "args": {}, "target": "bench::target", "capture": ["input"],
-              "filters": { "$and": [{ "input.n": { "$eq": -1 } }] }, "on": "success" },
+              "filters": { "$and": [{ "input.n": { "$eq": -1 } }] } },
             { "id": "n-minus-2", "args": {}, "target": "bench::target", "capture": ["input"],
-              "filters": { "$and": [{ "input.n": { "$eq": -2 } }] }, "on": "success" }
+              "filters": { "$and": [{ "input.n": { "$eq": -2 } }] } }
         ]),
         "bench::source" => json!([{
             "id": "obs-source", "args": {}, "target": "bench::target", "filters": {},
-            "capture": ["input", "output"], "on": "success"
+            "capture": ["input", "output"]
         }]),
         _ => json!([]),
     }
