@@ -39,9 +39,10 @@ the legacy `on` semantics apply. They are deprecated, and support will be remove
 release: upgrade the engine first, then move every worker to a 0.26 SDK.
 
 0.25 engines and SDKs remain interoperable with 0.26 engines and SDKs; however, the 0.26 SDKs no
-longer have the `on` and `deliver` fields on `observe()`. A worker that keeps its 0.25 SDK keeps
-working unchanged, but moving a worker to a 0.26 SDK means replacing `on` and `deliver` with
-`capture` in the same change (see [Observer `on` and `deliver`](#observer-on-and-deliver)).
+longer have the `on` and `deliver` fields on `observe()`. The observers of a worker that keeps its
+0.25 SDK keep working unchanged (the table above lists what else changes for such a worker, such as
+dropped trigger registrations), but moving a worker to a 0.26 SDK means replacing `on` and
+`deliver` with `capture` in the same change (see [Observer `on` and `deliver`](#observer-on-and-deliver)).
 
 An observer from a worker on a 0.25 SDK or a 0.26 release candidate SDK fires on success unless its
 source sets `on`, even when its `capture` names `error`. Set `on: "error"` or `on: "complete"` on
