@@ -2354,15 +2354,21 @@ impl ObservabilityWorker {
         crate::observer::events::payload_built();
         let mut depth = 0;
         let mut trace_ids = Vec::new();
+        let mut error_trace_ids = Vec::new();
         for span in batch {
             if SPAN_OWN_TRACES.contains(&span.trace_id) {
                 continue;
             }
             depth = depth.max(span.observe_depth);
             trace_ids.push(span.trace_id.clone());
+            if span.status.eq_ignore_ascii_case("error") {
+                error_trace_ids.push(span.trace_id.clone());
+            }
         }
         trace_ids.sort();
         trace_ids.dedup();
+        error_trace_ids.sort();
+        error_trace_ids.dedup();
         if !trace_ids.is_empty() {
             engine.observers.emit_with(
                 crate::protocol::DEFAULT_NAMESPACE,
@@ -2371,7 +2377,12 @@ impl ObservabilityWorker {
                     depth: Some(depth),
                     traceparent: Some(SPAN_OWN_TRACES.start()),
                 },
-                move || Some(serde_json::json!({ "trace_ids": trace_ids })),
+                move || {
+                    Some(serde_json::json!({
+                        "trace_ids": trace_ids,
+                        "error_trace_ids": error_trace_ids,
+                    }))
+                },
             );
         }
     }
@@ -4717,7 +4728,20 @@ mod tests {
         ObservabilityWorker::emit_span_window(&engine, &batch);
         assert_eq!(
             test_support::next(&mut spans).await,
-            serde_json::json!({ "trace_ids": ["t1", "t2"] })
+            serde_json::json!({ "trace_ids": ["t1", "t2"], "error_trace_ids": [] })
+        );
+
+        // A trace with an error span in the window is named in
+        // `error_trace_ids` too, so an error monitor need not re-read them all.
+        let failing = vec![
+            make_span("t3", "s4", None, "op", "svc", 1, 2, "ok", vec![]),
+            make_span("t1", "s5", None, "op", "svc", 1, 2, "ok", vec![]),
+            make_span("t3", "s6", None, "op", "svc", 1, 2, "error", vec![]),
+        ];
+        ObservabilityWorker::emit_span_window(&engine, &failing);
+        assert_eq!(
+            test_support::next(&mut spans).await,
+            serde_json::json!({ "trace_ids": ["t1", "t3"], "error_trace_ids": ["t3"] })
         );
 
         // What happens in the traces their activations run in is the targets'
