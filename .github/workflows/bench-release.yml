@@ -51,6 +51,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bench-runner.sh"
 
       - name: Run benchmarks
+        id: bench
         run: |
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           RUNNER_VAR="CARGO_TARGET_$(echo "$HOST" | tr 'a-z-' 'A-Z_')_RUNNER"
@@ -90,7 +91,9 @@ jobs:
       # Peak memory and the cores kept busy by each bench binary, as a second
       # series on the same gh-pages charts (lower is better). iii.dev/benchmarks
       # reads only the timing series above, so this one does not change the site.
+      # `!cancelled()` so a failed website dispatch above does not skip these (it still fails the job).
       - name: Collect CPU and memory
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' }}
         run: |
           python3 - <<'PY'
           import json, re
@@ -111,7 +114,7 @@ jobs:
           PY
 
       - name: Store CPU and memory result
-        if: hashFiles('resources.json') != ''
+        if: ${{ !cancelled() && steps.bench.outcome == 'success' && hashFiles('resources.json') != '' }}
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: iii Engine Benchmarks (CPU and memory)
