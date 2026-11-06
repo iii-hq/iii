@@ -619,3 +619,103 @@ fn burst_above_memory_cap_stays_bounded_and_reports_partial() {
     assert_eq!(status["completeness"], "partial");
     trace_store::flush().expect("the survivors still persist");
 }
+
+/// The archive writer thread's CPU time, from its `/proc` task entry.
+#[cfg(target_os = "linux")]
+fn writer_thread_cpu() -> Duration {
+    // SAFETY: sysconf only reads a configuration value.
+    let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) } as u64;
+    let mut ticks = 0;
+    for task in fs::read_dir("/proc/self/task").unwrap().flatten() {
+        let comm = fs::read_to_string(task.path().join("comm")).unwrap_or_default();
+        if comm.trim() != "iii-trace-store" {
+            continue;
+        }
+        let stat = fs::read_to_string(task.path().join("stat")).unwrap();
+        let fields: Vec<&str> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        ticks += fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap();
+    }
+    Duration::from_millis(ticks * 1000 / ticks_per_second)
+}
+
+/// A span shaped like one of an agent step's: 64 spans per trace, the
+/// attributes the harness sets, and an invocation payload of 1 KiB, or 48 KiB
+/// for one span in seven (the prompt the LLM calls carry).
+fn step_span(index: usize) -> StoredSpan {
+    let mut stored = span(
+        &format!("{:032x}", index / 64),
+        &format!("{index:016x}"),
+        1_000_000_000 + index as u64,
+        0,
+    );
+    stored.attributes = [
+        ("iii.function.id", "state::get"),
+        ("iii.session.id", "s_0123456789abcdef0123456789abcdef"),
+        ("iii.message.id", "m_0123456789abcdef0123456789abcdef"),
+        ("iii.tag.kind", "turn"),
+        ("iii.tag.message", "Use agent_call for each step"),
+        ("iii.tag.hidden", "false"),
+        ("thread.name", "tokio-runtime-worker"),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value.to_string()))
+    .collect();
+    let payload = if index.is_multiple_of(7) { 48 * 1024 } else { 1024 };
+    stored.events = vec![StoredSpanEvent {
+        name: "iii.invocation.input".to_string(),
+        timestamp_unix_nano: 1_000_000_000,
+        attributes: vec![("iii.payload.json".to_string(), "x".repeat(payload))],
+    }];
+    stored
+}
+
+/// Measurement, not a check: the archive writer's CPU per span when spans
+/// arrive as they do under 16 agent sessions, a few per batch at about 650
+/// spans/s. Run it alone, in release, on a disk-backed `TMPDIR`:
+/// `cargo test -p iii --release --test trace_storage_e2e archive_writer_cpu_per_span -- --ignored --nocapture`
+#[cfg(target_os = "linux")]
+#[test]
+#[serial]
+#[ignore = "measurement; run alone with --nocapture"]
+fn archive_writer_cpu_per_span() {
+    const SPANS: usize = 4_000;
+    const PER_BATCH: usize = 6;
+    let _reset = ResetTraceStorage;
+    trace_store::reset();
+    let root = tempfile::tempdir().expect("temp root");
+    let mut archive_config = config(root.path());
+    archive_config.max_disk_bytes = 1024 * MIB as u64;
+    let hot = start_archive(archive_config);
+    let before = writer_thread_cpu();
+    for batch in 0..SPANS / PER_BATCH {
+        hot.add_spans(
+            (0..PER_BATCH)
+                .map(|offset| step_span(batch * PER_BATCH + offset))
+                .collect(),
+        );
+        thread::sleep(Duration::from_millis(9));
+    }
+    trace_store::flush().expect("persist every span");
+    let cpu = writer_thread_cpu() - before;
+    let connection = rusqlite::Connection::open(root.path().join("traces.sqlite3")).unwrap();
+    let (spans, commits): (i64, i64) = connection
+        .query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT ingest_time_ns) FROM spans",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    println!(
+        "archive writer: {spans} spans in {commits} commits, {:.1} spans/commit, CPU {} ms, \
+         {:.1} us/span",
+        spans as f64 / commits as f64,
+        cpu.as_millis(),
+        cpu.as_micros() as f64 / spans as f64
+    );
+    assert_eq!(spans as usize, SPANS / PER_BATCH * PER_BATCH);
+}
