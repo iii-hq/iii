@@ -285,7 +285,7 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
       For the worker that hosts the function: what to set up and which calls to deliver (a table, a cron expression, a route). The engine validates them against the function's `args_format`.
     </ParamField>
     <ParamField body="capture" type="Capture[]">
-      What the target's payload carries, and with it which outcomes fire the target. Default `['input', 'output', 'caller', 'metadata']`. - `input` and `output` fire on success, `error` fires on error. - `caller` and `metadata` only add to the payload: a `capture` must name at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise). - `[]` fires on success, with the top-level fields only. So the default fires on success, `['error', 'caller']` on errors, and `['input', 'error']` on both. A success's payload never has `error`, an error's never has `output`.
+      What the target's payload carries, and with it which outcomes fire the target. Default `['input', 'output', 'caller']`. - `input` and `output` fire on success, `error` fires on error. - `caller` and `metadata` only add to the payload: a `capture` must name at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise). - `[]` fires on success, with the top-level fields only. So the default fires on success, `['error', 'caller']` on errors, and `['input', 'error']` on both. A success's payload never has `error`, an error's never has `output`.
     </ParamField>
     <ParamField body="filters" type="Filter">
       Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call.
@@ -467,7 +467,7 @@ isObserved(functionId: string, call?: Partial<Call<unknown, unknown>>) => boolea
     <ParamField body="output" type="O">
       The handler's return value: what observers observe.
     </ParamField>
-    <ParamField body="status" type="'error' | 'success'" required>
+    <ParamField body="status" type="'success' | 'error'" required>
     </ParamField>
   </Expandable>
 </ParamField>
@@ -734,7 +734,7 @@ the handler's return value.
 | `invocation_id` | `string` | Yes | - |
 | `metadata` | `Record<string, unknown>` | No | - |
 | `output` | `O` | No | The handler's return value: what observers observe. |
-| `status` | `"error" \| "success"` | Yes | - |
+| `status` | `"success" \| "error"` | Yes | - |
 
 ---
 
@@ -777,7 +777,7 @@ type CallerInfo = Partial<Omit<Caller, "parent">> & { parent?: Partial<Omit<Call
 
 #### Capture
 
-A field an observer captures. Default `['input', 'output', 'caller', 'metadata']`.
+A field an observer captures. Default `['input', 'output', 'caller']`.
 
 ```typescript
 type Capture = "input" | "output" | "error" | "caller" | "metadata"
@@ -953,7 +953,7 @@ Fields not captured, or that do not apply, are absent.
 | `observer_id` | `string` | Yes | - |
 | `output` | `O` | No | - |
 | `started_at_ms` | `number` | Yes | - |
-| `status` | `"error" \| "success"` | Yes | - |
+| `status` | `"success" \| "error"` | Yes | - |
 
 ---
 
@@ -1036,7 +1036,7 @@ The left side of `iii.observe`: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `Record<string, unknown>` | No | For the worker that hosts the function: what to set up and which calls<br />to deliver (a table, a cron expression, a route). The engine validates<br />them against the function's `args_format`. |
-| `capture` | [`Capture`](#capture)[] | No | What the target's payload carries, and with it which outcomes fire the<br />target. Default `['input', 'output', 'caller', 'metadata']`.<br /><br />- `input` and `output` fire on success, `error` fires on error.<br />- `caller` and `metadata` only add to the payload: a `capture` must name<br />  at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise).<br />- `[]` fires on success, with the top-level fields only.<br /><br />So the default fires on success, `['error', 'caller']` on errors, and<br />`['input', 'error']` on both. A success's payload never has `error`, an<br />error's never has `output`. |
+| `capture` | [`Capture`](#capture)[] | No | What the target's payload carries, and with it which outcomes fire the<br />target. Default `['input', 'output', 'caller']`.<br /><br />- `input` and `output` fire on success, `error` fires on error.<br />- `caller` and `metadata` only add to the payload: a `capture` must name<br />  at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise).<br />- `[]` fires on success, with the top-level fields only.<br /><br />So the default fires on success, `['error', 'caller']` on errors, and<br />`['input', 'error']` on both. A success's payload never has `error`, an<br />error's never has `output`. |
 | `filters` | [`Filter`](#filter) | No | Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. |
 | `function_id` | `string` | Yes | The observed function. |
 | `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). |
@@ -1551,7 +1551,9 @@ metadata, policy or connection. `target` is the target function id.
 | `args` | `Record<string, unknown>` | Yes | - |
 | `capture` | [`CaptureWire`](#capturewire)[] | Yes | - |
 | `filters` | `Record<string, unknown>` | Yes | The observer's filters, normalized by the engine. `{}` matches every call. |
+| `fires_on` | `FiresWire[]` | No | The outcomes that fire it, from an engine with `observe.capture`; absent from a 0.25 or rc engine. |
 | `id` | `string` | Yes | - |
+| `on` | `string` | No | - |
 | `target` | `string` | Yes | - |
 
 ---

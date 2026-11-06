@@ -361,7 +361,7 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
       For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none.
     </ParamField>
     <ParamField body="capture" type="list[Capture]">
-      What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller", "metadata"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both.
+      What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both.
     </ParamField>
     <ParamField body="filters" type="Filter">
       Which calls reach the target; ``{}`` (or absent) = every call.
@@ -1312,6 +1312,7 @@ keeps it in its own index (route table, consumers, ...).
 | `args` | `dict[str, Any]` | No | The observer's args, validated against ``args_format`` by the engine. |
 | `capture` | `list[str]` | No | What the target's payload carries when iii delivers, and with it the outcomes that fire it (see ``ObserveSource``). |
 | `filters` | `dict[str, Any]` | No | The observer's filters, normalized; iii's delivery and `matches` apply them. |
+| `fires_on` | `list[str] \| None` | No | - |
 | `function_id` | `str` | No | The observed function (one this worker hosts). |
 | `id` | `str` | No | The observer's id. |
 | `matches` | `(call: CallLike) -> bool` | Yes | Whether ``call`` passes this observer's capture and filters: what iii's delivery checks, for a deliver hook that calls targets itself. |
@@ -1367,7 +1368,7 @@ The left side of ``iii.observe``: what is observed.
 | --- | --- | --- | --- |
 | `function_id` | `str` | Yes | The observed function. |
 | `args` | `dict[str, Any]` | No | For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none. |
-| `capture` | `list[Capture]` | No | What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller", "metadata"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both. |
+| `capture` | `list[Capture]` | No | What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both. |
 | `filters` | `Filter` | No | Which calls reach the target; ``\{\}`` (or absent) = every call. |
 | `namespace` | `str` | No | Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``). |
 

@@ -308,7 +308,7 @@ observe(source: impl Into<Source>, target: impl Into<Target>) -> ObserverHandle
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
     <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
-      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`.
+      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="filters" type="fn(filters: Value) -> Self" required>
       Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
@@ -650,7 +650,7 @@ observe_with(source: impl Into<Source>, target: impl Into<Target>, options: Obse
       Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean.
     </ParamField>
     <ParamField body="capture" type="fn(capture: impl IntoIterator<Item = Capture>) -> Self" required>
-      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`.
+      What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller]`.
     </ParamField>
     <ParamField body="filters" type="fn(filters: Value) -> Self" required>
       Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call.
@@ -1044,10 +1044,7 @@ async wait_until_registered(timeout: Duration) -> Result<(), Error>
 
 ### capture_fires
 
-Whether a call that ended in success (or not) fires an observer with this
-`capture`, as the engine decides it: `input` and `output` fire on success,
-`error` on error; `caller` and `metadata` fire on nothing. `[]` fires on
-success, with the top-level fields only.
+
 
 **Signature**
 
@@ -1683,7 +1680,7 @@ The left side of an observer: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `fn(args: Value) -> Self` | Yes | Args for the worker that hosts the function: what to set up for this observer and which calls it wants, validated against the function's `args_format` (`INVALID_ARGS`). The function's description says what they mean. |
-| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller, metadata]`. |
+| `capture` | fn(capture: impl IntoIterator&lt;Item = [`Capture`](#capture)&gt;) -&gt; Self | Yes | What the target's payload carries, and with it which outcomes fire the target. Default `[input, output, caller]`. |
 | `filters` | `fn(filters: Value) -> Self` | Yes | Which calls reach the target: a filter over `input`, `output`, `error`, `caller` and `metadata`, with explicit operators (`{ "input.amount": { "$gte": 500 } }`). Unset matches every call. |
 | `function` | `fn(function_id: impl Into<String>) -> Self` | Yes | Observe `function_id`. Every function is observable. |
 | `function_id` | `fn() -> &str` | Yes | The observed function id. |
@@ -2000,6 +1997,9 @@ worker.
 | `filters` | `Value` | Yes | The observer's filters in normal form; `{}` matches every call. |
 | `target` | `String` | Yes | Target function id (its namespace is not disclosed). |
 | `capture` | Vec&lt;[`Capture`](#capture)&gt; | Yes | - |
+| `fires_on` | Option&lt;Vec&lt;[`InvocationStatus`](#invocationstatus)&gt;&gt; | No | The outcomes that fire it, from an engine with<br />`FEATURE_OBSERVE_CAPTURE`; absent from an older engine, whose<br />observers fire as their legacy `on` says. |
+| `on` | `Option<Value>` | No | The legacy `on` of an engine without `FEATURE_OBSERVE_CAPTURE`<br />(absent: success; `error`; `complete`). Read only when `fires_on` is<br />absent; deprecated. |
+| `fires_on` | `fn(success: bool) -> bool` | Yes | Whether a call that ended in success (or not) fires this observer: from `fires_on`, or else from the legacy `on`, never from `capture`. |
 
 ---
 
