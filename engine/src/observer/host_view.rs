@@ -274,4 +274,68 @@ mod tests {
             listed.iter().for_each(assert_rc_view);
         }
     }
+
+    /// The observer views of the shared protocol fixtures
+    /// (`sdk/fixtures/protocol/observe`), which every SDK decodes and every
+    /// SDK's mock engine models, are the views this engine sends: a host that
+    /// declared `observe.capture` gets exactly the fixture's fields, its
+    /// `fires_on` and its capture, and no `on`; a host without it gets the
+    /// same plus the legacy `on` when the observer fires on errors.
+    #[tokio::test]
+    async fn the_shared_fixture_views_are_the_views_this_engine_sends() {
+        use serde_json::Value;
+        const ADDED: &str =
+            include_str!("../../../sdk/fixtures/protocol/observe/observeradded.json");
+        const REGISTERED: &str =
+            include_str!("../../../sdk/fixtures/protocol/observe/functionregistered.json");
+        let added: Value = serde_json::from_str(ADDED).unwrap();
+        let registered: Value = serde_json::from_str(REGISTERED).unwrap();
+        let mut fixtures = vec![("observeradded.json", added["observer"].clone())];
+        for observer in registered["observers"].as_array().unwrap() {
+            fixtures.push(("functionregistered.json", observer.clone()));
+        }
+        let keys = |view: &Value| {
+            let mut keys: Vec<String> = view.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+
+        for (file, fixture) in fixtures {
+            let capture: Vec<Capture> = serde_json::from_value(fixture["capture"].clone()).unwrap();
+            for (kind, features) in [
+                (
+                    "capture host",
+                    &["observe.v1", "observe.v2", "observe.capture"][..],
+                ),
+                ("rc host", &["observe.v1", "observe.v2"][..]),
+            ] {
+                let engine = Arc::new(Engine::new());
+                let _sink = test_support::capture(&engine, "test::sink");
+                let (observing, _observing_rx) = test_support::worker(&engine);
+                let (host, mut rx) = host(&engine, features);
+                register(&engine, &host, "orders::create").await;
+                drain(&mut rx);
+                let mut request = request("obs", capture.clone());
+                request.source.filters = Some(fixture["filters"].clone());
+                engine.observers.observe(&engine, &observing, request).await;
+                let view = drain(&mut rx)
+                    .into_iter()
+                    .find_map(|message| match message {
+                        Message::ObserverAdded { observer, .. } => Some(observer),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{file} [{kind}]: no observeradded"));
+                let sent = serde_json::to_value(&view).unwrap();
+                let what = format!("{file} [{kind}]: engine {sent} vs fixture {fixture}");
+                assert_eq!(sent["fires_on"], fixture["fires_on"], "{what}");
+                assert_eq!(sent["capture"], fixture["capture"], "{what}");
+                let mut expected = keys(&fixture);
+                if kind == "rc host" && CaptureSet::from_list(&capture).legacy_on().is_some() {
+                    expected.push("on".to_string());
+                    expected.sort();
+                }
+                assert_eq!(keys(&sent), expected, "{what}");
+            }
+        }
+    }
 }
