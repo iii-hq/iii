@@ -38,6 +38,11 @@ The 0.26 engine and SDKs negotiate the `observe.capture` feature (see
 the legacy `on` semantics apply. They are deprecated, and support will be removed in a future
 release: upgrade the engine first, then move every worker to a 0.26 SDK.
 
+0.25 engines and SDKs remain interoperable with 0.26 engines and SDKs; however, the 0.26 SDKs no
+longer have the `on` and `deliver` fields on `observe()`. A worker that keeps its 0.25 SDK keeps
+working unchanged, but moving a worker to a 0.26 SDK means replacing `on` and `deliver` with
+`capture` in the same change (see [Observer `on` and `deliver`](#observer-on-and-deliver)).
+
 An observer from a worker on a 0.25 SDK or a 0.26 release candidate SDK fires on success unless its
 source sets `on`, even when its `capture` names `error`. Set `on: "error"` or `on: "complete"` on
 such an observer until the worker moves to a 0.26 SDK.
@@ -1703,8 +1708,9 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
 
 In 0.26, an observer's `capture` decides both the outcomes that run its target and what the payload
 carries (see [`capture`](../using-iii/observers#capture)). The 0.25 source fields `on` and `deliver`
-are deprecated. A 0.26 engine does not refuse them: it translates them to their 0.25 behavior when
-it registers the observer, and logs one `warn` per registration that names the observer, the
+are not part of the 0.26 SDKs: `observe()` has no `on` or `deliver` field, so a worker moved to a
+0.26 SDK must use `capture` instead. Workers that stay on a 0.25 SDK keep sending them, and a 0.26
+engine does not refuse them: it translates them to their 0.25 behavior when it registers the observer, and logs one `warn` per registration that names the observer, the
 fields, and the `capture` to use instead. An observer from a worker on a 0.25 SDK or a 0.26 release
 candidate SDK always gets the 0.25 semantics, even without `on` or `deliver`. A value the engine
 does not know, such as `on: "bogus"`, is refused with `INVALID_ARGS`. The exact rules are in
@@ -1737,7 +1743,9 @@ output; on 0.26 that payload has no `output`.
   `payload.metadata`. Route on call metadata in `onObservationMatch` or `onObservationDeliver`,
   which receive it whatever the observers capture, or filter on `metadata.*`, which works without
   capturing it.
-- `on` and `deliver` are translated with a warning, not refused with `INVALID_ARGS`.
+- A 0.26 engine translates `on` and `deliver` from release candidate SDKs with a warning instead of
+  refusing them with `INVALID_ARGS`. The 0.26 SDKs no longer have these fields on `observe()`:
+  replace them with `capture` when you move a worker to a 0.26 SDK.
 - The engine and the 0.26 SDKs add the `observe.capture` feature. Observer views and
   `engine::observers::list` carry `fires_on`, the outcomes that fire each observer; the numeric
   `fires` in `engine::observers::list` is still the number of activations.
@@ -1755,9 +1763,11 @@ output; on 0.26 that payload has no `output`.
       `iii trigger` with `call`, `call_async`, `Call`, `CallRequest`, `CallAction`, and `iii call`
 - [ ] Replace every `registerTrigger` with `iii.observe` of the type's function, and every
       `unregister()` with `dispose()`
-- [ ] Remove `on` and `deliver` from observer sources and set `capture`, which decides the outcomes
-      that fire. The engine translates `on` and `deliver` with a warning, but support will be
-      removed in a future release. See [Observer `on` and `deliver`](#observer-on-and-deliver)
+- [ ] Replace `on` and `deliver` in observer sources with `capture`, which decides the outcomes
+      that fire, when you move the worker to a 0.26 SDK: the 0.26 SDKs no longer have these fields
+      on `observe()`. Workers still on a 0.25 SDK keep working, since a 0.26 engine translates the
+      fields with a warning, but that support will be removed in a future release. See
+      [Observer `on` and `deliver`](#observer-on-and-deliver)
 - [ ] Read the event from the payload's `input` in targets that expected a trigger's event, and
       set `capture: ["input"]` on their observers. A source that delivers its calls itself, such
       as `http::on-request` or `ade::ui::asset`, decides what its targets receive: follow its
