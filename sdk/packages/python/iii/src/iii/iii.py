@@ -185,9 +185,11 @@ _UNSUPPORTED_REASON: ObserveReason = {
     "message": "the engine does not support observe (no observe.v1 in its features); upgrade it to 0.25 or later",
 }
 
-#: Rejections of one function's registration: the connection stays open.
-# Source fields removed in 0.26 that ``observe`` refuses (``INVALID_ARGS``) instead of dropping.
+#: Source fields that are not part of the 0.26 SDK API: ``observe`` refuses them
+#: (``INVALID_ARGS``) instead of dropping them. A 0.26 engine still translates them
+#: from 0.25 and release candidate SDKs; this SDK never sends them.
 _REMOVED_SOURCE_FIELDS = ("on", "deliver")
+#: Rejections of one function's registration: the connection stays open.
 _FUNCTION_REJECTIONS = frozenset({"FUNCTION_NAMESPACE_CONFLICT", "INVALID_ARGS_FORMAT", "UNSUPPORTED"})
 
 #: The second argument of a hook method that was not passed (``on_observer_added("id")``).

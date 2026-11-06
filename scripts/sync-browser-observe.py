@@ -91,6 +91,7 @@ EXCLUDED = {
     'tests/observe-fake-engine.ts': "the browser's fake engine replaces the global WebSocket instead of mocking `ws`",
     'tests/observe-e2e-utils.ts': 'browser helpers live in tests/integration/observe-utils.ts',
     'tests/observe-local-span.test.ts': 'OpenTelemetry spans: the browser SDK has none',
+    'tests/observe-error-filter-recipe.test.ts': 'host-side check of the documented error-filter recipe; the logic it exercises (observable.ts) is derived into the browser SDK unchanged',
 }
 
 # ── source modules ───────────────────────────────────────────────────────────

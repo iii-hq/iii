@@ -791,9 +791,10 @@ class Sdk implements ISdk {
       handle.setState('error', reason)
       return handle
     }
-    // Removed in 0.26: refused, not dropped, as the engine refuses them. Dropped,
-    // they would leave the default capture to fire the target on other outcomes
-    // than the ones asked for.
+    // Not part of the 0.26 SDK API: refused, not dropped. Dropped, they would
+    // leave the default capture to fire the target on other outcomes than the
+    // ones asked for. (A 0.26 engine still translates them from 0.25 and release
+    // candidate SDKs; this SDK never sends them.)
     for (const field of REMOVED_SOURCE_FIELDS) {
       if ((source as unknown as Record<string, unknown>)[field] !== undefined) {
         return refused({
