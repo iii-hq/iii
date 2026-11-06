@@ -645,14 +645,15 @@ impl ObserverRegistry {
         })
     }
 
-    /// Starts tracking an observed invocation: copies the input and shares
-    /// the call's metadata (CONTRACT D3: one more reference, never a copy)
+    /// Starts tracking an observed invocation: copies the input and metadata
     /// only when an active observer needs them (its filters read them, or it
     /// captures or delivers them), and only when the evaluator has room
     /// (otherwise the call counts an `OVERFLOW` drop when it completes,
     /// without having copied anything). Whether only the host's answer says
     /// how the call is delivered is decided when the call begins, from the
     /// host it goes to.
+    /// The call's metadata is shared, not copied: keeping it is one more
+    /// reference (decision 62).
     ///
     /// Observers see the payload as the caller sent it: a call a worker makes
     /// carries the engine's `_caller_worker_id` stamp, which the copy leaves

@@ -35,9 +35,9 @@ use iii_filter::FilterIndex;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::host_view::{self, HostView};
 use super::{
     FnKey, ObserverRegistry,
-    host_view::{self, HostView},
     lifecycle::{Announcement, Flags, Lock, Observer, lock},
     persistent::{Keyed, PersistentSet},
 };

@@ -236,9 +236,6 @@ function cloneValue<T>(value: T): T {
   }
 }
 
-/** Source fields removed in 0.26 that `observe` refuses (`INVALID_ARGS`) instead of dropping. */
-const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
-
 /** Frames only an engine with `observe.v1` understands (CONTRACT D2). */
 const OBSERVE_FAMILY: ReadonlySet<MessageType> = new Set([
   MessageType.Observe,
@@ -948,6 +945,7 @@ class Sdk implements IIIClient {
     // leave the default capture to fire the target on other outcomes than the
     // ones asked for. (A 0.26 engine still translates them from 0.25 and release
     // candidate SDKs; this SDK never sends them.)
+    const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
     for (const field of REMOVED_SOURCE_FIELDS) {
       if ((source as unknown as Record<string, unknown>)[field] !== undefined) {
         return refused({

@@ -292,9 +292,6 @@ function resolveNamespace(optionNamespace?: string): string | undefined {
   return optionNamespace
 }
 
-/** Source fields removed in 0.26 that `observe` refuses (`INVALID_ARGS`) instead of dropping. */
-const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
-
 /** The upgrade guide the removed 0.25 trigger APIs point to. */
 const UPGRADE_GUIDE = 'https://iii.dev/docs/upgrading/from-0-25-x'
 
@@ -795,6 +792,7 @@ class Sdk implements ISdk {
     // leave the default capture to fire the target on other outcomes than the
     // ones asked for. (A 0.26 engine still translates them from 0.25 and release
     // candidate SDKs; this SDK never sends them.)
+    const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
     for (const field of REMOVED_SOURCE_FIELDS) {
       if ((source as unknown as Record<string, unknown>)[field] !== undefined) {
         return refused({
