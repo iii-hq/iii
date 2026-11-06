@@ -47,7 +47,7 @@ pub enum LogStream {
 }
 
 impl LogStream {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Stdout => "stdout",
             Self::Stderr => "stderr",
@@ -833,5 +833,57 @@ mod tests {
             .unwrap();
 
         assert_eq!(after.containers[0].entries[0].message, "output after ready");
+    }
+
+    #[tokio::test]
+    async fn capture_shows_a_container_that_starts_after_the_first_read() {
+        // What `--follow` does on every poll: it holds cursors for the
+        // containers it has already read and asks for them all again. A
+        // container with no cursor of its own still has to report what it
+        // printed while starting.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::open_with_limits(dir.path().to_path_buf(), 1_024, 1).unwrap();
+        let mut writers = Vec::new();
+        for container in ["queue", "state"] {
+            let (writer, reader) = tokio::io::duplex(1_024);
+            let sender = store.sender.clone();
+            let container = container.to_string();
+            tokio::spawn(async move {
+                pump_stream(Box::new(reader), container, LogStream::Stdout, sender).await;
+            });
+            writers.push(writer);
+        }
+
+        writers[0].write_all(b"queue ready\n").await.unwrap();
+        let first = store
+            .query(
+                vec!["queue".to_string()],
+                BTreeMap::new(),
+                10,
+                None,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        let cursor = first.containers[0].cursor.clone().unwrap();
+
+        writers[1].write_all(b"state ready\n").await.unwrap();
+        let after = store
+            .query(
+                vec!["queue".to_string(), "state".to_string()],
+                BTreeMap::from([("queue".to_string(), cursor)]),
+                10,
+                None,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+
+        let state = after
+            .containers
+            .iter()
+            .find(|batch| batch.container == "state")
+            .expect("the late container should be reported");
+        assert_eq!(state.entries[0].message, "state ready");
     }
 }
