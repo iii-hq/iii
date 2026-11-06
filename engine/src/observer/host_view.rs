@@ -4,6 +4,68 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+//! How a function's host reads its observers' announcements (CONTRACT D5):
+//! every view names the outcomes the observer fires on (`fires_on`), and a host
+//! that did not declare `observe.capture` (0.25, and an rc host that declared
+//! `observe.v2` only) decides firing from the legacy `on` alone, so it gets
+//! that too. The host's features are read once per announcement of its
+//! function (`functionregistered`), never once per observer.
+
+use super::lifecycle::CaptureSet;
+use crate::worker_connections::WorkerFeatures;
+
+/// What a host reads from an observer's announcement, from its features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct HostView {
+    legacy_on: bool,
+}
+
+impl HostView {
+    /// The view a connection that declared `features` gets.
+    pub(crate) fn of(features: &WorkerFeatures) -> Self {
+        #[cfg(test)]
+        EVALUATIONS.with(|n| n.set(n.get() + 1));
+        Self {
+            legacy_on: !features.observe_capture(),
+        }
+    }
+
+    /// Whether the host also gets the legacy `on` (it lacks
+    /// `observe.capture`).
+    pub(crate) fn legacy_on(self) -> bool {
+        self.legacy_on
+    }
+}
+
+/// The outcomes `capture` fires on: `success`, `error`, or both in that
+/// order.
+pub(crate) fn fires(capture: CaptureSet) -> Vec<&'static str> {
+    let mut fires = Vec::with_capacity(2);
+    if capture.fires(true) {
+        fires.push("success");
+    }
+    if capture.fires(false) {
+        fires.push("error");
+    }
+    fires
+}
+
+#[cfg(test)]
+thread_local! {
+    static EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// [`HostView::of`] calls on this thread since [`reset_evaluations`].
+#[cfg(test)]
+pub(crate) fn evaluations() -> usize {
+    EVALUATIONS.with(|n| n.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_evaluations() {
+    EVALUATIONS.with(|n| n.set(0));
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -127,10 +189,10 @@ mod tests {
     /// the rest on success.
     fn assert_rc_view(view: &ObserverView) {
         if view.id.starts_with("obs-error") {
-            assert_eq!(view.fires, vec!["error"], "{view:?}");
+            assert_eq!(view.fires_on, vec!["error"], "{view:?}");
             assert_eq!(view.on.as_deref(), Some("error"), "{view:?}");
         } else {
-            assert_eq!(view.fires, vec!["success"], "{view:?}");
+            assert_eq!(view.fires_on, vec!["success"], "{view:?}");
             assert_eq!(view.on, None, "{view:?}");
         }
     }
@@ -195,9 +257,20 @@ mod tests {
         assert_rc_view(&added);
         assert_eq!(evaluations(), 1, "observeradded evaluates nothing again");
 
-        // A registration that announces nothing (the same connection again)
-        // evaluates nothing either.
+        // Registering again is announced again: one more evaluation for
+        // the whole new `functionregistered`, however many it lists.
         register(&engine, &rc_host, "orders::create").await;
-        assert_eq!(evaluations(), 1);
+        let relisted = drain(&mut rc_rx)
+            .into_iter()
+            .filter_map(|message| match message {
+                Message::FunctionRegistered { observers, .. } => Some(observers),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(evaluations(), relisted.len() + 1, "one per announcement");
+        for listed in &relisted {
+            assert_eq!(listed.len(), N + 1, "{listed:?}");
+            listed.iter().for_each(assert_rc_view);
+        }
     }
 }

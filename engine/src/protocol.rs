@@ -508,14 +508,20 @@ pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
 /// (`invocationresult.matched` and `delivered`, `output_is_input`) and the
 /// function options `args_format`, `private` and `observable`.
 pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
+/// Feature: the connection reads the outcomes an observer fires on from
+/// `fires_on` in its announcement, never from `capture` or the legacy `on`. A
+/// host without it (0.25, and an rc host that declares `observe.v2`) also
+/// gets `on`.
+pub const FEATURE_OBSERVE_CAPTURE: &str = "observe.capture";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
 /// What this engine advertises in [`Message::WorkerRegistered`], in this
 /// order.
-pub const ENGINE_FEATURES: [&str; 3] = [
+pub const ENGINE_FEATURES: [&str; 4] = [
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_LOCAL_DISPATCH_V1,
 ];
 /// Worker feature, declared on `engine::workers::register` and never
@@ -808,7 +814,11 @@ pub struct ObserverView {
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
-    /// For a host without `observe.v2` (0.25) only, which decides the outcomes
+    /// The outcomes the observer fires on: `success`, `error` or both.
+    /// Never empty from this engine; absent from an older one's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fires_on: Vec<String>,
+    /// For a host without `observe.capture` (0.25, rc) only, which decides the outcomes
     /// that fire from it alone: `error` or `complete` as `capture` implies,
     /// absent for success. Deprecated with those hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2067,18 +2077,19 @@ mod tests {
     }
 
     #[test]
-    fn an_observer_view_carries_fires_and_on_only_when_set() {
+    fn an_observer_view_carries_fires_on_and_on_only_when_set() {
         let view = super::ObserverView {
             id: "o-1".to_string(),
             args: json!({}),
             filters: json!({}),
             target: "sink::x".to_string(),
             capture: vec![super::Capture::Error],
-            fires: vec!["error".to_string()],
+            fires_on: vec!["error".to_string()],
             on: None,
         };
         let wire = serde_json::to_value(&view).unwrap();
-        assert_eq!(wire["fires"], json!(["error"]), "{wire}");
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
         assert!(wire.get("on").is_none(), "{wire}");
         let legacy = super::ObserverView {
             on: Some("error".to_string()),
@@ -2086,7 +2097,8 @@ mod tests {
         };
         let wire = serde_json::to_value(&legacy).unwrap();
         assert_eq!(wire["on"], "error", "{wire}");
-        assert_eq!(wire["fires"], json!(["error"]), "{wire}");
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
     }
 
     #[test]

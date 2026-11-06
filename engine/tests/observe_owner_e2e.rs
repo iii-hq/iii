@@ -2947,22 +2947,44 @@ async fn a_void_call_cannot_reach_a_private_function() {
     );
 }
 
-/// A host without `observe.v2` (0.25) decides the outcomes that fire from
-/// `on` alone: its announcements carry the `on` each observer's capture
-/// implies (deprecated). A host with `observe.v2` gets none.
+/// A host without `observe.capture` (0.25, and an rc host that declared
+/// `observe.v2` only) decides the outcomes that fire from `on` alone: its
+/// announcements carry the `on` each observer's capture implies
+/// (deprecated). A host with `observe.capture` gets none. Every host gets
+/// `fires_on` (CONTRACT D5).
 #[tokio::test]
-async fn a_host_without_observe_v2_is_told_the_on_each_observer_fires_on() {
+async fn a_host_without_observe_capture_is_told_the_on_each_observer_fires_on() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut watcher = connect_with(&t, "watcher", OBSERVE_V2).await;
-    for (name, features, v2) in [("legacy", OBSERVE_V1, false), ("modern", OBSERVE_V2, true)] {
+    let capture_host: &[&str] = &[
+        "observe.v1",
+        "observe.v2",
+        "observe.capture",
+        "local-dispatch.v1",
+    ];
+    for (name, features, reads_fires_on) in [
+        ("legacy", OBSERVE_V1, false),
+        ("rc", OBSERVE_V2, false),
+        ("modern", capture_host, true),
+    ] {
         let mut host = connect_with(&t, name, features).await;
         let function = format!("{name}::charge");
         host.register_function(&function).await;
         registered(&t.engine, "default", &function).await;
-        for (kind, capture, on) in [
-            ("errors", json!(["error", "caller"]), Some("error")),
-            ("both", json!(["input", "error"]), Some("complete")),
-            ("success", json!(["input"]), None),
+        for (kind, capture, on, fires_on) in [
+            (
+                "errors",
+                json!(["error", "caller"]),
+                Some("error"),
+                json!(["error"]),
+            ),
+            (
+                "both",
+                json!(["input", "error"]),
+                Some("complete"),
+                json!(["success", "error"]),
+            ),
+            ("success", json!(["input"]), None, json!(["success"])),
         ] {
             let id = format!("{name}-{kind}");
             watcher
@@ -2977,7 +2999,8 @@ async fn a_host_without_observe_v2_is_told_the_on_each_observer_fires_on() {
                     f["type"] == "observeradded" && f["observer"]["id"] == id.as_str()
                 })
                 .await;
-            let want = if v2 { None } else { on };
+            assert_eq!(added["observer"]["fires_on"], fires_on, "{name}: {added}");
+            let want = if reads_fires_on { None } else { on };
             assert_eq!(
                 added["observer"].get("on").and_then(Value::as_str),
                 want,

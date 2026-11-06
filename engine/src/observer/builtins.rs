@@ -82,6 +82,9 @@ pub struct ObserverInfo {
     pub filters: Value,
     pub target: ObserverTargetInfo,
     pub capture: Vec<String>,
+    /// The outcomes the observer fires on: `success`, `error` or both
+    /// (`fires` stays the count of its activations).
+    pub fires_on: Vec<String>,
     pub worker: ObservingWorkerInfo,
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +133,10 @@ impl ObserverRegistry {
                 .to_list()
                 .iter()
                 .map(|c| c.to_string())
+                .collect(),
+            fires_on: super::host_view::fires(observer.capture)
+                .into_iter()
+                .map(str::to_string)
                 .collect(),
             worker: ObservingWorkerInfo {
                 worker_id: observing.connection.to_string(),
