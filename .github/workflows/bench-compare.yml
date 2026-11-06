@@ -186,6 +186,10 @@ jobs:
             REV=$(jq -r ".[$i].rev" out/refs.json)
             echo "::group::$LABEL ($REV)"
             DIR="$RUNNER_TEMP/wt-$i"
+            # Make sure the pinned commit exists locally even if the PR was force-pushed since the comment.
+            if [[ "$REV" =~ ^[0-9a-f]{40}$ ]] && ! git cat-file -e "${REV}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$REV" || echo "::warning::pinned commit $REV is not available (PR force-pushed?)"
+            fi
             if git worktree add --detach "$DIR" "$REV" && \
                (cd "$DIR" && cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee "$GITHUB_WORKSPACE/out/$i.txt"; exit "${PIPESTATUS[0]}"); then
               echo ok > "out/$i.status"
@@ -255,6 +259,9 @@ jobs:
                   status.append(open(f'out/{i}.status').read().strip())
               except FileNotFoundError:
                   status.append('failed')
+              # A ref that exited cleanly but yielded no parsable measurements is incomplete.
+              if not data and status[-1] == 'ok':
+                  status[-1] = 'failed'
 
           def fmt(ns):
               if ns >= 1e9: return f'{ns/1e9:.2f} s'
@@ -263,7 +270,13 @@ jobs:
               return f'{ns} ns'
 
           def delta(base, val):
-              return (val - base) / base * 100.0 if base else 0.0
+              if not base:
+                  # zero baseline: the change is undefined (infinite) when the value grew
+                  return float('inf') if val > 0 else 0.0
+              return (val - base) / base * 100.0
+
+          def pct(d):
+              return '+∞%' if d == float('inf') else f'{d:+.1f}%'
 
           def icon(d):
               return '🔴' if d >= THRESHOLD else ('🟢' if d <= -THRESHOLD else '')
@@ -301,12 +314,12 @@ jobs:
                       cells.append(fmt(v) + tag)
                   else:
                       d = delta(base, v)
-                      cells.append(f'{fmt(v)} ({d:+.1f}%) {icon(d)}{tag}'.strip())
+                      cells.append(f'{fmt(v)} ({pct(d)}) {icon(d)}{tag}'.strip())
               if show_prev:
                   last, prev = results[-1].get(name), results[-2].get(name)
                   if last is not None and prev is not None:
                       d = delta(prev, last)
-                      cells.append(f'{d:+.1f}% {icon(d)}'.strip())
+                      cells.append(f'{pct(d)} {icon(d)}'.strip())
                   else:
                       cells.append({'new': '🆕 new', 'removed': '⚠️ removed'}.get(st, '—'))
               return '| ' + ' | '.join(cells) + ' |'
@@ -317,7 +330,7 @@ jobs:
 
           def magnitude(name):
               base, last, prev = results[0].get(name), results[-1].get(name), results[-2].get(name)
-              ds = [delta(base, r[name]) for r in results[1:] if base and name in r]
+              ds = [delta(base, r[name]) for r in results[1:] if base is not None and name in r]
               if show_prev and last is not None and prev is not None:
                   ds.append(delta(prev, last))
               return max((abs(d) for d in ds), default=0.0)
@@ -328,7 +341,7 @@ jobs:
 
           cmd = os.environ.get('COMMAND', '').splitlines()[0][:200] if os.environ.get('COMMAND') else '/bench'
           out = [f'## Benchmark comparison', f'`{cmd}` — [workflow run]({os.environ["RUN_URL"]})', '']
-          if os.environ.get('BENCH_RESULT') != 'success' and not any(results):
+          if not any(results):
               out.append(f'❌ The benchmark job finished with `{os.environ.get("BENCH_RESULT")}` and produced no results.')
           else:
               legend = (f'Baseline: **{refs[0]["label"]}**. Cells show ns/iter and the change versus the baseline '
