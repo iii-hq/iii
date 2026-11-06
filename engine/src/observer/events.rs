@@ -569,6 +569,30 @@ mod tests {
         assert_eq!(envelope["output"], event);
         assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
     }
+    /// The test helper's request leaves delivery at the wire default: with
+    /// no `raw_input`, its observer gets the Observed envelope, not the
+    /// input alone.
+    #[tokio::test]
+    async fn the_helpers_default_request_delivers_the_observed_envelope() {
+        let engine = std::sync::Arc::new(Engine::new());
+        register_engine_event_sources(&engine);
+        let mut sink = test_support::capture(&engine, "test::workers");
+        let (worker, _socket) = test_support::worker(&engine);
+        let request =
+            test_support::request("obs-default", ON_WORKERS_CHANGED, "test::workers", None);
+        test_support::observe_request(&engine, &worker, request).await;
+
+        let event = json!({ "event": "worker_connected", "worker_id": "w-1" });
+        engine
+            .observers
+            .emit(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED, || {
+                Some(event.clone())
+            });
+        let delivered = test_support::next(&mut sink).await;
+        assert_eq!(delivered["input"], event, "delivered {delivered}");
+        assert_eq!(delivered["output"], event);
+        assert_eq!(delivered["caller"], json!({ "worker_name": "iii-engine" }));
+    }
 
     /// Every observer's creation, in the state it was created in, and every
     /// state change after it is one call of `engine::on-observers-changed`.
