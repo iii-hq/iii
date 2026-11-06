@@ -239,6 +239,17 @@ function cloneValue<T>(value: T): T {
 /** Source fields removed in 0.26 that `observe` refuses (`INVALID_ARGS`) instead of dropping. */
 const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
 
+/** Whether an observer of the snapshot captures the input or filters on it; computed once per snapshot. */
+const inputReaders = new WeakMap<readonly ObserverImpl[], boolean>()
+function readsInput(snapshot: readonly ObserverImpl[]): boolean {
+  let reads = inputReaders.get(snapshot)
+  if (reads === undefined) {
+    reads = snapshot.some((obs) => obs.capture.includes('input') || obs.filter.roots.has('input'))
+    inputReaders.set(snapshot, reads)
+  }
+  return reads
+}
+
 /** Frames only an engine with `observe.v1` understands (CONTRACT D2). */
 const OBSERVE_FAMILY: ReadonlySet<MessageType> = new Set([
   MessageType.Observe,
@@ -1365,6 +1376,12 @@ class Sdk implements IIIClient {
     const activations = observe.activations
     const hook = this.functionHooks.get(function_id)?.deliver
     const delivering = hook !== undefined || snapshot.length > 0
+    // The delivery's copy of the input is taken only when something reads it:
+    // a deliver or match hook (worker code), or an observer that captures the
+    // input or filters on it.
+    const copiesInput =
+      delivering &&
+      (hook !== undefined || this.functionHooks.get(function_id)?.match !== undefined || readsInput(snapshot))
     const byReference = fn.message.private === true
     let input: unknown
     let metadata: unknown
@@ -1385,7 +1402,7 @@ class Sdk implements IIIClient {
         // What the delivery sees is the payload and metadata as the caller passed
         // them when the call started, not what the handler or the caller made of
         // them since. Not copied when nothing is delivered.
-        if (delivering) {
+        if (copiesInput) {
           callInput = cloneValue(request.payload)
           callMetadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
         }

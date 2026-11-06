@@ -9,14 +9,17 @@
 //!
 //! axum's `WebSocket` sends every message as one frame and exposes no frame
 //! API, so the worker endpoint upgrades to a tokio-tungstenite stream instead
-//! and fragments large envelopes itself (see [`json_frames`]). The engine
-//! reads the other direction itself, with [`InboundReader`], so that a message
-//! over the limit is dropped instead of ending the connection.
+//! and fragments large envelopes itself (see [`json_frames`]). An envelope
+//! kept in pieces goes out in the same frames, the pieces it shares borrowed
+//! rather than copied (see [`encoded_frames`]). The engine reads the other
+//! direction itself, with [`InboundReader`], so that a message over the limit
+//! is dropped instead of ending the connection.
 
 use std::{
     future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -53,6 +56,7 @@ use tokio_tungstenite::{
 };
 
 use super::inbound::InboundReader;
+use crate::invocation::encoded::{EncodedJson, Piece};
 
 type UpgradedIo = TokioIo<Upgraded>;
 
@@ -151,15 +155,146 @@ pub(crate) fn json_frames(payload: String) -> Vec<Message> {
         .collect()
 }
 
-/// Writes one serialized JSON envelope as [`json_frames`]. The connection's
-/// single writer task calls it, so no other data frame can land between the
-/// fragments of a message.
-pub(crate) async fn send_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
+/// Queues one serialized JSON envelope on `sink` as [`json_frames`], without
+/// flushing: the connection's writer queues every message waiting for it,
+/// then flushes them together. That single writer task calls it, so no other
+/// data frame can land between the fragments of a message.
+pub(crate) async fn feed_json<S>(sink: &mut S, payload: String) -> Result<(), S::Error>
 where
     S: Sink<Message> + Unpin,
 {
     for frame in json_frames(payload) {
-        sink.send(frame).await?;
+        sink.feed(frame).await?;
+    }
+    Ok(())
+}
+
+/// The frames that carry one JSON envelope kept in pieces ([`EncodedJson`])
+/// to a worker: the frames [`json_frames`] makes of its text, byte for byte,
+/// each made when the writer queues it.
+///
+/// A frame that lies within one piece borrows it, so the text an event's
+/// activations share (its payloads) is sent from where it is instead of
+/// copied into each activation's message. A frame that spans pieces is
+/// joined when it is made, which bounds the copy to one frame: the whole
+/// envelope when it fits in one frame, as it is sent today, or a fragment of
+/// a larger one that straddles a piece boundary. tungstenite copies every
+/// frame into its write buffer in any case.
+pub(crate) fn encoded_frames(envelope: EncodedJson) -> EncodedFrames {
+    let len = envelope.len();
+    if len <= JSON_FRAGMENT_BYTES {
+        return EncodedFrames {
+            whole: Some(envelope.into_text()),
+            pieces: Vec::new().into_iter(),
+            current: Bytes::new(),
+            len,
+            offset: len,
+        };
+    }
+    EncodedFrames {
+        whole: None,
+        pieces: envelope.into_pieces(),
+        current: Bytes::new(),
+        len,
+        offset: 0,
+    }
+}
+
+/// The frames of one envelope ([`encoded_frames`]), made one at a time.
+pub(crate) struct EncodedFrames {
+    /// An envelope sent as one frame, joined.
+    whole: Option<String>,
+    /// The pieces not framed yet.
+    pieces: std::vec::IntoIter<Piece>,
+    /// What is left of the piece being framed.
+    current: Bytes,
+    len: usize,
+    /// Bytes of the envelope framed so far.
+    offset: usize,
+}
+
+impl EncodedFrames {
+    /// The next `want` bytes of the envelope: borrowed from the piece they
+    /// lie in, or joined when they span pieces.
+    fn take(&mut self, want: usize) -> Bytes {
+        if self.fill() && self.current.len() >= want {
+            return self.current.split_to(want);
+        }
+        let mut joined = Vec::with_capacity(want);
+        while joined.len() < want && self.fill() {
+            let n = (want - joined.len()).min(self.current.len());
+            joined.extend_from_slice(&self.current[..n]);
+            self.current = self.current.slice(n..);
+        }
+        debug_assert_eq!(joined.len(), want, "the pieces add up to the length");
+        Bytes::from(joined)
+    }
+
+    /// Makes `current` the rest of a piece with bytes left; false when no
+    /// piece has any.
+    fn fill(&mut self) -> bool {
+        while self.current.is_empty() {
+            match self.pieces.next() {
+                Some(piece) => self.current = piece_bytes(piece),
+                None => return false,
+            }
+        }
+        true
+    }
+}
+
+impl Iterator for EncodedFrames {
+    type Item = Message;
+
+    fn next(&mut self) -> Option<Message> {
+        if let Some(text) = self.whole.take() {
+            return Some(Message::Text(text.into()));
+        }
+        if self.offset >= self.len {
+            return None;
+        }
+        let end = (self.offset + JSON_FRAGMENT_BYTES).min(self.len);
+        let payload = self.take(end - self.offset);
+        let opcode = if self.offset == 0 {
+            Data::Text
+        } else {
+            Data::Continue
+        };
+        self.offset = end;
+        Some(Message::Frame(Frame::message(
+            payload,
+            OpCode::Data(opcode),
+            end == self.len,
+        )))
+    }
+}
+
+/// A piece's bytes, not copied: an owned piece's buffer, or a shared piece
+/// borrowed for as long as a frame holds it.
+fn piece_bytes(piece: Piece) -> Bytes {
+    match piece {
+        Piece::Owned(text) => Bytes::from(text),
+        Piece::Shared(text) => Bytes::from_owner(SharedText(text)),
+    }
+}
+
+/// A shared piece as the payload of a frame.
+struct SharedText(Arc<str>);
+
+impl AsRef<[u8]> for SharedText {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+/// [`feed_json`] for an envelope kept in pieces: queues its
+/// [`encoded_frames`] on `sink`, without flushing.
+pub(crate) async fn feed_encoded<S>(sink: &mut S, envelope: EncodedJson) -> Result<(), S::Error>
+where
+    S: Sink<Message> + Unpin,
+{
+    for frame in encoded_frames(envelope) {
+        sink.feed(frame).await?;
     }
     Ok(())
 }
@@ -365,6 +500,76 @@ mod tests {
         assert_eq!(String::from_utf8(reassembled).unwrap(), payload);
     }
 
+    /// An envelope of `head`, `shared` and `tail`, the middle one shared.
+    fn in_pieces(head: &str, shared: &Arc<str>, tail: &str) -> EncodedJson {
+        EncodedJson::shared(shared.clone()).enclosed(head.to_string(), tail)
+    }
+
+    fn letters(len: usize) -> String {
+        (0..len)
+            .map(|index| char::from(b'a' + (index % 26) as u8))
+            .collect()
+    }
+
+    /// Whatever its pieces, an envelope goes out in the frames of its text:
+    /// one text frame up to 1 MiB, 1 MiB fragments beyond, with piece
+    /// boundaries inside, before, on and after fragment boundaries.
+    #[test]
+    fn an_envelope_in_pieces_has_the_frames_of_its_text() {
+        let mut envelopes = Vec::new();
+        for (head, shared, tail) in [
+            (0, 0, 0),
+            (10, 100, 5),
+            (10, JSON_FRAGMENT_BYTES - 15, 5),
+            (10, JSON_FRAGMENT_BYTES - 14, 5),
+            (MIB, MIB, MIB),
+            (MIB - 1, 2 * MIB + 2, 7),
+            (300, 5 * MIB + 3, 40),
+        ] {
+            let shared: Arc<str> = Arc::from(letters(shared));
+            envelopes.push(in_pieces(&letters(head), &shared, &letters(tail)));
+        }
+        // Two shared payloads, the piece between them inside one fragment.
+        let input: Arc<str> = Arc::from(format!("\"{}\"", letters(MIB + 100)));
+        let output: Arc<str> = Arc::from(format!("\"{}\"", letters(2 * MIB)));
+        let mut writer = crate::invocation::encoded::ObjectWriter::new();
+        writer.field("observer_id", &"o-1");
+        writer.shared_field("input", &input);
+        writer.field("status", &"success");
+        writer.shared_field("output", &output);
+        envelopes.push(writer.finish().enclosed("{\"data\":".to_string(), "}"));
+        // Multibyte characters split by fragment boundaries.
+        let shared: Arc<str> = Arc::from("\u{e9}\u{1f600}".repeat(600_000));
+        envelopes.push(in_pieces("x", &shared, "\u{e9}"));
+
+        for envelope in envelopes {
+            let len = envelope.len();
+            let expected = json_frames(envelope.clone().into_text());
+            let frames: Vec<Message> = encoded_frames(envelope).collect();
+            assert!(frames == expected, "length {len}");
+        }
+    }
+
+    /// Frames that lie within a shared piece borrow it: the queued envelope
+    /// and its frames hold the shared text, not a copy of it.
+    #[test]
+    fn frames_within_a_shared_piece_borrow_it() {
+        let shared: Arc<str> = Arc::from("s".repeat(3 * MIB + 10));
+        let start = shared.as_ptr() as usize;
+        let text = start..start + shared.len();
+        let frames: Vec<Message> = encoded_frames(in_pieces("{\"data\":", &shared, "}")).collect();
+        let borrowed: Vec<bool> = frame_parts(&frames)
+            .iter()
+            .map(|(_, _, data)| text.contains(&(data.as_ptr() as usize)))
+            .collect();
+        // The first frame starts in the head and the last ends in the tail:
+        // those two are joined. The two between lie in the shared text.
+        assert_eq!(borrowed, [false, true, true, false]);
+        assert_eq!(Arc::strong_count(&shared), 2);
+        drop(frames);
+        assert_eq!(Arc::strong_count(&shared), 1);
+    }
+
     mod connection {
         use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -565,6 +770,84 @@ mod tests {
             let (_client, received) = deliver(config, &payload).await;
             let message = received.expect("every frame must fit in 1 MiB");
             assert!(message["result"] == payload.as_str());
+        }
+
+        /// The text of the next data message, reassembled from its frames.
+        async fn next_text(client: &mut Client) -> String {
+            loop {
+                let frame = tokio::time::timeout(Duration::from_secs(60), client.next())
+                    .await
+                    .expect("timed out waiting for the engine")
+                    .expect("connection ended")
+                    .expect("a valid message");
+                match frame {
+                    Message::Text(text) => return text.as_str().to_string(),
+                    Message::Ping(_) | Message::Pong(_) => continue,
+                    other => panic!("unexpected frame {other:?}"),
+                }
+            }
+        }
+
+        /// A worker reassembles an activation the engine kept in pieces into
+        /// the text it was sent before: whole when small, and from fragments
+        /// of at most 1 MiB, multibyte characters split, when larger.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn worker_reassembles_an_activation_in_pieces_into_the_same_text() {
+            use crate::invocation::encoded::ObjectWriter;
+
+            let (address, engine) = serve().await;
+            let config = WebSocketConfig::default()
+                .max_frame_size(Some(JSON_FRAGMENT_BYTES))
+                .max_message_size(Some(MAX_JSON_MESSAGE_BYTES));
+            let (mut client, _) = tokio_tungstenite::connect_async_with_config(
+                format!("ws://{address}/"),
+                Some(config),
+                true,
+            )
+            .await
+            .unwrap();
+            let registered = next_json(&mut client).await.unwrap();
+            let worker_id: Uuid = registered["worker_id"].as_str().unwrap().parse().unwrap();
+            let worker = engine.worker_registry.get_worker(&worker_id).unwrap();
+            worker
+                .receive_message_limit
+                .store(MAX_JSON_MESSAGE_BYTES, std::sync::atomic::Ordering::Relaxed);
+
+            for blob in ["x".repeat(4096), "\u{e9}\u{1f600}".repeat(3 * MIB / 6)] {
+                let input: Arc<str> = Arc::from(serde_json::json!({ "blob": blob }).to_string());
+                let mut data = ObjectWriter::new();
+                data.field("observer_id", &"o-1");
+                data.shared_field("input", &input);
+                data.field("duration_ms", &1.5);
+                let invocation_id = Uuid::new_v4();
+                let frame = protocol::invoke_frame(
+                    Some(invocation_id),
+                    "test::target",
+                    data.finish(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                // The text the engine wrote before it kept frames in pieces.
+                let before = format!(
+                    r#"{{"type":"invokefunction","invocation_id":"{invocation_id}","function_id":"test::target","data":{{"observer_id":"o-1","input":{input},"duration_ms":1.5}}}}"#
+                );
+                worker
+                    .channel
+                    .send(Outbound::Invoke {
+                        invocation_id: Some(invocation_id),
+                        frame,
+                    })
+                    .await
+                    .unwrap();
+                let received = next_text(&mut client).await;
+                assert_eq!(received.len(), before.len());
+                assert!(received == before, "{} bytes", before.len());
+            }
         }
 
         /// Connects a raw worker; returns it with its worker id.

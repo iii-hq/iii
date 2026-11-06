@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::telemetry::SpanExt;
 
 use crate::{
-    function::{Function, FunctionResult, HandlerFn},
+    function::{EncodedHandlerFn, Function, FunctionResult, HandlerFn},
     observer::{HostDelivery, InvocationCtx, ObserverRegistry},
     protocol::ErrorBody,
     worker_connections::WorkerConnection,
@@ -26,6 +26,7 @@ use crate::{
 };
 
 pub mod auth;
+pub mod encoded;
 pub mod http_function;
 pub mod http_invoker;
 pub mod method;
@@ -42,6 +43,19 @@ async fn call_handler_with_metadata<H: AsRef<HandlerFn> + Send>(
     metadata: Option<Arc<Value>>,
 ) -> FunctionResult<Option<Value>, ErrorBody> {
     (handler.as_ref())(invocation_id, data, session, metadata).await
+}
+
+/// What a call runs, with its input.
+pub(crate) enum Dispatch<H> {
+    /// `handler`, with `body`.
+    Value { handler: H, body: Value },
+    /// A handler that sends its input on as JSON text (a worker connection),
+    /// with the input already encoded: an observer activation's argument,
+    /// which shares the event's encoded payloads with its other activations.
+    Encoded {
+        handler: Arc<EncodedHandlerFn>,
+        body: encoded::EncodedJson,
+    },
 }
 
 /// How a routed call ended: the executor's answer and, from a host that
@@ -156,8 +170,10 @@ impl InvocationHandler {
             worker_id,
             function_id,
             crate::protocol::DEFAULT_NAMESPACE,
-            body,
-            function_handler,
+            Dispatch::Value {
+                handler: function_handler,
+                body,
+            },
             traceparent,
             baggage,
             session,
@@ -192,8 +208,42 @@ impl InvocationHandler {
             worker_id,
             function_id,
             namespace,
-            body,
-            function_handler,
+            Dispatch::Value {
+                handler: function_handler,
+                body,
+            },
+            traceparent,
+            baggage,
+            session,
+            metadata,
+            ctx,
+        )
+        .await
+    }
+
+    /// An observer activation: a call no connection made, of `function_id`
+    /// resolved in `namespace`, running `dispatch`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn handle_activation(
+        &self,
+        invocation_id: Uuid,
+        function_id: String,
+        namespace: &str,
+        dispatch: Dispatch<Arc<HandlerFn>>,
+        traceparent: Option<String>,
+        baggage: Option<String>,
+        session: Option<Arc<Session>>,
+        metadata: Option<Arc<Value>>,
+        ctx: InvocationCtx,
+    ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
+        self.handle_invocation_inner(
+            Some(invocation_id),
+            None,
+            None,
+            None,
+            function_id,
+            namespace,
+            dispatch,
             traceparent,
             baggage,
             session,
@@ -231,8 +281,10 @@ impl InvocationHandler {
             observing,
             function_id,
             namespace,
-            body,
-            function_handler,
+            Dispatch::Value {
+                handler: function_handler,
+                body,
+            },
             traceparent,
             baggage,
             session,
@@ -254,8 +306,7 @@ impl InvocationHandler {
         routed_as: Option<Uuid>,
         function_id: String,
         namespace: &str,
-        body: Value,
-        function_handler: H,
+        dispatch: Dispatch<H>,
         traceparent: Option<String>,
         baggage: Option<String>,
         session: Option<Arc<Session>>,
@@ -274,7 +325,17 @@ impl InvocationHandler {
         }) {
             Some(Err(refused)) => return Ok(Err(refused)),
             Some(Ok((registry, Some(set)))) => {
-                Some(registry.begin(set, &body, &metadata, &traceparent, &baggage))
+                // An encoded input is decoded only for observers that keep it.
+                let decoded;
+                let body = match &dispatch {
+                    Dispatch::Value { body, .. } => body,
+                    Dispatch::Encoded { body, .. } if set.needs.input => {
+                        decoded = body.to_value();
+                        &decoded
+                    }
+                    Dispatch::Encoded { .. } => &Value::Null,
+                };
+                Some(registry.begin(set, body, &metadata, &traceparent, &baggage))
             }
             Some(Ok((_, None))) | None => None,
         };
@@ -409,13 +470,23 @@ impl InvocationHandler {
             // In scope while the handler runs, so a worker-hosted function's
             // `InvokeFunction` frame carries this call's caller, depth and
             // activation (`WorkerConnection::handle_function`).
-            let handler = call_handler_with_metadata(
-                function_handler,
-                Some(invocation_id),
-                body,
-                session,
-                metadata,
-            );
+            let handler = async move {
+                match dispatch {
+                    Dispatch::Value { handler, body } => {
+                        call_handler_with_metadata(
+                            handler,
+                            Some(invocation_id),
+                            body,
+                            session,
+                            metadata,
+                        )
+                        .await
+                    }
+                    Dispatch::Encoded { handler, body } => {
+                        handler(Some(invocation_id), body, session, metadata).await
+                    }
+                }
+            };
             let result = match &ctx {
                 Some(ctx) => InvocationCtx::scope(ctx.clone(), handler).await,
                 None => handler.await,

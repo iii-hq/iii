@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 use serde_json::{Map, Value, json};
 use tokio::sync::mpsc;
 
-use super::{Completed, ENGINE_DELIVERY, project};
+use super::{Completed, Delivery, InvocationId, Payload, project};
 use crate::{
     engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
     function::FunctionResult,
@@ -48,16 +48,17 @@ const CONNECTIONS: [(&str, &[&str]); 3] = [
 
 fn completed(success: bool, with_output: bool) -> Completed {
     Completed {
-        delivery: ENGINE_DELIVERY,
-        namespace: DEFAULT_NAMESPACE.to_string(),
-        function_id: "test::src".to_string(),
-        invocation_id: "1".to_string(),
+        delivery: Delivery::Engine,
+        function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
+        invocation_id: InvocationId::Reported("1".to_string()),
         success,
-        input: Some(Arc::new(json!({ "in": 1 }))),
-        output: (success && with_output).then(|| Arc::new(json!({ "out": 2 }))),
-        error: (!success).then(|| Arc::new(json!({ "code": "E", "message": "boom" }))),
+        output_is_input: false,
+        input: Some(Payload::Value(Arc::new(json!({ "in": 1 })))),
+        output: (success && with_output).then(|| Payload::Value(Arc::new(json!({ "out": 2 })))),
+        error: (!success)
+            .then(|| Payload::Value(Arc::new(json!({ "code": "E", "message": "boom" })))),
         caller: Some(Arc::new(json!({ "function_id": "caller::fn" }))),
-        metadata: Some(Arc::new(json!({ "m": 3 }))),
+        metadata: Some(Payload::Value(Arc::new(json!({ "m": 3 })))),
         started_at_ms: 0,
         duration_ms: 0.0,
         depth: 0,
@@ -65,6 +66,7 @@ fn completed(success: bool, with_output: bool) -> Completed {
         baggage: None,
         queues: AtomicUsize::new(0),
         charged: AtomicUsize::new(0),
+        encoded: once_cell::race::OnceBox::new(),
     }
 }
 
@@ -78,7 +80,8 @@ fn old_fires(on: &str) -> (bool, bool) {
 
 /// v0.25 `dispatch::project`, transcribed.
 fn old_payload(deliver: &str, capture: [bool; 5], c: &Completed) -> Value {
-    let shipped = |v: &Option<Arc<Value>>| v.as_deref().cloned().unwrap_or(Value::Null);
+    let value = |p: &Option<Payload>| p.as_ref().and_then(Payload::value).map(|v| Value::clone(v));
+    let shipped = |p: &Option<Payload>| value(p).unwrap_or(Value::Null);
     match deliver {
         "input" => return shipped(&c.input),
         "output" => return shipped(&c.output),
@@ -87,21 +90,21 @@ fn old_payload(deliver: &str, capture: [bool; 5], c: &Completed) -> Value {
     let mut m = Map::new();
     m.insert("observer_id".into(), "obs".into());
     m.insert("activation_id".into(), "a".into());
-    m.insert("function_id".into(), c.function_id.clone().into());
-    m.insert("namespace".into(), c.namespace.clone().into());
-    m.insert("invocation_id".into(), c.invocation_id.clone().into());
+    m.insert("function_id".into(), c.function.1.clone().into());
+    m.insert("namespace".into(), c.function.0.clone().into());
+    m.insert("invocation_id".into(), c.invocation_id.to_string().into());
     m.insert(
         "status".into(),
         if c.success { "success" } else { "error" }.into(),
     );
     for (wanted, key, value) in [
-        (capture[0], "input", &c.input),
-        (capture[2], "error", &c.error),
-        (capture[3], "caller", &c.caller),
-        (capture[4], "metadata", &c.metadata),
+        (capture[0], "input", value(&c.input)),
+        (capture[2], "error", value(&c.error)),
+        (capture[3], "caller", c.caller.as_deref().cloned()),
+        (capture[4], "metadata", value(&c.metadata)),
     ] {
         if wanted && let Some(value) = value {
-            m.insert(key.into(), Value::clone(value));
+            m.insert(key.into(), value);
         }
     }
     if capture[1] && c.success {

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::body::Bytes;
 use reqwest::{Client, Method};
 use serde_json::Value;
 use uuid::Uuid;
@@ -101,7 +102,7 @@ impl HttpInvoker {
         function_path: &str,
         invocation_id: &str,
         timestamp: u64,
-        body: Vec<u8>,
+        body: impl Into<reqwest::Body>,
     ) -> reqwest::RequestBuilder {
         let timeout = endpoint.timeout_ms.unwrap_or(self.default_timeout_ms);
 
@@ -210,6 +211,11 @@ impl HttpInvoker {
     ) -> Result<Option<Value>, ErrorBody> {
         self.validate_url(endpoint.url).await?;
         let (timestamp, body) = self.prepare_request(&data)?;
+        // The request needs only its body: the input is let go before the
+        // call waits, and the body is held once, at its length, by the
+        // request and the signature alike.
+        drop(data);
+        let body = Bytes::from(body.into_boxed_slice());
 
         let mut request = self.build_base_request(
             endpoint,
@@ -840,6 +846,64 @@ mod tests {
             capture.body.lock().expect("lock body").clone(),
             Some(payload)
         );
+    }
+
+    /// The request carries the input's JSON text byte for byte, at its
+    /// length, though the invoker lets the input go before it waits.
+    #[tokio::test]
+    async fn invoke_http_sends_the_input_text_unchanged() {
+        // The `content-length` header and the body of the one request.
+        type Received = Option<(Option<String>, Bytes)>;
+        let received: Arc<Mutex<Received>> = Arc::default();
+        let sink = received.clone();
+        let app = Router::new().route(
+            "/raw",
+            any(move |headers: HeaderMap, body: Bytes| {
+                let sink = sink.clone();
+                async move {
+                    let length = headers
+                        .get("content-length")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    *sink.lock().expect("lock body") = Some((length, body));
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let url = format!("http://{}/raw", listener.local_addr().expect("addr"));
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("serve") });
+        // Large enough that encoding grows its buffer past the text's length.
+        let payload = json!({
+            "items": (0..500)
+                .map(|i| json!({ "id": i, "name": format!("item-{i}") }))
+                .collect::<Vec<_>>(),
+        });
+        let expected = serde_json::to_vec(&payload).expect("serialize payload");
+        let timeout_ms = Some(5_000);
+        let headers = HashMap::new();
+        let auth = None;
+        let endpoint = HttpEndpointParams {
+            url: &url,
+            method: &HttpMethod::Post,
+            timeout_ms: &timeout_ms,
+            headers: &headers,
+            auth: &auth,
+        };
+
+        let result = permissive_invoker()
+            .invoke_http("svc.raw", &endpoint, Uuid::nil(), payload, None, None)
+            .await
+            .expect("invoke");
+        assert_eq!(result, None);
+
+        let (length, body) = received
+            .lock()
+            .expect("lock body")
+            .take()
+            .expect("one request");
+        assert_eq!(length, Some(expected.len().to_string()));
+        assert_eq!(&body[..], &expected[..]);
     }
 
     #[tokio::test]

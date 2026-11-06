@@ -602,6 +602,7 @@ async fn adapter_swapped_during_missing_op_grace_answers_s302() {
                 })))
             })
         }),
+        encoded_handler: None,
         _function_id: "fake::adapter::info".into(),
         _description: None,
         request_format: None,
