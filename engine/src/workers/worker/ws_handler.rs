@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use super::channels::{ChannelItem, ChannelManager, StreamChannel};
 use crate::protocol::ChannelDirection;
-use crate::workers::worker::AppState;
+use crate::workers::worker::{AppState, WS_READ_BUFFER_BYTES};
 
 /// Why a writer socket that ended without a close frame aborted.
 const WRITER_LOST: &str = "channel writer aborted: connection lost before close";
@@ -68,10 +68,11 @@ pub async fn channel_ws_upgrade(
 
     let direction = params.dir;
 
-    ws.on_upgrade(move |socket| {
-        handle_channel_socket(socket, channel_id, channel, direction, channel_mgr)
-    })
-    .into_response()
+    ws.read_buffer_size(WS_READ_BUFFER_BYTES)
+        .on_upgrade(move |socket| {
+            handle_channel_socket(socket, channel_id, channel, direction, channel_mgr)
+        })
+        .into_response()
 }
 
 /// Takes its end from `channel`, the one the upgrade found, not from a second
@@ -200,8 +201,9 @@ async fn handle_channel_socket(
                             total_bytes += len as u64;
                             msg_count += 1;
                             tracing::debug!(channel_id = %channel_id, msg = msg_count, bytes = len, "Write: received binary chunk from WS");
-                            // Tungstenite frames share its read buffer (128 KiB
-                            // by default). A queued frame can outlive the socket
+                            // Tungstenite frames share its read buffer
+                            // (`WS_READ_BUFFER_BYTES`, or the frame's size when
+                            // larger). A queued frame can outlive the socket
                             // until a late reader attaches or the channel TTL
                             // expires. Retain only the payload, not that buffer.
                             ChannelItem::Binary(Bytes::copy_from_slice(&data))
@@ -501,9 +503,38 @@ mod tests {
         ));
     }
 
+    /// A frame larger than `WS_READ_BUFFER_BYTES` takes several socket reads
+    /// and still reaches the channel whole.
+    #[tokio::test]
+    async fn frame_larger_than_the_read_buffer_arrives_whole() {
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let mut writer = connect_end(&base_url, &writer_ref).await;
+        let payload: Vec<u8> = (0..1024 * 1024).map(|i| (i % 251) as u8).collect();
+        writer
+            .send(Message::Binary(payload.clone().into()))
+            .await
+            .unwrap();
+        writer.close(None).await.unwrap();
+
+        let mut receiver = engine
+            .channel_manager
+            .take_receiver(&reader_ref.channel_id, &reader_ref.access_key)
+            .await
+            .unwrap();
+        let item = tokio::time::timeout(Duration::from_secs(2), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let ChannelItem::Binary(data) = item else {
+            panic!("expected binary")
+        };
+        assert_eq!(data.as_ref(), payload.as_slice());
+    }
+
     // A late reader must still receive queued data after the writer disconnects,
-    // but a tiny frame must not pin the WebSocket's entire 128 KiB read buffer
-    // for the channel's five-minute orphan TTL.
+    // but a tiny frame must not pin the WebSocket's entire read buffer for the
+    // channel's five-minute orphan TTL.
     #[tokio::test]
     async fn queued_binary_does_not_retain_websocket_read_buffer() {
         let (engine, base_url, _shutdown_tx) = spawn_app().await;

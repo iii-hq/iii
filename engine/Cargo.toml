@@ -61,6 +61,10 @@ name = "ws_roundtrip_bench"
 harness = false
 
 [[bench]]
+name = "channel_relay_bench"
+harness = false
+
+[[bench]]
 name = "worker_invocation_tracking_bench"
 harness = false
 
