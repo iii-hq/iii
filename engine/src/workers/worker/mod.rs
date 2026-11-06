@@ -57,6 +57,13 @@ pub(crate) const MAX_JSON_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// Main worker JSON message: 64 MiB (67,108,864 bytes), not channel transport.
 pub(crate) const MAX_JSON_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
+/// Read buffer of the engine's axum WebSocket endpoints: channels and
+/// `/otel`. Before every socket read tungstenite zero-fills the free part of
+/// its read buffer, up to this size (128 KiB by default), so each streamed
+/// delta of a few hundred bytes paid a 128 KiB `memset`. A larger frame still
+/// grows the buffer to fit; it is read in pieces of this size.
+pub(crate) const WS_READ_BUFFER_BYTES: usize = 8 * 1024;
+
 pub const DEFAULT_PORT: u16 = 49134;
 
 /// First SDK release that receives [`MAX_JSON_MESSAGE_BYTES`].
@@ -510,14 +517,15 @@ async fn otel_ws_handler(
     let engine = state.engine.clone();
     let config = state.config.clone();
 
-    ws.on_upgrade(move |socket| async move {
-        if let Err(err) = engine
-            .handle_otel(socket, addr, uri, headers, config, state.shutdown_rx)
-            .await
-        {
-            tracing::error!(addr = %addr, error = ?err, "otel connection error");
-        }
-    })
+    ws.read_buffer_size(WS_READ_BUFFER_BYTES)
+        .on_upgrade(move |socket| async move {
+            if let Err(err) = engine
+                .handle_otel(socket, addr, uri, headers, config, state.shutdown_rx)
+                .await
+            {
+                tracing::error!(addr = %addr, error = ?err, "otel connection error");
+            }
+        })
 }
 
 crate::register_worker!(
