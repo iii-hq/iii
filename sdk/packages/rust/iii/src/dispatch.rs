@@ -993,15 +993,30 @@ mod tests {
 
     const PARTS: [&str; 5] = ["input", "output", "error", "caller", "metadata"];
 
-    /// An observer of [`FUNCTION`] with `filters` and a random
-    /// capture (which decides its outcomes), active 9 times in 10.
+    /// An observer of [`FUNCTION`] with `filters` and a random capture,
+    /// active 9 times in 10. Three times in four it is announced as an
+    /// engine with `observe.capture` announces it, with the `fires_on` its
+    /// capture implies (`[]`, `input` or `output` fire on success, `error`
+    /// on error); otherwise as an older engine does, without `fires_on` and
+    /// with a random legacy `on` (absent, `success`, `error`, `complete`).
     fn observer(rng: &mut Rng, id: &str, filters: &Value, seq: u64) -> Observer {
         let capture: Vec<&str> = PARTS.into_iter().filter(|_| rng.chance(40)).collect();
-        Observer::test_view(
-            json!({ "id": id, "target": "t", "filters": filters, "capture": capture }),
-            seq,
-            !rng.chance(10),
-        )
+        let mut view = json!({ "id": id, "target": "t", "filters": filters, "capture": capture });
+        if rng.chance(75) {
+            let success =
+                capture.is_empty() || capture.iter().any(|p| matches!(*p, "input" | "output"));
+            let error = capture.contains(&"error");
+            let fires_on: Vec<&str> = [success.then_some("success"), error.then_some("error")]
+                .into_iter()
+                .flatten()
+                .collect();
+            view["fires_on"] = json!(fires_on);
+        } else if let Some(on) =
+            *rng.pick(&[None, Some("success"), Some("error"), Some("complete")])
+        {
+            view["on"] = json!(on);
+        }
+        Observer::test_view(view, seq, !rng.chance(10))
     }
 
     /// Ids in an order unrelated to the order observers are added in.
