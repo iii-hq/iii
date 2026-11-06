@@ -116,7 +116,7 @@ impl Source {
     }
 
     /// What the target's payload carries, and with it which outcomes fire
-    /// the target. Default `[input, output, caller, metadata]`.
+    /// the target. Default `[input, output, caller]`.
     ///
     /// `input` and `output` fire on success, `error` fires on error;
     /// `caller` and `metadata` only add to the payload, so a `capture` must

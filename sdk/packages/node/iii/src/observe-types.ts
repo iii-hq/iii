@@ -1,4 +1,4 @@
-/** A field an observer captures. Default `['input', 'output', 'caller', 'metadata']`. */
+/** A field an observer captures. Default `['input', 'output', 'caller']`. */
 export type Capture = 'input' | 'output' | 'error' | 'caller' | 'metadata'
 
 /**
@@ -79,7 +79,7 @@ export interface ObserveSource {
   filters?: Filter
   /**
    * What the target's payload carries, and with it which outcomes fire the
-   * target. Default `['input', 'output', 'caller', 'metadata']`.
+   * target. Default `['input', 'output', 'caller']`.
    *
    * - `input` and `output` fire on success, `error` fires on error.
    * - `caller` and `metadata` only add to the payload: a `capture` must name

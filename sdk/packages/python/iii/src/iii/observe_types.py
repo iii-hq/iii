@@ -91,8 +91,8 @@ class ObserveSource(_ObserveSourceRequired, total=False):
             without ``args_format`` takes none.
         filters: Which calls reach the target; ``{}`` (or absent) = every call.
         capture: What the target's payload carries, and with it which
-            outcomes fire the target. Default ``["input", "output", "caller",
-            "metadata"]``. ``input`` and ``output`` fire on success, ``error``
+            outcomes fire the target. Default ``["input", "output",
+            "caller"]``. ``input`` and ``output`` fire on success, ``error``
             fires on error; ``caller`` and ``metadata`` only add to the
             payload, so a ``capture`` must name at least one of ``input``,
             ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on

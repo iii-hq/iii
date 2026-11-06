@@ -11,7 +11,7 @@ import (
 // hook types). The wire shapes are in protocol.go.
 
 // Capture names a part of an observed invocation shipped to an observer's target.
-// The default is input, output, caller and metadata. Capture also decides which
+// The default is input, output and caller. Capture also decides which
 // outcomes fire the target: input and output fire on success, error on error; caller
 // and metadata only add to the payload.
 type Capture string
@@ -82,7 +82,7 @@ type Source struct {
 	// Filters decide which calls reach the target; nil matches every call.
 	Filters Filters
 	// Capture is what the target's payload carries, and with it which outcomes fire
-	// the target. nil means the default (input, output, caller, metadata), which
+	// the target. nil means the default (input, output, caller), which
 	// fires on success. Input and output fire on success, error fires on error; caller
 	// and metadata only add to the payload, so a non-empty Capture must name at least
 	// one of input, output, error (INVALID_ARGS otherwise). An empty, non-nil slice
