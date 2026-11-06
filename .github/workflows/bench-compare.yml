@@ -13,8 +13,9 @@ name: Benchmark Compare
 # Tokens: `base` = tip of the PR's base branch, `head` = PR head (always
 # included unless --no-head), `X.Y.Z[-pre]` (optional `v` / `iii/v` / `iii-alpha/v`
 # prefix) = the `iii/vX.Y.Z[-pre]` release tag, falling back to the
-# `iii-alpha/vX.Y.Z-alpha.N` alpha tag. The first ref listed is the baseline the
-# other columns are compared against.
+# `iii-alpha/vX.Y.Z-alpha.N` alpha tag. Versions match exactly: an alpha needs
+# its suffix (`0.25.1-alpha.2`; `0.25.1` only resolves to the stable `iii/v0.25.1`).
+# The first ref listed is the baseline the other columns are compared against.
 #
 # Besides the timings, the report lists the peak memory and the CPU each bench
 # binary used (see "Install the resource-measuring bench runner" below).
@@ -93,6 +94,15 @@ jobs:
             exit 0
           }
 
+          # 0 = tag exists, 1 = confirmed missing (HTTP 404), 2 = any other API failure
+          tag_exists() {
+            local out
+            if out=$(gh api "repos/$REPO/git/ref/tags/$1" 2>&1); then return 0; fi
+            if grep -q 'HTTP 404' <<< "$out"; then return 1; fi
+            echo "$out" >&2
+            return 2
+          }
+
           LINE=$(printf '%s' "$COMMENT_BODY" | head -n1 | tr -d '\r')
           read -r -a TOKENS <<< "$LINE"
           if [[ "${TOKENS[0]:-}" != "/bench" ]]; then
@@ -113,19 +123,24 @@ jobs:
               head) WANT_HEAD=true ;;
               --no-head) WANT_HEAD=false ;;
               *)
-                # Accept X.Y.Z[-pre], vX.Y.Z, iii/vX.Y.Z or iii-alpha/vX.Y.Z
-                V="${T#iii-alpha/}"; V="${V#iii/}"; V="${V#v}"
+                # Accept X.Y.Z[-pre], vX.Y.Z, iii/vX.Y.Z or iii-alpha/vX.Y.Z.
+                # Strip exactly one namespace; anything left over fails the check below.
+                case "$T" in
+                  iii-alpha/*) V="${T#iii-alpha/}"; CANDIDATES=("iii-alpha/v${V#v}") ;;
+                  iii/*)       V="${T#iii/}";       CANDIDATES=("iii/v${V#v}") ;;
+                  *)           V="$T";              CANDIDATES=() ;;
+                esac
+                V="${V#v}"
                 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
                   || fail "unknown argument \`$T\`. Usage: \`/bench [base] [X.Y.Z ...] [--no-head]\`"
                 # Stable releases and RCs are tagged iii/vX, alphas iii-alpha/vX.
-                case "$T" in
-                  iii-alpha/*) CANDIDATES=("iii-alpha/v$V") ;;
-                  iii/*)       CANDIDATES=("iii/v$V") ;;
-                  *)           CANDIDATES=("iii/v$V" "iii-alpha/v$V") ;;
-                esac
+                [[ ${#CANDIDATES[@]} -gt 0 ]] || CANDIDATES=("iii/v$V" "iii-alpha/v$V")
                 TAG=""
                 for C in "${CANDIDATES[@]}"; do
-                  if gh api "repos/$REPO/git/ref/tags/$C" >/dev/null 2>&1; then TAG="$C"; break; fi
+                  RC=0; tag_exists "$C" || RC=$?
+                  if [[ $RC -eq 0 ]]; then TAG="$C"; break; fi
+                  # Fall back to the next namespace only for a confirmed missing tag.
+                  [[ $RC -eq 1 ]] || fail "could not look up tag \`$C\` (GitHub API error), please retry."
                 done
                 [[ -n "$TAG" ]] || fail "no release tag found for \`$V\` (tried: ${CANDIDATES[*]})."
                 VERSIONS+=("$TAG")
