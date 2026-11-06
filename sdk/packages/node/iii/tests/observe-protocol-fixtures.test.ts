@@ -528,11 +528,17 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(frame.namespace).toBe('default')
     const { namespace: _, ...rest } = frame
     const want = expected.data as Json
+    // `features` is checked on its own: the fixture is shared by every SDK and
+    // gains `observe.capture` as each one announces it (CONTRACT D6).
+    const features = data.features
+    delete data.features
+    const { features: wantFeatures, ...wantRest } = want
     expect(asJson({ ...rest, data })).toEqual({
       ...expected,
-      data: { ...want, version: data.version, os: data.os, pid: data.pid },
+      data: { ...wantRest, version: data.version, os: data.os, pid: data.pid },
     })
-    expect(data.features).toEqual(['observe.v1', 'observe.v2', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1', 'large-messages.v1'])
+    expect(features).toEqual(expect.arrayContaining(wantFeatures as string[]))
   })
 })
 
@@ -633,7 +639,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
       filters: null,
       target: 't',
       capture: ['input', 'telemetry'],
-      on: 'start', // a field this SDK no longer reads is dropped
+      on: 'start', // the legacy field, read only without `fires_on` (CONTRACT D6): kept, an unknown value included
     })
     // `filters: null` is kept as sent: compiling it fails (INVALID_FILTER), it is never read as match-all
     expect(info).toEqual({
@@ -642,13 +648,36 @@ describe('engine → worker: the SDK decodes without loss', () => {
       filters: null,
       target: 't',
       capture: ['input', 'telemetry'],
+      on: 'start',
     })
     const sparse = wire.decodeObserverInfo({ id: 'o', target: 't' })
     expect(sparse).toMatchObject({
       filters: {},
-      capture: ['input', 'output', 'caller', 'metadata'],
+      capture: ['input', 'output', 'caller'],
     })
     expect(sparse).not.toHaveProperty('on')
+    expect(sparse).not.toHaveProperty('fires_on')
+    // `fires_on` (CONTRACT D6, AMENDMENT 1) is kept with its unknown values; `fires` (the activation count) is never read
+    const announced = wire.decodeObserverInfo({ id: 'o', target: 't', fires_on: ['error', 'timeout', 3], fires: 2 })
+    expect(announced.fires_on).toEqual(['error', 'timeout'])
+    expect(announced).not.toHaveProperty('fires')
+    expect(wire.observerFires(announced)).toEqual({ onSuccess: false, onError: true, legacy: false })
+    expect(wire.observerFires(wire.decodeObserverInfo({ id: 'o', target: 't', fires: ['error'] }))).toEqual({
+      onSuccess: true,
+      onError: false,
+      legacy: true,
+    })
+    expect(
+      [undefined, 'success', 'error', 'complete'].map((on) => {
+        const { onSuccess, onError } = wire.observerFires(wire.decodeObserverInfo({ id: 'o', target: 't', on }))
+        return [onSuccess, onError]
+      }),
+    ).toEqual([
+      [true, false],
+      [true, false],
+      [false, true],
+      [true, true],
+    ])
     const invoke = wire.decodeInvokeFunction({
       function_id: 'f',
       data: 1,

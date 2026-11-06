@@ -26,14 +26,16 @@ import type {
 } from './iii-types'
 import type { ObserverOptions, ObserveSource, Target } from './observe-types'
 
-/** CONTRACT D1: what an absent `capture` means: every field but `error`. */
-export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller', 'metadata']
+/** CONTRACT D1: what an absent `capture` means: `input`, `output` and `caller` (no `metadata`, no `error`). */
+export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller']
 
 /**
  * Whether a call that ended in success (`ok`) or error fires an observer
  * with this `capture`, as the engine decides it: `input` and `output` fire on
  * success, `error` on error; `caller` and `metadata` fire on nothing. `[]`
- * fires on success, with the top-level fields only.
+ * fires on success, with the top-level fields only. Used only to derive the
+ * legacy `source.on` sent to an engine without `observe.capture`: a host
+ * reads the engine's `fires_on` instead ({@link observerFires}).
  */
 export function captureFires(capture: readonly string[], ok: boolean): boolean {
   if (capture.length === 0) return ok
@@ -41,8 +43,8 @@ export function captureFires(capture: readonly string[], ok: boolean): boolean {
 }
 
 /**
- * The `source.on` an engine without `observe.v2` (0.25) needs for this
- * `capture`, since it decides the outcomes that fire from `on` alone:
+ * The `source.on` an engine without `observe.capture` (0.25, rc) needs for
+ * this `capture`, since it decides the outcomes that fire from `on` alone:
  * `error` or `complete`, or none for an observer that fires on success, its
  * default. Deprecated with those engines.
  */
@@ -52,10 +54,38 @@ export function legacyOn(capture: readonly string[] | undefined): 'error' | 'com
   return captureFires(list, true) ? 'complete' : 'error'
 }
 
-/** Logged once per client, the first time it derives `source.on` for an engine without `observe.v2`. */
+/**
+ * Logged once per client, the first time it talks legacy `on` with an engine
+ * without `observe.capture`: sending an observer's `source.on`, or reading an
+ * observer view that has no `fires_on`.
+ */
 export const LEGACY_ON_DEPRECATION =
-  'observe: this engine lacks observe.v2 (0.25), so observers are sent with `source.on`, derived from `capture`. ' +
-  '`source.on` is deprecated and will be removed in a future release: upgrade the engine to 0.26 or later.'
+  'observe: the connected engine does not support observe.capture; legacy `on` semantics are deprecated ' +
+  'and will be removed in a future version; upgrade the engine.'
+
+/** The outcomes that fire a hosted observer, computed once per view it is announced with. */
+export type ObserverFires = {
+  onSuccess: boolean
+  onError: boolean
+  /** The view had no `fires_on` (an engine without `observe.capture`): read from the legacy `on`. */
+  legacy: boolean
+}
+
+/**
+ * When a hosted observer fires (CONTRACT D6): from the view's `fires_on` when the
+ * engine sent it; otherwise from the legacy `on` alone, never from `capture`:
+ * absent (or `success`) fires on success, `error` on error, `complete` on both.
+ */
+export function observerFires(info: Pick<ObserverInfoWire, 'fires_on' | 'on'>): ObserverFires {
+  if (info.fires_on !== undefined) {
+    return { onSuccess: info.fires_on.includes('success'), onError: info.fires_on.includes('error'), legacy: false }
+  }
+  return {
+    onSuccess: info.on !== 'error',
+    onError: info.on === 'error' || info.on === 'complete',
+    legacy: true,
+  }
+}
 
 type Raw = Record<string, unknown>
 
@@ -114,6 +144,9 @@ export function decodeObserverInfo(v: unknown): ObserverInfoWire {
       ? raw.capture.filter((c): c is string => typeof c === 'string')
       : [...DEFAULT_CAPTURE],
   }
+  // `fires_on`, never `fires` (the activation count elsewhere: CONTRACT AMENDMENT 1).
+  if (Array.isArray(raw.fires_on)) info.fires_on = raw.fires_on.filter((f): f is string => typeof f === 'string')
+  if (typeof raw.on === 'string') info.on = raw.on
   return info
 }
 
