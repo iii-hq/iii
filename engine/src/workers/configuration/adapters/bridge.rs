@@ -396,7 +396,7 @@ impl ConfigurationAdapter for BridgeAdapter {
 
 /// The `configuration::on-updated` event an activation of the relay carries:
 /// the payload's `input`, taken out of the payload the relay owns rather than
-/// copied (CONTRACT D3).
+/// copied.
 fn decode_relayed(mut payload: Value) -> serde_json::Result<ConfigurationEventData> {
     let input = payload
         .get_mut("input")
@@ -442,7 +442,7 @@ mod tests {
     use serde_json::json;
 
     /// The relay decodes the `configuration::on-updated` event out of the
-    /// envelope it receives (CONTRACT D3: the input is taken, not cloned).
+    /// envelope it receives (the input is taken, not cloned).
     #[test]
     fn the_relay_decodes_the_configuration_event_from_the_envelope() {
         let payload = json!({

@@ -25,7 +25,7 @@ import { observerFires } from './observe-wire'
 import type { Reporter, ReportInit, ReportValues } from './reporter'
 import { unrefTimer } from './utils'
 
-/** CONTRACT D11: an observer hook still running after this is `OWNER_TIMEOUT`. */
+/** An observer hook still running after this is `OWNER_TIMEOUT`. */
 export const OBSERVE_HOOK_TIMEOUT_MS = 30_000
 
 /** The hooks that apply to one function: the worker's, and its own. */

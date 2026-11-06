@@ -68,7 +68,7 @@ impl CaptureSet {
     };
 
     /// What an engine-owned observer that hands its target the input alone
-    /// captures (CONTRACT D2): the input, on success; its host ships nothing
+    /// captures (decision 59): the input, on success; its host ships nothing
     /// else.
     pub const INPUT_ONLY: Self = Self {
         input: true,
@@ -180,7 +180,7 @@ impl CaptureSet {
 /// wire field: observers made by `observe` receive the payload; the engine's
 /// own observers receive the observed input alone; an older SDK's
 /// `deliver: input` / `deliver: output` is translated to [`Self::Input`] /
-/// [`Self::Output`] (CONTRACT D4).
+/// [`Self::Output`] (decision 60).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Deliver {
     #[default]
@@ -191,10 +191,10 @@ pub enum Deliver {
     Output,
 }
 
-/// CONTRACT D4: an older SDK's `source.on` / `source.deliver`, translated at
+/// Decision 60: an older SDK's `source.on` / `source.deliver`, translated at
 /// registration (the first `observe` and every replay) into what the
 /// observer does: `None` when the source carries neither and `always` is
-/// unset. CONTRACT D8: `always` is set for a worker that did not declare
+/// unset. Decision 60: `always` is set for a worker that did not declare
 /// `observe.capture` (an rc or 0.25 SDK), whose every source keeps the old
 /// semantics, `on` and `deliver` or not.
 ///
@@ -1810,7 +1810,7 @@ mod tests {
             CaptureSet::from_list(&crate::protocol::default_capture()),
             CaptureSet::DEFAULT
         );
-        // CONTRACT D1: `[input, output, caller]`, no `metadata`.
+        // Decision 62: `[input, output, caller]`, no `metadata`.
         assert_eq!(
             CaptureSet::DEFAULT.to_list(),
             vec![Capture::Input, Capture::Output, Capture::Caller]

@@ -311,7 +311,7 @@ describe('iii.observe', () => {
   })
 })
 
-/** The one-time deprecation logged against an engine without `observe.capture` (CONTRACT D6). */
+/** The one-time deprecation logged against an engine without `observe.capture` (decision 61). */
 const legacyWarnings = (warn: { mock: { calls: unknown[][] } }) =>
   warn.mock.calls.filter(([message]) => String(message).includes('does not support observe.capture'))
 
@@ -333,7 +333,7 @@ const LEGACY_ON_CASES = [
   [['input', 'output', 'error'], 'complete'],
 ] as const
 
-describe('sending observe to an engine without observe.capture (CONTRACT D6)', () => {
+describe('sending observe to an engine without observe.capture (decision 61)', () => {
   it.each(
     LEGACY_ENGINES,
   )('%s gets the source.on that capture implies, and one deprecation warning', async (_name, features) => {
@@ -411,7 +411,7 @@ describe('sending observe to an engine without observe.capture (CONTRACT D6)', (
   })
 })
 
-describe('sending observe to an engine with observe.capture (CONTRACT D6)', () => {
+describe('sending observe to an engine with observe.capture (decision 61)', () => {
   it('gets no source.on for any capture, on the first send or the replay, and no warning', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
@@ -442,7 +442,7 @@ describe('sending observe to an engine with observe.capture (CONTRACT D6)', () =
   })
 })
 
-describe('the default capture (CONTRACT D1)', () => {
+describe('the default capture (decision 62)', () => {
   it('is input, output and caller: no metadata, no error', () => {
     expect([...wire.DEFAULT_CAPTURE]).toEqual(['input', 'output', 'caller'])
   })

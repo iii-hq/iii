@@ -43,7 +43,7 @@ pub const OBSERVE_V1: &[&str] = &["observe.v1", "local-dispatch.v1"];
 pub const OBSERVE_V2: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
 
 /// What a current SDK declares: `observe.capture` too, so its observers
-/// follow the capture model (CONTRACT D8) and it reads `fires_on` (D5).
+/// follow the capture model (decision 60) and it reads `fires_on` (decision 61).
 pub const OBSERVE_CAPTURE: &[&str] = &[
     "observe.v1",
     "observe.v2",

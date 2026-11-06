@@ -312,7 +312,7 @@ impl StreamAdapter for BridgeAdapter {
 
 /// The [`PublishedStreamEvent`] an activation of the relay carries: the
 /// payload's `input` is what `publish` was called with. Taken out of the
-/// payload, which the relay owns, rather than copied (CONTRACT D3).
+/// payload, which the relay owns, rather than copied.
 fn decode_published(mut payload: Value) -> serde_json::Result<PublishedStreamEvent> {
     let input = payload
         .get_mut("input")
@@ -351,7 +351,7 @@ mod tests {
     }
 
     /// The relay decodes the observed `publish` call's input out of the
-    /// envelope it receives (CONTRACT D3: the input is taken, not cloned).
+    /// envelope it receives (the input is taken, not cloned).
     #[test]
     fn the_relay_decodes_the_published_event_from_the_envelope() {
         let payload = json!({

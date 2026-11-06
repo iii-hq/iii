@@ -1,5 +1,5 @@
-//! What a function's host reads from its observers' announcements (CONTRACT
-//! D5), over real WebSockets: every `observeradded` and every observer a
+//! What a function's host reads from its observers' announcements
+//! (decision 61), over real WebSockets: every `observeradded` and every observer a
 //! `functionregistered` lists carries `fires_on` (`["success"]`, `["error"]` or
 //! `["success", "error"]`), and a host that did not declare
 //! `observe.capture` (a 0.25 host, and an rc host that declared `observe.v2`
@@ -94,7 +94,7 @@ async fn orders_host(t: &TestEngine, name: &str, features: &[&str]) -> (Client, 
 async fn announced_views(features: &[&str]) -> (TestEngine, Client, Vec<Value>, Vec<Value>) {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = orders_host(&t, "orders", features).await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut sink = connect_with(&t, "sink", CAPTURE_HOST).await;
     sink.register_function("sink::orders").await;
     observe_support::registered(&t.engine, "default", "sink::orders").await;
@@ -199,7 +199,7 @@ async fn each_host_gets_the_view_its_own_features_call_for() {
     rc_host.manual_acks();
     rc_host.register_function("rc::run").await;
     function_registered(&mut rc_host, "rc::run").await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut sink = connect_with(&t, "sink", CAPTURE_HOST).await;
     sink.register_function("sink::all").await;
     observe_support::registered(&t.engine, "default", "sink::all").await;

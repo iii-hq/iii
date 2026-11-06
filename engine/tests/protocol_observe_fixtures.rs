@@ -628,7 +628,7 @@ fn fixtures_use_only_known_enum_values() {
 }
 
 /// SDKs declare their features in the `engine::workers::register` payload:
-/// `observe.v1`, `observe.v2`, `observe.capture` (CONTRACT D5/D8: it reads
+/// `observe.v1`, `observe.v2`, `observe.capture` (decisions 60 and 61: it reads
 /// `fires_on`, and its observers follow the capture model),
 /// `local-dispatch.v1`, plus `large-messages.v1`,
 /// which only workers declare. The engine reads them from what the fixture

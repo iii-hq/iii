@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Reporter, type ReporterHost, type ReportInit, wellFormed } from '../src/reporter'
 
-/** The reporter (sdk.md §4.4, CONTRACT D12): batching, bounds, drops, splitting, offline, stats. */
+/** The reporter (sdk.md §4.4): batching, bounds, drops, splitting, offline, stats. */
 
 type Frame = { type: string; items?: Record<string, unknown>[] } & Record<string, unknown>
 

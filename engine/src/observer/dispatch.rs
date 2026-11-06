@@ -2137,8 +2137,8 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
     payload(observer, completed, activation_id, Parts::shared(completed))
 }
 
-/// The target's first argument for the activation holding `completed`
-/// (CONTRACT D3). While other observers still hold the event its parts are
+/// The target's first argument for the activation holding `completed`.
+/// While other observers still hold the event its parts are
 /// copied; the last holder takes them instead, so the input, output, caller
 /// and metadata the call kept reach the target without a copy. The event
 /// keeps every other field.
@@ -2159,7 +2159,7 @@ fn project_owned(
 /// observers and an older SDK's `deliver: input`, the observed input alone;
 /// for its `deliver: output`, the observed output alone, `null` when there is
 /// none (on a failure too), as v0.25 did. The raw parts move like the
-/// envelope's (CONTRACT D3).
+/// envelope's.
 fn payload(observer: &Observer, completed: &Completed, activation_id: &str, parts: Parts) -> Value {
     match observer.deliver {
         Deliver::Input => return ship(parts.input).unwrap_or(Value::Null),

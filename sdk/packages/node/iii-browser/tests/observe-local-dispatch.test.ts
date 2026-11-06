@@ -340,7 +340,7 @@ describe('the invocation context and caller propagation', () => {
       parent: { worker_name: 'iii-engine', function_id: 'payments::charge', invocation_id: 'inv-1' },
     })
     expect(out?.observe_depth).toBe(2)
-    // an activation is answered like any call: the engine frees its in-flight slot on the reply (CONTRACT D16)
+    // an activation is answered like any call: the engine frees its in-flight slot on the reply
     expect(socket.framesOf('invocationresult')).toMatchObject([{ invocation_id: 'act-inv-1', result: null }])
   })
 
@@ -845,7 +845,7 @@ describe('the reporter against the socket and the function registry', () => {
   })
 })
 
-describe('when a hosted observer fires: the view `fires_on`, else the legacy `on` (CONTRACT D6)', () => {
+describe('when a hosted observer fires: the view `fires_on`, else the legacy `on` (decision 61)', () => {
   const legacyWarnings = () =>
     vi
       .mocked(console.warn)

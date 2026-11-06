@@ -676,7 +676,7 @@ wire_string_enum! {
     }
 }
 
-/// CONTRACT D1: `["input", "output", "caller"]`, so the default fires on
+/// Decision 62: `["input", "output", "caller"]`, so the default fires on
 /// success only and carries the call's `metadata` only when asked for.
 pub fn default_capture() -> Vec<Capture> {
     vec![Capture::Input, Capture::Output, Capture::Caller]
@@ -740,7 +740,7 @@ impl ObserveDescriptor {
 /// The left side of `iii.observe`: the observed function, its args and filters,
 /// and what to `capture`. `capture` alone decides which outcomes fire the
 /// target and what its payload carries. Absent fields stay absent; the
-/// accessors apply the defaults (CONTRACT D1).
+/// accessors apply the defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserveSource {
     pub function_id: String,
@@ -758,7 +758,7 @@ pub struct ObserveSource {
     pub capture: Option<Vec<Capture>>,
     /// Deprecated: an older SDK's `on` (`success` | `error` | `complete`),
     /// kept as it arrived. The engine translates it at registration
-    /// (CONTRACT D4) and refuses any other value with `INVALID_ARGS`.
+    /// (decision 60) and refuses any other value with `INVALID_ARGS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<Value>,
     /// Deprecated: an older SDK's `deliver` (`envelope` | `input` |
@@ -798,7 +798,7 @@ pub struct ObserveTarget {
 }
 
 /// An observer as its function's host sees it (`functionregistered`,
-/// `observeradded`; CONTRACT D15): never its metadata, policy or observing
+/// `observeradded`): never its metadata, policy or observing
 /// connection. The engine always sends `capture` resolved, so the default
 /// here only matters when decoding a sparse frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -810,7 +810,7 @@ pub struct ObserverView {
     /// The observer's filters, normalized (filters.md §5).
     #[serde(default = "empty_object")]
     pub filters: Value,
-    /// Target function id; its namespace is not disclosed (CONTRACT D6).
+    /// Target function id; its namespace is not disclosed.
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
@@ -1766,7 +1766,7 @@ mod tests {
         assert_eq!(
             source.capture(),
             vec![Capture::Input, Capture::Output, Capture::Caller],
-            "CONTRACT D1: no `metadata` unless asked for"
+            "decision 62: no `metadata` unless asked for"
         );
         assert!(!source.raw_input);
         let encoded = serde_json::to_value(&source).unwrap();

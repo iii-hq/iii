@@ -506,7 +506,7 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     got_a = collector(watcher, fid("py-d52::envelope"))
     got_b = collector(watcher, fid("py-d52::output"))
 
-    # A names metadata in its capture (CONTRACT D1: the default has none).
+    # A names metadata in its capture (decision 62: the default has none).
     a = watcher.observe(
         {"function_id": source, "args": {"session": "s1"}, "capture": ["input", "output", "caller", "metadata"]},
         fid("py-d52::envelope"),

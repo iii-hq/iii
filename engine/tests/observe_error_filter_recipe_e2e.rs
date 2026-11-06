@@ -1,5 +1,5 @@
-//! The "failed calls with their input" recipe (docs/next/using-iii/observers.mdx,
-//! CONTRACT D7), over real WebSockets:
+//! The "failed calls with their input" recipe (docs/next/using-iii/observers.mdx),
+//! over real WebSockets:
 //!
 //! ```json
 //! { "capture": ["input", "error"], "filters": { "error": { "$exists": true } } }
@@ -7,7 +7,7 @@
 //!
 //! `capture: [input, error]` fires on both outcomes (decision 59: a capture
 //! naming `input` fires on success too); the filter keeps the failures only.
-//! The observing worker runs a current SDK (`observe.capture`, CONTRACT D8).
+//! The observing worker runs a current SDK (`observe.capture`, decision 60).
 //!
 //! - Engine-routed path: the engine evaluates the filter of every routed call
 //!   (a host without `observe.v2`, or a capture host whose answer narrows
@@ -208,7 +208,7 @@ async fn a_capture_host_is_told_the_recipe_and_its_reported_failure_delivers_inp
 
 /// The recipe needs a current SDK on the observing side: from a worker
 /// without `observe.capture` (an rc SDK here) it keeps the v0.25 semantics
-/// (CONTRACT D8): no `on` means successes only, and a success never has an
+/// (decision 60): no `on` means successes only, and a success never has an
 /// `error`, so it never fires, on failures either.
 #[tokio::test]
 async fn from_a_worker_without_observe_capture_the_recipe_never_fires() {

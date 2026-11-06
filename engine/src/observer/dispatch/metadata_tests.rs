@@ -1,4 +1,4 @@
-//! CONTRACT D3: a call's metadata is shared (`Arc<Value>`), not deep-copied,
+//! Decision 62: a call's metadata is shared (`Arc<Value>`), not deep-copied,
 //! by the observed call that keeps it and by the activation envelopes built
 //! from it, and what the observers receive is unchanged.
 

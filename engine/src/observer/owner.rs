@@ -2064,11 +2064,11 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
     })
 }
 
-/// An observer as its function's owner sees it (CONTRACT D15). `capture`
+/// An observer as its function's owner sees it. `capture`
 /// also names the input an engine-internal observer gives its target, so
 /// the host's report of a local call carries it. `fires_on` names the outcomes
 /// it fires on; a host without `observe.capture` (0.25, rc) decides them
-/// from `on` alone, so it also gets the legacy `on` (CONTRACT D5).
+/// from `on` alone, so it also gets the legacy `on` (decision 61).
 pub(crate) fn view(observer: &Observer, host: HostView) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),

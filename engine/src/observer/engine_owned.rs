@@ -140,7 +140,7 @@ impl ObserverRegistry {
             )
         };
         // What it hands its target is all it captures, so all its
-        // function's host ships (CONTRACT D2).
+        // function's host ships (decision 59).
         let capture = match deliver {
             Deliver::Input => CaptureSet::INPUT_ONLY,
             Deliver::Output => CaptureSet {
@@ -390,7 +390,7 @@ mod tests {
         let observer = engine.observers.get("engine::test-watch").unwrap();
         assert!(observer.is_engine_owned());
         assert_eq!(observer.state(), ObserverState::Active);
-        // CONTRACT D2: it hands its target the input alone, so it captures
+        // Decision 59: it hands its target the input alone, so it captures
         // (and its function's host ships) the input alone, on success.
         assert_eq!(
             observer.capture,

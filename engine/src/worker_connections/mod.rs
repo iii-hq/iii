@@ -277,7 +277,7 @@ impl FromStr for WorkerConnectionStatus {
 /// through the registry's copy while `router_msg` and `cleanup_worker` hold the
 /// snapshot taken at connect time, and both must see the same answer.
 ///
-/// Set once (CONTRACT D17): the first declaration that lists any feature fixes
+/// Set once: the first declaration that lists any feature fixes
 /// them; later ones are ignored. The list and the flags the engine acts on are
 /// written together, and reading a flag is one atomic load.
 #[derive(Debug, Default)]
@@ -329,7 +329,7 @@ impl WorkerFeatures {
     }
 
     /// The connection speaks observe: the engine may push the observe
-    /// messages to it (CONTRACT D2). `observe.v2` includes it.
+    /// messages to it. `observe.v2` includes it.
     pub fn observe_v1(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_v1)
     }

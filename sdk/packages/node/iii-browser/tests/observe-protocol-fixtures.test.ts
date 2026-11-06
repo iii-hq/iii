@@ -11,7 +11,7 @@ import type { ISdk } from '../src/types'
 import * as fake from './observe-fake-engine'
 
 /**
- * The observe wire contract (`sdk/fixtures/protocol/observe`, CONTRACT D5):
+ * The observe wire contract (`sdk/fixtures/protocol/observe`):
  * every worker → engine message the SDK builds equals its fixture as a JSON
  * value given the same inputs, and every engine → worker message decodes
  * without loss and encodes back to the same value.
@@ -523,7 +523,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     expect(data).toMatchObject({ runtime: 'browser', name: 'billing', namespace: 'default' })
     // The fixture is a native SDK's. A browser receives one 16 MiB frame at
     // most, so it declares every feature but `large-messages.v1`; it also
-    // announces `observe.capture` (CONTRACT D6), which the shared fixture
+    // announces `observe.capture` (decision 61), which the shared fixture
     // gains as each SDK does.
     expect(data.features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1'])
     expect([...(data.features as string[]), 'large-messages.v1']).toEqual(
@@ -631,7 +631,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
       filters: null,
       target: 't',
       capture: ['input', 'telemetry'],
-      on: 'start', // the legacy field, read only without `fires_on` (CONTRACT D6): kept, an unknown value included
+      on: 'start', // the legacy field, read only without `fires_on` (decision 61): kept, an unknown value included
     })
     // `filters: null` is kept as sent: compiling it fails (INVALID_FILTER), it is never read as match-all
     expect(info).toEqual({
@@ -649,7 +649,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
     })
     expect(sparse).not.toHaveProperty('on')
     expect(sparse).not.toHaveProperty('fires_on')
-    // `fires_on` (CONTRACT D6, AMENDMENT 1) is kept with its unknown values; `fires` (the activation count) is never read
+    // `fires_on` (decision 61) is kept with its unknown values; `fires` (the activation count) is never read
     const announced = wire.decodeObserverInfo({ id: 'o', target: 't', fires_on: ['error', 'timeout', 3], fires: 2 })
     expect(announced.fires_on).toEqual(['error', 'timeout'])
     expect(announced).not.toHaveProperty('fires')

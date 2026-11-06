@@ -23,7 +23,7 @@
 //!   `[input, output, caller, metadata]`, every call carrying call metadata
 //!   of about 60 bytes (a routing key) or 4 KB (an opaque context blob):
 //!   what keeping the metadata for the observers and handing it to each
-//!   activation costs (CONTRACT D3). The caller's own copy of the metadata
+//!   activation costs (decision 62). The caller's own copy of the metadata
 //!   (the call API takes it by value) is in the measured time of both.
 //!
 //! The host counts what crosses its socket while the bench runs, and each

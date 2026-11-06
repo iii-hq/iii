@@ -6628,7 +6628,7 @@ mod observe_capture_tests {
             (json!({ "capture": ["error"], "on": "error" }), false, true),
             (json!({ "capture": [] , "on": "complete" }), true, true),
             (json!({}), true, false),
-            // `fires` is not the outcome list (AMENDMENT 1): ignored
+            // `fires` is not the outcome list (decision 61): ignored
             (
                 json!({ "fires": ["error"], "capture": ["input"] }),
                 true,

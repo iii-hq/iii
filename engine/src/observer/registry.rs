@@ -33,8 +33,8 @@ use crate::{
     worker_connections::WorkerConnection,
 };
 
-/// Longest observer id accepted. Ids are client-generated UUIDs (CONTRACT
-/// D3); the bound only keeps a misbehaving client from filling memory.
+/// Longest observer id accepted. Ids are client-generated UUIDs; the
+/// bound only keeps a misbehaving client from filling memory.
 const MAX_OBSERVER_ID_LEN: usize = 128;
 
 /// A decoded `observe` message.
@@ -100,22 +100,22 @@ struct Resolved {
 /// Why an observer keeps the v0.25 semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Legacy {
-    /// Its source carries `on` / `deliver` (CONTRACT D4).
+    /// Its source carries `on` / `deliver` (decision 60).
     Fields,
     /// Its worker did not declare `observe.capture`: an rc or 0.25 SDK
-    /// (CONTRACT D8).
+    /// (decision 60).
     Worker,
 }
 
 /// What an `observe` source may carry, and what it makes of the observer:
 /// known capture values; an older SDK's `on` / `deliver`, translated
-/// (CONTRACT D4); otherwise a capture that fires on something. A worker that
+/// (decision 60); otherwise a capture that fires on something. A worker that
 /// did not declare `observe.capture` (`observe_capture` unset: an rc or 0.25
 /// SDK) keeps the old semantics for every source, through the same
-/// translation (CONTRACT D8).
+/// translation (decision 60).
 fn resolve_source(source: &ObserveSource, observe_capture: bool) -> Result<Resolved, ErrorBody> {
-    // Values a newer peer may send and this engine cannot honour
-    // (CONTRACT D14). Never defaulted: the observer would silently do
+    // Values a newer peer may send and this engine cannot honour.
+    // Never defaulted: the observer would silently do
     // something other than what was asked.
     if let Some(unknown) = source
         .capture

@@ -1751,7 +1751,7 @@ class Sdk implements ISdk {
         os: globalThis.navigator?.userAgent ?? 'browser',
         // Omit when absent so the engine falls back to its `default` namespace.
         ...(this.namespace !== undefined ? { namespace: this.namespace } : {}),
-        // Opts this connection into the observe messages (CONTRACT D2).
+        // Opts this connection into the observe messages.
         features: [...SDK_FEATURES],
       },
       action: { type: 'void' },
@@ -1905,7 +1905,7 @@ class Sdk implements ISdk {
       }
 
       // Fire-and-forget (`void`, no invocation id): never answered. Activations
-      // carry an id and are answered like any call (CONTRACT D16).
+      // carry an id and are answered like any call.
       if (!invocation_id) {
         try {
           await run()

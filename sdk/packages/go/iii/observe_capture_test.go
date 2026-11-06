@@ -1,6 +1,6 @@
 package iii
 
-// D1 / D6 of the observe.capture contract (with AMENDMENT 1: the view field is
+// The observe.capture model (decisions 61 and 62; the view field is
 // fires_on): the default capture, the observe.capture feature, the outcomes an
 // observer fires on read from its view's fires_on (or else its legacy on), and the
 // legacy source.on sent to an engine without observe.capture.
@@ -70,7 +70,7 @@ func TestAnObserverFiresOnTheOutcomesItsViewAnnounces(t *testing.T) {
 		{`"capture":["error"],"on":"error"`, false, true},
 		{`"capture":[],"on":"complete"`, true, true},
 		{`"filters":{}`, true, false},
-		// fires is not the outcome list (AMENDMENT 1): ignored
+		// fires is not the outcome list (decision 61): ignored
 		{`"fires":["error"],"capture":["input"]`, true, false},
 		{`"fires":3,"fires_on":["error"]`, false, true},
 	}

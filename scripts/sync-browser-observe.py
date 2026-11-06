@@ -497,7 +497,7 @@ PROTOCOL_FIXTURES = UNIT + [
     expect(data).toMatchObject({ runtime: 'browser', name: 'billing', namespace: 'default' })
     // The fixture is a native SDK's. A browser receives one 16 MiB frame at
     // most, so it declares every feature but `large-messages.v1`; it also
-    // announces `observe.capture` (CONTRACT D6), which the shared fixture
+    // announces `observe.capture` (decision 61), which the shared fixture
     // gains as each SDK does.
     expect(data.features).toEqual(['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1'])
     expect([...(data.features as string[]), 'large-messages.v1']).toEqual(

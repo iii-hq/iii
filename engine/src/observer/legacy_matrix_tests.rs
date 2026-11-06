@@ -1,4 +1,4 @@
-//! CONTRACT D4: an older SDK's `source.on` / `source.deliver` are translated
+//! Decision 60: an older SDK's `source.on` / `source.deliver` are translated
 //! at registration instead of refused, and every one of the 528 old
 //! `on` x `deliver` x `capture` combinations fires on exactly the outcomes it
 //! fired on before and hands the target exactly the payload it got before.
@@ -19,7 +19,7 @@
 //!   That holds only for a worker that declared `observe.capture`: every row
 //!   is also sent from an rc SDK (`observe.v2` only) and a 0.25 SDK (no
 //!   features), and from those the 19 rows keep the v0.25 result too
-//!   (CONTRACT D8).
+//!   (decision 60).
 
 use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
@@ -264,7 +264,7 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
         // `on` and `deliver` is new-style: `capture` alone decides what
         // fires, and the gate refuses a non-empty capture of `caller` /
         // `metadata` alone. From any other worker (an rc SDK, a 0.25 SDK)
-        // every source keeps the v0.25 semantics (CONTRACT D8).
+        // every source keeps the v0.25 semantics (decision 60).
         let new_style = on.is_empty() && deliver.is_empty();
         let (new_ok, new_err, new_refused) = match (&capture, new_style) {
             (Some(list), true) => {
@@ -404,7 +404,7 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
     // design: the 16 capture shapes naming `error` fire on failures (and only
     // on successes too with `input` / `output`), and `[caller]`, `[metadata]`,
     // `[caller,metadata]` are refused. From an rc or 0.25 SDK the same 19
-    // rows keep the v0.25 result (CONTRACT D8).
+    // rows keep the v0.25 result (decision 60).
     assert_eq!(new_model.len(), 19, "{}", new_model.join("\n"));
     assert_eq!(
         legacy_checked,
@@ -566,7 +566,7 @@ async fn a_translated_observer_logs_one_deprecation_warning_per_registration() {
     assert_eq!(warnings("obs-modern"), 0, "{}", text());
 }
 
-/// CONTRACT D8: a worker that did not declare `observe.capture` (an rc SDK
+/// Decision 60: a worker that did not declare `observe.capture` (an rc SDK
 /// with `observe.v2` only, a 0.25 SDK with no features) gets the v0.25
 /// semantics even without `on` / `deliver`: it fires on successes alone, its
 /// payload carries exactly its capture, and the new gate refuses nothing.

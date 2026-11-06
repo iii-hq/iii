@@ -1514,7 +1514,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let (inbox_a, inbox_b) = (Inbox::default(), Inbox::default());
         watcher.register_function(&to_a, inbox_a.function());
         watcher.register_function(&to_b, inbox_b.function());
-        // A names metadata in its capture (CONTRACT D1: the default has none).
+        // A names metadata in its capture (decision 62: the default has none).
         let a = watcher.observe(
             Source::function(&source)
                 .args(json!({ "session": "s1" }))

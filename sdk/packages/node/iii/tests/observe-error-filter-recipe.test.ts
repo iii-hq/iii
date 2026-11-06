@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { IIIClient } from '../src/types'
 
 /**
- * The "failed calls with their input" recipe on the SDK-host path (CONTRACT D7):
+ * The "failed calls with their input" recipe on the SDK-host path:
  * `capture: ['input', 'error']` + `filters: { error: { $exists: true } }`.
  * A 0.26 host evaluates the observer's filter on its local calls and reports
  * only the calls it matched, so a success never leaves the host: no

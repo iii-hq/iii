@@ -26,7 +26,7 @@ import type {
 } from './iii-types'
 import type { ObserverOptions, ObserveSource, Target } from './observe-types'
 
-/** CONTRACT D1: what an absent `capture` means: `input`, `output` and `caller` (no `metadata`, no `error`). */
+/** Decision 62: what an absent `capture` means: `input`, `output` and `caller` (no `metadata`, no `error`). */
 export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller']
 
 /**
@@ -72,7 +72,7 @@ export type ObserverFires = {
 }
 
 /**
- * When a hosted observer fires (CONTRACT D6): from the view's `fires_on` when the
+ * When a hosted observer fires (decision 61): from the view's `fires_on` when the
  * engine sent it; otherwise from the legacy `on` alone, never from `capture`:
  * absent (or `success`) fires on success, `error` on error, `complete` on both.
  */
@@ -144,7 +144,7 @@ export function decodeObserverInfo(v: unknown): ObserverInfoWire {
       ? raw.capture.filter((c): c is string => typeof c === 'string')
       : [...DEFAULT_CAPTURE],
   }
-  // `fires_on`, never `fires` (the activation count elsewhere: CONTRACT AMENDMENT 1).
+  // `fires_on`, never `fires` (the activation count elsewhere: decision 61).
   if (Array.isArray(raw.fires_on)) info.fires_on = raw.fires_on.filter((f): f is string => typeof f === 'string')
   if (typeof raw.on === 'string') info.on = raw.on
   return info

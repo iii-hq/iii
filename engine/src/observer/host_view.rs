@@ -4,7 +4,7 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! How a function's host reads its observers' announcements (CONTRACT D5):
+//! How a function's host reads its observers' announcements (decision 61):
 //! every view names the outcomes the observer fires on (`fires_on`), and a host
 //! that did not declare `observe.capture` (0.25, and an rc host that declared
 //! `observe.v2` only) decides firing from the legacy `on` alone, so it gets

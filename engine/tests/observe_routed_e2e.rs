@@ -317,7 +317,7 @@ async fn filters_on_output_and_caller() {
 async fn capture_decides_which_outcomes_fire() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut sink = capture_host(
         &t,
         "sink",
@@ -349,7 +349,7 @@ async fn capture_decides_which_outcomes_fire() {
         ))
         .await;
     }
-    // No capture: the default, input, output and caller (CONTRACT D1).
+    // No capture: the default, input, output and caller (decision 62).
     sink.observe_active(observer(
         "obs-default",
         json!({ "function_id": "payments::charge" }),
@@ -440,11 +440,11 @@ async fn capture_decides_which_outcomes_fire() {
     );
 }
 
-/// CONTRACT D4: an older SDK's `source.on` / `source.deliver` are translated,
+/// Decision 60: an older SDK's `source.on` / `source.deliver` are translated,
 /// not refused: `on` alone decides the outcomes that fire, the `capture`
 /// (default `[input, output, caller]`) exactly what the payload carries, and
 /// `deliver: input` / `output` hand the target the raw input / output. Its
-/// replay is the same spec. CONTRACT D1: the default captures no `metadata`.
+/// replay is the same spec. Decision 62: the default captures no `metadata`.
 #[tokio::test]
 async fn legacy_on_and_deliver_are_translated_on_the_wire() {
     let t = spawn_engine(ObserversConfig::default()).await;
@@ -564,7 +564,7 @@ async fn legacy_on_and_deliver_are_translated_on_the_wire() {
     assert_eq!(fires(&t, "obs-input-complete"), 2);
 }
 
-/// CONTRACT D8: an `observe` from a worker that did not declare
+/// Decision 60: an `observe` from a worker that did not declare
 /// `observe.capture` (an rc SDK, `observe.v2` only; a 0.25 SDK, no features)
 /// keeps the v0.25 semantics even without `on` / `deliver`: it fires on
 /// successes alone, its payload carries exactly its capture, and a capture
@@ -1807,7 +1807,7 @@ async fn observe_rejections() {
         .await;
     registered(&t.engine, "default", "vault::read").await;
     registered(&t.engine, "default", "vault::secret").await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
 
     let source = |extra: Value| {
@@ -1909,7 +1909,7 @@ async fn observe_rejections() {
         "a replay"
     );
     // An older SDK's replay spelling out the defaults (`on: success`,
-    // `deliver: envelope`) is translated to the same spec (CONTRACT D4).
+    // `deliver: envelope`) is translated to the same spec (decision 60).
     let mut legacy = good.clone();
     legacy["source"]["on"] = json!("success");
     legacy["source"]["deliver"] = json!("envelope");
@@ -1917,7 +1917,7 @@ async fn observe_rejections() {
     // A replay is checked like a new observe: a capture that fires on nothing
     // is refused, not answered as the observer it names; `on` / `deliver`
     // that change what fires or what is delivered, and the `metadata` the
-    // default no longer captures (CONTRACT D1), are another spec.
+    // default no longer captures (decision 62), are another spec.
     for (change, code) in [
         (json!({ "capture": ["caller"] }), "INVALID_ARGS"),
         (json!({ "on": "bogus" }), "INVALID_ARGS"),

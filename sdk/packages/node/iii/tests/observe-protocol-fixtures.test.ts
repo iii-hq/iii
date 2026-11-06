@@ -5,7 +5,7 @@ import type { Observer } from '../src/observe-types'
 import type { IIIClient } from '../src/types'
 
 /**
- * The observe wire contract (`sdk/fixtures/protocol/observe`, CONTRACT D5):
+ * The observe wire contract (`sdk/fixtures/protocol/observe`):
  * every worker → engine message the SDK builds equals its fixture as a JSON
  * value given the same inputs, and every engine → worker message decodes
  * without loss and encodes back to the same value.
@@ -530,7 +530,7 @@ describe('worker → engine: what the SDK builds equals the fixture', () => {
     const { namespace: _, ...rest } = frame
     const want = expected.data as Json
     // `features` is checked on its own: the fixture is shared by every SDK and
-    // gains `observe.capture` as each one announces it (CONTRACT D6).
+    // gains `observe.capture` as each one announces it (decision 61).
     const features = data.features
     delete data.features
     const { features: wantFeatures, ...wantRest } = want
@@ -641,7 +641,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
       filters: null,
       target: 't',
       capture: ['input', 'telemetry'],
-      on: 'start', // the legacy field, read only without `fires_on` (CONTRACT D6): kept, an unknown value included
+      on: 'start', // the legacy field, read only without `fires_on` (decision 61): kept, an unknown value included
     })
     // `filters: null` is kept as sent: compiling it fails (INVALID_FILTER), it is never read as match-all
     expect(info).toEqual({
@@ -659,7 +659,7 @@ describe('engine → worker: the SDK decodes without loss', () => {
     })
     expect(sparse).not.toHaveProperty('on')
     expect(sparse).not.toHaveProperty('fires_on')
-    // `fires_on` (CONTRACT D6, AMENDMENT 1) is kept with its unknown values; `fires` (the activation count) is never read
+    // `fires_on` (decision 61) is kept with its unknown values; `fires` (the activation count) is never read
     const announced = wire.decodeObserverInfo({ id: 'o', target: 't', fires_on: ['error', 'timeout', 3], fires: 2 })
     expect(announced.fires_on).toEqual(['error', 'timeout'])
     expect(announced).not.toHaveProperty('fires')

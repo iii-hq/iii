@@ -742,7 +742,7 @@ func TestObserveCallForOneObserver(t *testing.T) {
 			localDispatchReady(t, owner, fn)
 			gotA, gotB := collector(t, watcher, toA), collector(t, watcher, toB)
 
-			// A names metadata in its capture (CONTRACT D1: the default has none).
+			// A names metadata in its capture (decision 62: the default has none).
 			a, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Capture: []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureCaller, iii.CaptureMetadata}}, toA)
 			ready(t, a)
 			exactly(t, gotA, 1, "A's state", 10*time.Second)

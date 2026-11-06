@@ -459,7 +459,7 @@ describe('calls for one observer (decision 52)', () => {
       const gotB = collector(watcher, `d52::output-${form}-${RUN}`)
       await localDispatchReady(owner, fn)
 
-      // A names metadata in its capture (CONTRACT D1: the default has none).
+      // A names metadata in its capture (decision 62: the default has none).
       const a = watcher.observe(
         { function_id: fn, args: { session: 's1' }, capture: ['input', 'output', 'caller', 'metadata'] },
         `d52::envelope-${form}-${RUN}`,

@@ -1,4 +1,4 @@
-"""D1 / D6 of the observe.capture contract (AMENDMENT 1: the view field is
+"""The observe.capture model (decisions 61 and 62; the view field is
 ``fires_on``): the default capture, the ``observe.capture`` feature, the outcomes
 an observer fires on read from its view's ``fires_on`` (or else its legacy
 ``on``), and the legacy ``source.on`` sent to an engine without
@@ -83,7 +83,7 @@ VIEW_CASES: list[tuple[dict[str, Any], bool, bool]] = [
     ({"capture": ["error"], "on": "error"}, False, True),
     ({"capture": [], "on": "complete"}, True, True),
     ({}, True, False),
-    # fires is not the outcome list (AMENDMENT 1): ignored
+    # fires is not the outcome list (decision 61): ignored
     ({"fires": ["error"], "capture": ["input"]}, True, False),
     ({"fires": 3, "fires_on": ["error"]}, False, True),
 ]

@@ -1396,7 +1396,7 @@ func (c *Client) registerWorkerMetadata() {
 		PID:         &pid,
 		Isolation:   isolationFromEnv(),
 		Telemetry:   c.resolveTelemetry(),
-		// Opts this connection into the observe messages (CONTRACT D2).
+		// Opts this connection into the observe messages.
 		Features: sdkFeatures,
 	}
 	data, err := json.Marshal(meta)

@@ -69,7 +69,7 @@ func TestReporterFlushesASmallBatchAfterTheLinger(t *testing.T) {
 	}
 }
 
-// CONTRACT D12: bounded by items and bytes; drops the newest and counts it.
+// Bounded by items and bytes; drops the newest and counts it.
 func TestReporterIsBoundedAndCountsDrops(t *testing.T) {
 	host := &fakeReportHost{online: false}
 	limits := defaultReporterLimits

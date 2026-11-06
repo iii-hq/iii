@@ -270,7 +270,7 @@ async fn an_observer_waits_for_its_owners_ack() {
     assert_eq!(
         view["capture"],
         json!(["input", "output", "caller"]),
-        "CONTRACT D1: the default captures no metadata"
+        "decision 62: the default captures no metadata"
     );
     for key in [
         "metadata",
@@ -2590,7 +2590,7 @@ async fn a_re_announcement_restarts_the_ack_timeout() {
 async fn reports_apply_capture_for_auto_functions_and_count_invalid_items() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut sink = host_with(&t, "sink", OBSERVE_CAPTURE, &["sink::errors"]).await;
     acked_observer(
         &mut orders,
@@ -2958,11 +2958,11 @@ async fn a_void_call_cannot_reach_a_private_function() {
 /// `observe.v2` only) decides the outcomes that fire from `on` alone: its
 /// announcements carry the `on` each observer's capture implies
 /// (deprecated). A host with `observe.capture` gets none. Every host gets
-/// `fires_on` (CONTRACT D5).
+/// `fires_on` (decision 61).
 #[tokio::test]
 async fn a_host_without_observe_capture_is_told_the_on_each_observer_fires_on() {
     let t = spawn_engine(ObserversConfig::default()).await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
     let capture_host: &[&str] = &[
         "observe.v1",

@@ -1,5 +1,5 @@
 //! What keeping a call's metadata for its observers costs, in heap bytes
-//! and allocations per observed call (CONTRACT D3): a measure the machine's
+//! and allocations per observed call (decision 62): a measure the machine's
 //! load does not move, unlike the latency of `observe_routed_bench`.
 //!
 //! An in-process function is observed by `n` observers capturing

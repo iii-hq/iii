@@ -406,7 +406,7 @@ func TestLocalReentrancyGuard(t *testing.T) {
 	waitUntil(t, "the next call went remote", func() bool { return invokeFrames(fe, "rec::down") == 1 })
 }
 
-// sdk.md §4.3, CONTRACT D16: an inbound activation sets the context, is answered, and
+// sdk.md §4.3: an inbound activation sets the context, is answered, and
 // the calls made from it carry caller and observe_depth; depth 0 is omitted, and
 // nothing is sent outside a handler or to an engine without observe.v1.
 func TestRemoteHandlerContextAndCallerPropagation(t *testing.T) {

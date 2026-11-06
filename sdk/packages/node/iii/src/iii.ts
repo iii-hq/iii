@@ -1523,7 +1523,7 @@ class Sdk implements IIIClient {
           project_name: telemetryOpts?.project_name ?? detectProjectName(),
           framework: telemetryOpts?.framework?.trim() || 'iii-node',
         },
-        // Opts this connection into the observe messages (CONTRACT D2).
+        // Opts this connection into the observe messages.
         features: [...SDK_FEATURES],
       },
       action: { type: 'void' },
@@ -2218,7 +2218,7 @@ class Sdk implements IIIClient {
       const run = () => runInContext(ctx, () => handler(resolvedInput, metadata, traceparent, baggage, settle))
 
       // Fire-and-forget (`void`, no invocation id): never answered. Activations
-      // carry an id and are answered like any call (CONTRACT D16).
+      // carry an id and are answered like any call.
       if (!invocation_id) {
         try {
           await run()

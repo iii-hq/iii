@@ -56,7 +56,7 @@ SDK_FEATURES: tuple[str, ...] = (
     FEATURE_LARGE_MESSAGES_V1,
 )
 
-#: What an absent ``capture`` means (CONTRACT D1): ``input``, ``output`` and ``caller``
+#: What an absent ``capture`` means (decision 62): ``input``, ``output`` and ``caller``
 #: (no ``error``, so it fires on success only, and no ``metadata``).
 DEFAULT_CAPTURE: tuple[str, ...] = ("input", "output", "caller")
 

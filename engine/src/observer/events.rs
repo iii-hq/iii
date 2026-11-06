@@ -364,8 +364,8 @@ pub(crate) mod test_support {
     }
 
     /// What a current SDK declares on `engine::workers::register`: with
-    /// `observe.capture`, its observers follow the capture model (CONTRACT
-    /// D8).
+    /// `observe.capture`, its observers follow the capture model
+    /// (decision 60).
     pub const CURRENT_SDK: &[&str] = &[
         "observe.v1",
         "observe.v2",
@@ -375,8 +375,8 @@ pub(crate) mod test_support {
     /// What an rc SDK declares: `observe.v2` without `observe.capture`.
     pub const RC_SDK: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
 
-    /// `observe.capture` alone: observers follow the capture model (CONTRACT
-    /// D8) while, as a host, the connection stays one that does not speak
+    /// `observe.capture` alone: observers follow the capture model
+    /// (decision 60) while, as a host, the connection stays one that does not speak
     /// observe (no `observe.v1`: no `functionregistered`, no acks).
     pub const CAPTURE_ONLY: &[&str] = &["observe.capture"];
 

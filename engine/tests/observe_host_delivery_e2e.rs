@@ -365,7 +365,7 @@ async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
 async fn an_error_answer_activates_the_on_error_observers_whose_filters_match() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", &["payments::charge"]).await;
-    // The observing worker runs a current SDK (CONTRACT D8).
+    // The observing worker runs a current SDK (decision 60).
     let mut sink = host_with(&t, "sink", OBSERVE_CAPTURE, &["sink::failures"]).await;
     let mut checkout = connect(&t, "checkout", true).await;
     sink.observe_active(observer(
