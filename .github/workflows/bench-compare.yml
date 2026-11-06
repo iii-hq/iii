@@ -294,6 +294,7 @@ jobs:
 
           def state(name):
               # 'new' / 'removed' are judged between the last two refs.
+              if status[-1] != 'ok' or status[-2] != 'ok': return ''  # a failed run is not a removal
               last, prev = results[-1].get(name), results[-2].get(name)
               if last is not None and prev is None: return 'new'
               if last is None and prev is not None: return 'removed'
@@ -349,7 +350,7 @@ jobs:
               if show_prev:
                   legend += (f' **Last vs previous** compares **{refs[-1]["label"]}** with **{refs[-2]["label"]}**.')
               legend += (' 🆕 = benchmark exists in the last ref but not the one before; ⚠️ = it disappeared in the last ref. '
-                         'All refs ran sequentially on one GitHub-hosted runner; expect a few % of noise.')
+                         'All refs ran sequentially, in the listed order, on one GitHub-hosted runner; expect a few % of noise (run order can bias results slightly).')
               out.append(legend)
               bad = [r['label'] for i, r in enumerate(refs) if status[i] != 'ok']
               if bad:
