@@ -28,7 +28,7 @@ use crate::{
     engine::Outbound,
     protocol::{
         DEFAULT_NAMESPACE, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1,
-        FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, effective_namespace,
+        FEATURE_OBSERVE_CAPTURE, FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, effective_namespace,
     },
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
@@ -290,6 +290,7 @@ struct DeclaredFeatures {
     list: Vec<String>,
     observe_v1: bool,
     observe_v2: bool,
+    observe_capture: bool,
     local_dispatch_v1: bool,
     large_messages_v1: bool,
 }
@@ -319,6 +320,7 @@ impl WorkerFeatures {
         let declared = DeclaredFeatures {
             observe_v1: observe_v2 || has(FEATURE_OBSERVE_V1),
             observe_v2,
+            observe_capture: has(FEATURE_OBSERVE_CAPTURE),
             local_dispatch_v1: has(FEATURE_LOCAL_DISPATCH_V1),
             large_messages_v1: has(FEATURE_LARGE_MESSAGES_V1),
             list,
@@ -339,6 +341,12 @@ impl WorkerFeatures {
     /// observers' filters (decision 55).
     pub fn observe_v2(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_v2)
+    }
+
+    /// The connection reads the outcomes an observer fires on from `fires`
+    /// in its announcement: it gets no legacy `on`.
+    pub fn observe_capture(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.observe_capture)
     }
 
     pub fn local_dispatch_v1(&self) -> bool {
@@ -675,6 +683,26 @@ mod tests {
         let v1 = make_worker();
         assert!(v1.features.set(&["observe.v1".to_string()]));
         assert!(v1.features.observe_v1() && !v1.features.observe_v2());
+    }
+
+    #[test]
+    fn observe_capture_is_its_own_feature() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_capture());
+        assert!(
+            worker
+                .features
+                .set(&["observe.v2".to_string(), "observe.capture".to_string()])
+        );
+        assert!(worker.features.observe_v2() && worker.features.observe_capture());
+
+        let rc = make_worker();
+        assert!(rc.features.set(&["observe.v2".to_string()]));
+        assert!(rc.features.observe_v2() && !rc.features.observe_capture());
+
+        let capture_only = make_worker();
+        assert!(capture_only.features.set(&["observe.capture".to_string()]));
+        assert!(capture_only.features.observe_capture() && !capture_only.features.observe_v2());
     }
 
     #[test]

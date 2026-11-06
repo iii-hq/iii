@@ -10,8 +10,9 @@ use std::{
 };
 
 use iii::protocol::{
-    Capture, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_V1,
-    FEATURE_OBSERVE_V2, InvocationStatus, Message, ObserverState, engine_features,
+    Capture, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1, FEATURE_OBSERVE_CAPTURE,
+    FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, InvocationStatus, Message, ObserverState,
+    engine_features,
 };
 use iii::workers::engine_fn::RegisterWorkerInput;
 use serde_json::{Value, json};
@@ -561,6 +562,19 @@ fn fixtures_carry_the_documented_variants() {
         [
             FEATURE_OBSERVE_V1,
             FEATURE_OBSERVE_V2,
+            FEATURE_LOCAL_DISPATCH_V1
+        ],
+        "an rc engine: no observe.capture"
+    );
+    let Message::WorkerRegistered { features, .. } = message("workerregistered-capture") else {
+        panic!("workerregistered-capture");
+    };
+    assert_eq!(
+        features,
+        [
+            FEATURE_OBSERVE_V1,
+            FEATURE_OBSERVE_V2,
+            FEATURE_OBSERVE_CAPTURE,
             FEATURE_LOCAL_DISPATCH_V1
         ]
     );

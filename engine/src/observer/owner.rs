@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 use super::{
     FnKey, ObserverRegistry,
+    host_view::{self, HostView},
     lifecycle::{Announcement, Flags, Lock, Observer, lock},
     persistent::{Keyed, PersistentSet},
 };
@@ -184,6 +185,10 @@ struct OwnerSync {
     /// The `observe.v1` connection that got this function's
     /// `functionregistered`; `None` until then and once it is gone.
     announced_to: Option<Uuid>,
+    /// What `announced_to` reads from an observer's announcement, from its
+    /// features when it got `functionregistered`: every `observeradded`
+    /// to it reuses it.
+    host_view: HostView,
 }
 
 /// `entry`'s `sync`, unless the entry was dropped (between finding it and
@@ -244,6 +249,7 @@ impl FunctionEntry {
             sync: Lock::new(OwnerSync {
                 revision,
                 announced_to: None,
+                host_view: HostView::default(),
             }),
             announced: AtomicBool::new(false),
             dead: AtomicBool::new(false),
@@ -1065,7 +1071,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer, !self.speaks_observe_v2(announced_to)),
+                    observer: view(observer, sync.host_view),
                 },
             );
             true
@@ -1450,21 +1456,12 @@ impl ObserverRegistry {
         }
     }
 
-    /// Whether `connection` declared `observe.v2`. A host without it (0.25)
-    /// reads the outcomes that fire from `on` in an observer's announcement.
-    fn speaks_observe_v2(&self, connection: Uuid) -> bool {
-        self.deps.get().is_some_and(|deps| {
-            deps.workers
-                .get_worker(&connection)
-                .is_some_and(|worker| worker.features.observe_v2())
-        })
-    }
-
     fn owner(&self, connection: Uuid, kind: InvocationKind) -> Owner {
         let speaks_observe = kind == InvocationKind::Regular
             && self.deps.get().is_some_and(|deps| {
                 deps.workers
-                    .get_worker(&connection)
+                    .workers
+                    .get(&connection)
                     .is_some_and(|worker| worker.features.observe_v1())
             });
         Owner {
@@ -1519,6 +1516,10 @@ impl ObserverRegistry {
                 return None;
             }
             sync.announced_to = Some(worker.id);
+            // The host's features, read once for every observer listed
+            // here and every `observeradded` to it after.
+            sync.host_view = HostView::of(&worker.features);
+            let host_view = sync.host_view;
             entry.announced.store(true, Ordering::Release);
             // A new revision for every announcement: an ack for an earlier
             // one (the same connection registering again) is stale.
@@ -1554,10 +1555,7 @@ impl ObserverRegistry {
                     namespace: namespace.to_string(),
                     revision,
                     local_dispatch,
-                    observers: observers
-                        .iter()
-                        .map(|o| view(o, !self.speaks_observe_v2(worker.id)))
-                        .collect(),
+                    observers: observers.iter().map(|o| view(o, host_view)).collect(),
                 },
             );
             Some((revision, observers.len()))
@@ -1793,7 +1791,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer, !self.speaks_observe_v2(announced_to)),
+                    observer: view(observer, sync.host_view),
                 },
             );
         });
@@ -2068,17 +2066,22 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
 
 /// An observer as its function's owner sees it (CONTRACT D15). `capture`
 /// also names the input an engine-internal observer gives its target, so
-/// the host's report of a local call carries it. A host without
-/// `observe.v2` (`legacy_host`, 0.25) decides the outcomes that fire from
-/// `on` alone, so it also gets the `on` the observer fires on.
-pub(crate) fn view(observer: &Observer, legacy_host: bool) -> ObserverView {
+/// the host's report of a local call carries it. `fires_on` names the outcomes
+/// it fires on; a host without `observe.capture` (0.25, rc) decides them
+/// from `on` alone, so it also gets the legacy `on` (CONTRACT D5).
+pub(crate) fn view(observer: &Observer, host: HostView) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
         args: observer.args.clone(),
         filters: observer.filter.normalized().clone(),
         target: observer.target.1.clone(),
         capture: observer.capture.with_delivered(&observer.deliver).to_list(),
-        on: legacy_host
+        fires_on: host_view::fires(observer.capture)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        on: host
+            .legacy_on()
             .then(|| observer.capture.legacy_on())
             .flatten()
             .map(str::to_string),

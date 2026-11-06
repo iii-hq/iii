@@ -28,6 +28,7 @@ mod context;
 mod dispatch;
 pub mod engine_owned;
 pub mod events;
+mod host_view;
 mod lifecycle;
 mod owner;
 mod persistent;
