@@ -265,54 +265,86 @@ jobs:
           def delta(base, val):
               return (val - base) / base * 100.0 if base else 0.0
 
-          names = sorted({n for r in results for n in r})
+          def icon(d):
+              return '🔴' if d >= THRESHOLD else ('🟢' if d <= -THRESHOLD else '')
+
+          n = len(refs)
+          # With 2 refs the baseline delta already is last-vs-previous.
+          show_prev = n >= 3
+          names = sorted({k for r in results for k in r})
           headers = ['Benchmark'] + [
               r['label'] + (' ⚠️' if status[i] != 'ok' else '') + (' (baseline)' if i == 0 else '')
               for i, r in enumerate(refs)
           ]
+          if show_prev:
+              headers.append('Last vs previous')
+
+          def state(name):
+              # 'new' / 'removed' are judged between the last two refs.
+              last, prev = results[-1].get(name), results[-2].get(name)
+              if last is not None and prev is None: return 'new'
+              if last is None and prev is not None: return 'removed'
+              return ''
 
           def row(name):
               cells = [f'`{name}`']
               base = results[0].get(name)
+              st = state(name)
               for i, r in enumerate(results):
                   v = r.get(name)
+                  tag = ''
+                  if i == n - 1 and st == 'new': tag = ' 🆕'
+                  if i == n - 1 and st == 'removed': tag = ' ⚠️'
                   if v is None:
-                      cells.append('—')
+                      cells.append('—' + tag)
                   elif i == 0 or base is None:
-                      cells.append(fmt(v))
+                      cells.append(fmt(v) + tag)
                   else:
                       d = delta(base, v)
-                      icon = '🔴' if d >= THRESHOLD else ('🟢' if d <= -THRESHOLD else '')
-                      cells.append(f'{fmt(v)} ({d:+.1f}%) {icon}'.strip())
+                      cells.append(f'{fmt(v)} ({d:+.1f}%) {icon(d)}{tag}'.strip())
+              if show_prev:
+                  last, prev = results[-1].get(name), results[-2].get(name)
+                  if last is not None and prev is not None:
+                      d = delta(prev, last)
+                      cells.append(f'{d:+.1f}% {icon(d)}'.strip())
+                  else:
+                      cells.append({'new': '🆕 new', 'removed': '⚠️ removed'}.get(st, '—'))
               return '| ' + ' | '.join(cells) + ' |'
 
           def table(rows):
               head = '| ' + ' | '.join(headers) + ' |\n|' + '---|' * len(headers)
               return head + '\n' + '\n'.join(rows)
 
-          def worst(name):
-              base = results[0].get(name)
+          def magnitude(name):
+              base, last, prev = results[0].get(name), results[-1].get(name), results[-2].get(name)
               ds = [delta(base, r[name]) for r in results[1:] if base and name in r]
-              return max(ds, key=abs) if ds else 0.0
+              if show_prev and last is not None and prev is not None:
+                  ds.append(delta(prev, last))
+              return max((abs(d) for d in ds), default=0.0)
 
-          flagged = [n for n in names if abs(worst(n)) >= THRESHOLD]
-          flagged.sort(key=lambda n: -abs(worst(n)))
+          flagged = [k for k in names if state(k) or magnitude(k) >= THRESHOLD]
+          # removed first (most important), then new, then by size of the change
+          flagged.sort(key=lambda k: ({'removed': 0, 'new': 1}.get(state(k), 2), -magnitude(k)))
 
           cmd = os.environ.get('COMMAND', '').splitlines()[0][:200] if os.environ.get('COMMAND') else '/bench'
           out = [f'## Benchmark comparison', f'`{cmd}` — [workflow run]({os.environ["RUN_URL"]})', '']
           if os.environ.get('BENCH_RESULT') != 'success' and not any(results):
               out.append(f'❌ The benchmark job finished with `{os.environ.get("BENCH_RESULT")}` and produced no results.')
           else:
-              out.append(f'Baseline: **{refs[0]["label"]}**. Cells show ns/iter and the change versus the baseline '
-                         f'(🔴 slower, 🟢 faster, threshold ±{THRESHOLD:.0f}%). All refs ran sequentially on one GitHub-hosted runner; '
-                         f'expect a few % of noise.')
+              legend = (f'Baseline: **{refs[0]["label"]}**. Cells show ns/iter and the change versus the baseline '
+                        f'(🔴 slower, 🟢 faster, threshold ±{THRESHOLD:.0f}%).')
+              if show_prev:
+                  legend += (f' **Last vs previous** compares **{refs[-1]["label"]}** with **{refs[-2]["label"]}**.')
+              legend += (' 🆕 = benchmark exists in the last ref but not the one before; ⚠️ = it disappeared in the last ref. '
+                         'All refs ran sequentially on one GitHub-hosted runner; expect a few % of noise.')
+              out.append(legend)
               bad = [r['label'] for i, r in enumerate(refs) if status[i] != 'ok']
               if bad:
                   out += ['', '⚠️ Benchmarks failed or were incomplete for: ' + ', '.join(f'**{b}**' for b in bad)]
-              out += ['', f'**{len(flagged)}** of {len(names)} benchmarks changed by ≥{THRESHOLD:.0f}%.', '']
+              out += ['', f'**{len(flagged)}** of {len(names)} benchmarks changed by ≥{THRESHOLD:.0f}% or were added/removed.', '']
               if flagged:
-                  out += [table([row(n) for n in flagged]), '']
-              full = f'<details><summary>All {len(names)} benchmarks</summary>\n\n' + table([row(n) for n in names]) + '\n\n</details>'
+                  out += [table([row(k) for k in flagged]), '']
+              full = f'<details><summary>All {len(names)} benchmarks</summary>\n\n' + table([row(k) for k in names]) + '\n\n</details>'
               if len('\n'.join(out)) + len(full) < LIMIT:
                   out.append(full)
               else:
