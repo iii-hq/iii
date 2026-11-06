@@ -13,3 +13,13 @@ overrides:
   # dev tree (helpers > @vitest/coverage-v8 > magicast) and gated by
   # scripts/audit-sdk.mjs. Every dependent declares ^1.2.x.
   source-map-js: ^1.2.2
+  # GHSA-g3hv-75wg-m249 (moderate, fixed in 11.0.1; no patched 10.x exists):
+  # reached from the SDK packages' dev tree (iii, iii-browser, helpers >
+  # typedoc > minimatch) and gated by scripts/audit-sdk.mjs. typedoc 0.28.20
+  # still declares ^10.2.5 and calls Minimatch#matchOne, which v11 made
+  # internal, so the patch below ports the upstream fix (TypeStrong/typedoc#3151).
+  # Drop the override and the patch once typedoc ships minimatch 11.
+  typedoc>minimatch: ^11.0.1
+
+patchedDependencies:
+  typedoc@0.28.20: patches/typedoc@0.28.20.patch
