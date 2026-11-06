@@ -313,6 +313,23 @@ fn approx_size(value: &Value) -> usize {
     }
 }
 
+/// [`approx_size`] of the values `parts` hold, a value several of them share
+/// (a report whose output is its input) counted once: it is held once.
+fn shared_size<const N: usize>(parts: [&Option<Arc<Value>>; N]) -> usize {
+    let mut seen: [*const Value; N] = [std::ptr::null(); N];
+    let mut total = 0;
+    for (i, part) in parts.into_iter().enumerate() {
+        if let Some(value) = part {
+            let ptr = Arc::as_ptr(value);
+            if !seen[..i].contains(&ptr) {
+                total += approx_size(value);
+            }
+            seen[i] = ptr;
+        }
+    }
+    total
+}
+
 /// `delivery` label: the engine matched the call among every active
 /// observer.
 const ENGINE_DELIVERY: &str = "engine";
@@ -454,17 +471,13 @@ pub(crate) struct Completed {
 impl Completed {
     /// Roughly what holding the event costs (see [`QUEUED_BYTES`]).
     fn cost(&self) -> usize {
-        let payloads: usize = [
+        let payloads = shared_size([
             &self.input,
             &self.output,
             &self.error,
             &self.caller,
             &self.metadata,
-        ]
-        .into_iter()
-        .filter_map(|value| value.as_deref())
-        .map(approx_size)
-        .sum();
+        ]);
         let text = [&self.traceparent, &self.baggage]
             .into_iter()
             .filter_map(|value| value.as_deref())
@@ -632,7 +645,8 @@ impl ObserverRegistry {
         })
     }
 
-    /// Starts tracking an observed invocation: copies the input and metadata
+    /// Starts tracking an observed invocation: copies the input and shares
+    /// the call's metadata (CONTRACT D3: one more reference, never a copy)
     /// only when an active observer needs them (its filters read them, or it
     /// captures or delivers them), and only when the evaluator has room
     /// (otherwise the call counts an `OVERFLOW` drop when it completes,
@@ -647,7 +661,7 @@ impl ObserverRegistry {
         &self,
         set: Arc<ActiveSet>,
         body: &Value,
-        metadata: &Option<Value>,
+        metadata: &Option<Arc<Value>>,
         traceparent: &Option<String>,
         baggage: &Option<String>,
     ) -> ObservedCall {
@@ -659,7 +673,7 @@ impl ObserverRegistry {
             Arc::new(unstamped(body.clone()))
         });
         let metadata = if admitted && needs.metadata {
-            metadata.clone().map(Arc::new)
+            metadata.clone()
         } else {
             None
         };
@@ -806,13 +820,11 @@ impl ObserverRegistry {
                     .then(|| ErrorBody::new("invocation_error", err.to_string())),
             ),
         };
-        // Everything the evaluator queue holds for the call: the default capture keeps
-        // its metadata as well as its input and output.
-        let bytes = [&call.input, &output, &call.metadata]
-            .into_iter()
-            .filter_map(|value| value.as_deref())
-            .map(approx_size)
-            .sum();
+        // Everything the evaluator queue holds for the call: its input,
+        // output and metadata, each counted once. The metadata is the
+        // caller's, shared rather than copied, but the event keeps it alive
+        // past the call, so it is charged as held.
+        let bytes = shared_size([&call.input, &output, &call.metadata]);
         let evaluation = Evaluation {
             bytes,
             completed: Completed {
@@ -1214,10 +1226,10 @@ impl ObserverRegistry {
         // Built now, from the event the observers share; the event is let go
         // (and its share of the queue budget given back) before the target
         // answers.
-        let event = pending.event.clone();
+        let mut event = pending.event.clone();
         drop(pending);
         let activation_id = super::new_uuid().to_string();
-        let envelope = project(observer, &event, &activation_id);
+        let envelope = project_owned(observer, &mut event, &activation_id);
         let ctx = InvocationCtx::activation(
             Caller {
                 worker_name: Some(ENGINE_CALLER_NAME.to_string()),
@@ -1244,7 +1256,7 @@ impl ObserverRegistry {
             traceparent,
             baggage,
             observer.observing_session(),
-            observer.metadata.clone(),
+            observer.metadata.clone().map(Arc::new),
             ctx,
         );
         let timeout = Duration::from_millis(self.config.load().activation_timeout_ms);
@@ -1841,7 +1853,7 @@ impl ObserverRegistry {
             call.traceparent,
             call.baggage,
             observing.session,
-            observer.metadata.clone(),
+            observer.metadata.clone().map(Arc::new),
             ctx,
         );
         let timeout = Duration::from_millis(self.config().activation_timeout_ms);
@@ -2079,13 +2091,74 @@ async fn run_activations(
     }
 }
 
-/// The target's first argument (README §4.3): the payload (the top-level
-/// fields plus what the observer captures that applies to the outcome) or,
-/// for the engine's own observers, the observed input alone.
+/// The values a payload may carry, still shared with whoever else holds the
+/// event, or taken from an event nobody else holds.
+struct Parts {
+    input: Option<Arc<Value>>,
+    output: Option<Arc<Value>>,
+    error: Option<Arc<Value>>,
+    caller: Option<Arc<Value>>,
+    metadata: Option<Arc<Value>>,
+}
+
+impl Parts {
+    fn shared(completed: &Completed) -> Self {
+        Self {
+            input: completed.input.clone(),
+            output: completed.output.clone(),
+            error: completed.error.clone(),
+            caller: completed.caller.clone(),
+            metadata: completed.metadata.clone(),
+        }
+    }
+
+    fn taken(completed: &mut Completed) -> Self {
+        Self {
+            input: completed.input.take(),
+            output: completed.output.take(),
+            error: completed.error.take(),
+            caller: completed.caller.take(),
+            metadata: completed.metadata.take(),
+        }
+    }
+}
+
+/// A part as the payload carries it: moved out when nothing else shares it
+/// any more, copied otherwise.
+fn ship(part: Option<Arc<Value>>) -> Option<Value> {
+    part.map(Arc::unwrap_or_clone)
+}
+
+/// The target's first argument (README §4.3), every part copied: the event
+/// stays whole.
+#[cfg(test)]
 fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> Value {
-    let shipped = |value: &Option<Arc<Value>>| value.as_deref().cloned().unwrap_or(Value::Null);
+    payload(observer, completed, activation_id, Parts::shared(completed))
+}
+
+/// The target's first argument for the activation holding `completed`
+/// (CONTRACT D3). While other observers still hold the event its parts are
+/// copied; the last holder takes them instead, so the input, output, caller
+/// and metadata the call kept reach the target without a copy. The event
+/// keeps every other field.
+fn project_owned(
+    observer: &Observer,
+    completed: &mut Arc<Completed>,
+    activation_id: &str,
+) -> Value {
+    let parts = match Arc::get_mut(completed) {
+        Some(sole) => Parts::taken(sole),
+        None => Parts::shared(completed),
+    };
+    payload(observer, completed, activation_id, parts)
+}
+
+/// The payload (the top-level fields plus what the observer captures that
+/// applies to the outcome) or, for the engine's own observers, the observed
+/// input alone, built from `parts`.
+fn payload(observer: &Observer, completed: &Completed, activation_id: &str, parts: Parts) -> Value {
     if observer.deliver == Deliver::Input {
-        return shipped(&completed.input);
+        return ship(parts.input).unwrap_or(Value::Null);
     }
     let capture = observer.capture;
     let mut envelope = Map::new();
@@ -2109,22 +2182,14 @@ fn project(observer: &Observer, completed: &Completed, activation_id: &str) -> V
     // `output` applies to a success and `error` to a failure, whatever a report
     // carries: a payload never has both. A field with no value is left out.
     for (wanted, key, value) in [
-        (capture.input, "input", &completed.input),
-        (
-            capture.output && completed.success,
-            "output",
-            &completed.output,
-        ),
-        (
-            capture.error && !completed.success,
-            "error",
-            &completed.error,
-        ),
-        (capture.caller, "caller", &completed.caller),
-        (capture.metadata, "metadata", &completed.metadata),
+        (capture.input, "input", parts.input),
+        (capture.output && completed.success, "output", parts.output),
+        (capture.error && !completed.success, "error", parts.error),
+        (capture.caller, "caller", parts.caller),
+        (capture.metadata, "metadata", parts.metadata),
     ] {
-        if wanted && let Some(value) = value {
-            envelope.insert(key.into(), Value::clone(value));
+        if wanted && let Some(value) = ship(value) {
+            envelope.insert(key.into(), value);
         }
     }
     envelope.insert("started_at_ms".into(), completed.started_at_ms.into());

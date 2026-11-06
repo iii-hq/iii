@@ -73,7 +73,7 @@ impl SandboxRouter {
         &self,
         function_id: String,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         if function_id == ROUTER_INFO_ID {
             let info = match &self.binding {
@@ -208,7 +208,7 @@ impl FunctionHandler for SandboxRouter {
         _invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         Box::pin(self.route(function_id, input, metadata))
     }

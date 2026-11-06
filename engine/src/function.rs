@@ -31,8 +31,9 @@ type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, E
 /// the per-invocation sidecar carried alongside the payload (set by the caller
 /// or by the observer that activated the call) — it travels as a distinct
 /// channel rather than being folded into `data`.
-pub type HandlerFn =
-    dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Value>) -> HandlerFuture + Send + Sync;
+pub type HandlerFn = dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Arc<Value>>) -> HandlerFuture
+    + Send
+    + Sync;
 
 #[derive(Clone)]
 pub struct Function {
@@ -66,7 +67,7 @@ impl Function {
         invocation_id: Option<Uuid>,
         data: Value,
         session: Option<Arc<Session>>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
         (self.handler)(invocation_id, data, session, metadata).await
     }
@@ -78,7 +79,7 @@ pub trait FunctionHandler {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
 }
 

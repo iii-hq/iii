@@ -279,10 +279,9 @@ impl StreamAdapter for BridgeAdapter {
                 let pub_sub = pub_sub.clone();
 
                 async move {
-                    // The payload's `input` is what `publish` was called with.
-                    match serde_json::from_value::<PublishedStreamEvent>(data["input"].clone()) {
+                    match decode_published(data) {
                         Ok(PublishedStreamEvent { data }) => {
-                            tracing::debug!(data = ?data.clone(), "Event: Received event");
+                            tracing::debug!(data = ?data, "Event: Received event");
                             pub_sub.send_msg(data);
                             Ok(Value::Null)
                         }
@@ -309,6 +308,17 @@ impl StreamAdapter for BridgeAdapter {
         self.pub_sub.watch_events().await;
         Ok(())
     }
+}
+
+/// The [`PublishedStreamEvent`] an activation of the relay carries: the
+/// payload's `input` is what `publish` was called with. Taken out of the
+/// payload, which the relay owns, rather than copied (CONTRACT D3).
+fn decode_published(mut payload: Value) -> serde_json::Result<PublishedStreamEvent> {
+    let input = payload
+        .get_mut("input")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(input)
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {

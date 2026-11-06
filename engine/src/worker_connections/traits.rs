@@ -26,7 +26,7 @@ impl FunctionHandler for WorkerConnection {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<std::sync::Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
         // This ensures we get the trace context from the #[tracing::instrument] span.
@@ -168,7 +168,7 @@ mod tests {
                 Some(inv_id),
                 "fn1".into(),
                 json!({"key": "val"}),
-                Some(json!({"session_id": "s_1"})),
+                Some(std::sync::Arc::new(json!({"session_id": "s_1"}))),
             )
             .await;
         assert!(matches!(result, FunctionResult::Deferred));
@@ -187,7 +187,7 @@ mod tests {
                 assert_eq!(data, json!({"key": "val"}));
                 // Metadata rides as a distinct field on the wire message, not
                 // folded into `data`.
-                assert_eq!(metadata, Some(json!({"session_id": "s_1"})));
+                assert_eq!(metadata.as_deref(), Some(&json!({"session_id": "s_1"})));
             }
             _ => panic!("Expected InvokeFunction message"),
         }
