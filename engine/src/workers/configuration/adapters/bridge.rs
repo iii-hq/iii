@@ -5,19 +5,22 @@
 // See LICENSE and PATENTS files for details.
 
 //! Bridge adapter — delegates `configuration::*` to a remote III instance
-//! and rebroadcasts that instance's `configuration` trigger events into the
-//! local fan-out so subscribers see remote-originated changes too.
+//! and observes that instance's `configuration::on-updated`, rebroadcasting
+//! each change into the local fan-out so subscribers see remote-originated
+//! changes too.
 
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use iii_sdk::protocol::{RegisterTriggerInput, TriggerRequest};
-use iii_sdk::{IIIClient, RegisterFunction, register_worker};
+use iii_sdk::protocol::CallRequest;
+use iii_sdk::{Capture, IIIClient, ObserverHandle, RegisterFunction, Source, register_worker};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::OnceCell;
 
 use crate::engine::Engine;
+use crate::observer::events::CONFIGURATION_ON_UPDATED;
+use crate::protocol::DEFAULT_NAMESPACE;
 use crate::workers::configuration::adapters::{
     AdapterEnsureOutcome, ConfigurationAdapter, EnsureCandidate, EnsureSupport, ExternalChange,
     ExternalChangeSender, RegisterKind, RegisterOutcome, SetOutcome,
@@ -42,9 +45,9 @@ const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 pub struct BridgeAdapter {
     bridge: Arc<IIIClient>,
-    /// Holds onto the relay [`iii_sdk::trigger::Trigger`] handle so the SDK keeps
-    /// the remote subscription alive for the worker's lifetime.
-    relay_trigger: Mutex<Option<iii_sdk::trigger::Trigger>>,
+    /// The observer of the remote `configuration::on-updated`, disposed by
+    /// [`ConfigurationAdapter::destroy`].
+    relay_observer: Mutex<Option<ObserverHandle>>,
     /// Set lazily by `watch` — used by the relay function below.
     sender: OnceCell<ExternalChangeSender>,
 }
@@ -61,7 +64,7 @@ impl BridgeAdapter {
         ));
         Ok(Self {
             bridge,
-            relay_trigger: Mutex::new(None),
+            relay_observer: Mutex::new(None),
             sender: OnceCell::new(),
         })
     }
@@ -70,7 +73,7 @@ impl BridgeAdapter {
         let payload =
             serde_json::to_value(input).map_err(|e| anyhow::anyhow!("encode payload: {}", e))?;
         self.bridge
-            .trigger(TriggerRequest {
+            .call(CallRequest {
                 function_id: function_id.to_string(),
                 payload,
                 action: None,
@@ -251,13 +254,12 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 
     async fn delete(&self, _id: &str) -> anyhow::Result<Option<ConfigurationEntry>> {
-        // The remote `configuration::*` surface does not expose `delete`
-        // — cleanup happens through TTL on the remote engine. Surface a
-        // clear error so callers know to operate on the remote engine
-        // directly when they want a hard removal.
+        // The remote `configuration::*` surface does not expose `delete`.
+        // Surface a clear error so callers know to operate on the remote
+        // engine directly when they want a hard removal.
         Err(anyhow::anyhow!(
             "bridge adapter cannot delete configurations on the remote engine; \
-             rely on TTL or operate on the remote engine directly"
+             operate on the remote engine directly"
         ))
     }
 
@@ -302,16 +304,15 @@ impl ConfigurationAdapter for BridgeAdapter {
         let sender_lookup = self.sender.clone();
         let raw_reader = self.bridge.clone();
 
-        // Register the relay handler on this bridge worker — when the
-        // remote engine fires the `configuration` trigger we registered
-        // below, it'll route the call to this function.
+        // Register the relay handler on this bridge worker: the observer
+        // created below makes the remote engine call it with each event.
         self.bridge.register_function(
             RELAY_FUNCTION_ID,
             RegisterFunction::new_async(move |payload: Value| {
                 let sender_lookup = sender_lookup.clone();
                 let raw_reader = raw_reader.clone();
                 async move {
-                    let event: ConfigurationEventData = serde_json::from_value(payload)
+                    let event = decode_relayed(payload)
                         .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
                         // Events carry applied values. Re-read raw before updating
@@ -321,7 +322,7 @@ impl ConfigurationAdapter for BridgeAdapter {
                                 Value::Null
                             } else {
                                 match raw_reader
-                                    .trigger(TriggerRequest {
+                                    .call(CallRequest {
                                         function_id: "configuration::get".into(),
                                         payload: serde_json::json!({ "id": event.id, "raw": true }),
                                         action: None,
@@ -343,12 +344,12 @@ impl ConfigurationAdapter for BridgeAdapter {
                                 }
                             };
                         let entry = ConfigurationEntry {
-                            id: event.id.clone(),
-                            name: event.name.clone(),
-                            description: event.description.clone(),
-                            schema: event.schema.clone(),
+                            id: event.id,
+                            name: event.name,
+                            description: event.description,
+                            schema: event.schema,
                             value: raw_value,
-                            metadata: event.metadata.clone(),
+                            metadata: event.metadata,
                         };
                         let change = match event.event_type {
                             ConfigurationEventType::Registered => ExternalChange::Registered(entry),
@@ -362,36 +363,46 @@ impl ConfigurationAdapter for BridgeAdapter {
             }),
         );
 
-        // The remote engine's `configuration` trigger type is the only way
-        // to follow it until `configuration::on-updated` can be observed there.
-        #[allow(deprecated)]
-        let trigger = self
-            .bridge
-            .register_trigger(RegisterTriggerInput::new(
-                "configuration".to_string(),
-                RELAY_FUNCTION_ID.to_string(),
-                serde_json::json!({}),
-            ))
-            .map_err(|e| {
-                anyhow::anyhow!("failed to subscribe to remote configuration trigger: {}", e)
-            })?;
-        *self.relay_trigger.lock().expect("relay trigger lock") = Some(trigger);
+        let observer = self.bridge.observe(
+            Source::function(CONFIGURATION_ON_UPDATED)
+                .namespace(DEFAULT_NAMESPACE)
+                .capture([Capture::Input]),
+            RELAY_FUNCTION_ID,
+        );
+        *self.relay_observer.lock().expect("relay observer lock") = Some(observer);
         Ok(())
     }
 
-    /// Unregister the relay and close the remote client without deleting configuration entries.
+    /// Dispose the relay observer and close the remote client without deleting configuration entries.
+    /// The client is closed whether or not the remote engine took the disposal.
     async fn destroy(&self) -> anyhow::Result<()> {
-        if let Some(trigger) = self
-            .relay_trigger
+        let observer = self
+            .relay_observer
             .lock()
-            .expect("relay trigger lock")
-            .take()
+            .expect("relay observer lock")
+            .take();
+        if let Some(observer) = observer
+            && let Err(error) = observer.dispose().await
         {
-            trigger.unregister();
+            tracing::warn!(
+                error = %error,
+                "Configuration bridge: disposing the relay observer failed"
+            );
         }
         self.bridge.shutdown_async().await;
         Ok(())
     }
+}
+
+/// The `configuration::on-updated` event an activation of the relay carries:
+/// the payload's `input`, taken out of the payload the relay owns rather than
+/// copied.
+fn decode_relayed(mut payload: Value) -> serde_json::Result<ConfigurationEventData> {
+    let input = payload
+        .get_mut("input")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(input)
 }
 
 /// Build the remote `configuration::ensure` input from a delegated candidate,
@@ -429,6 +440,44 @@ crate::register_adapter!(<ConfigurationAdapterRegistration> name: "bridge", make
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The relay decodes the `configuration::on-updated` event out of the
+    /// envelope it receives (the input is taken, not cloned).
+    #[test]
+    fn the_relay_decodes_the_configuration_event_from_the_envelope() {
+        let payload = json!({
+            "observer_id": "o",
+            "activation_id": "a",
+            "function_id": CONFIGURATION_ON_UPDATED,
+            "invocation_id": "i",
+            "status": "success",
+            "input": {
+                "type": "configuration",
+                "event_type": "configuration:updated",
+                "id": "iii-stream",
+                "name": "Stream",
+                "description": "desc",
+                "schema": { "type": "object" },
+                "metadata": { "owner": "team" },
+            },
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        let event = decode_relayed(payload).expect("decoded");
+        assert_eq!(event.event_type, ConfigurationEventType::Updated);
+        assert_eq!(event.id, "iii-stream");
+        assert_eq!(event.name, "Stream");
+        assert_eq!(event.description, "desc");
+        assert_eq!(event.schema, json!({ "type": "object" }));
+        assert_eq!(event.metadata, Some(json!({ "owner": "team" })));
+    }
+
+    /// An envelope without the event is an error, as before.
+    #[test]
+    fn the_relay_refuses_an_envelope_without_an_event() {
+        assert!(decode_relayed(json!({ "observer_id": "o" })).is_err());
+        assert!(decode_relayed(json!({ "input": { "id": "x" } })).is_err());
+    }
 
     #[test]
     /// Preserve the candidate and metadata without substituting a cached local value.

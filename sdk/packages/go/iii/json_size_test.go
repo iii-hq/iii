@@ -104,8 +104,8 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	c := New("ws://127.0.0.1:0")
 	defer c.Close()
 	huge := json.RawMessage(`"` + strings.Repeat("x", maxJSONMessageBytes) + `"`)
-	for _, action := range []*TriggerAction{nil, VoidAction(), EnqueueAction("q")} {
-		_, err := c.Trigger(context.Background(), TriggerRequest{FunctionID: "f", Payload: huge, Action: action})
+	for _, action := range []*CallAction{nil, VoidAction(), EnqueueAction("q")} {
+		_, err := c.Call(context.Background(), CallRequest{FunctionID: "f", Payload: huge, Action: action})
 		var ie *InvocationError
 		if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
 			t.Fatalf("local: %v", err)
@@ -128,13 +128,10 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 	if len(c.functions) != 0 || len(c.offline) != 0 || len(c.outbound) != 0 {
 		t.Fatal("typed registration retained or enqueued oversized envelope")
 	}
-	if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "t", Description: strings.Repeat("x", maxJSONMessageBytes)}, &stubTriggerHandler{}); err == nil {
-		t.Fatal("trigger type accepted")
+	if _, err := c.RegisterFunction("args", h, RegisterFunctionOptions{ArgsFormat: huge}); err == nil {
+		t.Fatal("args_format accepted")
 	}
-	if _, err := c.RegisterTrigger(RegisterTriggerInput{ID: "t", Type: "t", FunctionID: "f", Config: huge}); err == nil {
-		t.Fatal("trigger accepted")
-	}
-	if len(c.functions)+len(c.triggers)+len(c.triggerTypes) != 0 {
+	if len(c.functions) != 0 {
 		t.Fatal("durable leak")
 	}
 	raw, _ := MarshalMessage(&InvokeFunctionMessage{FunctionID: "f", Data: huge})
@@ -192,7 +189,7 @@ func TestJSONSocketReceiveAndContinuation(t *testing.T) {
 	// longer on shared CI runners; bound a stuck exchange, not expected work.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	out, err := c.Trigger(ctx, TriggerRequest{FunctionID: "remote"})
+	out, err := c.Call(ctx, CallRequest{FunctionID: "remote"})
 	if err != nil || len(out) != len(huge) {
 		t.Fatalf("incoming result: %d %v", len(out), err)
 	}
@@ -353,7 +350,7 @@ func TestJSONNullAbsentOnWire(t *testing.T) {
 	}
 }
 
-func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testing.T) {
+func TestJSONFunctionSchemasRejectCombinedEnvelope(t *testing.T) {
 	for _, connected := range []bool{false, true} {
 		name := "offline"
 		if connected {
@@ -369,43 +366,41 @@ func TestJSONTriggerTypeSchemasRejectCombinedEnvelopeWithoutReplacement(t *testi
 				if err := c.Connect(ctx); err != nil {
 					t.Fatal(err)
 				}
+				// the connect replay is over once the worker metadata arrived
+				m.waitFor(func(msgs []map[string]json.RawMessage) bool { return indexOfFunctionID(msgs, FnRegisterWorker) >= 0 }, 3*time.Second)
 			}
-			original := &stubTriggerHandler{}
-			if _, err := c.RegisterTriggerType(RegisterTriggerTypeInput{ID: "schemas", Description: "Original", TriggerRequestFormat: json.RawMessage(`true`)}, original); err != nil {
-				t.Fatal(err)
-			}
-			if connected {
-				waitTriggerTypeRegistration(t, m, "schemas")
-			}
-			retained := c.triggerTypes["schemas"]
-			beforeOffline, beforeOutbound := len(c.offline), len(c.outbound)
+			c.mu.Lock()
+			beforeOffline := len(c.offline)
+			c.mu.Unlock()
 			schema := json.RawMessage(`{"description":"` + strings.Repeat("x", maxJSONMessageBytes/2) + `"}`)
-			opts := RegisterTriggerTypeInput{ID: "schemas", Description: "Replacement", TriggerRequestFormat: schema, CallRequestFormat: append(json.RawMessage(nil), schema...)}
-			for _, single := range []RegisterTriggerTypeInput{{TriggerRequestFormat: schema}, {CallRequestFormat: schema}} {
-				if _, err := prepareJSON(&RegisterTriggerTypeMessage{ID: "schemas", Description: "Replacement", TriggerRequestFormat: single.TriggerRequestFormat, CallRequestFormat: single.CallRequestFormat}); err != nil {
+			for _, single := range []RegisterFunctionOptions{{RequestFormat: schema}, {ArgsFormat: schema}} {
+				msg, err := registerFunctionMessage("RegisterFunction", "schemas", single)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := prepareJSON(msg); err != nil {
 					t.Fatalf("individual schema should fit: %v", err)
 				}
 			}
-			configBefore, callBefore := string(opts.TriggerRequestFormat), string(opts.CallRequestFormat)
-			_, err := c.RegisterTriggerType(opts, &stubTriggerHandler{})
+			_, err := c.RegisterFunction("schemas", Identity, RegisterFunctionOptions{RequestFormat: schema, ArgsFormat: schema})
 			var sizeErr *InvocationError
 			if !errors.As(err, &sizeErr) || sizeErr.Code != "payload_too_large" {
 				t.Fatalf("combined schema envelope: %v", err)
 			}
-			if c.triggerTypes["schemas"].message != retained.message || c.triggerTypes["schemas"].handler != retained.handler {
-				t.Fatal("rejected registration replaced retained message or handler")
+			if c.functionObservers("schemas") != nil {
+				t.Fatal("rejected registration was stored")
 			}
-			if string(opts.TriggerRequestFormat) != configBefore || string(opts.CallRequestFormat) != callBefore {
-				t.Fatal("caller schema bytes changed")
-			}
-			if len(c.offline) != beforeOffline || len(c.outbound) != beforeOutbound {
+			c.mu.Lock()
+			afterOffline := len(c.offline)
+			c.mu.Unlock()
+			if afterOffline != beforeOffline {
 				t.Fatal("rejected registration was queued")
 			}
 			if connected {
 				small, _ := MarshalMessage(&PongMessage{})
 				c.outbound <- small
 				msgs := m.waitFor(func(msgs []map[string]json.RawMessage) bool { return countType(msgs, "pong") == 1 }, 3*time.Second)
-				if countType(msgs, "pong") != 1 || countRegister(msgs, "registertriggertype", "schemas") != 1 {
+				if countType(msgs, "pong") != 1 || countRegister(msgs, string(MsgRegisterFunction), "schemas") != 0 {
 					t.Fatal("rejected registration reached socket or continuation failed")
 				}
 			}

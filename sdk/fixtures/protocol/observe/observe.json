@@ -14,9 +14,7 @@
     },
     "capture": [
       "input"
-    ],
-    "on": "success",
-    "deliver": "envelope"
+    ]
   },
   "target": {
     "function_id": "local::cron-handler",

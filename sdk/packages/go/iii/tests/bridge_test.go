@@ -18,7 +18,7 @@ import (
 // (engine::functions::list returns a functions array).
 func TestConnectSuccessfully(t *testing.T) {
 	c := connect(t)
-	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: iii.FnListFunctions,
 		Payload:    json.RawMessage(`{}`),
 	})
@@ -54,12 +54,12 @@ func TestRegisterAndInvokeFunction(t *testing.T) {
 	}
 	settle()
 
-	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: "test::bridge::go::echo",
 		Payload:    json.RawMessage(`{"message":"hello"}`),
 	})
 	if err != nil {
-		t.Fatalf("Trigger: %v", err)
+		t.Fatalf("Call: %v", err)
 	}
 	var out struct {
 		Echoed struct {
@@ -98,16 +98,16 @@ func TestInvokeFireAndForget(t *testing.T) {
 	}
 	settle()
 
-	res, err := c.Trigger(ctxFor(t, 5*time.Second), iii.TriggerRequest{
+	res, err := c.Call(ctxFor(t, 5*time.Second), iii.CallRequest{
 		FunctionID: "test::bridge::go::sink",
 		Payload:    json.RawMessage(`{"event":"ping"}`),
 		Action:     iii.VoidAction(),
 	})
 	if err != nil {
-		t.Fatalf("void Trigger: %v", err)
+		t.Fatalf("void Call: %v", err)
 	}
 	if res != nil {
-		t.Errorf("void Trigger result = %s, want nil", res)
+		t.Errorf("void Call result = %s, want nil", res)
 	}
 
 	select {

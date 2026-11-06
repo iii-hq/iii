@@ -1,6 +1,6 @@
 # Tech Spec — `engine::register_trigger` / `unregister_trigger` with first-class invocation metadata
 
-**Status:** In progress — engine + all four SDKs landed; harness wiring + end-to-end test remain.
+**Status:** Superseded in 0.26 by [observe v2](2026-10-29-observe-v2/README.md). This spec describes the pre-0.26 trigger API; in 0.26 trigger types are observable functions and bindings are observers.
 **Tracking:** MOT-3747 · branch `feat/engine-register-trigger`
 **Source of truth:** commits `91a5f7947` (initial) and `6c3027ea7` (current design). All `file:line` references below are against `6c3027ea7` (HEAD).
 

@@ -7,7 +7,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 1;
+pub const CONTRACT_MINOR: u32 = 2;
+
+/// `worker::*` accepts a token scoped to one VM, [`crate::scoped_auth_token`], besides the
+/// project token. Since contract 1.2.
+pub const FEATURE_SCOPED_AUTH: &str = "worker.scoped_auth";
+/// The adapter stops a VM whose last log follower is gone and that no client reattaches to
+/// within its grace. Since contract 1.2.
+pub const FEATURE_LEASE: &str = "worker.lease";
+/// `worker::logs` honours [`crate::WorkerLogsRequest::from_end`]. Since contract 1.2.
+pub const FEATURE_LOGS_FROM_END: &str = "worker.logs_from_end";
 
 /// Contract version. A different major is incompatible (S302); a minor only adds fields.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -35,6 +44,17 @@ pub struct AdapterInfo {
     pub adapter_version: String,
     /// The contract version the adapter implements.
     pub contract: ContractVersion,
+    /// What the adapter implements beyond the base contract, e.g. [`FEATURE_SCOPED_AUTH`].
+    /// Since contract 1.2; an older adapter sends none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
+}
+
+impl AdapterInfo {
+    /// Whether the adapter announced `feature`.
+    pub fn supports(&self, feature: &str) -> bool {
+        self.features.iter().any(|announced| announced == feature)
+    }
 }
 
 /// Reply of `sandbox::adapter::info`, which the router answers itself.
@@ -46,6 +66,7 @@ pub struct RouterInfo {
     pub namespace: Option<String>,
     /// The engine's own `ContractVersion::CURRENT`.
     pub contract: ContractVersion,
-    /// The adapter's own info; `None` when unbound or the adapter is not connected.
+    /// The adapter's own info; `None` when unbound, or when the adapter is not connected
+    /// or does not answer within 2 s.
     pub info: Option<AdapterInfo>,
 }

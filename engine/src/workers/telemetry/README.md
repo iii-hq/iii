@@ -13,15 +13,16 @@ completed step on the `onboarding:steps:complete` topic, and this worker subscri
 that topic (with the internal handler `iii-telemetry::on-onboarding-step`) and
 reports each message as an `onboarding_step` event with the published payload.
 
-The subscription is a `durable:subscriber` binding served by the `queue`
-worker, so a step message waits in the queue and is retried until the handler
+The subscription is an engine-owned observer of `queue::on-message` with args
+`{ topic }`, created in every namespace the `queue` worker hosts that function
+in, so a step message waits in the queue and is retried until the handler
 takes it. One event is reported per tour step, counted in memory: a
 redelivered or repeated message reports once, and a restarted engine lets
 every step report again. Nothing about tour progress is persisted here — that
 belongs to the tour's own state.
 
-The subscription is registered at boot; a project without the `onboarding` or
-`queue` workers never fires it.
+The observer is created at boot; in a project without the `onboarding` or
+`queue` workers it never activates the handler.
 
 Apart from that handler, this module runs in the background and exposes no
-functions or trigger types.
+functions.

@@ -1309,16 +1309,15 @@ mod tests {
     ) -> EngineConfig {
         EngineConfig {
             registration_namespace_grace_ms: 5000,
+            sandbox: None,
             modules: vec![],
             workers: vec![
                 WorkerEntry {
                     name: "iii-observability".to_string(),
-                    image: None,
                     config: Some(observability_block),
                 },
                 WorkerEntry {
                     name: "configuration".to_string(),
-                    image: None,
                     config: Some(serde_json::json!({
                         "adapter": { "name": "fs", "config": { "directory": dir.to_string_lossy() } }
                     })),

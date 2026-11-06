@@ -21,6 +21,8 @@
     "capture": [
       "input"
     ],
-    "on": "success"
+    "fires_on": [
+      "success"
+    ]
   }
 }

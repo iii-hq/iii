@@ -14,8 +14,8 @@ check "browser worker confirms the delete" '"deleted":true' \
 sleep 2
 check "link deleted" 'null' "$(t link::resolve code=deleteme)"
 
-# The live click counter: the tab binds click-streamer::click through the
-# proxy, reads the starting total, then counts the clicks that arrive.
+# The live click counter: the tab observes click-streamer::on-click through
+# the proxy, reads the starting total, then counts the clicks that arrive.
 curl -s -X POST "$HTTP/links" -H 'Content-Type: application/json' \
   -d '{"url":"https://iii.dev","code":"watchme"}' >/dev/null
 curl -s -o /dev/null "$HTTP/s/watchme"

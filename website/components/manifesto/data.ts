@@ -108,7 +108,7 @@ export const statements: Statement[] = [
     accent: 'agents',
     heavy: 'are workers.',
     body: [
-      "an agent's tools are functions. its memory is state. its orchestration is triggers. the harness is the system. an agent that hits a task outside its current capabilities can register a worker at runtime and use its functions immediately. this is the difference between scripted LLM calls and real autonomy.",
+      "an agent's tools are functions. its memory is state. its orchestration is observers. the harness is the system. an agent that hits a task outside its current capabilities can register a worker at runtime and use its functions immediately. this is the difference between scripted LLM calls and real autonomy.",
     ],
   },
   {

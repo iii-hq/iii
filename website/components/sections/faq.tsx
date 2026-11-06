@@ -13,11 +13,11 @@ import { Section } from '@/components/site/section'
 export const faqs: { q: string; a: string }[] = [
   {
     q: 'What is iii?',
-    a: 'An engine that programs connect to over WebSocket. Each registers functions and triggers; the engine keeps a live registry of them, routes every call, and traces it.',
+    a: 'An engine that programs connect to over WebSocket. Each registers functions, and observers connect them: when one function runs, another runs. The engine keeps a live registry of both, routes every call, and traces it.',
   },
   {
     q: 'How is iii different from Claude Code, Codex, or Cursor?',
-    a: 'Those are coding agents; iii is the system they can run in. Install them as workers and keep using them. iii adds what surrounds them: your functions as their tools, permissions and approvals, durable queues, triggers that wake them, and traces shared with the rest of the system.',
+    a: 'Those are coding agents; iii is the system they can run in. Install them as workers and keep using them. iii adds what surrounds them: your functions as their tools, permissions and approvals, durable queues, observers that wake them, and traces shared with the rest of the system.',
   },
   {
     q: 'How is iii different from MCP?',
@@ -25,7 +25,7 @@ export const faqs: { q: string; a: string }[] = [
   },
   {
     q: 'Do I need a database?',
-    a: 'No. Storage is optional workers: `state` for key-value (built-in store or Redis), `database` for PostgreSQL, MySQL, or SQLite, and `storage` for S3-compatible objects. Each exposes functions and emits change triggers. Install what you need.',
+    a: 'No. Storage is optional workers: `state` for key-value (built-in store or Redis), `database` for PostgreSQL, MySQL, or SQLite, and `storage` for S3-compatible objects. Each exposes functions and a change source you can observe (`state::on-changed`, `database::on-row-changed`). Install what you need.',
   },
   {
     q: 'Do I need AI?',

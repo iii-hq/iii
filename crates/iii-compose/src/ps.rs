@@ -115,6 +115,25 @@ pub fn announce_engine(url: &str) -> Option<MarkerGuard> {
     Some(MarkerGuard(path))
 }
 
+/// Removes every marker of this process, for an exit that skips their owners'
+/// drops (`std::process::exit` while the listeners and the engine's own SDK
+/// clients, such as bridge adapters, still run).
+pub fn retract_process_markers() {
+    let Some(entries) = run_dir().and_then(|dir| std::fs::read_dir(dir).ok()) else {
+        return;
+    };
+    // The trailing dash keeps pid 12 from matching pid 123's markers.
+    let pid = std::process::id();
+    let prefixes = [format!("engine-{pid}-"), format!("worker-{pid}-")];
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(|name| {
+            name.ends_with(".json") && prefixes.iter().any(|prefix| name.starts_with(prefix))
+        }) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Every iii process this user runs, engines first, grouped by compose file.
 pub fn scan() -> Vec<IiiProcess> {
     let mut system = System::new();
@@ -133,7 +152,9 @@ pub fn scan() -> Vec<IiiProcess> {
         .ok()
         .and_then(|pid| system.process(pid))
         .and_then(|process| process.user_id().cloned());
-    let markers = live_markers(&system);
+    let markers = run_dir()
+        .map(|dir| live_markers(&system, &dir))
+        .unwrap_or_default();
 
     let mut found: Vec<IiiProcess> = system
         .processes()
@@ -367,8 +388,8 @@ type Markers = BTreeMap<u32, Vec<(String, Marker)>>;
 
 /// Markers whose process is still the one that wrote them. The rest are
 /// deleted: their writer is gone, or its PID now belongs to somebody else.
-fn live_markers(system: &System) -> Markers {
-    let Some(entries) = run_dir().and_then(|dir| std::fs::read_dir(dir).ok()) else {
+fn live_markers(system: &System, dir: &Path) -> Markers {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return BTreeMap::new();
     };
     let mut live = Markers::new();
@@ -388,7 +409,11 @@ fn live_markers(system: &System) -> Markers {
             system
                 .process(sysinfo::Pid::from_u32(marker.pid))
                 // Start times are whole seconds; allow the one it rounds into.
-                .is_some_and(|process| process.start_time() <= marker.started_at / 1000 + 1)
+                // Zero is a start time sysinfo could not read: another user's
+                // process, which never wrote into this user's run dir.
+                .is_some_and(|process| {
+                    (1..=marker.started_at / 1000 + 1).contains(&process.start_time())
+                })
         });
         match marker {
             Some(marker) if alive => {
@@ -540,6 +565,7 @@ mod tests {
         for other in [
             "iii compose logs",
             "iii compose build",
+            "iii call x::y",
             "iii trigger x::y",
             "iii ps",
         ] {
@@ -590,6 +616,39 @@ mod tests {
         };
         assert!(!is_running(&zombie));
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn a_marker_is_kept_only_while_its_writer_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let write = |name: &str, pid, started_at| {
+            let marker = Marker {
+                pid,
+                url: None,
+                name: None,
+                sdk: None,
+                started_at,
+            };
+            std::fs::write(dir.path().join(name), serde_json::to_vec(&marker).unwrap()).unwrap();
+        };
+        // PID 1 is somebody else's; on macOS its start time cannot be read.
+        write("worker-1-0.json", 1, 1_577_836_800_000);
+        write(&format!("worker-{me}-0.json"), me, now);
+        let mut system = System::new();
+        system.refresh_processes(
+            ProcessesToUpdate::Some(&[sysinfo::Pid::from_u32(1), sysinfo::Pid::from_u32(me)]),
+            true,
+        );
+
+        let live = live_markers(&system, dir.path());
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [me]);
+        assert!(!dir.path().join("worker-1-0.json").exists());
+        assert!(dir.path().join(format!("worker-{me}-0.json")).exists());
     }
 
     #[test]

@@ -3,28 +3,20 @@
 # Registry
 
 
-{/* Note: move this up */}
-
-The iii registry at [workers.iii.dev](https://workers.iii.dev/) is where published workers live.
-Other iii projects declare them in `worker-compose.yaml` or add them with `compose::add`.
-
-`worker-compose.yaml` is the Compose project manifest. It lists the workers one project runs.
-`iii.worker.yaml` is the manifest of one worker. See
-[Compose](../using-iii/compose#worker-composeyaml) for the project manifest fields.
+The iii registry at [workers.iii.dev](https://workers.iii.dev/) serves the artifacts of published
+workers. A worker published as a native binary, an OCI image, or a bundle archive is installable by
+name from any iii project. For the consuming side, see
+[Worker Registry](../using-iii/workers-registry).
 
 ## Publish a worker
 
-Publishing a worker uploads its binary or OCI image to the registry, records its semver version, and
-makes the worker installable by name from any iii project.
-
-{/* TODO: capture the registry's canonical publish API, authentication requirements, and expected metadata (description, repo URL, supported platforms, etc.). */}
+Publishing a worker uploads its artifact to the registry and records its semver version. The
+registry then resolves the worker by name for every project that requests it.
 
 ## Version your worker
 
 Workers in the registry follow semver. Patch bumps for bug fixes, minor bumps for additive
-capability, major bumps for breaking changes to function or trigger signatures.
-
-{/* TODO: document how versions are tagged in the worker repo (git tag pattern), how the publish command resolves the version, and how to publish pre-releases. */}
+capability, major bumps for breaking changes to function signatures or `args_format`.
 
 ## Build binary artifacts for multiple platforms
 
@@ -32,29 +24,23 @@ Binary workers can publish artifacts for multiple platform targets in a single r
 arm64/x64, Linux arm64/x64/armv7, Windows arm64/x64/x86). One published version covers every
 supported host without separate publications per platform.
 
-{/* TODO: document the cross-build flow, the supported target triples, how the artifacts are signed/checksummed, and where they're uploaded. */}
+## Bundle archives
 
-## Update or remove a published worker
-
-{/* TODO: cover how to publish a new version (semver bump + republish), how to deprecate a worker, and whether/how a published version can be retracted (yanked). */}
-
-## Bundling workers (tar.gz archives)
-
-Bundle workers are a third artifact kind alongside `binary` and `image`. The registry serves a
-single `tar.gz` archive that contains the worker's bundled source plus an `iii.worker.yaml` manifest
-at the archive root. Compose downloads it, verifies its SHA-256 checksum, extracts it into the
-daemon's versioned package cache, and runs it through the libkrun rails without a host-side source
-watcher.
+A bundle worker publishes a single `tar.gz` archive that contains the worker's bundled source plus
+an `iii.worker.yaml` manifest at the archive root.
 
 Use a bundle when:
 
-- You ship a pre-built JavaScript bundle (`esbuild`, `tsdown`, `bun build`) or a packaged Python
-  worker and don't want to publish a Docker image.
-- You want artifacts measured in KB, not MB. Only the bundled source travels in the archive; the
+- You ship a pre-built JavaScript bundle or a packaged Python worker, and you do not want to publish
+  a Docker image.
+- You want artifacts measured in KB, not MB. Only the bundled source travels in the archive. The
   runtime ships with the engine-allowlisted base image (`docker.io/iiidev/node:latest` or
   `docker.io/iiidev/python:latest`).
-- You want installation to look identical to other supported registry workers from the user's
-  perspective (`iii trigger --namespace dev compose::add worker=my-worker`).
+
+<Note>
+  A bundle archive is not a binary artifact and not an OCI image. The archive carries source plus a
+  manifest, and the engine runs that source inside the sandbox VM.
+</Note>
 
 ### Registry response shape
 
@@ -68,59 +54,81 @@ Use a bundle when:
 }
 ```
 
-Compose GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares against
-`sha256`. A mismatch, an HTTP error, an unexpected content type, or an oversized download aborts the
-install with `W142` and deletes the downloaded blob immediately.
+The engine GETs `archive_url`, streams the bytes through a SHA-256 hasher, and compares the result
+against `sha256`. A mismatch, an HTTP error, a content type without an `application/` prefix, or a
+download above 64 MiB aborts the install with `W142`, and the engine deletes the downloaded archive.
 
 ### Archive layout
 
-The archive root MUST contain `iii.worker.yaml`. Anything else sits at runtime-discoverable paths
-from the bundle's perspective.
+The archive root MUST contain `iii.worker.yaml`.
 
 ```text
 my-worker-1.2.0.tar.gz
 ├── iii.worker.yaml
 ├── bundle.js
 └── assets/
-    └── ...
+    └── logo.png
 ```
 
 ### Manifest contract (`iii.worker.yaml`)
 
-Bundle manifests use a strict subset of the local-worker manifest. Three fields are explicitly
-**rejected** with `W180 BundleManifestRejected`:
+Every sample below is a complete manifest.
 
-- `scripts.setup`: would execute publisher-supplied shell during install (a supply-chain smuggling
-  vector).
-- `scripts.install`: same reason. Vendor dependencies into the bundle instead.
-- `runtime.base_image`: would let a bundle pull an arbitrary OCI image as its rootfs. Bundles use
-  the engine-allowlisted base image instead.
+#### Rejected fields
 
-Required fields:
-
-- `name`: must equal the registry package name without an `@version` suffix. For example, use
-  `my-worker` for both `worker=my-worker` and `worker=my-worker@1.2.0`.
-- `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM. Example:
-  `node bundle.js`, `python -m worker`, `bun run bundle.js`.
-
-Optional fields (clamped against engine caps, with a `W182 BundleResourceClamped` warning when the
-request exceeds the cap):
-
-- `resources.cpus`: defaults to `2`, clamped to `4`.
-- `resources.memory`: defaults to `2048` MiB, clamped to `4096` MiB.
-
-A dependency graph deeper than 5 levels or wider than 32 transitive workers is rejected with
-`W183`.
+`scripts.setup` is rejected with `W180 BundleManifestRejected`. Provisioning belongs in the base
+image. Pre-build the bundle and ship it ready to run.
 
 ```yaml
 name: my-worker
-version: 1.2.0
+scripts:
+  setup: npm install
+  start: node bundle.js
+```
+
+#### Required fields
+
+- `name`: must equal the registry package name without an `@version` suffix. For example, use
+  `my-worker` for both `worker=my-worker` and `worker=my-worker@1.2.0`.
+- `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM.
+
+```yaml
+name: my-worker
 scripts:
   start: node bundle.js
-resources:
-  cpus: 2
-  memory: 2048
 ```
+
+#### Optional fields
+
+- `scripts.install`: a shell string. The engine runs it inside the sandbox VM one time, before it
+  starts the worker. Python bundles use it for a pip bootstrap that cannot be vendored into the
+  archive.
+- `runtime.base_image`: an OCI image reference. The engine accepts any reference with alphanumerics
+  and the characters `._-/:@+`, for example `docker.io/iiidev/python:latest`. A malformed reference
+  is rejected with `W180`.
+- `resources.cpus`: defaults to `2`, capped at `4`.
+- `resources.memory`: defaults to `2048` MiB, capped at `4096` MiB.
+
+```yaml
+name: my-worker
+runtime:
+  base_image: docker.io/iiidev/python:latest
+scripts:
+  start: python -m my_worker
+  install: pip install -r requirements.txt
+resources:
+  cpus: 4
+  memory: 4096
+```
+
+A resource value above the cap is clamped to the cap, and the install prints a
+`W182 BundleResourceClamped` warning. A resource value is never rejected for its size. Keys outside
+the subset above are ignored: the bundle install does not reject unknown keys.
+
+<Note>
+  The bundle manifest is a subset of the [worker manifest](./worker-manifest). It rejects
+  `scripts.setup` and ignores every key outside the classes above.
+</Note>
 
 ### Archive safety policy
 
@@ -132,9 +140,8 @@ Bundle archives are extracted with tighter limits than OCI layers:
 | Largest single file     | 32 MiB             |
 | Maximum entry count     | 1024               |
 | Maximum directory depth | 16                 |
+| Manifest size           | 64 KiB             |
 | Allowed tar entry types | Regular, Directory |
 
-Archives containing symlinks, hard links, character devices, FIFOs, or paths with `..` components
-are rejected with `W181 BundleArchiveUnsafe`.
-
-{/* TODO: document the registry publish flow, storage layout, and recommended bundler configurations for Node/Bun/Python. */}
+Archives that contain symlinks, hard links, character devices, FIFOs, absolute paths, or paths with
+`..` components are rejected with `W181 BundleArchiveUnsafe`.

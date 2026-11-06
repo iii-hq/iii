@@ -1,9 +1,8 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Request and response types of the sixteen ephemeral `sandbox::*` operations, moved from
-//! `crates/iii-worker/src/sandbox_daemon/{create,exec,stop,list,catalog,run,fs/*}.rs` with
-//! today's names, field docs and serde attributes. Handlers and runner traits stay in the adapter.
+//! Request and response types of the sixteen ephemeral `sandbox::*` operations. Handlers and
+//! runner traits live in the adapter.
 
 use crate::channel::StreamChannelRef;
 use schemars::JsonSchema;
@@ -471,7 +470,7 @@ fn stat_request_example() -> serde_json::Value {
 }
 
 /// Mirrors `FsEntry`. Note: the shell protocol does not carry uid/gid;
-/// those fields are absent at this trigger level.
+/// those fields are absent from this function's response.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StatResponse {
     pub name: String,

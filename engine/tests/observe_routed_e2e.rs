@@ -1,6 +1,8 @@
 //! Observers on the routed path (README §7 phase 1), over real WebSockets:
 //! every call here goes caller → engine → host, and the engine evaluates the
-//! observers' filters itself.
+//! observers' filters itself: the hosts here declare `observe.v1`, not
+//! `observe.v2` (`observe_host_delivery_e2e` covers hosts that deliver their
+//! own calls).
 //!
 //! Hosts that declare `observe.v1` ack their observers (the test client does
 //! it like an SDK whose hooks accept everything), so an observer goes
@@ -17,8 +19,9 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, Setup, TestEngine, connect, connect_query, evaluated, eventually, in_process,
-    registered, spawn, spawn_engine, spawn_engine_with,
+    Client, OBSERVE_CAPTURE, OBSERVE_V2, Setup, TestEngine, connect, connect_query, connect_with,
+    evaluated, eventually, in_process, registered, spawn, spawn_engine, spawn_engine_with,
+    unrestricted_listener,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -38,6 +41,18 @@ fn fixture_keys(name: &str) -> Vec<String> {
 /// A host for `functions`, connected and registered.
 async fn host(t: &TestEngine, name: &str, features: bool, functions: &[&str]) -> Client {
     let mut client = connect(t, name, features).await;
+    for function in functions {
+        client.register_function(function).await;
+    }
+    for function in functions {
+        registered(&t.engine, "default", function).await;
+    }
+    client
+}
+
+/// As [`host`], for a worker running a current SDK (`observe.capture`).
+async fn capture_host(t: &TestEngine, name: &str, functions: &[&str]) -> Client {
+    let mut client = connect_with(t, name, OBSERVE_CAPTURE).await;
     for function in functions {
         client.register_function(function).await;
     }
@@ -295,24 +310,50 @@ async fn filters_on_output_and_caller() {
     assert_eq!(fires(&t, "obs-paid"), 1);
 }
 
+/// `capture` alone decides which outcomes fire: `input` / `output` fire on
+/// success and `error` on error, `caller` / `metadata` only add to the
+/// payload, and `[]` fires on success with the top-level fields only.
 #[tokio::test]
-async fn lang_error_and_completion_facets() {
-    // payments::charge.error ~> alerts::raise, and .completion ~> metrics::record.
+async fn capture_decides_which_outcomes_fire() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
-    let mut sink = host(&t, "sink", true, &["alerts::raise", "metrics::record"]).await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut sink = capture_host(
+        &t,
+        "sink",
+        &[
+            "alerts::raise",
+            "metrics::record",
+            "metrics::count",
+            "audit::default",
+            "audit::full",
+        ],
+    )
+    .await;
     let mut checkout = connect(&t, "checkout", true).await;
 
+    for (id, capture, target) in [
+        ("obs-error", json!(["error", "caller"]), "alerts::raise"),
+        ("obs-both", json!(["input", "error"]), "metrics::record"),
+        ("obs-empty", json!([]), "metrics::count"),
+        (
+            "obs-full",
+            json!(["input", "output", "error"]),
+            "audit::full",
+        ),
+    ] {
+        sink.observe_active(observer(
+            id,
+            json!({ "function_id": "payments::charge", "capture": capture }),
+            target,
+        ))
+        .await;
+    }
+    // No capture: the default, input, output and caller (decision 62).
     sink.observe_active(observer(
-        "obs-error",
-        json!({ "function_id": "payments::charge", "on": "error", "capture": ["input", "error"] }),
-        "alerts::raise",
-    ))
-    .await;
-    sink.observe_active(observer(
-        "obs-complete",
-        json!({ "function_id": "payments::charge", "on": "complete", "capture": [] }),
-        "metrics::record",
+        "obs-default",
+        json!({ "function_id": "payments::charge" }),
+        "audit::default",
     ))
     .await;
 
@@ -325,17 +366,42 @@ async fn lang_error_and_completion_facets() {
         json!({ "ok": true }),
     )
     .await;
-    let completion = sink.invoked("metrics::record").await;
-    assert_eq!(completion["data"]["status"], "success");
+    let empty = sink.invoked("metrics::count").await;
+    assert_eq!(empty["data"]["status"], "success");
     for key in ["input", "output", "error", "caller", "metadata"] {
         assert!(
-            completion["data"].get(key).is_none(),
-            "capture: [] ships ids, status and timings only (D14): {completion}"
+            empty["data"].get(key).is_none(),
+            "capture: [] ships ids, status and timings only (D14): {empty}"
         );
     }
-    assert!(completion["data"]["duration_ms"].as_f64().is_some());
-    sink.reply(&completion, Value::Null).await;
-    assert_eq!(fires(&t, "obs-error"), 0, "on: error ignores a success");
+    assert!(empty["data"]["duration_ms"].as_f64().is_some());
+    sink.reply(&empty, Value::Null).await;
+    let success = sink.invoked("metrics::record").await;
+    assert_eq!(success["data"]["status"], "success");
+    assert_eq!(success["data"]["input"], json!({ "amount": 1 }));
+    assert!(success["data"].get("error").is_none() && success["data"].get("output").is_none());
+    sink.reply(&success, Value::Null).await;
+    let default = sink.invoked("audit::default").await;
+    assert_eq!(default["data"]["status"], "success");
+    assert_eq!(default["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert_eq!(default["data"]["caller"]["worker_name"], "checkout");
+    assert!(default["data"].get("error").is_none(), "{default}");
+    sink.reply(&default, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "success");
+    assert_eq!(full["data"]["input"], json!({ "amount": 1 }));
+    assert_eq!(full["data"]["output"], json!({ "ok": true }));
+    assert!(
+        full["data"].get("error").is_none(),
+        "never with output: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
+    assert_eq!(
+        fires(&t, "obs-error"),
+        0,
+        "error and caller ignore a success"
+    );
 
     let call = checkout
         .call("payments::charge", json!({ "amount": 2 }))
@@ -349,18 +415,265 @@ async fn lang_error_and_completion_facets() {
     let alert = sink.invoked("alerts::raise").await;
     assert_eq!(alert["data"]["status"], "error");
     assert_eq!(alert["data"]["error"]["code"], "CARD_DECLINED");
-    assert_eq!(alert["data"]["input"], json!({ "amount": 2 }));
-    assert!(alert["data"].get("output").is_none());
+    assert_eq!(alert["data"]["caller"]["worker_name"], "checkout");
+    assert!(alert["data"].get("input").is_none() && alert["data"].get("output").is_none());
     sink.reply(&alert, Value::Null).await;
-    let completion = sink.invoked("metrics::record").await;
-    assert_eq!(completion["data"]["status"], "error");
-    sink.reply(&completion, Value::Null).await;
+    let failure = sink.invoked("metrics::record").await;
+    assert_eq!(failure["data"]["status"], "error");
+    assert_eq!(failure["data"]["input"], json!({ "amount": 2 }));
+    assert_eq!(failure["data"]["error"]["code"], "CARD_DECLINED");
+    sink.reply(&failure, Value::Null).await;
+    let full = sink.invoked("audit::full").await;
+    assert_eq!(full["data"]["status"], "error");
+    assert_eq!(full["data"]["input"], json!({ "amount": 2 }));
+    assert_eq!(full["data"]["error"]["code"], "CARD_DECLINED");
+    assert!(
+        full["data"].get("output").is_none(),
+        "never with error: {full}"
+    );
+    sink.reply(&full, Value::Null).await;
+    assert_eq!(fires(&t, "obs-empty"), 1, "capture: [] ignores an error");
+    assert_eq!(
+        fires(&t, "obs-default"),
+        1,
+        "the default capture ignores an error: errors are not observed by default"
+    );
+}
+
+/// Decision 60: an older SDK's `source.on` / `source.deliver` are translated,
+/// not refused: `on` alone decides the outcomes that fire, the `capture`
+/// (default `[input, output, caller]`) exactly what the payload carries, and
+/// `deliver: input` / `output` hand the target the raw input / output. Its
+/// replay is the same spec. Decision 62: the default captures no `metadata`.
+#[tokio::test]
+async fn legacy_on_and_deliver_are_translated_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let targets = [
+        "legacy::on-error",
+        "legacy::output",
+        "legacy::input-complete",
+        "legacy::caller",
+        "modern::default",
+        "modern::metadata",
+    ];
+    let mut sink = host(&t, "sink", true, &targets).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+
+    for (id, extra, target) in [
+        ("obs-on-error", json!({ "on": "error" }), targets[0]),
+        ("obs-output", json!({ "deliver": "output" }), targets[1]),
+        (
+            "obs-input-complete",
+            json!({ "on": "complete", "deliver": "input" }),
+            targets[2],
+        ),
+        (
+            "obs-caller",
+            json!({ "on": "success", "deliver": "envelope", "capture": ["caller"] }),
+            targets[3],
+        ),
+        ("obs-default", json!({}), targets[4]),
+        (
+            "obs-metadata",
+            json!({ "capture": ["input", "metadata"] }),
+            targets[5],
+        ),
+    ] {
+        let mut source = json!({ "function_id": "payments::charge" });
+        for (key, value) in extra.as_object().unwrap() {
+            source[key] = value.clone();
+        }
+        let result = sink
+            .observe_active(observer(id, source.clone(), target))
+            .await;
+        assert!(result.get("error").is_none(), "{id}: {result}");
+        let replay = sink.observe(observer(id, source, target)).await;
+        assert_eq!(replay["state"], "active", "{id} replay: {replay}");
+    }
+
+    let call = checkout
+        .call_with(
+            "payments::charge",
+            json!({ "amount": 1 }),
+            json!({ "metadata": { "session": "s-1" } }),
+        )
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+
+    let output = sink.invoked("legacy::output").await;
+    assert_eq!(output["data"], json!({ "ok": true }), "the raw output");
+    sink.reply(&output, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(input["data"], json!({ "amount": 1 }), "the raw input");
+    sink.reply(&input, Value::Null).await;
+    let caller = sink.invoked("legacy::caller").await;
+    assert_eq!(caller["data"]["status"], "success");
+    assert_eq!(caller["data"]["caller"]["worker_name"], "checkout");
+    for key in ["input", "output", "error", "metadata"] {
+        assert!(caller["data"].get(key).is_none(), "{caller}");
+    }
+    sink.reply(&caller, Value::Null).await;
+    let default = sink.invoked("modern::default").await;
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert!(
+        default["data"].get("metadata").is_none(),
+        "D1: no metadata by default: {default}"
+    );
+    sink.reply(&default, Value::Null).await;
+    let metadata = sink.invoked("modern::metadata").await;
+    assert_eq!(metadata["data"]["metadata"], json!({ "session": "s-1" }));
+    sink.reply(&metadata, Value::Null).await;
+    assert_eq!(
+        fires(&t, "obs-on-error"),
+        0,
+        "`on: error` ignores a success"
+    );
+
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+
+    let on_error = sink.invoked("legacy::on-error").await;
+    let envelope = &on_error["data"];
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["input"], json!({ "amount": 2 }));
+    assert_eq!(envelope["caller"]["worker_name"], "checkout");
+    assert!(
+        envelope.get("error").is_none() && envelope.get("output").is_none(),
+        "the old default capture has neither on a failure: {on_error}"
+    );
+    sink.reply(&on_error, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(
+        input["data"],
+        json!({ "amount": 2 }),
+        "complete: errors too"
+    );
+    sink.reply(&input, Value::Null).await;
+    assert_eq!(fires(&t, "obs-on-error"), 1);
+    assert_eq!(fires(&t, "obs-output"), 1, "`on` absent: success only");
+    assert_eq!(fires(&t, "obs-caller"), 1);
+    assert_eq!(fires(&t, "obs-input-complete"), 2);
+}
+
+/// Decision 60: an `observe` from a worker that did not declare
+/// `observe.capture` (an rc SDK, `observe.v2` only; a 0.25 SDK, no features)
+/// keeps the v0.25 semantics even without `on` / `deliver`: it fires on
+/// successes alone, its payload carries exactly its capture, and a capture
+/// the new gate refuses (`[caller]`) is accepted. A worker that declared it
+/// gets the capture model: `[error]` fires on failures only, `[caller]` is
+/// refused. The replay of each is the same observer.
+#[tokio::test]
+async fn a_worker_without_observe_capture_keeps_the_old_semantics_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let kinds: [(&str, &[&str]); 3] = [
+        ("rc", OBSERVE_V2),
+        ("v025", &[]),
+        ("capture", OBSERVE_CAPTURE),
+    ];
+    let mut sinks = Vec::new();
+    for (kind, features) in kinds {
+        let mut sink = connect_with(&t, &format!("sink-{kind}"), features).await;
+        for target in ["error", "caller"] {
+            sink.register_function(&format!("{kind}::{target}")).await;
+            registered(&t.engine, "default", &format!("{kind}::{target}")).await;
+        }
+        for (name, capture) in [("error", json!(["error"])), ("caller", json!(["caller"]))] {
+            let id = format!("obs-{name}-{kind}");
+            let source = json!({ "function_id": "payments::charge", "capture": capture });
+            let target = format!("{kind}::{name}");
+            let first = sink.observe(observer(&id, source.clone(), &target)).await;
+            let replay = sink.observe(observer(&id, source, &target)).await;
+            let refused = kind == "capture" && name == "caller";
+            for (when, answer) in [("observe", &first), ("replay", &replay)] {
+                assert_eq!(
+                    answer["state"] == "error",
+                    refused,
+                    "[{kind}] {id} {when}: {answer}"
+                );
+            }
+        }
+        sinks.push((kind, sink));
+    }
+
+    // A success: the legacy SDKs' observers fire, carrying their capture.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 1 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+    for (kind, sink) in sinks.iter_mut().filter(|(kind, _)| *kind != "capture") {
+        let error = sink.invoked(&format!("{kind}::error")).await;
+        assert_eq!(error["data"]["status"], "success", "[{kind}] {error}");
+        for key in ["input", "output", "error", "caller"] {
+            assert!(
+                error["data"].get(key).is_none(),
+                "[{kind}] capture [error]: {error}"
+            );
+        }
+        sink.reply(&error, Value::Null).await;
+        let caller = sink.invoked(&format!("{kind}::caller")).await;
+        assert_eq!(
+            caller["data"]["caller"]["worker_name"], "checkout",
+            "[{kind}]"
+        );
+        for key in ["input", "output", "error"] {
+            assert!(
+                caller["data"].get(key).is_none(),
+                "[{kind}] capture [caller]: {caller}"
+            );
+        }
+        sink.reply(&caller, Value::Null).await;
+    }
+
+    // A failure: only the current SDK's `[error]` observer fires.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+    let (_, capture) = sinks
+        .iter_mut()
+        .find(|(kind, _)| *kind == "capture")
+        .unwrap();
+    let error = capture.invoked("capture::error").await;
+    assert_eq!(error["data"]["status"], "error");
+    assert_eq!(error["data"]["error"]["code"], "CARD_DECLINED", "{error}");
+    capture.reply(&error, Value::Null).await;
+
+    assert_eq!(
+        fires(&t, "obs-error-capture"),
+        1,
+        "the capture model: failures only"
+    );
+    for kind in ["rc", "v025"] {
+        assert_eq!(
+            fires(&t, &format!("obs-error-{kind}")),
+            1,
+            "[{kind}] v0.25: successes only"
+        );
+        assert_eq!(fires(&t, &format!("obs-caller-{kind}")), 1, "[{kind}]");
+    }
 }
 
 #[tokio::test]
 async fn lang_default_payload_and_invocation_facet() {
-    // orders::complete ~> (order) => ...: the target gets the output itself;
-    // orders::complete.invocation ~> ...: the full envelope.
+    // `capture: ["output"]` / `["input"]` carry that part alone in the
+    // payload; every field gives the full payload.
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut orders = host(&t, "orders", true, &["orders::complete"]).await;
     let mut sink = host(
@@ -374,13 +687,13 @@ async fn lang_default_payload_and_invocation_facet() {
 
     sink.observe_active(observer(
         "obs-output",
-        json!({ "function_id": "orders::complete", "deliver": "output" }),
+        json!({ "function_id": "orders::complete", "capture": ["output"] }),
         "receipts::render",
     ))
     .await;
     sink.observe_active(observer(
         "obs-input",
-        json!({ "function_id": "orders::complete", "deliver": "input" }),
+        json!({ "function_id": "orders::complete", "capture": ["input"] }),
         "audit::input",
     ))
     .await;
@@ -410,13 +723,17 @@ async fn lang_default_payload_and_invocation_facet() {
     checkout.result(call).await;
 
     let render = sink.invoked("receipts::render").await;
-    assert_eq!(render["data"], json!({ "order_id": "o-1", "total": 42 }));
+    assert_eq!(
+        render["data"]["output"],
+        json!({ "order_id": "o-1", "total": 42 })
+    );
+    assert!(render["data"].get("input").is_none());
     sink.reply(&render, Value::Null).await;
     let input = sink.invoked("audit::input").await;
     assert_eq!(
-        input["data"],
+        input["data"]["input"],
         json!({ "order_id": "o-1" }),
-        "deliver: input, as the caller sent it"
+        "the input, as the caller sent it"
     );
     sink.reply(&input, Value::Null).await;
     let audit = sink.invoked("audit::write").await;
@@ -467,6 +784,43 @@ async fn lang_observation_identity_close_stops_activations() {
             .is_none(),
         "nothing observes orders::complete any more"
     );
+}
+
+/// The observing worker unobserves, then observes again under the same id:
+/// the new observer is created and fires. Only a replay of an observer
+/// disposed without the worker asking answers with the disposal.
+#[tokio::test]
+async fn an_id_its_worker_unobserved_is_free_for_a_new_observer() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", true, &["orders::complete"]).await;
+    let mut sink = host(&t, "sink", true, &["receipts::render"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let frame = observer(
+        "watch-again",
+        json!({ "function_id": "orders::complete" }),
+        "receipts::render",
+    );
+
+    sink.observe_active(frame.clone()).await;
+    sink.send(json!({ "type": "unobserve", "id": "watch-again" }))
+        .await;
+    sink.state_becomes("watch-again", "disposed").await;
+    assert!(t.engine.observers.get("watch-again").is_none());
+
+    sink.observe_active(frame).await;
+    assert_eq!(state(&t, "watch-again"), Some(ObserverState::Active));
+    round_trip(
+        &t,
+        &mut checkout,
+        &mut orders,
+        "orders::complete",
+        json!({ "order": 7 }),
+        json!({}),
+    )
+    .await;
+    let activation = sink.invoked("receipts::render").await;
+    sink.reply(&activation, Value::Null).await;
+    assert_eq!(fires(&t, "watch-again"), 1);
 }
 
 #[tokio::test]
@@ -889,36 +1243,383 @@ async fn the_grace_period_ends_in_disposal() {
     );
 }
 
-/// A replay of an observer disposed meanwhile answers the disposal instead of
-/// re-creating it with fresh counters.
+/// An observer the engine disposes while its worker is connected (here
+/// `max_fires`) frees its id on that connection, which heard the `disposed`:
+/// an `observe` of the id from it is a new observer, with fresh counters
+/// (decision 56). A replay of the observer on a reattached connection is
+/// answered with the disposal and creates nothing, since the `disposed` may
+/// have been lost with the earlier connection.
 #[tokio::test]
 async fn a_disposed_observer_is_not_resurrected_by_a_replay() {
     let t = spawn_engine(ObserversConfig::default()).await;
-    let mut orders = host(&t, "orders", true, &["orders::create"]).await;
-    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::idle"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once", "sink::idle"]).await;
     let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    // Held across the reattach below, which re-parents it.
+    watcher
+        .observe_active(observer(
+            "obs-idle",
+            json!({ "function_id": "orders::idle" }),
+            "sink::idle",
+        ))
+        .await;
     let mut frame = observer(
         "obs-once",
         json!({ "function_id": "orders::create" }),
         "sink::once",
     );
     frame["max_fires"] = json!(1);
-    sink.observe_active(frame.clone()).await;
-    round_trip(
-        &t,
-        &mut checkout,
-        &mut orders,
-        "orders::create",
-        json!({}),
-        json!({}),
-    )
-    .await;
-    sink.state_becomes("obs-once", "disposed").await;
 
-    let replay = sink.observe(frame).await;
-    assert_eq!(replay["state"], "disposed");
+    for _ in 0..2 {
+        watcher.observe_active(frame.clone()).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        let disposed = watcher.state_becomes("obs-once", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "MAX_FIRES");
+        assert_eq!(disposed["fires"], 1, "a new observer counts from 0");
+    }
+
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "obs-idle") == Some(ObserverState::Suspended)).await,
+        "the observing worker left: suspended"
+    );
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    let replay = watcher.observe(frame).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
     assert_eq!(replay["error"]["code"], "MAX_FIRES");
     assert!(t.engine.observers.get("obs-once").is_none());
+    assert!(
+        eventually(|| state(&t, "obs-idle") == Some(ObserverState::Active)).await,
+        "the reattach re-parented the observer it held"
+    );
+}
+
+/// An id the engine disposed (`max_fires`, `expires_in_ms`) is free at once
+/// for its observing worker, which heard the disposal on its connection: a
+/// new `observe` under it creates a new observer, with fresh counters
+/// (decision 56).
+#[tokio::test]
+async fn an_id_the_engine_disposed_is_free_at_once_for_the_worker_that_heard_it() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", true, &["orders::create"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut once = observer(
+        "obs-again",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    once["max_fires"] = json!(1);
+    for fired in 1..=2 {
+        watcher.observe_active(once.clone()).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({ "n": fired }),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        assert_eq!(
+            activation["data"]["observer_id"], "obs-again",
+            "{fired}: {activation}"
+        );
+        sink.reply(&activation, Value::Null).await;
+        let disposed = watcher.state_becomes("obs-again", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "MAX_FIRES", "{disposed}");
+        assert_eq!(disposed["fires"], 1, "a new observer counts from 0");
+    }
+
+    let mut lease = observer(
+        "obs-lease",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    lease["expires_in_ms"] = json!(150);
+    for _ in 0..2 {
+        watcher.observe_active(lease.clone()).await;
+        let disposed = watcher.state_becomes("obs-lease", "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "EXPIRED", "{disposed}");
+    }
+}
+
+/// A connection whose only observer the engine disposed (`max_fires`,
+/// `expires_in_ms`) holds no observer when it closes, and the observer's
+/// tombstone moves with its `Reattach` all the same: the replay on the
+/// reattached connection is answered with the disposal and creates nothing,
+/// whether the worker read the `disposed` before its connection dropped or
+/// the `disposed` was lost with it. That answer frees the id there
+/// (decision 56): the next `observe` of it is a new observer, with fresh
+/// counters.
+#[tokio::test]
+async fn a_lone_observer_the_engine_disposed_is_not_resurrected_by_a_replay() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut orders = host(&t, "orders", true, &["orders::create"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, read_disposed) in [("obs-lone-read", true), ("obs-lone-lost", false)] {
+        let mut watcher = connect(&t, "watcher", true).await;
+        let mut frame = observer(id, json!({ "function_id": "orders::create" }), "sink::once");
+        frame["max_fires"] = json!(1);
+        watcher.observe_active(frame.clone()).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        assert!(state(&t, id).is_none(), "{id}: disposed at its last fire");
+        if read_disposed {
+            let disposed = watcher.state_becomes(id, "disposed").await;
+            assert_eq!(disposed["reason"]["code"], "MAX_FIRES", "{disposed}");
+        }
+
+        let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+        watcher.disconnect().await;
+        let mut watcher =
+            Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+        let replay = watcher.observe(frame.clone()).await;
+        assert_eq!(replay["state"], "disposed", "{id}: {replay}");
+        assert_eq!(replay["error"]["code"], "MAX_FIRES", "{id}: {replay}");
+        assert!(state(&t, id).is_none(), "{id}: the replay created nothing");
+
+        watcher.observe_active(frame).await;
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        assert_eq!(activation["data"]["observer_id"], id, "{activation}");
+        sink.reply(&activation, Value::Null).await;
+        let disposed = watcher.state_becomes(id, "disposed").await;
+        assert_eq!(disposed["reason"]["code"], "MAX_FIRES", "{disposed}");
+        assert_eq!(disposed["fires"], 1, "{id}: a new observer counts from 0");
+    }
+
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut lease = observer(
+        "obs-lone-lease",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    lease["expires_in_ms"] = json!(150);
+    watcher.observe_active(lease.clone()).await;
+    let disposed = watcher.state_becomes("obs-lone-lease", "disposed").await;
+    assert_eq!(disposed["reason"]["code"], "EXPIRED", "{disposed}");
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    let replay = watcher.observe(lease.clone()).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
+    assert_eq!(replay["error"]["code"], "EXPIRED", "{replay}");
+    assert!(state(&t, "obs-lone-lease").is_none());
+    lease["expires_in_ms"] = json!(60_000);
+    watcher.observe_active(lease).await;
+    assert_eq!(state(&t, "obs-lone-lease"), Some(ObserverState::Active));
+}
+
+/// An observer the engine disposed shortly before its worker's connection
+/// dropped, its `disposed` lost with it, stays disposed for a worker that
+/// reattaches after the grace period: the connection's expired record has
+/// the disposal, whether the connection held other observers or none.
+#[tokio::test]
+async fn an_observer_disposed_just_before_the_drop_stays_disposed_after_a_late_reattach() {
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: 100,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, neighbour) in [("obs-late-lone", None), ("obs-late", Some("obs-late-kept"))] {
+        let mut watcher = connect(&t, "watcher", true).await;
+        let mut frame = observer(id, json!({ "function_id": "orders::create" }), "sink::once");
+        frame["max_fires"] = json!(1);
+        watcher.observe_active(frame.clone()).await;
+        let kept = neighbour.map(|kept| {
+            observer(
+                kept,
+                json!({ "function_id": "orders::cancel" }),
+                "sink::once",
+            )
+        });
+        if let Some(kept) = &kept {
+            watcher.observe_active(kept.clone()).await;
+        }
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        assert!(eventually(|| state(&t, id).is_none()).await, "{id}");
+
+        let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+        watcher.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let mut watcher =
+            Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+        if let Some(kept) = kept {
+            let replay = watcher.observe(kept).await;
+            assert_eq!(
+                replay["state"], "disposed",
+                "after the grace period: {replay}"
+            );
+            assert_eq!(replay["error"]["code"], "OBSERVER_DISCONNECTED", "{replay}");
+        }
+        let replay = watcher.observe(frame).await;
+        assert_eq!(replay["state"], "disposed", "{id}: {replay}");
+        assert_eq!(replay["error"]["code"], "MAX_FIRES", "{id}: {replay}");
+        assert!(state(&t, id).is_none(), "{id}: the replay created nothing");
+    }
+}
+
+/// An observer the engine disposed within the grace period before its
+/// worker's connection dropped stays disposed for a `Reattach` within the
+/// grace period of the drop, also when that comes later than the grace
+/// period of the disposal (disposal 400 ms before the drop, `Reattach` 700
+/// ms after it, grace 1 s).
+#[tokio::test]
+async fn an_observer_disposed_well_before_the_drop_stays_disposed_after_a_reattach_in_time() {
+    let t = spawn_engine(ObserversConfig {
+        observer_grace_ms: 1_000,
+        ..ObserversConfig::default()
+    })
+    .await;
+    let mut orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let mut sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    for (id, neighbour) in [
+        ("obs-early-lone", None),
+        ("obs-early", Some("obs-early-kept")),
+    ] {
+        let mut watcher = connect(&t, "watcher", true).await;
+        let mut frame = observer(id, json!({ "function_id": "orders::create" }), "sink::once");
+        frame["max_fires"] = json!(1);
+        watcher.observe_active(frame.clone()).await;
+        let kept = neighbour.map(|kept| {
+            observer(
+                kept,
+                json!({ "function_id": "orders::cancel" }),
+                "sink::once",
+            )
+        });
+        if let Some(kept) = &kept {
+            watcher.observe_active(kept.clone()).await;
+        }
+        round_trip(
+            &t,
+            &mut checkout,
+            &mut orders,
+            "orders::create",
+            json!({}),
+            json!({}),
+        )
+        .await;
+        let activation = sink.invoked("sink::once").await;
+        sink.reply(&activation, Value::Null).await;
+        assert!(eventually(|| state(&t, id).is_none()).await, "{id}");
+
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+        watcher.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let mut watcher =
+            Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+        if let Some(kept) = kept {
+            let replay = watcher.observe(kept).await;
+            assert_ne!(
+                replay["state"], "disposed",
+                "within the grace period: {replay}"
+            );
+        }
+        let replay = watcher.observe(frame).await;
+        assert_eq!(replay["state"], "disposed", "{id}: {replay}");
+        assert_eq!(replay["error"]["code"], "MAX_FIRES", "{id}: {replay}");
+        assert!(state(&t, id).is_none(), "{id}: the replay created nothing");
+    }
+}
+
+/// An observer the engine disposed while its worker was away: the worker,
+/// reattached, has its replay answered with the disposal, and observes the
+/// id again as a new observer. An `unobserve` of such an id (a handle
+/// disposed while disconnected) frees it too.
+#[tokio::test]
+async fn after_its_replay_or_its_unobserve_an_id_disposed_while_away_is_free() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let _orders = host(&t, "orders", true, &["orders::create", "orders::cancel"]).await;
+    let _sink = host(&t, "sink", true, &["sink::once"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut lease = observer(
+        "obs-replayed",
+        json!({ "function_id": "orders::create" }),
+        "sink::once",
+    );
+    lease["expires_in_ms"] = json!(200);
+    let mut dropped = lease.clone();
+    dropped["id"] = json!("obs-unobserved");
+    watcher.observe_active(lease.clone()).await;
+    watcher.observe_active(dropped.clone()).await;
+    watcher
+        .observe_active(observer(
+            "obs-kept",
+            json!({ "function_id": "orders::cancel" }),
+            "sink::once",
+        ))
+        .await;
+
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "obs-replayed").is_none() && state(&t, "obs-unobserved").is_none())
+            .await,
+        "expired while the worker was away"
+    );
+    let mut watcher = Client::connect_with(t.port, "watcher", true, Some((previous, token))).await;
+    watcher
+        .send(json!({ "type": "unobserve", "id": "obs-unobserved" }))
+        .await;
+    let replay = watcher.observe(lease.clone()).await;
+    assert_eq!(replay["state"], "disposed", "{replay}");
+    assert_eq!(replay["error"]["code"], "EXPIRED", "{replay}");
+
+    for mut frame in [lease, dropped] {
+        frame["expires_in_ms"] = json!(60_000);
+        let id = frame["id"].as_str().unwrap().to_string();
+        watcher.observe_active(frame).await;
+        assert_eq!(state(&t, &id), Some(ObserverState::Active), "{id}");
+    }
 }
 
 /// A worker that comes back after `observer_grace_ms` reattaches and replays
@@ -1097,8 +1798,17 @@ async fn observe_rejections() {
             "observe": { "allow": false }
         }))
         .await;
+    orders
+        .register_function_with(json!({
+            "type": "registerfunction",
+            "id": "vault::secret",
+            "observable": false
+        }))
+        .await;
     registered(&t.engine, "default", "vault::read").await;
-    let mut watcher = connect(&t, "watcher", true).await;
+    registered(&t.engine, "default", "vault::secret").await;
+    // The observing worker runs a current SDK (decision 60).
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
 
     let source = |extra: Value| {
         let mut source = json!({ "function_id": "orders::create" });
@@ -1113,12 +1823,24 @@ async fn observe_rejections() {
             json!({ "source": source(json!({})), "target": { "function_id": "orders::create" } }),
         ),
         (
-            "UNSUPPORTED",
-            json!({ "source": source(json!({ "on": "start" })), "target": { "function_id": "sink::x" } }),
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "on": "bogus" })), "target": { "function_id": "sink::x" } }),
         ),
         (
-            "UNSUPPORTED",
-            json!({ "source": source(json!({ "deliver": "both" })), "target": { "function_id": "sink::x" } }),
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "deliver": 7 })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["caller", "metadata"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["caller"] })), "target": { "function_id": "sink::x" } }),
+        ),
+        (
+            "INVALID_ARGS",
+            json!({ "source": source(json!({ "capture": ["metadata"] })), "target": { "function_id": "sink::x" } }),
         ),
         (
             "UNSUPPORTED",
@@ -1152,6 +1874,10 @@ async fn observe_rejections() {
             "NOT_OBSERVABLE",
             json!({ "source": { "function_id": "vault::read" }, "target": { "function_id": "sink::x" } }),
         ),
+        (
+            "NOT_OBSERVABLE",
+            json!({ "source": { "function_id": "vault::secret" }, "target": { "function_id": "sink::x" } }),
+        ),
     ];
     for (n, (code, frame)) in cases.into_iter().enumerate() {
         let mut frame = frame;
@@ -1171,7 +1897,7 @@ async fn observe_rejections() {
     let explicit = json!({
         "id": "good",
         "source": source(json!({
-            "namespace": "default", "on": "success", "deliver": "envelope",
+            "namespace": "default",
             "capture": ["caller", "input", "output"], "args": {}, "filters": {}
         })),
         "target": { "function_id": "sink::x", "namespace": "default" },
@@ -1182,6 +1908,34 @@ async fn observe_rejections() {
         "pending",
         "a replay"
     );
+    // An older SDK's replay spelling out the defaults (`on: success`,
+    // `deliver: envelope`) is translated to the same spec (decision 60).
+    let mut legacy = good.clone();
+    legacy["source"]["on"] = json!("success");
+    legacy["source"]["deliver"] = json!("envelope");
+    assert_eq!(watcher.observe(legacy).await["state"], "pending");
+    // A replay is checked like a new observe: a capture that fires on nothing
+    // is refused, not answered as the observer it names; `on` / `deliver`
+    // that change what fires or what is delivered, and the `metadata` the
+    // default no longer captures (decision 62), are another spec.
+    for (change, code) in [
+        (json!({ "capture": ["caller"] }), "INVALID_ARGS"),
+        (json!({ "on": "bogus" }), "INVALID_ARGS"),
+        (json!({ "on": "error" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "input" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "output" }), "OBSERVER_ID_CONFLICT"),
+        (
+            json!({ "capture": ["input", "output", "caller", "metadata"] }),
+            "OBSERVER_ID_CONFLICT",
+        ),
+    ] {
+        let mut replay = good.clone();
+        for (key, value) in change.as_object().unwrap() {
+            replay["source"][key] = value.clone();
+        }
+        let refused = watcher.observe(replay).await;
+        assert_eq!(refused["error"]["code"], code, "{change} → {refused}");
+    }
     let mut changed = good.clone();
     changed["max_fires"] = json!(5);
     let conflict = watcher.observe(changed).await;
@@ -1320,16 +2074,18 @@ async fn a_re_registration_with_changed_formats_is_checked_again() {
     assert_eq!(error["reason"]["code"], "INVALID_FILTER_PATH");
 }
 
+/// A private function is observable: its observers receive the calls its
+/// host makes.
 #[tokio::test]
-async fn an_owner_delivered_function_is_not_evaluated_on_routed_calls() {
+async fn a_private_functions_own_calls_are_observed() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut http = connect(&t, "http", true).await;
     http.register_function_with(json!({
-        "type": "registerfunction", "id": "http::on-request", "observe": { "delivery": "owner" }
+        "type": "registerfunction", "id": "http::on-request", "private": true
     }))
     .await;
     registered(&t.engine, "default", "http::on-request").await;
-    let _users = host(&t, "users", true, &["users::get"]).await;
+    let mut users = host(&t, "users", true, &["users::get"]).await;
     let mut watcher = connect(&t, "watcher", true).await;
     watcher
         .observe_active(observer(
@@ -1339,54 +2095,83 @@ async fn an_owner_delivered_function_is_not_evaluated_on_routed_calls() {
         ))
         .await;
 
-    assert!(
-        t.engine
-            .observers
-            .watch("default", "http::on-request")
-            .is_none(),
-        "the owner picks this function's events"
-    );
-    // Only its owner invokes it (calling itself remotely); the routed hook
-    // leaves the call alone.
+    // Its host, calling itself remotely: the routed hook evaluates the call.
     let call = http.call("http::on-request", json!({ "path": "/" })).await;
-    http.serve("http::on-request", json!({})).await;
+    http.serve("http::on-request", json!({ "path": "/" })).await;
     http.result(call).await;
-    assert_eq!(t.engine.observers.evaluated(), 0);
-    assert_eq!(fires(&t, "route"), 0);
+    let activation = users.invoked("users::get").await;
+    assert_eq!(activation["data"]["input"]["path"], "/");
+    users.reply(&activation, Value::Null).await;
+    assert_eq!(fires(&t, "route"), 1);
 }
 
+/// A 0.25 `observe` object asking for a delivery other than `auto` refuses
+/// the registration with `UNSUPPORTED`, and an `args_format` that is not a
+/// JSON Schema with `INVALID_ARGS_FORMAT`. A 0.25 `args_format` beside
+/// `delivery: auto` is ignored.
 #[tokio::test]
-async fn an_invalid_observe_descriptor_refuses_the_registration() {
+async fn unsupported_and_invalid_registrations_are_refused() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut worker = connect(&t, "worker", true).await;
-    for (id, observe) in [
-        ("bad::delivery", json!({ "delivery": "broadcast" })),
+    for (id, fields, code) in [
+        (
+            "bad::delivery",
+            json!({ "observe": { "delivery": "broadcast" } }),
+            "UNSUPPORTED",
+        ),
+        (
+            "bad::owner",
+            json!({ "observe": { "delivery": "owner", "args_format": { "type": "object" } } }),
+            "UNSUPPORTED",
+        ),
         (
             "bad::args",
-            json!({ "delivery": "auto", "args_format": { "type": "object" } }),
+            json!({ "args_format": { "type": "not-a-type" } }),
+            "INVALID_ARGS_FORMAT",
         ),
     ] {
-        worker
-            .register_function_with(
-                json!({ "type": "registerfunction", "id": id, "observe": observe }),
-            )
-            .await;
+        let mut frame = json!({ "type": "registerfunction", "id": id });
+        for (key, value) in fields.as_object().unwrap() {
+            frame[key] = value.clone();
+        }
+        worker.register_function_with(frame).await;
         let rejected = worker
             .expect("registrationrejected", |f| {
                 f["type"] == "registrationrejected" && f["function_id"] == id
             })
             .await;
-        assert_eq!(rejected["code"], "INVALID_OBSERVE_DESCRIPTOR");
+        assert_eq!(rejected["code"], code, "{id}");
+        assert!(t.engine.functions.get("default", id).is_none(), "{id}");
     }
-    worker
-        .register_function_with(json!({
-            "type": "registerfunction", "id": "good::owner",
-            "observe": { "delivery": "owner", "args_format": { "type": "object" } }
-        }))
-        .await;
-    registered(&t.engine, "default", "good::owner").await;
-    assert!(t.engine.functions.get("default", "bad::delivery").is_none());
-    assert!(t.engine.functions.get("default", "bad::args").is_none());
+    for frame in [
+        json!({
+            "type": "registerfunction", "id": "good::auto",
+            "observe": { "delivery": "auto", "args_format": { "type": "object" } }
+        }),
+        json!({
+            "type": "registerfunction", "id": "good::args",
+            "args_format": { "type": "object" }
+        }),
+    ] {
+        let id = frame["id"].as_str().unwrap().to_string();
+        worker.register_function_with(frame).await;
+        registered(&t.engine, "default", &id).await;
+    }
+    assert!(
+        t.engine
+            .observers
+            .options("default", "good::auto")
+            .args_format
+            .is_none(),
+        "a 0.25 args_format is ignored"
+    );
+    assert!(
+        t.engine
+            .observers
+            .options("default", "good::args")
+            .args_format
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1495,6 +2280,364 @@ async fn rbac_gates_the_source_and_the_target() {
         .await;
     assert_eq!(watcher.result(call).await["result"]["disposed"], true);
     watcher.state_becomes("allowed", "disposed").await;
+}
+
+/// An activation runs under the session of the worker that created the
+/// observer, not unrestricted: a restricted worker cannot point its observer
+/// at `engine::observers::dispose` to dispose another worker's observer.
+#[tokio::test]
+async fn an_activation_cannot_dispose_another_workers_observer_under_rbac() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let mut orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    let mut victim = connect(&t, "victim", true).await;
+    victim
+        .observe_active(observer(
+            "victim-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "api::orders", "capture": ["input"] }),
+            "engine::observers::dispose",
+        ))
+        .await;
+
+    let mut caller = connect(&t, "caller", true).await;
+    let call = caller
+        .call("api::orders", json!({ "id": "victim-obs" }))
+        .await;
+    orders.serve("api::orders", json!({})).await;
+    caller.result(call).await;
+
+    assert!(eventually(|| { info(&t, "attack").is_some_and(|i| { i.fires == 1 }) }).await);
+    // The activation of `attack` has had its chance; give it time to run.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        info(&t, "victim-obs")
+            .expect("the victim's observer is gone: the attacker disposed it")
+            .state,
+        "active",
+        "the victim's observer survived the attacker's activation"
+    );
+}
+
+/// A call through an observer runs as the observer's activations do, under
+/// the session of the worker that created the observer: a host on a port
+/// without RBAC that forwards its input through a restricted worker's
+/// observer of `engine::observers::dispose` cannot dispose another worker's
+/// observer. The host's own call of the same builtin can.
+#[tokio::test]
+async fn a_call_through_an_observer_runs_under_the_observing_workers_session() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"h::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let internal = unrestricted_listener(&t).await;
+    let _orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    let mut victim = connect(&t, "victim", true).await;
+    victim
+        .observe_active(observer(
+            "victim-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut fanout = Client::connect(internal, "fanout", true).await;
+    fanout.register_function("h::fanout").await;
+    registered(&t.engine, "default", "h::fanout").await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "h::fanout", "capture": ["input"] }),
+            "engine::observers::dispose",
+        ))
+        .await;
+
+    let call = fanout
+        .call_with(
+            "h::fanout",
+            json!({ "id": "victim-obs" }),
+            json!({ "activation": { "observer_id": "attack" } }),
+        )
+        .await;
+    let answer = fanout.result(call).await;
+    assert_eq!(answer["error"]["code"], "FORBIDDEN", "{answer}");
+    assert_eq!(fires(&t, "attack"), 1, "the call went through the observer");
+    assert_eq!(
+        info(&t, "victim-obs").map(|i| i.state).as_deref(),
+        Some("active"),
+        "the victim's observer survived the call through the attacker's"
+    );
+
+    let call = fanout
+        .call("engine::observers::dispose", json!({ "id": "victim-obs" }))
+        .await;
+    assert_eq!(fanout.result(call).await["result"]["disposed"], true);
+}
+
+/// A call through an observer carries no `_caller_worker_id` (decision 49),
+/// so the host's identity authorizes nothing its target does: a host whose
+/// call through another worker's observer of `engine::observers::dispose`
+/// names the host's own observer leaves it alone, though the host may
+/// dispose it itself.
+#[tokio::test]
+async fn a_call_through_an_observer_does_not_act_with_the_hosts_identity() {
+    let rbac = json!({
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let mut orders = host(&t, "orders", true, &["api::orders", "api::sink"]).await;
+    orders
+        .observe_active(observer(
+            "host-obs",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let mut attacker = connect(&t, "attacker", true).await;
+    attacker
+        .observe_active(observer(
+            "attack",
+            json!({ "function_id": "api::orders", "capture": ["input"] }),
+            "engine::observers::dispose",
+        ))
+        .await;
+    let call = attacker
+        .call("engine::observers::dispose", json!({ "id": "host-obs" }))
+        .await;
+    assert_eq!(attacker.result(call).await["error"]["code"], "FORBIDDEN");
+
+    // What a deliver hook that forwards the call's input sends.
+    let call = orders
+        .call_with(
+            "api::orders",
+            json!({ "id": "host-obs" }),
+            json!({ "activation": { "observer_id": "attack" } }),
+        )
+        .await;
+    let answer = orders.result(call).await;
+    assert_eq!(answer["error"]["code"], "FORBIDDEN", "{answer}");
+    assert_eq!(
+        info(&t, "host-obs").map(|i| i.state).as_deref(),
+        Some("active"),
+        "the host's observer survived the call through the attacker's"
+    );
+
+    let call = orders
+        .call("engine::observers::dispose", json!({ "id": "host-obs" }))
+        .await;
+    assert_eq!(orders.result(call).await["result"]["disposed"], true);
+}
+
+/// A worker that reconnects with a narrower session no longer observes what it
+/// may not invoke: the observer is disposed `FORBIDDEN` on reattach, not
+/// re-parented under the new session.
+#[tokio::test]
+async fn a_reattach_with_a_narrower_session_disposes_the_observers_it_forbids() {
+    let rbac = json!({
+        "auth_function_id": "test::auth",
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    in_process(&t.engine, "test::auth", |input| {
+        let narrowed = input["query_params"]["who"]
+            .as_array()
+            .is_some_and(|who| who.iter().any(|w| w == "narrowed"));
+        if narrowed {
+            json!({ "forbidden_functions": ["api::sink"] })
+        } else {
+            json!({})
+        }
+    });
+    let _host = host(&t, "host", true, &["api::orders", "api::sink"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    watcher
+        .observe_active(observer(
+            "narrowing",
+            json!({ "function_id": "api::orders" }),
+            "api::sink",
+        ))
+        .await;
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "narrowing") == Some(ObserverState::Suspended)).await,
+        "the observing worker left: suspended"
+    );
+
+    let mut watcher = Client::open_query(t.port, "watcher", "who=narrowed").await;
+    watcher
+        .send(json!({
+            "type": "reattach",
+            "previous_worker_id": previous.to_string(),
+            "reattach_token": token,
+        }))
+        .await;
+    watcher.announce(true).await;
+    assert!(
+        eventually(|| t.engine.observers.get("narrowing").is_none()).await,
+        "the new session may not invoke the target: disposed"
+    );
+    let disposed = watcher.state_becomes("narrowing", "disposed").await;
+    assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
+}
+
+/// A worker name is only what a connection declares, so taking over a
+/// suspended observer's id (decision 51) also needs the same principal: an
+/// RBAC session with the same auth context, or another connection on a port
+/// without `rbac`. Another user, a session whose context names no one, and
+/// any RBAC session against a trusted worker's observer get
+/// `OBSERVER_ID_CONFLICT`, and the observer stays suspended. The same user,
+/// back on a new connection, takes the id.
+#[tokio::test]
+async fn only_the_same_principal_takes_over_a_suspended_observer() {
+    let rbac = json!({
+        "auth_function_id": "test::auth",
+        "expose_functions": ["match(\"api::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    let trusted = unrestricted_listener(&t).await;
+    in_process(
+        &t.engine,
+        "test::auth",
+        |input| match input["query_params"]["user"].as_array() {
+            Some(user) => json!({ "context": { "user": user } }),
+            None => json!({}),
+        },
+    );
+    let _host = host(&t, "host", true, &["api::orders", "api::sink"]).await;
+    let spec = |id: &str| observer(id, json!({ "function_id": "api::orders" }), "api::sink");
+    async fn leave(t: &TestEngine, client: Client) {
+        let id = client.worker_id;
+        client.disconnect().await;
+        assert!(eventually(|| t.engine.worker_registry.get_worker(&id).is_none()).await);
+    }
+    async fn refused(t: &TestEngine, mut client: Client, id: &str, spec: Value) {
+        let answer = client.observe(spec).await;
+        assert_eq!(answer["error"]["code"], "OBSERVER_ID_CONFLICT", "{answer}");
+        assert_eq!(state(t, id), Some(ObserverState::Suspended));
+        leave(t, client).await;
+    }
+
+    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
+    alice.observe_active(spec("users")).await;
+    leave(&t, alice).await;
+    let mallory = connect_query(&t, "watcher", true, "user=mallory").await;
+    refused(&t, mallory, "users", spec("users")).await;
+
+    let mut anonymous = connect_query(&t, "anon", true, "").await;
+    anonymous.observe_active(spec("anon")).await;
+    leave(&t, anonymous).await;
+    let other = connect_query(&t, "anon", true, "").await;
+    refused(&t, other, "anon", spec("anon")).await;
+
+    let mut service = Client::connect(trusted, "svc", true).await;
+    let id = service.worker_id;
+    assert!(eventually(|| t.engine.worker_registry.get_worker_name(&id).is_some()).await);
+    service.observe_active(spec("svc")).await;
+    leave(&t, service).await;
+    let session = connect_query(&t, "svc", true, "").await;
+    refused(&t, session, "svc", spec("svc")).await;
+
+    let mut alice = connect_query(&t, "watcher", true, "user=alice").await;
+    alice.observe_active(spec("users")).await;
+}
+
+/// A reattach runs `rbac.on_observer_registration_function_id` again for each
+/// observer it re-parents, with the registration as the worker asked for it
+/// and the new session's context: an observer the hook now denies is
+/// disposed `FORBIDDEN`, one it admits is kept as it is.
+#[tokio::test]
+async fn a_reattach_runs_the_observer_registration_hook_again() {
+    let rbac = json!({
+        "auth_function_id": "test::auth",
+        "on_observer_registration_function_id": "test::hook",
+        "expose_functions": ["match(\"api::*\")", "match(\"engine::observers::*\")"]
+    });
+    let t = spawn_engine_with(ObserversConfig::default(), Some(rbac)).await;
+    in_process(&t.engine, "test::auth", |input| {
+        let narrowed = input["query_params"]["who"]
+            .as_array()
+            .is_some_and(|who| who.iter().any(|w| w == "narrowed"));
+        json!({ "context": { "narrowed": narrowed } })
+    });
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    in_process(&t.engine, "test::hook", {
+        let seen = seen.clone();
+        move |input| {
+            seen.lock().unwrap().push(input.clone());
+            // Narrowed, the hook admits only observers of `api::orders`.
+            if input["context"]["narrowed"] == json!(true)
+                && input["function_id"] != json!("api::orders")
+            {
+                Value::Null
+            } else {
+                json!({})
+            }
+        }
+    });
+    let _host = host(
+        &t,
+        "host",
+        true,
+        &["api::orders", "api::refunds", "api::sink"],
+    )
+    .await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    let mut kept = observer("kept", json!({ "function_id": "api::orders" }), "api::sink");
+    kept["metadata"] = json!({ "team": "eu" });
+    watcher.observe_active(kept).await;
+    watcher
+        .observe_active(observer(
+            "denied",
+            json!({ "function_id": "api::refunds" }),
+            "api::sink",
+        ))
+        .await;
+    seen.lock().unwrap().clear();
+    let (previous, token) = (watcher.worker_id, watcher.reattach_token.clone());
+    watcher.disconnect().await;
+    assert!(
+        eventually(|| state(&t, "denied") == Some(ObserverState::Suspended)).await,
+        "the observing worker left: suspended"
+    );
+
+    let mut watcher = Client::open_query(t.port, "watcher", "who=narrowed").await;
+    watcher
+        .send(json!({
+            "type": "reattach",
+            "previous_worker_id": previous.to_string(),
+            "reattach_token": token,
+        }))
+        .await;
+    watcher.announce(true).await;
+    let disposed = watcher.state_becomes("denied", "disposed").await;
+    assert_eq!(disposed["reason"]["code"], "FORBIDDEN", "{disposed}");
+    assert!(
+        eventually(|| state(&t, "kept") == Some(ObserverState::Active)).await,
+        "the hook admits it: kept"
+    );
+    let seen = seen.lock().unwrap().clone();
+    let kept_input = seen
+        .iter()
+        .find(|input| input["observer_id"] == "kept")
+        .expect("the hook ran for `kept`");
+    assert_eq!(kept_input["function_id"], "api::orders");
+    assert_eq!(kept_input["namespace"], "default");
+    assert_eq!(kept_input["args"], json!({}));
+    assert_eq!(kept_input["metadata"], json!({ "team": "eu" }));
+    assert_eq!(kept_input["target_function_id"], "api::sink");
+    assert_eq!(kept_input["filters"], Value::Null);
+    assert_eq!(kept_input["context"], json!({ "narrowed": true }));
+    assert_eq!(seen.len(), 2, "once per observer: {seen:?}");
 }
 
 /// `list` / `get` show only observers of functions the caller may invoke; the
@@ -1651,7 +2794,6 @@ async fn the_observers_builtins_list_get_and_dispose() {
     let info = &observers[0];
     assert_eq!(info["id"], "listed");
     assert_eq!(info["state"], "active");
-    assert_eq!(info["delivery"], "auto");
     assert_eq!(info["target"]["function_id"], "sink::orders");
     assert_eq!(info["worker"]["worker_name"], "sink");
     assert_eq!(

@@ -11,14 +11,15 @@ import (
 	"time"
 )
 
-// This file is the reporter (sdk.md §4.4, CONTRACT D12): one bounded buffer for
-// matched local invocations of auto functions and obs.Emit events of owner functions,
-// flushed as invocationsobserved batches, plus the periodic localinvocationstats.
+// This file is the reporter: one bounded buffer for the deliveries of local calls,
+// flushed as invocationsobserved batches, and the periodic localinvocationstats. Routed
+// calls are never reported: the engine delivers them.
 //
 // It never blocks a call: pushing only appends under a mutex. When the buffer is full
 // the newest item is dropped and counted (BUFFER_FULL); an item too large on its own is
 // dropped and counted (TOO_LARGE). Items stay buffered while disconnected and are
-// flushed once the engine confirmed their function on the new connection. Flushing
+// flushed once the engine confirmed their function on the new connection; items handed
+// to a connection that closed before writing them are counted DISCONNECTED. Flushing
 // and sending run on the reporter's own goroutine.
 //
 // Lock order: reporter.mu, then Client.mu, then functionObservers.mu. The client never
@@ -36,9 +37,10 @@ const (
 )
 
 type reporterHost interface {
-	// reportOnline is the current connection's epoch, and whether it is connected to
-	// an engine that advertised observe.v1.
-	reportOnline() (epoch uint64, ok bool)
+	// reportOnline is the current connection's epoch, whether it is connected to an
+	// engine that advertised observe.v1, and whether that engine advertised observe.v2
+	// (items may then set output_is_input).
+	reportOnline() (epoch uint64, ok bool, v2 bool)
 	reportStatus(functionID string, epoch uint64) reportStatus
 	// sendReport sends one frame on connection epoch; false when it is gone.
 	sendReport(epoch uint64, frame []byte) bool
@@ -66,9 +68,10 @@ var defaultReporterLimits = reporterLimits{
 }
 
 const (
-	dropBufferFull = "BUFFER_FULL"
-	dropTooLarge   = "TOO_LARGE"
-	dropInactive   = "INACTIVE"
+	dropBufferFull   = "BUFFER_FULL"
+	dropTooLarge     = "TOO_LARGE"
+	dropInactive     = "INACTIVE"
+	dropDisconnected = "DISCONNECTED"
 )
 
 var (
@@ -80,6 +83,7 @@ var reportFrameOverhead = len(reportFrameHead) + len(reportFrameTail)
 
 // reportValues are the parts an item may carry, as JSON; a part is sent only when some
 // matched observer captures it. A nil part does not exist (no output on a failure).
+// caller is the caller as items carry it (reportCaller).
 type reportValues struct {
 	input, output, errBody, metadata json.RawMessage
 	caller                           *Caller
@@ -98,74 +102,86 @@ type reportInit struct {
 	trace        traceContext
 }
 
+// reportItem is the JSON of one delivery, encoded when it is built: it keeps no value
+// of the call, so what the call's caller does with its result does not change it.
 type reportItem struct {
-	wire     ObservedItem
-	values   reportValues
-	captured map[Capture]bool
-	json     []byte
-	// coalesceKey and context identify an emitted event: one event emitted to N
-	// observers from one invocation becomes one item.
-	coalesceKey string
-	context     *invocation
+	functionID   string
+	invocationID string
+	json         []byte
+	// v2 is the form json is in: for an engine with observe.v2, an item that carries an
+	// output equal to its input (as bytes) carries the input once, with
+	// output_is_input.
+	v2 bool
 }
 
-func newReportItem(init reportInit) *reportItem {
-	// Numbers no double can hold become null, as the evaluator reads them: the engine's
-	// decoder refuses them, which would fail the whole frame (SDK-PARITY decision 31).
-	init.values.input = overflowToNull(init.values.input)
-	init.values.output = overflowToNull(init.values.output)
-	init.values.metadata = overflowToNull(init.values.metadata)
+// newReportItem encodes the delivery init, with the parts captures asks for, for an
+// engine with (v2) or without observe.v2.
+func newReportItem(init reportInit, captures []Capture, v2 bool) (*reportItem, error) {
 	durationMs := init.durationMs
 	if math.IsNaN(durationMs) || math.IsInf(durationMs, 0) || durationMs < 0 {
 		durationMs = 0
 	}
-	return &reportItem{
-		wire: ObservedItem{
-			FunctionID:   init.functionID,
-			Namespace:    init.namespace,
-			InvocationID: init.invocationID,
-			Matched:      append([]string(nil), init.matched...),
-			Status:       init.status,
-			StartedAtMs:  init.startedAtMs,
-			DurationMs:   durationMs,
-			ObserveDepth: init.observeDepth,
-			Traceparent:  init.trace.traceparent,
-			Baggage:      init.trace.baggage,
-		},
-		values:   init.values,
-		captured: map[Capture]bool{},
+	wire := ObservedItem{
+		FunctionID:   init.functionID,
+		Namespace:    init.namespace,
+		InvocationID: init.invocationID,
+		Matched:      init.matched,
+		Status:       init.status,
+		StartedAtMs:  init.startedAtMs,
+		DurationMs:   durationMs,
+		ObserveDepth: init.observeDepth,
+		Traceparent:  init.trace.traceparent,
+		Baggage:      init.trace.baggage,
 	}
-}
-
-// capture adds the parts captures asks for that are not in the item yet.
-func (it *reportItem) capture(captures []Capture) {
+	// Numbers no double can hold become null, as the evaluator reads them: the engine's
+	// decoder refuses them, which would fail the whole frame (SDK-PARITY decision 31).
+	values := init.values
 	for _, c := range captures {
-		if it.captured[c] {
-			continue
-		}
-		it.captured[c] = true
 		switch c {
 		case CaptureInput:
-			it.wire.Input = it.values.input
+			wire.Input = overflowToNull(values.input)
 		case CaptureOutput:
-			it.wire.Output = it.values.output
+			wire.Output = overflowToNull(values.output)
 		case CaptureError:
-			it.wire.Error = it.values.errBody
+			wire.Error = values.errBody
 		case CaptureCaller:
-			it.wire.Caller = it.values.caller
+			wire.Caller = values.caller
 		case CaptureMetadata:
-			it.wire.Metadata = it.values.metadata
+			wire.Metadata = overflowToNull(values.metadata)
 		}
 	}
+	it := &reportItem{functionID: init.functionID, invocationID: init.invocationID}
+	if err := it.encode(&wire, v2); err != nil {
+		return nil, err
+	}
+	return it, nil
 }
 
-func (it *reportItem) render() error {
-	data, err := encodeCompact(&it.wire)
+// encode sets the item's JSON to wire in the form for an engine with (v2) or without
+// observe.v2.
+func (it *reportItem) encode(wire *ObservedItem, v2 bool) error {
+	switch {
+	case !v2 && wire.OutputIsInput:
+		wire.Output, wire.OutputIsInput = wire.Input, false
+	case v2 && wire.Input != nil && wire.Output != nil && bytes.Equal(wire.Input, wire.Output):
+		wire.Output, wire.OutputIsInput = nil, true
+	}
+	data, err := encodeCompact(wire)
 	if err != nil {
 		return err
 	}
-	it.json = data
+	it.json, it.v2 = data, v2
 	return nil
+}
+
+// render encodes the item again, from its own JSON, for an engine with (v2) or without
+// observe.v2.
+func (it *reportItem) render(v2 bool) error {
+	var wire ObservedItem
+	if err := json.Unmarshal(it.json, &wire); err != nil {
+		return err
+	}
+	return it.encode(&wire, v2)
 }
 
 // overflowToNull rewrites the number tokens of raw JSON whose value overflows a
@@ -248,7 +264,6 @@ type reporter struct {
 	// sending is the bytes of flushed items not yet handed to the connection's
 	// writer: they still count against the bound (SDK-PARITY decision 21).
 	sending     int
-	openEmits   map[string][]*reportItem
 	lingerTimer *time.Timer
 	stats       map[string]*functionStats
 	statsOrder  []string
@@ -271,7 +286,6 @@ func newReporter(host reporterHost, limits reporterLimits) *reporter {
 	return &reporter{
 		host:        host,
 		limits:      limits,
-		openEmits:   map[string][]*reportItem{},
 		stats:       map[string]*functionStats{},
 		drops:       map[dropKey]uint64{},
 		windowStart: time.Now(),
@@ -333,12 +347,23 @@ func (r *reporter) size() int {
 	return len(r.items)
 }
 
-// push buffers a matched local invocation of an auto function.
-func (r *reporter) push(init reportInit, captures []Capture) bool {
-	item := newReportItem(init)
-	item.capture(captures)
-	if err := item.render(); err != nil {
+// build makes the item of one delivery, in the form for the current engine (with
+// observe.v2 while offline: the flush renders it again for an engine without), or nil
+// when it cannot be encoded.
+func (r *reporter) build(init reportInit, captures []Capture) *reportItem {
+	_, online, v2 := r.host.reportOnline()
+	item, err := newReportItem(init, captures, v2 || !online)
+	if err != nil {
 		r.logUnencodable(init.functionID, err)
+		return nil
+	}
+	return item
+}
+
+// push buffers the delivery of a local call.
+func (r *reporter) push(init reportInit, captures []Capture) bool {
+	item := r.build(init, captures)
+	if item == nil {
 		return false
 	}
 	r.mu.Lock()
@@ -346,62 +371,18 @@ func (r *reporter) push(init reportInit, captures []Capture) bool {
 	return r.enqueueLocked(item)
 }
 
-// pushEmit buffers an obs.Emit event. The same event (the same JSON) emitted to
-// several observers from the same invocation, before the buffer is flushed, becomes
-// one item whose matched lists them all, with the union of their captures.
-func (r *reporter) pushEmit(init reportInit, captures []Capture, observerID string, event json.RawMessage, ctx *invocation) bool {
-	key := init.functionID + "\x00" + string(event)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, it := range r.openEmits[key] {
-		if it.context != ctx || containsString(it.wire.Matched, observerID) {
-			continue
-		}
-		before := len(it.json)
-		it.wire.Matched = append(it.wire.Matched, observerID)
-		it.capture(captures)
-		if err := it.render(); err != nil {
-			r.logUnencodable(init.functionID, err)
-			return false
-		}
-		r.bytes += len(it.json) - before
-		return true
-	}
-	init.matched = []string{observerID}
-	item := newReportItem(init)
-	item.coalesceKey = key
-	item.context = ctx
-	item.capture(captures)
-	if err := item.render(); err != nil {
-		r.logUnencodable(init.functionID, err)
-		return false
-	}
-	if !r.enqueueLocked(item) {
-		return false
-	}
-	r.openEmits[key] = append(r.openEmits[key], item)
-	return true
-}
-
-func containsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 func (r *reporter) logUnencodable(functionID string, err error) {
-	if r.unencodable[functionID] {
-		return
-	}
+	r.mu.Lock()
+	warned := r.unencodable[functionID]
 	r.unencodable[functionID] = true
-	log.Printf("iii: cannot encode an observed invocation of %q as JSON; it is not reported: %v", functionID, err)
+	r.mu.Unlock()
+	if !warned {
+		log.Printf("iii: cannot encode an observed call of %q as JSON; it is not reported: %v", functionID, err)
+	}
 }
 
 func (r *reporter) enqueueLocked(item *reportItem) bool {
-	fn := item.wire.FunctionID
+	fn := item.functionID
 	size := len(item.json)
 	if size > r.limits.maxBytes || size+reportFrameOverhead > r.limits.maxFrameBytes {
 		r.dropLocked(fn, dropTooLarge, 1)
@@ -447,7 +428,7 @@ func (r *reporter) recordLocal(functionID string, ok bool, durationMs float64) {
 }
 
 // countUnsent counts the items of a report frame that was handed to a writer and
-// never written (the connection ended first) as INACTIVE.
+// never written (the connection ended first) as DISCONNECTED.
 func (r *reporter) countUnsent(frame []byte) {
 	var msg InvocationsObservedMessage
 	if json.Unmarshal(frame, &msg) != nil {
@@ -456,7 +437,7 @@ func (r *reporter) countUnsent(frame []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, it := range msg.Items {
-		r.dropLocked(it.FunctionID, dropInactive, 1)
+		r.dropLocked(it.FunctionID, dropDisconnected, 1)
 	}
 }
 
@@ -476,7 +457,7 @@ func (r *reporter) discardFunction(functionID string) {
 	var dropped uint64
 	r.bytes = 0
 	for _, it := range r.items {
-		if it.wire.FunctionID == functionID {
+		if it.functionID == functionID {
 			dropped++
 			continue
 		}
@@ -491,19 +472,13 @@ func (r *reporter) discardFunction(functionID string) {
 		return
 	}
 	r.dropLocked(functionID, dropInactive, dropped)
-	r.openEmits = map[string][]*reportItem{}
-	for _, it := range r.items {
-		if it.coalesceKey != "" {
-			r.openEmits[it.coalesceKey] = append(r.openEmits[it.coalesceKey], it)
-		}
-	}
 }
 
 // flush sends what can be sent: items whose function the engine confirmed on the
 // current connection, in frames under the frame limit, while the socket keeps up. The
 // rest stays buffered.
 func (r *reporter) flush() {
-	epoch, online := r.host.reportOnline()
+	epoch, online, v2 := r.host.reportOnline()
 	r.mu.Lock()
 	if r.lingerTimer != nil {
 		r.lingerTimer.Stop()
@@ -528,7 +503,7 @@ func (r *reporter) flush() {
 	var ready, held []*reportItem
 	gone := false
 	for _, it := range r.items {
-		fn := it.wire.FunctionID
+		fn := it.functionID
 		st, ok := statuses[fn]
 		if !ok {
 			st = r.host.reportStatus(fn, epoch)
@@ -562,12 +537,8 @@ func (r *reporter) flush() {
 	}
 	r.items = held
 	r.bytes = 0
-	r.openEmits = map[string][]*reportItem{}
 	for _, it := range held {
 		r.bytes += len(it.json)
-		if it.coalesceKey != "" {
-			r.openEmits[it.coalesceKey] = append(r.openEmits[it.coalesceKey], it)
-		}
 	}
 	// Held items wait for their function's functionregistered, which kicks a flush.
 	type batch struct {
@@ -577,8 +548,11 @@ func (r *reporter) flush() {
 	var batches []batch
 	var cur batch
 	for _, it := range ready {
+		if it.v2 != v2 && it.render(v2) != nil {
+			continue
+		}
 		if len(it.json)+reportFrameOverhead > r.limits.maxFrameBytes {
-			r.dropLocked(it.wire.FunctionID, dropTooLarge, 1)
+			r.dropLocked(it.functionID, dropTooLarge, 1)
 			continue
 		}
 		if cur.data != nil && len(cur.data)+1+len(it.json)+len(reportFrameTail) > r.limits.maxFrameBytes {
@@ -628,13 +602,10 @@ func (r *reporter) flush() {
 }
 
 // putBack returns items whose frame could not be sent to the front of the buffer.
-// They do not join the coalescing index again (an item that left the buffer is
-// never merged into: SDK-PARITY decision 26).
 func (r *reporter) putBack(items []*reportItem) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, it := range items {
-		it.coalesceKey = ""
 		r.bytes += len(it.json)
 	}
 	r.items = append(items, r.items...)
@@ -650,7 +621,7 @@ func (r *reporter) sendStats(now time.Time) bool {
 		return false
 	}
 	r.mu.Unlock()
-	epoch, online := r.host.reportOnline()
+	epoch, online, _ := r.host.reportOnline()
 	if !online {
 		return false
 	}
@@ -707,5 +678,4 @@ func (r *reporter) clear() {
 	defer r.mu.Unlock()
 	r.items = nil
 	r.bytes = 0
-	r.openEmits = map[string][]*reportItem{}
 }

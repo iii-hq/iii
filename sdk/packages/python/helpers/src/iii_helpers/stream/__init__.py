@@ -17,13 +17,11 @@ __all__ = [
     "StreamDeleteResult",
     "StreamGetInput",
     "StreamJoinLeaveEvent",
-    "StreamJoinLeaveTriggerConfig",
     "StreamJoinResult",
     "StreamListGroupsInput",
     "StreamListInput",
     "StreamSetInput",
     "StreamSetResult",
-    "StreamTriggerConfig",
     "StreamUpdateInput",
     "StreamUpdateResult",
     "UpdateAppend",
@@ -458,40 +456,6 @@ class UpdateMerge(BaseModel):
 UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
 
 
-class StreamTriggerConfig(BaseModel):
-    """Trigger config for ``stream`` triggers. Filters which item changes fire the handler.
-
-    .. deprecated::
-        StreamTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release.
-        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
-
-    Attributes:
-        stream_name: Stream name to watch. Only changes on this stream fire the handler.
-        group_id: If set, only changes within this group fire the handler.
-        item_id: If set, only changes to this specific item fire the handler.
-        condition_function_id: Function ID for conditional execution. If it returns ``False``, the handler is skipped.
-    """
-
-    stream_name: str
-    group_id: str | None = None
-    item_id: str | None = None
-    condition_function_id: str | None = None
-
-
-class StreamJoinLeaveTriggerConfig(BaseModel):
-    """Trigger config for ``stream:join`` and ``stream:leave`` triggers.
-
-    .. deprecated::
-        StreamJoinLeaveTriggerConfig is deprecated (iii-stream) and will be removed in an upcoming release.
-        Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
-
-    Attributes:
-        condition_function_id: Function ID for conditional execution. If it returns ``False``, the handler is skipped.
-    """
-
-    condition_function_id: str | None = None
-
-
 class StreamChangeEventDetail(BaseModel):
     """Detail of a stream change event containing the mutation type and data.
 
@@ -509,7 +473,7 @@ class StreamChangeEventDetail(BaseModel):
 
 
 class StreamChangeEvent(BaseModel):
-    """Handler input for ``stream`` triggers, fired when an item changes via ``stream::set``, ``stream::update``, or ``stream::delete``.
+    """A stream change, from an item changed via ``stream::set``, ``stream::update``, or ``stream::delete``.
 
     .. deprecated::
         StreamChangeEvent is deprecated (iii-stream) and will be removed in an upcoming release.

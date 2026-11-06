@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest'
 import type { StreamSetInput, StreamSetResult } from '@iii-dev/helpers/stream'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { bridgeIII } from './bridge-utils'
 
 type TestData = {
@@ -15,7 +15,7 @@ describe('Bridge Stream Operations', () => {
 
   beforeEach(async () => {
     await bridgeIII
-      .trigger({
+      .call({
         function_id: 'stream::delete',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId },
       })
@@ -26,7 +26,7 @@ describe('Bridge Stream Operations', () => {
     it('should set a new stream item', async () => {
       const testData = { name: 'Test Item', value: 42 }
 
-      const result = await bridgeIII.trigger<StreamSetInput, StreamSetResult<TestData>>({
+      const result = await bridgeIII.call<StreamSetInput, StreamSetResult<TestData>>({
         function_id: 'stream::set',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId, data: testData },
       })
@@ -39,12 +39,12 @@ describe('Bridge Stream Operations', () => {
       const initialData: TestData = { value: 1 }
       const updatedData: TestData = { value: 2, updated: true }
 
-      await bridgeIII.trigger({
+      await bridgeIII.call({
         function_id: 'stream::set',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId, data: initialData },
       })
 
-      const result: StreamSetResult<TestData> = await bridgeIII.trigger({
+      const result: StreamSetResult<TestData> = await bridgeIII.call({
         function_id: 'stream::set',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId, data: updatedData },
       })
@@ -58,12 +58,12 @@ describe('Bridge Stream Operations', () => {
     it('should get an existing stream item', async () => {
       const testData: TestData = { name: 'Test', value: 100 }
 
-      await bridgeIII.trigger({
+      await bridgeIII.call({
         function_id: 'stream::set',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId, data: testData },
       })
 
-      const result: TestData = await bridgeIII.trigger({
+      const result: TestData = await bridgeIII.call({
         function_id: 'stream::get',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId },
       })
@@ -73,7 +73,7 @@ describe('Bridge Stream Operations', () => {
     })
 
     it('should return undefined for non-existent item', async () => {
-      const result = await bridgeIII.trigger({
+      const result = await bridgeIII.call({
         function_id: 'stream::get',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: 'non-existent-item' },
       })
@@ -84,17 +84,17 @@ describe('Bridge Stream Operations', () => {
 
   describe('stream::delete via bridge', () => {
     it('should delete an existing stream item', async () => {
-      await bridgeIII.trigger({
+      await bridgeIII.call({
         function_id: 'stream::set',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId, data: { test: true } },
       })
 
-      await bridgeIII.trigger({
+      await bridgeIII.call({
         function_id: 'stream::delete',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId },
       })
 
-      const result = await bridgeIII.trigger({
+      const result = await bridgeIII.call({
         function_id: 'stream::get',
         payload: { stream_name: testStreamName, group_id: testGroupId, item_id: testItemId },
       })
@@ -104,7 +104,7 @@ describe('Bridge Stream Operations', () => {
 
     it('should handle deleting non-existent item gracefully', async () => {
       await expect(
-        bridgeIII.trigger({
+        bridgeIII.call({
           function_id: 'stream::delete',
           payload: { stream_name: testStreamName, group_id: testGroupId, item_id: 'non-existent' },
         }),
@@ -124,13 +124,13 @@ describe('Bridge Stream Operations', () => {
       ]
 
       for (const item of items) {
-        await bridgeIII.trigger({
+        await bridgeIII.call({
           function_id: 'stream::set',
           payload: { stream_name: testStreamName, group_id: groupId, item_id: item.id, data: item },
         })
       }
 
-      const result: TestDataWithId[] = await bridgeIII.trigger({
+      const result: TestDataWithId[] = await bridgeIII.call({
         function_id: 'stream::list',
         payload: { stream_name: testStreamName, group_id: groupId },
       })

@@ -40,8 +40,6 @@ const { registerWorker } = await import('../src/iii')
 type Retained = { message: Record<string, unknown>; handler?: unknown }
 type Internal = IIIClient & {
   functions: Map<string, Retained>
-  triggerTypes: Map<string, Retained>
-  triggers: Map<string, Record<string, unknown>>
   messagesToSend: Record<string, unknown>[]
   registerWorkerMetadata: () => void
   sendMessage: (...args: unknown[]) => void
@@ -60,17 +58,12 @@ afterEach(async () => {
   await sdk.shutdown()
 })
 
-const triggerHandler = () => ({
-  registerTrigger: vi.fn(async () => {}),
-  unregisterTrigger: vi.fn(async () => {}),
-})
-
 describe('Registration JSON snapshots', () => {
   it('replays accepted nested fields independently of caller mutation and preserves handlers', async () => {
     const socket = makeSdk()
     const schema = { type: 'object' as const, properties: { value: { type: 'string' } } }
     const metadata = { nested: { value: 'original' }, nullable: null }
-    const config = { nested: { value: 'accepted' } }
+    const argsFormat = { type: 'object' as const, properties: { table: { type: 'string' } } }
     const headers = { 'X-Test': 'original' }
     const auth = { type: 'bearer' as const, token_key: 'original' }
     const handler = vi.fn(async () => ({ ok: true }))
@@ -84,37 +77,24 @@ describe('Registration JSON snapshots', () => {
       { url: 'https://example.invalid/handler', headers, auth },
       { metadata },
     )
-    const typeHandler = triggerHandler()
-    const typeInput = {
-      id: 'custom',
-      description: 'accepted',
-      trigger_request_format: schema,
-      call_request_format: schema,
-    }
-    const typeRef = sdk.registerTriggerType(typeInput, typeHandler)
-    sdk.registerTrigger({ type: 'custom', function_id: 'size::handler', config, metadata })
+    sdk.registerFunction('size::source', (event: unknown) => event, { args_format: argsFormat, private: true })
     const functionHandler = sdk.functions.get('size::handler')?.handler
-    expect(sdk.triggerTypes.get('custom')?.handler).toBe(typeHandler)
-    expect([...sdk.triggers.values()][0].config).not.toBe(config)
 
     schema.properties.value.type = 'x'.repeat(LIMIT)
     metadata.nested.value = 'mutated'
-    config.nested.value = 'x'.repeat(LIMIT)
+    argsFormat.properties.table.type = 'x'.repeat(LIMIT)
     headers['X-Test'] = 'mutated'
     auth.token_key = 'mutated'
-    typeInput.id = 'mutated'
-    typeRef.registerTrigger('size::handler', { extra: true })
     sdk.messagesToSend.push({ type: 'pong' })
     expect(() => socket.simulateOpen()).not.toThrow()
 
-    const registrations = socket.sent.filter(
-      frame => String(frame.type).startsWith('register') && frame.type !== 'registerworker',
-    )
+    socket.emit('message', JSON.stringify({ type: 'workerregistered', worker_id: 'w-1', features: ['observe.v2'] }))
+
+    const registrations = socket.sent.filter(frame => frame.type === 'registerfunction')
     const expected = { type: 'object', properties: { value: { type: 'string' } } }
-    expect(registrations.find(frame => frame.type === 'registertriggertype')).toMatchObject({
-      id: 'custom',
-      trigger_request_format: expected,
-      call_request_format: expected,
+    expect(registrations.find(frame => frame.id === 'size::source')).toMatchObject({
+      args_format: { type: 'object', properties: { table: { type: 'string' } } },
+      private: true,
     })
     expect(registrations.find(frame => frame.id === 'size::handler')).toMatchObject({
       request_format: expected,
@@ -127,13 +107,7 @@ describe('Registration JSON snapshots', () => {
         auth: { type: 'bearer', token_key: 'original' },
       },
     })
-    const triggers = registrations.filter(frame => frame.type === 'registertrigger')
-    expect(triggers[0]).toMatchObject({
-      config: { nested: { value: 'accepted' } },
-      metadata: { nested: { value: 'original' } },
-    })
-    expect(triggers[1]).toMatchObject({ trigger_type: 'custom', config: { extra: true } })
-    expect(socket.sent[socket.sent.length - 1]).toEqual({ type: 'pong' })
+    expect(socket.sent.some(frame => frame.type === 'pong')).toBe(true)
     expect(sdk.messagesToSend).toHaveLength(0)
     expect(sdk.functions.get('size::handler')?.handler).toBe(functionHandler)
     await (functionHandler as (data: unknown) => Promise<unknown>)({})
@@ -142,11 +116,11 @@ describe('Registration JSON snapshots', () => {
 
   it('uses existing JSON semantics for toJSON, absent undefined, and explicit null', () => {
     const socket = makeSdk()
-    const config = { toJSON: () => ({ value: 'wire', absent: undefined, nullable: null }) }
-    sdk.registerTrigger({ type: 'custom', function_id: 'size::handler', config })
-    config.toJSON = () => ({ value: 'mutated', absent: undefined, nullable: null })
+    const metadata = { toJSON: () => ({ value: 'wire', absent: undefined, nullable: null }) }
+    sdk.registerFunction('size::handler', async () => null, { metadata: metadata as never })
+    metadata.toJSON = () => ({ value: 'mutated', absent: undefined, nullable: null })
     socket.simulateOpen()
-    expect(socket.sent.find(frame => frame.type === 'registertrigger')?.config).toEqual({
+    expect(socket.sent.find(frame => frame.type === 'registerfunction')?.metadata).toEqual({
       value: 'wire',
       nullable: null,
     })
@@ -154,14 +128,9 @@ describe('Registration JSON snapshots', () => {
 
   it('rejects replacements before retaining them and keeps accepted ownership', () => {
     const socket = makeSdk()
-    const originalHandler = triggerHandler()
-    sdk.registerTriggerType({ id: 'custom', description: 'accepted' }, originalHandler)
-    const accepted = sdk.triggerTypes.get('custom')
-    expect(() =>
-      sdk.registerTriggerType({ id: 'custom', description: 'x'.repeat(LIMIT) }, triggerHandler()),
-    ).toThrow('payload_too_large')
-    expect(sdk.triggerTypes.get('custom')).toBe(accepted)
-    expect(sdk.triggerTypes.get('custom')?.handler).toBe(originalHandler)
+    const original = async () => ({ ok: true })
+    sdk.registerFunction('size::accepted', original)
+    const accepted = sdk.functions.get('size::accepted')
     expect(() =>
       sdk.registerFunction('size::rejected', async () => {}, {
         metadata: { value: 'x'.repeat(LIMIT) },
@@ -169,46 +138,30 @@ describe('Registration JSON snapshots', () => {
     ).toThrow('payload_too_large')
     expect(sdk.functions.has('size::rejected')).toBe(false)
     expect(() =>
-      sdk.registerTrigger({
-        type: 'custom',
-        function_id: 'size::handler',
-        config: { value: 'x'.repeat(LIMIT) },
+      sdk.registerFunction('size::rejected', async () => {}, {
+        private: true,
+        args_format: { description: 'x'.repeat(LIMIT) },
       }),
     ).toThrow('payload_too_large')
-    expect(sdk.triggers.size).toBe(0)
+    expect(sdk.functions.has('size::rejected')).toBe(false)
+    expect(sdk.functions.get('size::accepted')).toBe(accepted)
     expect(sdk.messagesToSend).toHaveLength(0)
     socket.simulateOpen()
-    expect(socket.sent.find(frame => frame.type === 'registertriggertype')).toMatchObject({
-      id: 'custom',
-      description: 'accepted',
-    })
+    expect(socket.sent.filter(frame => frame.type === 'registerfunction').map(frame => frame.id)).toEqual([
+      'size::accepted',
+    ])
   })
 
-  it.each([
-    'type',
-    'function',
-    'trigger',
-  ])('isolates a permanent %s rejection inside the real open callback', kind => {
+  it('isolates a permanent function rejection inside the real open callback', () => {
     const socket = makeSdk()
-    // Simulate an invalid retained/legacy entry independently of caller snapshots.
-    sdk.registerTriggerType({ id: 'custom', description: 'accepted' }, triggerHandler())
     sdk.registerFunction('size::handler', async () => ({ ok: true }))
-    sdk.registerTrigger({ type: 'custom', function_id: 'size::handler', config: {} })
-    if (kind === 'type') sdk.triggerTypes.get('custom')!.message.description = 'x'.repeat(LIMIT)
-    if (kind === 'function')
-      sdk.functions.get('size::handler')!.message.metadata = { value: 'x'.repeat(LIMIT) }
-    if (kind === 'trigger') [...sdk.triggers.values()][0].config = { value: 'x'.repeat(LIMIT) }
-    sdk.registerTriggerType({ id: 'later', description: 'small' }, triggerHandler())
+    // Simulate an invalid retained entry independently of caller snapshots.
+    sdk.functions.get('size::handler')!.message.metadata = { value: 'x'.repeat(LIMIT) }
     sdk.registerFunction('size::later', async () => ({ ok: true }))
-    sdk.registerTrigger({ type: 'later', function_id: 'size::later', config: { value: 1 } })
     sdk.messagesToSend.push({ type: 'pong' })
     expect(() => socket.simulateOpen()).not.toThrow()
     expect(socket.sent).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: 'registertriggertype', id: 'later' }),
-        expect.objectContaining({ type: 'registerfunction', id: 'size::later' }),
-        expect.objectContaining({ type: 'registertrigger', function_id: 'size::later' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ type: 'registerfunction', id: 'size::later' })]),
     )
     expect(socket.sent[socket.sent.length - 1]).toEqual({ type: 'pong' })
     expect(sdk.messagesToSend).toHaveLength(0)
@@ -216,7 +169,7 @@ describe('Registration JSON snapshots', () => {
 
   it('does not mask unexpected or transport-related errors thrown by replay', () => {
     const socket = makeSdk()
-    sdk.registerTriggerType({ id: 'custom', description: 'accepted' }, triggerHandler())
+    sdk.registerFunction('size::handler', async () => ({ ok: true }))
     sdk.registerWorkerMetadata = vi.fn()
     const error = new Error('transport or unexpected failure')
     vi.spyOn(sdk, 'sendMessage').mockImplementation(() => {

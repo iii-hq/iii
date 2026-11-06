@@ -9,6 +9,18 @@
     {
       "source": "/next/sdk-reference/engine-sdk",
       "destination": "/next/reference/engine-protocol"
+    },
+    {
+      "source": "/next/using-iii/triggers",
+      "destination": "/next/using-iii/observers"
+    },
+    {
+      "source": "/next/creating-workers/triggers",
+      "destination": "/next/creating-workers/observable-functions"
+    },
+    {
+      "source": "/next/how-to/use-trigger-conditions",
+      "destination": "/next/reference/filters"
     }
   ],
   "theme": "mint",
@@ -93,10 +105,9 @@
                 "group": "Using iii",
                 "pages": [
                   "next/using-iii/workers",
-                  "next/using-iii/workers-registry",
-                  "next/using-iii/observers",
-                  "next/using-iii/triggers",
                   "next/using-iii/functions",
+                  "next/using-iii/observers",
+                  "next/using-iii/workers-registry",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
                   "next/using-iii/compose",
@@ -124,6 +135,7 @@
                   {
                     "group": "Common Workers",
                     "pages": [
+                      "next/creating-workers/database",
                       "next/creating-workers/http",
                       "next/creating-workers/queues",
                       "next/creating-workers/observability",
@@ -132,16 +144,17 @@
                     ]
                   },
                   "next/creating-workers/workers",
-                  "next/creating-workers/worker-manifest",
-                  "next/creating-workers/observable-functions",
-                  "next/creating-workers/triggers",
                   "next/creating-workers/functions",
+                  "next/creating-workers/observable-functions",
+                  "next/creating-workers/worker-manifest",
                   "next/creating-workers/channels"
                 ]
               },
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-25-x",
+                  "next/upgrading/sandbox-worker",
                   "next/upgrading/from-0-24-x",
                   "next/upgrading/migrate-from-streams",
                   "next/upgrading/workers-to-compose",

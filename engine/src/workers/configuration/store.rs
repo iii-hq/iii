@@ -45,8 +45,8 @@ static ENV_VAR_RE: LazyLock<Regex> =
 static LONE_PLACEHOLDER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\s*\$\{[^}]*\}\s*$").unwrap());
 
-/// Non-panicking env-var substitution for one string. Mirrors the CLI's
-/// `expand_env_vars` (`crates/iii-worker/src/cli/config_file.rs`): on a missing
+/// Non-panicking env-var substitution for one string. Mirrors the legacy
+/// worker CLI's `expand_env_vars`: on a missing
 /// var with no default, the var name is recorded in `missing` and the literal
 /// `${VAR}` is left in place so partial output stays usable. The engine-only
 /// `__III_ENGINE_VERSION__` sentinel default is honored (config.rs parity).
@@ -191,8 +191,8 @@ pub struct MigrateOutcome {
     pub active_entry: Option<ConfigurationEntry>,
 }
 
-/// Whether a reconciled [`ExternalChange`] should be fanned out to trigger
-/// subscribers, returned by [`ConfigurationStore::apply_external`].
+/// Whether a reconciled [`ExternalChange`] should be fanned out to listeners
+/// and observers, returned by [`ConfigurationStore::apply_external`].
 ///
 /// External changes reach the store through a channel, so a snapshot the
 /// watcher captured can be applied only AFTER a newer local mutation commits.
@@ -670,6 +670,7 @@ impl ConfigurationStore {
     }
 
     /// Delete from storage before removing the cache entry under the mutation lock.
+    #[cfg(test)]
     pub async fn delete(&self, id: &str) -> Result<Option<ConfigurationEntry>, StoreError> {
         let _write = self.write_lock.lock().await;
         let removed = self.adapter.delete(id).await?;

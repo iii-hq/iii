@@ -22,8 +22,8 @@ export const site = {
   keywords: [
     'iii',
     'worker',
-    'trigger',
     'function',
+    'observer',
     'three primitives',
     'backend engine',
     'distributed systems',
@@ -140,7 +140,7 @@ export function siteJsonLd() {
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Linux, macOS, Windows',
         description:
-          'An engine and one open protocol (JSON over WebSocket) built on three primitives: Function, Trigger, Worker. Any process, in any language, on any runtime, that speaks the protocol joins as a worker.',
+          'An engine and one open protocol (JSON over WebSocket) built on three primitives: Worker, Function, Observer. Any process, in any language, on any runtime, that speaks the protocol joins as a worker.',
         url: `${site.url}/`,
         downloadUrl: links.install,
         softwareHelp: links.docs,

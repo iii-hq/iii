@@ -19,8 +19,9 @@ import (
 // Sentinel errors for the two failure modes that carry no payload. Compare with
 // errors.Is. These line up with the Rust IIIError::NotConnected / ::Timeout variants.
 var (
-	// ErrNotConnected is returned by Trigger when the client has no live connection
-	// and the call cannot be buffered (e.g. an await-style Trigger needs a round trip).
+	// ErrNotConnected is returned by Call when the client has no live connection and
+	// the call cannot be buffered (a call through an observer, or one cancelled by
+	// shutdown).
 	ErrNotConnected = errors.New("iii: not connected")
 	// ErrTimeout is returned when no InvocationResult arrives within the call's timeout
 	// (DefaultInvocationTimeout unless overridden).

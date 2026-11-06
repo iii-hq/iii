@@ -74,6 +74,52 @@ impl Node {
         matches!(self, Node::And(nodes) if nodes.is_empty())
     }
 
+    /// The equality conditions a document must meet for the filter to match
+    /// it: for each clause of the top-level `$and` on a document path (not
+    /// `@`), its `$eq` operand, or its `$in` operands, as `(path, operands)`.
+    /// A document whose value at `path` equals none of `operands` does not
+    /// match (an absent path equals nothing).
+    /// Adds the first key of every `input` path the node reads to `fields`;
+    /// `false` when a path reads `input` whole. A `$any` filter reads the
+    /// elements of its clause's path, which names the field.
+    pub(crate) fn input_fields(&self, fields: &mut Vec<Box<str>>) -> bool {
+        match self {
+            Node::And(nodes) | Node::Or(nodes) => {
+                nodes.iter().all(|node| node.input_fields(fields))
+            }
+            Node::Not(node) => node.input_fields(fields),
+            Node::Path(clause) => {
+                if clause.path.root == Root::Input {
+                    match clause.path.segments.first() {
+                        Some(segment) => fields.push(segment.key.clone()),
+                        None => return false,
+                    }
+                }
+                true
+            }
+        }
+    }
+
+    pub fn equality_terms(&self) -> impl Iterator<Item = (&Path, &[Value])> {
+        let clauses: &[Node] = match self {
+            Node::And(nodes) => nodes,
+            _ => &[],
+        };
+        clauses
+            .iter()
+            .filter_map(|node| match node {
+                Node::Path(clause) if clause.path.root != Root::Element => Some(clause),
+                _ => None,
+            })
+            .flat_map(|clause| {
+                clause.ops.iter().filter_map(move |op| match op {
+                    Op::Eq(literal) => Some((&clause.path, std::slice::from_ref(literal))),
+                    Op::In(literals) => Some((&clause.path, &literals[..])),
+                    _ => None,
+                })
+            })
+    }
+
     pub fn collect_roots(&self, roots: &mut Roots) {
         match self {
             Node::And(nodes) | Node::Or(nodes) => {

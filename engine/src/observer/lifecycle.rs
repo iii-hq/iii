@@ -27,17 +27,21 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use super::{
-    FnKey, ObserverRegistry,
+    FnKey, Held, ObserverRegistry,
     dispatch::{Completed, QueueBudget},
 };
 use crate::{
     engine::Outbound,
-    protocol::{
-        Capture, Deliver, ErrorBody, LegacyTrigger, Message, ObserverState, On, observe_codes,
-    },
+    protocol::{Capture, ErrorBody, Message, ObserverState, observe_codes},
 };
 
-/// What an activation ships to the target, from the observer's `capture`.
+/// What an activation ships to the target, and which outcomes fire it, from
+/// the observer's `capture`.
+///
+/// `input` and `output` fire on success, `error` fires on error; `caller`
+/// and `metadata` only add to the payload. A non-empty `capture` must name at
+/// least one of `input`, `output`, `error` ([`CaptureSet::resolve`]); `[]`
+/// means a success carrying the top-level fields only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CaptureSet {
     pub input: bool,
@@ -45,11 +49,55 @@ pub(crate) struct CaptureSet {
     pub error: bool,
     pub caller: bool,
     pub metadata: bool,
+    /// Fires on a success / an error.
+    pub on_success: bool,
+    pub on_error: bool,
 }
 
 impl CaptureSet {
+    /// What an observer that names no `capture` captures:
+    /// [`crate::protocol::default_capture`].
+    pub const DEFAULT: Self = Self {
+        input: true,
+        output: true,
+        error: false,
+        caller: true,
+        metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
+    /// What an engine-owned observer that hands its target the input alone
+    /// captures (decision 59): the input, on success; its host ships nothing
+    /// else.
+    pub const INPUT_ONLY: Self = Self {
+        input: true,
+        output: false,
+        error: false,
+        caller: false,
+        metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
+    /// What `capture: []` means: a success, with the top-level fields only.
+    pub const EMPTY: Self = Self {
+        input: false,
+        output: false,
+        error: false,
+        caller: false,
+        metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
     /// Known values only: `observe` refuses unknown ones before this runs.
+    /// `[]` is [`Self::EMPTY`]; otherwise each outcome fires when a field
+    /// that fires on it is captured.
     pub fn from_list(list: &[Capture]) -> Self {
+        if list.is_empty() {
+            return Self::EMPTY;
+        }
         let mut set = Self::default();
         for capture in list {
             match capture {
@@ -61,7 +109,57 @@ impl CaptureSet {
                 Capture::Unknown(_) => {}
             }
         }
+        set.on_success = set.input || set.output;
+        set.on_error = set.error;
         set
+    }
+
+    /// [`Self::from_list`] behind the gate: a non-empty `capture` that fires
+    /// on nothing (only `caller` / `metadata`) is refused.
+    pub fn resolve(list: &[Capture]) -> Result<Self, String> {
+        let set = Self::from_list(list);
+        if !set.on_success && !set.on_error {
+            return Err(
+                "`source.capture` must name at least one of `input`, `output`, `error` \
+                 (or be `[]`): `caller` and `metadata` alone fire on nothing"
+                    .to_string(),
+            );
+        }
+        Ok(set)
+    }
+
+    /// The `on` a host without `observe.v2` (0.25) reads from an observer's
+    /// announcement, since it decides the outcomes that fire from it alone:
+    /// `error` or `complete`, or none for success, its default. Deprecated
+    /// with those hosts.
+    pub fn legacy_on(self) -> Option<&'static str> {
+        match (self.on_success, self.on_error) {
+            (_, false) => None,
+            (true, true) => Some("complete"),
+            (false, true) => Some("error"),
+        }
+    }
+
+    /// Whether an invocation that ended in success (or not) fires the target.
+    pub fn fires(self, success: bool) -> bool {
+        if success {
+            self.on_success
+        } else {
+            self.on_error
+        }
+    }
+
+    /// The parts the host of the observed function sends the engine for an
+    /// observer: what it captures, and the input an engine-internal observer
+    /// hands its target, which the engine has no other way to get for a call
+    /// the host reports.
+    pub fn with_delivered(mut self, deliver: &Deliver) -> Self {
+        match deliver {
+            Deliver::Payload => {}
+            Deliver::Input => self.input = true,
+            Deliver::Output => self.output = true,
+        }
+        self
     }
 
     pub fn to_list(self) -> Vec<Capture> {
@@ -78,6 +176,110 @@ impl CaptureSet {
     }
 }
 
+/// What the target's first argument is. Engine-internal, never a new-style
+/// wire field: observers made by `observe` receive the payload; the engine's
+/// own observers receive the observed input alone; an older SDK's
+/// `deliver: input` / `deliver: output` is translated to [`Self::Input`] /
+/// [`Self::Output`] (decision 60).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Deliver {
+    #[default]
+    Payload,
+    Input,
+    /// The observed output alone, `null` when there is none (on a failure
+    /// too), as v0.25's `deliver: output`.
+    Output,
+}
+
+/// Decision 60: an older SDK's `source.on` / `source.deliver`, translated at
+/// registration (the first `observe` and every replay) into what the
+/// observer does: `None` when the source carries neither and `always` is
+/// unset. Decision 60: `always` is set for a worker that did not declare
+/// `observe.capture` (an rc or 0.25 SDK), whose every source keeps the old
+/// semantics, `on` and `deliver` or not.
+///
+/// Firing comes from `on` alone (absent or `success`: successes; `error`:
+/// failures; `complete`: both), set directly rather than through
+/// [`CaptureSet::resolve`], since an old capture such as `[caller]` was
+/// valid with any `on`. The payload carries exactly the `capture` list (the
+/// old default `[input, output, caller]` when absent). `deliver` absent or
+/// `envelope` is the payload, `input` / `output` the raw value. Any other
+/// value of either is an error message for `INVALID_ARGS`.
+pub(crate) fn translate_legacy(
+    on: Option<&Value>,
+    deliver: Option<&Value>,
+    capture: Option<&[Capture]>,
+    always: bool,
+) -> Result<Option<(CaptureSet, Deliver)>, String> {
+    if on.is_none() && deliver.is_none() && !always {
+        return Ok(None);
+    }
+    let (on_success, on_error) = match on {
+        None => (true, false),
+        Some(value) => match value.as_str() {
+            Some("success") => (true, false),
+            Some("error") => (false, true),
+            Some("complete") => (true, true),
+            _ => {
+                return Err(format!(
+                    "`source.on` must be `success`, `error` or `complete`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let deliver = match deliver {
+        None => Deliver::Payload,
+        Some(value) => match value.as_str() {
+            Some("envelope") => Deliver::Payload,
+            Some("input") => Deliver::Input,
+            Some("output") => Deliver::Output,
+            _ => {
+                return Err(format!(
+                    "`source.deliver` must be `envelope`, `input` or `output`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let mut set = match capture {
+        None => CaptureSet::DEFAULT,
+        Some(list) => CaptureSet::from_list(list),
+    };
+    set.on_success = on_success;
+    set.on_error = on_error;
+    Ok(Some((set, deliver)))
+}
+
+/// The new-style `capture` closest to a translated observer, for its
+/// deprecation warning: what fires on its outcomes, plus what its payload
+/// carries.
+pub(crate) fn capture_replacing(set: CaptureSet, deliver: Deliver) -> Vec<Capture> {
+    let mut new = match deliver {
+        Deliver::Payload => set,
+        Deliver::Input => CaptureSet {
+            input: true,
+            ..CaptureSet::default()
+        },
+        Deliver::Output => CaptureSet {
+            output: true,
+            ..CaptureSet::default()
+        },
+    };
+    if set.on_success && !new.input && !new.output {
+        new.input = deliver != Deliver::Output;
+        new.output = deliver == Deliver::Output;
+    }
+    if !set.on_success {
+        new.output = false;
+        if deliver != Deliver::Input {
+            new.input = false;
+        }
+    }
+    new.error |= set.on_error;
+    new.to_list()
+}
+
 /// An observer's spec as its observing worker asked for it, with the defaults
 /// applied, the namespaces resolved and the filters normalized: a replay with
 /// the same id must carry an equal one (`OBSERVER_ID_CONFLICT` otherwise), and
@@ -88,27 +290,13 @@ pub(crate) struct ObserveSpec {
     pub target: FnKey,
     pub args: Value,
     pub filters: Value,
-    pub capture: Vec<Capture>,
-    pub on: On,
+    /// With the outcomes it fires on: a translated `on` is part of the spec.
+    pub capture: CaptureSet,
     pub deliver: Deliver,
     pub metadata: Option<Value>,
     pub max_fires: Option<u64>,
     pub expires_in_ms: Option<u64>,
     pub max_in_flight: u32,
-    /// The `RegisterTrigger` a legacy observer stands for; `None` for one
-    /// made by `observe`.
-    pub legacy: Option<LegacyTrigger>,
-}
-
-/// What makes an observer a legacy one (protocol.md §6): the shim made it
-/// from a `RegisterTrigger`. Its observing worker sent no `observe`, so it
-/// hears no `observeresult` / `observerstatechanged`; it gets one
-/// `TriggerRegistrationResult` instead, once the owner acked or rejected.
-pub(crate) struct LegacyBinding {
-    /// Forwarded to the owner in `observeradded` / `functionregistered`.
-    pub trigger: LegacyTrigger,
-    /// The registrant got its `TriggerRegistrationResult`.
-    pub answered: AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -126,10 +314,14 @@ pub(crate) struct Flags {
     pub observing_connected: bool,
     pub function_available: bool,
     pub target_available: bool,
-    /// The function's owner has the observer: it acked it, or the owner does
-    /// not speak observe (legacy SDK, engine-hosted, HTTP-invoked), so there is
-    /// nothing to wait for. `active` needs it (protocol.md §3.3).
+    /// The function's host has the observer: it acked it, or the host does
+    /// not speak observe (an older SDK, engine-hosted, HTTP-invoked), so there
+    /// is nothing to wait for. `active` needs it (protocol.md §3.3).
     pub owner_acked: bool,
+    /// Reattached and waiting for its target before its owner hears about it
+    /// again. Returning observers of one function are announced in creation
+    /// order, so a later one waits behind an earlier unavailable target.
+    pub returning: bool,
     /// How the current owner was told about the observer
     /// (`functionregistered` or `observeradded`); `None` while it was not.
     /// An ack or an ack timeout counts only for the announcement it answers,
@@ -141,39 +333,29 @@ pub(crate) struct Flags {
     /// Set the first time the observer is active: a target that goes away
     /// after that suspends it, one that was never there keeps it pending.
     pub activated_once: bool,
-    pub failed: Option<ErrorBody>,
-    pub disposed: Option<ErrorBody>,
+    pub failed: Option<Arc<ErrorBody>>,
+    pub disposed: Option<Arc<ErrorBody>>,
+    /// Its disposal leaves a tombstone (see [`Tombstone`]): not when its
+    /// observing worker asked for it, since that worker replays no handle it
+    /// disposed.
+    pub tombstone: bool,
 }
 
 impl Flags {
-    fn state(&self, observer: &Observer) -> (ObserverState, Option<ErrorBody>) {
-        if let Some(reason) = &self.disposed {
-            return (ObserverState::Disposed, Some(reason.clone()));
+    /// The state these facts give, and why. Nothing is allocated: the
+    /// reason is built from [`Why`] when it is read.
+    fn state(&self) -> (ObserverState, Why) {
+        if self.disposed.is_some() {
+            return (ObserverState::Disposed, Why::Disposed);
         }
-        if let Some(error) = &self.failed {
-            return (ObserverState::Error, Some(error.clone()));
+        if self.failed.is_some() {
+            return (ObserverState::Error, Why::Failed);
         }
         if !self.observing_connected {
-            return (
-                ObserverState::Suspended,
-                Some(ErrorBody::new(
-                    observe_codes::OBSERVER_DISCONNECTED,
-                    "the observing worker disconnected; the observer is kept until it reattaches \
-                     or the grace period ends",
-                )),
-            );
+            return (ObserverState::Suspended, Why::Disconnected);
         }
         if !self.function_available {
-            return (
-                ObserverState::Pending,
-                Some(ErrorBody::new(
-                    observe_codes::OWNER_UNAVAILABLE,
-                    format!(
-                        "no worker hosts `{}` in namespace `{}`",
-                        observer.function.1, observer.function.0
-                    ),
-                )),
-            );
+            return (ObserverState::Pending, Why::OwnerUnavailable);
         }
         if !self.target_available {
             let state = if self.activated_once {
@@ -181,40 +363,105 @@ impl Flags {
             } else {
                 ObserverState::Pending
             };
-            return (
-                state,
-                Some(ErrorBody::new(
-                    observe_codes::TARGET_UNAVAILABLE,
-                    format!(
-                        "the target `{}` is not registered in namespace `{}`",
-                        observer.target.1, observer.target.0
-                    ),
-                )),
-            );
+            return (state, Why::TargetUnavailable);
         }
         if !self.owner_acked {
             // Waiting for the owner's `observerack`.
-            return (ObserverState::Pending, None);
+            return (ObserverState::Pending, Why::Nothing);
         }
-        (ObserverState::Active, None)
+        (ObserverState::Active, Why::Nothing)
     }
+}
+
+/// Why an observer is in its state: what its state reason is built from
+/// ([`Observer::reason`]). Each names one reason code, so two observers'
+/// reasons have the same code exactly when their `Why` is the same (a
+/// disposal or a failure is recorded once and never changes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    /// No reason: `active`, or `pending` its owner's ack.
+    Nothing,
+    /// `flags.disposed`.
+    Disposed,
+    /// `flags.failed`.
+    Failed,
+    /// `OBSERVER_DISCONNECTED`.
+    Disconnected,
+    /// `OWNER_UNAVAILABLE`.
+    OwnerUnavailable,
+    /// `TARGET_UNAVAILABLE`.
+    TargetUnavailable,
 }
 
 struct Status {
     flags: Flags,
     state: ObserverState,
-    reason: Option<ErrorBody>,
+    why: Why,
+    /// Who observes, read with the state (a transition tells this
+    /// connection) and changed under the same lock (a `Reattach`).
+    observing: Observing,
+}
+
+impl Status {
+    /// The state reason of `observer`, whose status this is.
+    fn reason(&self, observer: &Observer) -> Option<ErrorBody> {
+        match self.why {
+            Why::Nothing => None,
+            Why::Disposed => self.flags.disposed.as_deref().cloned(),
+            Why::Failed => self.flags.failed.as_deref().cloned(),
+            Why::Disconnected => Some(ErrorBody::new(
+                observe_codes::OBSERVER_DISCONNECTED,
+                "the observing worker disconnected; the observer is kept until it reattaches or \
+                 the grace period ends",
+            )),
+            Why::OwnerUnavailable => Some(ErrorBody::new(
+                observe_codes::OWNER_UNAVAILABLE,
+                format!(
+                    "no worker hosts `{}` in namespace `{}`",
+                    observer.function.1, observer.function.0
+                ),
+            )),
+            Why::TargetUnavailable => Some(ErrorBody::new(
+                observe_codes::TARGET_UNAVAILABLE,
+                format!(
+                    "the target `{}` is not registered in namespace `{}`",
+                    observer.target.1, observer.target.0
+                ),
+            )),
+        }
+    }
+
+    /// Whether the state reason's code is `code`, read without building it.
+    fn reason_is(&self, code: &str) -> bool {
+        match self.why {
+            Why::Nothing => false,
+            Why::Disposed => self.flags.disposed.as_ref().is_some_and(|r| r.code == code),
+            Why::Failed => self.flags.failed.as_ref().is_some_and(|r| r.code == code),
+            Why::Disconnected => code == observe_codes::OBSERVER_DISCONNECTED,
+            Why::OwnerUnavailable => code == observe_codes::OWNER_UNAVAILABLE,
+            Why::TargetUnavailable => code == observe_codes::TARGET_UNAVAILABLE,
+        }
+    }
 }
 
 /// Who observes: the connection that created the observer (re-parented on
-/// `Reattach`), and the RBAC session it was authorized under, which every
-/// later registration of the observed function or the target is checked
-/// against again.
+/// `Reattach`), the worker name and namespace that connection registered
+/// with, and the RBAC session it was authorized under, which every later
+/// registration of the observed function or the target is checked against
+/// again. The name and namespace identify the worker: a new connection
+/// under both may replace the observer while its connection is away
+/// (decision 51).
 #[derive(Clone)]
 pub(crate) struct Observing {
     pub connection: Uuid,
-    pub worker_name: Option<String>,
+    pub worker_name: Option<Arc<str>>,
+    pub namespace: Arc<str>,
     pub session: Option<Arc<crate::workers::worker::rbac_session::Session>>,
+    /// `connection` has the observer's `observeresult` (its creation's, or
+    /// the answer to its replay there): it hears the observer's disposal
+    /// after that answer, in order. `false` from a `Reattach` until the
+    /// replay is answered.
+    pub answered: bool,
 }
 
 /// Disposed observers remembered at most (see `Tombstone`).
@@ -223,10 +470,30 @@ pub(crate) const MAX_TOMBSTONES: usize = 10_000;
 /// A disposed observer, remembered for `observers.observer_grace_ms`: its
 /// observing worker replaying it learns why it is gone instead of creating it
 /// again with fresh counters.
+///
+/// A worker replays its observers on a new connection, after a `Reattach`
+/// (which moves the tombstone to it). A connection that heard the
+/// `disposed` replays nothing more of it: an `observe` of the id from it is
+/// a new observer (decision 56).
 pub(crate) struct Tombstone {
     pub connection: Uuid,
-    pub reason: ErrorBody,
+    pub reason: Arc<ErrorBody>,
     pub until: Instant,
+    /// `connection` heard the disposal after the observer's `observeresult`
+    /// there, or had the disposal as the answer to its replay: it replays
+    /// nothing more of it, so its next `observe` of the id is a new
+    /// observer. A `Reattach` that moves the tombstone to a new connection
+    /// clears it: the disposal may have been lost with the earlier one.
+    pub heard: bool,
+}
+
+impl Tombstone {
+    /// Whether this tombstone answers an `observe` of its id from
+    /// `connection`: one from the observer's own worker, on a connection
+    /// that has not heard the disposal, before it expires.
+    pub(crate) fn answers(&self, connection: Uuid, now: Instant) -> bool {
+        self.connection == connection && !self.heard && self.until > now
+    }
 }
 
 /// Observers held in `Expired` records at most, across all of them.
@@ -239,7 +506,7 @@ pub(crate) const MAX_EXPIRED_OBSERVERS: usize = 10_000;
 pub(crate) struct Expired {
     pub token: Uuid,
     /// Each observer the connection owned, with why it was disposed.
-    pub disposed: Vec<(String, ErrorBody)>,
+    pub disposed: Vec<(Arc<str>, Arc<ErrorBody>)>,
     pub until: Instant,
 }
 
@@ -250,6 +517,70 @@ pub(crate) struct ExpiredOrder {
     /// Observers counted in `queue`; a record a reattach consumed still
     /// counts until its entry is dropped.
     pub held: usize,
+}
+
+/// Activations started for one observer, by `delivery` label, and what was
+/// last exported of each: `iii.observer.activations.total` follows from them
+/// as it does from the drop counters (see [`DropCounters::unexported`]), one
+/// atomic add per activation instead of a metric record.
+#[derive(Debug, Default)]
+pub(crate) struct ActivationCounters {
+    counts: [AtomicU64; 3],
+    exported: [AtomicU64; 3],
+}
+
+impl ActivationCounters {
+    const DELIVERIES: [&'static str; 3] = ["engine", "host", "observer_call"];
+
+    pub(crate) fn count(&self, delivery: &str) {
+        let at = Self::DELIVERIES
+            .iter()
+            .position(|known| *known == delivery)
+            .unwrap_or(0);
+        self.counts[at].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The activations counted since the last call, by delivery. One caller
+    /// at a time, as for the drops.
+    pub(crate) fn unexported(&self) -> impl Iterator<Item = (&'static str, u64)> + '_ {
+        Self::DELIVERIES
+            .into_iter()
+            .zip(self.counts.iter().zip(&self.exported))
+            .filter_map(|(delivery, (count, exported))| {
+                let total = count.load(Ordering::Relaxed);
+                let before = exported.swap(total, Ordering::Relaxed);
+                (total > before).then_some((delivery, total - before))
+            })
+    }
+}
+
+/// What an observer reads of the input of the calls it observes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InputReads {
+    /// Nothing: it neither captures nor delivers the input, nor filters on
+    /// it.
+    Nothing,
+    /// The top-level fields its filters read (sorted, each once), and no
+    /// more: it neither captures nor delivers the input.
+    Fields(Box<[Box<str>]>),
+    /// All of it.
+    Whole,
+}
+
+impl InputReads {
+    pub(crate) fn of(capture: CaptureSet, deliver: &Deliver, filter: &Filter) -> Self {
+        if capture.input || *deliver == Deliver::Input {
+            return Self::Whole;
+        }
+        if !filter.roots().input {
+            return Self::Nothing;
+        }
+        match filter.input_fields() {
+            Some(fields) if !fields.is_empty() => Self::Fields(fields.into()),
+            Some(_) => Self::Nothing,
+            None => Self::Whole,
+        }
+    }
 }
 
 /// Events dropped for one observer, by drop reason (protocol.md §4).
@@ -264,19 +595,24 @@ pub(crate) struct DropCounters {
     /// timeout) before its result could be evaluated.
     pub cancelled: AtomicU64,
     /// A report item naming the observer was malformed (an unknown
-    /// `status`).
+    /// `status`), or reported a routed call.
     pub invalid_report: AtomicU64,
     /// The event alone was larger than a limit it must fit in whole: what
     /// the engine holds for observers, or what the target worker receives.
     /// No amount of waiting makes room for it, unlike `OVERFLOW`.
     pub too_large: AtomicU64,
+    /// A fire-and-forget call through the observer from a connection that
+    /// does not host its function.
+    pub not_function_owner: AtomicU64,
+    /// A fire-and-forget call through the observer while it was not active.
+    pub observer_not_active: AtomicU64,
     /// Each counter's value when it last went to the metric, in
     /// [`Self::counters`] order (see [`Self::unexported`]).
-    exported: [AtomicU64; 8],
+    exported: [AtomicU64; 10],
 }
 
 impl DropCounters {
-    fn counters(&self) -> [(&'static str, &AtomicU64); 8] {
+    fn counters(&self) -> [(&'static str, &AtomicU64); 10] {
         [
             (observe_codes::INACTIVE, &self.inactive),
             (observe_codes::LOOP_GUARD, &self.loop_guard),
@@ -286,6 +622,11 @@ impl DropCounters {
             (CANCELLED, &self.cancelled),
             (INVALID_REPORT, &self.invalid_report),
             (observe_codes::TOO_LARGE, &self.too_large),
+            (observe_codes::NOT_FUNCTION_OWNER, &self.not_function_owner),
+            (
+                observe_codes::OBSERVER_NOT_ACTIVE,
+                &self.observer_not_active,
+            ),
         ]
     }
 
@@ -316,9 +657,8 @@ impl DropCounters {
 /// known (not in protocol.md §4, which has no such case).
 pub(crate) const CANCELLED: &str = "CANCELLED";
 
-/// Drop reason for report items that do not decode or carry a `status` this
-/// engine does not know. Not in protocol.md §4's list, which has no reason
-/// for a malformed report.
+/// Drop reason for report items that do not decode, carry a `status` this
+/// engine does not know, or report a routed call (decision 38).
 pub(crate) const INVALID_REPORT: &str = "INVALID_REPORT";
 
 /// Activations that started and did not complete, by reason. Not drops: the
@@ -332,6 +672,21 @@ pub(crate) struct FailureCounters {
     pub target_unavailable: AtomicU64,
     /// The target answered with an error.
     pub target_error: AtomicU64,
+}
+
+/// What an observer counts once it does something: the events it dropped,
+/// the activations it started and those that failed, and when it last
+/// logged a warning. Made the first time it counts anything, so an observer
+/// that never fired nor dropped an event holds none.
+#[derive(Debug, Default)]
+pub(crate) struct Counters {
+    pub drops: DropCounters,
+    pub activations: ActivationCounters,
+    pub failures: FailureCounters,
+    pub last_loop_warn_ms: AtomicU64,
+    /// When a `TOO_LARGE` drop was last logged (see
+    /// [`super::dispatch::drop_too_large`]).
+    pub last_too_large_warn_ms: AtomicU64,
 }
 
 /// Activation failure reasons (`iii.observer.activation.failures.total`).
@@ -437,36 +792,58 @@ struct Timers {
 /// One `iii.observe(source, target)`.
 pub struct Observer {
     pub id: String,
-    /// The observed function, `(namespace, function_id)`.
-    pub function: FnKey,
-    /// The function each activation invokes.
-    pub target: FnKey,
-    pub(crate) spec: ObserveSpec,
+    /// The observed function, `(namespace, function_id)`, shared with the
+    /// function's other observers, its entry and its active set.
+    pub function: Arc<FnKey>,
+    /// The function each activation invokes, shared with the other
+    /// observers that invoke it.
+    pub target: Arc<FnKey>,
+    /// The spec its observing worker asked for, kept only when it differs
+    /// from what the observer's own fields give (a registration hook or a
+    /// function prefix rewrote it): see [`Observer::spec_matches`].
+    spec: Option<Box<ObserveSpec>>,
     /// `{}` when the observer has none.
     pub args: Value,
     pub filter: Filter,
     pub(crate) capture: CaptureSet,
-    pub on: On,
-    pub deliver: Deliver,
+    pub(crate) deliver: Deliver,
     /// The activation's metadata sidecar.
     pub metadata: Option<Value>,
     pub(crate) policy: Policy,
     pub created_at_ms: u64,
     /// Filter paths that could not be verified at creation.
     pub(crate) warnings: Vec<String>,
-    observing: Mutex<Observing>,
-    status: Mutex<Status>,
+    status: Lock<Status>,
+    /// `status.state` is `active`: set with it, under the status lock, and
+    /// read without the lock (the routed hook reads it on every activation).
+    active: AtomicBool,
     pub(crate) fires: AtomicU64,
-    pub(crate) drops: DropCounters,
-    pub(crate) failures: FailureCounters,
-    pub(crate) flow: Mutex<Flow>,
-    timers: Mutex<Timers>,
-    pub(crate) last_loop_warn_ms: AtomicU64,
-    /// When a `TOO_LARGE` drop was last logged (see
-    /// [`super::dispatch::drop_too_large`]).
-    pub(crate) last_too_large_warn_ms: AtomicU64,
-    /// Set for an observer the legacy shim made from a `RegisterTrigger`.
-    pub(crate) legacy: Option<LegacyBinding>,
+    /// Its counters, made when it first counts something (see
+    /// [`Counters`]).
+    counters: std::sync::OnceLock<Box<Counters>>,
+    /// What it reads of a call's input, from its capture, deliver and
+    /// filters, which never change.
+    pub(crate) input_reads: InputReads,
+    pub(crate) flow: Lock<Flow>,
+    timers: Lock<Timers>,
+    /// A timer was ever set in `timers`: until then, cancelling them takes
+    /// no lock.
+    timed: AtomicBool,
+    /// Its place in its function's creation order, given when it joins the
+    /// function's observers ([`ObserverRegistry::attach_to_function`]): `0`
+    /// until then.
+    seq: AtomicU64,
+    /// It is one of its function's live observers: set as it joins them and
+    /// cleared as it leaves, under the function's observers lock.
+    member: AtomicBool,
+    /// The function entry it joined (see [`Observer::joined_entry`]).
+    joined: std::sync::OnceLock<std::sync::Weak<super::owner::FunctionEntry>>,
+    /// Its function's active set in the routed view holds it: set and
+    /// cleared with the set, under the registry's `rebuild` lock.
+    in_active_set: AtomicBool,
+    /// The engine created it for one of its own modules
+    /// ([`super::ENGINE_CONNECTION`] observes it, for its whole life).
+    engine_owned: bool,
 }
 
 impl Drop for Observer {
@@ -479,88 +856,273 @@ impl Drop for Observer {
 /// Everything `Observer::new` needs; the registry builds it after validation.
 pub(crate) struct NewObserver {
     pub id: String,
-    pub function: FnKey,
-    pub target: FnKey,
-    pub spec: ObserveSpec,
+    pub function: Arc<FnKey>,
+    pub target: Arc<FnKey>,
+    /// The spec its observing worker asked for; `None` when the observer's
+    /// own fields are its spec.
+    pub spec: Option<ObserveSpec>,
     pub args: Value,
     pub filter: Filter,
     pub capture: CaptureSet,
-    pub on: On,
     pub deliver: Deliver,
     pub metadata: Option<Value>,
     pub policy: Policy,
     pub warnings: Vec<String>,
     pub observing: Observing,
     pub flags: Flags,
-    pub legacy: Option<LegacyTrigger>,
 }
 
 impl Observer {
     pub(crate) fn new(new: NewObserver) -> Self {
-        let observer = Self {
+        let input_reads = InputReads::of(new.capture, &new.deliver, &new.filter);
+        let engine_owned = new.observing.connection == super::ENGINE_CONNECTION;
+        let spec = new.spec;
+        let mut observer = Self {
             id: new.id,
             function: new.function,
             target: new.target,
-            spec: new.spec,
+            spec: None,
             args: new.args,
             filter: new.filter,
             capture: new.capture,
-            on: new.on,
             deliver: new.deliver,
             metadata: new.metadata,
             policy: new.policy,
             created_at_ms: now_ms(),
             warnings: new.warnings,
-            observing: Mutex::new(new.observing),
-            status: Mutex::new(Status {
+            status: Lock::new(Status {
                 flags: new.flags,
                 state: ObserverState::Pending,
-                reason: None,
+                why: Why::Nothing,
+                observing: new.observing,
             }),
+            active: AtomicBool::new(false),
             fires: AtomicU64::new(0),
-            drops: DropCounters::default(),
-            failures: FailureCounters::default(),
-            flow: Mutex::new(Flow::default()),
-            timers: Mutex::new(Timers::default()),
-            last_loop_warn_ms: AtomicU64::new(0),
-            last_too_large_warn_ms: AtomicU64::new(0),
-            legacy: new.legacy.map(|trigger| LegacyBinding {
-                trigger,
-                answered: AtomicBool::new(false),
-            }),
+            counters: std::sync::OnceLock::new(),
+            input_reads,
+            flow: Lock::new(Flow::default()),
+            timers: Lock::new(Timers::default()),
+            timed: AtomicBool::new(false),
+            seq: AtomicU64::new(0),
+            member: AtomicBool::new(false),
+            joined: std::sync::OnceLock::new(),
+            in_active_set: AtomicBool::new(false),
+            engine_owned,
         };
+        if let Some(spec) = spec
+            && !observer.has_spec(&spec)
         {
-            let mut status = lock(&observer.status);
-            let (state, reason) = status.flags.state(&observer);
+            observer.spec = Some(Box::new(spec));
+        }
+        {
+            let status = observer.status.get_mut();
+            let (state, why) = status.flags.state();
             if state == ObserverState::Active {
                 status.flags.activated_once = true;
+                *observer.active.get_mut() = true;
             }
             status.state = state;
-            status.reason = reason;
+            status.why = why;
         }
         observer
     }
 
+    /// The spec its observing worker asked for, when a registration hook or
+    /// a function prefix rewrote it; `None` when its own fields give it.
+    pub(crate) fn requested_spec(&self) -> Option<&ObserveSpec> {
+        self.spec.as_deref()
+    }
+
+    /// Whether `spec` is the one this observer was created with: a replay
+    /// with the same id must carry it (`OBSERVER_ID_CONFLICT` otherwise).
+    pub(crate) fn spec_matches(&self, spec: &ObserveSpec) -> bool {
+        match &self.spec {
+            Some(own) => **own == *spec,
+            None => self.has_spec(spec),
+        }
+    }
+
+    /// Whether the observer's own fields give `spec`.
+    fn has_spec(&self, spec: &ObserveSpec) -> bool {
+        spec.function == *self.function
+            && spec.target == *self.target
+            && spec.args == self.args
+            && self.filter.normalized_eq(&spec.filters)
+            && spec.capture == self.capture
+            && spec.deliver == self.deliver
+            && spec.metadata == self.metadata
+            && spec.max_fires == self.policy.max_fires
+            && spec.expires_in_ms == self.policy.expires_in_ms
+            && spec.max_in_flight == self.policy.max_in_flight
+    }
+
     pub fn state(&self) -> ObserverState {
-        lock(&self.status).state.clone()
+        self.status.read().state.clone()
     }
 
     pub fn reason(&self) -> Option<ErrorBody> {
-        lock(&self.status).reason.clone()
+        self.status.read().reason(self)
     }
 
+    /// Whether its state reason's code is `code`, read without building the
+    /// reason.
+    pub(crate) fn reason_is(&self, code: &str) -> bool {
+        self.status.read().reason_is(code)
+    }
+
+    /// Whether it is `active`, read without the status lock.
     pub fn is_active(&self) -> bool {
-        lock(&self.status).state == ObserverState::Active
+        self.active.load(Ordering::Acquire)
+    }
+
+    /// Whether a fire it has already counted runs: it is `active`, or it
+    /// was disposed for reaching `max_fires`. That disposal keeps the queue,
+    /// so every fire counted within `max_fires` runs, including one whose
+    /// activation the last fire overtook. Any other state drops the fire.
+    ///
+    /// `active` is stored with the state, under the status lock, so an
+    /// active observer answers without taking the lock: what each activation
+    /// asks under its flow lock, its observer's queue full or not.
+    pub(crate) fn runs_counted_fires(&self) -> bool {
+        if self.is_active() {
+            return true;
+        }
+        let status = self.status.read();
+        match status.state {
+            ObserverState::Active => true,
+            ObserverState::Disposed => status
+                .flags
+                .disposed
+                .as_deref()
+                .is_some_and(|reason| reason.code == observe_codes::MAX_FIRES),
+            _ => false,
+        }
+    }
+
+    /// Whether it was disposed: set before its disposal takes it out of any
+    /// index.
+    pub(crate) fn is_disposed(&self) -> bool {
+        self.status.read().flags.disposed.is_some()
+    }
+
+    /// Runs `f` with the state and what builds its reason, holding the
+    /// status lock: no transition happens meanwhile.
+    pub(crate) fn with_state<R>(
+        &self,
+        f: impl FnOnce(&ObserverState, &dyn Fn() -> Option<ErrorBody>) -> R,
+    ) -> R {
+        let status = self.status.write();
+        f(&status.state, &|| status.reason(self))
     }
 
     /// State and reason read together.
     pub fn snapshot_state(&self) -> (ObserverState, Option<ErrorBody>) {
-        let status = lock(&self.status);
-        (status.state.clone(), status.reason.clone())
+        let status = self.status.read();
+        (status.state.clone(), status.reason(self))
     }
 
     pub(crate) fn observing(&self) -> Observing {
-        lock(&self.observing).clone()
+        self.status.read().observing.clone()
+    }
+
+    /// The observing connection, read without copying the rest of
+    /// [`Self::observing`].
+    pub(crate) fn observing_connection(&self) -> Uuid {
+        self.status.read().observing.connection
+    }
+
+    /// The observing connection's session, read without copying the rest of
+    /// [`Self::observing`]: what each activation runs with.
+    pub(crate) fn observing_session(
+        &self,
+    ) -> Option<Arc<crate::workers::worker::rbac_session::Session>> {
+        self.status.read().observing.session.clone()
+    }
+
+    /// Its counters, to count with: made the first time.
+    pub(crate) fn counters(&self) -> &Counters {
+        self.counters.get_or_init(Box::default)
+    }
+
+    /// Its counters, when it counted anything: reading them makes none.
+    pub(crate) fn counted(&self) -> Option<&Counters> {
+        self.counters.get().map(|counters| &**counters)
+    }
+
+    /// What it dropped, by reason (see [`DropCounters::snapshot`]).
+    pub(crate) fn drop_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.drops.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// Its activations that failed, by reason (see
+    /// [`FailureCounters::snapshot`]).
+    pub(crate) fn failure_snapshot(&self) -> BTreeMap<String, u64> {
+        self.counted()
+            .map(|counters| counters.failures.snapshot())
+            .unwrap_or_default()
+    }
+
+    /// The worker name and namespace of its observing worker.
+    pub(crate) fn observing_names(&self) -> (Option<Arc<str>>, Arc<str>) {
+        let status = self.status.read();
+        (
+            status.observing.worker_name.clone(),
+            status.observing.namespace.clone(),
+        )
+    }
+
+    /// The `function_id` label of its metrics: its function's id. Made for
+    /// the records that carry it, so an observer at rest holds no copy.
+    pub(crate) fn function_label(&self) -> Arc<str> {
+        Arc::from(self.function.1.as_str())
+    }
+
+    /// Whether the engine created this observer for one of its own modules.
+    pub fn is_engine_owned(&self) -> bool {
+        self.engine_owned
+    }
+
+    /// Its place in its function's creation order; `None` before it joined
+    /// its function's observers.
+    pub(crate) fn seq(&self) -> Option<u64> {
+        match self.seq.load(Ordering::Acquire) {
+            0 => None,
+            seq => Some(seq),
+        }
+    }
+
+    pub(crate) fn set_seq(&self, seq: u64) {
+        self.seq.store(seq, Ordering::Release);
+    }
+
+    /// Whether it is one of its function's live observers.
+    pub(crate) fn is_member(&self) -> bool {
+        self.member.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_member(&self, member: bool) {
+        self.member.store(member, Ordering::Release);
+    }
+
+    /// The function entry it joined, while that entry is kept: the live one
+    /// for its function as long as the observer is one of its members.
+    pub(crate) fn joined_entry(&self) -> Option<Arc<super::owner::FunctionEntry>> {
+        self.joined.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    pub(crate) fn set_joined_entry(&self, entry: &Arc<super::owner::FunctionEntry>) {
+        let _ = self.joined.set(Arc::downgrade(entry));
+    }
+
+    /// Whether its function's active set holds it (read under `rebuild`).
+    pub(crate) fn in_active_set(&self) -> bool {
+        self.in_active_set.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_in_active_set(&self, held: bool) {
+        self.in_active_set.store(held, Ordering::Release);
     }
 
     pub fn fires(&self) -> u64 {
@@ -568,27 +1130,37 @@ impl Observer {
     }
 
     pub(crate) fn set_observing(&self, observing: Observing) {
-        *lock(&self.observing) = observing;
+        self.status.write().observing = observing;
     }
 
     pub(crate) fn set_expiry_timer(&self, handle: tokio::task::AbortHandle) {
-        lock(&self.timers).expiry = Some(handle);
+        let mut timers = self.timers.write();
+        timers.expiry = Some(handle);
+        self.timed.store(true, Ordering::Release);
     }
 
     pub(crate) fn set_ack_timer(&self, handle: tokio::task::AbortHandle) {
-        if let Some(previous) = lock(&self.timers).ack.replace(handle) {
+        let mut timers = self.timers.write();
+        self.timed.store(true, Ordering::Release);
+        if let Some(previous) = timers.ack.replace(handle) {
             previous.abort();
         }
     }
 
     pub(crate) fn cancel_ack_timer(&self) {
-        if let Some(handle) = lock(&self.timers).ack.take() {
+        if !self.timed.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(handle) = self.timers.write().ack.take() {
             handle.abort();
         }
     }
 
     fn cancel_timers(&self) {
-        let mut timers = lock(&self.timers);
+        if !self.timed.load(Ordering::Acquire) {
+            return;
+        }
+        let mut timers = self.timers.write();
         for handle in [timers.expiry.take(), timers.ack.take()]
             .into_iter()
             .flatten()
@@ -604,17 +1176,40 @@ impl Observer {
     }
 
     /// The flags, for decisions that depend on more than the state.
+    #[cfg(test)]
     pub(crate) fn flags(&self) -> Flags {
-        lock(&self.status).flags.clone()
+        self.status.read().flags.clone()
+    }
+
+    /// Runs `f` with the flags, holding the status lock: for decisions that
+    /// depend on more than the state, without copying them.
+    pub(crate) fn with_flags<R>(&self, f: impl FnOnce(&Flags) -> R) -> R {
+        f(&self.status.read().flags)
+    }
+
+    /// The announcement the observer waits for its owner to answer: told,
+    /// and neither acked, failed nor disposed since. `None` otherwise.
+    pub(crate) fn awaited_announcement(&self) -> Option<Announcement> {
+        let status = self.status.read();
+        let flags = &status.flags;
+        flags
+            .announced
+            .filter(|_| !flags.owner_acked && flags.failed.is_none() && flags.disposed.is_none())
     }
 
     /// Clears the owner announcement (no state depends on it) and returns
-    /// it, with whether the owner had rejected the observer.
-    pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool) {
-        let mut status = lock(&self.status);
-        let announced = status.flags.announced.take();
-        let rejected = std::mem::take(&mut status.flags.rejected_by_owner);
-        (announced, rejected)
+    /// it, with whether the owner had rejected the observer, whether it had
+    /// acked it, and whether it failed for not acking it in time.
+    pub(crate) fn take_announcement(&self) -> (Option<Announcement>, bool, bool, bool) {
+        let mut status = self.status.write();
+        let flags = &mut status.flags;
+        let announced = flags.announced.take();
+        let rejected = std::mem::take(&mut flags.rejected_by_owner);
+        let timed_out = flags
+            .failed
+            .as_ref()
+            .is_some_and(|error| error.code == observe_codes::OWNER_TIMEOUT);
+        (announced, rejected, flags.owner_acked, timed_out)
     }
 }
 
@@ -624,6 +1219,12 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The lock an observer's status, and a function entry's parts, are kept
+/// under: dashmap's `RwLock` (lock_api over parking_lot_core), the lock the
+/// registry's maps take. While nobody else holds it, taking it is one
+/// compare-exchange, with no allocation and no system call.
+pub(crate) type Lock<T> = dashmap::RwLock<T>;
+
 pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -631,7 +1232,10 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// Live observers by state, for the `iii.observers` gauge.
+/// Live observers by state, for the `iii.observers` gauge: counted on every
+/// transition, and sent to the gauge every
+/// [`DROP_EXPORT_INTERVAL`](super::dispatch::DROP_EXPORT_INTERVAL) with the
+/// drop counts ([`ObserverRegistry::export_drops`]).
 #[derive(Default)]
 pub(crate) struct StateCounts {
     pending: AtomicI64,
@@ -653,15 +1257,13 @@ impl StateCounts {
 
     pub fn enter(&self, state: &ObserverState) {
         if let Some(slot) = self.slot(state) {
-            let count = slot.fetch_add(1, Ordering::Relaxed) + 1;
-            record_state_gauge(state, count);
+            slot.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     pub fn leave(&self, state: &ObserverState) {
         if let Some(slot) = self.slot(state) {
-            let count = slot.fetch_sub(1, Ordering::Relaxed) - 1;
-            record_state_gauge(state, count);
+            slot.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -670,78 +1272,185 @@ impl StateCounts {
             .map(|slot| slot.load(Ordering::Relaxed))
             .unwrap_or_default()
     }
+
+    /// Sends each count to the `iii.observers` gauge.
+    pub fn record(&self) {
+        let Some(metrics) = super::metrics() else {
+            return;
+        };
+        for (label, slot) in [
+            ("pending", &self.pending),
+            ("active", &self.active),
+            ("suspended", &self.suspended),
+            ("error", &self.error),
+        ] {
+            metrics.observers.record(
+                slot.load(Ordering::Relaxed),
+                &[opentelemetry::KeyValue::new("state", label)],
+            );
+        }
+    }
 }
 
-fn record_state_gauge(state: &ObserverState, count: i64) {
-    if let Some(metrics) = super::metrics() {
-        metrics.observers.record(
-            count,
-            &[opentelemetry::KeyValue::new("state", state.to_string())],
-        );
-    }
+/// A state change made under an observer's status lock
+/// ([`ObserverRegistry::transition`]), for [`ObserverRegistry::settle`] once
+/// the lock is released.
+#[must_use = "a transition is settled once the status lock is released"]
+pub(super) struct Transition {
+    became: ObserverState,
+    unqueued: Option<super::events::UnqueuedEvent>,
+    activeness_changed: bool,
+}
+
+/// What [`ObserverRegistry::settle_deferring_refresh`] leaves its caller.
+#[must_use = "the active set follows, then a disposed observer is forgotten"]
+pub(super) struct Settled {
+    /// Activeness changed: the observer joins its function's active set or
+    /// leaves it.
+    pub refresh: bool,
+    /// It was disposed: [`ObserverRegistry::forget`] drops it.
+    pub disposed: bool,
 }
 
 impl ObserverRegistry {
     /// Applies `change` to `observer`'s flags and re-derives its state. On a
     /// change, the observing worker hears about it (`observerstatechanged`),
-    /// the function's active set is rebuilt when activeness changed, and a
-    /// disposed observer is forgotten.
+    /// `engine::on-observers-changed` is called, the observer joins or leaves
+    /// its function's active set when activeness changed, and a disposed
+    /// observer is forgotten.
     pub(crate) fn update(&self, observer: &Arc<Observer>, change: impl FnOnce(&mut Flags)) {
-        let (became, activeness_changed) = {
-            let mut status = lock(&observer.status);
-            change(&mut status.flags);
-            let (state, reason) = status.flags.state(observer);
-            let same_reason =
-                status.reason.as_ref().map(|r| &r.code) == reason.as_ref().map(|r| &r.code);
-            if state == status.state && same_reason {
-                return;
-            }
-            let was_active = status.state == ObserverState::Active;
-            self.state_counts.leave(&status.state);
-            self.state_counts.enter(&state);
-            if state == ObserverState::Active {
-                status.flags.activated_once = true;
-            }
-            status.state = state.clone();
-            status.reason = reason.clone();
-            // Under the status lock, so one observer's transitions reach its
-            // observing worker in the order they happened. A legacy
-            // observer's registrant asked for a trigger, not an observer: it
-            // hears how the registration ended, once.
-            if observer.legacy.is_some() {
-                match &state {
-                    ObserverState::Active => self.answer_legacy(observer, None),
-                    ObserverState::Error => self.answer_legacy(observer, reason),
-                    _ => {}
-                }
-            } else {
-                self.notify(
-                    observer.observing().connection,
-                    Message::ObserverStateChanged {
-                        id: observer.id.clone(),
-                        state: state.clone(),
-                        reason,
-                        fires: observer.fires(),
-                    },
-                );
-            }
-            (state, was_active != (status.state == ObserverState::Active))
-        };
+        if let Some(transition) = self.transition(observer, change) {
+            self.settle(observer, transition);
+        }
+    }
+
+    /// The part of [`Self::update`] done under `observer`'s status lock:
+    /// applies `change`, re-derives the state and, on a change, tells the
+    /// observing worker (`observerstatechanged`) and hands
+    /// `engine::on-observers-changed` its call, so one observer's transitions
+    /// reach both in the order they happened. `None` when the state and its
+    /// reason stayed the same. The caller settles a transition
+    /// ([`Self::settle`]).
+    pub(super) fn transition(
+        &self,
+        observer: &Arc<Observer>,
+        change: impl FnOnce(&mut Flags),
+    ) -> Option<Transition> {
+        self.transition_telling(observer, change, true)
+    }
+
+    /// [`Self::transition`], telling the observing worker only when `tell`:
+    /// not when its connection is gone (it learns its observers' states
+    /// again when it reattaches or replays them).
+    pub(super) fn transition_telling(
+        &self,
+        observer: &Arc<Observer>,
+        change: impl FnOnce(&mut Flags),
+        tell: bool,
+    ) -> Option<Transition> {
+        let mut status = observer.status.write();
+        self.transition_locked(observer, &mut status, change, tell)
+    }
+
+    /// [`Self::transition_telling`] under the status lock the caller holds.
+    fn transition_locked(
+        &self,
+        observer: &Arc<Observer>,
+        status: &mut Status,
+        change: impl FnOnce(&mut Flags),
+        tell: bool,
+    ) -> Option<Transition> {
+        change(&mut status.flags);
+        let (state, why) = status.flags.state();
+        if state == status.state && why == status.why {
+            return None;
+        }
+        let was_active = status.state == ObserverState::Active;
+        self.state_counts.leave(&status.state);
+        self.state_counts.enter(&state);
+        if state == ObserverState::Active {
+            status.flags.activated_once = true;
+        }
+        observer
+            .active
+            .store(state == ObserverState::Active, Ordering::Release);
+        status.state = state.clone();
+        status.why = why;
+        let unqueued = self.observer_changed(observer, &state, &|| status.reason(observer));
+        // The engine hears nothing about the observers it owns.
+        if tell && !observer.is_engine_owned() {
+            self.notify(
+                status.observing.connection,
+                Message::ObserverStateChanged {
+                    id: observer.id.clone(),
+                    state: state.clone(),
+                    reason: status.reason(observer),
+                    fires: observer.fires(),
+                },
+            );
+        }
+        Some(Transition {
+            activeness_changed: was_active != (state == ObserverState::Active),
+            became: state,
+            unqueued,
+        })
+    }
+
+    /// The part of [`Self::update`] done once `observer`'s status lock is
+    /// released: the `engine::on-observers-changed` call no evaluator took is
+    /// evaluated, an observer in `disposed` or `error` leaves its owner's set
+    /// (`observerremoved`), the observer joins or leaves its function's
+    /// active set when activeness changed, and a disposed observer is
+    /// forgotten.
+    pub(super) fn settle(&self, observer: &Arc<Observer>, transition: Transition) {
+        let releases_returning = matches!(
+            &transition.became,
+            ObserverState::Disposed | ObserverState::Error
+        ) && observer.with_flags(|flags| flags.returning);
+        let settled = self.settle_deferring_refresh(observer, transition);
+        if settled.refresh {
+            self.refresh_observer(observer);
+        }
+        if settled.disposed {
+            self.forget(observer);
+        }
+        if releases_returning && let Some(registry) = self.this() {
+            registry.announce_returned(std::slice::from_ref(observer));
+        }
+    }
+
+    /// [`Self::settle`] but for the change of its function's active set and
+    /// the disposed observer's forgetting, which the caller does, in that
+    /// order: put the observer in its active set or take it out when
+    /// activeness changed ([`Self::refresh_observers`] does many at once),
+    /// then forget it if it was disposed.
+    pub(super) fn settle_deferring_refresh(
+        &self,
+        observer: &Arc<Observer>,
+        transition: Transition,
+    ) -> Settled {
+        let Transition {
+            became,
+            unqueued,
+            activeness_changed,
+        } = transition;
         tracing::debug!(observer_id = %observer.id, state = %became, "observer state changed");
+        if let Some(event) = unqueued {
+            event.evaluate();
+        }
 
         if became == ObserverState::Disposed || became == ObserverState::Error {
             // Out of the owner's set: it hears `observerremoved`.
             self.withdraw_from_owner(observer);
-            let drop_queue = !matches!(
-                observer.reason().map(|r| r.code),
-                Some(code) if code == observe_codes::MAX_FIRES
-            );
-            if drop_queue {
-                let dropped = std::mem::take(&mut lock(&observer.flow).queue).len() as u64;
-                observer
-                    .drops
-                    .inactive
-                    .fetch_add(dropped, Ordering::Relaxed);
+            if !observer.reason_is(observe_codes::MAX_FIRES) {
+                let dropped = std::mem::take(&mut observer.flow.write().queue).len() as u64;
+                if dropped > 0 {
+                    observer
+                        .counters()
+                        .drops
+                        .inactive
+                        .fetch_add(dropped, Ordering::Relaxed);
+                }
             }
         }
         if became != ObserverState::Active {
@@ -749,17 +1458,15 @@ impl ObserverRegistry {
             // queue reads on: its events no longer reach the queue.
             self.queue_budget.room.notify_waiters();
         }
-        if activeness_changed {
-            self.refresh_active(&observer.function);
-        }
-        if became == ObserverState::Disposed {
-            self.forget(observer);
+        Settled {
+            refresh: activeness_changed,
+            disposed: became == ObserverState::Disposed,
         }
     }
 
     /// Disposes `observer` with `code` as the state reason.
     pub(crate) fn dispose(&self, observer: &Arc<Observer>, code: &str, message: impl Into<String>) {
-        let reason = ErrorBody::new(code, message);
+        let reason = Arc::new(ErrorBody::new(code, message));
         self.update(observer, |flags| {
             if flags.disposed.is_none() {
                 flags.disposed = Some(reason);
@@ -767,42 +1474,184 @@ impl ObserverRegistry {
         });
     }
 
-    /// Moves `observer` to `error`: a rejection that arrived after creation.
-    pub(crate) fn fail(&self, observer: &Arc<Observer>, error: ErrorBody) {
+    /// Disposes `observer` at the request of whoever observes with it (its
+    /// observing worker, or the engine for its own): as [`Self::dispose`],
+    /// with no tombstone, since that observer replays no handle it disposed.
+    /// The reason is shared by every such disposal.
+    pub(crate) fn dispose_unobserved(&self, observer: &Arc<Observer>) {
+        static BY_WORKER: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        static BY_ENGINE: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        let (reason, message) = if observer.is_engine_owned() {
+            (&BY_ENGINE, "disposed by the engine")
+        } else {
+            (&BY_WORKER, "disposed by its observing worker")
+        };
+        let reason = reason
+            .get_or_init(|| Arc::new(ErrorBody::new(observe_codes::UNOBSERVED, message)))
+            .clone();
         self.update(observer, |flags| {
-            if flags.failed.is_none() {
-                flags.failed = Some(error);
+            if flags.disposed.is_none() {
+                flags.disposed = Some(reason);
+                flags.tombstone = false;
             }
         });
     }
 
-    /// Drops every index entry of a disposed observer.
-    fn forget(&self, observer: &Arc<Observer>) {
-        observer.cancel_timers();
-        self.by_id
-            .remove_if(&observer.id, |_, current| Arc::ptr_eq(current, observer));
-        let connection = observer.observing().connection;
-        self.remember_tombstone(
-            observer.id.clone(),
-            Tombstone {
-                connection,
-                reason: observer.reason().unwrap_or_else(|| {
-                    ErrorBody::new(observe_codes::UNOBSERVED, "the observer was disposed")
-                }),
-                until: Instant::now()
-                    + std::time::Duration::from_millis(self.config().observer_grace_ms),
+    /// Answers the replayed `observe` of `observer` from `connection`, its
+    /// observing connection, deciding and answering under its status lock, so no
+    /// transition comes between the two. An observer in `error` is refused
+    /// with that error, its handle's last answer (decision 56): it is
+    /// disposed as it answers, so the worker holds nothing under the id any
+    /// more, and neither does the engine. Nothing more is sent about it, and
+    /// no tombstone is left; the caller sends the refusal, the `Err`. Any
+    /// other observer is answered with its current state (a `disposed` one
+    /// with why), and from then on that connection hears its disposal in
+    /// order (see [`Observing::answered`]).
+    pub(crate) fn answer_replay(
+        &self,
+        observer: &Arc<Observer>,
+        connection: Uuid,
+    ) -> Result<(), ErrorBody> {
+        static REFUSED: std::sync::OnceLock<Arc<ErrorBody>> = std::sync::OnceLock::new();
+        let mut status = observer.status.write();
+        if status.flags.disposed.is_none()
+            && let Some(failed) = status.flags.failed.clone()
+        {
+            let transition = self.transition_locked(
+                observer,
+                &mut status,
+                |flags| {
+                    flags.disposed = Some(
+                        REFUSED
+                            .get_or_init(|| {
+                                Arc::new(ErrorBody::new(
+                                    observe_codes::UNOBSERVED,
+                                    "its replayed observe was refused with its error",
+                                ))
+                            })
+                            .clone(),
+                    );
+                    flags.tombstone = false;
+                },
+                false,
+            );
+            drop(status);
+            if let Some(transition) = transition {
+                self.settle(observer, transition);
+            }
+            return Err(ErrorBody::clone(&failed));
+        }
+        status.observing.answered = true;
+        let state = status.state.clone();
+        let error = (state == ObserverState::Disposed)
+            .then(|| status.reason(observer))
+            .flatten();
+        self.notify(
+            connection,
+            Message::ObserveResult {
+                id: observer.id.clone(),
+                state,
+                error,
+                warnings: observer.warnings.clone(),
             },
         );
-        if let Some(mut ids) = self.by_connection.get_mut(&connection) {
-            ids.remove(&observer.id);
-        }
+        Ok(())
+    }
+
+    /// Moves `observer` to `error`: a rejection that arrived after creation.
+    pub(crate) fn fail(&self, observer: &Arc<Observer>, error: ErrorBody) {
+        self.update(observer, |flags| {
+            if flags.failed.is_none() {
+                flags.failed = Some(Arc::new(error));
+            }
+        });
+    }
+
+    /// Files `observer`, just given its id in `by_id`, under `connection` and
+    /// under its target. Called under its status lock (see
+    /// [`Self::publish`]): its disposal, which takes that lock first, always
+    /// finds both entries to take out.
+    pub(super) fn index(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
         self.by_connection
-            .remove_if(&connection, |_, ids| ids.is_empty());
-        if let Some(mut ids) = self.by_target.get_mut(&observer.target) {
-            ids.remove(&observer.id);
+            .entry(connection)
+            .or_default()
+            .insert(held.clone());
+        match self.by_target.get_mut(&observer.target) {
+            Some(mut targeting) => {
+                targeting.insert(held);
+            }
+            None => {
+                self.by_target
+                    .entry(observer.target.clone())
+                    .or_default()
+                    .insert(held);
+            }
         }
+    }
+
+    /// Takes `observer`'s entries out of the connection and target indexes:
+    /// its own, not those of another observer under the same id.
+    fn unindex(&self, observer: &Arc<Observer>, connection: Uuid) {
+        let held = Held(observer.clone());
+        self.by_connection
+            .remove_if_mut(&connection, |_, observing| {
+                observing.remove(&held);
+                observing.is_empty()
+            });
         self.by_target
-            .remove_if(&observer.target, |_, ids| ids.is_empty());
+            .remove_if_mut(&observer.target, |_, targeting| {
+                targeting.remove(&held);
+                targeting.is_empty()
+            });
+    }
+
+    /// Drops every index entry of a disposed observer. Its observing worker
+    /// replaying it later learns why it is gone from its tombstone, unless
+    /// that worker disposed of it, or the engine owns it (the engine replays
+    /// nothing). A connected worker that had the observer's answer hears the
+    /// disposal itself, so the tombstone answers no `observe` of its own on
+    /// that connection: the id is free for it at once (decision 56).
+    pub(super) fn forget(&self, observer: &Arc<Observer>) {
+        observer.cancel_timers();
+        self.by_id.remove_if(observer.id.as_str(), |current, _| {
+            Arc::ptr_eq(&current.0, observer)
+        });
+        let (connection, connected, answered, tombstone, reason) = {
+            let status = observer.status.read();
+            (
+                status.observing.connection,
+                status.flags.observing_connected,
+                status.observing.answered,
+                status.flags.tombstone,
+                status.flags.disposed.clone(),
+            )
+        };
+        if tombstone && !observer.is_engine_owned() {
+            let id: Arc<str> = Arc::from(observer.id.as_str());
+            let until = Instant::now()
+                + std::time::Duration::from_millis(self.config.load().observer_grace_ms);
+            self.remember_tombstone(
+                id.clone(),
+                Tombstone {
+                    connection,
+                    reason: reason.unwrap_or_else(|| {
+                        Arc::new(ErrorBody::new(
+                            observe_codes::UNOBSERVED,
+                            "the observer was disposed",
+                        ))
+                    }),
+                    until,
+                    heard: answered && connected,
+                },
+            );
+            // Before the observer leaves the connection's index: a close
+            // that finds it gone from there finds its tombstone here.
+            if connected {
+                self.note_tombstones(connection, [(until, id)]);
+            }
+        }
+        self.unindex(observer, connection);
         self.detach_from_function(observer);
     }
 
@@ -811,7 +1660,7 @@ impl ObserverRegistry {
     /// when there are more than [`MAX_TOMBSTONES`]: amortized constant work
     /// per disposal, however many observers churn. One that expired and was
     /// not dropped yet is ignored where it is read.
-    pub(super) fn remember_tombstone(&self, id: String, tombstone: Tombstone) {
+    pub(super) fn remember_tombstone(&self, id: Arc<str>, tombstone: Tombstone) {
         let until = tombstone.until;
         self.tombstones.insert(id.clone(), tombstone);
         let mut order = lock(&self.tombstone_order);
@@ -830,6 +1679,28 @@ impl ObserverRegistry {
         }
     }
 
+    /// Files tombstones that `connection`, a connected worker's, holds (see
+    /// `tombstoned`), each with its expiry, so its close finds them without
+    /// a scan of every tombstone. Expired ones are dropped from the front,
+    /// and the oldest past [`MAX_TOMBSTONES`]: amortized constant work per
+    /// tombstone.
+    pub(super) fn note_tombstones(
+        &self,
+        connection: Uuid,
+        tombstones: impl IntoIterator<Item = (Instant, Arc<str>)>,
+    ) {
+        let mut tombstones = tombstones.into_iter().peekable();
+        if tombstones.peek().is_none() {
+            return;
+        }
+        let now = Instant::now();
+        let mut held = self.tombstoned.entry(connection).or_default();
+        held.extend(tombstones);
+        while held.front().is_some_and(|(until, _)| *until <= now) || held.len() > MAX_TOMBSTONES {
+            held.pop_front();
+        }
+    }
+
     /// Keeps what `connection`'s observers became when its grace period
     /// ended (see [`Expired`]), for `observers.disposed_retention_ms`. Like
     /// tombstones, records expire oldest first, and the oldest are dropped
@@ -838,7 +1709,7 @@ impl ObserverRegistry {
         &self,
         connection: Uuid,
         token: Uuid,
-        disposed: Vec<(String, ErrorBody)>,
+        disposed: Vec<(Arc<str>, Arc<ErrorBody>)>,
     ) {
         let retention = std::time::Duration::from_millis(self.config().disposed_retention_ms);
         if disposed.is_empty() || retention.is_zero() {
@@ -871,20 +1742,20 @@ impl ObserverRegistry {
         }
     }
 
-    /// Sends `msg` to `connection`, after everything sent to it before. Each
-    /// connection gets one forwarding task, so a slow worker never holds up
-    /// another's notifications. A connection that is gone drops the message.
+    /// Sends `msg` to `connection`, after everything sent to it before. It
+    /// goes straight into the connection's channel while that has room and
+    /// nothing waits before it; otherwise it waits in the connection's
+    /// backlog, which one task per connection sends while it holds anything,
+    /// so a slow worker never holds up another's notifications. A connection
+    /// that is gone drops the message.
     ///
-    /// The queue is bounded ([`NOTIFY_QUEUE`]): a worker that stops reading
+    /// The backlog is bounded ([`NOTIFY_QUEUE`]): a worker that stops reading
     /// while its notifications pile up is disconnected, so it reconnects and
     /// resyncs (replayed observers, a fresh `functionregistered`) instead of
     /// the engine holding an ever-growing backlog for it.
     pub(crate) fn notify(&self, connection: Uuid, msg: Message) {
-        let existing = self
-            .notifiers
-            .get(&connection)
-            .map(|n| (n.tx.clone(), n.evict.clone()));
-        let (tx, evict) = match existing {
+        let existing = self.notifiers.get(&connection).map(|n| Arc::clone(&n));
+        let notifier = match existing {
             Some(notifier) => notifier,
             None => {
                 let Some(deps) = self.deps.get() else {
@@ -893,7 +1764,7 @@ impl ObserverRegistry {
                 let Some(worker) = deps.workers.get_worker(&connection) else {
                     return;
                 };
-                // A connection in teardown gets no new forwarder: it would
+                // A connection in teardown gets no new notifier: it would
                 // outlive the connection in `notifiers`.
                 if worker
                     .cleanup_claimed
@@ -901,55 +1772,99 @@ impl ObserverRegistry {
                 {
                     return;
                 }
-                let Some(runtime) = self.runtime() else {
-                    return;
-                };
-                let (tx, mut rx) = mpsc::channel::<Message>(NOTIFY_QUEUE);
-                let notifier = self.notifiers.entry(connection).or_insert(Notifier {
-                    tx,
-                    evict: worker.evict.clone(),
+                let notifier = self.notifiers.entry(connection).or_insert_with(|| {
+                    Arc::new(Notifier {
+                        channel: worker.channel.clone(),
+                        evict: worker.evict.clone(),
+                        backlog: Lock::new(Backlog::default()),
+                    })
                 });
-                let current = (notifier.tx.clone(), notifier.evict.clone());
-                drop(notifier);
-                // A losing racer's receiver ends with its sender, so only the
-                // winner's task outlives this call.
-                runtime.spawn(async move {
-                    while let Some(msg) = rx.recv().await {
-                        if worker.channel.send(Outbound::Protocol(msg)).await.is_err() {
-                            break;
-                        }
-                    }
-                });
-                current
+                Arc::clone(&notifier)
             }
         };
-        match tx.try_send(msg) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!(
-                    connection = %connection,
-                    queued = NOTIFY_QUEUE,
-                    "a worker is not reading its observe notifications; closing its connection \
-                     so it reconnects and resyncs"
-                );
-                self.notifiers.remove(&connection);
-                evict.notify_one();
+        let mut backlog = notifier.backlog.write();
+        if backlog.closed {
+            drop(backlog);
+            self.notifiers.remove(&connection);
+            return;
+        }
+        if !backlog.sending {
+            let msg = match notifier.channel.try_send(Outbound::Protocol(msg)) {
+                Ok(()) => return,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    drop(backlog);
+                    self.notifiers.remove(&connection);
+                    return;
+                }
+                Err(mpsc::error::TrySendError::Full(msg)) => msg,
+            };
+            let Some(runtime) = self.runtime() else {
+                return;
+            };
+            backlog.queue.push_back(msg);
+            backlog.sending = true;
+            drop(backlog);
+            runtime.spawn(send_backlog(notifier));
+            return;
+        }
+        if backlog.queue.len() >= NOTIFY_QUEUE {
+            drop(backlog);
+            tracing::warn!(
+                connection = %connection,
+                queued = NOTIFY_QUEUE,
+                "a worker is not reading its observe notifications; closing its connection \
+                 so it reconnects and resyncs"
+            );
+            self.notifiers.remove(&connection);
+            notifier.evict.notify_one();
+            return;
+        }
+        backlog.queue.push_back(Outbound::Protocol(msg));
+    }
+}
+
+/// Sends `notifier`'s backlog, oldest first, until it is empty or the
+/// connection's channel closes.
+async fn send_backlog(notifier: Arc<Notifier>) {
+    loop {
+        let msg = {
+            let mut backlog = notifier.backlog.write();
+            match backlog.queue.pop_front() {
+                Some(msg) => msg,
+                None => {
+                    backlog.sending = false;
+                    return;
+                }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.notifiers.remove(&connection);
-            }
+        };
+        if notifier.channel.send(msg).await.is_err() {
+            let mut backlog = notifier.backlog.write();
+            backlog.closed = true;
+            backlog.queue.clear();
+            return;
         }
     }
 }
 
-/// Observe notifications queued for one connection before the engine
+/// Observe notifications waiting for one connection before the engine
 /// disconnects it.
 pub(crate) const NOTIFY_QUEUE: usize = 4096;
 
-/// One connection's notification queue.
+/// One connection's notifications: its channel, and what waits for room in it.
 pub(crate) struct Notifier {
-    tx: mpsc::Sender<Message>,
+    channel: mpsc::Sender<Outbound>,
     evict: Arc<tokio::sync::Notify>,
+    backlog: Lock<Backlog>,
+}
+
+/// Notifications waiting for room in a connection's channel, oldest first.
+#[derive(Default)]
+struct Backlog {
+    queue: VecDeque<Outbound>,
+    /// A task is sending `queue`: a new notification waits behind it.
+    sending: bool,
+    /// The connection's channel closed while that task sent.
+    closed: bool,
 }
 
 #[cfg(test)]
@@ -969,7 +1884,7 @@ mod tests {
     /// queue is full, instead of the engine buffering for it without bound.
     #[tokio::test]
     async fn a_worker_that_stops_reading_its_notifications_is_evicted() {
-        let registry = ObserverRegistry::new();
+        let registry = Arc::new(ObserverRegistry::new());
         let workers = Arc::new(WorkerConnectionRegistry::new());
         let (tx, _never_drained) = mpsc::channel(1);
         let worker = WorkerConnection::new(tx);
@@ -983,7 +1898,9 @@ mod tests {
             Arc::new(DashMap::new()),
         );
 
-        for revision in 0..=NOTIFY_QUEUE as u64 {
+        // The first fills the connection's channel; the rest wait in its
+        // backlog, and the one past it closes the connection.
+        for revision in 0..=NOTIFY_QUEUE as u64 + 1 {
             registry.notify(
                 id,
                 Message::ObserverRemoved {
@@ -1003,6 +1920,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_default_capture_set_is_the_default_capture() {
+        assert_eq!(
+            CaptureSet::from_list(&crate::protocol::default_capture()),
+            CaptureSet::DEFAULT
+        );
+        // Decision 62: `[input, output, caller]`, no `metadata`.
+        assert_eq!(
+            CaptureSet::DEFAULT.to_list(),
+            vec![Capture::Input, Capture::Output, Capture::Caller]
+        );
+    }
+
+    /// `input` / `output` fire on success, `error` on error; `caller` and
+    /// `metadata` fire on nothing; `[]` fires on success; a non-empty
+    /// capture that fires on nothing is refused.
+    #[test]
+    fn capture_decides_the_outcomes_that_fire() {
+        use Capture::{Caller, Error, Input, Metadata, Output};
+        for (list, on_success, on_error) in [
+            (crate::protocol::default_capture(), true, false),
+            (vec![Input], true, false),
+            (vec![Output, Caller], true, false),
+            (vec![Input, Metadata], true, false),
+            (vec![Error, Caller], false, true),
+            (vec![Error, Metadata], false, true),
+            (vec![Error, Input], true, true),
+            (vec![Output, Error], true, true),
+            (vec![], true, false),
+        ] {
+            let set = CaptureSet::resolve(&list).expect("passes the gate");
+            assert_eq!(
+                (set.fires(true), set.fires(false)),
+                (on_success, on_error),
+                "{list:?}"
+            );
+        }
+        for list in [vec![Caller], vec![Metadata], vec![Caller, Metadata]] {
+            assert!(CaptureSet::resolve(&list).is_err(), "{list:?}");
+        }
+        assert_eq!(CaptureSet::from_list(&[]).to_list(), Vec::<Capture>::new());
+    }
     /// The metric is told each drop once: what was counted since the last
     /// export, nothing when there was none.
     #[test]

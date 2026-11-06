@@ -62,29 +62,6 @@ jobs:
   # Engine Build — critical path, produces iii binary for downstream
   # ──────────────────────────────────────────────────────────────
 
-  worker-musl:
-    name: Worker Alpine (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: |
-            target/worker-musl
-            target/${{ matrix.target }}
-            target/release
-          key: worker-musl-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'scripts/build-worker-musl.sh') }}
-      - name: Build and test in pristine Alpine
-        run: bash scripts/build-worker-musl.sh "${{ matrix.target }}"
-
   engine-build:
     name: Engine Build (artifact)
     runs-on: ubuntu-latest
@@ -96,14 +73,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: engine
-
-      - name: Install system dependencies
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Build iii (debug, all-features)
         run: cargo build --locked -p iii --all-features
@@ -157,15 +126,8 @@ jobs:
           # Fast path: GitHub runner images ship with fresh apt lists, so
           # install directly (the slow `apt-get update` refreshes every index).
           # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev lld \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev lld; }
-
-      - name: Build and install iii-worker (needed by iii integration tests)
-        run: |
-          cargo build --locked -p iii-worker
-          mkdir -p ~/.local/bin
-          cp target/debug/iii-worker ~/.local/bin/iii-worker
-          chmod +x ~/.local/bin/iii-worker
+          sudo apt-get install -y lld \
+            || { sudo apt-get update && sudo apt-get install -y lld; }
 
       - name: Run tests with coverage
         run: |
@@ -177,17 +139,14 @@ jobs:
           # so the `-C instrument-coverage` RUSTFLAGS exported above are kept.
           export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=lld"
           # cargo test runs the crate's tests (incl. doctests) parallel within
-          # each binary in one process. The VM crates run with default features
-          # only (--all-features would enable integration-vm/-oci, which need KVM
-          # and have their own jobs); iii runs with --all-features. (Process-per-
+          # each binary in one process, with --all-features. (Process-per-
           # test runners like nextest aren't used here: several engine tests rely
           # on shared in-process global state — tracing/metrics singletons,
           # ports — and aren't isolation-safe.)
-          cargo test --locked -p iii-worker -p iii-filesystem -p iii-network -p iii-init -p iii-loadtest
           cargo test --locked -p iii -p iii-sandbox-contract --all-features
           # Reports re-read the merged profdata (no recompile), so emitting the
           # terminal summary, an lcov file, and a browsable HTML tree is cheap.
-          IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|queue/adapters/rabbitmq/|^sdk/'
+          IGNORE='engine/src/main\.rs|(cron|pubsub|queue|state|stream)/adapters/(redis_adapter|bridge)\.rs|^sdk/'
           cargo llvm-cov report --ignore-filename-regex "$IGNORE"
           cargo llvm-cov report --ignore-filename-regex "$IGNORE" --lcov --output-path coverage.lcov
           cargo llvm-cov report --ignore-filename-regex "$IGNORE" --html
@@ -223,14 +182,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: engine-benches
-
-      - name: Install system dependencies
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
 
       - name: Check benches compile
         run: cargo bench --locked --benches --no-run
@@ -274,14 +225,6 @@ jobs:
         with:
           shared-key: engine
 
-      - name: Install system dependencies
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
       - name: Regenerate CLI reference pages
         run: ./scripts/generate-cli-docs.sh
 
@@ -293,37 +236,6 @@ jobs:
             echo "::error::docs/next/cli-reference is stale. Run scripts/generate-cli-docs.sh (or 'make cli-docs') and commit the result."
             exit 1
           fi
-
-  # ──────────────────────────────────────────────────────────────
-  # Engine RabbitMQ Integration Tests
-  # ──────────────────────────────────────────────────────────────
-
-  engine-rabbitmq-tests:
-    name: Engine RabbitMQ Integration Tests
-    runs-on: ubuntu-latest
-    services:
-      rabbitmq:
-        image: rabbitmq:3-management-alpine
-        ports:
-          - 5672:5672
-          - 15672:15672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics check_running" --health-interval 10s --health-timeout
-          5s --health-retries 5
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: engine
-
-      - name: Run RabbitMQ integration tests
-        env:
-          RABBITMQ_URL: amqp://localhost:5672
-          RUST_LOG: info
-        run: cargo test --locked -p iii --test rabbitmq_queue_integration -- --nocapture
 
   # ──────────────────────────────────────────────────────────────
   # Compose — supervision is platform code, so it is tested per OS
@@ -348,19 +260,59 @@ jobs:
         with:
           key: compose-test-${{ matrix.os }}
 
-      # Bundle containers reach libkrun through iii-worker, which links cap-ng.
-      - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
       # Process-group and job-object behaviour cannot be cross-checked: only the
       # host OS can prove that a teardown really reaches a worker's children.
       # The unix suites are cfg-gated, so the windows run exercises the portable
       # tests plus compilation of the job-object path.
       - name: Run compose tests
         run: cargo test --locked -p iii-compose
+
+  # ──────────────────────────────────────────────────────────────
+  # Compose on sandbox-libkrun — the spec's acceptance run: a registry bundle
+  # and a base-image worker boot in real microVMs owned by the adapter, and one
+  # sandbox::exec goes through the engine router. The adapter and the bundle
+  # are pinned in the test, so a registry release cannot turn this job red.
+  # No continue-on-error: it is meant to become a required check.
+  # ──────────────────────────────────────────────────────────────
+
+  compose-sandbox-e2e-linux:
+    name: Compose Sandbox E2E - linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: compose-sandbox-e2e-linux
+
+      # Public GitHub-hosted Linux runners expose /dev/kvm as of April 2024
+      # (github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available).
+      # The udev rule below grants the runner user direct access — required for
+      # libkrun-backed sandbox tests that boot a real microVM. Cheap no-op for
+      # any feature-gated tests that don't actually launch a guest.
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            ls -l /dev/kvm
+          else
+            echo "::warning::/dev/kvm missing on this runner image; libkrun guest boot will be unavailable"
+          fi
+
+      # The adapter needs libcap-ng at run time (a host prerequisite of sandbox-libkrun).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y libcap-ng0 \
+            || { sudo apt-get update && sudo apt-get install -y libcap-ng0; }
+
+      - name: Run the Compose sandbox e2e
+        run: cargo test --locked -p iii --test compose_sandbox_e2e -- --ignored --nocapture
 
   engine-build-matrix:
     name: Engine Build - ${{ matrix.target }}
@@ -405,357 +357,60 @@ jobs:
         run: cargo build --locked -p iii --target ${{ matrix.target }}
 
   # ──────────────────────────────────────────────────────────────
-  # Worker Build Matrix (matches release targets)
+  # SDK Test Workers — state, http, pubsub, cron and queue from
+  # iii-hq/workers at sdk/fixtures/workers-ref, built against this
+  # checkout's Rust SDK. Runs beside engine-build; every SDK job below
+  # starts its fixtures with these binaries.
   # ──────────────────────────────────────────────────────────────
 
-  worker-build-matrix:
-    name: Worker Build - ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    env:
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_PKG_CONFIG_ALLOW_CROSS: "1"
-      PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu: /usr/aarch64-linux-gnu
-      PKG_CONFIG_PATH_aarch64_unknown_linux_gnu: /usr/lib/aarch64-linux-gnu/pkgconfig
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-L/usr/lib/aarch64-linux-gnu"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: worker-${{ matrix.target }}
-
-      - name: Install system dependencies (x86_64 Linux)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
-      - name: Install cross-compilation tools (aarch64 Linux)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo dpkg --add-architecture arm64
-          sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
-          MIRROR=http://azure.ports.ubuntu.com/ubuntu-ports/
-          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs) main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
-          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          # libc6 is multi-arch and must match the security-patched version
-          # already installed for amd64 on the runner.
-          echo "deb [arch=arm64] $MIRROR $(lsb_release -cs)-security main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
-          # The amd64 cross toolchain is already indexed on the runner image, so
-          # install it directly (full `apt-get update` only as a fallback).
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
-            || { sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross; }
-          # Multi-arch libc packages must have matching versions. Refresh the
-          # amd64 index too, so apt can upgrade its installed libc6 alongside
-          # the arm64 dependency selected from the newly-added sources.
-          sudo apt-get update
-          sudo apt-get install -y libcap-ng-dev:arm64
-
-      - name: Add target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Build iii-worker for target
-        run: cargo build --locked -p iii-worker --target ${{ matrix.target }}
-
-  # ──────────────────────────────────────────────────────────────
-  # Worker Test Matrix (cross-platform integration tests)
-  # ──────────────────────────────────────────────────────────────
-
-  worker-test-matrix:
-    name: Worker Tests - ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-          - os: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: worker-test-${{ matrix.os }}
-
-      - uses: taiki-e/install-action@cargo-nextest
-
-      - name: Install system dependencies (Linux only)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
-      - name: Run iii-worker tests
-        run: cargo nextest run --locked -p iii-worker --profile ci
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: junit-worker-test-${{ matrix.os }}
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────
-  # Worker Feature-Gated Tests
-  # ──────────────────────────────────────────────────────────────
-
-  worker-test-vm-linux:
-    name: Worker Tests (VM) - linux
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: worker-test-vm-linux
-
-      - uses: taiki-e/install-action@cargo-nextest
-
-      # Public GitHub-hosted Linux runners expose /dev/kvm as of April 2024
-      # (github.blog/changelog/2024-04-02-github-actions-hardware-accelerated-android-virtualization-now-available).
-      # The udev rule below grants the runner user direct access — required for
-      # libkrun-backed sandbox tests that boot a real microVM. Cheap no-op for
-      # any feature-gated tests that don't actually launch a guest.
-      - name: Enable KVM
-        run: |
-          if [ -e /dev/kvm ]; then
-            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-              | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-            sudo udevadm control --reload-rules
-            sudo udevadm trigger --name-match=kvm
-            ls -l /dev/kvm
-          else
-            echo "::warning::/dev/kvm missing on this runner image; libkrun guest boot will be unavailable"
-          fi
-
-      - name: Install system dependencies
-        run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
-      - name: Run VM feature-gated tests
-        run: cargo nextest run --locked -p iii-worker --features integration-vm --profile ci
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: junit-worker-test-vm-linux
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
-
-  worker-test-vm-macos:
-    name: Worker Tests (VM) - macos
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: worker-test-vm-macos
-
-      - uses: taiki-e/install-action@cargo-nextest
-
-      - name: Run VM feature-gated tests
-        run: cargo nextest run --locked -p iii-worker --features integration-vm --profile ci
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: junit-worker-test-vm-macos
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
-
-  worker-test-oci-linux:
-    name: Worker Tests (OCI) - linux
+  sdk-test-workers:
+    name: SDK Test Workers (build)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: worker-test-oci-linux
-
-      - uses: taiki-e/install-action@cargo-nextest
-
-      - name: Install system dependencies
+      - name: Cache keys
+        id: keys
         run: |
-          # Fast path: GitHub runner images ship with fresh apt lists, so
-          # install directly (the slow `apt-get update` refreshes every index).
-          # Fall back to a full update only if the cached index misses.
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
+          echo "workers=$(tr -d '[:space:]' < sdk/fixtures/workers-ref)" >> "$GITHUB_OUTPUT"
+          echo "sdk=${{ hashFiles('scripts/ci/sdk-test-workers.sh', 'Cargo.toml', 'sdk/packages/rust/**', 'crates/iii-filter/**') }}" >> "$GITHUB_OUTPUT"
 
-      - name: Run OCI feature-gated tests
-        run: cargo nextest run --locked -p iii-worker --features integration-oci --profile ci
-
-      - uses: actions/upload-artifact@v4
-        if: always()
+      # Exact match only: these binaries belong to one workers commit and one
+      # state of the Rust SDK sources.
+      - name: Restore built workers
+        id: bin-cache
+        uses: actions/cache@v4
         with:
-          name: junit-worker-test-oci-linux
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+          key: sdk-test-workers-bin-${{ runner.os }}-${{ steps.keys.outputs.workers }}-${{ steps.keys.outputs.sdk }}
 
-  worker-test-oci-macos:
-    name: Worker Tests (OCI) - macos
-    runs-on: macos-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - name: Restore workers cargo build
+        if: steps.bin-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
         with:
-          key: worker-test-oci-macos
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.temp }}/sdk-test-workers/cargo-target
+          key: sdk-test-workers-cargo-${{ runner.os }}-${{ steps.keys.outputs.workers }}-${{ steps.keys.outputs.sdk }}
+          restore-keys: |
+            sdk-test-workers-cargo-${{ runner.os }}-${{ steps.keys.outputs.workers }}-
+            sdk-test-workers-cargo-${{ runner.os }}-
 
-      - uses: taiki-e/install-action@cargo-nextest
-
-      - name: Run OCI feature-gated tests
-        run: cargo nextest run --locked -p iii-worker --features integration-oci --profile ci
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: junit-worker-test-oci-macos
-          path: target/nextest/ci/junit.xml
-          retention-days: 7
-
-  # ──────────────────────────────────────────────────────────────
-  # Sandbox rootfs isolation — a sandbox must never write into
-  # the shared image cache. Linux boots real microVMs from a real Red Hat
-  # (UBI 9) image through the production daemon; macOS covers the macOS
-  # host side (read-only root share, erofs lower, embedded init). Both
-  # build the guest init the way releases do, so the sandbox path runs.
-  # ──────────────────────────────────────────────────────────────
-
-  sandbox-isolation-linux:
-    name: Sandbox Isolation (RHEL UBI 9, KVM) - linux
-    needs: engine-build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: sandbox-isolation-linux
-
-      - name: Enable KVM
-        run: |
-          test -e /dev/kvm || { echo "::error::/dev/kvm missing on this runner"; exit 1; }
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get install -y libcap-ng-dev \
-            || { sudo apt-get update && sudo apt-get install -y libcap-ng-dev; }
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: iii-binary
-          path: ${{ runner.temp }}/engine
-
-      - name: Build the guest init and a release-shaped iii-worker
-        run: |
-          cargo build --locked -p iii-init --release --target x86_64-unknown-linux-musl
-          cargo build --locked -p iii-worker --features embed-init,embed-libkrunfw
-
-      - name: Sandbox unit and integration tests with the embedded init
-        run: |
-          cargo test --locked -p iii-worker --features embed-init,embed-libkrunfw --lib \
-            -- sandbox_daemon vm_boot overlay erofs
-          cargo test --locked -p iii-worker --features embed-init,embed-libkrunfw \
-            --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
-
-      - name: Sandbox isolation end to end (UBI 9 image, real microVMs)
+      - name: Build workers
+        if: steps.bin-cache.outputs.cache-hit != 'true'
         env:
-          III_BIN: ${{ runner.temp }}/engine/iii
-          WORKER_BIN: target/debug/iii-worker
-          IMAGE_REF: registry.access.redhat.com/ubi9/ubi:latest
-          WORK: ${{ runner.temp }}/sandbox-isolation
-        run: |
-          chmod +x "$III_BIN"
-          bash scripts/sandbox-isolation-e2e.sh
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh build
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: sandbox-isolation-linux-logs
-          path: ${{ runner.temp }}/sandbox-isolation/logs
-          if-no-files-found: ignore
-          retention-days: 7
-
-  sandbox-isolation-macos:
-    name: Sandbox Isolation - macos
-    runs-on: macos-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-musl
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: sandbox-isolation-macos
-
-      # macOS hosts boot the same Linux guest; releases embed this init.
-      - name: Build the guest init (aarch64-unknown-linux-musl)
-        run: cargo build --locked -p iii-init --release --target aarch64-unknown-linux-musl
-
-      - name: Read-only root share on a macOS host (PassthroughFs)
-        run: |
-          cargo test --locked -p iii-filesystem \
-            --test passthrough_read_only --test sandbox_shared_rootfs_guest_writes
-
-      - name: Sandbox boot shape and erofs lower with the embedded init
-        run: |
-          cargo test --locked -p iii-worker --features embed-init --lib \
-            -- sandbox_daemon vm_boot overlay erofs
-          cargo test --locked -p iii-worker --features embed-init \
-            --test sandbox_shared_rootfs_boot_params --test sandbox_canonical_cache_boot_params
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+          if-no-files-found: error
+          retention-days: 1
 
   # ──────────────────────────────────────────────────────────────
   # SDK Node
@@ -763,7 +418,7 @@ jobs:
 
   sdk-node-ci:
     name: SDK Node Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -800,19 +455,30 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engines
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-bridge-backend.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-bridge-backend.yaml" \
             --port 49198 \
             --pid-file /tmp/iii-backend.pid \
             --log-file /tmp/iii-backend.log
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-bridge.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-bridge.yaml" \
             --port 49197 \
             --pid-file /tmp/iii-bridge.pid \
             --log-file /tmp/iii-bridge.log
@@ -833,7 +499,7 @@ jobs:
 
   sdk-node-browser-ci:
     name: SDK Browser Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -867,11 +533,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run integration tests
@@ -890,8 +567,9 @@ jobs:
 
   sdk-python-ci:
     name: SDK Python (${{ matrix.python-version }})
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -926,11 +604,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run tests with coverage
@@ -950,8 +639,9 @@ jobs:
 
   sdk-rust-ci:
     name: SDK Rust Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -974,11 +664,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Run tests
@@ -993,7 +694,7 @@ jobs:
 
   sdk-go-ci:
     name: SDK Go Tests
-    needs: engine-build
+    needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -1019,11 +720,22 @@ jobs:
         with:
           name: iii-binary
 
+      - name: Download SDK test workers
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-test-workers
+          path: ${{ runner.temp }}/sdk-test-workers/bin
+
+      - name: Point the SDK fixtures at the SDK test workers
+        env:
+          SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
+        run: bash scripts/ci/sdk-test-workers.sh fixtures
+
       - name: Start III Engine
         run: |
           chmod +x ./iii
           bash scripts/start-iii.sh \
-            --config sdk/fixtures/config-test.yaml \
+            --config "$RUNNER_TEMP/sdk-test-workers/fixtures/config-test.yaml" \
             --port 49199
 
       - name: Integration tests

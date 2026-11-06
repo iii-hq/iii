@@ -55,7 +55,7 @@ def roundtrip(data: dict[str, object]) -> bool:
     target = str(data["target"])
     size = int(data["size"])
     marker = str(data["marker"])
-    result = sdk.trigger({"function_id": target, "payload": pattern(size, marker), "timeout_ms": 120_000})
+    result = sdk.call({"function_id": target, "payload": pattern(size, marker), "timeout_ms": 120_000})
     assert_pattern(result, size, marker)
     print("JSON_SIZE_PYTHON_CROSS_SDK_OK", flush=True)
     return True
@@ -63,12 +63,12 @@ def roundtrip(data: dict[str, object]) -> bool:
 
 def local_limit(_: object) -> bool:
     try:
-        sdk.trigger({"function_id": "size::rust", "payload": pattern(MESSAGE_LIMIT_BYTES, "Z")})
+        sdk.call({"function_id": "size::rust", "payload": pattern(MESSAGE_LIMIT_BYTES, "Z")})
         raise AssertionError("Python accepted an envelope over 64 MiB")
     except InvocationError as error:
         assert error.code == "payload_too_large", error
         check_limit_message(error.message)
-    assert sdk.trigger({"function_id": "size::rust", "payload": "after-python-limit"}) == "after-python-limit"
+    assert sdk.call({"function_id": "size::rust", "payload": "after-python-limit"}) == "after-python-limit"
     return True
 
 

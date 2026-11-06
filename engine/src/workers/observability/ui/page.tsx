@@ -1296,7 +1296,7 @@ export function ObservabilityConfigPage({ healthCheck, ...props }: Observability
 }
 
 export default function setup(host: ConfigFormHost): () => void {
-  const healthCheck = () => host.iii.trigger<HealthCheckResult>("engine::health::check", {});
+  const healthCheck = () => host.iii.call<HealthCheckResult>("engine::health::check", {});
   const RegisteredForm = (props: ConfigFormProps) => (
     <ObservabilityConfigPage
       {...props}

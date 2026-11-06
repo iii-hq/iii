@@ -13,8 +13,8 @@
 //! disk file stays focused on the value a human edits. The adapter watches the
 //! directory with `notify`
 //! and surfaces external edits through the `ExternalChange` channel so the
-//! worker can fire `configuration` triggers without depending on the source
-//! of the change.
+//! worker can broadcast `configuration::on-updated` events without depending
+//! on the source of the change.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -3,7 +3,7 @@ title: 'The Four Loops, Clearly Explained'
 description: 'Loop engineering is a pattern, not one right answer. Four agentic loops -- turn-based, goal-based, time-based, and proactive -- differ only in what starts a run and what decides the work is done. Each one is a distributed-systems pattern you already know, built on iii with the same three primitives.'
 pubDate: 2026-07-30
 author: 'Mike Piccolo, Founder & CEO of iii'
-tags: ['agents', 'architecture', 'harness', 'loops', 'triggers', 'workers']
+tags: ['agents', 'architecture', 'harness', 'loops', 'observers', 'workers']
 ogImage: ../../assets/blog/the-four-loops-clearly-explained/banner.png
 ---
 
@@ -30,15 +30,15 @@ and *into a system* that runs without you.
 In this article, we show how you can implement four different types of
 agentic loops using iii.
 
-## Background: Workers, Triggers, and Functions
+## Background: Workers, Functions, and Observers
 
-iii consists of three primitives: Workers, Triggers, and Functions.
+iii consists of three primitives: Workers, Functions, and Observers.
 
-**Workers register functions. Triggers bind events to functions. The engine
-routes between them.**
+**Workers register functions. Observers run one function when another runs.
+The engine routes between them.**
 
 While in many harnesses loops are a separate concept, in iii you get agentic
-loops when you register a trigger whose function is another agent turn.
+loops when you register an observer whose target is another agent turn.
 Therefore, with iii, **every type of agentic loop is a traditional
 distributed-systems pattern you already know,** simply including an LLM turn
 as part of a run.
@@ -47,7 +47,7 @@ as part of a run.
 
 Before the four types of loops, it helps to name the thing they're all
 working around. A turn is one pass through the agent: it reads context,
-triggers functions, and ends when the model ends it.
+calls functions, and ends when the model ends it.
 
 The turn ending means the *model* decides it's done for now and can't
 proceed, but not necessarily because *the task is done*. It could be that it
@@ -55,7 +55,7 @@ needs more input from a user or a loop to continue.
 
 ## 1. Turn-based: you are the loop
 
-**Trigger:** a prompt you write.
+**Starts with:** a prompt you write.
 
 **Ends when:** you say so.
 
@@ -69,15 +69,15 @@ daemon, no shared state between runs, because you are the control loop.
 
 The agent gathers context, acts, and checks its own work inside one turn,
 then hands it back. You read it, decide what is missing, and write the next
-prompt. No triggers get registered. Nothing runs later on its own. The loop
+prompt. No observers get registered. Nothing runs later on its own. The loop
 runs in your head, one exchange at a time.
 
 The composability is still there. Any worker function the harness allows
-(filesystem, git, database, HTTP) is triggerable inside the turn without
+(filesystem, git, database, HTTP) is callable inside the turn without
 extra setup. You control when to continue and when to stop.
 
-Technically, this is the simplest case there is: minimal trigger
-registration, no evaluator, no schedule, no list. The task ends the same way
+Technically, this is the simplest case there is: no observers, no
+evaluator, no schedule, no list. The task ends the same way
 it started, inside a single turn, because a human is the only checkpoint the
 work needs.
 
@@ -115,7 +115,7 @@ End with:
 
 ## 2. Goal-based: the check moves off you
 
-**Trigger:** a task with success criteria.
+**Starts with:** a task with success criteria.
 
 **Ends when:** an evaluator function says to.
 
@@ -130,10 +130,11 @@ job that re-runs until a health check passes, is this pattern. The validator
 is a function, the attempt counter is shared state, and the loop is the
 retry.
 
-Here a real trigger appears. Say the goal is a Lighthouse score of 90 on a
+Here a real observer appears. Say the goal is a Lighthouse score of 90 on a
 webpage, five attempts allowed. Instead of you reading the result and
-deciding, you register a check on the session's **turn-completed** event.
-Each time the LLM's turn ends, the engine triggers the evaluator function.
+deciding, you observe the session's **turn-completed** event
+(`harness::on-turn-completed`). Each time the LLM's turn ends, the engine runs
+the evaluator function.
 The evaluator reads the result, checks it against the stated criteria, and
 returns a verdict: **pass, continue, or abort.**
 
@@ -146,7 +147,7 @@ in state too, decremented on each continue, so the loop cannot outrun what
 you allowed.
 
 The mechanics are two function calls and a state key.
-`engine::register_trigger` sets up the check. `harness::react` runs the
+`harness::observe` sets up the check. `harness::react` runs the
 evaluator as a sub-agent. The budget counter and the terminal verdict sit in
 state. The stored state survives restarts, so a long-running goal loop does
 not lose its place.
@@ -188,10 +189,9 @@ Wire it as a validated loop, not a chat sequence:
 
 1. Pick a fresh worker session id (e.g. sec-audit-templates-<4char>). Record baseline = "no report yet".
 
-2. BEFORE the first spawn, register the evaluator via @fn(engine::register_trigger):
-   - trigger_type: "harness::turn-completed"
-   - function_id: "harness::react"
-   - config: { session_id: "<worker session id>" }
+2. BEFORE the first spawn, register the evaluator via @fn(harness::observe):
+   - source: "harness::on-turn-completed", filtered on input.session_id = "<worker session id>"
+   - target: "harness::react"
    - metadata.once: false
    - metadata.continue_on_error: true
    - metadata.task: evaluator prompt that
@@ -202,17 +202,17 @@ Wire it as a validated loop, not a chat sequence:
        e) confirms constraints held (no writes outside allowed paths, no full secrets quoted, no PRs opened),
        f) returns { verdict: "pass" | "continue" | "abort", evidence, feedback },
        - continue + attempts remain → @fn(harness::spawn) next worker turn into the SAME session with feedback, decrement budget state key,
-       - pass / abort / budget exhausted → write terminal state and @fn(engine::unregister_trigger) itself.
-   - metadata.options.functions.allow: file read, shell read-only (git log / diff / cat), state get/set, harness spawn, engine unregister_trigger.
+       - pass / abort / budget exhausted → write terminal state and @fn(harness::unobserve) itself.
+   - metadata.options.functions.allow: file read, shell read-only (git log / diff / cat), state get/set, harness spawn, harness unobserve.
 
 3. THEN @fn(harness::spawn) the first worker turn into that session with the goal, constraints, and repo URL. Worker's allow list: git clone, file read/write scoped to allowed paths, shell for scanners, package-registry lookups, state set.
 
-Return baseline note, evaluator subscription id, worker session id, budget state key, and how to cancel (unregister + delete state key).
+Return baseline note, evaluator observer id, worker session id, budget state key, and how to cancel (unobserve + delete state key).
 ```
 
-## 3. Time-based: the trigger moves off you
+## 3. Time-based: the start moves off you
 
-**Trigger:** a cron.
+**Starts with:** a cron.
 
 **Ends when:** the fixed task finishes, then it waits for the next tick.
 
@@ -227,28 +227,28 @@ The only change is that the job body is an agent turn instead of a script.
 
 Sometimes agentic tasks need to run on a schedule. iii has a worker for this
 too, the same worker that the rest of the system would use for this same
-task: **a cron trigger.**
+task: **the cron worker.**
 
-Here the cron trigger runs on a schedule and starts a fresh agent session on
-every tick, performing the same fixed task each time: **check the PR, fix CI,
+Here an observer of `cron::on-tick` runs on a schedule and starts a fresh
+agent session on every tick, performing the same fixed task each time: **check the PR, fix CI,
 review yesterday's issues.** The task never changes, and it runs the same
 each and every day.
 
 Importantly this schedule is not a separate service, it's just another
-worker. **Cron is a standard iii trigger type; you can add it with
-`iii worker add cron`.** The engine delivers cron ticks the same way it
-delivers any other event, so the child session, the state it reads, and the
+worker. **Cron is a standard iii worker; you can add it with
+`iii call compose::add worker=cron`.** The engine delivers cron ticks the
+same way it delivers any other event, so the child session, the state it reads, and the
 functions it calls are all part of the same system.
 
 Some time-based loops will add a second. For example in this case it would be
 a validation check that makes sure all claims are confirmed before a daily
 report goes out. It could be implemented as:
 
-1. A trigger that waits for and then runs on completion of the daily cron job
-2. A trigger that waits for a state mutation
-3. A trigger that runs on its own cron schedule
-4. A trigger in a worker that you define that works exactly as you need for
-   your use case
+1. An observer that runs on completion of the daily cron job
+2. An observer of a state mutation
+3. An observer of its own cron schedule
+4. An observer of a function in a worker that you define that works exactly
+   as you need for your use case
 
 Once the schedule and task prove reliable, the cron configuration and the
 agent turn become a production-grade worker, ready to be deployed as part of
@@ -261,30 +261,28 @@ all of the same exact functions.
 ```text
 Create a recurring iii workflow that runs every weekday at [TIME AND TIMEZONE].
 
-1. Register the schedule via @fn(engine::register_trigger):
-   - trigger_type: "cron"
-   - function_id: "harness::react"
-   - config: the cron spec + timezone (fetch @fn(engine::triggers::info) for cron before registering)
+1. Register the schedule via @fn(harness::observe):
+   - source: "cron::on-tick" with args { expression: the cron spec } (fetch @fn(engine::functions::info) for cron::on-tick before registering: its args_format is the schema)
+   - target: "harness::react"
    - metadata.task: the daily agent — inspect [<add your repo here>], review open PRs and CI, fix deterministic branch-caused failures, run focused verification, draft (do not publish) a concise report to a state key like "reports/daily/<date>".
    - metadata.options.functions.allow: read/edit/verify/state::set — NOT the publish function.
    - Each firing gets a unique child session id (slug + date).
 
-2. Register a publish-gate validator via @fn(engine::register_trigger):
-   - trigger_type: "harness::turn-completed"
-   - config: { parent_session_id: "<this registering session>" }  (matches every cron-spawned child)
-   - function_id: "harness::react"
+2. Register a publish-gate validator via @fn(harness::observe):
+   - source: "harness::on-turn-completed", filtered on input.parent_session_id = "<this registering session>"  (matches every cron-spawned child)
+   - target: "harness::react"
    - metadata.once: false
    - metadata.task: reviewer that reads the drafted report from state, checks it against publish rules (no secrets, no speculative changes, cites verification, non-empty when claiming action), and only then calls the publish function. If it rejects, write the reasons to state and skip publishing that day.
    - metadata.options.functions.allow: state::get + the publish function only.
 
 3. Overlap guard: the daily agent must no-op if a state lock for today already exists.
 
-Return both subscription ids, the state key layout, and how to disable each.
+Return both observer ids, the state key layout, and how to disable each.
 ```
 
 ## 4. Proactive: neither question is yours
 
-**Trigger:** an event, with nobody watching.
+**Starts with:** an event, with nobody watching.
 
 **Ends when:** an agentic reviewer approves.
 
@@ -312,9 +310,9 @@ criteria triage set, and the drafted output, then returns approve, revise, or
 escalate.
 
 The composition is where iii's primitives pay off. A **cron writes new events
-to state**. A state trigger picks them up and starts triage. A
-**turn-completed trigger** scoped to the analysis session runs the reviewer.
-Three trigger types, one engine, one registry. Everything runs completely
+to state**. An observer of `state::on-changed` picks them up and starts
+triage. An observer of **turn-completed**, filtered to the analysis session,
+runs the reviewer. Three sources, one engine, one registry. Everything runs completely
 autonomously.
 
 Approve publishes the result. Revise sends it back with concrete feedback,
@@ -334,22 +332,21 @@ add adversarial checks, insert human gates, or shift the boundaries of your
 scope, you just modify the logic. You aren't fighting against a rigid
 framework or learning a proprietary hook system that lives outside your
 stack. Every change you make still uses the same three primitives:
-**workers, triggers, and functions.**
+**workers, functions, and observers.**
 
 ```text
 Set up a proactive workflow for new issues opened on https://github.com/iii-hq/templates that produces a triage response comment, adversarially validated before it posts.
 
-Event source (verify shapes live via @fn(engine::triggers::list) / @fn(engine::triggers::info)):
+Event source (verify shapes live via @fn(engine::functions::list) / @fn(engine::functions::info)):
   - Cron poller every 10 min lists open issues on iii-hq/templates.
   - For each issue not already in state key issues/templates/<number>/seen, write { number, title, body, labels, author, created_at } to issues/templates/<number>/incoming and mark seen.
-  - A `state` trigger on the "incoming" key fans out one firing per issue to the triage stage.
+  - An observer of `state::on-changed` on the "incoming" keys fans out one call per issue to the triage stage.
 
 Wire three stages:
 
-1. INTAKE — @fn(engine::register_trigger):
-   - trigger_type: "state"
-   - config: filter on keys matching issues/templates/*/incoming
-   - function_id: "harness::react"
+1. INTAKE — @fn(harness::observe):
+   - source: "state::on-changed", filtered on input.key starting with issues/templates/ and ending in /incoming
+   - target: "harness::react"
    - metadata.task: triage agent that
        a) reads the issue body + labels,
        b) classifies as bug / feature-request / question / docs / security / duplicate / spam / needs-info,
@@ -365,10 +362,9 @@ Wire three stages:
    - state set to write the drafted response to issues/templates/<number>/response_draft with { classification, summary, repro_result, root_cause_hypothesis, next_steps, cited_files[], suggested_labels[] }.
    - Must NOT self-post to GitHub; must NOT declare resolved; must cite file+line for any code claim; must state explicitly when it could not reproduce.
 
-3. REVIEW VALIDATOR — @fn(engine::register_trigger):
-   - trigger_type: "harness::turn-completed"
-   - config: { session_id: "<analysis session id>" }
-   - function_id: "harness::react"
+3. REVIEW VALIDATOR — @fn(harness::observe):
+   - source: "harness::on-turn-completed", filtered on input.session_id = "<analysis session id>"
+   - target: "harness::react"
    - metadata.once: true
    - metadata.continue_on_error: true
    - metadata.task: adversarial reviewer that
@@ -379,15 +375,15 @@ Wire three stages:
        - approve → post the response as an issue comment on iii-hq/templates, apply suggested_labels via github API, write issues/templates/<number>/status = "posted", record the comment URL,
        - revise (≤ 2 attempts, tracked in issues/templates/<number>/revisions) → @fn(harness::spawn) another analysis turn into the SAME session with reviewer feedback AND register a fresh review validator for it,
        - escalate / revisions exhausted → write status = "escalated" and route to [HUMAN/CHANNEL] with all evidence; do NOT post.
-   - metadata.options.functions.allow: github read + comment-post + label-apply only (no close, no assign to humans, no edit-others-comments), state get/set, harness spawn, engine register_trigger.
+   - metadata.options.functions.allow: github read + comment-post + label-apply only (no close, no assign to humans, no edit-others-comments), state get/set, harness spawn, harness observe.
 
 Rules:
    - Each stage runs in its own child session; min allow list per stage.
    - Dedupe on issue number — updates to the issue body do NOT re-enter intake unless a maintainer adds the label `retriage`.
-   - Never trigger on comments the workflow itself posted (filter out the bot account in the poller).
-   - Before ending setup, verify via @fn(engine::registered-triggers::list) that: cron poller, state trigger on incoming key, and analysis agent's allow list actually includes state::set on response_draft (else the review validator will wait forever).
+   - Never react to comments the workflow itself posted (filter out the bot account in the poller).
+   - Before ending setup, verify via @fn(engine::observers::list) that: cron poller, state observer on incoming key, and analysis agent's allow list actually includes state::set on response_draft (else the review validator will wait forever).
 
-Return: poller subscription id, intake subscription id, state key layout under issues/templates/, per-stage allow lists, escalation channel, disable instructions (unregister poller + intake, cancel any in-flight review validators, optionally delete state prefix).
+Return: poller observer id, intake observer id, state key layout under issues/templates/, per-stage allow lists, escalation channel, disable instructions (unobserve poller + intake, cancel any in-flight review validators, optionally delete state prefix).
 ```
 
 ## One job at a time
@@ -396,10 +392,10 @@ Line up the loop types that we discussed, and you'll see how you move between
 them by progressively handing off responsibility from yourself to the agentic
 system:
 
-1. Turn-based keeps both the trigger and the validation with you.
+1. Turn-based keeps both the start and the validation with you.
 2. Goal-based hands off the validation.
-3. Time-based also hands off the trigger.
-4. Proactive hands off both trigger and validation, and adds a reviewer
+3. Time-based also hands off the start.
+4. Proactive hands off both start and validation, and adds a reviewer
    agent.
 
 None of these is "more advanced" than the others. The real question is what
@@ -426,8 +422,8 @@ a worker. State is a worker. The reviewer is a function you register. The
 trace crosses all of them because the engine emits the metadata required for
 it. That is why each loop above was done as a single prompt and did not
 require building a full project from scratch. You are not integrating six
-systems to reproduce a distributed pattern, you are only naming triggers and
-functions on one iii engine that already manages durability, routing,
+systems to reproduce a distributed pattern, you are only naming functions and
+observers on one iii engine that already manages durability, routing,
 retries, and state.
 
 This is the difference between iii and a framework that wraps your agent. A
@@ -475,7 +471,7 @@ Mike Piccolo, Founder & CEO [@iiidevs](https://x.com/iiidevs)
 **P.S.** The iii harness works exactly the same in production. The proactive
 prompt above added a queue, shared state, and a review gate the same way a
 standing service would. If you wanted to lift that loop out of the harness
-and run it as its own orchestration, you would follow the same triggers and
-functions it already used. **That is the next post,** and it is why loop
+and run it as its own orchestration, you would follow the same functions and
+observers it already used. **That is the next post,** and it is why loop
 engineering and the orchestration you deploy are the same three primitives
 all the way down.

@@ -231,6 +231,37 @@ async fn managed_daemon_requires_restart_when_its_owner_engine_section_changes()
 }
 
 #[tokio::test]
+async fn changing_engine_sandbox_requires_an_engine_restart() {
+    isolate_state();
+    let tmp = project_dir();
+    let file = tmp.path().join("worker-compose.yaml");
+    std::fs::write(
+        &file,
+        "engine: { workers: {} }\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+    let initial = iii_compose::ComposeFile::load(&file).unwrap();
+    let policy = EnginePolicy::managed(&initial).unwrap();
+    std::fs::write(
+        &file,
+        "engine:\n  workers: {}\n  sandbox: {adapter: sandbox-docker}\ncontainers:\n  api:\n    worker: path://./workers/api\n",
+    )
+    .unwrap();
+
+    let daemon = Daemon::start(
+        "ws://127.0.0.1:1/ws".to_string(),
+        format!("managed-sandbox-change-test-{}", std::process::id()),
+        None,
+        policy,
+    );
+    let err = match daemon.project(&file).await {
+        Err(err) => err,
+        Ok(_) => panic!("a changed engine.sandbox must require a restart"),
+    };
+    assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
+}
+
+#[tokio::test]
 async fn up_rechecks_the_owner_engine_section_after_the_project_is_cached() {
     isolate_state();
     let tmp = tempfile::tempdir().unwrap();
@@ -340,6 +371,53 @@ async fn add_rejects_an_engine_change_before_editing_the_file() {
 
     assert_eq!(err.code(), "ENGINE_RESTART_REQUIRED");
     assert_eq!(std::fs::read_to_string(file).unwrap(), changed);
+}
+
+/// The comment on the `containers:` line is the operator's: `compose::add` and
+/// `compose::remove` read that line as the bare key and leave it as it is.
+#[tokio::test]
+async fn add_and_remove_keep_a_comment_on_the_containers_line() {
+    let tmp = project_dir();
+    std::fs::create_dir_all(tmp.path().join("workers/extra")).unwrap();
+    std::fs::write(
+        tmp.path().join("workers/extra/iii.worker.yaml"),
+        "name: extra\nscripts:\n  start: exit 0\n",
+    )
+    .unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    let text = COMPOSE.replace("containers:", "containers: # my workers");
+    std::fs::write(&file, &text).unwrap();
+    let daemon = daemon();
+    // Each edit is on disk long before its start gives up on the engine that is
+    // not listening.
+    let bound = std::time::Duration::from_secs(30);
+
+    let added = tokio::time::timeout(
+        bound,
+        daemon.add(
+            Some(&file),
+            &["./workers/extra".to_string()],
+            "add-under-comment".to_string(),
+        ),
+    )
+    .await;
+    let edited = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        edited.contains("containers: # my workers\n") && edited.contains("extra:"),
+        "{added:?}\n{edited}"
+    );
+
+    let removed = tokio::time::timeout(
+        bound,
+        daemon.remove(
+            Some(&file),
+            &["extra".to_string()],
+            "remove-under-comment".to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "{removed:?}");
+    daemon.shutdown().await;
 }
 
 #[tokio::test]
@@ -549,4 +627,39 @@ async fn remove_validates_every_worker_before_writing_the_batch() {
 
     assert_eq!(err.code(), "UNKNOWN_CONTAINER");
     assert_eq!(std::fs::read_to_string(file).unwrap(), before);
+}
+
+#[tokio::test]
+async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("vm")).unwrap();
+    std::fs::write(
+        tmp.path().join("vm/iii.worker.yaml"),
+        "runtime: {base_image: python}\nscripts: {start: run}\n",
+    )
+    .unwrap();
+    let file = tmp.path().join("worker-compose.yaml");
+    let lock = tmp.path().join("worker-compose.lock");
+    let text = "containers:\n  vm:\n    worker: path://./vm\n";
+    let locked = "version: 1\ncontainers: {}\n";
+    std::fs::write(&file, text).unwrap();
+    std::fs::write(&lock, locked).unwrap();
+
+    let daemon = daemon();
+    let err = daemon
+        .up_frozen(Some(&file), None, "frozen".into())
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), "SANDBOX_ADAPTER_NOT_DECLARED");
+    assert_eq!(
+        err.to_string(),
+        "vm needs the sandbox adapter 'sandbox-libkrun', and --frozen does not edit the file. Run up once without --frozen, or: iii call compose::add worker=iii-sandbox"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
+
+    let err = iii_compose::build::build_frozen(&file).await.unwrap_err();
+    assert_eq!(err.code(), "SANDBOX_ADAPTER_NOT_DECLARED");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
 }

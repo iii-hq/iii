@@ -5,7 +5,6 @@ use serde_json::json;
 fn entry(name: &str, cfg: Option<serde_json::Value>) -> WorkerEntry {
     WorkerEntry {
         name: name.to_string(),
-        image: None,
         config: cfg,
     }
 }
@@ -72,23 +71,6 @@ fn field_reordering_in_config_is_not_a_change() {
     let d = diff_entries(&old, &new);
     assert!(d.changed.is_empty());
     assert_eq!(d.unchanged, vec!["a".to_string()]);
-}
-
-#[test]
-fn changed_image_detected() {
-    let mut a_old = entry("a", None);
-    a_old.image = Some("v1".to_string());
-    let mut a_new = entry("a", None);
-    a_new.image = Some("v2".to_string());
-
-    let d = diff_entries(&[a_old], &[a_new]);
-    assert_eq!(
-        d.changed
-            .iter()
-            .map(|e| e.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["a"]
-    );
 }
 
 #[test]

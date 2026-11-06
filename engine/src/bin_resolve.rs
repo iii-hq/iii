@@ -6,17 +6,14 @@
 
 //! Single shared resolver for locating an `iii-*` helper binary to EXECUTE.
 //!
-//! Every place that spawns a sibling binary (`iii-worker`, `iii-cloud`, ...)
-//! routes through [`find_existing_binary`] so they can never disagree on which
-//! copy runs:
-//!
-//! - the CLI dispatcher (`cli::platform::find_existing_binary`, bin crate),
-//! - the engine's known-external spawner (`workers::external`).
+//! Every place that spawns a sibling binary (`iii-cloud`) routes through
+//! [`find_existing_binary`] so they can never disagree on which copy runs (the
+//! CLI dispatcher reaches it through `cli::platform::find_existing_binary`, in
+//! the bin crate).
 //!
 //! Resolution is **PATH-first**: a dev / override build earlier on `$PATH`
 //! wins over the managed install. The managed `~/.local/bin` copy is only the
-//! fallback. This lives in the lib (not the bin-only `cli` module) so both the
-//! bin and the lib workers can share it.
+//! fallback.
 //!
 //! Note: this is the *execution* resolver. The install/update lifecycle
 //! (`cli::update`) deliberately probes the managed `~/.local/bin` copy first,

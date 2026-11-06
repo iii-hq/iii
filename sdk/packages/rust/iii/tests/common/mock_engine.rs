@@ -174,7 +174,7 @@ impl MockEngine {
 
     /// Reset the recorded messages buffer. Useful between phases of a
     /// test (e.g. after asserting the initial registration set, before
-    /// triggering a reconnect).
+    /// forcing a reconnect).
     pub fn clear(&self) {
         self.received.lock().unwrap().clear();
     }

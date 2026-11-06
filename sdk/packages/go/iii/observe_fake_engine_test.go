@@ -5,21 +5,23 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
 )
 
 // fakeEngine scripts the engine side of observe on top of mockEngine: it greets every
-// connection with workerregistered (with or without observe.v1), answers each
+// connection with workerregistered (observe.v1 and observe.v2 by default), answers each
 // registerfunction with functionregistered (the function's current observer set), and
-// lets a test push observeradded / observerremoved / observe results and reply to the
-// worker's calls.
+// lets a test push observeradded / observerremoved / observe results, route calls to
+// the worker and reply to the worker's calls.
 type fakeEngine struct {
-	t *testing.T
+	t testing.TB
 	m *mockEngine
 
 	mu            sync.Mutex
@@ -34,12 +36,12 @@ type fakeEngine struct {
 	gate chan struct{}
 }
 
-func newFakeEngine(t *testing.T) *fakeEngine {
+func newFakeEngine(t testing.TB) *fakeEngine {
 	t.Helper()
 	fe := &fakeEngine{
 		t:             t,
 		m:             newMockEngine(t),
-		features:      []string{FeatureObserveV1, FeatureLocalDispatchV1},
+		features:      []string{FeatureObserveV1, FeatureObserveV2, "observe.capture", FeatureLocalDispatchV1},
 		confirm:       true,
 		localDispatch: true,
 		sets:          map[string][]ObserverInfo{},
@@ -59,6 +61,50 @@ func (fe *fakeEngine) oldEngine() *fakeEngine {
 	fe.confirm = false
 	fe.mu.Unlock()
 	return fe
+}
+
+// v1Engine makes the engine a 0.25 one: observe.v1 without observe.v2.
+func (fe *fakeEngine) v1Engine() *fakeEngine {
+	fe.setFeatures(FeatureObserveV1, FeatureLocalDispatchV1)
+	return fe
+}
+
+func (fe *fakeEngine) setFeatures(features ...string) {
+	fe.mu.Lock()
+	fe.features = features
+	fe.mu.Unlock()
+}
+
+// invoke routes a call of fn to the worker, with an invocation_id, and returns it.
+func (fe *fakeEngine) invoke(msg InvokeFunctionMessage) uuid.UUID {
+	fe.t.Helper()
+	if msg.InvocationID == nil {
+		id := uuid.New()
+		msg.InvocationID = &id
+	}
+	if msg.Data == nil {
+		msg.Data = json.RawMessage(`{}`)
+	}
+	fe.send(&msg)
+	return *msg.InvocationID
+}
+
+// waitResult waits for the worker's invocationresult of invocation id.
+func (fe *fakeEngine) waitResult(id uuid.UUID) *InvocationResultMessage {
+	fe.t.Helper()
+	got := fe.waitFrames(MsgInvocationResult, 1, func(d *DecodedMessage) bool { return d.InvocationResult.InvocationID == id })
+	return got[0].InvocationResult
+}
+
+// frameIndex is the position of the first recorded frame that pred accepts, or -1.
+func (fe *fakeEngine) frameIndex(pred func(*DecodedMessage) bool) int {
+	for i, raw := range fe.m.receivedMessages() {
+		data, _ := json.Marshal(raw)
+		if d, err := UnmarshalMessage(data); err == nil && pred(d) {
+			return i
+		}
+	}
+	return -1
 }
 
 func (fe *fakeEngine) setOnFrame(fn func(msg map[string]json.RawMessage)) {
@@ -95,9 +141,72 @@ func (fe *fakeEngine) confirmFunction(conn *websocket.Conn, id string, localDisp
 	set := append([]ObserverInfo{}, fe.sets[id]...)
 	rev := fe.revisions[id]
 	fe.mu.Unlock()
-	_ = fe.m.send(context.Background(), conn, &FunctionRegisteredMessage{
+	frame, err := fe.encode(&FunctionRegisteredMessage{
 		ID: id, Namespace: "default", Revision: rev, LocalDispatch: localDispatch, Observers: set,
 	})
+	if err == nil {
+		_ = fe.m.sendRaw(context.Background(), conn, frame)
+	}
+}
+
+// encode is msg's frame, its observer views announced as an engine with
+// observe.capture announces them: with the fires_on their capture implies, unless a
+// view carries its own fires_on or a legacy on. Other engines' frames are unchanged.
+func (fe *fakeEngine) encode(msg any) ([]byte, error) {
+	frame, err := MarshalMessage(msg)
+	if err != nil {
+		return nil, err
+	}
+	fe.mu.Lock()
+	announces := slices.Contains(fe.features, "observe.capture")
+	fe.mu.Unlock()
+	var m map[string]json.RawMessage
+	if !announces || json.Unmarshal(frame, &m) != nil {
+		return frame, nil
+	}
+	patch := func(raw json.RawMessage) json.RawMessage {
+		var view map[string]json.RawMessage
+		if json.Unmarshal(raw, &view) != nil {
+			return raw
+		}
+		if _, ok := view["fires_on"]; ok {
+			return raw
+		}
+		if _, ok := view["on"]; ok {
+			return raw
+		}
+		capture := []Capture{CaptureInput, CaptureOutput, CaptureCaller}
+		if c, ok := view["capture"]; ok {
+			capture = nil
+			_ = json.Unmarshal(c, &capture)
+		}
+		firesOn := []string{}
+		if len(capture) == 0 || slices.Contains(capture, CaptureInput) || slices.Contains(capture, CaptureOutput) {
+			firesOn = append(firesOn, "success")
+		}
+		if slices.Contains(capture, CaptureError) {
+			firesOn = append(firesOn, "error")
+		}
+		view["fires_on"], _ = json.Marshal(firesOn)
+		out, err := json.Marshal(view)
+		if err != nil {
+			return raw
+		}
+		return out
+	}
+	if view, ok := m["observer"]; ok {
+		m["observer"] = patch(view)
+	}
+	if views, ok := m["observers"]; ok {
+		var list []json.RawMessage
+		if json.Unmarshal(views, &list) == nil {
+			for i := range list {
+				list[i] = patch(list[i])
+			}
+			m["observers"], _ = json.Marshal(list)
+		}
+	}
+	return json.Marshal(m)
 }
 
 // send writes a message to the current connection.
@@ -109,7 +218,11 @@ func (fe *fakeEngine) send(msg any) {
 	if conn == nil {
 		fe.t.Fatalf("fake engine: no connection to send %T on", msg)
 	}
-	if err := fe.m.send(context.Background(), conn, msg); err != nil {
+	frame, err := fe.encode(msg)
+	if err == nil {
+		err = fe.m.sendRaw(context.Background(), conn, frame)
+	}
+	if err != nil {
 		fe.t.Fatalf("fake engine: send %T: %v", msg, err)
 	}
 }
@@ -164,19 +277,33 @@ func (fe *fakeEngine) setObservers(fn string, rev uint64, set ...ObserverInfo) {
 // client connects a client and waits until WorkerRegistered was applied.
 func (fe *fakeEngine) client(opts ...Option) *Client {
 	fe.t.Helper()
+	c := fe.newClient(opts...)
+	fe.connect(c)
+	return c
+}
+
+// newClient is a client of this engine that is not connected yet, so a test can set
+// hooks and register functions first.
+func (fe *fakeEngine) newClient(opts ...Option) *Client {
+	fe.t.Helper()
 	opts = append([]Option{
 		WithName("observe-test"),
 		WithReconnectConfig(ReconnectConfig{InitialDelay: 5 * time.Millisecond, MaxDelay: 20 * time.Millisecond, BackoffMultiplier: 1, MaxRetries: -1}),
 	}, opts...)
 	c := New(fe.m.url, opts...)
+	fe.t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// connect connects c and waits until WorkerRegistered was applied.
+func (fe *fakeEngine) connect(c *Client) {
+	fe.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := c.Connect(ctx); err != nil {
 		fe.t.Fatalf("Connect: %v", err)
 	}
-	fe.t.Cleanup(func() { _ = c.Close() })
 	waitUntil(fe.t, "WorkerRegistered applied", c.registeredNow)
-	return c
 }
 
 func (c *Client) registeredNow() bool {
@@ -298,7 +425,7 @@ func (fe *fakeEngine) countFrames(mark int, except ...MessageType) int {
 
 func (fe *fakeEngine) mark() int { return len(fe.m.receivedMessages()) }
 
-func decodeRecorded(t *testing.T, raw map[string]json.RawMessage) *DecodedMessage {
+func decodeRecorded(t testing.TB, raw map[string]json.RawMessage) *DecodedMessage {
 	t.Helper()
 	data, err := json.Marshal(raw)
 	if err != nil {
@@ -311,7 +438,7 @@ func decodeRecorded(t *testing.T, raw map[string]json.RawMessage) *DecodedMessag
 	return d
 }
 
-func waitUntil(t *testing.T, what string, cond func() bool) {
+func waitUntil(t testing.TB, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for !cond() {
@@ -322,9 +449,9 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 	}
 }
 
-// observerInfo is an observer as the engine pushes it to the owner.
+// observerInfo is an observer as the engine pushes it to the host.
 func observerInfo(id, target string, args, filters string, capture ...Capture) ObserverInfo {
-	info := ObserverInfo{ID: id, Target: target, On: OnSuccess, Capture: capture}
+	info := ObserverInfo{ID: id, Target: target, Capture: capture}
 	if capture == nil {
 		info.Capture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 	}
@@ -372,7 +499,7 @@ func (b *syncBuffer) count(substr string) int { return strings.Count(b.String(),
 
 func echoHandler(_ context.Context, data json.RawMessage) (any, error) { return data, nil }
 
-func jsonEq(t *testing.T, got, want []byte) bool {
+func jsonEq(t testing.TB, got, want []byte) bool {
 	t.Helper()
 	var a, b any
 	if err := json.Unmarshal(got, &a); err != nil {

@@ -1,7 +1,7 @@
 //! Synthetic single-frame receive coverage, not a claim of engine envelope growth.
 mod common;
 use common::mock_engine::{MockEngine, count_type};
-use iii_sdk::protocol::TriggerRequest;
+use iii_sdk::CallRequest;
 use iii_sdk::{InitOptions, RegisterFunction, register_worker};
 use serde_json::{Value, json};
 use std::{collections::HashMap, time::Duration};
@@ -58,7 +58,7 @@ async fn receives_large_invocations_and_results_with_and_without_headers() {
         let caller = sdk.clone();
         let call = tokio::spawn(async move {
             caller
-                .trigger(TriggerRequest {
+                .call(CallRequest {
                     function_id: "remote".into(),
                     payload: json!({}),
                     action: None,

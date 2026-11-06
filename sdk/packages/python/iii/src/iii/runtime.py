@@ -1,6 +1,6 @@
 """Public runtime types."""
 
-from .iii_constants import FunctionRef, IIIConnectionState
-from .triggers import TriggerTypeRef
+from .function_ref import FunctionRef
+from .iii_constants import IIIConnectionState
 
-__all__ = ["FunctionRef", "IIIConnectionState", "TriggerTypeRef"]
+__all__ = ["FunctionRef", "IIIConnectionState"]

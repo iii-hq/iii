@@ -1,7 +1,7 @@
 // Writes content/benchmarks/data.json, the data /benchmarks renders, before every build and dev server
 // (see package.json). CI publishes both sources to the gh-pages branch:
 //
-//   loadtest/index.json, loadtest/runs/<id>.json   load benchmarks (.github/workflows/loadtest.yml)
+//   loadtest/index.json, loadtest/runs/<id>.json   load benchmarks (the workers repo's .github/workflows/loadtest.yml)
 //   dev/bench/data.js                              criterion history (.github/workflows/bench-release.yml)
 //
 // Each part comes from the published branch when it can be fetched, and otherwise from the snapshot committed

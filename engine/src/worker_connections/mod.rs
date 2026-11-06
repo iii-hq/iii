@@ -11,14 +11,14 @@ use std::{
     str::FromStr,
     sync::{
         Arc, RwLock as StdRwLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
 };
 
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use opentelemetry::KeyValue;
-use tokio::sync::{Notify, RwLock, mpsc, oneshot, watch};
+use tokio::sync::{Notify, RwLock, mpsc, watch};
 use uuid::Uuid;
 
 use schemars::JsonSchema;
@@ -27,8 +27,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     engine::Outbound,
     protocol::{
-        DEFAULT_NAMESPACE, ErrorBody, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1,
-        FEATURE_OBSERVE_V1, effective_namespace,
+        DEFAULT_NAMESPACE, FEATURE_LARGE_MESSAGES_V1, FEATURE_LOCAL_DISPATCH_V1,
+        FEATURE_OBSERVE_CAPTURE, FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, effective_namespace,
     },
     workers::{observability::metrics::get_engine_metrics, worker::rbac_session::Session},
 };
@@ -277,7 +277,7 @@ impl FromStr for WorkerConnectionStatus {
 /// through the registry's copy while `router_msg` and `cleanup_worker` hold the
 /// snapshot taken at connect time, and both must see the same answer.
 ///
-/// Set once (CONTRACT D17): the first declaration that lists any feature fixes
+/// Set once: the first declaration that lists any feature fixes
 /// them; later ones are ignored. The list and the flags the engine acts on are
 /// written together, and reading a flag is one atomic load.
 #[derive(Debug, Default)]
@@ -289,6 +289,8 @@ pub struct WorkerFeatures {
 struct DeclaredFeatures {
     list: Vec<String>,
     observe_v1: bool,
+    observe_v2: bool,
+    observe_capture: bool,
     local_dispatch_v1: bool,
     large_messages_v1: bool,
 }
@@ -314,8 +316,11 @@ impl WorkerFeatures {
             return false;
         }
         let has = |name: &str| list.iter().any(|feature| feature == name);
+        let observe_v2 = has(FEATURE_OBSERVE_V2);
         let declared = DeclaredFeatures {
-            observe_v1: has(FEATURE_OBSERVE_V1),
+            observe_v1: observe_v2 || has(FEATURE_OBSERVE_V1),
+            observe_v2,
+            observe_capture: has(FEATURE_OBSERVE_CAPTURE),
             local_dispatch_v1: has(FEATURE_LOCAL_DISPATCH_V1),
             large_messages_v1: has(FEATURE_LARGE_MESSAGES_V1),
             list,
@@ -324,9 +329,24 @@ impl WorkerFeatures {
     }
 
     /// The connection speaks observe: the engine may push the observe
-    /// messages to it (CONTRACT D2).
+    /// messages to it. `observe.v2` includes it.
     pub fn observe_v1(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_v1)
+    }
+
+    /// The connection runs the match and deliver hooks of the functions it
+    /// hosts: its `invocationresult` to each routed call names the observers
+    /// a match hook matched (`matched`), or says that a deliver hook
+    /// delivered the call (`delivered`), and the engine evaluates the
+    /// observers' filters (decision 55).
+    pub fn observe_v2(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.observe_v2)
+    }
+
+    /// The connection reads the outcomes an observer fires on from `fires_on`
+    /// in its announcement: it gets no legacy `on`.
+    pub fn observe_capture(&self) -> bool {
+        self.declared.get().is_some_and(|d| d.observe_capture)
     }
 
     pub fn local_dispatch_v1(&self) -> bool {
@@ -377,11 +397,6 @@ pub struct WorkerConnection {
     /// Shared with the connection writer for size-rejection diagnostics.
     pub receive_sdk_version: Arc<StdRwLock<Option<String>>>,
     pub session: Option<Arc<Session>>,
-    /// In-flight `Message::RegisterTrigger` deliveries awaiting this worker's
-    /// `TriggerRegistrationResult` ack, keyed by trigger id. Only ownerless
-    /// (function-path) registrations wait on an entry here — see the
-    /// `TriggerRegistrator` impl in `traits.rs`.
-    pub pending_trigger_acks: Arc<DashMap<String, oneshot::Sender<Option<ErrorBody>>>>,
     /// Signaled when a reconnecting successor of this worker reattaches
     /// (`Message::Reattach`): the connection's read loop must exit (its exit
     /// path runs the connection's cleanup). Shared across clones so the
@@ -403,21 +418,26 @@ pub struct WorkerConnection {
     /// Per-connection secret, sent to the worker only over its own socket
     /// (in `WorkerRegistered`). A reconnecting successor must present it in
     /// `Message::Reattach` to retire this connection: worker ids alone are
-    /// public (`engine::workers::list`, the workers-available trigger) and
+    /// public (`engine::workers::list`, `engine::on-workers-changed`) and
     /// must not suffice to evict a live worker.
     pub reattach_token: Uuid,
     /// Protocol features declared on `engine::workers::register`.
     pub features: Arc<WorkerFeatures>,
-    /// The id each `RegisterTriggerType` this connection sent was filed under,
-    /// by `(namespace, requested id)`: the registration hook may rename it,
-    /// and `UnregisterTriggerType` names the type as the worker knows it.
-    pub filed_trigger_types: Arc<DashMap<(String, String), String>>,
+    /// The removed message types (`REMOVED_MESSAGES` in the engine) this
+    /// connection was warned about, one bit each.
+    pub removed_messages_warned: Arc<AtomicU8>,
+    /// Removed-message warnings held back until the worker's name and SDK
+    /// reach the registry: `(index, peer)`.
+    pub removed_messages_pending: Arc<std::sync::Mutex<Vec<(usize, std::net::SocketAddr)>>>,
     /// The observe depth of each in-flight invocation forwarded to this
     /// connection at depth > 0: the loop guard's stand-in for the depth of
     /// what the connection does meanwhile without saying (calls from a worker
     /// without `observe.v1`, registrations, telemetry; see
     /// [`WorkerConnection::inflight_depth`]).
-    pub inflight_depths: Arc<std::sync::Mutex<HashMap<Uuid, u32>>>,
+    pub inflight_depths: Arc<std::sync::Mutex<InflightDepths>>,
+    /// The routed calls this connection answered last, when it declared
+    /// `observe.v2`: its report items for them are refused (decision 38).
+    pub routed_answers: Arc<crate::observer::RoutedAnswers>,
 }
 
 impl WorkerConnection {
@@ -446,15 +466,16 @@ impl WorkerConnection {
             receive_limit_requires_upgrade: Arc::new(AtomicBool::new(true)),
             receive_sdk_version: Arc::new(StdRwLock::new(None)),
             session: None,
-            pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
             has_reader: Arc::new(AtomicBool::new(false)),
             cleanup_claimed: Arc::new(AtomicBool::new(false)),
             cleanup_done: Arc::new(watch::channel(false).0),
             reattach_token: Uuid::new_v4(),
             features: Arc::new(WorkerFeatures::default()),
-            filed_trigger_types: Arc::new(DashMap::new()),
-            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            removed_messages_warned: Arc::new(AtomicU8::new(0)),
+            removed_messages_pending: Arc::default(),
+            inflight_depths: Arc::default(),
+            routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
 
@@ -478,7 +499,6 @@ impl WorkerConnection {
             isolation: None,
             namespace: None,
             session: Some(Arc::new(session)),
-            pending_trigger_acks: Arc::new(DashMap::new()),
             evict: Arc::new(Notify::new()),
             has_reader: Arc::new(AtomicBool::new(false)),
             cleanup_claimed: Arc::new(AtomicBool::new(false)),
@@ -490,8 +510,10 @@ impl WorkerConnection {
             receive_sdk_version: Arc::new(StdRwLock::new(None)),
             reattach_token: Uuid::new_v4(),
             features: Arc::new(WorkerFeatures::default()),
-            filed_trigger_types: Arc::new(DashMap::new()),
-            inflight_depths: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            removed_messages_warned: Arc::new(AtomicU8::new(0)),
+            removed_messages_pending: Arc::default(),
+            inflight_depths: Arc::default(),
+            routed_answers: Arc::new(crate::observer::RoutedAnswers::default()),
         }
     }
 
@@ -557,9 +579,11 @@ impl WorkerConnection {
         self.invocations.write().await.insert(invocation_id);
     }
 
-    pub async fn remove_invocation(&self, invocation_id: &Uuid) {
-        self.invocations.write().await.remove(invocation_id);
+    /// Forgets `invocation_id`; `true` when it was this connection's.
+    pub async fn remove_invocation(&self, invocation_id: &Uuid) -> bool {
+        let removed = self.invocations.write().await.remove(invocation_id);
         self.forget_inflight_depth(invocation_id);
+        removed
     }
 
     /// Records that `invocation_id`, forwarded to this connection, runs at
@@ -572,13 +596,10 @@ impl WorkerConnection {
     }
 
     pub fn forget_inflight_depth(&self, invocation_id: &Uuid) {
-        let mut depths = self
-            .inflight_depths
+        self.inflight_depths
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !depths.is_empty() {
-            depths.remove(invocation_id);
-        }
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(invocation_id);
     }
 
     /// The loop guard's heuristic for what this connection does without
@@ -594,11 +615,63 @@ impl WorkerConnection {
         self.inflight_depths
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .copied()
-            .max()
+            .deepest()
+    }
+
+    /// Whether this is the first frame of the removed message type `index`
+    /// this connection sent: true once per connection and type.
+    pub fn first_removed_message(&self, index: usize) -> bool {
+        let bit = 1u8 << index;
+        self.removed_messages_warned
+            .fetch_or(bit, Ordering::Relaxed)
+            & bit
+            == 0
     }
 }
+
+/// The depths of the invocations a connection runs at a depth above 0 (see
+/// [`WorkerConnection::inflight_depth`]), and how many run at each depth: the
+/// deepest is read on every frame the connection sends without a depth, in
+/// `O(log d)` for `d` distinct depths, however many invocations are in
+/// flight.
+#[derive(Debug, Default)]
+pub struct InflightDepths {
+    by_invocation: HashMap<Uuid, u32>,
+    by_depth: std::collections::BTreeMap<u32, usize>,
+}
+
+impl InflightDepths {
+    fn insert(&mut self, invocation_id: Uuid, depth: u32) {
+        if let Some(previous) = self.by_invocation.insert(invocation_id, depth) {
+            self.uncount(previous);
+        }
+        *self.by_depth.entry(depth).or_default() += 1;
+    }
+
+    fn remove(&mut self, invocation_id: &Uuid) {
+        if self.by_invocation.is_empty() {
+            return;
+        }
+        if let Some(depth) = self.by_invocation.remove(invocation_id) {
+            self.uncount(depth);
+        }
+    }
+
+    fn deepest(&self) -> Option<u32> {
+        self.by_depth.last_key_value().map(|(depth, _)| *depth)
+    }
+
+    fn uncount(&mut self, depth: u32) {
+        if let std::collections::btree_map::Entry::Occupied(mut entry) = self.by_depth.entry(depth)
+        {
+            *entry.get_mut() -= 1;
+            if *entry.get() == 0 {
+                entry.remove();
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -640,6 +713,38 @@ mod tests {
     }
 
     #[test]
+    fn observe_v2_includes_observe_v1() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_v2());
+        assert!(worker.features.set(&["observe.v2".to_string()]));
+        assert!(worker.features.observe_v1() && worker.features.observe_v2());
+
+        let v1 = make_worker();
+        assert!(v1.features.set(&["observe.v1".to_string()]));
+        assert!(v1.features.observe_v1() && !v1.features.observe_v2());
+    }
+
+    #[test]
+    fn observe_capture_is_its_own_feature() {
+        let worker = make_worker();
+        assert!(!worker.features.observe_capture());
+        assert!(
+            worker
+                .features
+                .set(&["observe.v2".to_string(), "observe.capture".to_string()])
+        );
+        assert!(worker.features.observe_v2() && worker.features.observe_capture());
+
+        let rc = make_worker();
+        assert!(rc.features.set(&["observe.v2".to_string()]));
+        assert!(rc.features.observe_v2() && !rc.features.observe_capture());
+
+        let capture_only = make_worker();
+        assert!(capture_only.features.set(&["observe.capture".to_string()]));
+        assert!(capture_only.features.observe_capture() && !capture_only.features.observe_v2());
+    }
+
+    #[test]
     fn worker_features_are_bounded() {
         let worker = make_worker();
         let mut features: Vec<String> = (0..40).map(|i| format!("feature.{i}")).collect();
@@ -670,9 +775,13 @@ mod tests {
         let snapshot = worker.clone();
         registry.register_worker(worker);
 
-        registry.set_worker_features(&snapshot.id, &["observe.v1".to_string()]);
+        registry.set_worker_features(
+            &snapshot.id,
+            &["observe.v1".to_string(), "observe.v2".to_string()],
+        );
 
         assert!(snapshot.features.observe_v1());
+        assert!(snapshot.features.observe_v2());
     }
 
     #[test]
@@ -731,9 +840,7 @@ mod tests {
             namespaces: Default::default(),
             allowed_functions: vec![],
             forbidden_functions: vec![],
-            allowed_trigger_types: Some(vec![]),
             allow_function_registration: false,
-            allow_trigger_type_registration: false,
             context: serde_json::json!({}),
             function_registration_prefix: None,
         };
@@ -897,5 +1004,28 @@ mod tests {
         let (tx, _rx) = mpsc::channel::<Outbound>(1);
         let worker = WorkerConnection::new(tx);
         assert!(worker.isolation.is_none());
+    }
+
+    /// The deepest in-flight depth follows the invocations in flight,
+    /// including one remembered again at another depth.
+    #[test]
+    fn the_deepest_inflight_depth_follows_what_is_in_flight() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let worker = WorkerConnection::new(tx);
+        assert_eq!(worker.inflight_depth(), None);
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        worker.remember_inflight_depth(a, 2);
+        worker.remember_inflight_depth(b, 5);
+        worker.remember_inflight_depth(c, 5);
+        assert_eq!(worker.inflight_depth(), Some(5));
+        worker.forget_inflight_depth(&b);
+        assert_eq!(worker.inflight_depth(), Some(5));
+        worker.forget_inflight_depth(&c);
+        assert_eq!(worker.inflight_depth(), Some(2));
+        worker.remember_inflight_depth(a, 3);
+        assert_eq!(worker.inflight_depth(), Some(3));
+        worker.forget_inflight_depth(&a);
+        worker.forget_inflight_depth(&a);
+        assert_eq!(worker.inflight_depth(), None);
     }
 }
