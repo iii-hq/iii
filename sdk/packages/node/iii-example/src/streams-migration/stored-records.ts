@@ -18,7 +18,7 @@
  *
  * Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
  */
-import { type IIIClient, ObserveRejection, registerWorker } from 'iii-sdk'
+import { type IIIClient, type Observed, ObserveRejection, registerWorker } from 'iii-sdk'
 
 const ENGINE_URL = process.env.III_URL ?? 'ws://127.0.0.1:49134'
 const RUN_ID = Math.random().toString(36).slice(2, 8)
@@ -324,7 +324,8 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
     return run
   }
 
-  iii.registerFunction(handlerId, async (change: TaskChange) => {
+  iii.registerFunction(handlerId, async ({ input }: Observed<TaskChange>) => {
+    const change = input as TaskChange // the observer captures the event as `input`
     const known = view.get(change.id)?.revision ?? 0
     if (change.revision <= known) {
       stats.skipped++ // duplicate or out-of-order delivery
@@ -338,7 +339,7 @@ export function startDashboard(name: string, view: TaskView = new Map(), engineU
   })
 
   // 1. Observe first, so nothing committed after the read below can be missed ...
-  const observer = iii.observe({ function_id: TASK_CHANGED, deliver: 'input' }, handlerId)
+  const observer = iii.observe({ function_id: TASK_CHANGED, capture: ['input'] }, handlerId)
 
   // 3. ... and re-query after every reconnect: notifications fired while disconnected are gone.
   // (getConnectionState() is a local read; the SDK replays the observer by itself on reconnect.)

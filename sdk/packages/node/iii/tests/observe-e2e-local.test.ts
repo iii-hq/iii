@@ -53,7 +53,6 @@ describe('equivalence: local and routed calls look the same to observers', () =>
     const handle = watcher.observe(
       {
         function_id: `eq::price-${RUN}`,
-        on: 'complete',
         capture: [...ALL],
         filters: { 'input.sku': { $prefix: 'A-' } },
       },
@@ -458,11 +457,15 @@ describe('calls for one observer (decision 52)', () => {
       const gotB = collector(watcher, `d52::output-${form}-${RUN}`)
       await localDispatchReady(owner, fn)
 
-      const a = watcher.observe({ function_id: fn, args: { session: 's1' } }, `d52::envelope-${form}-${RUN}`)
+      // A names metadata in its capture (decision 62: the default has none).
+      const a = watcher.observe(
+        { function_id: fn, args: { session: 's1' }, capture: ['input', 'output', 'caller', 'metadata'] },
+        `d52::envelope-${form}-${RUN}`,
+      )
       await a.ready()
       await exactly(gotA, 1, "A's initial state")
       const b = watcher.observe(
-        { function_id: fn, args: { session: 's1' }, deliver: 'output' },
+        { function_id: fn, args: { session: 's1' }, capture: ['output'] },
         `d52::output-${form}-${RUN}`,
       )
       await b.ready()
@@ -478,9 +481,13 @@ describe('calls for one observer (decision 52)', () => {
       await exactly(gotA, 3, 'the call for A')
       expect(gotB).toHaveLength(2)
 
-      // A receives the envelope it receives for every call: same fields, the observer's own id
+      // A receives the envelope it receives for every call: same fields, the observer's own id.
+      // A captures metadata, so the calls that carry for_observer show it;
+      // the ordinary call carries none, so its envelope has no metadata field.
       const [initial, ordinary, forA] = gotA.map((g) => g.data)
-      for (const envelope of [initial, forA]) {
+      expect(ordinary).not.toHaveProperty('metadata')
+      for (const { metadata, ...envelope } of [initial, forA]) {
+        expect(metadata).toEqual({ for_observer: a.id })
         expect(Object.keys(envelope).sort()).toEqual(Object.keys(ordinary).sort())
         expect(stable(envelope)).toEqual({ ...stable(ordinary), input: envelope.input, output: envelope.output })
         expect(envelope.observer_id).toBe(a.id)
@@ -491,7 +498,7 @@ describe('calls for one observer (decision 52)', () => {
         { session: 's1', n: 2 },
       ])
       // B receives the output, as for every call
-      expect(gotB.map((g) => g.data)).toEqual([
+      expect(gotB.map((g) => g.data.output)).toEqual([
         { session: 's1', n: 0 },
         { session: 's1', n: 1 },
       ])
@@ -499,20 +506,20 @@ describe('calls for one observer (decision 52)', () => {
   }
 })
 
-describe("deliver: 'output' and calls through an observer over max_in_flight", () => {
-  it("deliver: 'output' of a private event source's local call: the target receives the event, reported once", async () => {
+describe("capture: ['input', 'output'] and calls through an observer over max_in_flight", () => {
+  it("the output of a private event source's local call: the target receives the event, reported once", async () => {
     const owner = worker('output-owner')
     const watcher = worker('output-watcher')
     const fn = `source::on-event-${RUN}`
     owner.registerFunction(fn, (event: { id: number; kind: string }) => event, { private: true })
     const got = collector(watcher, `source::on-output-${RUN}`)
-    const handle = watcher.observe({ function_id: fn, deliver: 'output' }, `source::on-output-${RUN}`)
+    const handle = watcher.observe({ function_id: fn, capture: ['input', 'output'] }, `source::on-output-${RUN}`)
     await handle.ready()
     await localDispatchReady(owner, fn)
     const frames = frameCounter(owner)
     await owner.call({ function_id: fn, payload: { id: 1, kind: 'created' } })
     await exactly(got, 1, 'the activation')
-    expect(got[0].data).toEqual({ id: 1, kind: 'created' })
+    expect(got[0].data.output).toEqual({ id: 1, kind: 'created' })
     // the report item carried the event once: the engine filled output from input
     const items = frames.frames
       .filter((f) => f.type === 'invocationsobserved')
@@ -657,5 +664,72 @@ describe('reconnect', () => {
     await sleep(300)
     expect(log).toHaveLength(2)
     expect(ref.isObserved()).toBe(false)
+  })
+})
+
+describe('capture alone decides which outcomes fire (the observers guide, row by row)', () => {
+  type Field = (typeof ALL)[number]
+  // The payload fields each outcome carries, or null when it does not fire the target.
+  const ROWS: { name: string; capture?: Field[]; success: Field[] | null; error: Field[] | null }[] = [
+    { name: 'default', success: ['caller', 'input', 'output'], error: null },
+    { name: 'errors-only', capture: ['error', 'caller'], success: null, error: ['caller', 'error'] },
+    { name: 'full', capture: ['input', 'output', 'error'], success: ['input', 'output'], error: ['error', 'input'] },
+    { name: 'empty', capture: [], success: [], error: null },
+    { name: 'input-error', capture: ['input', 'error'], success: ['input'], error: ['error', 'input'] },
+  ]
+
+  // local: the hosting worker calls its function, and this SDK decides what fires;
+  // routed: another worker's call goes through the engine, which decides.
+  for (const path of ['local', 'routed'] as const) {
+    it(`${path}: each capture fires on its outcomes with its fields; the default ignores errors`, async () => {
+      const owner = worker(`capture-${path}-owner`)
+      const watcher = worker(`capture-${path}-watcher`)
+      const fn = `e2e::charge-${path}-${RUN}`
+      owner.registerFunction(fn, async (input: { amount: number }) => {
+        if (input.amount < 0) throw new Error(`cannot charge ${input.amount}`)
+        return { charged: input.amount }
+      })
+      const targets = ROWS.map((row) => `e2e::on-${row.name}-${path}-${RUN}`)
+      const got = targets.map((target) => collector(watcher, target))
+      const handles = ROWS.map((row, i) =>
+        watcher.observe({ function_id: fn, ...(row.capture ? { capture: row.capture } : {}) }, targets[i]),
+      )
+      await Promise.all(handles.map((handle) => handle.ready()))
+      await localDispatchReady(owner, fn)
+
+      const caller = path === 'local' ? owner : watcher
+      await caller.call({ function_id: fn, payload: { amount: 10 }, metadata: { request_id: 'req-1' } })
+      await caller
+        .call({ function_id: fn, payload: { amount: -5 }, metadata: { request_id: 'req-2' } })
+        .catch(() => undefined)
+      const expected = ROWS.map((row) => (row.success ? 1 : 0) + (row.error ? 1 : 0))
+      await waitFor(() => got.every((activations, i) => activations.length >= expected[i]), 'the activations')
+      await sleep(200)
+
+      ROWS.forEach((row, i) => {
+        expect(got[i], row.name).toHaveLength(expected[i])
+        for (const [status, fields] of [
+          ['success', row.success],
+          ['error', row.error],
+        ] as const) {
+          const activation = got[i].find((a) => a.data.status === status)
+          if (fields === null) {
+            expect(activation, `${row.name} fired on ${status}`).toBeUndefined()
+            continue
+          }
+          expect(activation, `${row.name} on ${status}`).toBeDefined()
+          const carried = ALL.filter((key) => activation && key in activation.data).sort()
+          expect(carried, `${row.name} on ${status}`).toEqual(fields)
+        }
+      })
+    })
+  }
+
+  it('a capture that names no outcome is refused with INVALID_ARGS', async () => {
+    const watcher = worker('capture-refused')
+    for (const capture of [['caller'], ['metadata'], ['caller', 'metadata']] as Field[][]) {
+      const handle = watcher.observe({ function_id: `e2e::anything-${RUN}`, capture }, `e2e::nowhere-${RUN}`)
+      await expect(handle.ready(), JSON.stringify(capture)).rejects.toMatchObject({ code: 'INVALID_ARGS' })
+    }
   })
 })

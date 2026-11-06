@@ -319,10 +319,11 @@ worker.call({'observer': obs, 'payload': request})  # in a deliver hook
 
 Observes a function: when ``source`` runs, ``target`` runs. Every
 call of the source function that passes ``source["filters"]`` invokes
-``target``, a registered function, with the ``Observed`` envelope
-(``input``, ``output`` or ``error``, ``caller``, ...);
-``source["deliver"]`` set to ``"input"`` or ``"output"`` gives it that
-value instead. The worker that hosts the source can decide otherwise
+``target``, a registered function, with the ``Observed`` payload:
+the top-level fields plus what ``source["capture"]`` names that applies
+to the outcome (``input``, ``output`` or ``error``, ``caller``,
+``metadata``). ``capture`` also decides which outcomes fire the target.
+The worker that hosts the source can decide otherwise
 in its ``on_observation_deliver``.
 
 Returns synchronously, also before the connection is up; the observer
@@ -350,7 +351,7 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
   <Tab title="Parameters">
 
 <ParamField body="source" type="str | ObserveSource | dict[str, Any]" required>
-  What is observed: a function id, or ``function_id``, ``namespace``, ``args`` (read by the worker that hosts the function, validated against its ``args_format``), ``filters``, and ``on`` / ``capture`` / ``deliver``.
+  What is observed: a function id, or ``function_id``, ``namespace``, ``args`` (read by the worker that hosts the function, validated against its ``args_format``), ``filters``, and ``capture``.
 
   <Expandable title="`ObserveSource` fields">
     <ParamField body="function_id" type="str" required>
@@ -360,19 +361,13 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
       For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none.
     </ParamField>
     <ParamField body="capture" type="list[Capture]">
-      Default ``["input", "output", "caller"]``.
-    </ParamField>
-    <ParamField body="deliver" type="Literal['envelope', 'input', 'output']">
-      What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``.
+      What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both.
     </ParamField>
     <ParamField body="filters" type="Filter">
       Which calls reach the target; ``{}`` (or absent) = every call.
     </ParamField>
     <ParamField body="namespace" type="str">
       Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``).
-    </ParamField>
-    <ParamField body="on" type="Literal['success', 'error', 'complete']">
-      ``"success"`` (default), ``"error"`` or ``"complete"``.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -411,7 +406,7 @@ observe(source: str | ObserveSource | dict[str, Any], target: Target, options: O
 iii.observe("orders::create", "alerts::big-order")
 iii.register_function("alerts::payment-failed", notify)
 failures = iii.observe(
-    {"function_id": "payments::charge", "on": "error",
+    {"function_id": "payments::charge", "capture": ["error", "caller"],
      "filters": {"input.amount": {"$gte": 500}}},
     "alerts::payment-failed",
     {"max_in_flight": 4},
@@ -746,7 +741,7 @@ it (``on_observation_match``, or all of them), as a snapshot taken when
 the call started, and what it returns (or raises) is what the caller
 gets back. iii delivers nothing for that function: the hook calls
 through observers (``iii.call({"observer": obs, ...})``) and applies
-their ``on`` and filters with ``obs.matches(call)``. Works as a
+their capture and filters with ``obs.matches(call)``. Works as a
 decorator (``@iii.on_observation_deliver("fn::id")``) and returns the
 hook; ``None`` restores iii's delivery.
 
@@ -795,7 +790,7 @@ async def route(call, observers):
 
 Sets which observers want each call of one function. By default
 every observer wants every call; iii's delivery then applies their
-``on`` and filters, and an ``on_observation_deliver`` receives only the
+capture and filters, and an ``on_observation_deliver`` receives only the
 observers that matched.
 
 As a predicate, ``hook(obs, call) -> bool`` is asked once per
@@ -1278,8 +1273,9 @@ through the RBAC port.
 
 #### Observed
 
-What an observer's target receives with ``deliver: "envelope"`` (the
-default). Fields not in the observer's ``capture`` are absent.
+What an observer's target receives when iii delivers: the top-level
+fields, plus whichever of the observer's ``capture`` apply to the outcome.
+Fields not captured, or that do not apply, are absent.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1314,12 +1310,12 @@ keeps it in its own index (route table, consumers, ...).
 | `accepted` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the SDK has acked this observer: a call made afterwards reaches an active observer. Use it to send a new observer its initial state, outside its ``on_observer_added`` (which runs before the ack): a call through it (``\{"observer": obs, "payload": ...\}``), which runs its target alone with the payload as given. Use `accepted_async` in async code. |
 | `accepted_async` | `async () -> None` | Yes | Waits until the SDK has acked this observer (on any event loop). |
 | `args` | `dict[str, Any]` | No | The observer's args, validated against ``args_format`` by the engine. |
-| `capture` | `list[str]` | No | What travels to the target when iii delivers. |
+| `capture` | `list[str]` | No | What the target's payload carries when iii delivers, and with it the outcomes that fire it (see ``ObserveSource``). |
 | `filters` | `dict[str, Any]` | No | The observer's filters, normalized; iii's delivery and `matches` apply them. |
+| `fires_on` | `list[str] \| None` | No | - |
 | `function_id` | `str` | No | The observed function (one this worker hosts). |
 | `id` | `str` | No | The observer's id. |
-| `matches` | `(call: CallLike) -> bool` | Yes | Whether ``call`` passes this observer's ``on`` and filters: what iii's delivery checks, for a deliver hook that calls targets itself. |
-| `on` | `str` | No | ``success``, ``error`` or ``complete``. |
+| `matches` | `(call: CallLike) -> bool` | Yes | Whether ``call`` passes this observer's capture and filters: what iii's delivery checks, for a deliver hook that calls targets itself. |
 | `reject` | `(code: str, message: str) -> None` | Yes | Late rejection of an active observer (e.g. after a config reload). |
 | `target` | `str` | No | The target function id. |
 | `to_dict` | `() -> dict[str, Any]` | Yes | - |
@@ -1372,11 +1368,9 @@ The left side of ``iii.observe``: what is observed.
 | --- | --- | --- | --- |
 | `function_id` | `str` | Yes | The observed function. |
 | `args` | `dict[str, Any]` | No | For the worker that hosts the function, which reads them in its hooks; validated against the function's ``args_format``. A function without ``args_format`` takes none. |
-| `capture` | `list[Capture]` | No | Default ``["input", "output", "caller"]``. |
-| `deliver` | `Literal['envelope', 'input', 'output']` | No | What the target receives when iii delivers: ``"envelope"`` (default), ``"input"`` or ``"output"``. |
+| `capture` | `list[Capture]` | No | What the target's payload carries, and with it which outcomes fire the target. Default ``["input", "output", "caller"]``. ``input`` and ``output`` fire on success, ``error`` fires on error; ``caller`` and ``metadata`` only add to the payload, so a ``capture`` must name at least one of ``input``, ``output``, ``error`` (``INVALID_ARGS`` otherwise). ``[]`` fires on success with the top-level fields only. The default fires on success, ``["error", "caller"]`` on errors, ``["input", "error"]`` on both. |
 | `filters` | `Filter` | No | Which calls reach the target; ``\{\}`` (or absent) = every call. |
 | `namespace` | `str` | No | Defaults to this worker's (``engine::*`` and ``configuration::*`` resolve to ``default``). |
-| `on` | `Literal['success', 'error', 'complete']` | No | ``"success"`` (default), ``"error"`` or ``"complete"``. |
 
 ---
 

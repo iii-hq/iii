@@ -4354,7 +4354,7 @@ mod tests {
                 args: serde_json::json!({}),
                 filters: None,
                 target: (default, target.to_string()),
-                deliver: crate::protocol::Deliver::Input,
+                deliver: crate::observer::Deliver::Input,
                 metadata: None,
             })
             .expect("observe observability::on-span");
@@ -4681,7 +4681,7 @@ mod tests {
 
         let mut logs = test_support::capture(&engine, "test::on-log");
         let mut spans = test_support::capture(&engine, "test::on-span");
-        let _log_socket = test_support::observe(
+        let _log_socket = test_support::observe_input(
             &engine,
             "obs-errors",
             OBSERVABILITY_ON_LOG,
@@ -4689,7 +4689,7 @@ mod tests {
             Some(serde_json::json!({ "input.severity_text": { "$eq": "ERROR" } })),
         )
         .await;
-        let _span_socket = test_support::observe(
+        let _span_socket = test_support::observe_input(
             &engine,
             "obs-spans",
             OBSERVABILITY_ON_SPAN,

@@ -462,7 +462,7 @@ async fn register_log_recorder(harness: &Harness, fn_id: &str, level: &str) -> A
             filters: (level != "all")
                 .then(|| json!({ "input.severity_text": { "$eq": level.to_uppercase() } })),
             target: (default, fn_id.to_string()),
-            deliver: iii::protocol::Deliver::Input,
+            deliver: iii::observer::Deliver::Input,
             metadata: None,
         })
         .expect("observe observability::on-log");

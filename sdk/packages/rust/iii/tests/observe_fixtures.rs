@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use iii_sdk::Message;
 use iii_sdk::protocol::{
-    Capture, InvocationStatus, ObserverState, On, RegisterFunctionMessage, SDK_FEATURES,
+    Capture, InvocationStatus, ObserverState, RegisterFunctionMessage, SDK_FEATURES,
 };
 
 /// The two files that carry the 0.25 `observe` object, which no v2 SDK sends
@@ -107,7 +107,7 @@ fn optional_fields_accept_null() {
                 .unwrap_or_else(|e| panic!("{name}: `{key}: null` failed to decode: {e}"));
         }
         if value.get("observer").is_some() {
-            for key in ["args", "filters", "capture", "on"] {
+            for key in ["args", "filters", "capture"] {
                 let mut nulled = value.clone();
                 nulled["observer"][key] = Value::Null;
                 let Message::ObserverAdded { observer: view, .. } = decode(&nulled) else {
@@ -116,11 +116,7 @@ fn optional_fields_accept_null() {
                 match key {
                     "args" => assert_eq!(view.args, json!({}), "{name}"),
                     "filters" => assert_eq!(view.filters, json!({}), "{name}"),
-                    "capture" => assert_eq!(
-                        view.capture,
-                        vec![Capture::Input, Capture::Output, Capture::Caller]
-                    ),
-                    _ => assert_eq!(view.on, On::Success),
+                    _ => assert_eq!(view.capture, iii_sdk::protocol::default_capture()),
                 }
             }
         }
@@ -164,7 +160,6 @@ fn unknown_message_types_and_enum_values_decode() {
         observer.capture,
         vec![Capture::Input, Capture::Unknown("telemetry".into())]
     );
-    assert_eq!(observer.on, On::Unknown("start".into()));
     assert_eq!(observer.args, json!({}));
     assert_eq!(observer.filters, json!({}));
 }

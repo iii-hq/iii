@@ -43,7 +43,7 @@ function worker(features: string[] = fake.ENGINE_FEATURES) {
 
 type Tick = { expression: string; n: number }
 
-const every = (id: string, expression: string, extra: { filters?: Json; capture?: string[]; on?: string } = {}) =>
+const every = (id: string, expression: string, extra: { filters?: Json; capture?: string[] } = {}) =>
   observerInfo(id, `local::${id}`, { args: { expression }, capture: ['input'], ...extra })
 
 /** `cron::on-tick`: an event source whose observers ask for an expression. */
@@ -616,12 +616,12 @@ describe('local calls: observers matched through the index of their equality con
     Array.from({ length: count }, (_, i) =>
       observerInfo(`tenant-${i}`, 'audit::tenant', {
         filters: { 'input.tenant': { $eq: `t-${i % 500}` } },
-        on: i % 7 === 0 ? 'complete' : 'success',
+        capture: i % 7 === 0 ? ['input', 'output', 'error', 'caller'] : ['input', 'output', 'caller'],
       }),
     )
   const others = [
     observerInfo('big', 'audit::big', { filters: { 'input.n': { $gte: 10 } } }),
-    observerInfo('failures', 'audit::failures', { filters: { 'input.tenant': { $in: ['t-7', 't-8'] } }, on: 'error' }),
+    observerInfo('failures', 'audit::failures', { filters: { 'input.tenant': { $in: ['t-7', 't-8'] } }, capture: ['error'] }),
     observerInfo('all', 'audit::all'),
   ]
 
@@ -783,7 +783,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   const observers = [
     observerInfo('big', 'alerts::big', { filters: { $and: [{ 'input.qty': { $gte: 10 } }] } }),
     observerInfo('all', 'audit::all'),
-    observerInfo('errors', 'alerts::errors', { on: 'error' }),
+    observerInfo('errors', 'alerts::errors', { capture: ['error'] }),
   ]
 
   it('no match hook and no deliver hook: neither matched nor delivered, on success and on the handler error; no report', async () => {
@@ -792,7 +792,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
     socket.deliver(invokeFunction('orders::create', { qty: 1, fail: true }, { invocation_id: 'i-2' }))
     await settle()
     await flushed()
-    // the engine evaluates on and filters of every active observer: the host evaluates none
+    // the engine evaluates capture and filters of every active observer: the host evaluates none
     expect(socket.frames()).toEqual([
       {
         type: 'invocationresult',
@@ -833,7 +833,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
       [
         observerInfo('small', 'audit::small', { args: { max: 5 } }),
         observerInfo('large', 'audit::large', { args: { max: 50 }, filters: { 'input.qty': { $gte: 1000 } } }),
-        observerInfo('errors', 'alerts::errors', { args: { max: 50 }, on: 'error' }),
+        observerInfo('errors', 'alerts::errors', { args: { max: 50 }, capture: ['error'] }),
       ],
       (ref) =>
         ref.onObservationMatch((obs, call) => {
@@ -870,7 +870,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
     const { socket } = await routed(
       [
         observerInfo('eu', 'audit::eu', { args: { region: 'eu' } }),
-        observerInfo('us', 'audit::us', { args: { region: 'us' }, on: 'error' }),
+        observerInfo('us', 'audit::us', { args: { region: 'us' }, capture: ['error'] }),
         observerInfo('eu-2', 'audit::eu-2', { args: { region: 'eu' } }),
       ],
       (ref) =>
@@ -972,7 +972,7 @@ describe('routed calls: the answer says how the call is delivered (v2 §8.2, dec
   })
 
   it('a deliver hook: delivered: true and what the hook returns or throws, never matched', async () => {
-    const { socket } = await routed([observerInfo('all', 'audit::all', { on: 'complete' })], (ref) =>
+    const { socket } = await routed([observerInfo('all', 'audit::all', { capture: ['input', 'output', 'error', 'caller'] })], (ref) =>
       ref
         .onObservationMatch(() => true)
         .onObservationDeliver(async (call) => {
@@ -1217,8 +1217,8 @@ describe('Observer.matches', () => {
     const { sdk } = await cron(
       [
         every('ok', '*', { filters: { $and: [{ 'input.n': { $gte: 0 } }] } }),
-        every('err', '*', { on: 'error' }),
-        every('any', '*', { on: 'complete' }),
+        every('err', '*', { capture: ['error'] }),
+        every('any', '*', { capture: ['input', 'output', 'error', 'caller'] }),
       ],
       () => undefined,
     )

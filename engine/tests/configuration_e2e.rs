@@ -24,7 +24,6 @@ use tokio::sync::mpsc;
 use iii::engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest};
 use iii::function::FunctionResult;
 use iii::observer::{EngineObserver, events::CONFIGURATION_ON_UPDATED};
-use iii::protocol::{DEFAULT_NAMESPACE, Deliver};
 use iii::workers::configuration::ConfigurationWorker;
 use iii::workers::configuration::adapters::ConfigurationAdapter;
 use iii::workers::configuration::adapters::fs::FsAdapter;
@@ -33,6 +32,7 @@ use iii::workers::configuration::structs::{
     ConfigurationRegisterInput, ConfigurationSetInput,
 };
 use iii::workers::traits::Worker;
+use iii::{observer::Deliver, protocol::DEFAULT_NAMESPACE};
 
 /// Build a `ConfigurationWorker` backed by a real `FsAdapter` rooted at `dir`
 /// for direct, in-process end-to-end testing (no engine boot, no WebSocket).

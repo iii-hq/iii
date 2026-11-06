@@ -35,6 +35,7 @@ use iii_filter::FilterIndex;
 use serde_json::Value;
 use uuid::Uuid;
 
+use super::host_view::{self, HostView};
 use super::{
     FnKey, ObserverRegistry,
     lifecycle::{Announcement, Flags, Lock, Observer, lock},
@@ -184,6 +185,10 @@ struct OwnerSync {
     /// The `observe.v1` connection that got this function's
     /// `functionregistered`; `None` until then and once it is gone.
     announced_to: Option<Uuid>,
+    /// What `announced_to` reads from an observer's announcement, from its
+    /// features when it got `functionregistered`: every `observeradded`
+    /// to it reuses it.
+    host_view: HostView,
 }
 
 /// `entry`'s `sync`, unless the entry was dropped (between finding it and
@@ -244,6 +249,7 @@ impl FunctionEntry {
             sync: Lock::new(OwnerSync {
                 revision,
                 announced_to: None,
+                host_view: HostView::default(),
             }),
             announced: AtomicBool::new(false),
             dead: AtomicBool::new(false),
@@ -437,10 +443,10 @@ pub(crate) struct Needs {
 impl Needs {
     /// What `observer` captures or delivers.
     fn delivered(observer: &Observer) -> Self {
-        let capture = observer.capture;
+        let capture = observer.capture.with_delivered(&observer.deliver);
         Self {
-            input: capture.input || observer.deliver == crate::protocol::Deliver::Input,
-            output: capture.output || observer.deliver == crate::protocol::Deliver::Output,
+            input: capture.input,
+            output: capture.output,
             error: capture.error,
             caller: capture.caller,
             metadata: capture.metadata,
@@ -1065,7 +1071,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer),
+                    observer: view(observer, sync.host_view),
                 },
             );
             true
@@ -1454,7 +1460,8 @@ impl ObserverRegistry {
         let speaks_observe = kind == InvocationKind::Regular
             && self.deps.get().is_some_and(|deps| {
                 deps.workers
-                    .get_worker(&connection)
+                    .workers
+                    .get(&connection)
                     .is_some_and(|worker| worker.features.observe_v1())
             });
         Owner {
@@ -1509,6 +1516,10 @@ impl ObserverRegistry {
                 return None;
             }
             sync.announced_to = Some(worker.id);
+            // The host's features, read once for every observer listed
+            // here and every `observeradded` to it after.
+            sync.host_view = HostView::of(&worker.features);
+            let host_view = sync.host_view;
             entry.announced.store(true, Ordering::Release);
             // A new revision for every announcement: an ack for an earlier
             // one (the same connection registering again) is stale.
@@ -1544,7 +1555,7 @@ impl ObserverRegistry {
                     namespace: namespace.to_string(),
                     revision,
                     local_dispatch,
-                    observers: observers.iter().map(|o| view(o)).collect(),
+                    observers: observers.iter().map(|o| view(o, host_view)).collect(),
                 },
             );
             Some((revision, observers.len()))
@@ -1780,7 +1791,7 @@ impl ObserverRegistry {
                     function_id: observer.function.1.clone(),
                     namespace: observer.function.0.clone(),
                     revision,
-                    observer: view(observer),
+                    observer: view(observer, sync.host_view),
                 },
             );
         });
@@ -2053,17 +2064,27 @@ fn waits_behind(entry: &FunctionEntry, observer: &Observer, announced: Announcem
     })
 }
 
-/// An observer as its function's owner sees it (CONTRACT D15). `capture`
-/// also names the part `deliver` gives the target, so the host's report of
-/// a local call carries it.
-pub(crate) fn view(observer: &Observer) -> ObserverView {
+/// An observer as its function's owner sees it. `capture`
+/// also names the input an engine-internal observer gives its target, so
+/// the host's report of a local call carries it. `fires_on` names the outcomes
+/// it fires on; a host without `observe.capture` (0.25, rc) decides them
+/// from `on` alone, so it also gets the legacy `on` (decision 61).
+pub(crate) fn view(observer: &Observer, host: HostView) -> ObserverView {
     ObserverView {
         id: observer.id.clone(),
         args: observer.args.clone(),
         filters: observer.filter.normalized().clone(),
         target: observer.target.1.clone(),
         capture: observer.capture.with_delivered(&observer.deliver).to_list(),
-        on: observer.on.clone(),
+        fires_on: host_view::fires(observer.capture)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        on: host
+            .legacy_on()
+            .then(|| observer.capture.legacy_on())
+            .flatten()
+            .map(str::to_string),
     }
 }
 
@@ -2210,15 +2231,15 @@ mod tests {
     #[tokio::test]
     async fn a_call_keeps_what_its_observers_need() {
         use super::super::events::test_support;
-        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE};
         let engine = Arc::new(crate::engine::Engine::new());
         let _source = test_support::capture(&engine, "test::src");
         let _target = test_support::capture(&engine, "test::dst");
         let (worker, _socket) = test_support::worker(&engine);
-        let observe = |id: &str, filters: Option<Value>, capture: Vec<Capture>, deliver| {
+        let observe = |id: &str, filters: Option<Value>, capture: Vec<Capture>| {
             let mut request = test_support::request(id, "test::src", "test::dst", filters);
             request.source.capture = Some(capture);
-            request.source.deliver = Some(deliver);
+            request.source.raw_input = false;
             request
         };
         let needs = |engine: &crate::engine::Engine| {
@@ -2229,12 +2250,7 @@ mod tests {
                 .needs
         };
 
-        test_support::observe_request(
-            &engine,
-            &worker,
-            observe("count", None, vec![], Deliver::Envelope),
-        )
-        .await;
+        test_support::observe_request(&engine, &worker, observe("count", None, vec![])).await;
         assert_eq!(needs(&engine), Needs::default());
 
         test_support::observe_request(
@@ -2244,7 +2260,6 @@ mod tests {
                 "filtered",
                 Some(json!({ "input.n": { "$eq": 1 }, "caller.worker_name": { "$ne": "x" } })),
                 vec![],
-                Deliver::Envelope,
             ),
         )
         .await;
@@ -2258,7 +2273,7 @@ mod tests {
         test_support::observe_request(
             &engine,
             &worker,
-            observe("outputs", None, vec![Capture::Error], Deliver::Output),
+            observe("outputs", None, vec![Capture::Output, Capture::Error]),
         )
         .await;
         let delivered = Needs {
@@ -2322,7 +2337,7 @@ mod tests {
                 crate::protocol::DEFAULT_NAMESPACE.to_string(),
                 target.to_string(),
             ),
-            deliver: crate::protocol::Deliver::Input,
+            deliver: crate::observer::Deliver::Input,
             metadata: None,
         }
     }
@@ -2673,7 +2688,7 @@ mod tests {
     #[tokio::test]
     async fn what_a_call_keeps_goes_with_the_observers_that_need_it() {
         use super::super::events::test_support;
-        use crate::protocol::{Capture, DEFAULT_NAMESPACE, Deliver};
+        use crate::protocol::{Capture, DEFAULT_NAMESPACE};
         let engine = Arc::new(crate::engine::Engine::new());
         let _source = test_support::capture(&engine, "test::src");
         let _target = test_support::capture(&engine, "test::dst");
@@ -2681,7 +2696,7 @@ mod tests {
         let observe = |id: &str, filters: Option<Value>| {
             let mut request = test_support::request(id, "test::src", "test::dst", filters);
             request.source.capture = Some(vec![]);
-            request.source.deliver = Some(Deliver::Envelope);
+            request.source.raw_input = false;
             request
         };
         let needs = || {
@@ -2699,7 +2714,7 @@ mod tests {
         }
         let mut errors = test_support::request("errors", "test::src", "test::dst", None);
         errors.source.capture = Some(vec![Capture::Error]);
-        errors.source.deliver = Some(Deliver::Envelope);
+        errors.source.raw_input = false;
         test_support::observe_request(&engine, &worker, errors).await;
         let reads = Needs {
             input: true,

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult, UpdateOp};
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Deliver, IIIClient, Source, register_worker};
+use iii_sdk::{Capture, IIIClient, Source, register_worker};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -275,13 +275,13 @@ impl StreamAdapter for BridgeAdapter {
         let pub_sub = self.pub_sub.clone();
         self.bridge.register_function(
             handler_function_id.clone(),
-            iii_sdk::RegisterFunction::new_async(move |data| {
+            iii_sdk::RegisterFunction::new_async(move |data: Value| {
                 let pub_sub = pub_sub.clone();
 
                 async move {
-                    match serde_json::from_value::<PublishedStreamEvent>(data) {
+                    match decode_published(data) {
                         Ok(PublishedStreamEvent { data }) => {
-                            tracing::debug!(data = ?data.clone(), "Event: Received event");
+                            tracing::debug!(data = ?data, "Event: Received event");
                             pub_sub.send_msg(data);
                             Ok(Value::Null)
                         }
@@ -301,13 +301,24 @@ impl StreamAdapter for BridgeAdapter {
         self.bridge.observe(
             Source::function(PUBLISH_FUNCTION_ID)
                 .filters(json!({ "input.topic": { "$eq": STREAM_EVENTS_TOPIC } }))
-                .deliver(Deliver::Input),
+                .capture([Capture::Input]),
             handler_function_id,
         );
 
         self.pub_sub.watch_events().await;
         Ok(())
     }
+}
+
+/// The [`PublishedStreamEvent`] an activation of the relay carries: the
+/// payload's `input` is what `publish` was called with. Taken out of the
+/// payload, which the relay owns, rather than copied.
+fn decode_published(mut payload: Value) -> serde_json::Result<PublishedStreamEvent> {
+    let input = payload
+        .get_mut("input")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(input)
 }
 
 fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFuture {
@@ -323,3 +334,53 @@ fn make_adapter(_engine: Arc<Engine>, config: Option<Value>) -> StreamAdapterFut
 }
 
 crate::register_adapter!(<StreamAdapterRegistration> name: "bridge", make_adapter);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrapper() -> Value {
+        json!({
+            "type": "stream",
+            "timestamp": 7,
+            "streamName": "chat",
+            "groupId": "room-1",
+            "id": "msg-1",
+            "event": { "type": "create", "data": { "text": "hi" } },
+        })
+    }
+
+    /// The relay decodes the observed `publish` call's input out of the
+    /// envelope it receives (the input is taken, not cloned).
+    #[test]
+    fn the_relay_decodes_the_published_event_from_the_envelope() {
+        let payload = json!({
+            "observer_id": "o",
+            "activation_id": "a",
+            "function_id": PUBLISH_FUNCTION_ID,
+            "invocation_id": "i",
+            "status": "success",
+            "input": { "topic": STREAM_EVENTS_TOPIC, "data": wrapper() },
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        let event = decode_published(payload).expect("decoded");
+        assert_eq!(event.data.stream_name, "chat");
+        assert_eq!(event.data.group_id, "room-1");
+        assert_eq!(event.data.id.as_deref(), Some("msg-1"));
+        assert_eq!(event.data.timestamp, 7);
+        assert_eq!(
+            serde_json::to_value(&event.data).unwrap()["event"],
+            wrapper()["event"]
+        );
+    }
+
+    /// An envelope without the input (or with a malformed one) is an error,
+    /// as before.
+    #[test]
+    fn the_relay_refuses_an_envelope_without_a_published_event() {
+        assert!(decode_published(json!({ "observer_id": "o" })).is_err());
+        assert!(decode_published(json!({ "input": { "topic": "t" } })).is_err());
+        assert!(decode_published(json!(null)).is_err());
+    }
+}

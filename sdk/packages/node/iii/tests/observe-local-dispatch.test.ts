@@ -351,7 +351,7 @@ describe('the invocation context and caller propagation', () => {
       parent: { worker_name: 'iii-engine', function_id: 'payments::charge', invocation_id: 'inv-1' },
     })
     expect(out?.observe_depth).toBe(2)
-    // an activation is answered like any call: the engine frees its in-flight slot on the reply (CONTRACT D16)
+    // an activation is answered like any call: the engine frees its in-flight slot on the reply
     expect(socket.framesOf('invocationresult')).toMatchObject([{ invocation_id: 'act-inv-1', result: null }])
   })
 
@@ -409,8 +409,11 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
         filters: { $and: [{ 'input.amount': { $gte: 500 } }] },
         capture: ['input'],
       }),
-      observerInfo('out', 'audit::out', { filters: { $and: [{ 'output.charged': { $gt: 0 } }] }, capture: ['output'] }),
-      observerInfo('errors', 'alerts::err', { on: 'error' }),
+      observerInfo('out', 'audit::out', {
+        filters: { $and: [{ 'output.charged': { $gt: 0 } }] },
+        capture: ['output'],
+      }),
+      observerInfo('errors', 'alerts::err', { capture: ['error'] }),
     ])
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 750 }, metadata: { tenant: 'acme' } })
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 0 } })
@@ -431,16 +434,20 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
     })
   })
 
-  it("on: 'error' sees only failures, with the error and the caller", async () => {
+  it('capture decides the outcomes: error without input or output sees only failures; [] only successes', async () => {
     const { sdk, socket } = await observed([
-      observerInfo('errors', 'alerts::err', { on: 'error', capture: ['input', 'error', 'caller'] }),
-      observerInfo('all', 'audit::all', { on: 'complete', capture: [] }),
+      observerInfo('errors', 'alerts::err', { capture: ['error', 'caller'] }),
+      observerInfo('all', 'audit::all', { capture: ['input', 'error'] }),
+      observerInfo('empty', 'audit::count', { capture: [] }),
     ])
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 1, fail: true } }).catch(() => undefined)
     await sdk.call({ function_id: 'payments::charge', payload: { amount: 2 } })
     await fake.elapse(10)
     const items = reportedItems(socket)
-    expect(items.map((i) => i.matched)).toEqual([['errors', 'all'], ['all']])
+    expect(items.map((i) => i.matched)).toEqual([
+      ['errors', 'all'],
+      ['all', 'empty'],
+    ])
     expect(items[0]).toMatchObject({
       status: 'error',
       input: { amount: 1, fail: true },
@@ -448,12 +455,12 @@ describe("iii's delivery: local calls are evaluated and reported (v2 §4.4)", ()
     })
     // made outside any handler: no caller (the engine stamps the worker)
     expect(items[0]).not.toHaveProperty('caller')
-    expect(items[1]).not.toHaveProperty('input')
+    expect(items[1]).toMatchObject({ status: 'success', input: { amount: 2 } })
     expect(items[1]).not.toHaveProperty('output')
   })
 
   it('the caller of a call made inside a handler: that invocation, never worker_id / worker_name', async () => {
-    const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['caller'] })])
+    const { sdk, socket } = await observed([observerInfo('all', 'audit::all', { capture: ['input', 'caller'] })])
     sdk.registerFunction('checkout::confirm', async () =>
       sdk.call({ function_id: 'payments::charge', payload: { amount: 5 } }),
     )
@@ -846,6 +853,134 @@ describe('the reporter against the socket and the function registry', () => {
       [1, ['a']],
       [2, ['a']],
     ])
+  })
+})
+
+describe('when a hosted observer fires: the view `fires_on`, else the legacy `on` (decision 61)', () => {
+  const legacyWarnings = () =>
+    vi
+      .mocked(console.warn)
+      .mock.calls.filter(([message]) => String(message).includes('does not support observe.capture'))
+
+  async function hosted(features: readonly string[], observers: Record<string, unknown>[]) {
+    fake.fakeClock()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    sdk.registerFunction('payments::charge', async (input: { fail?: boolean }) => {
+      if (input.fail) throw new Error('card declined')
+      return { charged: true }
+    })
+    socket.open([...features])
+    socket.deliver(functionRegistered('payments::charge', observers))
+    await settle()
+    socket.clear()
+    return { sdk, socket }
+  }
+
+  /** One failed call, then one that succeeds: the observers each one matched. */
+  async function outcomes(sdk: IIIClient, socket: ReturnType<typeof fake.lastSocket>) {
+    await sdk.call({ function_id: 'payments::charge', payload: { fail: true } }).catch(() => undefined)
+    await sdk.call({ function_id: 'payments::charge', payload: {} })
+    await fake.elapse(10)
+    const items = reportedItems(socket)
+    socket.clear()
+    return items.map((i) => [i.status, i.matched])
+  }
+
+  it('an engine with observe.capture: fires as the view says, whatever capture says, and no warning', async () => {
+    const { sdk, socket } = await hosted(fake.ENGINE_FEATURES, [
+      observerInfo('err-by-fires', 'audit::a', { capture: ['input'], fires_on: ['error'] }),
+      observerInfo('ok-by-fires', 'audit::b', { capture: ['error'], fires_on: ['success'] }),
+      observerInfo('both', 'audit::c', { capture: ['caller'], fires_on: ['success', 'error'] }),
+    ])
+    expect(await outcomes(sdk, socket)).toEqual([
+      ['error', ['err-by-fires', 'both']],
+      ['success', ['ok-by-fires', 'both']],
+    ])
+    expect(legacyWarnings()).toHaveLength(0)
+  })
+
+  it.each([
+    ['a 0.25 engine', fake.ENGINE_FEATURES_V1],
+    ['an rc engine', fake.ENGINE_FEATURES_RC],
+  ] as const)('%s (no fires_on): on absent => success only, error, complete, whatever capture says; one warning', async (_name, features) => {
+    const { sdk, socket } = await hosted(features, [
+      // capture alone would fire this one on errors only
+      observerInfo('absent', 'audit::a', { capture: ['error'], fires_on: null }),
+      observerInfo('error', 'audit::b', { capture: ['input', 'output'], fires_on: null, on: 'error' }),
+      observerInfo('complete', 'audit::c', { capture: ['input'], fires_on: null, on: 'complete' }),
+      observerInfo('success', 'audit::d', { capture: ['error'], fires_on: null, on: 'success' }),
+    ])
+    expect(await outcomes(sdk, socket)).toEqual([
+      ['error', ['error', 'complete']],
+      ['success', ['absent', 'complete', 'success']],
+    ])
+    // another legacy view later: still one warning per client
+    socket.deliver(
+      fake.observerAdded('payments::charge', 1, observerInfo('late', 'audit::e', { fires_on: null, on: 'error' })),
+    )
+    await settle()
+    expect(legacyWarnings()).toHaveLength(1)
+    expect(String(legacyWarnings()[0][0])).toMatch(/deprecated.*future version.*upgrade the engine/)
+  })
+
+  it('a view with fires_on wins over a legacy on in the same view', async () => {
+    const { sdk, socket } = await hosted(fake.ENGINE_FEATURES, [
+      observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'], on: 'error' }),
+    ])
+    expect(await outcomes(sdk, socket)).toEqual([['success', ['o']]])
+    expect(legacyWarnings()).toHaveLength(0)
+  })
+
+  it('an array under `fires` (the activation count elsewhere) is never read as the outcomes', async () => {
+    const { sdk, socket } = await hosted(fake.ENGINE_FEATURES_RC, [
+      { ...observerInfo('o', 'audit::a', { capture: ['input'], fires_on: null }), fires: ['error'] },
+    ])
+    expect(await outcomes(sdk, socket)).toEqual([['success', ['o']]])
+    expect(legacyWarnings()).toHaveLength(1)
+  })
+
+  it('the hot path reads the bits computed when the observer was announced, not its capture', async () => {
+    let held: Record<string, unknown> | undefined
+    fake.fakeClock()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    sdk
+      .registerFunction('payments::charge', async (input: { fail?: boolean }) => {
+        if (input.fail) throw new Error('card declined')
+        return { charged: true }
+      })
+      .onObserverAdded((obs) => {
+        held = obs as unknown as Record<string, unknown>
+      })
+    socket.open()
+    socket.deliver(
+      functionRegistered('payments::charge', [
+        observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['success'] }),
+      ]),
+    )
+    await settle()
+    expect(held).toMatchObject({ firesOnSuccess: true, firesOnError: false })
+    // capture changed behind the SDK's back: firing does not follow it
+    ;(held as { capture: string[] }).capture = ['error']
+    socket.clear()
+    expect(await outcomes(sdk, socket)).toEqual([['success', ['o']]])
+    const observer = held as unknown as { matches(call: Record<string, unknown>): boolean }
+    expect(observer.matches({ status: 'success' })).toBe(true)
+    expect(observer.matches({ status: 'error' })).toBe(false)
+
+    // a new view of the same observer recomputes them (functionregistered after a reconnect, same args)
+    socket.deliver(
+      functionRegistered(
+        'payments::charge',
+        [observerInfo('o', 'audit::a', { capture: ['input'], fires_on: ['error'] })],
+        { revision: 5 },
+      ),
+    )
+    await settle()
+    expect(held).toMatchObject({ firesOnSuccess: false, firesOnError: true })
+    socket.clear()
+    expect(await outcomes(sdk, socket)).toEqual([['error', ['o']]])
   })
 })
 

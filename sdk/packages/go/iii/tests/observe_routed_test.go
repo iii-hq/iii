@@ -83,7 +83,7 @@ func TestObserveRoutedFiltersOnInputOutputAndCaller(t *testing.T) {
 	}
 }
 
-func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
+func TestObserveRoutedCaptureDecidesTheOutcomes(t *testing.T) {
 	owner := observeWorker(t, "routed-owner", nil)
 	watcher := observeWorker(t, "routed-watcher", nil)
 	flaky := fnID(t, "go-e2e::flaky")
@@ -100,8 +100,9 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	})
 	errs := collector(t, watcher, fnID(t, "go-e2e::on-error"))
 	inputs := collector(t, watcher, fnID(t, "go-e2e::on-input"))
-	a, _ := watcher.Observe(iii.Source{FunctionID: flaky, On: iii.OnError, Capture: []iii.Capture{iii.CaptureError}}, fnID(t, "go-e2e::on-error"))
-	b, _ := watcher.Observe(iii.Source{FunctionID: flaky, On: iii.OnComplete, Deliver: iii.DeliverInput}, fnID(t, "go-e2e::on-input"))
+	// error alone fires on failures only; input and error fire on both
+	a, _ := watcher.Observe(iii.Source{FunctionID: flaky, Capture: []iii.Capture{iii.CaptureError}}, fnID(t, "go-e2e::on-error"))
+	b, _ := watcher.Observe(iii.Source{FunctionID: flaky, Capture: []iii.Capture{iii.CaptureInput, iii.CaptureError}}, fnID(t, "go-e2e::on-input"))
 	ready(t, a)
 	ready(t, b)
 
@@ -121,10 +122,12 @@ func TestObserveRoutedOnErrorCaptureAndDeliver(t *testing.T) {
 	ins := exactly(t, inputs, 2, "the input activations", 10*time.Second)
 	seen := map[float64]bool{}
 	for _, in := range ins {
-		if _, isEnvelope := in.Data["observer_id"]; isEnvelope {
-			t.Errorf("deliver: input sent an envelope: %v", in.Data)
+		if in.Data["status"] == "error" {
+			if _, has := in.Data["output"]; has {
+				t.Errorf("an error carried an output: %v", in.Data)
+			}
 		}
-		n, _ := in.Data["n"].(float64)
+		n, _ := field(in.Data, "input.n").(float64)
 		seen[n] = true
 	}
 	if !seen[1] || !seen[2] {
@@ -273,7 +276,7 @@ func TestObserveRoutedEngineCodes(t *testing.T) {
 
 // deliver: output sends the target the handler's return value alone, for routed and
 // local calls of the observed function.
-func TestObserveRoutedDeliverOutput(t *testing.T) {
+func TestObserveRoutedCaptureOutput(t *testing.T) {
 	owner := observeWorker(t, "deliver-owner", nil)
 	watcher := observeWorker(t, "deliver-watcher", nil)
 	double, target := fnID(t, "go-deliver::double"), fnID(t, "go-deliver::on-output")
@@ -285,7 +288,7 @@ func TestObserveRoutedDeliverOutput(t *testing.T) {
 		return map[string]int{"doubled": in.N * 2}, nil
 	})
 	got := collector(t, watcher, target)
-	h, err := watcher.Observe(iii.Source{FunctionID: double, Deliver: iii.DeliverOutput}, target)
+	h, err := watcher.Observe(iii.Source{FunctionID: double, Capture: []iii.Capture{iii.CaptureOutput}}, target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,10 +299,14 @@ func TestObserveRoutedDeliverOutput(t *testing.T) {
 	outs := exactly(t, got, 2, "the output activations", 10*time.Second)
 	seen := map[string]bool{}
 	for _, a := range outs {
-		seen[string(a.Raw)] = true
+		if _, has := a.Data["input"]; has {
+			t.Errorf("capture [output] carried the input: %v", a.Data)
+		}
+		out, _ := json.Marshal(a.Data["output"])
+		seen[string(out)] = true
 	}
 	if !seen[`{"doubled":4}`] || !seen[`{"doubled":6}`] {
-		t.Errorf("targets got %v, want the bare outputs {\"doubled\":4} and {\"doubled\":6}", outs)
+		t.Errorf("targets got %v, want the outputs {\"doubled\":4} and {\"doubled\":6}", outs)
 	}
 }
 

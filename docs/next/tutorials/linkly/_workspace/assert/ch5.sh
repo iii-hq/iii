@@ -53,7 +53,7 @@ const worker = registerWorker(process.env.III_URL!, {
 });
 const received: Record<string, string[]> = { empty: [], none: [] };
 for (const name of ["empty", "none"]) {
-  worker.registerFunction(`filter-check::${name}`, async (click: { code: string }) => {
+  worker.registerFunction(`filter-check::${name}`, async ({ output: click }: { output: { code: string } }) => {
     received[name].push(click.code);
     return null;
   });
@@ -64,13 +64,13 @@ await Promise.all([
       {
         function_id: "click-streamer::on-click",
         filters: { "input.code": { $eq: "" } },
-        deliver: "output",
+        capture: ["output"],
       },
       "filter-check::empty",
     )
     .ready(),
   worker
-    .observe({ function_id: "click-streamer::on-click", deliver: "output" }, "filter-check::none")
+    .observe({ function_id: "click-streamer::on-click", capture: ["output"] }, "filter-check::none")
     .ready(),
 ]);
 const click = await worker.call({

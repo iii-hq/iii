@@ -85,7 +85,12 @@ async fn the_engine_advertises_its_features_and_records_the_workers() {
     );
     assert_eq!(
         registered["features"],
-        json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+        json!([
+            "observe.v1",
+            "observe.v2",
+            "observe.capture",
+            "local-dispatch.v1"
+        ])
     );
     let worker_id: Uuid = registered["worker_id"]
         .as_str()

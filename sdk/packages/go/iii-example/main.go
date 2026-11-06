@@ -87,14 +87,17 @@ func main() {
 		log.Fatalf("observe http::on-request: %v", err)
 	}
 
-	// Every function is observable: log each greeting hello::greet returns.
+	// Every function is observable: log each greeting hello::greet returns (the
+	// payload's output).
 	if _, err := client.RegisterFunction("hello::on-greeted", func(ctx context.Context, data json.RawMessage) (any, error) {
-		log.Printf("greeted: %s", data)
+		var observed iii.Observed
+		_ = json.Unmarshal(data, &observed)
+		log.Printf("greeted: %s", observed.Output)
 		return nil, nil
 	}); err != nil {
 		log.Fatalf("register function: %v", err)
 	}
-	if _, err := client.Observe(iii.Source{FunctionID: "hello::greet", Deliver: iii.DeliverOutput}, "hello::on-greeted"); err != nil {
+	if _, err := client.Observe(iii.Source{FunctionID: "hello::greet", Capture: []iii.Capture{iii.CaptureOutput}}, "hello::on-greeted"); err != nil {
 		log.Fatalf("observe hello::greet: %v", err)
 	}
 

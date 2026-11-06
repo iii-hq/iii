@@ -6,8 +6,9 @@ use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_ma
 use iii::{
     engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
     function::{Function, FunctionResult, FunctionsRegistry},
+    observer::Deliver,
     observer::EngineObserver,
-    protocol::{DEFAULT_NAMESPACE, Deliver},
+    protocol::DEFAULT_NAMESPACE,
     worker_connections::{WorkerConnection, WorkerConnectionRegistry},
     workers::observability::metrics::ensure_default_meter,
 };

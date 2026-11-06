@@ -15,7 +15,11 @@ type ObserverHandle struct {
 	client *Client
 	// frame is the observe frame, sent on every connection.
 	frame []byte
-	seq   uint64
+	// legacyOn is the source.on its capture implies, sent (in a frame built when sent)
+	// to an engine without observe.capture; "" when that engine's default, success, is
+	// what it implies.
+	legacyOn string
+	seq      uint64
 	// refused: an observeresult in state error answered h's observe (decision 56), and
 	// the engine holds no observer for it; h is not sent again, and its Dispose sends
 	// nothing. Guarded by client.mu, kept across connections.

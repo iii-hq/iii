@@ -11,7 +11,9 @@ import (
 // hook types). The wire shapes are in protocol.go.
 
 // Capture names a part of an observed invocation shipped to an observer's target.
-// The default is input, output and caller.
+// The default is input, output and caller. Capture also decides which
+// outcomes fire the target: input and output fire on success, error on error; caller
+// and metadata only add to the payload.
 type Capture string
 
 const (
@@ -20,26 +22,6 @@ const (
 	CaptureError    Capture = "error"
 	CaptureCaller   Capture = "caller"
 	CaptureMetadata Capture = "metadata"
-)
-
-// On selects which calls of a function reach an observer, by their status. The default
-// is [OnSuccess].
-type On string
-
-const (
-	OnSuccess  On = "success"
-	OnError    On = "error"
-	OnComplete On = "complete"
-)
-
-// Deliver selects what an observer's target receives: the whole [Observed] envelope
-// (the default), or only the observed input or output.
-type Deliver string
-
-const (
-	DeliverEnvelope Deliver = "envelope"
-	DeliverInput    Deliver = "input"
-	DeliverOutput   Deliver = "output"
 )
 
 // ObserverState is an observer's lifecycle: pending (no host yet, waiting for the
@@ -99,14 +81,14 @@ type Source struct {
 	Args Args
 	// Filters decide which calls reach the target; nil matches every call.
 	Filters Filters
-	// On selects calls by status; empty means [OnSuccess].
-	On On
-	// Capture is what the envelope carries. nil means the default (input, output,
-	// caller); an empty, non-nil slice captures nothing.
+	// Capture is what the target's payload carries, and with it which outcomes fire
+	// the target. nil means the default (input, output, caller), which
+	// fires on success. Input and output fire on success, error fires on error; caller
+	// and metadata only add to the payload, so a non-empty Capture must name at least
+	// one of input, output, error (INVALID_ARGS otherwise). An empty, non-nil slice
+	// fires on success with the top-level fields only. {error, caller} fires on
+	// errors, {input, error} on both.
 	Capture []Capture
-	// Deliver is what the target receives when iii delivers; empty means
-	// [DeliverEnvelope].
-	Deliver Deliver
 }
 
 // ObserverOptions are the observer's own settings: its id, policy and metadata. A zero
@@ -160,8 +142,9 @@ func ObserveRejection(code, message string) error {
 // specification uses.
 type FunctionOptions = RegisterFunctionOptions
 
-// Observed is what an observer's target receives with [DeliverEnvelope] (the default)
-// when iii delivers. Fields not in the observer's capture are absent.
+// Observed is what an observer's target receives when iii delivers: the top-level
+// fields, plus whichever of the observer's capture apply to the outcome. Fields not
+// captured, or that do not apply, are absent.
 // Decode a target's payload into it:
 //
 //	var ev iii.Observed

@@ -32,10 +32,16 @@ use super::{
 };
 use crate::{
     engine::Outbound,
-    protocol::{Capture, Deliver, ErrorBody, Message, ObserverState, On, observe_codes},
+    protocol::{Capture, ErrorBody, Message, ObserverState, observe_codes},
 };
 
-/// What an activation ships to the target, from the observer's `capture`.
+/// What an activation ships to the target, and which outcomes fire it, from
+/// the observer's `capture`.
+///
+/// `input` and `output` fire on success, `error` fires on error; `caller`
+/// and `metadata` only add to the payload. A non-empty `capture` must name at
+/// least one of `input`, `output`, `error` ([`CaptureSet::resolve`]); `[]`
+/// means a success carrying the top-level fields only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct CaptureSet {
     pub input: bool,
@@ -43,6 +49,9 @@ pub(crate) struct CaptureSet {
     pub error: bool,
     pub caller: bool,
     pub metadata: bool,
+    /// Fires on a success / an error.
+    pub on_success: bool,
+    pub on_error: bool,
 }
 
 impl CaptureSet {
@@ -54,10 +63,41 @@ impl CaptureSet {
         error: false,
         caller: true,
         metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
+    /// What an engine-owned observer that hands its target the input alone
+    /// captures (decision 59): the input, on success; its host ships nothing
+    /// else.
+    pub const INPUT_ONLY: Self = Self {
+        input: true,
+        output: false,
+        error: false,
+        caller: false,
+        metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
+    /// What `capture: []` means: a success, with the top-level fields only.
+    pub const EMPTY: Self = Self {
+        input: false,
+        output: false,
+        error: false,
+        caller: false,
+        metadata: false,
+        on_success: true,
+        on_error: false,
     };
 
     /// Known values only: `observe` refuses unknown ones before this runs.
+    /// `[]` is [`Self::EMPTY`]; otherwise each outcome fires when a field
+    /// that fires on it is captured.
     pub fn from_list(list: &[Capture]) -> Self {
+        if list.is_empty() {
+            return Self::EMPTY;
+        }
         let mut set = Self::default();
         for capture in list {
             match capture {
@@ -69,18 +109,55 @@ impl CaptureSet {
                 Capture::Unknown(_) => {}
             }
         }
+        set.on_success = set.input || set.output;
+        set.on_error = set.error;
         set
     }
 
+    /// [`Self::from_list`] behind the gate: a non-empty `capture` that fires
+    /// on nothing (only `caller` / `metadata`) is refused.
+    pub fn resolve(list: &[Capture]) -> Result<Self, String> {
+        let set = Self::from_list(list);
+        if !set.on_success && !set.on_error {
+            return Err(
+                "`source.capture` must name at least one of `input`, `output`, `error` \
+                 (or be `[]`): `caller` and `metadata` alone fire on nothing"
+                    .to_string(),
+            );
+        }
+        Ok(set)
+    }
+
+    /// The `on` a host without `observe.v2` (0.25) reads from an observer's
+    /// announcement, since it decides the outcomes that fire from it alone:
+    /// `error` or `complete`, or none for success, its default. Deprecated
+    /// with those hosts.
+    pub fn legacy_on(self) -> Option<&'static str> {
+        match (self.on_success, self.on_error) {
+            (_, false) => None,
+            (true, true) => Some("complete"),
+            (false, true) => Some("error"),
+        }
+    }
+
+    /// Whether an invocation that ended in success (or not) fires the target.
+    pub fn fires(self, success: bool) -> bool {
+        if success {
+            self.on_success
+        } else {
+            self.on_error
+        }
+    }
+
     /// The parts the host of the observed function sends the engine for an
-    /// observer: what it captures, and the part `deliver` hands the target
-    /// (`input` or `output`), which the engine has no other way to get for
-    /// a call the host reports.
+    /// observer: what it captures, and the input an engine-internal observer
+    /// hands its target, which the engine has no other way to get for a call
+    /// the host reports.
     pub fn with_delivered(mut self, deliver: &Deliver) -> Self {
         match deliver {
+            Deliver::Payload => {}
             Deliver::Input => self.input = true,
             Deliver::Output => self.output = true,
-            Deliver::Envelope | Deliver::Unknown(_) => {}
         }
         self
     }
@@ -99,6 +176,110 @@ impl CaptureSet {
     }
 }
 
+/// What the target's first argument is. Engine-internal, never a new-style
+/// wire field: observers made by `observe` receive the payload; the engine's
+/// own observers receive the observed input alone; an older SDK's
+/// `deliver: input` / `deliver: output` is translated to [`Self::Input`] /
+/// [`Self::Output`] (decision 60).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Deliver {
+    #[default]
+    Payload,
+    Input,
+    /// The observed output alone, `null` when there is none (on a failure
+    /// too), as v0.25's `deliver: output`.
+    Output,
+}
+
+/// Decision 60: an older SDK's `source.on` / `source.deliver`, translated at
+/// registration (the first `observe` and every replay) into what the
+/// observer does: `None` when the source carries neither and `always` is
+/// unset. Decision 60: `always` is set for a worker that did not declare
+/// `observe.capture` (an rc or 0.25 SDK), whose every source keeps the old
+/// semantics, `on` and `deliver` or not.
+///
+/// Firing comes from `on` alone (absent or `success`: successes; `error`:
+/// failures; `complete`: both), set directly rather than through
+/// [`CaptureSet::resolve`], since an old capture such as `[caller]` was
+/// valid with any `on`. The payload carries exactly the `capture` list (the
+/// old default `[input, output, caller]` when absent). `deliver` absent or
+/// `envelope` is the payload, `input` / `output` the raw value. Any other
+/// value of either is an error message for `INVALID_ARGS`.
+pub(crate) fn translate_legacy(
+    on: Option<&Value>,
+    deliver: Option<&Value>,
+    capture: Option<&[Capture]>,
+    always: bool,
+) -> Result<Option<(CaptureSet, Deliver)>, String> {
+    if on.is_none() && deliver.is_none() && !always {
+        return Ok(None);
+    }
+    let (on_success, on_error) = match on {
+        None => (true, false),
+        Some(value) => match value.as_str() {
+            Some("success") => (true, false),
+            Some("error") => (false, true),
+            Some("complete") => (true, true),
+            _ => {
+                return Err(format!(
+                    "`source.on` must be `success`, `error` or `complete`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let deliver = match deliver {
+        None => Deliver::Payload,
+        Some(value) => match value.as_str() {
+            Some("envelope") => Deliver::Payload,
+            Some("input") => Deliver::Input,
+            Some("output") => Deliver::Output,
+            _ => {
+                return Err(format!(
+                    "`source.deliver` must be `envelope`, `input` or `output`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let mut set = match capture {
+        None => CaptureSet::DEFAULT,
+        Some(list) => CaptureSet::from_list(list),
+    };
+    set.on_success = on_success;
+    set.on_error = on_error;
+    Ok(Some((set, deliver)))
+}
+
+/// The new-style `capture` closest to a translated observer, for its
+/// deprecation warning: what fires on its outcomes, plus what its payload
+/// carries.
+pub(crate) fn capture_replacing(set: CaptureSet, deliver: Deliver) -> Vec<Capture> {
+    let mut new = match deliver {
+        Deliver::Payload => set,
+        Deliver::Input => CaptureSet {
+            input: true,
+            ..CaptureSet::default()
+        },
+        Deliver::Output => CaptureSet {
+            output: true,
+            ..CaptureSet::default()
+        },
+    };
+    if set.on_success && !new.input && !new.output {
+        new.input = deliver != Deliver::Output;
+        new.output = deliver == Deliver::Output;
+    }
+    if !set.on_success {
+        new.output = false;
+        if deliver != Deliver::Input {
+            new.input = false;
+        }
+    }
+    new.error |= set.on_error;
+    new.to_list()
+}
+
 /// An observer's spec as its observing worker asked for it, with the defaults
 /// applied, the namespaces resolved and the filters normalized: a replay with
 /// the same id must carry an equal one (`OBSERVER_ID_CONFLICT` otherwise), and
@@ -109,8 +290,8 @@ pub(crate) struct ObserveSpec {
     pub target: FnKey,
     pub args: Value,
     pub filters: Value,
-    pub capture: Vec<Capture>,
-    pub on: On,
+    /// With the outcomes it fires on: a translated `on` is part of the spec.
+    pub capture: CaptureSet,
     pub deliver: Deliver,
     pub metadata: Option<Value>,
     pub max_fires: Option<u64>,
@@ -546,8 +727,7 @@ pub struct Observer {
     pub args: Value,
     pub filter: Filter,
     pub(crate) capture: CaptureSet,
-    pub on: On,
-    pub deliver: Deliver,
+    pub(crate) deliver: Deliver,
     /// The activation's metadata sidecar.
     pub metadata: Option<Value>,
     pub(crate) policy: Policy,
@@ -605,7 +785,6 @@ pub(crate) struct NewObserver {
     pub args: Value,
     pub filter: Filter,
     pub capture: CaptureSet,
-    pub on: On,
     pub deliver: Deliver,
     pub metadata: Option<Value>,
     pub policy: Policy,
@@ -627,7 +806,6 @@ impl Observer {
             args: new.args,
             filter: new.filter,
             capture: new.capture,
-            on: new.on,
             deliver: new.deliver,
             metadata: new.metadata,
             policy: new.policy,
@@ -693,8 +871,7 @@ impl Observer {
             && spec.target == self.target
             && spec.args == self.args
             && spec.filters == *self.filter.normalized()
-            && spec.capture == self.capture.to_list()
-            && spec.on == self.on
+            && spec.capture == self.capture
             && spec.deliver == self.deliver
             && spec.metadata == self.metadata
             && spec.max_fires == self.policy.max_fires
@@ -1633,8 +1810,42 @@ mod tests {
             CaptureSet::from_list(&crate::protocol::default_capture()),
             CaptureSet::DEFAULT
         );
+        // Decision 62: `[input, output, caller]`, no `metadata`.
+        assert_eq!(
+            CaptureSet::DEFAULT.to_list(),
+            vec![Capture::Input, Capture::Output, Capture::Caller]
+        );
     }
 
+    /// `input` / `output` fire on success, `error` on error; `caller` and
+    /// `metadata` fire on nothing; `[]` fires on success; a non-empty
+    /// capture that fires on nothing is refused.
+    #[test]
+    fn capture_decides_the_outcomes_that_fire() {
+        use Capture::{Caller, Error, Input, Metadata, Output};
+        for (list, on_success, on_error) in [
+            (crate::protocol::default_capture(), true, false),
+            (vec![Input], true, false),
+            (vec![Output, Caller], true, false),
+            (vec![Input, Metadata], true, false),
+            (vec![Error, Caller], false, true),
+            (vec![Error, Metadata], false, true),
+            (vec![Error, Input], true, true),
+            (vec![Output, Error], true, true),
+            (vec![], true, false),
+        ] {
+            let set = CaptureSet::resolve(&list).expect("passes the gate");
+            assert_eq!(
+                (set.fires(true), set.fires(false)),
+                (on_success, on_error),
+                "{list:?}"
+            );
+        }
+        for list in [vec![Caller], vec![Metadata], vec![Caller, Metadata]] {
+            assert!(CaptureSet::resolve(&list).is_err(), "{list:?}");
+        }
+        assert_eq!(CaptureSet::from_list(&[]).to_list(), Vec::<Capture>::new());
+    }
     /// The metric is told each drop once: what was counted since the last
     /// export, nothing when there was none.
     #[test]

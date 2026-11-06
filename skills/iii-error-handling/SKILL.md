@@ -33,7 +33,7 @@ rejects with an `ObserveRejection` (Go `*iii.ObserveRejectionError`) carrying th
 
 | Code | Meaning | Typical handling |
 | --- | --- | --- |
-| `UNSUPPORTED` | The engine is older than 0.25, or `on` / `capture` / `deliver` has an unknown value | Upgrade the engine or fix the source |
+| `UNSUPPORTED` | The engine is older than 0.25, or `capture` has an unknown value | Upgrade the engine or fix the source |
 | `INVALID_ARGS` | `args` fail the function's `args_format`, or args were sent to a function without one | Fix the args; check the function's `args_format` in `engine::functions::list` |
 | `INVALID_FILTER` / `INVALID_FILTER_PATH` | The filter is malformed, over a limit, uses literal shorthand, or names a path the function's schema does not have | Use explicit operators (`{ "$eq": v }`); check the path against `request_format` |
 | `NOT_OBSERVABLE` | The function registered `observable: false` | Do not retry |

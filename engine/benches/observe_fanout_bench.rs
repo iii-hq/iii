@@ -24,8 +24,9 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
+    observer::Deliver,
     observer::{EngineObserver, events::register_event_source},
-    protocol::{DEFAULT_NAMESPACE, Deliver},
+    protocol::DEFAULT_NAMESPACE,
     workers::observability::metrics::ensure_default_meter,
 };
 use serde_json::json;

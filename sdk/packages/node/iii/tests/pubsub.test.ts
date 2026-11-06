@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { Observed } from '../src/observe-types'
 import { iii, sleep } from './utils'
 
 function uniqueTopic(prefix: string): string {
@@ -14,14 +15,17 @@ describe('PubSub: observers of publish, filtered by topic', () => {
       resolveReceived = r
     })
 
-    const fn = iii.registerFunction(`test.pubsub.subscriber.${topic}`, async (data: Record<string, unknown>) => {
-      receivedMessages.push(data)
-      resolveReceived?.()
-      return {}
-    })
+    const fn = iii.registerFunction(
+      `test.pubsub.subscriber.${topic}`,
+      async ({ input }: Observed<Record<string, unknown>>) => {
+        receivedMessages.push(input as Record<string, unknown>)
+        resolveReceived?.()
+        return {}
+      },
+    )
 
     const subscription = iii.observe(
-      { function_id: 'publish', filters: { 'input.topic': { $eq: topic } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topic } }, capture: ['input'] },
       fn.id,
     )
 
@@ -43,7 +47,7 @@ describe('PubSub: observers of publish, filtered by topic', () => {
     ])
 
     expect(receivedMessages).toHaveLength(1)
-    // deliver: 'input' hands the target what publish was called with
+    // the payload's `input` is what publish was called with
     expect(receivedMessages[0]).toEqual({ topic, data: { message: 'Hello PubSub!' } })
 
     fn.unregister()
@@ -61,24 +65,30 @@ describe('PubSub: observers of publish, filtered by topic', () => {
       resolveA = r
     })
 
-    const fnA = iii.registerFunction(`test.pubsub.topic_a.${topicA}`, async (data: Record<string, unknown>) => {
-      receivedA.push(data)
-      resolveA?.()
-      return {}
-    })
+    const fnA = iii.registerFunction(
+      `test.pubsub.topic_a.${topicA}`,
+      async ({ input }: Observed<Record<string, unknown>>) => {
+        receivedA.push(input as Record<string, unknown>)
+        resolveA?.()
+        return {}
+      },
+    )
 
-    const fnB = iii.registerFunction(`test.pubsub.topic_b.${topicB}`, async (data: Record<string, unknown>) => {
-      receivedB.push(data)
-      return {}
-    })
+    const fnB = iii.registerFunction(
+      `test.pubsub.topic_b.${topicB}`,
+      async ({ input }: Observed<Record<string, unknown>>) => {
+        receivedB.push(input as Record<string, unknown>)
+        return {}
+      },
+    )
 
     const subscriptionA = iii.observe(
-      { function_id: 'publish', filters: { 'input.topic': { $eq: topicA } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicA } }, capture: ['input'] },
       fnA.id,
     )
 
     const subscriptionB = iii.observe(
-      { function_id: 'publish', filters: { 'input.topic': { $eq: topicB } }, deliver: 'input' },
+      { function_id: 'publish', filters: { 'input.topic': { $eq: topicB } }, capture: ['input'] },
       fnB.id,
     )
 

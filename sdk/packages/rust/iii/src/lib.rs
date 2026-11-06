@@ -66,8 +66,8 @@ pub use observe::{
 #[allow(deprecated)]
 pub use protocol::TriggerAction;
 pub use protocol::{
-    Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Capture, Deliver,
-    Dispatch, InvocationStatus, Message, ObserverState, On, ParentCaller,
+    Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Capture, Dispatch,
+    InvocationStatus, Message, ObserverState, ParentCaller, capture_fires,
 };
 #[allow(deprecated)]
 pub use stream_provider::IStream;
@@ -429,9 +429,9 @@ fn _ensure_enqueue_result_at_root() {}
 /// ```rust,no_run
 /// # #![allow(deprecated)]
 /// use iii_sdk::{
-///     AddedHook, Call, CallAction, CallRequest, Caller, Capture, DeliverHook, Deliver, Dispatch,
+///     AddedHook, Call, CallAction, CallRequest, Caller, Capture, DeliverHook, Dispatch,
 ///     Doc, Filter, InvocationCtx, Keys, Match, ObserveRejection, Observed, Observer,
-///     ObserverHandle, ObserverOptions, ObserverState, On, RemovedHook, Source, Target,
+///     ObserverHandle, ObserverOptions, ObserverState, RemovedHook, Source, Target,
 ///     TriggerAction, current_invocation, scope,
 /// };
 /// use iii_sdk::protocol::observe_codes::UNSUPPORTED;

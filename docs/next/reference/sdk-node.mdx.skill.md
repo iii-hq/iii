@@ -93,7 +93,7 @@ event source's handler returns the event it is called with.
 Every call of the function, local or routed, runs the handler and then
 goes to the observers that want it (`onObservationMatch`; by default all of
 them): the function's `onObservationDeliver` hook delivers it, or iii does,
-to those whose `on` and filters match. iii evaluates `on` and filters
+to those whose capture and filters match. iii evaluates capture and filters
 where the call is: the engine for a call it routes to this worker, and
 the SDK for a call this worker makes to its own function in-process,
 through an index of the filters' equality conditions. What the worker
@@ -278,17 +278,14 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
   <Tab title="Parameters">
 
 <ParamField body="source" type="string | ObserveSource" required>
-  What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `on`, `capture`, `deliver`.
+  What is observed: a function id, or `function_id`, `args` (read by the worker that hosts the function), `filters`, `capture`.
 
   <Expandable title="`ObserveSource` fields">
     <ParamField body="args" type="Record<string, unknown>">
       For the worker that hosts the function: what to set up and which calls to deliver (a table, a cron expression, a route). The engine validates them against the function's `args_format`.
     </ParamField>
     <ParamField body="capture" type="Capture[]">
-      What the envelope carries; default `['input', 'output', 'caller']`.
-    </ParamField>
-    <ParamField body="deliver" type="'input' | 'output' | 'envelope'">
-      What the target receives when iii delivers: the Observed envelope (default), the call's `input`, or its `output`.
+      What the target's payload carries, and with it which outcomes fire the target. Default `['input', 'output', 'caller']`. - `input` and `output` fire on success, `error` fires on error. - `caller` and `metadata` only add to the payload: a `capture` must name at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise). - `[]` fires on success, with the top-level fields only. So the default fires on success, `['error', 'caller']` on errors, and `['input', 'error']` on both. A success's payload never has `error`, an error's never has `output`.
     </ParamField>
     <ParamField body="filters" type="Filter">
       Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call.
@@ -298,9 +295,6 @@ observe(source: string | ObserveSource, target: Target, options?: ObserverOption
     </ParamField>
     <ParamField body="namespace" type="string">
       Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`).
-    </ParamField>
-    <ParamField body="on" type="'success' | 'error' | 'complete'">
-      Which outcomes reach the target; default `'success'`.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -506,7 +500,7 @@ observers that matched it (a snapshot taken when the call started), and
 what it returns (or throws) is what the caller gets back. iii delivers
 nothing for that function: the hook calls through observers and applies
 their filters with `obs.matches(call)`. Without it, iii delivers every
-call to the matching observers whose `on` and filters accept it, and the
+call to the matching observers whose capture and filters accept it, and the
 caller gets the handler's result. `null` removes the hook.
 
 A function with a deliver hook needs an engine with `observe.v2`: against
@@ -554,7 +548,7 @@ once per observation (for every call, once for each active observer);
 `{ observer, call }` key functions are computed once per observer, when
 it is accepted, and once per call, and an
 observer wants a call when they share a key (the SDK keeps an index). The
-observers' `on`, filters, policy and `deliver` still apply. A hook set
+observers' capture, filters and policy still apply. A hook set
 while observers are active rebuilds the index from them. `null` removes
 the hook, predicate or keys: every observer gets every call again.
 
@@ -783,7 +777,7 @@ type CallerInfo = Partial<Omit<Caller, "parent">> & { parent?: Partial<Omit<Call
 
 #### Capture
 
-What an observer ships to its target. Default `['input', 'output', 'caller']`.
+A field an observer captures. Default `['input', 'output', 'caller']`.
 
 ```typescript
 type Capture = "input" | "output" | "error" | "caller" | "metadata"
@@ -892,7 +886,7 @@ default every observer wants every call. A predicate is asked once per
 observation: for every call, once for each active observer (a throw
 counts as no match for that observer). Keys are computed
 once per observer, when it is accepted, and once per call. The observers'
-`on`, filters, policy and `deliver` still apply. Setting it to `null`
+capture, filters and policy still apply. Setting it to `null`
 removes it: every observer gets every call again.
 
 ```typescript
@@ -941,9 +935,9 @@ call before it reaches the target function.
 
 #### Observed
 
-What an observer's target receives when iii delivers with
-`deliver: 'envelope'` (the default). Fields not in the observer's
-`capture` are absent.
+What an observer's target receives when iii delivers: the top-level
+fields, plus whichever of the observer's `capture` apply to the outcome.
+Fields not captured, or that do not apply, are absent.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -966,7 +960,7 @@ What an observer's target receives when iii delivers with
 #### Observer
 
 An observer as the worker that hosts its function sees it (the hooks,
-`FunctionRef.observers()`): its args, filters, target, capture and `on`.
+`FunctionRef.observers()`): its args, filters, target and capture.
 Who observes, the observer's metadata and its policy stay with the engine.
 
 | Name | Type | Required | Description |
@@ -976,10 +970,9 @@ Who observes, the observer's metadata and its policy stay with the engine.
 | `filters` | [`Filter`](#filter) | Yes | The observer's filters, normalized. |
 | `function_id` | `string` | Yes | The observed function (one this worker hosts). |
 | `id` | `string` | Yes | - |
-| `on` | `"success" \| "error" \| "complete"` | Yes | - |
 | `target` | `string` | Yes | The target function id. |
 | `accepted` | `() => Promise<void>` | Yes | Resolves once the SDK has acked the observer. A call made after it<br />resolves reaches an active observer, so a provider sends an observer its<br />initial state from here: a call through it<br />(`iii.call({ observer: obs, payload })`), which runs its target alone<br />with the payload as given. Rejects with an<br />ObserveRejection when the observer is rejected first. |
-| `matches` | (call: Partial&lt;[`Call`](#call)&gt;) =&gt; boolean | Yes | Whether `call` reaches this observer: its `on` accepts the call's<br />`status` (absent reads as `'success'`) and its filters match the call. |
+| `matches` | (call: Partial&lt;[`Call`](#call)&gt;) =&gt; boolean | Yes | Whether `call` reaches this observer: its `capture` fires on the call's<br />`status` (absent reads as `'success'`) and its filters match the call. |
 | `reject` | `(code: string, message: string) => void` | Yes | Late rejection of an active observer (e.g. after a config reload). It<br />stops receiving calls at once, its `onObserverRemoved` hooks run, and it<br />stays rejected across reconnects until the engine adds it again. |
 
 ---
@@ -1043,12 +1036,10 @@ The left side of `iii.observe`: what is observed.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `args` | `Record<string, unknown>` | No | For the worker that hosts the function: what to set up and which calls<br />to deliver (a table, a cron expression, a route). The engine validates<br />them against the function's `args_format`. |
-| `capture` | [`Capture`](#capture)[] | No | What the envelope carries; default `['input', 'output', 'caller']`. |
-| `deliver` | `"input" \| "output" \| "envelope"` | No | What the target receives when iii delivers: the Observed envelope<br />(default), the call's `input`, or its `output`. |
+| `capture` | [`Capture`](#capture)[] | No | What the target's payload carries, and with it which outcomes fire the<br />target. Default `['input', 'output', 'caller']`.<br /><br />- `input` and `output` fire on success, `error` fires on error.<br />- `caller` and `metadata` only add to the payload: a `capture` must name<br />  at least one of `input`, `output`, `error` (`INVALID_ARGS` otherwise).<br />- `[]` fires on success, with the top-level fields only.<br /><br />So the default fires on success, `['error', 'caller']` on errors, and<br />`['input', 'error']` on both. A success's payload never has `error`, an<br />error's never has `output`. |
 | `filters` | [`Filter`](#filter) | No | Which calls reach the target, by `input`, `output`, `error`, `caller` and `metadata`; `{}` (or absent) = every call. |
 | `function_id` | `string` | Yes | The observed function. |
 | `namespace` | `string` | No | Defaults to this worker's namespace (`engine::*` and `configuration::*` resolve to `default`). |
-| `on` | `"success" \| "error" \| "complete"` | No | Which outcomes reach the target; default `'success'`. |
 
 ---
 
@@ -1360,7 +1351,8 @@ type CallRequest = { action?: CallAction; dispatch?: "auto" | "remote"; function
 
 #### CaptureWire
 
-What an observer ships to its target (`capture`).
+What an observer captures (`capture`): the fields its target's payload
+carries, and with them the outcomes that fire it.
 
 ```typescript
 type CaptureWire = OpenEnum<"input" | "output" | "error" | "caller" | "metadata">
@@ -1410,7 +1402,7 @@ type CaptureWire = OpenEnum<"input" | "output" | "error" | "caller" | "metadata"
 | `error` | `unknown` | No | - |
 | `function_id` | `string` | Yes | The path of the function. |
 | `invocation_id` | `string` | Yes | The id of the invocation |
-| `matched` | `string[]` | No | Host → engine (`observe.v2`): the observers the function's match hook<br />(`onObservationMatch`) matched for this routed call, before their `on` and<br />filters, which the engine evaluates; `[]` when it matched none. Left out<br />by a function without a match hook: the engine then evaluates every<br />active observer of the function. |
+| `matched` | `string[]` | No | Host → engine (`observe.v2`): the observers the function's match hook<br />(`onObservationMatch`) matched for this routed call, before their capture and<br />filters, which the engine evaluates; `[]` when it matched none. Left out<br />by a function without a match hook: the engine then evaluates every<br />active observer of the function. |
 | `message_type` | [`MessageType`](#messagetype).InvocationResult | Yes | - |
 | `result` | `unknown` | No | - |
 | `traceparent` | `string` | No | W3C trace-context traceparent header for distributed tracing |
@@ -1559,8 +1551,9 @@ metadata, policy or connection. `target` is the target function id.
 | `args` | `Record<string, unknown>` | Yes | - |
 | `capture` | [`CaptureWire`](#capturewire)[] | Yes | - |
 | `filters` | `Record<string, unknown>` | Yes | The observer's filters, normalized by the engine. `{}` matches every call. |
+| `fires_on` | `FiresWire[]` | No | The outcomes that fire it, from an engine with `observe.capture`; absent from a 0.25 or rc engine. |
 | `id` | `string` | Yes | - |
-| `on` | `ObserveOnWire` | Yes | - |
+| `on` | `string` | No | - |
 | `target` | `string` | Yes | - |
 
 ---
@@ -1597,11 +1590,9 @@ metadata, policy or connection. `target` is the target function id.
 | --- | --- | --- | --- |
 | `args` | `Record<string, unknown>` | No | - |
 | `capture` | [`CaptureWire`](#capturewire)[] | No | - |
-| `deliver` | `ObserveDeliverWire` | No | - |
 | `filters` | `Record<string, unknown>` | No | - |
 | `function_id` | `string` | Yes | - |
 | `namespace` | `string` | No | - |
-| `on` | `ObserveOnWire` | No | - |
 
 ---
 

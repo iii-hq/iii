@@ -9,11 +9,9 @@
       }
     },
     "capture": [
-      "input",
       "error",
       "caller"
-    ],
-    "on": "error"
+    ]
   },
   "target": {
     "function_id": "alerts::payment-failed"

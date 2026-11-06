@@ -24,7 +24,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, IIIClient, InitOptions,
-    Keys, Match, ObserveRejection, Observer, ObserverOptions, ObserverState, On, RegisterFunction,
+    Keys, Match, ObserveRejection, Observer, ObserverOptions, ObserverState, RegisterFunction,
     RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker, scope,
 };
 
@@ -86,12 +86,18 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
     }
 }
 
-/// The engine's hello on this connection: an `observe.v2` engine, or none.
+/// The engine's hello on this connection: a current engine (`observe.v2`
+/// and `observe.capture`), or none.
 fn hello(mock: &MockEngine, observe: bool) {
     hello_with(
         mock,
         if observe {
-            json!(["observe.v1", "observe.v2", "local-dispatch.v1"])
+            json!([
+                "observe.v1",
+                "observe.v2",
+                "observe.capture",
+                "local-dispatch.v1"
+            ])
         } else {
             json!([])
         },
@@ -115,8 +121,20 @@ fn confirm(mock: &MockEngine, id: &str, revision: u64, local_dispatch: bool, obs
     }));
 }
 
-fn view(id: &str, filters: Value, capture: Value, on: &str) -> Value {
-    json!({ "id": id, "args": {}, "filters": filters, "target": "t::target", "capture": capture, "on": on })
+/// An observer view as an engine with `observe.capture` announces it: with
+/// the `fires_on` its capture implies.
+fn view(id: &str, filters: Value, capture: Value) -> Value {
+    let has = |c: &str| capture.as_array().unwrap().iter().any(|v| v == c);
+    let empty = capture.as_array().unwrap().is_empty();
+    let mut fires_on = Vec::new();
+    if empty || has("input") || has("output") {
+        fires_on.push("success");
+    }
+    if has("error") {
+        fires_on.push("error");
+    }
+    json!({ "id": id, "args": {}, "filters": filters, "target": "t::target",
+            "capture": capture, "fires_on": fires_on })
 }
 
 /// Registers `id` on a connected worker and lets the engine confirm it.
@@ -194,6 +212,7 @@ async fn features_are_declared_on_workers_register() {
         json!([
             "observe.v1",
             "observe.v2",
+            "observe.capture",
             "local-dispatch.v1",
             "large-messages.v1"
         ])
@@ -295,8 +314,7 @@ async fn observe_frames_match_the_fixtures() {
     let on_error = iii.observe_with(
         Source::function("payments::charge")
             .filters(json!({ "input.amount": { "$gte": 500 } }))
-            .capture([Capture::Input, Capture::Error, Capture::Caller])
-            .on(On::Error),
+            .capture([Capture::Error, Capture::Caller]),
         "alerts::payment-failed",
         ObserverOptions::default()
             .id("c81e2f4a-5b6c-4d7e-9f0a-1b2c3d4e5f60")
@@ -366,6 +384,105 @@ async fn an_observer_made_after_the_hello_is_sent_at_once() {
         let handle = iii.observe("a::b", "c::d");
         frame(&mock, |m| m["type"] == "observe" && m["id"] == handle.id()).await;
         assert_eq!(frames(&mock, "observe").len(), 1, "features {features}");
+        iii.shutdown_async().await;
+    }
+}
+
+/// An engine without `observe.capture` (a 0.25 engine, and an rc engine that
+/// advertises `observe.v2` only) decides the outcomes that fire from
+/// `source.on`: it gets the `on` the capture implies, on the first observe
+/// and on the replay after a reconnect. An engine with `observe.capture`
+/// never gets one.
+#[tokio::test]
+async fn an_engine_without_observe_capture_gets_the_on_capture_implies() {
+    use Capture::{Caller, Error as Failure, Input, Output};
+    let cases: Vec<(Option<Vec<Capture>>, Option<&str>)> = vec![
+        (None, None),
+        (Some(vec![Input]), None),
+        (Some(vec![]), None),
+        (Some(vec![Failure]), Some("error")),
+        (Some(vec![Failure, Caller]), Some("error")),
+        (Some(vec![Input, Failure]), Some("complete")),
+        (Some(vec![Input, Output, Failure]), Some("complete")),
+    ];
+    for (features, capture_engine) in [
+        (
+            fixture("workerregistered-v1.json")["features"].clone(),
+            false,
+        ),
+        (
+            json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+            false,
+        ),
+        (
+            json!([
+                "observe.v1",
+                "observe.v2",
+                "observe.capture",
+                "local-dispatch.v1"
+            ]),
+            true,
+        ),
+    ] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "observer");
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(&mock, features.clone());
+        until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+        for (i, (capture, _)) in cases.iter().enumerate() {
+            let mut source = Source::function("a::b");
+            if let Some(capture) = capture.clone() {
+                source = source.capture(capture);
+            }
+            iii.observe_with(
+                source,
+                "c::d",
+                ObserverOptions::default().id(format!("o{i}")),
+            );
+        }
+        let want: Vec<(String, Option<String>)> = cases
+            .iter()
+            .enumerate()
+            .map(|(i, (_, on))| {
+                (
+                    format!("o{i}"),
+                    if capture_engine {
+                        None
+                    } else {
+                        on.map(String::from)
+                    },
+                )
+            })
+            .collect();
+        let sent = |mock: &MockEngine| -> Vec<(String, Option<String>)> {
+            let mut sent: Vec<(String, Option<String>)> = frames(mock, "observe")
+                .iter()
+                .map(|f| {
+                    (
+                        f["id"].as_str().unwrap().to_string(),
+                        f["source"]["on"].as_str().map(String::from),
+                    )
+                })
+                .collect();
+            sent.sort();
+            sent
+        };
+        until("the observes", || {
+            frames(&mock, "observe").len() == cases.len()
+        })
+        .await;
+        assert_eq!(sent(&mock), want, "initial observe, features {features}");
+
+        // the replay on the next connection carries the same `on`
+        mock.clear();
+        mock.close_active_connection();
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(&mock, features.clone());
+        until("the replayed observes", || {
+            frames(&mock, "observe").len() == cases.len()
+        })
+        .await;
+        assert_eq!(sent(&mock), want, "replay, features {features}");
         iii.shutdown_async().await;
     }
 }
@@ -1256,7 +1373,7 @@ async fn a_million_unobserved_local_calls_send_no_frame() {
         &iii,
         "z::observed",
         echo(),
-        json!([view("all", json!({}), json!(["input"]), "success")]),
+        json!([view("all", json!({}), json!(["input"]))]),
     )
     .await;
     until("the observer", || observed.is_observed()).await;
@@ -1547,8 +1664,7 @@ async fn auto_functions_report_only_matching_local_calls() {
     let observers = json!([view(
         "obs-err",
         json!({ "$and": [{ "input.amount": { "$gte": 500 } }] }),
-        json!(["input", "error", "caller"]),
-        "error"
+        json!(["error", "caller"])
     )]);
     let function = hosted(&mock, &iii, "p::charge", charge, observers).await;
     let ack = frame(&mock, is("observerack")).await;
@@ -1562,7 +1678,7 @@ async fn auto_functions_report_only_matching_local_calls() {
 
     mock.clear();
     let call = |input: Value| iii.call(CallRequest::new("p::charge", input));
-    call(json!({ "amount": 900 })).await.unwrap(); // success: on error only
+    call(json!({ "amount": 900 })).await.unwrap(); // success: `error` without input or output
     let _ = call(json!({ "amount": 100, "fail": true })).await; // filter miss
     let err = call(json!({ "amount": 1250, "fail": true }))
         .await
@@ -1579,7 +1695,7 @@ async fn auto_functions_report_only_matching_local_calls() {
     assert_eq!(item["namespace"], "default");
     assert_eq!(item["matched"], json!(["obs-err"]));
     assert_eq!(item["status"], "error");
-    assert_eq!(item["input"], json!({ "amount": 1250, "fail": true }));
+    assert!(item.get("input").is_none(), "input is not captured");
     assert_eq!(
         item["error"],
         json!({ "code": "CARD_DECLINED", "message": "declined" })
@@ -1596,9 +1712,73 @@ async fn auto_functions_report_only_matching_local_calls() {
     iii.shutdown_async().await;
 }
 
-/// An observer with `capture: []` is reported the call's ids, status and
-/// timing, and none of its payloads: no input, output, error or caller, even
-/// for a failed call made from a handler.
+/// An engine without `observe.capture` (an rc engine with `observe.v2`
+/// only) announces views without `fires_on`: the observer fires as its legacy
+/// `on` says (absent: success only), never as its capture implies.
+#[tokio::test]
+async fn a_view_without_fires_on_fires_as_its_legacy_on_says() {
+    for (on, want) in [
+        (None, vec!["success"]),
+        (Some("success"), vec!["success"]),
+        (Some("error"), vec!["error"]),
+        (Some("complete"), vec!["error", "success"]),
+    ] {
+        let mock = MockEngine::start().await;
+        let iii = worker(&mock, "owner");
+        frame(&mock, |m| m["function_id"] == "engine::workers::register").await;
+        hello_with(
+            &mock,
+            json!(["observe.v1", "observe.v2", "local-dispatch.v1"]),
+        );
+        until("the hello", || iii.engine_supports_observe() == Some(true)).await;
+        let charge = RegisterFunction::new(|input: Value| {
+            if input["fail"] == json!(true) {
+                Err(Error::Remote {
+                    code: "CARD_DECLINED".into(),
+                    message: "declined".into(),
+                    stacktrace: None,
+                })
+            } else {
+                Ok(json!({ "ok": true }))
+            }
+        });
+        // the capture alone would fire on both outcomes
+        let mut observer = json!({ "id": "obs", "args": {}, "filters": {},
+                                   "target": "t::target", "capture": ["input", "error"] });
+        if let Some(on) = on {
+            observer["on"] = json!(on);
+        }
+        hosted(&mock, &iii, "p::charge", charge, json!([observer])).await;
+        frame(&mock, is("observerack")).await;
+        mock.clear();
+        let call = |input: Value| iii.call(CallRequest::new("p::charge", input));
+        call(json!({ "amount": 1 })).await.unwrap();
+        let _ = call(json!({ "amount": 2, "fail": true })).await;
+        let statuses = |mock: &MockEngine| -> Vec<String> {
+            let mut statuses: Vec<String> = frames(mock, "invocationsobserved")
+                .iter()
+                .flat_map(|r| {
+                    r["items"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|i| i["status"].as_str().unwrap().to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            statuses.sort();
+            statuses
+        };
+        until("the reports", || statuses(&mock).len() >= want.len()).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(statuses(&mock), want, "on {on:?}");
+        iii.shutdown_async().await;
+    }
+}
+
+/// An observer with `capture: []` fires on success only, and is reported the
+/// call's ids, status and timing, and none of its payloads: no input, output,
+/// error or caller, though the call is made from a handler.
 #[tokio::test]
 async fn an_empty_capture_reports_ids_status_and_timing_only() {
     let mock = MockEngine::start().await;
@@ -1625,7 +1805,7 @@ async fn an_empty_capture_reports_ids_status_and_timing_only() {
         &iii,
         "c0::count",
         counted,
-        json!([view("count", json!({}), json!([]), "complete")]),
+        json!([view("count", json!({}), json!([]))]),
     )
     .await;
     acked(&mock, &[("count", 1)]).await;
@@ -1656,14 +1836,13 @@ async fn an_empty_capture_reports_ids_status_and_timing_only() {
     ))
     .await
     .unwrap();
-    let msgs = mock.wait_for(|m| report_items_in(m).len() >= 2, WAIT).await;
-    let items = report_items_in(&msgs);
-    assert_eq!(items.len(), 2, "{items:#?}");
+    mock.wait_for(|m| !report_items_in(m).is_empty(), WAIT)
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let items = report_items_in(&mock.received_messages());
+    assert_eq!(items.len(), 1, "`[]` fires on success only: {items:#?}");
     let invoked = invoked.lock().unwrap().clone();
-    for (item, (status, invocation_id)) in items
-        .iter()
-        .zip([("success", &invoked[0]), ("error", &invoked[1])])
-    {
+    for (item, (status, invocation_id)) in items.iter().zip([("success", &invoked[0])]) {
         assert_eq!(item["function_id"], "c0::count");
         assert_eq!(item["invocation_id"], json!(invocation_id));
         assert_eq!(item["status"], status);
@@ -1694,7 +1873,7 @@ async fn reports_are_batched_by_256_and_by_linger() {
         &iii,
         "b::f",
         echo(),
-        json!([view("all", json!({}), json!(["input"]), "success")]),
+        json!([view("all", json!({}), json!(["input"]))]),
     )
     .await;
     frame(&mock, is("observerack")).await;
@@ -1749,7 +1928,7 @@ async fn every_local_call_after_the_ack_is_reported() {
     let function = hosted(&mock, &iii, "r::f", echo(), json!([])).await;
     mock.send_to_client(json!({
         "type": "observeradded", "function_id": "r::f", "namespace": "default", "revision": 2,
-        "observer": view("late", json!({}), json!(["input"]), "success")
+        "observer": view("late", json!({}), json!(["input"]))
     }));
     // The engine turns the observer active when this ack arrives.
     frame(&mock, is("observerack")).await;
@@ -1834,7 +2013,7 @@ fn added(function_id: &str, revision: u64, id: &str, args: Value) -> Value {
         "type": "observeradded", "function_id": function_id, "namespace": "default",
         "revision": revision,
         "observer": { "id": id, "args": args, "filters": {}, "target": "t::target",
-                      "capture": ["input"], "on": "success" }
+                      "capture": ["input"] }
     })
 }
 
@@ -1994,8 +2173,8 @@ async fn reconnect_diffs_the_set_and_keeps_serving_locally() {
         "d::f",
         echo(),
         json!([
-            view("a", json!({}), json!(["input"]), "success"),
-            view("b", json!({}), json!(["input"]), "success")
+            view("a", json!({}), json!(["input"])),
+            view("b", json!({}), json!(["input"]))
         ]),
     )
     .await;
@@ -2030,8 +2209,8 @@ async fn reconnect_diffs_the_set_and_keeps_serving_locally() {
         1,
         true,
         json!([
-            view("b", json!({}), json!(["input"]), "success"),
-            view("c", json!({}), json!(["input"]), "success")
+            view("b", json!({}), json!(["input"])),
+            view("c", json!({}), json!(["input"]))
         ]),
     );
     let report = frame(&mock, is("invocationsobserved")).await;
@@ -2077,7 +2256,7 @@ async fn a_replay_with_the_same_args_runs_no_hook() {
     let above = |n: i64| {
         json!({ "id": "a", "args": { "kind": "a" }, "target": "t::target",
                 "filters": { "$and": [{ "input.n": { "$gt": n } }] },
-                "capture": ["input", "caller"], "on": "success" })
+                "capture": ["input", "caller"] })
     };
     // The `n` of each local call of `ns` reported to `a`, which the filters
     // of its current view select.
@@ -2179,12 +2358,12 @@ async fn kinds_setup(mock: &MockEngine, iii: &IIIClient) -> (FunctionRef, Record
             {
                 "id": "only-x1", "args": { "kind": "a" }, "target": "t::one",
                 "filters": { "$and": [{ "input.x": { "$eq": 1 } }] },
-                "capture": ["input", "caller"], "on": "success"
+                "capture": ["input", "caller"]
             },
             { "id": "all-a", "args": { "kind": "a" }, "filters": {}, "target": "t::two",
-              "capture": ["input"], "on": "success" },
+              "capture": ["input"] },
             { "id": "all-b", "args": { "kind": "b" }, "filters": {}, "target": "t::three",
-              "capture": ["input", "output", "caller", "metadata"], "on": "success" }
+              "capture": ["input", "output", "caller", "metadata"] }
         ]),
     )
     .await;
@@ -2322,7 +2501,7 @@ async fn a_call_through_an_observer_is_the_fixture_frame() {
             "id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c",
             "args": { "method": "GET", "path": "/users/:id" },
             "filters": { "$and": [{ "input.headers.x-tenant": { "$eq": "acme" } }] },
-            "target": "users::get", "capture": ["input"], "on": "success"
+            "target": "users::get", "capture": ["input"]
         }]),
     )
     .await;
@@ -2414,7 +2593,7 @@ async fn a_call_through_an_observer_takes_no_metadata() {
         echo().private(),
         json!([{
             "id": "b6c4e2a0-9f1d-4b3a-8e7c-6d5f4e3a2b1c", "args": { "method": "GET", "path": "/users" },
-            "filters": {}, "target": "users::get", "capture": ["input"], "on": "success"
+            "filters": {}, "target": "users::get", "capture": ["input"]
         }]),
     )
     .await;
@@ -2570,7 +2749,7 @@ async fn a_void_call_through_an_accepted_observer_is_the_fixture_frame() {
         echo().private(),
         json!([{
             "id": "868c8f79-e34f-4390-8ca6-7904b54ba84a", "args": {}, "filters": {},
-            "target": "storefront::sync-stock", "capture": ["input"], "on": "success"
+            "target": "storefront::sync-stock", "capture": ["input"]
         }]),
     )
     .await;
@@ -2604,7 +2783,7 @@ async fn a_void_call_through_an_accepted_observer_is_the_fixture_frame() {
         &iii,
         "stock::refused",
         echo(),
-        json!([view("r", json!({}), json!(["input"]), "success")]),
+        json!([view("r", json!({}), json!(["input"]))]),
     )
     .await;
     until("refused", || refused.lock().unwrap().is_some()).await;
@@ -2672,7 +2851,7 @@ async fn a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_
         iii.on_observation_match_for("tmux::on-changed", session_match(keys, seen.clone()));
         let watch = |id: &str| {
             json!({ "id": id, "args": { "session": "s1" }, "filters": {}, "target": format!("ui::{id}"),
-                    "capture": ["input", "output", "metadata"], "on": "success" })
+                    "capture": ["input", "output", "metadata"] })
         };
         hosted(
             &mock,
@@ -2772,7 +2951,7 @@ async fn an_accepted_observer_gets_its_initial_state() {
     });
     let stock = |id: &str| {
         json!({ "id": id, "args": {}, "filters": {}, "target": "storefront::sync-stock",
-                "capture": ["input"], "on": "success" })
+                "capture": ["input"] })
     };
     hosted(
         &mock,
@@ -2899,8 +3078,8 @@ async fn a_late_rejection_echoes_the_latest_announced_revision() {
     connected(&mock, &iii, true).await;
     let recorder = Recorder::default();
     let observers = json!([
-        view("a", json!({}), json!(["input"]), "success"),
-        view("b", json!({}), json!(["input"]), "success")
+        view("a", json!({}), json!(["input"])),
+        view("b", json!({}), json!(["input"]))
     ]);
     set_hooks(&iii, "lr::f", &recorder);
     let function = hosted(&mock, &iii, "lr::f", echo(), observers.clone()).await;
@@ -2970,7 +3149,7 @@ async fn a_late_rejection_survives_a_reconnect() {
     let iii = worker(&mock, "owner");
     connected(&mock, &iii, true).await;
     let recorder = Recorder::default();
-    let observers = json!([view("a", json!({}), json!(["input"]), "success")]);
+    let observers = json!([view("a", json!({}), json!(["input"]))]);
     set_hooks(&iii, "ls::f", &recorder);
     let function = hosted(&mock, &iii, "ls::f", echo(), observers.clone()).await;
     frame(&mock, is("observerack")).await;
@@ -3031,12 +3210,7 @@ async fn reports_carry_the_invocations_trace_context() {
         &iii,
         "tc::on-row",
         echo().private(),
-        json!([view(
-            "all",
-            json!({}),
-            json!(["input", "caller"]),
-            "success"
-        )]),
+        json!([view("all", json!({}), json!(["input", "caller"]))]),
     )
     .await;
     acked(&mock, &[("all", 1)]).await;
@@ -3140,7 +3314,7 @@ async fn a_conflict_releases_the_functions_reports() {
     let mock = MockEngine::start().await;
     let iii = worker(&mock, "owner");
     connected(&mock, &iii, true).await;
-    let all = json!([view("all", json!({}), json!(["input"]), "success")]);
+    let all = json!([view("all", json!({}), json!(["input"]))]);
     let lost = hosted(&mock, &iii, "cf::lost", echo(), all.clone()).await;
     hosted(&mock, &iii, "cf::kept", echo(), all.clone()).await;
     // Everything of the first connection is recorded before the clear.
@@ -3206,7 +3380,7 @@ async fn reports_do_not_wait_for_slow_hooks() {
     let iii = worker(&mock, "owner");
     connected(&mock, &iii, true).await;
     let recorder = Recorder::default();
-    let a = view("a", json!({}), json!(["input"]), "success");
+    let a = view("a", json!({}), json!(["input"]));
     set_hooks(&iii, "sh::f", &recorder);
     hosted(&mock, &iii, "sh::f", echo(), json!([a.clone()])).await;
     acked(&mock, &[("a", 1)]).await;
@@ -3222,7 +3396,7 @@ async fn reports_do_not_wait_for_slow_hooks() {
         .unwrap();
     frame(&mock, registered("sh::f")).await;
     hello(&mock, true);
-    let mut slow = view("slow", json!({}), json!(["input"]), "success");
+    let mut slow = view("slow", json!({}), json!(["input"]));
     slow["args"] = json!({ "delay_ms": 1500 });
     confirm(&mock, "sh::f", 2, true, json!([a, slow]));
     let msgs = acked(&mock, &[("slow", 2)]).await;
@@ -3445,7 +3619,7 @@ async fn a_rejection_survives_a_changed_view_on_replay() {
         &iii,
         "cv::f",
         echo(),
-        json!([view("a", json!({}), json!(["input"]), "success")]),
+        json!([view("a", json!({}), json!(["input"]))]),
     )
     .await;
     acked_for(&mock, "cv::f", &[("a", 1)]).await;
@@ -3463,7 +3637,6 @@ async fn a_rejection_survives_a_changed_view_on_replay() {
         "a",
         json!({ "$and": [{ "input.n": { "$gt": 1 } }] }),
         json!(["input", "caller"]),
-        "success",
     );
     confirm(&mock, "cv::f", 3, true, json!([changed]));
     let acks = acked_for(&mock, "cv::f", &[("a", 3)]).await;
@@ -3594,7 +3767,7 @@ fn removed_hook(
 
 fn observer_with_args(id: &str, args: Value) -> Value {
     json!({ "id": id, "args": args, "filters": {}, "target": "t::target",
-            "capture": ["input"], "on": "success" })
+            "capture": ["input"] })
 }
 
 fn events_of(events: &Events) -> Vec<String> {
@@ -3619,7 +3792,7 @@ async fn hooks_run_at_both_levels_in_order() {
         &iii,
         "both::f",
         echo(),
-        json!([view("o", json!({}), json!(["input"]), "success")]),
+        json!([view("o", json!({}), json!(["input"]))]),
     )
     .await;
     acked_for(&mock, "both::f", &[("o", 1)]).await;
@@ -3643,7 +3816,7 @@ async fn hooks_run_at_both_levels_in_order() {
         &iii,
         "other::f",
         echo(),
-        json!([view("p", json!({}), json!(["input"]), "success")]),
+        json!([view("p", json!({}), json!(["input"]))]),
     )
     .await;
     acked_for(&mock, "other::f", &[("p", 1)]).await;
@@ -3932,7 +4105,7 @@ async fn the_key_index_follows_adds_and_removes() {
         "revision": 3,
         "observer": { "id": "late-a", "args": { "expression": "A" },
                       "filters": { "$and": [{ "input.n": { "$gt": 1 } }] },
-                      "target": "t::target", "capture": ["input"], "on": "success" }
+                      "target": "t::target", "capture": ["input"] }
     }));
     acked(&mock, &[("late-a", 3)]).await;
     assert_eq!(
@@ -3980,13 +4153,13 @@ async fn a_routed_call_without_hooks_is_answered_with_its_result_alone() {
         json!([
             {
                 "id": "small", "args": {}, "target": "t::a", "capture": ["input"],
-                "filters": { "$and": [{ "input.qty": { "$gte": 1 } }] }, "on": "success"
+                "filters": { "$and": [{ "input.qty": { "$gte": 1 } }] }
             },
             observer_with_args("every", json!({})),
             { "id": "on-error", "args": {}, "filters": {}, "target": "t::b",
-              "capture": ["error"], "on": "error" },
+              "capture": ["error"] },
             { "id": "big", "args": {}, "target": "t::c", "capture": ["input"],
-              "filters": { "$and": [{ "input.qty": { "$gte": 100 } }] }, "on": "success" }
+              "filters": { "$and": [{ "input.qty": { "$gte": 100 } }] } }
         ]),
     )
     .await;
@@ -4047,11 +4220,11 @@ async fn a_routed_answer_lists_what_the_match_hook_matched() {
             // a filter no call below passes, and `on: error`: the engine's to
             // apply
             { "id": ids[0], "args": { "region": "eu" }, "target": "t::a", "capture": ["input"],
-              "filters": { "$and": [{ "input.qty": { "$gte": 1000 } }] }, "on": "success" },
+              "filters": { "$and": [{ "input.qty": { "$gte": 1000 } }] } },
             { "id": ids[1], "args": { "region": "eu" }, "target": "t::b", "capture": ["error"],
-              "filters": {}, "on": "error" },
+              "filters": {} },
             { "id": "us", "args": { "region": "us" }, "target": "t::c", "capture": ["input"],
-              "filters": {}, "on": "success" }
+              "filters": {} }
         ]),
     )
     .await;
@@ -4113,7 +4286,7 @@ async fn a_routed_error_lists_what_the_match_hook_matched() {
         json!([
             { "id": on_error["id"], "args": { "page": true }, "target": "alerts::payment-failed",
               "filters": { "$and": [{ "input.amount": { "$gte": 500 } }] },
-              "capture": on_error["source"]["capture"], "on": "error" },
+              "capture": on_error["source"]["capture"] },
             observer_with_args("audit", json!({ "page": false }))
         ]),
     )
@@ -4183,7 +4356,7 @@ async fn an_answer_too_large_to_send_activates_no_observer() {
         &iii,
         "exports::dump",
         RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::String("x".repeat(LIMIT + 1)))),
-        json!([view("every", json!({}), json!(["error"]), "complete")]),
+        json!([view("every", json!({}), json!(["error"]))]),
     )
     .await;
     acked(&mock, &[("every", 1)]).await;
@@ -4460,7 +4633,7 @@ async fn an_engine_without_observe_v2_evaluates_routed_calls() {
         "v1::source",
         echo(),
         json!([{ "id": "o", "args": {}, "filters": {}, "target": "t::a",
-                 "capture": ["input", "output"], "on": "success" }]),
+                 "capture": ["input", "output"] }]),
     )
     .await;
     acked(&mock, &[("o", 1)]).await;
@@ -4529,7 +4702,7 @@ async fn a_reconnect_to_an_engine_without_observe_v2_releases_v2_functions() {
             }
         })
         .private(),
-        json!([view("o", json!({}), json!(["input"]), "success")]),
+        json!([view("o", json!({}), json!(["input"]))]),
     )
     .await;
     acked(&mock, &[("o", 1)]).await;
@@ -4590,7 +4763,7 @@ async fn a_reconnect_to_an_engine_without_observe_v2_releases_v2_functions() {
         "v2::on-event",
         2,
         true,
-        json!([view("o", json!({}), json!(["input"]), "success")]),
+        json!([view("o", json!({}), json!(["input"]))]),
     );
     acked(&mock, &[("o", 2)]).await;
     until("local dispatch", || function.local_dispatch_active()).await;
@@ -4782,7 +4955,7 @@ async fn a_withdrawn_registration_is_released() {
                 Ok::<_, Error>(input)
             }
         }),
-        json!([view("o", json!({}), json!(["input"]), "success")]),
+        json!([view("o", json!({}), json!(["input"]))]),
     )
     .await;
     acked(&mock, &[("o", 1)]).await;
@@ -4815,7 +4988,7 @@ async fn a_withdrawn_registration_is_released() {
         "wd::f",
         2,
         true,
-        json!([view("o2", json!({}), json!(["input"]), "success")]),
+        json!([view("o2", json!({}), json!(["input"]))]),
     );
     mock.send_to_client(added("wd::f", 3, "o3", json!({})));
     let in_flight = tokio::spawn({

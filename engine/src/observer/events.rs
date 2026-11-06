@@ -336,7 +336,7 @@ pub(crate) mod test_support {
         engine::{Engine, EngineTrait, Handler, Outbound, RegisterFunctionRequest},
         function::FunctionResult,
         observer::ObserveRequest,
-        protocol::{Deliver, ObserveSource, ObserveTarget, ObserverState},
+        protocol::{ObserveSource, ObserveTarget, ObserverState},
         worker_connections::WorkerConnection,
     };
 
@@ -363,18 +363,49 @@ pub(crate) mod test_support {
         rx
     }
 
-    /// A connected observing worker, and its socket (keep it alive).
+    /// What a current SDK declares on `engine::workers::register`: with
+    /// `observe.capture`, its observers follow the capture model
+    /// (decision 60).
+    pub const CURRENT_SDK: &[&str] = &[
+        "observe.v1",
+        "observe.v2",
+        "observe.capture",
+        "local-dispatch.v1",
+    ];
+    /// What an rc SDK declares: `observe.v2` without `observe.capture`.
+    pub const RC_SDK: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
+
+    /// `observe.capture` alone: observers follow the capture model
+    /// (decision 60) while, as a host, the connection stays one that does not speak
+    /// observe (no `observe.v1`: no `functionregistered`, no acks).
+    pub const CAPTURE_ONLY: &[&str] = &["observe.capture"];
+
+    /// A connected observing worker whose observers follow the capture model
+    /// ([`CAPTURE_ONLY`]), and its socket (keep it alive).
     pub fn worker(engine: &Engine) -> (WorkerConnection, mpsc::Receiver<Outbound>) {
+        worker_with(engine, CAPTURE_ONLY)
+    }
+
+    /// A connected observing worker that declared `features` (none when
+    /// empty, as a 0.25 SDK), and its socket (keep it alive).
+    pub fn worker_with(
+        engine: &Engine,
+        features: &[&str],
+    ) -> (WorkerConnection, mpsc::Receiver<Outbound>) {
         // Activations record invocation metrics.
         crate::workers::observability::metrics::ensure_default_meter();
         let (tx, rx) = mpsc::channel(1024);
         let worker = WorkerConnection::new(tx);
+        if !features.is_empty() {
+            let features: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+            assert!(worker.features.set(&features), "features declared once");
+        }
         engine.worker_registry.register_worker(worker.clone());
         (worker, rx)
     }
 
-    /// `source ~> target` with `deliver: input` (the call's input alone),
-    /// defaults otherwise.
+    /// `source ~> target` with the wire defaults: its target gets the
+    /// `Observed` envelope. Set `source.raw_input` for the input alone.
     pub fn request(id: &str, source: &str, target: &str, filters: Option<Value>) -> ObserveRequest {
         ObserveRequest {
             id: id.to_string(),
@@ -385,7 +416,8 @@ pub(crate) mod test_support {
                 filters,
                 capture: None,
                 on: None,
-                deliver: Some(Deliver::Input),
+                deliver: None,
+                raw_input: false,
             },
             target: ObserveTarget {
                 function_id: target.to_string(),
@@ -437,6 +469,22 @@ pub(crate) mod test_support {
         rx
     }
 
+    /// [`observe`] with `source.raw_input`: its target gets the call's input
+    /// alone.
+    pub async fn observe_input(
+        engine: &Arc<Engine>,
+        id: &str,
+        source: &str,
+        target: &str,
+        filters: Option<Value>,
+    ) -> mpsc::Receiver<Outbound> {
+        let (worker, rx) = worker(engine);
+        let mut request = request(id, source, target, filters);
+        request.source.raw_input = true;
+        observe_request(engine, &worker, request).await;
+        rx
+    }
+
     /// The next input `rx` gets.
     pub async fn next(rx: &mut mpsc::UnboundedReceiver<Value>) -> Value {
         tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -449,7 +497,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Deliver;
 
     /// An engine-hosted source's events reach its observers (with the
     /// engine's depth), are not built while nothing observes it, and a direct
@@ -478,7 +525,7 @@ mod tests {
         assert_eq!(built.load(Ordering::SeqCst), 0, "unobserved: nothing built");
 
         let mut sink = test_support::capture(&engine, "test::workers");
-        let _socket = test_support::observe(
+        let _socket = test_support::observe_input(
             &engine,
             "obs-workers",
             ON_WORKERS_CHANGED,
@@ -524,7 +571,7 @@ mod tests {
             "test::workers",
             Some(json!({ "output.event": { "$eq": "worker_connected" } })),
         );
-        request.source.deliver = Some(Deliver::Envelope);
+        request.source.raw_input = false;
         test_support::observe_request(&engine, &worker, request).await;
 
         let event = json!({ "event": "worker_connected", "worker_id": "w-1" });
@@ -538,6 +585,30 @@ mod tests {
         assert_eq!(envelope["output"], event);
         assert_eq!(envelope["caller"], json!({ "worker_name": "iii-engine" }));
     }
+    /// The test helper's request leaves delivery at the wire default: with
+    /// no `raw_input`, its observer gets the Observed envelope, not the
+    /// input alone.
+    #[tokio::test]
+    async fn the_helpers_default_request_delivers_the_observed_envelope() {
+        let engine = std::sync::Arc::new(Engine::new());
+        register_engine_event_sources(&engine);
+        let mut sink = test_support::capture(&engine, "test::workers");
+        let (worker, _socket) = test_support::worker(&engine);
+        let request =
+            test_support::request("obs-default", ON_WORKERS_CHANGED, "test::workers", None);
+        test_support::observe_request(&engine, &worker, request).await;
+
+        let event = json!({ "event": "worker_connected", "worker_id": "w-1" });
+        engine
+            .observers
+            .emit(DEFAULT_NAMESPACE, ON_WORKERS_CHANGED, || {
+                Some(event.clone())
+            });
+        let delivered = test_support::next(&mut sink).await;
+        assert_eq!(delivered["input"], event, "delivered {delivered}");
+        assert_eq!(delivered["output"], event);
+        assert_eq!(delivered["caller"], json!({ "worker_name": "iii-engine" }));
+    }
 
     /// Every observer's creation, in the state it was created in, and every
     /// state change after it is one call of `engine::on-observers-changed`.
@@ -546,7 +617,7 @@ mod tests {
         let engine = std::sync::Arc::new(Engine::new());
         register_engine_event_sources(&engine);
         let mut changes = test_support::capture(&engine, "test::changes");
-        let _changes_socket = test_support::observe(
+        let _changes_socket = test_support::observe_input(
             &engine,
             "obs-changes",
             ON_OBSERVERS_CHANGED,

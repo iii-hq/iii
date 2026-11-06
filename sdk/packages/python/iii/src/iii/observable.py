@@ -3,13 +3,13 @@
 :class:`Observer` handed to them, matching (``on_observation_match``, the key
 index) and each call's delivery (iii's, or ``on_observation_deliver``).
 
-Where filters run (decision 55): the engine evaluates the observers' ``on``
+Where filters run (decision 55): the engine evaluates the observers' capture
 and filters for every call it routes. For a routed call this host runs only
 worker code, the function's match and deliver hooks, and its answer says
 which observers the match hook matched (``matched``) or that the deliver
 hook delivered the call (``delivered``). The engine never sees this
 worker's calls of its own functions: for those, iii's delivery here applies
-``on`` and filters through an index of the filters' equality conditions
+capture and filters through an index of the filters' equality conditions
 (:class:`~iii.filter._index.FilterIndex`), and reports the observers
 delivered.
 
@@ -59,10 +59,6 @@ CallLike = Union[Call[Any, Any], Mapping[str, Any]]
 #: observers one by one; past it, it matches them through the active set's
 #: filter index, which a set builds once (:meth:`ActiveSet.filter_index`).
 SCAN_MAX = 8
-
-#: The ``on`` values that accept a call that succeeded, and one that failed.
-_ON_SUCCESS = frozenset({"success", "complete"})
-_ON_ERROR = frozenset({"error", "complete"})
 
 _PARTS = ("input", "output", "error", "caller", "metadata")
 
@@ -177,23 +173,13 @@ def same_data(a: Any, b: Any) -> bool:
 
 def _same_view(obs: Observer, info: ObserverInfoWire) -> bool:
     """Whether ``obs`` is served with the view ``info`` announces: its
-    filters, target, capture and ``on``."""
+    filters, target and capture."""
     return (
         obs.target == info.target
-        and obs.on == info.on
         and obs.capture == list(info.capture)
+        and (obs._fires_on_success, obs._fires_on_error) == info.firing()
         and _same_json(obs.filters, info.filters)
     )
-
-
-def _on_accepts(on: str, ok: bool) -> bool:
-    if on == "complete":
-        return True
-    if on == "success":
-        return ok
-    if on == "error":
-        return not ok
-    return False
 
 
 def _rejection_of(error: BaseException) -> tuple[str, str]:
@@ -267,8 +253,8 @@ class Observer:
         filters: The observer's filters, normalized; iii's delivery and
             :meth:`matches` apply them.
         target: The target function id.
-        capture: What travels to the target when iii delivers.
-        on: ``success``, ``error`` or ``complete``.
+        capture: What the target's payload carries when iii delivers, and
+            with it the outcomes that fire it (see ``ObserveSource``).
     """
 
     def __init__(self, owner: FunctionObservers, info: ObserverInfoWire, filter_: CompiledFilter, revision: int):
@@ -279,7 +265,11 @@ class Observer:
         self.filters: dict[str, Any] = info.filters
         self.target: str = info.target
         self.capture: list[str] = list(info.capture)
-        self.on: str = info.on
+        #: The outcomes that fire it, read once from the view (``fires_on``, or the legacy ``on``).
+        self._fires_on_success, self._fires_on_error = info.firing()
+        #: The outcomes the engine named in the view (``None`` from an engine
+        #: without ``observe.capture``, whose views carry the legacy ``on``).
+        self.fires_on: list[str] | None = None if info.fires_on is None else list(info.fires_on)
         self._filter = filter_
         #: The revision it was acked with (echoed by a late rejection).
         self._revision = revision
@@ -306,17 +296,22 @@ class Observer:
         self._filter = filter_
         self.target = info.target
         self.capture = list(info.capture)
-        self.on = info.on
+        self._fires_on_success, self._fires_on_error = info.firing()
+        self.fires_on = None if info.fires_on is None else list(info.fires_on)
+
+    def _fires(self, ok: bool) -> bool:
+        """Whether a call that ended in success (``ok``) or error fires it."""
+        return self._fires_on_success if ok else self._fires_on_error
 
     def matches(self, call: CallLike) -> bool:
-        """Whether ``call`` passes this observer's ``on`` and filters: what
+        """Whether ``call`` passes this observer's capture and filters: what
         iii's delivery checks, for a deliver hook that calls targets itself.
 
         ``call`` is a :class:`Call` or a partial one (``{"input": ...}``);
-        ``on`` is checked when it has a ``status``.
+        its capture is checked against its ``status`` when it has one.
         """
         status = call.get("status") if isinstance(call, Mapping) else call.status
-        if status is not None and not _on_accepts(self.on, status == "success"):
+        if status is not None and not self._fires(status == "success"):
             return False
         return self._filter.matches(call_doc(call))
 
@@ -428,7 +423,7 @@ class Observer:
             "filters": self.filters,
             "target": self.target,
             "capture": self.capture,
-            "on": self.on,
+            **({} if self.fires_on is None else {"fires_on": self.fires_on}),
         }
 
     def __repr__(self) -> str:
@@ -888,7 +883,7 @@ class FunctionObservers:
         """Acks again, at ``revision`` and without running any hook, an
         observer this SDK holds that the engine announced again (decision 44):
         one with the same args, served from now on with the filters, target,
-        capture and ``on`` it was announced with (filed under its keys again
+        capture it was announced with (filed under its keys again
         when they changed), or, when ``listed`` by ``functionregistered``, one
         rejected late, whose rejection is sent again. ``False`` for an
         observer to add as a new one after removing the one held: other args, a
@@ -1125,8 +1120,8 @@ class Delivery:
     from the active set when the call started), then the function's
     ``on_observation_deliver``, which delivers the call itself, or iii's
     delivery. For a local call, iii's delivery reports the matched observers
-    whose ``on`` and filters match the call in one report item. For a routed
-    call the engine evaluates ``on`` and filters: the answer lists in
+    whose capture and filters match the call in one report item. For a routed
+    call the engine evaluates capture and filters: the answer lists in
     ``matched`` the observers the function's match hook matched (``[]`` when
     none), and carries no list for a function without one (decision 55)."""
 
@@ -1153,7 +1148,7 @@ class Delivery:
         self._duration_ms = duration_ms
         self._observe_depth = observe_depth
         #: A routed call's ``matched``: the observers its match hook matched,
-        #: before ``on`` and filters. ``None`` for a function without one.
+        #: before capture and filters. ``None`` for a function without one.
         self.matched: list[str] | None = None
 
     async def run_async(self, hook: DeliverHook | None) -> tuple[bool, Any]:
@@ -1200,7 +1195,7 @@ class Delivery:
     def _deliver(self, matched: Sequence[Observer]) -> tuple[bool, Any]:
         """iii's delivery: a routed call's answer names the observers the
         match hook matched, and a local call is reported to the matched
-        observers whose ``on`` and filters match it. Returns the handler's
+        observers whose capture and filters match it. Returns the handler's
         outcome."""
         call = self.call
         ok = call.status == "success"
@@ -1216,7 +1211,7 @@ class Delivery:
         return False, self.handler_error
 
     def _select(self, matched: Sequence[Observer], ok: bool) -> list[Observer]:
-        """The matched observers whose ``on`` and filters match the call, in
+        """The matched observers whose capture and filters match the call, in
         order. Past :data:`SCAN_MAX` observers, through the active set's
         filter index once the set has one (:meth:`ActiveSet.filter_index`):
         every observer when there is no match hook, or the match hook's
@@ -1224,18 +1219,17 @@ class Delivery:
         if not matched:
             return []
         doc = call_doc(self.call)
-        accepted = _ON_SUCCESS if ok else _ON_ERROR  # what `_on_accepts` accepts
         active = self._active
         index = active.filter_index(len(matched)) if len(matched) > SCAN_MAX else None
         if index is None:
-            return [obs for obs in matched if obs.on in accepted and obs._filter.matches(doc)]
+            return [obs for obs in matched if obs._fires(ok) and obs._filter.matches(doc)]
         if matched is active.observers:
             return [
                 entry.key
                 for entry in index.candidate_entries(doc)
-                if entry.key.on in accepted and entry.filter.matches(doc)
+                if entry.key._fires(ok) and entry.filter.matches(doc)
             ]
-        return index.select(matched, doc, lambda obs: obs.on in accepted)
+        return index.select(matched, doc, lambda obs: obs._fires(ok))
 
     def _item(self, selected: list[Observer]) -> tuple[ReportInit, set[str]]:
         """The report item of a local call delivered to ``selected``."""

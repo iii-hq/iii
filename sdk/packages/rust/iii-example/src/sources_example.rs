@@ -1,5 +1,5 @@
 use iii_sdk::engine::EngineSources;
-use iii_sdk::{Deliver, Error, IIIClient, RegisterFunction, Source};
+use iii_sdk::{Capture, Error, IIIClient, Observed, RegisterFunction, Source};
 use serde_json::json;
 
 /// Observers of the event sources the cron, state, http, pubsub, queue and
@@ -15,7 +15,7 @@ pub fn setup(iii: &IIIClient) {
     iii.observe(
         Source::function("cron::on-tick")
             .args(json!({ "expression": "0 * * * * * *" }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "example::scheduled_cleanup",
     );
 
@@ -28,7 +28,7 @@ pub fn setup(iii: &IIIClient) {
     iii.observe(
         Source::function("state::on-changed")
             .filters(json!({ "input.scope": { "$eq": "users" } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "example::on_user_updated",
     );
 
@@ -50,7 +50,7 @@ pub fn setup(iii: &IIIClient) {
     iii.observe(
         Source::function("publish")
             .filters(json!({ "input.topic": { "$eq": "orders.created" } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "example::on_order_created",
     );
 
@@ -72,12 +72,19 @@ pub fn setup(iii: &IIIClient) {
     iii.observe(
         Source::function(EngineSources::LOG)
             .filters(json!({ "input.severity_text": { "$eq": "ERROR" } }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "example::on_error_log",
     );
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────
+
+/// The observed call's input: every observer above captures `input`.
+fn input_of<T>(event: Observed<T>) -> Result<T, Error> {
+    event
+        .input
+        .ok_or_else(|| Error::Handler("the observer captures no input".into()))
+}
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CronTick {
@@ -85,7 +92,8 @@ struct CronTick {
     scheduled_time: String,
 }
 
-fn scheduled_cleanup(tick: CronTick) -> Result<serde_json::Value, Error> {
+fn scheduled_cleanup(event: Observed<CronTick>) -> Result<serde_json::Value, Error> {
+    let tick = input_of(event)?;
     Ok(json!({ "cleaned": true, "expression": tick.expression, "at": tick.scheduled_time }))
 }
 
@@ -98,7 +106,8 @@ struct StateChange {
     new_value: serde_json::Value,
 }
 
-fn on_user_updated(change: StateChange) -> Result<serde_json::Value, Error> {
+fn on_user_updated(event: Observed<StateChange>) -> Result<serde_json::Value, Error> {
+    let change = input_of(event)?;
     Ok(json!({ "event": change.event_type, "scope": change.scope, "key": change.key }))
 }
 
@@ -106,7 +115,8 @@ fn health_check(_request: serde_json::Value) -> Result<serde_json::Value, Error>
     Ok(json!({ "status_code": 200, "body": { "status": "ok" } }))
 }
 
-fn on_order_created(message: serde_json::Value) -> Result<serde_json::Value, Error> {
+fn on_order_created(event: Observed<serde_json::Value>) -> Result<serde_json::Value, Error> {
+    let message = input_of(event)?;
     Ok(json!({ "processed": true, "order": message["data"] }))
 }
 
@@ -120,6 +130,7 @@ struct LogRecord {
     body: String,
 }
 
-fn on_error_log(record: LogRecord) -> Result<serde_json::Value, Error> {
+fn on_error_log(event: Observed<LogRecord>) -> Result<serde_json::Value, Error> {
+    let record = input_of(event)?;
     Ok(json!({ "alerted": true, "severity": record.severity_text, "message": record.body }))
 }

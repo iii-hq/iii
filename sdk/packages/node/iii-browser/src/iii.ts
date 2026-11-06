@@ -20,11 +20,13 @@ import {
   type CallerWire,
   type CallRequest,
   type ErrorBody,
+  FEATURE_OBSERVE_CAPTURE,
   FEATURE_OBSERVE_V1,
   FEATURE_OBSERVE_V2,
   type IIIMessage,
   type InvocationResultMessage,
   MessageType,
+  type ObserverInfoWire,
   type RegisterFunctionMessage,
   SDK_FEATURES,
   type StreamChannelRef,
@@ -81,6 +83,8 @@ import {
   decodeObserverStateChanged,
   decodeRegistrationRejected,
   decodeWorkerRegistered,
+  LEGACY_ON_DEPRECATION,
+  legacyOn,
   stripCaller,
 } from './observe-wire'
 import { ObserverHandleImpl, toObserverState } from './observer-handle'
@@ -319,6 +323,8 @@ class Sdk implements ISdk {
   // The engine's features (`WorkerRegistered.features`), kept across a
   // disconnect until the next `WorkerRegistered` replaces them.
   private engineFeatures: ReadonlySet<string> = new Set()
+  /** Whether the legacy `on` deprecation (engines without `observe.capture`) was logged. */
+  private legacyOnWarned = false
   // `WorkerRegistered` arrived on the current connection.
   private registeredOnConnection = false
   // Bumped on every connection: `functionregistered` confirms a function on one.
@@ -737,7 +743,8 @@ class Sdk implements ISdk {
    * and sends nothing.
    *
    * @param source - What is observed: a function id, or `function_id`,
-   *   `args`, `filters`, and `on` / `capture` / `deliver`.
+   *   `args`, `filters`, and `capture` (what the payload carries, and with it
+   *   which outcomes fire the target).
    * @param target - The function to invoke (registered first; until then the observer is `pending`).
    * @param options - Policy and metadata: `id`, `max_fires`, `expires_in_ms`, `max_in_flight`, `metadata`.
    *
@@ -780,6 +787,19 @@ class Sdk implements ISdk {
       )
       handle.setState('error', reason)
       return handle
+    }
+    // Not part of the 0.26 SDK API: refused, not dropped. Dropped, they would
+    // leave the default capture to fire the target on other outcomes than the
+    // ones asked for. (A 0.26 engine still translates them from 0.25 and release
+    // candidate SDKs; this SDK never sends them.)
+    const REMOVED_SOURCE_FIELDS = ['on', 'deliver'] as const
+    for (const field of REMOVED_SOURCE_FIELDS) {
+      if ((source as unknown as Record<string, unknown>)[field] !== undefined) {
+        return refused({
+          code: 'INVALID_ARGS',
+          message: `observe: \`source.${field}\` was removed: \`source.capture\` decides which outcomes fire the target and what it receives`,
+        })
+      }
     }
     // Validated as written, before JSON could drop or rewrite a clause (an
     // `undefined` operand, `NaN`, a `Date`, a `Map`) and widen the filter.
@@ -861,8 +881,34 @@ class Sdk implements ISdk {
   withInvocation = <T>(invocation: InvocationContext | undefined, fn: () => T): T =>
     enterInvocation(contextFromView(invocation), fn, MAX_RUNNING_INVOCATION_MS)
 
+  /**
+   * The `observe` frame for this connection's engine, on the first send and on
+   * every replay. One without `observe.capture` (0.25, and rc engines that have
+   * `observe.v2`) decides the outcomes that fire from `source.on` alone, so it
+   * gets the `on` that `capture` implies; one with it never gets `on`.
+   */
+  private observeFrame(message: ObserverHandleImpl['message']): ObserverHandleImpl['message'] {
+    if (this.engineFeatures.has(FEATURE_OBSERVE_CAPTURE)) return message
+    const on = legacyOn(message.source.capture)
+    if (on === undefined) return message
+    this.warnLegacyOn()
+    return { ...message, source: { ...message.source, on } as typeof message.source }
+  }
+
+  /** Logs, once per client, that the engine talks the deprecated legacy `on` (no `observe.capture`). */
+  private warnLegacyOn(): void {
+    if (this.legacyOnWarned) return
+    this.legacyOnWarned = true
+    this.logWarn(LEGACY_ON_DEPRECATION)
+  }
+
+  /** Observer views without `fires_on` come from an engine without `observe.capture`: they fire from the legacy `on`. */
+  private noteLegacyViews(views: readonly ObserverInfoWire[]): void {
+    if (!this.legacyOnWarned && views.some((view) => view.fires_on === undefined)) this.warnLegacyOn()
+  }
+
   private sendObserve(handle: ObserverHandleImpl): void {
-    this.sendMessage(MessageType.Observe, handle.message, true)
+    this.sendMessage(MessageType.Observe, this.observeFrame(handle.message), true)
     handle.sent = true
     handle.answered = false
     const sent = this.observesSent.get(handle.id)
@@ -1705,7 +1751,7 @@ class Sdk implements ISdk {
         os: globalThis.navigator?.userAgent ?? 'browser',
         // Omit when absent so the engine falls back to its `default` namespace.
         ...(this.namespace !== undefined ? { namespace: this.namespace } : {}),
-        // Opts this connection into the observe messages (CONTRACT D2).
+        // Opts this connection into the observe messages.
         features: [...SDK_FEATURES],
       },
       action: { type: 'void' },
@@ -1803,7 +1849,7 @@ class Sdk implements ISdk {
       if (traceparent !== undefined) ctx.traceparent = traceparent
       if (baggage !== undefined) ctx.baggage = baggage
 
-      // The engine evaluates the `on` and filters of the calls it routes
+      // The engine evaluates the capture and filters of the calls it routes
       // (decision 55). An observe.v2 host runs the function's match and
       // deliver hooks for them, which see the input as it arrived (channel
       // refs unresolved), and its answer says how the call is delivered:
@@ -1859,7 +1905,7 @@ class Sdk implements ISdk {
       }
 
       // Fire-and-forget (`void`, no invocation id): never answered. Activations
-      // carry an id and are answered like any call (CONTRACT D16).
+      // carry an id and are answered like any call.
       if (!invocation_id) {
         try {
           await run()
@@ -1942,6 +1988,7 @@ class Sdk implements ISdk {
       })
     } else if (msgType === MessageType.FunctionRegistered) {
       const msg = decodeFunctionRegistered(message)
+      this.noteLegacyViews(msg.observers)
       const fn = this.functions.get(msg.id)
       // Only a registration sent on this connection is confirmed: not one
       // unregistered since (a match or deliver hook against an engine without observe.v2).
@@ -1951,6 +1998,7 @@ class Sdk implements ISdk {
       }
     } else if (msgType === MessageType.ObserverAdded) {
       const msg = decodeObserverAdded(message)
+      this.noteLegacyViews([msg.observer])
       const fn = this.functions.get(msg.function_id)
       // An observer of a registration this connection withdrew (or never
       // sent) is ignored, as its functionregistered is: no hook, no ack.

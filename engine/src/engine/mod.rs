@@ -854,7 +854,7 @@ impl Engine {
         body: Value,
         traceparent: Option<String>,
         baggage: Option<String>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         caller: Option<Box<crate::protocol::Caller>>,
         observe_depth: Option<u32>,
     ) -> Result<Result<Option<Value>, ErrorBody>, RecvError> {
@@ -938,7 +938,7 @@ impl Engine {
         traceparent: Option<String>,
         baggage: Option<String>,
         invocation_id: Option<Uuid>,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
         caller: Option<Box<crate::protocol::Caller>>,
         observe_depth: Option<u32>,
     ) {
@@ -2600,7 +2600,7 @@ impl Engine {
         namespace: &str,
         function_id: &str,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> Result<Option<Value>, ErrorBody> {
         let function = self.internal_function_handler(namespace, function_id)?;
         self.call_handler_with_metadata(
@@ -2641,7 +2641,7 @@ impl Engine {
         function_id: String,
         function: Arc<crate::function::HandlerFn>,
         input: Value,
-        metadata: Option<Value>,
+        metadata: Option<Arc<Value>>,
     ) -> impl Future<Output = Result<Option<Value>, ErrorBody>> + Send + 'a {
         // Use the current tracing context to preserve parent-child links.
         let ctx = tracing::Span::current().context();
@@ -3680,7 +3680,7 @@ impl EngineTrait for Engine {
             message: e.to_string(),
             stacktrace: None,
         })?;
-        self.call_value_with_metadata_ns(namespace, function_id, input, metadata)
+        self.call_value_with_metadata_ns(namespace, function_id, input, metadata.map(Arc::new))
             .await
     }
 
@@ -4077,7 +4077,7 @@ mod tests {
             .expect("register function");
 
         let mut sink = test_support::capture(&engine, "test::sink");
-        let _observing = test_support::observe(
+        let _observing = test_support::observe_input(
             &engine,
             "obs-http",
             "external::lambda",
@@ -5479,7 +5479,7 @@ mod tests {
                     traceparent: None,
                     baggage: None,
                     action: None,
-                    metadata: Some(metadata.clone()),
+                    metadata: Some(Arc::new(metadata.clone())),
                     namespace: Some("orders".to_string()),
                     caller: None,
                     observe_depth: None,
@@ -5504,7 +5504,7 @@ mod tests {
             panic!("expected remote invocation, got {dispatched:?}");
         };
         assert_eq!(function_id, "orders::echo");
-        assert_eq!(received_metadata, Some(metadata));
+        assert_eq!(received_metadata.as_deref(), Some(&metadata));
         assert_eq!(
             data.as_object_mut().unwrap().remove("_caller_worker_id"),
             Some(json!(caller.id.to_string()))

@@ -50,7 +50,7 @@ The examples on this page react to `orders::create`, a function that another wor
 
     type Order = { id: string; email: string; total: number };
 
-    // The target: a regular function. It receives the Observed envelope of each call.
+    // The target: a regular function. It receives the Observed payload of each call.
     worker.registerFunction("alerts::new-order", async (event: Observed<Order>) => {
       logger.info(`order ${event.input?.id} totals ${event.input?.total}`);
       return null;
@@ -71,7 +71,7 @@ The examples on this page react to `orders::create`, a function that another wor
     worker = register_worker(os.environ.get("III_URL"), InitOptions(worker_name="alerts"))
     logger = Logger()
 
-    # The target: a regular function. It receives the Observed envelope of each call.
+    # The target: a regular function. It receives the Observed payload of each call.
     def new_order(event: dict) -> None:
         order = event.get("input", {})
         logger.info(f"order {order.get('id')} totals {order.get('total')}")
@@ -101,7 +101,7 @@ The examples on this page react to `orders::create`, a function that another wor
     let url = std::env::var("III_URL").expect("III_URL must be set");
     let worker = register_worker(&url, InitOptions::default());
 
-    // The target: a regular function. It receives the Observed envelope of each call.
+    // The target: a regular function. It receives the Observed payload of each call.
     worker.register_function(
         "alerts::new-order",
         RegisterFunction::new(|event: Observed<Order>| {
@@ -132,7 +132,7 @@ The examples on this page react to `orders::create`, a function that another wor
 
     worker := iii.RegisterWorker(os.Getenv("III_URL"))
 
-    // The target: a regular function. It receives the Observed envelope of each call.
+    // The target: a regular function. It receives the Observed payload of each call.
     worker.RegisterFunction("alerts::new-order", func(ctx context.Context, data json.RawMessage) (any, error) {
         var event iii.Observed
         if err := json.Unmarshal(data, &event); err != nil {
@@ -163,13 +163,18 @@ message (`queue::on-message`) or a row change (`database::on-row-changed`). The 
 registered function. Any worker can observe any function, private ones included, unless the function
 is registered with `observable: false` or RBAC restricts it (see [Authorization](#authorization)).
 
-What an observer receives is typically the function's return value, unless the worker that hosts the
-function overrides it. If unsure, refer to that worker's documentation.
+By default, an observer is accepted as soon as it is added, and its target runs on every call its
+`capture` fires on and its filters match. The worker that hosts the function can override each part
+of that with a hook: `onObserverAdded` sets something up for the observer, or rejects it;
+`onObservationMatch` decides which calls reach which observer; and `onObservationDeliver` delivers
+the calls itself and decides what the caller gets back (see
+[Hooks](../creating-workers/observable-functions#hooks)). If unsure, refer to that worker's
+documentation.
 
 ### Defaults
 
 - The target runs after each successful call of the observed function.
-- The target receives the [`Observed` envelope](#target-arguments) of the call, with its `input`,
+- The target receives the [`Observed` payload](#the-payload) of the call, with its `input`,
   its `output`, and its `caller`.
 - The caller of the observed function gets its result without waiting for the target. Each call runs
   the target at most once, and a failure of the target does not change the call.
@@ -443,94 +448,18 @@ against the `request_format` and `response_format` of the function. If a closed 
 a path, the observer fails with `INVALID_FILTER_PATH`. If the function is not registered yet, the
 engine does this check when the function registers.
 
-## Target arguments
+## What the target receives
 
-`deliver`, `capture`, and `on` set what the target receives, and after which calls.
+`capture` sets what the target receives, and with it after which calls the target runs.
 
-### `deliver`
+### The payload
 
-`deliver` sets what the target receives:
-
-| `deliver`            | The target receives                                         |
-| -------------------- | ----------------------------------------------------------- |
-| `envelope` (default) | The `Observed` envelope of the call.                        |
-| `input`              | The input of the call alone.                                |
-| `output`             | The output of the call (the function's return value) alone. |
-
-If the value is absent (for example, `output` after a failed call), the argument is `null`.
-
-There is no `deliver: "error"`. The error of a failed call reaches the target only in the envelope,
-as its `error` field (`{ code, message, stacktrace? }`). For that, the observer needs [`on`](#on)
-set to `error` or `complete`, and `error` in [`capture`](#capture).
-
-<Tabs>
-  <Tab title="Node / TypeScript">
-    ```typescript
-    worker.registerFunction("emails::send-receipt", async (order: Order) => {
-      await sendReceipt(order.email, order);
-      return null;
-    });
-
-    // After each successful call of orders::create, run emails::send-receipt with the order.
-    worker.observe({ function_id: "orders::create", deliver: "input" }, "emails::send-receipt");
-    ```
-
-  </Tab>
-  <Tab title="Python">
-    ```python
-    def send_receipt(order: dict) -> None:
-        mailer.send_receipt(order["email"], order)
-
-    worker.register_function("emails::send-receipt", send_receipt)
-
-    # After each successful call of orders::create, run emails::send-receipt with the order.
-    worker.observe({"function_id": "orders::create", "deliver": "input"}, "emails::send-receipt")
-    ```
-
-  </Tab>
-  <Tab title="Rust">
-    ```rust
-    use iii_sdk::{Deliver, Source};
-
-    worker.register_function(
-        "emails::send-receipt",
-        RegisterFunction::new(|order: Order| {
-            send_receipt(&order.email, &order);
-            Ok::<_, Error>(())
-        }),
-    );
-
-    // After each successful call of orders::create, run emails::send-receipt with the order.
-    worker.observe(
-        Source::function("orders::create").deliver(Deliver::Input),
-        "emails::send-receipt",
-    );
-    ```
-
-  </Tab>
-  <Tab title="Go">
-    ```go
-    worker.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
-        var order Order
-        if err := json.Unmarshal(data, &order); err != nil {
-            return nil, err
-        }
-        return nil, sendReceipt(ctx, order.Email, order)
-    })
-
-    // After each successful call of orders::create, run emails::send-receipt with the order.
-    worker.Observe(iii.Source{
-        FunctionID: "orders::create",
-        Deliver:    iii.DeliverInput,
-    }, "emails::send-receipt")
-    ```
-
-  </Tab>
-</Tabs>
-
-The envelope always has the ids, `status`, and the timings. It has `input`, `output`, `error`,
-`caller`, and `metadata` only when [`capture`](#capture) includes them. `output` is present only
-after a successful call.
+The target receives the `Observed` payload of the call. It always has the ids, `status`, and the
+timings. It has `input`, `output`, `error`, `caller`, and `metadata` when [`capture`](#capture)
+includes them and the call has them: `output` only after a successful call, `error` only after a
+failed one. A field that is not captured, or that the call does not have, is absent, never `null`.
+This differs from 0.25, which sent `"output": null` to an observer that captured `output` when a
+successful call reported no output.
 
 | Field                          | Meaning                                                                          |
 | ------------------------------ | -------------------------------------------------------------------------------- |
@@ -543,43 +472,127 @@ after a successful call.
 | `metadata`                     | The metadata of the observed call.                                               |
 | `started_at_ms`, `duration_ms` | When the observed invocation started, and how long it ran.                       |
 
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    worker.registerFunction("emails::send-receipt", async ({ input }: Observed<Order>) => {
+      await sendReceipt(input.email, input);
+      return null;
+    });
+
+    // After each successful call of orders::create, run emails::send-receipt with the order.
+    worker.observe({ function_id: "orders::create", capture: ["input"] }, "emails::send-receipt");
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def send_receipt(observed: dict) -> None:
+        order = observed["input"]
+        mailer.send_receipt(order["email"], order)
+
+    worker.register_function("emails::send-receipt", send_receipt)
+
+    # After each successful call of orders::create, run emails::send-receipt with the order.
+    worker.observe({"function_id": "orders::create", "capture": ["input"]}, "emails::send-receipt")
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Capture, Observed, Source};
+
+    worker.register_function(
+        "emails::send-receipt",
+        RegisterFunction::new(|observed: Observed<Order>| {
+            let order = observed.input.expect("captured");
+            send_receipt(&order.email, &order);
+            Ok::<_, Error>(())
+        }),
+    );
+
+    // After each successful call of orders::create, run emails::send-receipt with the order.
+    worker.observe(
+        Source::function("orders::create").capture([Capture::Input]),
+        "emails::send-receipt",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    worker.RegisterFunction("emails::send-receipt", func(ctx context.Context, data json.RawMessage) (any, error) {
+        var observed iii.Observed
+        if err := json.Unmarshal(data, &observed); err != nil {
+            return nil, err
+        }
+        var order Order
+        if err := json.Unmarshal(observed.Input, &order); err != nil {
+            return nil, err
+        }
+        return nil, sendReceipt(ctx, order.Email, order)
+    })
+
+    // After each successful call of orders::create, run emails::send-receipt with the order.
+    worker.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Capture:    []iii.Capture{iii.CaptureInput},
+    }, "emails::send-receipt")
+    ```
+
+  </Tab>
+</Tabs>
+
 ### `capture`
 
-`capture` sets which parts of the call the envelope carries: any of `input`, `output`, `error`,
-`caller`, and `metadata`. The default is `["input", "output", "caller"]`.
+`capture` lists the fields the payload carries: any of `input`, `output`, `error`, `caller`, and
+`metadata`. The default is `["input", "output", "caller"]`.
 
-An observer that only counts calls, or only records that they failed (`on: "error"`), uses
-`capture: []`: no payload moves to its target.
+`metadata` is opt-in: the call's metadata reaches the target only when `capture` names it. Earlier
+0.26 release candidates of this change added `metadata` to the default; 0.26 does not. To route
+calls by their metadata (for example a `for_observer` key), use the hosting worker's
+[`onObservationMatch` or `onObservationDeliver`](../creating-workers/observable-functions#hooks)
+hook, which receives the call's metadata whatever the observers capture. A [filter](#filters) can
+also read `metadata.*` without `metadata` in `capture`.
 
-`capture` sets only what the target receives. A [filter](#filters) can read any field of the call,
-including the fields that `capture` leaves out.
+The fields also decide after which calls the target runs:
+
+- `input` and `output` run it after a successful call.
+- `error` runs it after a failed call.
+- `caller` and `metadata` add to the payload only. A `capture` must name at least one of `input`,
+  `output`, and `error`; one with only `caller` or `metadata` fails with `INVALID_ARGS`. The
+  exception is `capture: []`, which runs the target after successful calls with no payload fields.
+- `[]` runs the target after a successful call, with the ids, `status`, and the timings only: no
+  payload moves to it. An observer that only counts calls uses it.
+
+| `capture`                                    | The target runs after           |
+| -------------------------------------------- | ------------------------------- |
+| default, `["input"]`, `["output", "caller"]` | a successful call               |
+| `["error"]`, `["error", "caller"]`           | a failed call                   |
+| `["input", "error"]`, `["output", "error"]`  | each call, successful or failed |
+| `[]`                                         | a successful call (no payload)  |
+
+The default does not include `error`, so a default observer runs after successful calls only. A
+call the engine cancels (for example, a call it routes whose caller stopped waiting) does not run
+the target, for any `capture`. The engine counts it as a dropped call with the reason `CANCELLED`
+in the `iii.observer.dropped.total` metric. A call the hosting worker runs in its own process is
+not cancelled when its caller stops waiting: its handler runs to the end, and its outcome reaches
+the observers like any other.
+
+Once `capture` has decided which outcomes run the target, a [filter](#filters) can read any field
+of the call, including the fields that `capture` leaves out of the payload.
 
 To keep observed calls small, capture only what the target reads. See
 [Observed call size](#observed-call-size).
 
-### `on`
-
-By default, the target runs only after a successful call of the observed function. `on` changes
-this:
-
-| `on`                | The target runs after           |
-| ------------------- | ------------------------------- |
-| `success` (default) | a successful call               |
-| `error`             | a failed call                   |
-| `complete`          | each call, successful or failed |
-
-A cancelled call (for example, its caller stopped waiting) does not run the target, for any value of
-`on`. The engine counts it as a dropped call with the reason `CANCELLED` in the
-`iii.observer.dropped.total` metric.
-
-The default `capture` does not include `error`. To give the target the error, add `error` to
-`capture`:
+To run the target after failed calls with their error, capture `error`:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    // After each failed call: the error, and who made the call.
     worker.observe(
-      { function_id: "orders::create", on: "error", capture: ["input", "error"] },
+      { function_id: "orders::create", capture: ["error", "caller"] },
       "alerts::order-failed",
     );
     ```
@@ -587,8 +600,9 @@ The default `capture` does not include `error`. To give the target the error, ad
   </Tab>
   <Tab title="Python">
     ```python
+    # After each failed call: the error, and who made the call.
     worker.observe(
-        {"function_id": "orders::create", "on": "error", "capture": ["input", "error"]},
+        {"function_id": "orders::create", "capture": ["error", "caller"]},
         "alerts::order-failed",
     )
     ```
@@ -596,12 +610,11 @@ The default `capture` does not include `error`. To give the target the error, ad
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Capture, On, Source};
+    use iii_sdk::{Capture, Source};
 
+    // After each failed call: the error, and who made the call.
     worker.observe(
-        Source::function("orders::create")
-            .on(On::Error)
-            .capture([Capture::Input, Capture::Error]),
+        Source::function("orders::create").capture([Capture::Error, Capture::Caller]),
         "alerts::order-failed",
     );
     ```
@@ -609,15 +622,91 @@ The default `capture` does not include `error`. To give the target the error, ad
   </Tab>
   <Tab title="Go">
     ```go
+    // After each failed call: the error, and who made the call.
     worker.Observe(iii.Source{
         FunctionID: "orders::create",
-        On:         iii.OnError,
-        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError},
+        Capture:    []iii.Capture{iii.CaptureError, iii.CaptureCaller},
     }, "alerts::order-failed")
     ```
 
   </Tab>
 </Tabs>
+
+To get the input of every call, successful or failed, capture `input` and `error`: the target runs
+after both, and the payload's `status` says which.
+
+#### Failed calls with their input
+
+To run the target after failed calls only, and still get each call's input, capture `input` and
+`error` and keep only the calls that have an `error` with a filter:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // After each failed call only: its input and its error.
+    worker.observe(
+      {
+        function_id: "orders::create",
+        capture: ["input", "error"],
+        filters: { error: { $exists: true } },
+      },
+      "alerts::order-failed",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # After each failed call only: its input and its error.
+    worker.observe(
+        {
+            "function_id": "orders::create",
+            "capture": ["input", "error"],
+            "filters": {"error": {"$exists": True}},
+        },
+        "alerts::order-failed",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Capture, Source};
+    use serde_json::json;
+
+    // After each failed call only: its input and its error.
+    worker.observe(
+        Source::function("orders::create")
+            .capture([Capture::Input, Capture::Error])
+            .filters(json!({ "error": { "$exists": true } })),
+        "alerts::order-failed",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // After each failed call only: its input and its error.
+    worker.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError},
+        Filters:    iii.Filters{"error": iii.Op{"$exists": true}},
+    }, "alerts::order-failed")
+    ```
+
+  </Tab>
+</Tabs>
+
+`capture: ["input", "error"]` fires on both outcomes, and the filter drops the successful calls
+before they reach the observing worker. The engine evaluates it for the calls it routes and starts
+no target for a successful one. For the calls a worker on a 0.26 SDK runs in-process, that SDK
+evaluates it and does not report a successful call to the engine at all. After each failed call
+the target gets `status: "error"`, the `input`, and the `error`. Capturing `error` alone would
+fire on failures only, but its payload would not carry the input.
+
+The observing worker needs a 0.26 SDK. An observer from a worker without the `observe.capture`
+feature keeps the 0.25 semantics and fires on successful calls only, so with this filter it never
+fires (see [Compatibility](#compatibility)).
 
 ### Metadata
 
@@ -625,8 +714,9 @@ The observer's `metadata` option, set in the [policy](#policy-and-metadata), rea
 function as its second argument on every activation.
 
 <Note title="Two kinds of metadata">
-  The envelope's `metadata` field is the metadata of the observed call, present when `capture`
-  includes `metadata`. The observer's `metadata` option is the target function's second argument.
+  The payload's `metadata` field is the metadata of the observed call, present only when `capture`
+  names `metadata`: the default leaves it out. The observer's `metadata` option is the target
+  function's second argument.
 </Note>
 
 ### The target function's return value
@@ -658,9 +748,8 @@ run of the target.
     worker.observe(
       {
         function_id: "payments::charge",
-        on: "error",
         filters: { "input.amount": { $gte: 500 } },
-        capture: ["input", "error", "caller"],
+        capture: ["error", "caller"],
       },
       "alerts::payment-failed",
       { max_in_flight: 4, metadata: { team: "billing" } },
@@ -673,9 +762,8 @@ run of the target.
     worker.observe(
         {
             "function_id": "payments::charge",
-            "on": "error",
             "filters": {"input.amount": {"$gte": 500}},
-            "capture": ["input", "error", "caller"],
+            "capture": ["error", "caller"],
         },
         "alerts::payment-failed",
         {"max_in_flight": 4, "metadata": {"team": "billing"}},
@@ -685,14 +773,13 @@ run of the target.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Capture, ObserverOptions, On, Source};
+    use iii_sdk::{Capture, ObserverOptions, Source};
     use serde_json::json;
 
     worker.observe_with(
         Source::function("payments::charge")
-            .on(On::Error)
             .filters(json!({ "input.amount": { "$gte": 500 } }))
-            .capture([Capture::Input, Capture::Error, Capture::Caller]),
+            .capture([Capture::Error, Capture::Caller]),
         "alerts::payment-failed",
         ObserverOptions::default()
             .max_in_flight(4)
@@ -705,9 +792,8 @@ run of the target.
     ```go
     worker.Observe(iii.Source{
         FunctionID: "payments::charge",
-        On:         iii.OnError,
         Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
-        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError, iii.CaptureCaller},
+        Capture:    []iii.Capture{iii.CaptureError, iii.CaptureCaller},
     }, "alerts::payment-failed", iii.ObserverOptions{
         MaxInFlight: 4,
         Metadata:    json.RawMessage(`{"team":"billing"}`),
@@ -802,7 +888,7 @@ the `iii.observer.dropped.total` metric, by function and reason.
 </Tabs>
 
 A target that runs in the observing worker can stop its own observer: it calls `dispose()` on the
-handle, or it calls `engine::observers::dispose` with the `observer_id` from the envelope. To stop
+handle, or it calls `engine::observers::dispose` with the `observer_id` from the payload. To stop
 after a number of calls or after a time, set `max_fires` or `expires_in_ms` in the
 [policy](#policy-and-metadata).
 
@@ -856,8 +942,9 @@ without naming a namespace. For `observability::*` sources, a worker in another 
 | `observability::on-span`       | `{ trace_ids: [...] }`: the traces that recorded spans in one window of about 300 ms.                                                                                                                                                                                                                                       |
 
 Each of them is a private function whose handler returns the event. So `input` and `output` are both
-the event, and `deliver: "input"` and `deliver: "output"` both give the target the event. Their
-calls never fail: an observer with `on: "error"` is accepted, but its target never runs. Their
+the event: `capture: ["input"]` or `capture: ["output"]` gives the target the event in the payload.
+Their calls never fail, so an observer that captures `error` but neither `input` nor `output` is
+accepted, but its target never runs. Their
 `request_format` is closed at the top level, so an `input.*` filter path that is not in the event
 fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a worker fails with
 `FORBIDDEN`. The SDK exports their ids as `EngineSources`, for example
@@ -870,7 +957,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
     worker.observe(
       {
         function_id: "configuration::on-updated",
-        deliver: "input",
+        capture: ["input"],
         filters: {
           "input.id": { $eq: "billing" },
           "input.event_type": { $eq: "configuration:updated" },
@@ -884,14 +971,14 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
       {
         function_id: "observability::on-log",
         namespace: "default",
-        deliver: "input",
+        capture: ["input"],
         filters: { "input.severity_number": { $gte: 17 } }, // OpenTelemetry ERROR and above
       },
       "alerts::log",
     );
 
     // Refresh a cache when workers change.
-    worker.observe({ function_id: "engine::on-workers-changed", deliver: "input" }, "ops::refresh-workers");
+    worker.observe({ function_id: "engine::on-workers-changed", capture: ["input"] }, "ops::refresh-workers");
     ```
 
   </Tab>
@@ -900,7 +987,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
     worker.observe(
         {
             "function_id": "configuration::on-updated",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": {
                 "input.id": {"$eq": "billing"},
                 "input.event_type": {"$eq": "configuration:updated"},
@@ -914,7 +1001,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
         {
             "function_id": "observability::on-log",
             "namespace": "default",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": {"input.severity_number": {"$gte": 17}},  # OpenTelemetry ERROR and above
         },
         "alerts::log",
@@ -924,12 +1011,12 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{Deliver, Source};
+    use iii_sdk::{Capture, Source};
     use serde_json::json;
 
     worker.observe(
         Source::function("configuration::on-updated")
-            .deliver(Deliver::Input)
+            .capture([Capture::Input])
             .filters(json!({
                 "input.id": { "$eq": "billing" },
                 "input.event_type": { "$eq": "configuration:updated" },
@@ -941,7 +1028,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
     worker.observe(
         Source::function("observability::on-log")
             .namespace("default")
-            .deliver(Deliver::Input)
+            .capture([Capture::Input])
             .filters(json!({ "input.severity_number": { "$gte": 17 } })),
         "alerts::log",
     );
@@ -952,7 +1039,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
     ```go
     worker.Observe(iii.Source{
         FunctionID: "configuration::on-updated",
-        Deliver:    iii.DeliverInput,
+        Capture:    []iii.Capture{iii.CaptureInput},
         Filters: iii.Filters{
             "input.id":         iii.Op{"$eq": "billing"},
             "input.event_type": iii.Op{"$eq": "configuration:updated"},
@@ -963,7 +1050,7 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
     worker.Observe(iii.Source{
         FunctionID: "observability::on-log",
         Namespace:  "default",
-        Deliver:    iii.DeliverInput,
+        Capture:    []iii.Capture{iii.CaptureInput},
         Filters:    iii.Filters{"input.severity_number": iii.Op{"$gte": 17}},
     }, "alerts::log")
     ```
@@ -974,22 +1061,24 @@ fails with `INVALID_FILTER_PATH`. Only the engine calls them. A call from a work
 ## Chain reactions
 
 A call of a target is a normal call, so another observer can observe the target. In a chain, each
-observer observes the target of the observer before it, and `deliver: "output"` hands it the
-previous step's return value.
+observer observes the target of the observer before it, and `capture: ["output"]` hands it the
+previous step's return value as the payload's `output`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
     // Inventory worker: after each successful call of orders::create, reserve the items.
-    inventoryWorker.registerFunction("inventory::reserve", async (order: Order) => reserveItems(order));
-    inventoryWorker.observe({ function_id: "orders::create", deliver: "input" }, "inventory::reserve");
+    inventoryWorker.registerFunction("inventory::reserve", async ({ input }: Observed<Order>) =>
+      reserveItems(input),
+    );
+    inventoryWorker.observe({ function_id: "orders::create", capture: ["input"] }, "inventory::reserve");
 
     // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
-    shippingWorker.registerFunction("shipping::schedule", async (reservation: Reservation) =>
-      scheduleShipment(reservation),
+    shippingWorker.registerFunction("shipping::schedule", async ({ output }: Observed<unknown, Reservation>) =>
+      scheduleShipment(output),
     );
     shippingWorker.observe(
-      { function_id: "inventory::reserve", deliver: "output" },
+      { function_id: "inventory::reserve", capture: ["output"] },
       "shipping::schedule",
     );
     ```
@@ -998,28 +1087,30 @@ previous step's return value.
   <Tab title="Python">
     ```python
     # Inventory worker: after each successful call of orders::create, reserve the items.
-    inventory_worker.register_function("inventory::reserve", reserve_items)
-    inventory_worker.observe({"function_id": "orders::create", "deliver": "input"}, "inventory::reserve")
+    inventory_worker.register_function("inventory::reserve", lambda observed: reserve_items(observed["input"]))
+    inventory_worker.observe({"function_id": "orders::create", "capture": ["input"]}, "inventory::reserve")
 
     # Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
-    shipping_worker.register_function("shipping::schedule", schedule_shipment)
-    shipping_worker.observe({"function_id": "inventory::reserve", "deliver": "output"}, "shipping::schedule")
+    shipping_worker.register_function("shipping::schedule", lambda observed: schedule_shipment(observed["output"]))
+    shipping_worker.observe({"function_id": "inventory::reserve", "capture": ["output"]}, "shipping::schedule")
     ```
 
   </Tab>
   <Tab title="Rust">
     ```rust
+    use iii_sdk::{Capture, Source};
+
     // Inventory worker: after each successful call of orders::create, reserve the items.
     inventory_worker.register_function("inventory::reserve", RegisterFunction::new(reserve_items));
     inventory_worker.observe(
-        Source::function("orders::create").deliver(Deliver::Input),
+        Source::function("orders::create").capture([Capture::Input]),
         "inventory::reserve",
     );
 
     // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
     shipping_worker.register_function("shipping::schedule", RegisterFunction::new(schedule_shipment));
     shipping_worker.observe(
-        Source::function("inventory::reserve").deliver(Deliver::Output),
+        Source::function("inventory::reserve").capture([Capture::Output]),
         "shipping::schedule",
     );
     ```
@@ -1029,15 +1120,24 @@ previous step's return value.
     ```go
     // Inventory worker: after each successful call of orders::create, reserve the items.
     inventoryWorker.RegisterFunction("inventory::reserve", reserveItems)
-    inventoryWorker.Observe(iii.Source{FunctionID: "orders::create", Deliver: iii.DeliverInput}, "inventory::reserve")
+    inventoryWorker.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Capture:    []iii.Capture{iii.CaptureInput},
+    }, "inventory::reserve")
 
     // Shipping worker: after each successful call of inventory::reserve, schedule the shipment.
     shippingWorker.RegisterFunction("shipping::schedule", scheduleShipment)
-    shippingWorker.Observe(iii.Source{FunctionID: "inventory::reserve", Deliver: iii.DeliverOutput}, "shipping::schedule")
+    shippingWorker.Observe(iii.Source{
+        FunctionID: "inventory::reserve",
+        Capture:    []iii.Capture{iii.CaptureOutput},
+    }, "shipping::schedule")
     ```
 
   </Tab>
 </Tabs>
+
+In Rust and Go, `reserve_items` / `reserveItems` and `schedule_shipment` / `scheduleShipment` take
+the `Observed` payload and read its `input` or `output`.
 
 To add a step, observe the last function in the chain. To branch, add two observers to the same
 function. Each step adds 1 to the depth of the call: see [Loop guard](#loop-guard).
@@ -1048,7 +1148,7 @@ The engine lists observers through three built-in functions:
 
 | Function                     | Input                                   | Returns                                                                                                                                                                   |
 | ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, args, normalized filters, target, observing worker, state, reason, fires, drops and activation failures by reason, policy. |
+| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, args, normalized filters, target, `capture`, `fires_on` (the outcomes that fire the observer: `success`, `error`, or both), observing worker, state, reason, `fires` (the number of activations), drops and activation failures by reason, policy. |
 | `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                    |
 | `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                        |
 
@@ -1068,8 +1168,8 @@ When an observer cannot be created, it becomes `error`, and `ready()` fails with
 
 | Code                   | When                                                                                                                                                                                                                    |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNSUPPORTED`          | The engine is older than 0.25 (the SDK gives this code), or `on`, `capture`, or `deliver` has a value that the engine does not support.                                                                                 |
-| `INVALID_ARGS`         | `args` do not match the `args_format` of the function, or the function takes no `args`. Also: an empty or too-long observer id, an empty `function_id`, or `max_fires`, `expires_in_ms`, or `max_in_flight` set to `0`. |
+| `UNSUPPORTED`          | The engine is older than 0.25 (the SDK gives this code), or `capture` has a value that the engine does not support.                                                                                 |
+| `INVALID_ARGS`         | `args` do not match the `args_format` of the function, or the function takes no `args`. Also: an empty or too-long observer id, an empty `function_id`, or `max_fires`, `expires_in_ms`, or `max_in_flight` set to `0`, or a non-empty `capture` that names none of `input`, `output`, and `error` (not checked for an observer that gets the 0.25 semantics: see [Legacy `on` and `deliver`](../reference/engine-protocol#legacy-on-and-deliver)). |
 | `INVALID_FILTER`       | The filter is not valid, uses a literal value in place of an operator object, or is larger than a limit.                                                                                                                |
 | `INVALID_FILTER_PATH`  | A filter path is not in the function's closed `request_format` or `response_format`.                                                                                                                                    |
 | `NOT_OBSERVABLE`       | The function is registered with `observable: false`.                                                                                                                                                                    |
@@ -1103,8 +1203,7 @@ two cases it also counts in the observer's `dropped` counts
 observer, the function, the size, and the limit, at most once a minute per observer.
 
 To keep observed calls small, capture only what the target reads, for example `capture: ["input"]`.
-With `deliver: "input"` or `deliver: "output"`, set a matching `capture` too: captured fields are
-kept even when the target receives one value. For payloads larger than these limits, pass a
+For payloads larger than these limits, pass a
 [channel](../creating-workers/channels) reference in place of the data.
 
 <Note title="TOO_LARGE and OVERFLOW">
@@ -1260,3 +1359,11 @@ To change or deny observers in the RBAC configuration, see
   every routed call, whichever SDK hosts the function, and the hosting SDK reports its own local
   calls.
 - Workers on SDKs older than 0.25 cannot observe.
+- `on` and `deliver` in an observer's source are deprecated. A 0.26 engine translates them to their
+  0.25 behavior and logs a warning, and an observer from a worker on a 0.25 SDK or a 0.26 release
+  candidate SDK always gets the 0.25 semantics. Replace them with `capture`: see
+  [Legacy `on` and `deliver`](../reference/engine-protocol#legacy-on-and-deliver). Support will be
+  removed in a future release.
+- A 0.26 SDK connected to a 0.25 engine or a 0.26 release candidate engine sends each observer with
+  the legacy `on` its `capture` implies, and logs once that this is deprecated. Upgrade the engine.
+  See the [compatibility matrix](../upgrading/from-0-25-x#compatibility).

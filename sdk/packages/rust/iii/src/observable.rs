@@ -30,7 +30,7 @@ use crate::{
     hooks::{AddedSlot, Call, ErasedDeliverHook, ErasedRemovedHook, Level, Match, Matcher},
     iii::{IIIClient, IIIInner},
     observer_set::ObserverSet,
-    protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, On, observe_codes},
+    protocol::{Capture, ErrorBody, InvocationStatus, Message, ObserverView, observe_codes},
     reporter::CaptureMask,
 };
 
@@ -121,14 +121,14 @@ pub(crate) fn capture_mask(capture: &[Capture]) -> CaptureMask {
 }
 
 /// One observer of a function this worker hosts, as its host sees it: its
-/// id, args, filters, target, capture and `on`. Never its metadata, policy or
+/// id, args, filters, target and capture. Never its metadata, policy or
 /// observing worker.
 ///
 /// Cheap to clone (an `Arc`), so hooks take it by value and a worker keeps it
 /// in its own index. Two `Observer`s are equal when their ids are.
 ///
 /// The engine may announce an observer again with the same args and other
-/// filters, target, capture or `on`: it stays the same observer and no hook
+/// filters, target or capture: it stays the same observer and no hook
 /// runs. Handles given out earlier keep the view they were made with, and
 /// [`IIIClient::observers`] returns the announced one.
 #[derive(Clone)]
@@ -153,6 +153,10 @@ struct ObserverInner {
     /// conditions; one it does not is evaluated on every call.
     indexed: bool,
     mask: CaptureMask,
+    /// The outcomes that fire it, read once from the view (`fires_on`, or the
+    /// legacy `on`).
+    fires_on_success: bool,
+    fires_on_error: bool,
     function_id: String,
     namespace: String,
     state: Arc<ObserverState>,
@@ -233,6 +237,7 @@ impl Observer {
         state: Arc<ObserverState>,
     ) -> Self {
         let mask = capture_mask(&view.capture);
+        let (fires_on_success, fires_on_error) = view.firing();
         let indexed = filter.is_indexable();
         Self {
             inner: Arc::new(ObserverInner {
@@ -240,6 +245,8 @@ impl Observer {
                 filter,
                 indexed,
                 mask,
+                fires_on_success,
+                fires_on_error,
                 function_id,
                 namespace,
                 state,
@@ -309,18 +316,13 @@ impl Observer {
         &self.inner.view.capture
     }
 
-    /// Which outcomes of a call reach it.
-    pub fn on(&self) -> &On {
-        &self.inner.view.on
-    }
-
     /// Whether it is still delivered to: accepted, and neither removed nor
     /// rejected since.
     pub fn is_active(&self) -> bool {
         self.state().active.load(Ordering::Acquire)
     }
 
-    /// Whether `call` reaches this observer: its `on` accepts the call's
+    /// Whether `call` reaches this observer: its `capture` fires on the call's
     /// status and its filters match the call. A deliver hook that calls
     /// targets itself applies them with this.
     pub fn matches(&self, call: &Call) -> bool {
@@ -459,7 +461,7 @@ impl Observer {
     }
 
     /// An observer of `test::f` announced with `view` (`id`, `filters`,
-    /// `on`, `capture`, ...), its filters compiled, active or not, and not
+    /// `capture`, ...), its filters compiled, active or not, and not
     /// held by any client.
     #[cfg(test)]
     pub(crate) fn test_view(view: Value, seq: u64, active: bool) -> Self {
@@ -498,11 +500,10 @@ impl Observer {
 
     /// Whether a call that ended with `success` (or not) reaches it.
     pub(crate) fn accepts(&self, success: bool) -> bool {
-        match self.inner.view.on {
-            On::Success => success,
-            On::Error => !success,
-            On::Complete => true,
-            On::Unknown(_) => false,
+        if success {
+            self.inner.fires_on_success
+        } else {
+            self.inner.fires_on_error
         }
     }
 }
@@ -571,7 +572,7 @@ impl Ord for ById {
     }
 }
 
-/// The observers of a set whose `on` accepts one outcome of a call, by the
+/// The observers of a set whose `capture` fires on one outcome of a call, by the
 /// equality conditions of their filters.
 pub(crate) type OutcomeIndex = FilterIndex<ById, ()>;
 
@@ -584,7 +585,7 @@ pub(crate) const SCAN_MAX: usize = 16;
 /// compiled set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Plan {
-    /// No observer's `on` accepts the outcome: nothing to evaluate.
+    /// no observer's `capture` fires on the outcome: nothing to evaluate.
     #[default]
     Nothing,
     /// Every observer of the set evaluated, in id order: a set of at most
@@ -619,7 +620,7 @@ impl Plan {
 pub(crate) struct CompiledSet {
     /// By id.
     pub observers: ObserverSet,
-    /// The observers whose `on` accepts a call that succeeded (`success`,
+    /// The observers whose `capture` fires on a call that succeeded (`success`,
     /// `complete`), indexed by their filters' equality conditions: what a
     /// local call that succeeded is looked up in when its plan is
     /// [`Plan::Index`].
@@ -630,7 +631,7 @@ pub(crate) struct CompiledSet {
     plans: [Plan; 2],
     /// The roots any observer's filter reads.
     pub roots: Roots,
-    /// The roots the filters of the observers whose `on` accepts a call that
+    /// The roots the filters of the observers whose `capture` fires on a call that
     /// succeeded, and one that failed, read: what a local call of that
     /// outcome builds of its `error` and `caller`.
     reads: [Roots; 2],
@@ -651,10 +652,10 @@ pub(crate) struct CompiledSet {
 struct PartCounts {
     roots: [usize; 5],
     capture: [usize; 5],
-    /// `roots` of the observers whose `on` accepts a call that succeeded,
+    /// `roots` of the observers whose `capture` fires on a call that succeeded,
     /// and of those that accept one that failed.
     reads: [[usize; 5]; 2],
-    /// The observers whose `on` accepts a call that succeeded, and those
+    /// The observers whose `capture` fires on a call that succeeded, and those
     /// that accept one that failed, that the index files under no
     /// condition.
     scanned: [usize; 2],
@@ -760,7 +761,7 @@ impl CompiledSet {
         }
     }
 
-    /// The index of the observers whose `on` accepts a call that succeeded
+    /// The index of the observers whose `capture` fires on a call that succeeded
     /// (`success`), or one that failed.
     pub(crate) fn accepting(&self, success: bool) -> &OutcomeIndex {
         if success {
@@ -777,14 +778,14 @@ impl CompiledSet {
         self.plans[usize::from(!success)]
     }
 
-    /// The roots the filters of the observers whose `on` accepts a call
+    /// The roots the filters of the observers whose `capture` fires on a call
     /// that succeeded (`success`), or one that failed, read.
     #[inline]
     pub(crate) fn reads(&self, success: bool) -> Roots {
         self.reads[usize::from(!success)]
     }
 
-    /// The two indexes with `obs` filed in those its `on` accepts, in place
+    /// The two indexes with `obs` filed in those its `capture` fires on, in place
     /// of any other view of it: `O(log n)` each.
     fn indexes_with(&self, obs: &Observer) -> [OutcomeIndex; 2] {
         let key = ById(obs.clone());
@@ -1410,7 +1411,7 @@ enum Replay {
 /// SDK holds that the engine announced again as `view`: one with the same
 /// args, or (when `replay` is [`Replay::Listed`]) one rejected late, whose
 /// rejection is sent again. A held observer whose filters, target, capture or
-/// `on` changed is served with the new view from the ack on. Returns `view`
+/// capture changed is served with the new view from the ack on. Returns `view`
 /// for an observer to add as a new one (after removing the one held).
 fn ack_held(
     iii: &IIIClient,

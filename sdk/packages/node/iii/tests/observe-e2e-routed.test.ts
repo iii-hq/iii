@@ -150,7 +150,7 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     expect(answer).not.toHaveProperty('matched')
   })
 
-  it("on: 'error' sees failures only; capture limits what travels; deliver: 'input' sends the input alone", async () => {
+  it("capture: ['error'] sees failures only and carries only the error; ['input', 'error'] fires on both", async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::flaky-${RUN}`, async (input: { fail: boolean; n: number }) => {
@@ -159,14 +159,8 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     })
     const errors = collector(watcher, `e2e::on-error-${RUN}`)
     const inputs = collector(watcher, `e2e::on-input-${RUN}`)
-    const a = watcher.observe(
-      { function_id: `e2e::flaky-${RUN}`, on: 'error', capture: ['error'] },
-      `e2e::on-error-${RUN}`,
-    )
-    const b = watcher.observe(
-      { function_id: `e2e::flaky-${RUN}`, on: 'complete', deliver: 'input' },
-      `e2e::on-input-${RUN}`,
-    )
+    const a = watcher.observe({ function_id: `e2e::flaky-${RUN}`, capture: ['error'] }, `e2e::on-error-${RUN}`)
+    const b = watcher.observe({ function_id: `e2e::flaky-${RUN}`, capture: ['input', 'error'] }, `e2e::on-input-${RUN}`)
     await Promise.all([a.ready(), b.ready()])
 
     await watcher.call({ function_id: `e2e::flaky-${RUN}`, payload: { fail: false, n: 1 } })
@@ -179,21 +173,24 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
       error: { code: 'invocation_failed', message: 'flaky failed' },
     })
     expect(errors[0].data).not.toHaveProperty('input')
-    expect(inputs.map((x) => x.data).sort((p, q) => Number(p.n) - Number(q.n))).toEqual([
+    const n = (x: { data: { input?: unknown } }) => Number((x.data.input as { n: number }).n)
+    expect(inputs.sort((p, q) => n(p) - n(q)).map((x) => x.data.input)).toEqual([
       { fail: false, n: 1 },
       { fail: true, n: 2 },
     ])
+    expect(inputs.find((x) => x.data.status === 'success')?.data).not.toHaveProperty('error')
+    expect(inputs.find((x) => x.data.status === 'error')?.data).not.toHaveProperty('output')
   })
 
-  it("deliver: 'output' sends the handler's return value alone, also when it is the input", async () => {
+  it("capture: ['output'] carries the handler's return value, also when it is the input", async () => {
     const owner = worker('routed-owner')
     const watcher = worker('routed-watcher')
     owner.registerFunction(`e2e::price-${RUN}`, async (input: { qty: number }) => ({ total: input.qty * 4 }))
     owner.registerFunction(`e2e::echo-${RUN}`, async (input: { n: number }) => input)
     const prices = collector(watcher, `e2e::on-price-output-${RUN}`)
     const echoes = collector(watcher, `e2e::on-echo-output-${RUN}`)
-    const a = watcher.observe({ function_id: `e2e::price-${RUN}`, deliver: 'output' }, `e2e::on-price-output-${RUN}`)
-    const b = watcher.observe({ function_id: `e2e::echo-${RUN}`, deliver: 'output' }, `e2e::on-echo-output-${RUN}`)
+    const a = watcher.observe({ function_id: `e2e::price-${RUN}`, capture: ['output'] }, `e2e::on-price-output-${RUN}`)
+    const b = watcher.observe({ function_id: `e2e::echo-${RUN}`, capture: ['output'] }, `e2e::on-echo-output-${RUN}`)
     await Promise.all([a.ready(), b.ready()])
 
     await expect(watcher.call({ function_id: `e2e::price-${RUN}`, payload: { qty: 2 } })).resolves.toEqual({
@@ -202,9 +199,10 @@ describe('observe: routed invocations (filters evaluated by the engine)', () => 
     await watcher.call({ function_id: `e2e::echo-${RUN}`, payload: { n: 1 } })
     await waitFor(() => prices.length >= 1 && echoes.length >= 1, 'the activations')
     await sleep(200)
-    // exactly the return value: no envelope, no engine stamp (`_caller_worker_id`)
-    expect(prices.map((x) => x.data)).toEqual([{ total: 8 }])
-    expect(echoes.map((x) => x.data)).toEqual([{ n: 1 }])
+    // exactly the return value: no engine stamp (`_caller_worker_id`), no input
+    expect(prices.map((x) => x.data.output)).toEqual([{ total: 8 }])
+    expect(echoes.map((x) => x.data.output)).toEqual([{ n: 1 }])
+    expect(prices[0].data).not.toHaveProperty('input')
   })
 
   it('a target that is not registered keeps the observer pending until it is', async () => {

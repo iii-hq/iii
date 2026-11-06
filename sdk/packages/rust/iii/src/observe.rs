@@ -29,12 +29,12 @@
 //!     "reports::daily-summary",
 //! );
 //!
-//! // failed charges above 500, with a policy
+//! // failed charges above 500, with a policy: `error` without `input` or
+//! // `output` fires on failures only
 //! iii.observe_with(
 //!     Source::function("payments::charge")
-//!         .on(iii_sdk::On::Error)
 //!         .filters(json!({ "input.amount": { "$gte": 500 } }))
-//!         .capture([Capture::Input, Capture::Error, Capture::Caller]),
+//!         .capture([Capture::Error, Capture::Caller]),
 //!     "alerts::payment-failed",
 //!     ObserverOptions::default().max_in_flight(4),
 //! );
@@ -60,8 +60,8 @@ use crate::{
     iii::IIIClient,
     observable::coded_error,
     protocol::{
-        Caller, Capture, Deliver, ErrorBody, InvocationStatus, Message, ObserveSource,
-        ObserveTarget, ObserverState, On, observe_codes,
+        Caller, Capture, ErrorBody, InvocationStatus, Message, ObserveSource, ObserveTarget,
+        ObserverState, observe_codes,
     },
 };
 
@@ -76,8 +76,6 @@ pub struct Source {
     args: Option<Value>,
     filters: Option<Value>,
     capture: Option<Vec<Capture>>,
-    on: Option<On>,
-    deliver: Option<Deliver>,
 }
 
 impl Source {
@@ -89,8 +87,6 @@ impl Source {
             args: None,
             filters: None,
             capture: None,
-            on: None,
-            deliver: None,
         }
     }
 
@@ -119,23 +115,17 @@ impl Source {
         self
     }
 
-    /// What travels to the target. Default `[input, output, caller]`.
+    /// What the target's payload carries, and with it which outcomes fire
+    /// the target. Default `[input, output, caller]`.
+    ///
+    /// `input` and `output` fire on success, `error` fires on error;
+    /// `caller` and `metadata` only add to the payload, so a `capture` must
+    /// name at least one of `input`, `output`, `error` (`INVALID_ARGS`
+    /// otherwise). `[]` fires on success with the top-level fields only.
+    /// The default fires on success, `[Error, Caller]` on errors, and
+    /// `[Input, Error]` on both.
     pub fn capture(mut self, capture: impl IntoIterator<Item = Capture>) -> Self {
         self.capture = Some(capture.into_iter().collect());
-        self
-    }
-
-    /// Which outcomes reach the target. Default [`On::Success`].
-    pub fn on(mut self, on: On) -> Self {
-        self.on = Some(on);
-        self
-    }
-
-    /// What the target receives when iii delivers: the [`Observed`] envelope
-    /// (default), or the observed input or output alone. A function whose
-    /// deliver hook calls targets itself documents what they receive.
-    pub fn deliver(mut self, deliver: Deliver) -> Self {
-        self.deliver = Some(deliver);
         self
     }
 
@@ -651,8 +641,8 @@ impl ObserverHandle {
     }
 }
 
-/// What an observer's target receives with the default `deliver: envelope`:
-/// the observed call, per the observer's `capture`.
+/// What an observer's target receives when iii delivers: the observed
+/// call, per the observer's `capture`.
 ///
 /// ```rust,no_run
 /// # use iii_sdk::{Error, IIIClient, Observed, RegisterFunction};
@@ -802,8 +792,6 @@ impl IIIClient {
                 args: source.args,
                 filters: source.filters,
                 capture: source.capture,
-                on: source.on,
-                deliver: source.deliver,
             }),
             target: ObserveTarget {
                 function_id: target.function_id,
@@ -833,9 +821,7 @@ mod tests {
                     .namespace("default")
                     .args(json!({ "expression": "0 0 9 * * Mon-Fri" }))
                     .filters(json!({ "input.scheduled_time": { "$gte": "2026-11-01T00:00:00Z" } }))
-                    .capture([Capture::Input])
-                    .on(On::Success)
-                    .deliver(Deliver::Envelope),
+                    .capture([Capture::Input]),
                 Target::function("local::cron-handler").namespace("default"),
                 ObserverOptions::default()
                     .metadata(json!({ "__binding": "weekday-digest" }))

@@ -86,8 +86,8 @@ through the built-in discovery functions:
 | `engine::observers::list` | Observers you may see (`function_id`, `namespace`, `worker` filters) |
 
 For topology changes, observe the engine-hosted sources `engine::on-workers-changed`,
-`engine::on-functions-changed`, or `engine::on-observers-changed` with `deliver: 'input'` (see
-`iii-observe`).
+`engine::on-functions-changed`, or `engine::on-observers-changed` with `capture: ['input']`: the
+event is the payload's `input` (see `iii-observe`).
 
 ## Built-In Sources
 
@@ -98,11 +98,11 @@ the other engine-hosted sources.
 | Source function | `args` | What the target receives |
 | --- | --- | --- |
 | `http::on-request` | `{ method: "POST", path: "/orders/:id", middleware_function_ids? }` | `{ method, path, path_params, query_params, headers, body }`; its result is the response `{ status_code, headers?, body? }` |
-| `cron::on-tick` | `{ expression: "0 0 9 * * * *" }` | The envelope; `input` is `{ expression, scheduled_time, actual_time }` |
+| `cron::on-tick` | `{ expression: "0 0 9 * * * *" }` | The payload; `input` is `{ expression, scheduled_time, actual_time }` |
 | `queue::on-message` | `{ topic: "payments", max_retries?, backoff_ms?, group? }` | The published data; returning acks the message |
-| `state::on-changed` | none; filter on `input.scope`, `input.key` | The envelope; `input` is `{ event_type, scope, key, old_value, new_value }` |
-| `database::on-row-changed` | `{ db, table?, ops? }` | The envelope; `input` is the row change |
-| `observability::on-log` | none; filter on `input.severity_text`; from a namespaced worker, observe with `namespace: "default"` | The envelope; `input` is one log record |
+| `state::on-changed` | none; filter on `input.scope`, `input.key` | The payload; `input` is `{ event_type, scope, key, old_value, new_value }` |
+| `database::on-row-changed` | `{ db, table?, ops? }` | The payload; `input` is the row change |
+| `observability::on-log` | none; filter on `input.severity_text`; from a namespaced worker, observe with `namespace: "default"` | The payload; `input` is one log record |
 
 A condition you can state over the call (its input, output, error, caller, or metadata) is a
 filter on the observer. A condition that needs code goes in the target.

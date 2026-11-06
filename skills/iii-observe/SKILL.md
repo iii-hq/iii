@@ -18,14 +18,14 @@ iii.observe("orders::create", "alerts::big-order");
 ```
 
 Every function is observable. By default, each successful call of `orders::create` runs
-`alerts::big-order` with an envelope of that call (its input, output, and caller). Events are
+`alerts::big-order` with the `Observed` payload of that call (its input, output, and caller; the call's metadata only when `capture` names it). Events are
 function calls too: an HTTP request is a call of `http::on-request`, a cron tick a call of
 `cron::on-tick`, a row change a call of `database::on-row-changed`. Observing one of them is how a
 function runs on that event.
 
 | Part | Fields | Notes |
 | --- | --- | --- |
-| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, on?, capture?, deliver? }` | `args` are for the function's worker (a route, a cron expression, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `on`: `success` (default), `error`, `complete`. `capture`: which parts of the call the envelope carries (`input`, `output`, `error`, `caller`, `metadata`); default `['input', 'output', 'caller']`; ids, status, and timing are always there, and `capture: []` (for an observer that counts calls or records errors) moves no payloads. `deliver`: `envelope` (default), `input`, `output` |
+| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, capture? }` | `args` are for the function's worker (a route, a cron expression, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `capture`: which parts of the call the payload carries (`input`, `output`, `error`, `caller`, `metadata`), and with them which calls run the target: `input`/`output` fire on success, `error` on error, `caller`/`metadata` only add fields (a non-empty `capture` must name one of `input`, `output`, `error`: `INVALID_ARGS` otherwise). Default `['input', 'output', 'caller']` (success only; `metadata` is opt-in). `on` and `deliver` are deprecated: the engine translates them with a warning (see [Code written for 0.25](#code-written-for-025)). Ids, status, and timing are always there; `capture: []` fires on success and moves no payloads |
 | `target` (right side) | a registered function id (or `{ function_id, namespace }`) | No inline handler. The observer stays `pending` until the target is registered |
 | `options` | `id?`, `max_fires?`, `expires_in_ms?`, `max_in_flight?`, `metadata?` | `id` defaults to a UUID kept across replays. `metadata` is the sidecar of every activation |
 
@@ -34,7 +34,8 @@ The source namespace resolves like `call()`: the worker's namespace, except `eng
 
 ## Observe a function
 
-Register the target, then observe. This alerts on failed charges of 500 or more:
+Register the target, then observe. This alerts on failed charges of 500 or more (`error` without
+`input` or `output` fires on failures only; the filter still reads the input):
 
 ```typescript
 import { registerWorker, type Observed } from "iii-sdk";
@@ -42,16 +43,15 @@ import { registerWorker, type Observed } from "iii-sdk";
 const iii = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
 
 iii.registerFunction("alerts::payment-failed", async (event: Observed<{ amount: number }>) => {
-  console.log(event.function_id, event.error?.code, event.input?.amount, event.caller?.worker_name);
+  console.log(event.function_id, event.error?.code, event.caller?.worker_name);
   return null;
 });
 
 const failures = iii.observe(
   {
     function_id: "payments::charge",
-    on: "error",
     filters: { "input.amount": { $gte: 500 } },
-    capture: ["input", "error", "caller"],
+    capture: ["error", "caller"],
   },
   "alerts::payment-failed",
   { max_in_flight: 4 },
@@ -64,8 +64,8 @@ await failures.ready(); // rejects with ObserveRejection (error.code) on error o
 iii.register_function("alerts::payment-failed", lambda event: print(event["error"]["code"]))
 
 failures = iii.observe(
-    {"function_id": "payments::charge", "on": "error",
-     "filters": {"input.amount": {"$gte": 500}}, "capture": ["input", "error", "caller"]},
+    {"function_id": "payments::charge",
+     "filters": {"input.amount": {"$gte": 500}}, "capture": ["error", "caller"]},
     "alerts::payment-failed",
     {"max_in_flight": 4},
 )
@@ -73,7 +73,7 @@ failures.ready()  # blocks; in async code: await failures.ready_async()
 ```
 
 ```rust
-use iii_sdk::{Capture, Error, ObserverOptions, Observed, On, RegisterFunction, Source};
+use iii_sdk::{Capture, Error, ObserverOptions, Observed, RegisterFunction, Source};
 use serde_json::{json, Value};
 
 iii.register_function(
@@ -85,9 +85,8 @@ iii.register_function(
 );
 let failures = iii.observe_with(
     Source::function("payments::charge")
-        .on(On::Error)
         .filters(json!({ "input.amount": { "$gte": 500 } }))
-        .capture([Capture::Input, Capture::Error, Capture::Caller]),
+        .capture([Capture::Error, Capture::Caller]),
     "alerts::payment-failed",
     ObserverOptions::default().max_in_flight(4),
 );
@@ -105,9 +104,8 @@ client.RegisterFunction("alerts::payment-failed", func(ctx context.Context, data
 })
 failures, err := client.Observe(iii.Source{
 	FunctionID: "payments::charge",
-	On:         iii.OnError,
 	Filters:    iii.Filters{"input.amount": iii.Op{"$gte": 500}},
-	Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError, iii.CaptureCaller},
+	Capture:    []iii.Capture{iii.CaptureError, iii.CaptureCaller},
 }, "alerts::payment-failed", iii.ObserverOptions{MaxInFlight: 4})
 if err == nil {
 	err = failures.Ready(ctx) // *iii.ObserveRejectionError carries the code
@@ -125,11 +123,11 @@ Each capability worker hosts a source function. Add the worker once
 | Source function | Worker | `args` | What the target receives |
 | --- | --- | --- | --- |
 | `http::on-request` | `http` | `{ method, path, middleware_function_ids?, public_webhook? }` | The request `{ method, path, path_params, query_params, headers, body }`. Its result is the HTTP response `{ status_code, headers?, body? }` |
-| `cron::on-tick` | `cron` | `{ expression }` (7 fields: sec min hour day month weekday year) | The envelope; `input` is `{ expression, scheduled_time, actual_time }` |
+| `cron::on-tick` | `cron` | `{ expression }` (7 fields: sec min hour day month weekday year) | The payload; `input` is `{ expression, scheduled_time, actual_time }` |
 | `queue::on-message` | `queue` | `{ topic, max_retries?, backoff_ms?, queue_config?, group? }` | The published data. Returning acks the message; an error retries it with backoff, then moves it to the topic's DLQ |
-| `state::on-changed` | `state` | none; filter on `input.scope`, `input.key` | The envelope; `input` is `{ event_type, scope, key, old_value, new_value }` |
-| `database::on-row-changed` | `database` | `{ db, table?, ops? }` | The envelope; `input` is the row change (`db`, `table`, `op`, ...) |
-| `publish`         | `pubsub` | none; filter on `input.topic` | The envelope; `input` is `{ topic, data }` |
+| `state::on-changed` | `state` | none; filter on `input.scope`, `input.key` | The payload; `input` is `{ event_type, scope, key, old_value, new_value }` |
+| `database::on-row-changed` | `database` | `{ db, table?, ops? }` | The payload; `input` is the row change (`db`, `table`, `op`, ...) |
+| `publish`         | `pubsub` | none; filter on `input.topic` | The payload; `input` is `{ topic, data }` |
 
 Other workers name their sources `<worker>::on-<event>` and list them in their README. Engine
 sources are [below](#engine-hosted-sources).
@@ -143,9 +141,9 @@ iii.registerFunction("orders::create", async (req: { body: { sku: string; qty: n
 // POST /orders runs orders::create; its result is the response
 iii.observe({ function_id: "http::on-request", args: { method: "POST", path: "/orders" } }, "orders::create");
 
-// every day at 09:00; deliver: 'input' sends the tick alone
+// every day at 09:00; capture: ['input'] carries the tick alone, as `input`
 iii.observe(
-  { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, deliver: "input" },
+  { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, capture: ["input"] },
   "reports::daily-summary",
 );
 
@@ -154,7 +152,7 @@ iii.observe({ function_id: "queue::on-message", args: { topic: "payments", max_r
 
 // each change in the "todos" state scope
 iii.observe(
-  { function_id: "state::on-changed", deliver: "input", filters: { "input.scope": { $eq: "todos" } } },
+  { function_id: "state::on-changed", capture: ["input"], filters: { "input.scope": { $eq: "todos" } } },
   "todos::on-change",
 );
 ```
@@ -163,7 +161,7 @@ iii.observe(
 iii.observe({"function_id": "http::on-request", "args": {"method": "POST", "path": "/orders"}},
             "orders::create")
 iii.observe({"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"},
-             "deliver": "input"}, "reports::daily-summary")
+             "capture": ["input"]}, "reports::daily-summary")
 ```
 
 ```rust
@@ -174,7 +172,7 @@ iii.observe(
 iii.observe(
     Source::function("cron::on-tick")
         .args(json!({ "expression": "0 0 9 * * * *" }))
-        .deliver(Deliver::Input),
+        .capture([Capture::Input]),
     "reports::daily-summary",
 );
 ```
@@ -187,7 +185,7 @@ client.Observe(iii.Source{
 client.Observe(iii.Source{
 	FunctionID: "cron::on-tick",
 	Args:       iii.Args{"expression": "0 0 9 * * * *"},
-	Deliver:    iii.DeliverInput,
+	Capture:    []iii.Capture{iii.CaptureInput},
 }, "reports::daily-summary")
 ```
 
@@ -203,14 +201,23 @@ client.Observe(iii.Source{
 
 ## What the target receives
 
-- **Envelope** (default `deliver`): `{ observer_id, activation_id, function_id, namespace,
-  invocation_id, status, input?, output?, error?, caller?, metadata?, started_at_ms, duration_ms }`.
-  Only captured fields are present. `deliver: 'input'` or `'output'` sends that value alone.
+- **Payload**: `{ observer_id, activation_id, function_id, namespace, invocation_id, status,
+  input?, output?, error?, caller?, metadata?, started_at_ms, duration_ms }`. Only captured fields
+  that apply to the outcome are present: `output` on success, `error` on error, never both.
 - The observer's `options.metadata` arrives as the handler's metadata argument (Node and browser
   second argument, Python `metadata` parameter, the `Option<Value>` of a Rust
   `Fn(Value, Option<Value>)` handler, Go `iii.MetadataFromContext(ctx)`), on iii's delivery and on
   a call through the observer alike. The observed call's own metadata reaches the target only in
-  the envelope's `metadata` field, when `capture` includes `metadata`.
+  the payload's `metadata` field, when `capture` includes `metadata` (the default does not). Route
+  on call metadata (`for_observer`, a request id) in the hosting worker's `onObservationMatch` or
+  `onObservationDeliver`, which get it whatever the observers capture; a filter on `metadata.*`
+  also works without capturing it.
+- **Failed calls with their input**: `capture: ["input", "error"]` plus
+  `filters: { "error": { "$exists": true } }`. The capture fires on both outcomes; the filter runs
+  in the engine for routed calls and in the hosting 0.26 SDK for its in-process calls (it never
+  reports a success), so successes never reach the observing worker. The observing worker must be
+  on a 0.26 SDK: without `observe.capture` the observer fires on successes only and never matches.
+  `capture: ["error"]` alone fires on failures only but carries no input.
 - iii's delivery is fire-and-forget and at most once: the target's result is discarded, and drops
   are counted. A source whose worker calls targets itself documents what its target receives and
   what its result does (an `http::on-request` target returns the response; a `queue::on-message`
@@ -268,7 +275,7 @@ happens. iii does the rest by default. Four hooks override those defaults:
 | `onObserverAdded(obs)` | accepts the observer: it becomes active and receives the function's calls | set something up from `obs.args` before the observer is accepted: start a cron job, add an HTTP route, install a database trigger, open a queue consumer. Throw to reject the observer |
 | `onObserverRemoved(obs)` | stops delivering to the observer and forgets it | tear down what `onObserverAdded` set up |
 | `onObservationMatch(obs, call)` | every observer wants every call | say which calls each observer wants, from its args: a predicate `(obs, call) => boolean`, or `{ observer, call }` keys that iii indexes |
-| `onObservationDeliver(call, observers)` | runs the target of every matching observer whose `on` and filters match the call, and gives the caller the handler's return value | deliver each call yourself: the hook receives the matched observers, and what it returns or throws is what the caller gets back |
+| `onObservationDeliver(call, observers)` | runs the target of every matching observer whose capture and filters match the call, and gives the caller the handler's return value | deliver each call yourself: the hook receives the matched observers, and what it returns or throws is what the caller gets back |
 
 `onObserverAdded` and `onObserverRemoved` exist for one function (by id, or on the `FunctionRef`
 that `registerFunction` returns) and for every function the worker hosts. `onObservationMatch` and
@@ -473,7 +480,7 @@ How hooks behave:
   Replacing a hook while observers are active behaves differently across SDKs, so set each hook
   once.
 - **Matching.** iii delivers a call to the observers `onObservationMatch` matched, and applies each
-  one's `on`, filters, policy, and `deliver`. A predicate runs once per active observer per call,
+  one's capture, filters, and policy. A predicate runs once per active observer per call,
   before filters; one that throws counts as no match, logged once per function. Keys are computed
   once per observer, when it is accepted, and once per call; a call matches the observers filed
   under any of its keys, each once, and an observer whose key function throws is rejected with
@@ -485,7 +492,7 @@ How hooks behave:
 - **Delivering yourself.** `onObservationDeliver(call, observers)` receives the matched observers (a
   snapshot taken when the call started) and runs inside the function's invocation, so calls it
   makes have that invocation as their caller. iii delivers nothing for that function. The hook
-  checks an observer's `on` and filters with `obs.matches(call)` and calls
+  checks an observer's capture and filters with `obs.matches(call)` and calls
   `iii.call({ observer: obs, payload })` (Python `call_async({"observer": obs, ...})`, Rust
   `CallRequest::observer(&obs, payload)`, Go `iii.CallRequest{Observer: obs, ...}`), which resolves
   to the target's result. Only the worker that hosts the function may call through its observers
@@ -582,7 +589,8 @@ iii.DispatchRemote`), per function (`localDispatch: false`, Python `local_dispat
 ## Engine-hosted sources
 
 Private functions in the `default` namespace whose handler returns the event, so `input` and
-`output` are both the event. Observe them with `deliver: 'input'` to receive the event alone.
+`output` are both the event. Observe them with `capture: ['input']` to receive the event alone, as
+the payload's `input`.
 Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CHANGED`,
 `WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`,
 `STREAM_JOIN`, `STREAM_LEAVE`).
@@ -598,15 +606,15 @@ Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CH
 | `stream::on-changed`, `stream::on-join`, `stream::on-leave` (`iii-stream`) | the stream event; filter on `input.stream_name`, `input.group_id` |
 
 ```typescript
-iii.observe({ function_id: "engine::on-workers-changed", deliver: "input" }, "ops::on-worker");
+iii.observe({ function_id: "engine::on-workers-changed", capture: ["input"] }, "ops::on-worker");
 iii.observe(
-  { function_id: "configuration::on-updated", deliver: "input",
+  { function_id: "configuration::on-updated", capture: ["input"],
     filters: { "input.id": { $eq: "orders" }, "input.event_type": { $eq: "configuration:updated" } } },
   "orders::reload",
 );
 // a worker in another namespace names default for observability::* and stream::*
 iii.observe(
-  { function_id: "observability::on-log", namespace: "default", deliver: "input",
+  { function_id: "observability::on-log", namespace: "default", capture: ["input"],
     filters: { "input.severity_text": { $eq: "ERROR" } } },
   "alerts::log",
 );
@@ -617,11 +625,26 @@ iii.observe(
 To move code written for 0.25 to 0.26, follow the upgrade guide:
 https://iii.dev/docs/upgrading/from-0-25-x.
 
+- `source.on` and `source.deliver` are deprecated, not refused. A 0.26 engine translates them to
+  the 0.25 behavior (`deliver: "output"` hands the target the bare output, `null` after a failure)
+  and logs one warning per registration. Only invalid values get `INVALID_ARGS`. Replace them:
+  `on: "error"` -> `capture: ["error", "caller"]` (or the failed-calls-with-input recipe above),
+  `on: "complete"` -> add `"error"`, `deliver: "input"`/`"output"` -> `capture: ["input"]`/
+  `["output"]` read from the payload. Support will be removed in a future release.
+- A worker without the `observe.capture` feature (0.25 SDK, 0.26 release candidate SDK) always gets
+  the 0.25 semantics on a 0.26 engine: outcomes from `on` (absent = success), whatever `capture`
+  names. Its hosted functions get the legacy `on` in their observer views.
+- A 0.26 SDK on an engine without `observe.capture` (0.25, 0.26 release candidate) sends the `on`
+  its `capture` implies, reads views without `fires_on` from `on`, and logs a one-time deprecation
+  warning. Upgrade the engine.
+- The `Observed` payload omits absent fields; 0.25 sent `"output": null` for a captured output a
+  successful call did not report.
+
 ## Error codes
 
 | When | Codes |
 | --- | --- |
-| Creating an observer (`ready()` rejects) | `UNSUPPORTED` (engine older than 0.25, or an unknown `on`/`capture`/`deliver`), `INVALID_ARGS`, `INVALID_FILTER`, `INVALID_FILTER_PATH`, `NOT_OBSERVABLE`, `FORBIDDEN`, `SELF_TARGET`, `LIMIT_EXCEEDED`, `OBSERVER_ID_CONFLICT`, `OWNER_TIMEOUT`, `OBSERVE_REJECTED`, or the hosting worker's own code (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...) |
+| Creating an observer (`ready()` rejects) | `UNSUPPORTED` (engine older than 0.25, or an unknown `capture` value), `INVALID_ARGS`, `INVALID_FILTER`, `INVALID_FILTER_PATH`, `NOT_OBSERVABLE`, `FORBIDDEN`, `SELF_TARGET`, `LIMIT_EXCEEDED`, `OBSERVER_ID_CONFLICT`, `OWNER_TIMEOUT`, `OBSERVE_REJECTED`, or the hosting worker's own code (`HTTP_ROUTE_CONFLICT`, `INVALID_CRON_EXPRESSION`, ...) |
 | Registering a function | `INVALID_ARGS_FORMAT`, `FUNCTION_NAMESPACE_CONFLICT` (another connection hosts the id; the SDK does not retry), `UNSUPPORTED` (a function with `args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver` on an engine without `observe.v2`: the SDK logs it once and registers the function when it connects to an engine that has it) |
 | Calling a private function from another worker | `FORBIDDEN` |
 | A call through an observer | `NOT_FUNCTION_OWNER`, `OBSERVER_NOT_FOUND`, `OBSERVER_NOT_ACTIVE`, `OVERFLOW`, `LOOP_GUARD`, `TIMEOUT`, or the target's error |

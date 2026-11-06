@@ -165,6 +165,8 @@ type Client struct {
 	// engineFeatures are the last WorkerRegistered's features, kept across a
 	// disconnect until the next WorkerRegistered replaces them.
 	engineFeatures map[string]bool
+	// legacyOnWarned: the source.on deprecation (engines without observe.v2) was logged.
+	legacyOnWarned bool
 	// registeredOnConnection: WorkerRegistered arrived on the current connection.
 	registeredOnConnection bool
 	// observers this worker created, replayed (same id) on every connection: each
@@ -514,7 +516,7 @@ func (c *Client) setState(s ConnectionState) {
 // The handler's return value is what observers observe. Every call of the function,
 // local or routed, runs the handler and is then delivered to the observers that want it
 // ([Client.OnObservationMatchFor]; by default all of them): by the function's deliver hook
-// ([Client.OnObservationDeliverFor]), or by iii, to those whose on and filters match. Set
+// ([Client.OnObservationDeliverFor]), or by iii, to those whose capture and filters match. Set
 // hooks by id before registering: the SDK acks no observer before RegisterFunction
 // returns, but a hook set on the returned handle can miss observers already accepted,
 // and is caught up for them.
@@ -1394,7 +1396,7 @@ func (c *Client) registerWorkerMetadata() {
 		PID:         &pid,
 		Isolation:   isolationFromEnv(),
 		Telemetry:   c.resolveTelemetry(),
-		// Opts this connection into the observe messages (CONTRACT D2).
+		// Opts this connection into the observe messages.
 		Features: sdkFeatures,
 	}
 	data, err := json.Marshal(meta)
@@ -1673,7 +1675,7 @@ func (c *Client) enqueueOutboundDirect(frame []byte) {
 
 // handleInvoke runs a registered function for an inbound InvokeFunction that arrived on
 // connection epoch and, unless the call is fire-and-forget (no invocation_id), replies
-// with an InvocationResult. The engine evaluates the observers' on and filters for the
+// with an InvocationResult. The engine evaluates the observers' capture and filters for the
 // call: it holds the input, the caller, the metadata and the answer (decision 55). With
 // an engine that advertised observe.v2 (which sends every call with an invocation_id,
 // a void one included) this worker runs the function's hooks: a function with a deliver

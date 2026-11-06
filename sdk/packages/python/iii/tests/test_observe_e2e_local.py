@@ -59,7 +59,6 @@ def test_equivalence_dispatch_auto_and_remote_give_identical_envelopes(worker: A
     handle = watcher.observe(
         {
             "function_id": fid("py-eq::price"),
-            "on": "complete",
             "capture": ALL,
             "filters": {"input.sku": {"$prefix": "A-"}},
         },
@@ -115,7 +114,7 @@ def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_r
     envelopes = collector(watcher, fid("py-cap::on-envelope"))
     outputs = collector(watcher, fid("py-cap::on-output"))
     bare = watcher.observe({"function_id": fid("py-cap::price"), "capture": []}, fid("py-cap::on-envelope"))
-    output = watcher.observe({"function_id": fid("py-cap::price"), "deliver": "output"}, fid("py-cap::on-output"))
+    output = watcher.observe({"function_id": fid("py-cap::price"), "capture": ["output"]}, fid("py-cap::on-output"))
     bare.ready(timeout=10)
     output.ready(timeout=10)
     local_dispatch_ready(owner, fid("py-cap::price"))
@@ -126,8 +125,9 @@ def test_capture_empty_moves_no_payloads_and_deliver_output_sends_the_handlers_r
     exactly(envelopes, 1, "the envelope")
     exactly(outputs, 1, "the output")
 
-    # A7: deliver 'output' hands the target the handler's return value
-    assert outputs[0].data == {"total": 30}
+    # A7: capture ['output'] carries the handler's return value, and no input
+    assert outputs[0].data["output"] == {"total": 30}
+    assert "input" not in outputs[0].data
     # A6: capture [] keeps ids, status and timing, and moves no payload
     envelope = envelopes[0].data
     assert not {"input", "output", "error", "caller", "metadata"} & envelope.keys()
@@ -506,10 +506,17 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     got_a = collector(watcher, fid("py-d52::envelope"))
     got_b = collector(watcher, fid("py-d52::output"))
 
-    a = watcher.observe({"function_id": source, "args": {"session": "s1"}}, fid("py-d52::envelope"))
+    # A names metadata in its capture (decision 62: the default has none).
+    a = watcher.observe(
+        {"function_id": source, "args": {"session": "s1"}, "capture": ["input", "output", "caller", "metadata"]},
+        fid("py-d52::envelope"),
+    )
     a.ready(timeout=10)
     exactly(got_a, 1, "A's state")
-    b = watcher.observe({"function_id": source, "args": {"session": "s1"}, "deliver": "output"}, fid("py-d52::output"))
+    b = watcher.observe(
+        {"function_id": source, "args": {"session": "s1"}, "capture": ["output"]},
+        fid("py-d52::output"),
+    )
     b.ready(timeout=10)
     exactly(got_b, 1, "B's state")
     assert len(got_a) == 1
@@ -524,12 +531,17 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     assert len(got_b) == 2
 
     state, ordinary, for_a = (g.data for g in got_a)
-    for envelope in (state, for_a):
+    # A captures metadata, so the calls that carry for_observer show it;
+    # the ordinary call carries none, so its envelope has no metadata field.
+    assert "metadata" not in ordinary
+    for full in (state, for_a):
+        assert full["metadata"] == {"for_observer": a.id}
+        envelope = {key: value for key, value in full.items() if key != "metadata"}
         assert sorted(envelope) == sorted(ordinary)
         assert envelope["observer_id"] == a.id
         assert stable(envelope) == {**stable(ordinary), "input": envelope["input"], "output": envelope["output"]}
     assert [e["output"] for e in (state, ordinary, for_a)] == [{"session": "s1", "n": n} for n in (0, 1, 2)]
-    assert [g.data for g in got_b] == [{"session": "s1", "n": n} for n in (0, 1)]
+    assert [g.data["output"] for g in got_b] == [{"session": "s1", "n": n} for n in (0, 1)]
 
 
 def test_an_event_source_sends_each_event_once_and_its_observers_observe_the_event(worker: Any, fid: Any) -> None:
@@ -591,3 +603,68 @@ def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff
     wait_for(lambda: gone.id in removed, "on_observer_removed from the diff", timeout=10)
     assert removed == [gone.id]
     assert added.count(stays.id) == 1  # kept: no second add
+
+
+# capture alone decides which outcomes fire (the observers guide, row by row): the
+# payload fields each outcome carries, or None when it does not fire the target.
+CAPTURE_ROWS: list[tuple[str, list[str] | None, list[str] | None, list[str] | None]] = [
+    ("default", None, ["caller", "input", "output"], None),
+    ("errors-only", ["error", "caller"], None, ["caller", "error"]),
+    ("full", ["input", "output", "error"], ["input", "output"], ["error", "input"]),
+    ("empty", [], [], None),
+    ("input-error", ["input", "error"], ["input"], ["error", "input"]),
+]
+
+
+# local: the hosting worker calls its function, and this SDK decides what fires;
+# routed: another worker's call goes through the engine, which decides.
+@pytest.mark.parametrize("path", ["local", "routed"])
+def test_each_capture_fires_on_its_outcomes_with_its_fields(worker: Any, fid: Any, path: str) -> None:
+    owner = worker(f"capture-{path}-owner")
+    watcher = worker(f"capture-{path}-watcher")
+    fn = fid("py-capture::charge")
+
+    def charge(payload: dict[str, Any]) -> dict[str, Any]:
+        if payload["amount"] < 0:
+            raise RuntimeError(f"cannot charge {payload['amount']}")
+        return {"charged": payload["amount"]}
+
+    owner.register_function(fn, charge)
+    got = []
+    handles = []
+    for name, capture, _, _ in CAPTURE_ROWS:
+        target = fid(f"py-capture::on-{name}")
+        got.append(collector(watcher, target))
+        source: dict[str, Any] = {"function_id": fn}
+        if capture is not None:
+            source["capture"] = capture
+        handles.append(watcher.observe(source, target))
+    for handle in handles:
+        handle.ready(timeout=10)
+    local_dispatch_ready(owner, fn)
+
+    caller = owner if path == "local" else watcher
+    caller.call({"function_id": fn, "payload": {"amount": 10}, "metadata": {"request_id": "req-1"}})
+    with pytest.raises(InvocationError):
+        caller.call({"function_id": fn, "payload": {"amount": -5}, "metadata": {"request_id": "req-2"}})
+
+    for (name, _, success, error), activations in zip(CAPTURE_ROWS, got):
+        expected = (success is not None) + (error is not None)
+        exactly(activations, expected, f"{name}'s activations")
+        for status, fields in (("success", success), ("error", error)):
+            found = [a for a in activations if a.data["status"] == status]
+            if fields is None:
+                assert found == [], f"{name} fired on {status}"
+                continue
+            assert len(found) == 1, f"{name} on {status}"
+            assert sorted(k for k in ALL if k in found[0].data) == fields, f"{name} on {status}"
+
+
+def test_a_capture_that_names_no_outcome_is_refused(worker: Any, fid: Any) -> None:
+    watcher = worker("capture-refused")
+    for capture in (["caller"], ["metadata"], ["caller", "metadata"]):
+        source = {"function_id": fid("py-capture::anything"), "capture": capture}
+        handle = watcher.observe(source, fid("py-capture::nowhere"))
+        with pytest.raises(ObserveRejection) as raised:
+            handle.ready(timeout=10)
+        assert raised.value.code == "INVALID_ARGS", capture

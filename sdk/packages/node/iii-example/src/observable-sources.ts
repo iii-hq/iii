@@ -9,7 +9,7 @@
  * 3. Listing the functions and how many observers each has
  */
 
-import { ObserveRejection } from 'iii-sdk'
+import { type Observed, ObserveRejection } from 'iii-sdk'
 import { EngineFunctions } from 'iii-sdk/engine'
 import { iii } from './iii'
 
@@ -88,16 +88,16 @@ export async function onWebhook(event: WebhookEvent): Promise<void> {
   await iii.call({ function_id: 'webhooks::on-received', payload: event })
 }
 
-iii.registerFunction('example::webhook_handler', async (event: WebhookEvent) => ({
+iii.registerFunction('example::webhook_handler', async ({ input }: Observed<WebhookEvent>) => ({
   processed: true,
-  method: event.method,
+  method: input?.method,
 }))
 
 iii.observe(
   {
     function_id: 'webhooks::on-received',
     args: { url: '/hooks/my-service', secret: 'my-secret-key', methods: ['POST', 'PUT'] },
-    deliver: 'input',
+    capture: ['input'],
   },
   'example::webhook_handler',
 )
@@ -110,31 +110,31 @@ iii.observe(
   'example::scheduled_cleanup',
 )
 
-iii.registerFunction('example::on_user_updated', async (event: { event_type?: string }) => ({
+iii.registerFunction('example::on_user_updated', async ({ input }: Observed<{ event_type?: string }>) => ({
   processed: true,
-  event: event.event_type,
+  event: input?.event_type,
 }))
 iii.observe(
   {
     function_id: 'state::on-changed',
     filters: { 'input.scope': { $eq: 'users' } },
-    deliver: 'input',
+    capture: ['input'],
   },
   'example::on_user_updated',
 )
 
 iii.registerFunction(
   'example::on_order_created',
-  async (message: { topic: string; data: unknown }) => ({
+  async ({ input }: Observed<{ topic: string; data: unknown }>) => ({
     processed: true,
-    order: message.data,
+    order: input?.data,
   }),
 )
 iii.observe(
   {
     function_id: 'publish',
     filters: { 'input.topic': { $eq: 'orders.created' } },
-    deliver: 'input',
+    capture: ['input'],
   },
   'example::on_order_created',
 )

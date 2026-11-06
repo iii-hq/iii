@@ -27,10 +27,26 @@ request, a queue message, or a row change.
 
 ### Compatibility
 
-| SDK          | 0.25 engine                                                                                                                                                                                                                                                                                                                | 0.26 engine                                                                                                                                                                                                                                                                             |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **0.25 SDK** | As shipped.                                                                                                                                                                                                                                                                                                                | Functions, `trigger`, and `observe` work. The engine drops trigger registrations and trigger type registrations, with one `warn` per connection and message type that names the replacement. A function registered with `observe: { delivery: "owner" }` is refused with `UNSUPPORTED`. |
-| **0.26 SDK** | Functions that declare `args_format`, `private`, or `observable: false`, or set `onObservationMatch` or `onObservationDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for each. The SDK registers them when it connects to an engine with `observe.v2`. Every other function, `call`, and `observe` work. | Everything works.                                                                                                                                                                                                                                                                       |
+| SDK                       | 0.25 engine | 0.26 release candidate engine | 0.26 engine |
+| ------------------------- | ----------- | ----------------------------- | ----------- |
+| **0.25 SDK**              | As shipped. | Functions and `observe` work. Observers keep the 0.25 semantics (`on`, `deliver`). | Functions, `trigger`, and `observe` work. The engine drops trigger registrations and trigger type registrations, with one `warn` per connection and message type that names the replacement. A function registered with `observe: { delivery: "owner" }` is refused with `UNSUPPORTED`. Observers keep the 0.25 semantics: `on` and `deliver` are translated with a deprecation warning, and functions this worker hosts receive the legacy `on` in their observer views. |
+| **0.26 release candidate SDK** | Functions that need `observe.v2` stay unregistered, as for the 0.26 SDK. Observers keep the 0.25 semantics. | As shipped in the release candidate. | Everything registers. Observers keep the 0.25 semantics: outcomes come from `on` (absent means success), whatever `capture` names, and `on` and `deliver` are translated with a deprecation warning. Functions this worker hosts receive the legacy `on` in their observer views, so their error observers see failures. |
+| **0.26 SDK**              | Functions that declare `args_format`, `private`, or `observable: false`, or set `onObservationMatch` or `onObservationDeliver`, stay unregistered, and the SDK logs `UNSUPPORTED` once for each. The SDK registers them when it connects to an engine with `observe.v2`. Every other function, `call`, and `observe` work. The SDK sends each observer with the legacy `on` its `capture` implies, reads the outcomes of the observers of its own functions from `on`, and logs once that this is deprecated. Upgrade the engine. | Everything registers. The SDK sends each observer with the legacy `on` its `capture` implies, reads the outcomes of the observers of its own functions from `on`, and logs once that this is deprecated. Upgrade the engine. | Everything works. |
+
+The 0.26 engine and SDKs negotiate the `observe.capture` feature (see
+[Feature negotiation](../reference/engine-protocol#feature-negotiation)). Without it on both sides,
+the legacy `on` semantics apply. They are deprecated, and support will be removed in a future
+release: upgrade the engine first, then move every worker to a 0.26 SDK.
+
+0.25 engines and SDKs remain interoperable with 0.26 engines and SDKs; however, the 0.26 SDKs no
+longer have the `on` and `deliver` fields on `observe()`. The observers of a worker that keeps its
+0.25 SDK keep working unchanged (the table above lists what else changes for such a worker, such as
+dropped trigger registrations), but moving a worker to a 0.26 SDK means replacing `on` and
+`deliver` with `capture` in the same change (see [Observer `on` and `deliver`](#observer-on-and-deliver)).
+
+An observer from a worker on a 0.25 SDK or a 0.26 release candidate SDK fires on success unless its
+source sets `on`, even when its `capture` names `error`. Set `on: "error"` or `on: "complete"` on
+such an observer until the worker moves to a 0.26 SDK.
 
 A worker that binds with `registerTrigger` receives no events on a 0.26 engine, and the 0.26
 releases of the http, cron, queue, state, and database workers need a 0.26 engine. Upgrade the
@@ -93,7 +109,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | trigger `type`                                                                    | the observed function, from [the table below](#trigger-types-and-their-functions)                                                                  |
 | trigger `config`                                                                  | `args` for sources that set something up (http, cron, queue, database); `filters` for sources that take no args                                    |
 | trigger `function_id`                                                             | the target, the second argument of `observe`                                                                                                       |
-| the trigger's event, as the target's payload                                      | the `Observed` envelope when iii delivers; `deliver: "input"` hands the target the call's input, as a trigger did                                  |
+| the trigger's event, as the target's payload                                      | the `Observed` payload when iii delivers: the call's input, the event a trigger handed over, is its `input` (`capture: ["input"]`) |
 | trigger `metadata`                                                                | `options.metadata`, delivered to the target as the activation's metadata sidecar                                                                   |
 | `trigger_namespace`, `namespace`                                                  | `source.namespace`, `target.namespace`                                                                                                             |
 | `condition_function_id`                                                           | `filters` for a condition you can state over the call; a condition that needs code moves to the start of the target                                |
@@ -104,7 +120,7 @@ the language supports it, with no runtime warning. The wire field `action` is un
 | `engine::register_trigger`, `engine::unregister_trigger`                          | `observe` from an SDK; `engine::observers::dispose`                                                                                                |
 | typed trigger configs (`IIITrigger`, `HttpTriggerConfig`, `CronTriggerConfig`, …) | `observe` with `args`                                                                                                                              |
 | `EngineTriggers`                                                                  | `EngineSources`: `FUNCTIONS_CHANGED`, `WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`                               |
-| `ObserveDoc` (Node, browser, Go) and `obs.matches(doc)`                           | `obs.matches(call)`, which takes a `Call` and also applies the observer's `on`                                                                     |
+| `ObserveDoc` (Node, browser, Go) and `obs.matches(doc)`                           | `obs.matches(call)`, which takes a `Call` and also applies the observer's `capture`                                                                |
 | Rust: `Observe`, `ObserveHandler`                                                 | none; `observe` takes `Source` and `Target`, and the hooks are `AddedHook`, `RemovedHook`, `DeliverHook`, and `Match`                              |
 | Rust, Go: `LegacyTrigger`; Go: `Observer.Legacy`                                  | none; consumers observe the function                                                                                                               |
 | `TriggerTypeRef` (Node, browser, Python, Rust, and their `runtime` modules)       | `FunctionRef`, since a trigger type is a function                                                                                                  |
@@ -264,7 +280,7 @@ function is observable, so it has no replacement. For the model, see
 | RBAC config `on_trigger_registration_function_id`                                                                               | `on_observer_registration_function_id`                                                                                                                                                                   |
 | RBAC config `on_trigger_type_registration_function_id`                                                                          | `on_function_registration_function_id`, whose input carries `args_format`, `private`, and `observable` and whose answer may rewrite them                                                                 |
 | wire frames `registertrigger`, `unregistertrigger`, `triggerregistrationresult`, `registertriggertype`, `unregistertriggertype` | none; [`observe`](../reference/engine-protocol#observe) and [`registerfunction`](../reference/engine-protocol#registerfunction)                                                                          |
-| feature `observe.v1`                                                                                                            | `observe.v1` and `observe.v2` (see [Feature negotiation](../reference/engine-protocol#feature-negotiation))                                                                                              |
+| feature `observe.v1`                                                                                                            | `observe.v1`, `observe.v2`, and `observe.capture` (see [Feature negotiation](../reference/engine-protocol#feature-negotiation))                                                                                              |
 | error codes `NOT_OWNER_DELIVERED`, `TARGET_MISMATCH`, `FILTERS_NOT_MATCHED`, `INVALID_OBSERVE_DESCRIPTOR`                       | retired                                                                                                                                                                                                  |
 | new error codes                                                                                                                 | `NOT_FUNCTION_OWNER` (a call through an observer from a worker that does not host its function), `FORBIDDEN` (private functions), `INVALID_ARGS_FORMAT`, `UNSUPPORTED` (owner delivery on a 0.26 engine) |
 | metric label `iii.observer.activations.total{delivery="auto" \| "owner"}`                                                       | `delivery="engine" \| "host" \| "observer_call"`                                                                                                                                                         |
@@ -445,12 +461,17 @@ config as `args`, and the same target. Register the target first; until it is re
 observer stays `pending`.
 
 A trigger handed its target the event itself. When iii delivers a call, an observer's target
-receives the `Observed` envelope (`input`, `output`, `caller`, and so on) unless the observer sets
-`deliver: "input"`, so set it to keep a trigger's handler unchanged. A source that delivers its
+receives the `Observed` payload: the ids, `status` and timings, plus the fields the observer's
+`capture` names. The event is the call's `input`, so a trigger's handler reads it from the
+payload's `input`, and `capture: ["input"]` carries the event alone. A source that delivers its
 calls itself, such as `http::on-request` or `ade::ui::asset`, decides what its targets receive.
 
+An observer runs its target after successful calls of the observed function, like a trigger. To run
+it after failed calls too, capture `error` as well; see
+[`capture`](../using-iii/observers#capture).
+
 This cron trigger runs `reports::daily-summary` every day at 09:00, with metadata for the target.
-With `deliver: "input"`, the target receives the tick itself:
+With `capture: ["input"]`, the target receives the tick as the payload's `input`:
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -471,7 +492,7 @@ With `deliver: "input"`, the target receives the tick itself:
 
     ```typescript
     const observer = iii.observe(
-      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, deliver: "input" },
+      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, capture: ["input"] },
       "reports::daily-summary",
       { metadata: { team: "reports" } },
     );
@@ -499,7 +520,7 @@ With `deliver: "input"`, the target receives the tick itself:
 
     ```python
     observer = iii.observe(
-        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "deliver": "input"},
+        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "capture": ["input"]},
         "reports::daily-summary",
         {"metadata": {"team": "reports"}},
     )
@@ -531,13 +552,13 @@ With `deliver: "input"`, the target receives the tick itself:
     **After (0.26)**
 
     ```rust
-    use iii_sdk::{Deliver, ObserverOptions, Source};
+    use iii_sdk::{Capture, ObserverOptions, Source};
     use serde_json::json;
 
     let observer = iii.observe_with(
         Source::function("cron::on-tick")
             .args(json!({ "expression": "0 0 9 * * * *" }))
-            .deliver(Deliver::Input),
+            .capture([Capture::Input]),
         "reports::daily-summary",
         ObserverOptions::default().metadata(json!({ "team": "reports" })),
     );
@@ -570,7 +591,7 @@ With `deliver: "input"`, the target receives the tick itself:
     observer, err := client.Observe(iii.Source{
         FunctionID: "cron::on-tick",
         Args:       iii.Args{"expression": "0 0 9 * * * *"},
-        Deliver:    iii.DeliverInput,
+        Capture:    []iii.Capture{iii.CaptureInput},
     }, "reports::daily-summary", iii.ObserverOptions{Metadata: json.RawMessage(`{"team":"reports"}`)})
     if err != nil {
         log.Fatal(err)
@@ -602,7 +623,7 @@ iii.observe(
   {
     function_id: "state::on-changed",
     filters: { "input.scope": { $eq: "orders" } },
-    deliver: "input",
+    capture: ["input"],
   },
   "orders::on-state-changed",
 );
@@ -612,7 +633,7 @@ iii.observe(
   {
     function_id: "publish",
     filters: { "input.topic": { $eq: "link.created" } },
-    deliver: "input",
+    capture: ["input"],
   },
   "search::index-link",
 );
@@ -626,7 +647,7 @@ iii.observe(
       "input.id": { $eq: "my-worker" },
       "input.event_type": { $eq: "configuration:updated" },
     },
-    deliver: "input",
+    capture: ["input"],
   },
   "my-worker::config::reload",
 );
@@ -638,7 +659,7 @@ iii.observe(
 );
 
 // engine::functions-available
-iii.observe({ function_id: "engine::on-functions-changed", deliver: "input" }, "catalog::refresh");
+iii.observe({ function_id: "engine::on-functions-changed", capture: ["input"] }, "catalog::refresh");
 ```
 
 Do not pass a `configuration` trigger's config as `args`. `configuration::on-updated` declares no
@@ -1160,7 +1181,7 @@ observes the function:
 
 ```typescript
 iii.observe(
-  { function_id: "timer::on-tick", args: { every_ms: 60_000 }, deliver: "input" },
+  { function_id: "timer::on-tick", args: { every_ms: 60_000 }, capture: ["input"] },
   "reports::refresh",
 );
 ```
@@ -1684,6 +1705,56 @@ moves the way the [timer above](#move-a-trigger-type-to-an-observable-function) 
 function with the event, and say which observers want it with `onObservationMatch`. With many
 observers, give it keys (`{ observer, call }`), and iii keeps the index.
 
+## Observer `on` and `deliver`
+
+In 0.26, an observer's `capture` decides both the outcomes that run its target and what the payload
+carries (see [`capture`](../using-iii/observers#capture)). The 0.25 source fields `on` and `deliver`
+are not part of the 0.26 SDKs: `observe()` has no `on` or `deliver` field, so a worker moved to a
+0.26 SDK must use `capture` instead. Workers that stay on a 0.25 SDK keep sending them, and a 0.26
+engine does not refuse them: it translates them to their 0.25 behavior when it registers the observer, and logs one `warn` per registration that names the observer, the
+fields, and the `capture` to use instead. An observer from a worker on a 0.25 SDK or a 0.26 release
+candidate SDK always gets the 0.25 semantics, even without `on` or `deliver`. A value the engine
+does not know, such as `on: "bogus"`, is refused with `INVALID_ARGS`. The exact rules are in
+[Legacy `on` and `deliver`](../reference/engine-protocol#legacy-on-and-deliver).
+
+Move each observer to `capture`:
+
+| 0.25 source                                 | 0.26 source                                                                                                         |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `on: "success"`, or no `on`                 | `capture` with `input` or `output`, or `capture: []`                                                                |
+| `on: "error"`                               | `capture: ["error", "caller"]`, without `input` or `output`, which would fire on success too                        |
+| `on: "error"`, and the target reads `input` | `capture: ["input", "error"]` with the filter `{ "error": { "$exists": true } }` (see [Failed calls with their input](../using-iii/observers#failed-calls-with-their-input)) |
+| `on: "complete"`                            | add `"error"` to `capture`, next to `input` or `output`                                                             |
+| `deliver: "input"`                          | `capture: ["input"]`, and the target reads `payload.input`                                                          |
+| `deliver: "output"`                         | `capture: ["output"]`, and the target reads `payload.output`. The target no longer runs with `null` after a failure |
+| `deliver: "envelope"`                       | remove it                                                                                                           |
+| `capture: ["caller"]` or `["metadata"]`     | add `input` or `output`: a 0.26 `capture` must name `input`, `output`, or `error`                                   |
+
+The default `capture` is `["input", "output", "caller"]`, as in 0.25. The call's `metadata` reaches
+the target only when `capture` names it.
+
+The `Observed` payload omits a field the call does not have instead of sending `null`. On 0.25, an
+observer that captured `output` got `"output": null` after a successful call that reported no
+output; on 0.26 that payload has no `output`.
+
+### From a 0.26 release candidate
+
+- The default `capture` is `["input", "output", "caller"]`. Earlier release candidates of this
+  change added `metadata` to the default; add `metadata` to `capture` where a target reads
+  `payload.metadata`. Route on call metadata in `onObservationMatch` or `onObservationDeliver`,
+  which receive it whatever the observers capture, or filter on `metadata.*`, which works without
+  capturing it.
+- A 0.26 engine translates `on` and `deliver` from release candidate SDKs with a warning instead of
+  refusing them with `INVALID_ARGS`. The 0.26 SDKs no longer have these fields on `observe()`:
+  replace them with `capture` when you move a worker to a 0.26 SDK.
+- The engine and the 0.26 SDKs add the `observe.capture` feature. Observer views and
+  `engine::observers::list` carry `fires_on`, the outcomes that fire each observer; the numeric
+  `fires` in `engine::observers::list` is still the number of activations.
+- The engine's own observers that hand their target the bare input capture `["input"]` only.
+- Rust code that embeds the engine library: `FunctionHandler::handle_function`, the `HandlerFn` type,
+  and `Message::InvokeFunction` take the call's metadata as `Option<Arc<Value>>` instead of
+  `Option<Value>`.
+
 ## Checklist
 
 - [ ] Upgrade the engine and the iii workers your project runs in one release, together with every
@@ -1693,7 +1764,15 @@ observers, give it keys (`{ observer, call }`), and iii keeps the index.
       `iii trigger` with `call`, `call_async`, `Call`, `CallRequest`, `CallAction`, and `iii call`
 - [ ] Replace every `registerTrigger` with `iii.observe` of the type's function, and every
       `unregister()` with `dispose()`
-- [ ] Set `deliver: "input"` on observers whose targets still expect a trigger's event
+- [ ] Replace `on` and `deliver` in observer sources with `capture`, which decides the outcomes
+      that fire, when you move the worker to a 0.26 SDK: the 0.26 SDKs no longer have these fields
+      on `observe()`. Workers still on a 0.25 SDK keep working, since a 0.26 engine translates the
+      fields with a warning, but that support will be removed in a future release. See
+      [Observer `on` and `deliver`](#observer-on-and-deliver)
+- [ ] Read the event from the payload's `input` in targets that expected a trigger's event, and
+      set `capture: ["input"]` on their observers. A source that delivers its calls itself, such
+      as `http::on-request` or `ade::ui::asset`, decides what its targets receive: follow its
+      documentation instead
 - [ ] Move each `configuration` trigger's `configuration_id` and `event_types` to filters on
       `input.id` and `input.event_type`
 - [ ] Move `console:script`, `console:style`, and `console:module` registrations to observers of

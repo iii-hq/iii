@@ -20,9 +20,9 @@ def unique_topic(prefix: str) -> str:
 
 
 def subscribe(iii_client: III, topic: str, function_id: str) -> ObserverHandle:
-    """A subscriber: every publish to ``topic`` calls ``function_id`` with the published input."""
+    """A subscriber: every publish to ``topic`` calls ``function_id``; the published input is the payload's ``input``."""
     return iii_client.observe(
-        {"function_id": "publish", "filters": {"input.topic": {"$eq": topic}}, "deliver": "input"},
+        {"function_id": "publish", "filters": {"input.topic": {"$eq": topic}}, "capture": ["input"]},
         function_id,
     )
 
@@ -35,7 +35,7 @@ async def test_subscribe_and_receive_published_messages(iii_client: III):
     received_event = asyncio.Event()
 
     async def subscriber_handler(published):
-        received_messages.append(published["data"])
+        received_messages.append(published["input"]["data"])
         received_event.set()
         return {}
 
@@ -71,12 +71,12 @@ async def test_topic_isolation(iii_client: III):
     received_a_event = asyncio.Event()
 
     async def handler_a(published):
-        received_a.append(published["data"])
+        received_a.append(published["input"]["data"])
         received_a_event.set()
         return {}
 
     async def handler_b(published):
-        received_b.append(published["data"])
+        received_b.append(published["input"]["data"])
         return {}
 
     fn_a = iii_client.register_function(f"test.pubsub.py.topic_a.{topic_a}", handler_a)

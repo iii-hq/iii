@@ -69,6 +69,10 @@ name = "worker_invocation_tracking_bench"
 harness = false
 
 [[bench]]
+name = "observe_metadata_alloc_bench"
+harness = false
+
+[[bench]]
 name = "observe_dispatch_bench"
 harness = false
 

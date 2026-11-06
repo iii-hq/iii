@@ -18,7 +18,7 @@ use iii_helpers::observability::OtelConfig;
 use iii_sdk::runtime::WorkerMetadata;
 use iii_sdk::{
     AddedHook, Call, CallAction, CallRequest, Capture, Dispatch, Error, Filter, IIIClient,
-    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState, On,
+    InitOptions, Match, ObserveRejection, Observed, Observer, ObserverOptions, ObserverState,
     RegisterFunction, RemovedHook, Source, WorkerIdentityMode, current_invocation, register_worker,
     scope,
 };
@@ -215,9 +215,7 @@ async fn on_error_delivers_the_error_with_its_capture() {
     let inbox = Inbox::default();
     owner.register_function(&target, inbox.function());
     let handle = owner.observe_with(
-        Source::function(&charge)
-            .on(On::Error)
-            .capture([Capture::Input, Capture::Error]),
+        Source::function(&charge).capture([Capture::Input, Capture::Error]),
         &target,
         ObserverOptions::default().metadata(json!({ "team": "oncall" })),
     );
@@ -678,7 +676,6 @@ async fn local_and_remote_calls_deliver_the_same_envelope() {
     observer.register_function(&target, inbox.function());
     let handle = observer.observe_with(
         Source::function(&source)
-            .on(On::Complete)
             .filters(json!({ "input.n": { "$gte": 10 }, "caller.worker_name": { "$eq": format!("owner-{id}") } }))
             .capture([
                 Capture::Input,
@@ -1517,8 +1514,16 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let (inbox_a, inbox_b) = (Inbox::default(), Inbox::default());
         watcher.register_function(&to_a, inbox_a.function());
         watcher.register_function(&to_b, inbox_b.function());
+        // A names metadata in its capture (decision 62: the default has none).
         let a = watcher.observe(
-            Source::function(&source).args(json!({ "session": "s1" })),
+            Source::function(&source)
+                .args(json!({ "session": "s1" }))
+                .capture([
+                    Capture::Input,
+                    Capture::Output,
+                    Capture::Caller,
+                    Capture::Metadata,
+                ]),
             &to_a,
         );
         tokio::time::timeout(WAIT, a.ready())
@@ -1529,7 +1534,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let b = watcher.observe(
             Source::function(&source)
                 .args(json!({ "session": "s1" }))
-                .deliver(iii_sdk::Deliver::Output),
+                .capture([Capture::Output]),
             &to_b,
         );
         tokio::time::timeout(WAIT, b.ready())
@@ -1564,9 +1569,24 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
             "keys {keys}: the call for A did not reach B"
         );
 
-        // A gets the envelope of every call; B the output of every call
+        // A gets the payload of every call; B the output of every call alone
         let ordinary = &got_a[1];
-        for envelope in [&got_a[0], &got_a[2]] {
+        // A captures metadata, so the calls that carry for_observer
+        // show it; the ordinary call carries none, so its envelope has no
+        // metadata field.
+        assert!(
+            ordinary.get("metadata").is_none(),
+            "keys {keys}: {ordinary:#?}"
+        );
+        for full in [&got_a[0], &got_a[2]] {
+            assert_eq!(
+                full["metadata"],
+                json!({ "for_observer": a.id() }),
+                "keys {keys}"
+            );
+            let mut envelope = full.clone();
+            envelope.as_object_mut().unwrap().remove("metadata");
+            let envelope = &envelope;
             let keys_of = |v: &Value| {
                 let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
                 k.sort();
@@ -1590,7 +1610,11 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
             "keys {keys}"
         );
         assert_eq!(
-            inbox_b.inputs(),
+            inbox_b
+                .inputs()
+                .iter()
+                .map(|p| p["output"].clone())
+                .collect::<Vec<_>>(),
             [0, 1].map(|n| json!({ "session": "s1", "n": n })),
             "keys {keys}"
         );
@@ -1598,4 +1622,166 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
             c.shutdown_async().await;
         }
     }
+}
+
+/// One row of the observers guide: the payload fields each outcome carries,
+/// or `None` when the outcome does not fire the target.
+struct CaptureRow {
+    name: &'static str,
+    capture: Option<Vec<Capture>>,
+    success: Option<&'static [&'static str]>,
+    error: Option<&'static [&'static str]>,
+}
+
+fn capture_rows() -> Vec<CaptureRow> {
+    use Capture::{Caller, Error as Failure, Input, Output};
+    vec![
+        CaptureRow {
+            name: "default",
+            capture: None,
+            success: Some(&["caller", "input", "output"]),
+            error: None,
+        },
+        CaptureRow {
+            name: "errors-only",
+            capture: Some(vec![Failure, Caller]),
+            success: None,
+            error: Some(&["caller", "error"]),
+        },
+        CaptureRow {
+            name: "full",
+            capture: Some(vec![Input, Output, Failure]),
+            success: Some(&["input", "output"]),
+            error: Some(&["error", "input"]),
+        },
+        CaptureRow {
+            name: "empty",
+            capture: Some(vec![]),
+            success: Some(&[]),
+            error: None,
+        },
+        CaptureRow {
+            name: "input-error",
+            capture: Some(vec![Input, Failure]),
+            success: Some(&["input"]),
+            error: Some(&["error", "input"]),
+        },
+    ]
+}
+
+/// `capture` alone decides which outcomes fire. Local: the hosting worker
+/// calls its function, and this SDK decides what fires; routed: another
+/// worker's call goes through the engine, which decides.
+#[tokio::test]
+async fn each_capture_fires_on_its_outcomes_with_its_fields() {
+    for local in [true, false] {
+        let id = uid();
+        let charge = format!("it{id}::charge");
+        let owner = client(&format!("capture-owner-{id}")).await;
+        let function = owner.register_function(
+            &charge,
+            RegisterFunction::new(|v: Value| {
+                let amount = v["amount"].as_i64().unwrap_or(0);
+                if amount < 0 {
+                    return Err(Error::Remote {
+                        code: "invocation_failed".into(),
+                        message: format!("cannot charge {amount}"),
+                        stacktrace: None,
+                    });
+                }
+                Ok(json!({ "charged": amount }))
+            }),
+        );
+        let watcher = client(&format!("capture-watcher-{id}")).await;
+        let rows = capture_rows();
+        let mut inboxes = Vec::new();
+        for row in &rows {
+            let target = format!("it{id}::on-{}", row.name);
+            let inbox = Inbox::default();
+            watcher.register_function(&target, inbox.function());
+            let mut source = Source::function(&charge);
+            if let Some(capture) = row.capture.clone() {
+                source = source.capture(capture);
+            }
+            let handle = watcher.observe(source, &target);
+            tokio::time::timeout(WAIT, handle.ready())
+                .await
+                .unwrap()
+                .unwrap();
+            inboxes.push(inbox);
+        }
+        until("local dispatch", || function.local_dispatch_active()).await;
+
+        let caller = if local { &owner } else { &watcher };
+        caller
+            .call(
+                call_req(&charge, json!({ "amount": 10 }))
+                    .metadata(json!({ "request_id": "req-1" })),
+            )
+            .await
+            .expect("the call with 10");
+        caller
+            .call(
+                call_req(&charge, json!({ "amount": -5 }))
+                    .metadata(json!({ "request_id": "req-2" })),
+            )
+            .await
+            .expect_err("the call with -5");
+
+        for (row, inbox) in rows.iter().zip(&inboxes) {
+            let want = usize::from(row.success.is_some()) + usize::from(row.error.is_some());
+            inbox.wait(want).await;
+            settle().await;
+            let got = inbox.inputs();
+            assert_eq!(got.len(), want, "local {local}: {}: {got:#?}", row.name);
+            for (status, fields) in [("success", row.success), ("error", row.error)] {
+                let found: Vec<&Value> = got.iter().filter(|p| p["status"] == status).collect();
+                let Some(fields) = fields else {
+                    assert!(
+                        found.is_empty(),
+                        "local {local}: {} fired on {status}",
+                        row.name
+                    );
+                    continue;
+                };
+                assert_eq!(found.len(), 1, "local {local}: {} on {status}", row.name);
+                let mut carried: Vec<&str> = ["input", "output", "error", "caller", "metadata"]
+                    .into_iter()
+                    .filter(|key| found[0].get(*key).is_some())
+                    .collect();
+                carried.sort();
+                assert_eq!(carried, fields, "local {local}: {} on {status}", row.name);
+            }
+        }
+        watcher.shutdown_async().await;
+        owner.shutdown_async().await;
+    }
+}
+
+/// A capture that names no outcome would never fire: refused with
+/// `INVALID_ARGS`.
+#[tokio::test]
+async fn a_capture_that_names_no_outcome_is_refused() {
+    let id = uid();
+    let watcher = client(&format!("capture-refused-{id}")).await;
+    for capture in [
+        vec![Capture::Caller],
+        vec![Capture::Metadata],
+        vec![Capture::Caller, Capture::Metadata],
+    ] {
+        let handle = watcher.observe(
+            Source::function(format!("it{id}::anything")).capture(capture.clone()),
+            format!("it{id}::nowhere"),
+        );
+        let err = tokio::time::timeout(WAIT, handle.ready())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            err.invocation_error().unwrap().code,
+            "INVALID_ARGS",
+            "{capture:?}"
+        );
+    }
+    watcher.shutdown_async().await;
 }

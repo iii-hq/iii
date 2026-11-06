@@ -300,7 +300,7 @@ func TestHookRejectionBuildsObserverackError(t *testing.T) {
 		return ObserveRejection("INVALID_CRON_EXPRESSION", fmt.Sprintf("invalid day-of-week field 'Mon-Fry' in '%s'", obs.Args["expression"]))
 	})
 	registerHost(t, c, "cron::on-tick", Identity)
-	rev := fe.add("cron::on-tick", ObserverInfo{ID: "e5b7d9f1-3a2c-4e6b-8d0f-2a4c6e8b0d1f", Target: "x::y", Args: json.RawMessage(`{"expression":"0 0 9 * * Mon-Fry"}`), Filters: json.RawMessage(`{}`), Capture: []Capture{CaptureInput}, On: OnSuccess})
+	rev := fe.add("cron::on-tick", ObserverInfo{ID: "e5b7d9f1-3a2c-4e6b-8d0f-2a4c6e8b0d1f", Target: "x::y", Args: json.RawMessage(`{"expression":"0 0 9 * * Mon-Fry"}`), Filters: json.RawMessage(`{}`), Capture: []Capture{CaptureInput}})
 	got, _ := MarshalMessage(fe.waitAck("cron::on-tick", "e5b7d9f1-3a2c-4e6b-8d0f-2a4c6e8b0d1f", rev))
 	assertJSONEqual(t, "observerack-error.json", got, observeFixture(t, "observerack-error.json"))
 }
