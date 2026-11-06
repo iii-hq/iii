@@ -149,7 +149,8 @@ jobs:
       contents: read
     concurrency:
       group: bench-compare-pr-${{ needs.authorize.outputs.pr }}
-      cancel-in-progress: false
+      # Queue every accepted /bench instead of replacing the single pending job.
+      queue: max
     steps:
       - uses: actions/checkout@v4
         with:
