@@ -312,9 +312,8 @@ impl ConfigurationAdapter for BridgeAdapter {
                 let sender_lookup = sender_lookup.clone();
                 let raw_reader = raw_reader.clone();
                 async move {
-                    let event: ConfigurationEventData =
-                        serde_json::from_value(payload["input"].clone())
-                            .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
+                    let event = decode_relayed(payload)
+                        .map_err(|e| iii_sdk::Error::Handler(e.to_string()))?;
                     if let Some(tx) = sender_lookup.get() {
                         // Events carry applied values. Re-read raw before updating
                         // the local store, or migration's template would become a secret.
@@ -345,12 +344,12 @@ impl ConfigurationAdapter for BridgeAdapter {
                                 }
                             };
                         let entry = ConfigurationEntry {
-                            id: event.id.clone(),
-                            name: event.name.clone(),
-                            description: event.description.clone(),
-                            schema: event.schema.clone(),
+                            id: event.id,
+                            name: event.name,
+                            description: event.description,
+                            schema: event.schema,
                             value: raw_value,
-                            metadata: event.metadata.clone(),
+                            metadata: event.metadata,
                         };
                         let change = match event.event_type {
                             ConfigurationEventType::Registered => ExternalChange::Registered(entry),
@@ -395,6 +394,17 @@ impl ConfigurationAdapter for BridgeAdapter {
     }
 }
 
+/// The `configuration::on-updated` event an activation of the relay carries:
+/// the payload's `input`, taken out of the payload the relay owns rather than
+/// copied (CONTRACT D3).
+fn decode_relayed(mut payload: Value) -> serde_json::Result<ConfigurationEventData> {
+    let input = payload
+        .get_mut("input")
+        .map(Value::take)
+        .unwrap_or(Value::Null);
+    serde_json::from_value(input)
+}
+
 /// Build the remote `configuration::ensure` input from a delegated candidate,
 /// forwarding the ORIGINAL seed candidate verbatim. Kept as a free function so
 /// it can be unit-tested without a live remote engine: the whole point of the
@@ -430,6 +440,44 @@ crate::register_adapter!(<ConfigurationAdapterRegistration> name: "bridge", make
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The relay decodes the `configuration::on-updated` event out of the
+    /// envelope it receives (CONTRACT D3: the input is taken, not cloned).
+    #[test]
+    fn the_relay_decodes_the_configuration_event_from_the_envelope() {
+        let payload = json!({
+            "observer_id": "o",
+            "activation_id": "a",
+            "function_id": CONFIGURATION_ON_UPDATED,
+            "invocation_id": "i",
+            "status": "success",
+            "input": {
+                "type": "configuration",
+                "event_type": "configuration:updated",
+                "id": "iii-stream",
+                "name": "Stream",
+                "description": "desc",
+                "schema": { "type": "object" },
+                "metadata": { "owner": "team" },
+            },
+            "started_at_ms": 1,
+            "duration_ms": 0.5,
+        });
+        let event = decode_relayed(payload).expect("decoded");
+        assert_eq!(event.event_type, ConfigurationEventType::Updated);
+        assert_eq!(event.id, "iii-stream");
+        assert_eq!(event.name, "Stream");
+        assert_eq!(event.description, "desc");
+        assert_eq!(event.schema, json!({ "type": "object" }));
+        assert_eq!(event.metadata, Some(json!({ "owner": "team" })));
+    }
+
+    /// An envelope without the event is an error, as before.
+    #[test]
+    fn the_relay_refuses_an_envelope_without_an_event() {
+        assert!(decode_relayed(json!({ "observer_id": "o" })).is_err());
+        assert!(decode_relayed(json!({ "input": { "id": "x" } })).is_err());
+    }
 
     #[test]
     /// Preserve the candidate and metadata without substituting a cached local value.

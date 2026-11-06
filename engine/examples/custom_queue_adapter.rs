@@ -285,7 +285,7 @@ impl FunctionHandler for CustomQueueModule {
         _invocation_id: Option<Uuid>,
         _function_id: String,
         input: Value,
-        _metadata: Option<Value>,
+        _metadata: Option<std::sync::Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'static>>
     {
         let adapter = self.adapter.clone();

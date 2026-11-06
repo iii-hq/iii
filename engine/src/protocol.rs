@@ -256,7 +256,7 @@ pub enum Message {
         /// omitted when absent, so older peers that don't send/expect it stay
         /// wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
+        metadata: Option<std::sync::Arc<Value>>,
         /// Target namespace for routing. Optional and additive: absent means
         /// [`DEFAULT_NAMESPACE`], so older peers that don't send it stay
         /// wire-compatible.
@@ -1446,7 +1446,9 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
-            metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+            metadata: Some(std::sync::Arc::new(
+                serde_json::json!({ "session_id": "s_1" }),
+            )),
             namespace: None,
             caller: None,
             observe_depth: None,
@@ -1456,7 +1458,10 @@ mod tests {
         assert!(json.contains("\"metadata\""));
         match serde_json::from_str::<Message>(&json).expect("deserialize") {
             Message::InvokeFunction { metadata, data, .. } => {
-                assert_eq!(metadata, Some(serde_json::json!({ "session_id": "s_1" })));
+                assert_eq!(
+                    metadata.as_deref(),
+                    Some(&serde_json::json!({ "session_id": "s_1" }))
+                );
                 // Payload is untouched — metadata is not folded into `data`.
                 assert_eq!(data, serde_json::json!({ "k": 1 }));
             }
