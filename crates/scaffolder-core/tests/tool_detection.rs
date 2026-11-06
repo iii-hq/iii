@@ -1,10 +1,12 @@
 use scaffolder_core::runtime::tool::{ToolConfig, ToolManager};
-use std::{env, fs, process::Command};
+use std::{env, fs, net::TcpListener, process::Command, time::Instant};
 
 const TOOL_NAME: &str = "scaffolder-tool-detection-fixture";
 const PROBE_ENV: &str = "SCAFFOLDER_TOOL_DETECTION_PROBE";
 const FAILURE_ENV: &str = "SCAFFOLDER_TOOL_DETECTION_FAILURE";
+const HANG_ENV: &str = "SCAFFOLDER_TOOL_DETECTION_HANG";
 
+/// Detect tools using PATH alone, rejecting missing, failing and stalled probes.
 #[test]
 fn detects_tools_without_an_external_path_lookup_command() {
     // Run each probe in a child process so its isolated PATH cannot affect
@@ -16,7 +18,17 @@ fn detects_tools_without_an_external_path_lookup_command() {
             install_script_url: "https://example.invalid/install.sh",
             docs_url: "https://example.invalid/docs",
         });
+        let started = Instant::now();
         assert_eq!(tool.is_installed(), scenario == "installed");
+        if scenario == "hanging" {
+            assert!(
+                started.elapsed().as_secs() < 15,
+                "probe exceeded its deadline"
+            );
+            let port_file = env::var_os(HANG_ENV).expect("find probe port file");
+            let address = fs::read_to_string(port_file).expect("read stalled tool address");
+            let _listener = TcpListener::bind(address).expect("timed-out tool was not reaped");
+        }
         if scenario == "installed" {
             assert_eq!(tool.get_version().as_deref(), Some("0.26.0-rc.5"));
         }
@@ -32,6 +44,13 @@ fn main() {
     assert_eq!(std::env::args().nth(1).as_deref(), Some("--version"));
     if std::env::var_os("SCAFFOLDER_TOOL_DETECTION_FAILURE").is_some() {
         std::process::exit(7);
+    }
+    if let Some(port_file) = std::env::var_os("SCAFFOLDER_TOOL_DETECTION_HANG") {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(port_file, listener.local_addr().unwrap().to_string()).unwrap();
+        // Bound the fixture itself so a regressed implementation eventually exits.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        drop(listener);
     }
     println!("0.26.0-rc.5");
 }
@@ -56,7 +75,9 @@ fn main() {
 
     let empty_path = fixture.path().join("empty");
     fs::create_dir(&empty_path).expect("create empty PATH directory");
-    for scenario in ["installed", "missing", "failing"] {
+    let work_dir = fixture.path().join("work");
+    fs::create_dir(&work_dir).expect("create probe working directory");
+    for scenario in ["installed", "missing", "failing", "hanging"] {
         let lookup_dir = if scenario == "missing" {
             &empty_path
         } else {
@@ -67,12 +88,16 @@ fn main() {
             .arg("--exact")
             .arg("detects_tools_without_an_external_path_lookup_command")
             .arg("--nocapture")
-            .current_dir(lookup_dir)
+            .current_dir(&work_dir)
             .env("PATH", lookup_dir)
             .env(PROBE_ENV, scenario)
-            .env_remove(FAILURE_ENV);
+            .env_remove(FAILURE_ENV)
+            .env_remove(HANG_ENV);
         if scenario == "failing" {
             probe.env(FAILURE_ENV, "1");
+        }
+        if scenario == "hanging" {
+            probe.env(HANG_ENV, fixture.path().join("stalled-tool-port"));
         }
         let output = probe.output().expect("run isolated tool detection probe");
         assert!(
