@@ -51,16 +51,16 @@ fn call_metadata() -> Value {
 
 fn completed(metadata: Option<Arc<Value>>) -> super::Completed {
     super::Completed {
-        delivery: super::ENGINE_DELIVERY,
-        namespace: DEFAULT_NAMESPACE.to_string(),
-        function_id: "test::src".to_string(),
-        invocation_id: Uuid::new_v4().to_string(),
+        delivery: super::Delivery::Engine,
+        function: Arc::new((DEFAULT_NAMESPACE.to_string(), "test::src".to_string())),
+        invocation_id: super::InvocationId::Uuid(Uuid::new_v4()),
         success: true,
-        input: Some(Arc::new(json!({ "n": 1 }))),
-        output: Some(Arc::new(json!({ "ok": true }))),
+        output_is_input: false,
+        input: Some(value(json!({ "n": 1 }))),
+        output: Some(value(json!({ "ok": true }))),
         error: None,
         caller: None,
-        metadata,
+        metadata: metadata.map(super::Payload::Value),
         started_at_ms: 1,
         duration_ms: 2.0,
         depth: 0,
@@ -68,6 +68,19 @@ fn completed(metadata: Option<Arc<Value>>) -> super::Completed {
         baggage: None,
         queues: AtomicUsize::new(0),
         charged: AtomicUsize::new(0),
+        encoded: once_cell::race::OnceBox::new(),
+    }
+}
+
+fn value(value: Value) -> super::Payload {
+    super::Payload::Value(Arc::new(value))
+}
+
+/// The metadata an event holds as a value.
+fn metadata_of(event: &super::Completed) -> Option<&Arc<Value>> {
+    match &event.metadata {
+        Some(super::Payload::Value(value)) => Some(value),
+        _ => None,
     }
 }
 
@@ -215,10 +228,7 @@ async fn the_last_activation_moves_the_metadata_into_its_envelope() {
         "moved, not copied"
     );
     assert_eq!(envelope["input"], json!({ "n": 1 }));
-    assert_eq!(
-        event.function_id, "test::src",
-        "the rest of the event stays"
-    );
+    assert_eq!(event.function.1, "test::src", "the rest of the event stays");
 }
 
 /// While another observer still holds the event, its envelope gets a copy
@@ -243,7 +253,7 @@ async fn a_shared_event_keeps_its_metadata_for_the_other_observers() {
     let first = super::project_owned(&observer, &mut event, "a");
     assert_eq!(first["metadata"], *metadata);
     assert!(
-        Arc::ptr_eq(other.metadata.as_ref().unwrap(), &metadata),
+        Arc::ptr_eq(metadata_of(&other).unwrap(), &metadata),
         "the other observers' event still shares the call's metadata"
     );
     drop(other);
@@ -262,15 +272,15 @@ async fn a_shared_event_keeps_its_metadata_for_the_other_observers() {
 fn the_queue_counts_a_shared_value_once() {
     let shared = Arc::new(json!({ "big": "x".repeat(1000) }));
     let mut event = completed(Some(Arc::new(json!({ "for_observer": "o" }))));
-    event.input = Some(shared.clone());
-    event.output = Some(shared.clone());
+    event.input = Some(super::Payload::Value(shared.clone()));
+    event.output = Some(super::Payload::Value(shared.clone()));
     let alone = {
-        let mut event = completed(event.metadata.clone());
-        event.input = Some(shared.clone());
+        let mut event = completed(metadata_of(&event).cloned());
+        event.input = Some(super::Payload::Value(shared.clone()));
         event.output = None;
-        event.invocation_id = String::new();
+        event.invocation_id = super::InvocationId::Reported(String::new());
         event.cost()
     };
-    event.invocation_id = String::new();
+    event.invocation_id = super::InvocationId::Reported(String::new());
     assert_eq!(event.cost(), alone, "the shared input/output counted once");
 }

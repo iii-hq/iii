@@ -20,6 +20,7 @@ fn make_function(id: &str) -> Function {
         handler: Arc::new(move |_invocation_id, input, _session, _metadata| {
             Box::pin(async move { FunctionResult::Success(Some(input)) })
         }),
+        encoded_handler: None,
         _function_id: id.to_string(),
         _description: Some("cleanup benchmark function".to_string()),
         request_format: None,
@@ -171,6 +172,17 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &worker_registry,
                         )
                         .await;
+                        // The registries outlive a worker's cleanup in the
+                        // engine: returned, they are dropped after the
+                        // measurement.
+                        (
+                            worker,
+                            functions,
+                            service_registry,
+                            invocations,
+                            observers,
+                            worker_registry,
+                        )
                     },
                     BatchSize::SmallInput,
                 );
@@ -232,6 +244,17 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &worker_registry,
                         )
                         .await;
+                        // The registries outlive a worker's cleanup in the
+                        // engine: returned, they are dropped after the
+                        // measurement.
+                        (
+                            worker,
+                            functions,
+                            service_registry,
+                            invocations,
+                            observers,
+                            worker_registry,
+                        )
                     },
                     BatchSize::SmallInput,
                 );

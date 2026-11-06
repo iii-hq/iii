@@ -80,6 +80,18 @@ harness = false
 name = "observe_routed_bench"
 harness = false
 
+[[bench]]
+name = "observe_activation_ws_bench"
+harness = false
+
+[[bench]]
+name = "observe_control_scaling_bench"
+harness = false
+
+[[bench]]
+name = "observe_route_lookup_bench"
+harness = false
+
 [features]
 # Test-only controls (the durable trace archive's) for this crate's own tests.
 # Enabled only through the self dev-dependency below; never in a normal build.
@@ -115,7 +127,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 schemars = "0.8"
 serde_yaml = "0.9"
@@ -148,7 +160,7 @@ iii-sandbox-contract = { path = "../crates/iii-sandbox-contract" }
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
-jsonschema = { version = "0.30", default-features = false }
+jsonschema = { version = "0.47", default-features = false }
 inventory = "0.3"
 rand = "0.8"
 rkyv = "0.8.12"

@@ -15,10 +15,18 @@ use uuid::Uuid;
 use crate::{
     engine::Outbound,
     function::{FunctionHandler, FunctionResult},
+    invocation::encoded::EncodedJson,
     protocol::{ErrorBody, Message},
     telemetry::{inject_baggage_from_context, inject_traceparent_from_context},
     worker_connections::WorkerConnection,
 };
+
+/// What a worker connection sends as an invocation's `data`.
+enum Input {
+    Value(Value),
+    /// Already encoded: sent as is (see [`crate::protocol::invoke_frame`]).
+    Encoded(EncodedJson),
+}
 
 impl FunctionHandler for WorkerConnection {
     fn handle_function<'a>(
@@ -26,6 +34,33 @@ impl FunctionHandler for WorkerConnection {
         invocation_id: Option<Uuid>,
         function_id: String,
         input: Value,
+        metadata: Option<std::sync::Arc<Value>>,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
+        self.invoke(invocation_id, function_id, Input::Value(input), metadata)
+    }
+
+    fn takes_encoded(&self) -> bool {
+        true
+    }
+
+    fn handle_encoded<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        function_id: String,
+        input: EncodedJson,
+        metadata: Option<std::sync::Arc<Value>>,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
+        self.invoke(invocation_id, function_id, Input::Encoded(input), metadata)
+    }
+}
+
+impl WorkerConnection {
+    /// Sends the worker an `invokefunction` for the invocation.
+    fn invoke<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        function_id: String,
+        input: Input,
         metadata: Option<std::sync::Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
         // Capture OTel context from current tracing span BEFORE async move
@@ -130,10 +165,34 @@ impl FunctionHandler for WorkerConnection {
                 ),
                 _ => (None, None, None),
             };
+            let data = match input {
+                Input::Value(data) => data,
+                Input::Encoded(data) => match crate::protocol::invoke_frame(
+                    invocation_id,
+                    &function_id,
+                    data,
+                    traceparent.as_deref(),
+                    baggage.as_deref(),
+                    metadata.as_deref(),
+                    caller.as_deref(),
+                    observe_depth,
+                    activation.as_ref(),
+                ) {
+                    Ok(frame) => {
+                        permit.send(Outbound::Invoke {
+                            invocation_id,
+                            frame,
+                        });
+                        return FunctionResult::Deferred;
+                    }
+                    // Not expected (every field encodes): sent as a message.
+                    Err(data) => data.to_value(),
+                },
+            };
             permit.send(Outbound::Protocol(Message::InvokeFunction {
                 invocation_id,
                 function_id,
-                data: input,
+                data,
                 traceparent,
                 baggage,
                 action: None,
@@ -194,5 +253,53 @@ mod tests {
 
         // Verify invocation was tracked
         assert!(worker.invocations.read().await.contains(&inv_id));
+    }
+
+    /// Activations queued with an encoded input above
+    /// [`crate::protocol::INVOKE_FRAME_WHOLE_UP_TO`] share it: each frame
+    /// holds the input's text, not a copy, and decodes to the message.
+    #[tokio::test]
+    async fn handle_encoded_queues_frames_that_share_the_input() {
+        use std::sync::Arc;
+
+        let (worker, mut rx) = make_worker();
+        let value = json!({ "key": "v".repeat(crate::protocol::INVOKE_FRAME_WHOLE_UP_TO) });
+        let input: Arc<str> = Arc::from(value.to_string());
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            let id = Uuid::new_v4();
+            let result = worker
+                .handle_encoded(
+                    Some(id),
+                    "fn1".into(),
+                    EncodedJson::shared(input.clone()),
+                    None,
+                )
+                .await;
+            assert!(matches!(result, FunctionResult::Deferred));
+            ids.push(id);
+        }
+        assert_eq!(Arc::strong_count(&input), 4);
+
+        for id in ids {
+            match rx.recv().await.unwrap() {
+                Outbound::Invoke {
+                    invocation_id,
+                    frame,
+                } => {
+                    assert_eq!(invocation_id, Some(id));
+                    let message: Message = serde_json::from_str(&frame.into_text()).unwrap();
+                    assert!(matches!(
+                        message,
+                        Message::InvokeFunction { invocation_id, function_id, data, .. }
+                            if invocation_id == Some(id)
+                                && function_id == "fn1"
+                                && data == value
+                    ));
+                }
+                other => panic!("expected an encoded invokefunction, got {other:?}"),
+            }
+        }
+        assert_eq!(Arc::strong_count(&input), 1);
     }
 }

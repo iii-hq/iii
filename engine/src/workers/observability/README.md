@@ -327,6 +327,13 @@ with that handler's trace. Each call stores one record (instrumentation scope `i
 | `engine::traces::tree`   | Retrieve a trace as a hierarchical span tree. Parameters: `trace_id` (required).                                                                                                                                                                                                          |
 | `engine::traces::clear`  | Clear all stored trace spans from memory.                                                                                                                                                                                                                                                 |
 
+`engine::traces::list` builds its summaries from span names, statuses, times and attributes only. It never reads span
+events or links, where the SDKs keep captured payloads. `engine::traces::spans` by `trace_id`/`trace_ids` with
+`include_events: false` drops each span's events as it reads it, and with `search_all_spans` and a `status` filter it
+decodes only the spans of that status. Trace queries run in two pools of four: summaries in one, payload reads (`spans`,
+`tree`, `group_by`) in the other; `engine::traces::clear` is not limited. A call that waits 5 s for a slot fails with
+`observability_busy`; retry it later rather than at once.
+
 ### Live (pending) spans
 
 With the `memory` exporter (the local-dev default), spans are additionally mirrored into the

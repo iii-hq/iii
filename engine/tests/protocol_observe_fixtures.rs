@@ -376,7 +376,10 @@ fn fixtures_carry_the_documented_variants() {
         "a call that failed"
     );
     assert!(
-        items.iter().any(|i| i.output == Some(Value::Null)),
+        items.iter().any(|i| i
+            .output
+            .as_ref()
+            .is_some_and(|output| output.get() == "null")),
         "a call that returned null"
     );
     assert!(
@@ -390,7 +393,11 @@ fn fixtures_carry_the_documented_variants() {
     let event_source = &items.items[0];
     assert!(event_source.output_is_input && event_source.output.is_none());
     assert!(event_source.matched.len() > 1, "one event, two observers");
-    let event = event_source.input.as_ref().expect("the row change");
+    let event = event_source
+        .input
+        .as_ref()
+        .and_then(|input| input.to_value())
+        .expect("the row change");
     for key in [
         "db",
         "schema",

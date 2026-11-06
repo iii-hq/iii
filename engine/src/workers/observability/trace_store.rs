@@ -849,6 +849,21 @@ impl TraceDiskStore {
     /// trace turns a 500-row page into hundreds of connection opens and JSON
     /// decodes.
     pub fn get_spans_by_trace_ids(&self, trace_ids: &[String]) -> Result<Vec<StoredSpan>, String> {
+        self.read_spans_by_trace_ids(trace_ids, false, None)
+    }
+
+    /// The archived spans of these traces, decoded one row at a time.
+    /// `without_events` drops each span's events and links as soon as it is
+    /// decoded, so the read never holds more than one span's payloads.
+    /// `status_contains` skips, before decoding, spans whose status does not
+    /// contain it (ASCII case-insensitive, as `traces::spans` filters): a page
+    /// of a long trace's error spans no longer decodes the whole trace.
+    pub fn read_spans_by_trace_ids(
+        &self,
+        trace_ids: &[String],
+        without_events: bool,
+        status_contains: Option<&str>,
+    ) -> Result<Vec<StoredSpan>, String> {
         if trace_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -863,30 +878,170 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
         configure_read_connection(&mut connection)?;
         let epoch = self.epoch.load(Ordering::Acquire) as i64;
-        let mut rows = Vec::new();
+        let mut spans = Vec::new();
 
         for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
             let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(", ");
+            // No ORDER BY: callers merge by key, and sorting by start time made
+            // SQLite walk the epoch's whole start-time index instead of
+            // looking the traces up by id.
+            let status_clause = if status_contains.is_some() {
+                " AND instr(lower(status), lower(?)) > 0"
+            } else {
+                ""
+            };
             let query = format!(
-                "SELECT payload FROM spans WHERE epoch = ? AND trace_id IN ({placeholders})\n                 ORDER BY start_time_ns ASC, trace_id ASC, span_id ASC"
+                "SELECT payload FROM spans WHERE epoch = ? AND trace_id IN ({placeholders}){status_clause}"
             );
             let mut statement = connection
                 .prepare(&query)
                 .map_err(|err| format!("cannot prepare batched trace read: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 2);
+            parameters.push(&epoch);
+            parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
+            if let Some(status) = &status_contains {
+                parameters.push(status);
+            }
+            let mut rows = statement
+                .query(params_from_iter(parameters))
+                .map_err(|err| format!("cannot query batched trace archive: {err}"))?;
+            // One row at a time, straight from SQLite's buffer: collecting
+            // every raw payload of a page of long traces before decoding any
+            // held them all twice over.
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| format!("cannot read batched trace archive row: {err}"))?
+            {
+                let payload = row
+                    .get_ref(0)
+                    .map_err(|err| format!("cannot read batched trace archive row: {err}"))?
+                    .as_str()
+                    .map_err(|err| format!("cannot read batched trace archive payload: {err}"))?;
+                if let Some(mut span) = self.decode_payload(payload) {
+                    if without_events {
+                        span.events = Vec::new();
+                        span.links = Vec::new();
+                    }
+                    spans.push(span);
+                }
+            }
+        }
+
+        Ok(spans)
+    }
+
+    /// The spans of these traces without events or links, built from the
+    /// columns stored ahead of `payload` and from `span_attributes`: no payload
+    /// is read or decoded. A trace summary needs nothing else, and decoding the
+    /// payloads of a long harness trace (every prompt and reply is an event)
+    /// for a few hundred bytes of summary is what ran the engine out of memory.
+    /// Fields kept only in the payload (instrumentation scope, flags,
+    /// `trace_state`) come back empty; no summary reads them.
+    pub fn get_span_headers_by_trace_ids(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<StoredSpan>, String> {
+        if trace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut unique_ids = HashSet::with_capacity(trace_ids.len());
+        let trace_ids: Vec<&str> = trace_ids
+            .iter()
+            .filter_map(|id| unique_ids.insert(id.as_str()).then_some(id.as_str()))
+            .collect();
+
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        // One snapshot for both statements below: the writer can evict a
+        // trace between them, which would return its spans without attributes.
+        let snapshot = connection
+            .transaction()
+            .map_err(|err| format!("cannot begin trace archive read: {err}"))?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut spans = Vec::new();
+        let mut index = HashMap::<(String, String), usize>::new();
+
+        for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
             let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 1);
             parameters.push(&epoch);
             parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
-            let chunk_rows = statement
-                .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
-                .map_err(|err| format!("cannot query batched trace archive: {err}"))?
+
+            // No ORDER BY: callers merge by key, and sorting by start time made
+            // SQLite walk the epoch's whole start-time index instead of
+            // looking the traces up by id.
+            let query = format!(
+                "SELECT trace_id, span_id, parent_span_id, name, start_time_ns, end_time_ns,
+                        status, status_description, service_name
+                 FROM spans WHERE epoch = ? AND trace_id IN ({placeholders})"
+            );
+            let mut statement = snapshot
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched span header read: {err}"))?;
+            let chunk_spans = statement
+                .query_map(params_from_iter(parameters.iter()), |row| {
+                    Ok(StoredSpan {
+                        trace_id: row.get(0)?,
+                        span_id: row.get(1)?,
+                        parent_span_id: row.get(2)?,
+                        name: row.get(3)?,
+                        start_time_unix_nano: row.get::<_, i64>(4)?.max(0) as u64,
+                        end_time_unix_nano: row.get::<_, i64>(5)?.max(0) as u64,
+                        status: row.get(6)?,
+                        status_description: row.get(7)?,
+                        attributes: Vec::new(),
+                        service_name: row.get(8)?,
+                        events: Vec::new(),
+                        links: Vec::new(),
+                        instrumentation_scope_name: None,
+                        instrumentation_scope_version: None,
+                        flags: None,
+                        trace_state: None,
+                        // The writer never archives a pending snapshot.
+                        pending: false,
+                        observe_depth: 0,
+                    })
+                })
+                .map_err(|err| format!("cannot query batched span headers: {err}"))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| format!("cannot read batched trace archive row: {err}"))?;
-            rows.extend(chunk_rows);
+                .map_err(|err| format!("cannot read batched span header row: {err}"))?;
+            for span in chunk_spans {
+                index.insert((span.trace_id.clone(), span.span_id.clone()), spans.len());
+                spans.push(span);
+            }
+
+            let query = format!(
+                "SELECT trace_id, span_id, key, value FROM span_attributes
+                 WHERE epoch = ? AND trace_id IN ({placeholders})
+                 ORDER BY trace_id ASC, span_id ASC, ordinal ASC"
+            );
+            let mut statement = snapshot
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched span attribute read: {err}"))?;
+            let mut rows = statement
+                .query(params_from_iter(parameters.iter()))
+                .map_err(|err| format!("cannot query batched span attributes: {err}"))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| format!("cannot read batched span attribute row: {err}"))?
+            {
+                let read = |column| {
+                    row.get::<_, String>(column)
+                        .map_err(|err| format!("cannot read span attribute column: {err}"))
+                };
+                if let Some(&owner) = index.get(&(read(0)?, read(1)?)) {
+                    spans[owner].attributes.push((read(2)?, read(3)?));
+                }
+            }
         }
 
-        Ok(self.decode_payloads(rows))
+        Ok(spans)
     }
 
     /// Read every trace-level tag for a set of traces in bounded SQLite
@@ -1147,6 +1302,12 @@ impl TraceDiskStore {
         };
 
         Ok(self.decode_payloads(rows))
+    }
+
+    fn decode_payload(&self, payload: &str) -> Option<StoredSpan> {
+        serde_json::from_str::<StoredSpan>(payload)
+            .map_err(|err| self.record_error(format!("corrupt trace payload skipped: {err}")))
+            .ok()
     }
 
     fn decode_payloads(&self, rows: Vec<String>) -> Vec<StoredSpan> {
@@ -3790,6 +3951,132 @@ mod tests {
         assert_eq!(tags[0].value, "earlier");
         assert_eq!(tags[2].trace_id, "trace-2");
         assert_eq!(tags[2].key, "iii.session.name");
+        store.shutdown();
+    }
+
+    #[test]
+    fn span_headers_match_archived_spans_without_reading_a_payload() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(32, 1_000_000));
+        store.attach_hot_storage(&hot);
+
+        let mut root = test_span("trace-1", "span-1", "turn");
+        root.attributes
+            .push(("iii.tag.session".to_string(), "s1".to_string()));
+        root.attributes
+            .push(("function_id".to_string(), "harness::turn".to_string()));
+        root.events = vec![crate::workers::observability::otel::StoredSpanEvent {
+            name: "invocation".to_string(),
+            timestamp_unix_nano: 1_000_000_001,
+            attributes: vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))],
+        }];
+        root.instrumentation_scope_name = Some("iii-sdk".to_string());
+        root.flags = Some(1);
+        root.trace_state = Some("vendor=1".to_string());
+        let mut child = test_span("trace-1", "span-2", "tool");
+        child.parent_span_id = Some("span-1".to_string());
+        child.status = "error".to_string();
+        child.status_description = Some("boom".to_string());
+        hot.add_spans(vec![root, child, test_span("trace-2", "span-3", "other")]);
+        store.flush().expect("flush trace store");
+
+        let ids = ["trace-1".to_string()];
+        // What a trace summary reads; payload-only fields are not in a header.
+        let summary_fields = |mut spans: Vec<StoredSpan>| {
+            spans.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+            spans
+                .into_iter()
+                .map(|span| {
+                    (
+                        span.trace_id,
+                        span.span_id,
+                        span.parent_span_id,
+                        span.name,
+                        span.start_time_unix_nano,
+                        span.end_time_unix_nano,
+                        span.status,
+                        span.status_description,
+                        span.service_name,
+                        span.attributes,
+                        span.pending,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut full = store.get_spans_by_trace_ids(&ids).expect("full read");
+        full.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+        assert!(
+            full.iter().any(|span| !span.events.is_empty()),
+            "the archive kept the payload event"
+        );
+        let headers = store
+            .get_span_headers_by_trace_ids(&ids)
+            .expect("header read");
+        assert!(headers.iter().all(|span| span.events.is_empty()
+            && span.instrumentation_scope_name.is_none()
+            && span.flags.is_none()));
+        assert_eq!(
+            summary_fields(headers),
+            summary_fields(full.clone()),
+            "a header carries every field a summary reads, attributes in order"
+        );
+
+        let mut without_events = store
+            .read_spans_by_trace_ids(&ids, true, None)
+            .expect("read without events");
+        without_events.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+        let full_minus_events: Vec<_> = full
+            .iter()
+            .map(|span| serde_json::to_value(span.header()).expect("serialize span"))
+            .collect();
+        assert_eq!(
+            without_events
+                .iter()
+                .map(|span| serde_json::to_value(span).expect("serialize span"))
+                .collect::<Vec<_>>(),
+            full_minus_events,
+            "without events, a read keeps every other stored field"
+        );
+
+        let errors = store
+            .read_spans_by_trace_ids(&ids, false, Some("ERR"))
+            .expect("read error spans");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["span-2"],
+            "a status filter decodes only the spans whose status contains it"
+        );
+
+        let corrupt = |payload: &str| {
+            Connection::open(&store.database_path)
+                .expect("open archive")
+                .execute(&format!("UPDATE spans SET payload = {payload}"), [])
+                .expect("corrupt payloads");
+        };
+        corrupt("'not json'");
+        assert!(
+            store
+                .get_spans_by_trace_ids(&ids)
+                .expect("full read")
+                .is_empty(),
+            "a full read decodes payloads and skips the corrupt ones"
+        );
+        // Not even text: any read of the column fails.
+        corrupt("X'FF'");
+        assert!(store.get_spans_by_trace_ids(&ids).is_err());
+        assert_eq!(
+            store
+                .get_span_headers_by_trace_ids(&ids)
+                .expect("header read")
+                .len(),
+            2,
+            "a header read never reads the payload column"
+        );
         store.shutdown();
     }
 

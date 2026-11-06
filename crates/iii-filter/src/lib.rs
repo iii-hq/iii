@@ -24,6 +24,7 @@
 //! specified in `tech-specs/2026-10-13-observe/filters.md` and
 //! `sdk/fixtures/filters/README.md` in the iii repository.
 
+mod compact;
 mod error;
 mod eval;
 mod index;
@@ -40,6 +41,7 @@ use serde_json::Value;
 pub use error::{ErrorCode, FilterError};
 pub use index::{FilterIndex, Iter, Matches};
 
+use crate::compact::Json;
 use crate::parse::SizeLimit;
 
 /// Validation limits (filters.md §4). `sdk/fixtures/filters/README.md`
@@ -118,7 +120,11 @@ pub struct Filter {
 }
 
 struct Inner {
-    normalized: Value,
+    /// The normal form, compact (see [`compact`]).
+    normal: Json,
+    /// The normal form as a `Value`, made the first time
+    /// [`Filter::normalized`] lends it, and kept from then on.
+    normalized: OnceLock<Box<Value>>,
     node: eval::Node,
     roots: Roots,
 }
@@ -146,7 +152,8 @@ impl Filter {
         parsed.node.collect_roots(&mut roots);
         Filter {
             inner: Arc::new(Inner {
-                normalized: parsed.normalized,
+                normal: Json::from(parsed.normalized),
+                normalized: OnceLock::new(),
                 node: parsed.node,
                 roots,
             }),
@@ -168,13 +175,47 @@ impl Filter {
 
     /// The normal form (filters.md §5), as carried by `functionregistered`
     /// and `observeradded`.
+    ///
+    /// The filter keeps its normal form compact, and makes this `Value` the
+    /// first time it lends it, keeping it from then on (a `Value` object
+    /// takes about 630 bytes): what keeps many filters should use
+    /// [`Filter::to_normalized`], [`Filter::normalized_eq`] or `Serialize`
+    /// instead.
     pub fn normalized(&self) -> &Value {
-        &self.inner.normalized
+        self.inner
+            .normalized
+            .get_or_init(|| Box::new(self.inner.normal.to_value()))
+    }
+
+    /// The normal form (see [`Filter::normalized`]), made for the caller.
+    pub fn to_normalized(&self) -> Value {
+        match self.inner.normalized.get() {
+            Some(normalized) => Value::clone(normalized),
+            None => self.inner.normal.to_value(),
+        }
+    }
+
+    /// Whether `value` is the normal form, as `Value`'s `==` compares,
+    /// without making a `Value` of it.
+    pub fn normalized_eq(&self, value: &Value) -> bool {
+        self.inner.normal.eq_value(value)
     }
 
     /// The roots any clause references.
     pub fn roots(&self) -> Roots {
         self.inner.roots
+    }
+
+    /// The top-level `input` fields the filter reads, sorted, each once:
+    /// `None` when it reads `input` whole, empty when it reads none of it.
+    pub fn input_fields(&self) -> Option<Vec<Box<str>>> {
+        let mut fields = Vec::new();
+        if !self.inner.node.input_fields(&mut fields) {
+            return None;
+        }
+        fields.sort();
+        fields.dedup();
+        Some(fields)
     }
 
     /// Evaluates the filter. Total: never fails, never panics.
@@ -226,7 +267,7 @@ impl Default for Filter {
 impl fmt::Debug for Filter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Filter")
-            .field(&self.inner.normalized)
+            .field(&self.to_normalized())
             .finish()
     }
 }
@@ -234,14 +275,14 @@ impl fmt::Debug for Filter {
 /// Compact JSON of the normal form.
 impl fmt::Display for Filter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.inner.normalized, f)
+        fmt::Display::fmt(&self.to_normalized(), f)
     }
 }
 
 /// Two filters are equal when their normal forms are.
 impl PartialEq for Filter {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner) || self.inner.normalized == other.inner.normalized
+        Arc::ptr_eq(&self.inner, &other.inner) || self.inner.normal == other.inner.normal
     }
 }
 
@@ -250,7 +291,7 @@ impl Eq for Filter {}
 /// Serializes the normal form.
 impl serde::Serialize for Filter {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.inner.normalized.serialize(serializer)
+        self.inner.normal.serialize(serializer)
     }
 }
 
@@ -267,7 +308,7 @@ impl<'de> serde::Deserialize<'de> for Filter {
 
 /// Validates `src` and returns its normal form (filters.md §5).
 pub fn normalize(src: &Value) -> Result<Value, FilterError> {
-    Filter::parse(src).map(|f| f.normalized().clone())
+    Filter::parse(src).map(|f| f.to_normalized())
 }
 
 #[cfg(test)]
@@ -275,6 +316,32 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn keeps_its_normal_form_compact_and_gives_it_back_whole() {
+        let src = serde_json::json!({
+            "input.key": { "$eq": "key-1" },
+            "output.n": { "$in": [2, 1.5] },
+        });
+        let filter = Filter::parse(&src).unwrap();
+        let normalized = filter.to_normalized();
+        assert!(
+            filter.inner.normalized.get().is_none(),
+            "no `Value` is kept until one is lent"
+        );
+        assert!(filter.normalized_eq(&normalized));
+        assert!(!filter.normalized_eq(&serde_json::json!({})));
+        assert_eq!(
+            serde_json::to_string(&filter).unwrap(),
+            serde_json::to_string(&normalized).unwrap()
+        );
+        assert_eq!(filter.to_string(), normalized.to_string());
+        assert_eq!(format!("{filter:#}"), format!("{normalized:#}"));
+        assert_eq!(filter.normalized(), &normalized);
+        assert_eq!(filter.to_normalized(), normalized);
+        assert_eq!(Filter::from_normalized(&normalized).unwrap(), filter);
+        assert_eq!(normalize(&src).unwrap(), normalized);
+    }
 
     #[test]
     fn filter_is_send_sync() {
@@ -371,5 +438,28 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidFilter);
         assert_eq!(err.code.as_str(), "INVALID_FILTER");
         assert!(err.to_string().starts_with("INVALID_FILTER: "));
+    }
+
+    #[test]
+    fn input_fields_are_the_first_keys_of_the_input_paths() {
+        let f = Filter::parse(&serde_json::json!({
+            "input.k": { "$eq": 1 },
+            "$or": [
+                { "input.a.b": { "$exists": true } },
+                { "output.x": { "$eq": 2 } }
+            ],
+            "$not": { "input.k": { "$eq": 3 } },
+            "input.items": { "$any": { "@.sku": { "$eq": "a" } } }
+        }))
+        .unwrap();
+        let fields = f.input_fields().unwrap();
+        let fields: Vec<&str> = fields.iter().map(|f| &**f).collect();
+        assert_eq!(fields, ["a", "items", "k"]);
+        let output_only = Filter::parse(&serde_json::json!({ "output.x": { "$eq": 1 } })).unwrap();
+        assert_eq!(output_only.input_fields(), Some(Vec::new()));
+        // `input` itself, when the language takes it, is read whole.
+        if let Ok(whole) = Filter::parse(&serde_json::json!({ "input": { "$exists": true } })) {
+            assert_eq!(whole.input_fields(), None);
+        }
     }
 }

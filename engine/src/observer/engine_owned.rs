@@ -48,6 +48,11 @@ fn engine_names() -> &'static (Arc<str>, Arc<str>) {
     NAMES.get_or_init(|| (Arc::from(ENGINE_CALLER_NAME), Arc::from(DEFAULT_NAMESPACE)))
 }
 
+/// `default`, shared by every observer that observes under it.
+pub(super) fn default_namespace() -> Arc<str> {
+    engine_names().1.clone()
+}
+
 /// An observer the engine creates: `function` observed with `args` and
 /// `filters`, `target` invoked with what `deliver` names and `metadata` as
 /// the sidecar.
@@ -162,7 +167,7 @@ impl ObserverRegistry {
                 function: function.clone(),
                 target: target.clone(),
                 args: args.clone(),
-                filters: filter.normalized().clone(),
+                filters: filter.to_normalized(),
                 capture,
                 deliver,
                 metadata: metadata.clone(),
@@ -185,7 +190,7 @@ impl ObserverRegistry {
         let target_available = self.is_registered(&target);
         let observer = Arc::new(Observer::new(NewObserver {
             id,
-            target,
+            target: self.target_key(target),
             // Its fields are its spec: nothing rewrote them.
             spec: None,
             args,
@@ -221,7 +226,7 @@ impl ObserverRegistry {
                 disposed: None,
                 tombstone: true,
             },
-            function,
+            function: self.function_key(function),
         }));
         if !self.publish(&observer, ENGINE_CONNECTION, Vec::new(), None) {
             return Err(ErrorBody::new(

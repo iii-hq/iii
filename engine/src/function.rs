@@ -17,6 +17,7 @@ use futures::Future;
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::invocation::encoded::EncodedJson;
 use crate::protocol::*;
 use crate::workers::worker::rbac_session::Session;
 
@@ -34,10 +35,20 @@ type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, E
 pub type HandlerFn = dyn Fn(Option<Uuid>, Value, Option<Arc<Session>>, Option<Arc<Value>>) -> HandlerFuture
     + Send
     + Sync;
+/// [`HandlerFn`] for a handler that sends its input on as JSON text (a
+/// worker connection): the input comes already encoded, and is sent as is.
+pub type EncodedHandlerFn = dyn Fn(Option<Uuid>, EncodedJson, Option<Arc<Session>>, Option<Arc<Value>>) -> HandlerFuture
+    + Send
+    + Sync;
 
 #[derive(Clone)]
 pub struct Function {
     pub handler: Arc<HandlerFn>,
+    /// The same handler, taking its input already encoded, when it sends the
+    /// input on as JSON text (a worker connection): the activations of one
+    /// observed event share its encoded payloads instead of each copying
+    /// and encoding them.
+    pub encoded_handler: Option<Arc<EncodedHandlerFn>>,
     pub _function_id: String,
     pub _description: Option<String>,
     pub request_format: Option<Value>,
@@ -81,6 +92,24 @@ pub trait FunctionHandler {
         input: Value,
         metadata: Option<Arc<Value>>,
     ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>>;
+
+    /// Whether [`Self::handle_encoded`] sends the encoded input on as is,
+    /// rather than decoding it.
+    fn takes_encoded(&self) -> bool {
+        false
+    }
+
+    /// [`Self::handle_function`] with the input already encoded as JSON. By
+    /// default it is decoded first.
+    fn handle_encoded<'a>(
+        &'a self,
+        invocation_id: Option<Uuid>,
+        function_id: String,
+        input: EncodedJson,
+        metadata: Option<Arc<Value>>,
+    ) -> Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send + 'a>> {
+        self.handle_function(invocation_id, function_id, input.to_value(), metadata)
+    }
 }
 
 /// What happened to a function in the registry.
@@ -271,6 +300,24 @@ impl FunctionsRegistry {
         })
     }
 
+    /// The handler of `(namespace, function_id)`, and the one taking its input
+    /// already encoded when it has one (see [`Function::encoded_handler`]),
+    /// read together.
+    pub(crate) fn get_handlers(
+        &self,
+        namespace: &str,
+        function_id: &str,
+    ) -> Option<(Arc<HandlerFn>, Option<Arc<EncodedHandlerFn>>)> {
+        self.with_function(namespace, function_id, |function| {
+            function.map(|function| {
+                (
+                    Arc::clone(&function.handler),
+                    function.encoded_handler.clone(),
+                )
+            })
+        })
+    }
+
     /// Read a descriptor synchronously; the callback must not re-enter the registry.
     pub(crate) fn with_function<T>(
         &self,
@@ -319,6 +366,7 @@ mod tests {
             handler: Arc::new(|_invocation_id, _input, _session, _metadata| {
                 Box::pin(async { FunctionResult::Success(Some(serde_json::json!({"ok": true}))) })
             }),
+            encoded_handler: None,
             _function_id: id.to_string(),
             _description: Some("test function".to_string()),
             request_format: None,
@@ -509,6 +557,7 @@ mod tests {
         let reg = FunctionsRegistry::new();
         let func1 = Function {
             handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            encoded_handler: None,
             _function_id: "fn".to_string(),
             _description: Some("version 1".to_string()),
             request_format: None,
@@ -517,6 +566,7 @@ mod tests {
         };
         let func2 = Function {
             handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            encoded_handler: None,
             _function_id: "fn".to_string(),
             _description: Some("version 2".to_string()),
             request_format: None,
@@ -533,6 +583,7 @@ mod tests {
     fn function_metadata_and_formats() {
         let func = Function {
             handler: Arc::new(|_, _, _, _| Box::pin(async { FunctionResult::Success(None) })),
+            encoded_handler: None,
             _function_id: "fn".to_string(),
             _description: None,
             request_format: Some(json!({"type": "object"})),
@@ -574,6 +625,7 @@ mod tests {
                     }
                 })
             }),
+            encoded_handler: None,
             _function_id: "test_with_id".to_string(),
             _description: None,
             request_format: None,
@@ -603,6 +655,7 @@ mod tests {
                     })
                 })
             }),
+            encoded_handler: None,
             _function_id: "failing_fn".to_string(),
             _description: None,
             request_format: None,

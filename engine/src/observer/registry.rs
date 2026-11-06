@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use super::{
-    Departed, FnKey, Held, ObserverRegistry,
+    ById, Departed, FnKey, Held, ObserverRegistry,
     lifecycle::{
         CaptureSet, Deliver, Flags, NewObserver, ObserveSpec, Observer, Observing, Policy,
         Tombstone, Transition, capture_replacing, translate_legacy,
@@ -55,9 +55,9 @@ impl ObserveRequest {
         let namespace =
             |ns: &Option<String>| ns.clone().unwrap_or_else(|| DEFAULT_NAMESPACE.to_string());
         let filters = match &self.source.filters {
-            None => Filter::match_all().normalized().clone(),
+            None => Filter::match_all().to_normalized(),
             Some(src) => Filter::parse(src)
-                .map(|filter| filter.normalized().clone())
+                .map(|filter| filter.to_normalized())
                 .unwrap_or_else(|_| src.clone()),
         };
         ObserveSpec {
@@ -219,6 +219,7 @@ fn registration_hook_input(
 /// prefix rewrote it), its filters in normal form, absent when they match
 /// everything.
 fn requested_registration_hook_input(observer: &Observer, context: &Value) -> Value {
+    let normalized;
     let (function, target, args, filters, metadata) = match observer.requested_spec() {
         Some(spec) => (
             &spec.function,
@@ -227,13 +228,16 @@ fn requested_registration_hook_input(observer: &Observer, context: &Value) -> Va
             &spec.filters,
             spec.metadata.as_ref(),
         ),
-        None => (
-            &observer.function,
-            &observer.target,
-            &observer.args,
-            observer.filter.normalized(),
-            observer.metadata.as_ref(),
-        ),
+        None => {
+            normalized = observer.filter.to_normalized();
+            (
+                &*observer.function,
+                &*observer.target,
+                &observer.args,
+                &normalized,
+                observer.metadata.as_ref(),
+            )
+        }
     };
     let filters = (!filters.as_object().is_some_and(Map::is_empty)).then_some(filters);
     registration_hook_input(
@@ -592,7 +596,7 @@ impl ObserverRegistry {
         }
         // The observer this one replaces leaves the function as it joins.
         let replaced_here = usize::from(replacing.as_ref().is_some_and(|replaced| {
-            replaced.function == function && replaced.with_flags(left_behind)
+            *replaced.function == function && replaced.with_flags(left_behind)
         }));
         let on_function = self
             .function_entry(&function)
@@ -612,7 +616,7 @@ impl ObserverRegistry {
         let target_available = self.is_registered(&target_key);
         let observer = Arc::new(Observer::new(NewObserver {
             id,
-            target: target_key,
+            target: self.target_key(target_key),
             spec: Some(spec),
             args,
             filter,
@@ -652,7 +656,7 @@ impl ObserverRegistry {
                 disposed: None,
                 tombstone: true,
             },
-            function,
+            function: self.function_key(function),
         }));
 
         let inserted = self.publish(&observer, worker.id, warnings, replacing.as_ref());
@@ -715,20 +719,20 @@ impl ObserverRegistry {
         // after these, and a disposal, which finds the observer by its id,
         // finds its index entries too.
         let published = observer.with_state(|state, reason| {
-            let took_id = match self.by_id.entry(observer.id.clone()) {
-                dashmap::mapref::entry::Entry::Occupied(mut held) => {
+            let took_id = match self.by_id.entry(ById(observer.clone())) {
+                dashmap::mapref::entry::Entry::Occupied(held) => {
                     // The observer just disposed stays in `by_id` until it
                     // is settled below.
                     let took = replaced
                         .as_ref()
-                        .is_some_and(|(previous, _)| Arc::ptr_eq(held.get(), previous));
+                        .is_some_and(|(previous, _)| Arc::ptr_eq(&held.key().0, previous));
                     if took {
-                        held.insert(observer.clone());
+                        held.replace_entry(());
                     }
                     took
                 }
                 dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                    vacant.insert(observer.clone());
+                    vacant.insert(());
                     true
                 }
             };
@@ -792,15 +796,37 @@ impl ObserverRegistry {
 
     /// The worker name and namespace `connection` registered with
     /// (`engine::workers::register`), which identify its worker across
-    /// connections. No name until it registered one.
+    /// connections. No name until it registered one. Each is shared with
+    /// the connection's other observers when they hold the same, and the
+    /// namespace `default` with every observer's.
     fn worker_identity(&self, connection: Uuid) -> (Option<Arc<str>>, Arc<str>) {
-        match self.deps.get() {
+        let (name, namespace) = match self.deps.get() {
             Some(deps) => (
-                deps.workers.get_worker_name(&connection).map(Arc::from),
-                Arc::from(deps.workers.get_namespace(&connection)),
+                deps.workers.get_worker_name(&connection),
+                deps.workers.get_namespace(&connection),
             ),
-            None => (None, Arc::from(DEFAULT_NAMESPACE)),
-        }
+            None => (None, DEFAULT_NAMESPACE.to_string()),
+        };
+        // One of the connection's observers, taken out of the index before
+        // its status is read: a transition indexes under the status lock.
+        let sibling = self
+            .by_connection
+            .get(&connection)
+            .and_then(|held| held.iter().next().map(|held| held.0.clone()));
+        let (held_name, held_namespace) = match sibling {
+            Some(sibling) => sibling.observing_names(),
+            None => (None, super::engine_owned::default_namespace()),
+        };
+        let name = name.map(|name| match held_name {
+            Some(held) if *held == *name => held,
+            _ => Arc::from(name),
+        });
+        let namespace = if *held_namespace == *namespace {
+            held_namespace
+        } else {
+            Arc::from(namespace)
+        };
+        (name, namespace)
     }
 
     /// Whether `worker`, observing under the id of `existing` (another
@@ -1161,7 +1187,7 @@ impl ObserverRegistry {
             let live = self
                 .by_id
                 .get(&observer.id)
-                .is_some_and(|current| Arc::ptr_eq(&current, &observer));
+                .is_some_and(|current| Arc::ptr_eq(&current.key().0, &observer));
             if !live {
                 let gone = Held(observer.clone());
                 self.by_connection
@@ -1172,7 +1198,7 @@ impl ObserverRegistry {
                 continue;
             }
             if let Some(session) = &observer.observing().session {
-                let denied = [&observer.function, &observer.target].into_iter().find(
+                let denied = [&*observer.function, &*observer.target].into_iter().find(
                     |(namespace, function)| {
                         !engine.is_function_allowed(session, Some(namespace), function)
                     },
@@ -1376,6 +1402,45 @@ mod tests {
 
     fn state(engine: &Engine, id: &str) -> Option<ObserverState> {
         engine.observers.get(id).map(|o| o.state())
+    }
+
+    /// A worker's observers hold one copy of its name, and every observer
+    /// one copy of the namespace `default`.
+    #[tokio::test]
+    async fn a_workers_observers_share_its_names() {
+        let engine = engine_with_functions();
+        let (named, _named_socket) = test_support::worker(&engine);
+        engine.worker_registry.update_worker_metadata(
+            &named.id,
+            "node".to_string(),
+            None,
+            Some("named".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let (other, _other_socket) = test_support::worker(&engine);
+        for (worker, id) in [(&named, "a"), (&named, "b"), (&other, "c")] {
+            test_support::observe_request(
+                &engine,
+                worker,
+                test_support::request(id, "test::src", "test::dst", None),
+            )
+            .await;
+        }
+        let names = |id: &str| engine.observers.get(id).unwrap().observing_names();
+        let ((a_name, a_namespace), (b_name, b_namespace), (c_name, c_namespace)) =
+            (names("a"), names("b"), names("c"));
+        let (a_name, b_name) = (a_name.unwrap(), b_name.unwrap());
+        assert_eq!(&*a_name, "named");
+        assert!(Arc::ptr_eq(&a_name, &b_name), "one copy of the name");
+        assert!(c_name.is_none());
+        assert_eq!(&*a_namespace, crate::protocol::DEFAULT_NAMESPACE);
+        assert!(Arc::ptr_eq(&a_namespace, &b_namespace));
+        assert!(Arc::ptr_eq(&a_namespace, &c_namespace), "one `default`");
     }
 
     /// A refused `observe` leaves nothing in the engine (decision 56): its
@@ -2069,7 +2134,7 @@ mod tests {
             registry
                 .by_id
                 .get(&held.0.id)
-                .is_some_and(|current| Arc::ptr_eq(&current, &held.0))
+                .is_some_and(|current| Arc::ptr_eq(&current.key().0, &held.0))
         };
         let mut stale = Vec::new();
         for entry in registry.by_connection.iter() {
@@ -2359,12 +2424,10 @@ mod tests {
         let engine = engine_with_functions();
         let registry = engine.observers.clone();
         let entry = |function: &str| {
-            registry
-                .routed
-                .load()
-                .get(&("default", function) as &dyn FunctionKey)
-                .cloned()
+            let key = &("default", function) as &dyn FunctionKey;
+            registry.routed.load(key).get(key).cloned()
         };
+        let src = &("default", "test::src") as &dyn FunctionKey;
         let (first, _first_socket) = test_support::worker(&engine);
         test_support::observe_request(
             &engine,
@@ -2373,11 +2436,11 @@ mod tests {
         )
         .await;
         let held = entry("test::src").expect("in the view");
-        let view = registry.routed.load_full();
+        let view = registry.routed.load_full(src);
 
         registry.connection_closed(first.id, first.reattach_token);
         assert!(
-            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            Arc::ptr_eq(&registry.routed.load_full(src), &view),
             "not copied"
         );
         assert!(!registry.is_observed("default", "test::src"));
@@ -2398,7 +2461,7 @@ mod tests {
         );
         assert_eq!(state(&engine, "obs"), Some(ObserverState::Active));
         assert!(
-            Arc::ptr_eq(&registry.routed.load_full(), &view),
+            Arc::ptr_eq(&registry.routed.load_full(src), &view),
             "not copied"
         );
         assert!(Arc::ptr_eq(&entry("test::src").unwrap(), &held));
@@ -2412,9 +2475,20 @@ mod tests {
             test_support::request("back", "test::dst", "test::src", None),
         )
         .await;
-        assert!(entry("test::src").is_none(), "left out of the copy");
+        // A copy of its shard leaves it out; another shard's copy leaves it
+        // as it is, found by nobody.
+        let dst = &("default", "test::dst") as &dyn FunctionKey;
+        if super::super::owner::RoutedShards::shard_index(src)
+            == super::super::owner::RoutedShards::shard_index(dst)
+        {
+            assert!(entry("test::src").is_none(), "left out of the copy");
+            assert_eq!(registry.routed.len(), 1);
+        } else {
+            assert!(entry("test::src").is_some_and(|held| !held.is_live()));
+            assert_eq!(registry.routed.len(), 2);
+        }
+        assert!(!registry.is_observed("default", "test::src"));
         assert!(registry.is_observed("default", "test::dst"));
-        assert_eq!(registry.routed.load().len(), 1);
         assert_eq!(registry.routed_live.load(Ordering::Acquire), 1);
     }
 

@@ -665,7 +665,11 @@ fn step_span(index: usize) -> StoredSpan {
     .into_iter()
     .map(|(key, value)| (key.to_string(), value.to_string()))
     .collect();
-    let payload = if index.is_multiple_of(7) { 48 * 1024 } else { 1024 };
+    let payload = if index.is_multiple_of(7) {
+        48 * 1024
+    } else {
+        1024
+    };
     stored.events = vec![StoredSpanEvent {
         name: "iii.invocation.input".to_string(),
         timestamp_unix_nano: 1_000_000_000,

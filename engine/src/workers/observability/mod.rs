@@ -555,7 +555,77 @@ fn trace_storage_status_value() -> Value {
 /// waits on the writer thread), so handlers must not run them on a tokio
 /// worker. JoinError only occurs on closure panic or runtime shutdown; map it
 /// to a failure instead of propagating the panic into the handler.
+///
+/// At most [`QUERY_PERMITS`] of these run at once. A query may hold whole
+/// traces in memory and nothing cancels it when its caller times out, so
+/// without the cap a slow engine piled up one blocking thread per call (up to
+/// tokio's 512), each with its own copy, until the machine ran out of memory.
+/// A caller that cannot get a permit within [`QUERY_PERMIT_WAIT`] gets
+/// `observability_busy`.
+///
+/// For reads that may decode span payloads: `traces::spans`, `traces::tree`,
+/// `traces::group_by`. Header and key reads use [`run_light_query`], so a slow
+/// payload read never starves a trace summary.
 async fn run_blocking_query<T: Send + 'static>(
+    operation: &'static str,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ErrorBody> {
+    run_blocking_query_held(operation, query)
+        .await
+        .map(|(value, _permit)| value)
+}
+
+/// [`run_blocking_query`] that hands its permit back with the result, for a
+/// handler that reads the archive again with what the query returned.
+async fn run_blocking_query_held<T: Send + 'static>(
+    operation: &'static str,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Result<(T, tokio::sync::OwnedSemaphorePermit), ErrorBody> {
+    static PERMITS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(QUERY_PERMITS)));
+    run_limited(&PERMITS, QUERY_PERMIT_WAIT, operation, query).await
+}
+
+/// [`run_blocking_query`] for reads of span headers and keys only (trace
+/// summaries, tag rows), in a pool of their own.
+async fn run_light_query<T: Send + 'static>(
+    operation: &'static str,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ErrorBody> {
+    static PERMITS: std::sync::LazyLock<Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(QUERY_PERMITS)));
+    run_limited(&PERMITS, QUERY_PERMIT_WAIT, operation, query)
+        .await
+        .map(|(value, _permit)| value)
+}
+
+/// Queries of one pool that may run at once.
+const QUERY_PERMITS: usize = 4;
+/// How long a query waits for a permit before it answers busy.
+const QUERY_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn run_limited<T: Send + 'static>(
+    permits: &Arc<tokio::sync::Semaphore>,
+    wait: std::time::Duration,
+    operation: &'static str,
+    query: impl FnOnce() -> T + Send + 'static,
+) -> Result<(T, tokio::sync::OwnedSemaphorePermit), ErrorBody> {
+    let Ok(Ok(permit)) = tokio::time::timeout(wait, permits.clone().acquire_owned()).await else {
+        return Err(ErrorBody::new(
+            "observability_busy",
+            format!("{operation}: too many observability queries running; retry later"),
+        ));
+    };
+    // The permit moves into the task and comes back with the result: a caller
+    // that stopped waiting drops this future, and the permit is released when
+    // the query ends, not before.
+    run_unlimited(operation, move || (query(), permit)).await
+}
+
+/// Off the executor with no permit: for `traces::clear`, which waits on the
+/// writer and holds no trace in memory, and for work under a permit its caller
+/// already holds.
+async fn run_unlimited<T: Send + 'static>(
     operation: &'static str,
     query: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, ErrorBody> {
@@ -567,6 +637,18 @@ async fn run_blocking_query<T: Send + 'static>(
                 format!("{operation} background task failed: {join_error}"),
             )
         })
+}
+
+/// The status a `traces::spans` read by trace id may push down to the
+/// archive. Only when every span it drops would be dropped anyway: with
+/// `search_all_spans` (no root detection over the whole trace) and no name or
+/// attribute filter (which match at trace level, over spans of any status).
+/// This is sentinel's error-span paging, which otherwise decoded the whole
+/// trace for each page of error spans.
+fn pushed_down_status(input: &TracesListInput) -> Option<String> {
+    (input.search_all_spans.unwrap_or(false) && input.name.is_none() && input.attributes.is_none())
+        .then(|| input.status.clone())
+        .flatten()
 }
 
 fn disabled_component() -> Value {
@@ -2419,7 +2501,7 @@ impl ObservabilityWorker {
                 let query_trace_id = input.trace_id.clone();
                 let query_trace_ids = input.trace_ids.clone();
                 let query_input = input.clone();
-                let query_view = run_blocking_query("traces::list summary view", move || {
+                let query_view = run_light_query("traces::list summary view", move || {
                     if unfiltered {
                         // Keys only: sorting and paging never decode a
                         // payload, so the cost tracks the root count rather
@@ -2445,19 +2527,23 @@ impl ObservabilityWorker {
                             .take(limit)
                             .map(|root| root.trace_id)
                             .collect();
-                        (otel::get_query_spans_by_trace_ids(&trace_ids), Some(total))
+                        // Summaries read span headers only: no payload is
+                        // decoded and no event or link is copied.
+                        (
+                            otel::get_query_span_headers_by_trace_ids(&trace_ids),
+                            Some(total),
+                        )
                     } else if let Some(trace_id) = query_trace_id {
-                        (otel::get_query_spans_by_trace_id(&trace_id), None)
+                        (otel::get_query_span_headers_by_trace_ids(&[trace_id]), None)
                     } else if let Some(trace_ids) = query_trace_ids {
-                        (otel::get_query_spans_by_trace_ids(&trace_ids), None)
+                        (otel::get_query_span_headers_by_trace_ids(&trace_ids), None)
                     } else {
                         // The root keys and the attribute index reject
-                        // traces before any payload is decoded; only the
-                        // candidates left are read in full for the exact
-                        // pass below.
+                        // traces before any span is read; the headers of
+                        // the candidates left feed the exact pass below.
                         // ponytail: status, duration and time filters, and
                         // hidden-function exclusions alone, narrow nothing
-                        // here, so they still read most traces in full; a
+                        // here, so they still read most traces' headers; a
                         // per-trace aggregate query would page them too.
                         let indexed = IndexedListFilters::load(&query_input);
                         let mut roots_by_trace =
@@ -2480,7 +2566,7 @@ impl ObservabilityWorker {
                                 .then_some(trace_id)
                             })
                             .collect();
-                        (otel::get_query_spans_by_trace_ids(&trace_ids), None)
+                        (otel::get_query_span_headers_by_trace_ids(&trace_ids), None)
                     }
                 })
                 .await;
@@ -2611,7 +2697,9 @@ impl ObservabilityWorker {
                 // is the latency the caller actually experiences.
                 let query_trace_id = input.trace_id.clone();
                 let query_trace_ids = input.trace_ids.clone();
-                let query_view = run_blocking_query("traces::list query view", move || {
+                let include_events = input.include_events.unwrap_or(true);
+                let status = pushed_down_status(&input);
+                let query_view = run_blocking_query_held("traces::list query view", move || {
                     if is_unfiltered_all_spans_page {
                         let page =
                             otel::get_query_spans_page_by_start_time(offset, limit, sort_order_asc);
@@ -2624,10 +2712,20 @@ impl ObservabilityWorker {
                             include_internal,
                         );
                         (page.spans, Some(page.total))
-                    } else if let Some(ref trace_id) = query_trace_id {
-                        (otel::get_query_spans_by_trace_id(trace_id), None)
+                    } else if let Some(trace_id) = query_trace_id {
+                        let spans = otel::get_query_trace_spans(
+                            &[trace_id],
+                            include_events,
+                            status.as_deref(),
+                        );
+                        (spans, None)
                     } else if let Some(ref trace_ids) = query_trace_ids {
-                        (otel::get_query_spans_by_trace_ids(trace_ids), None)
+                        let spans = otel::get_query_trace_spans(
+                            trace_ids,
+                            include_events,
+                            status.as_deref(),
+                        );
+                        (spans, None)
                     } else if search_all {
                         (otel::get_query_spans(), None)
                     } else {
@@ -2635,10 +2733,18 @@ impl ObservabilityWorker {
                     }
                 })
                 .await;
-                let (all_spans, prepaginated_total) = match query_view {
+                let ((mut all_spans, prepaginated_total), permit) = match query_view {
                     Ok(result) => result,
                     Err(error) => return FunctionResult::Failure(error),
                 };
+                // Dropped before anything below awaits, so a page of payloads
+                // is not held across the tag enrichment.
+                if !include_events {
+                    for span in &mut all_spans {
+                        span.events = Vec::new();
+                        span.links = Vec::new();
+                    }
+                }
                 let query_view_elapsed = query_started.elapsed();
 
                 // One "now" for the whole listing — pending spans measure
@@ -2827,7 +2933,11 @@ impl ObservabilityWorker {
                         "service_name" => a.service_name.cmp(&b.service_name),
                         "name" => a.name.cmp(&b.name),
                         _ => a.start_time_unix_nano.cmp(&b.start_time_unix_nano),
-                    };
+                    }
+                    // Ties keep one order across calls, so offset pages neither
+                    // repeat nor skip a span.
+                    .then_with(|| a.trace_id.cmp(&b.trace_id))
+                    .then_with(|| a.span_id.cmp(&b.span_id));
                     if sort_order_asc { cmp } else { cmp.reverse() }
                 });
                 let sorting_elapsed = query_started.elapsed();
@@ -2848,8 +2958,12 @@ impl ObservabilityWorker {
                 let tag_started = Instant::now();
                 let unique_page_traces = page_trace_ids.len();
                 let enrichment_trace_ids = page_trace_ids;
+                // Under the query's own permit: a second one could answer busy
+                // and throw away the page already read, and none at all would let
+                // enrichments pile up past the pool.
                 let tags_by_trace_id =
-                    match run_blocking_query("traces::list tag enrichment", move || {
+                    match run_unlimited("traces::list tag enrichment", move || {
+                        let _permit = permit;
                         otel::get_query_trace_tags_by_trace_ids(&enrichment_trace_ids)
                     })
                     .await
@@ -2859,14 +2973,9 @@ impl ObservabilityWorker {
                     };
                 let tag_elapsed = tag_started.elapsed();
                 let serialization_started = Instant::now();
-                let include_events = input.include_events.unwrap_or(true);
                 let result_spans: Vec<Value> = spans
                     .into_iter()
-                    .map(|mut s| {
-                        if !include_events {
-                            s.events.clear();
-                            s.links.clear();
-                        }
+                    .map(|s| {
                         let tags = tags_by_trace_id
                             .get(&s.trace_id)
                             .cloned()
@@ -2967,8 +3076,7 @@ impl ObservabilityWorker {
                 // clear() waits on the writer thread (up to 5s); keep it off
                 // the async executor. The hot clear stays sync — pure memory.
                 if let Some(archive) = otel::get_trace_disk_storage() {
-                    let cleared =
-                        run_blocking_query("traces::clear", move || archive.clear()).await;
+                    let cleared = run_unlimited("traces::clear", move || archive.clear()).await;
                     match cleared {
                         Ok(Ok(())) => {}
                         Ok(Err(error)) => {
@@ -9119,6 +9227,200 @@ mod tests {
         rest["events"] = serde_json::json!([]);
         rest["links"] = serde_json::json!([]);
         assert_eq!(bare, rest, "only events and links are dropped");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_a_status_read_copies_only_the_matching_hot_spans_events() {
+        reset_observability_test_state();
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        let event = otel::StoredSpanEvent {
+            name: "invocation".to_string(),
+            timestamp_unix_nano: 1,
+            attributes: vec![("iii.payload.json".to_string(), "x".repeat(1024))],
+        };
+        let mut ok = make_span("t-1", "s-1", None, "turn", "svc", 1, 10, "ok", vec![]);
+        ok.events = vec![event.clone()];
+        let mut failed = make_span(
+            "t-1",
+            "s-2",
+            Some("s-1"),
+            "tool",
+            "svc",
+            2,
+            5,
+            "error",
+            vec![],
+        );
+        failed.events = vec![event];
+        span_storage.add_spans(vec![ok, failed]);
+
+        let spans = otel::get_query_trace_spans(&["t-1".to_string()], true, Some("ERROR"));
+        let events_of = |id: &str| {
+            spans
+                .iter()
+                .find(|span| span.span_id == id)
+                .map(|span| span.events.len())
+        };
+        assert_eq!(
+            events_of("s-2"),
+            Some(1),
+            "the matching span keeps its events"
+        );
+        assert_eq!(
+            events_of("s-1"),
+            Some(0),
+            "a span of another status comes back as a header only"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_list_traces_summarizes_from_span_headers_only() {
+        reset_observability_test_state();
+
+        let module = make_test_module(Arc::new(Engine::new()));
+        let span_storage = otel::get_span_storage().expect("span storage should exist");
+        span_storage.clear();
+        let mut root = make_span(
+            "t-1",
+            "s-1",
+            None,
+            "turn",
+            "svc",
+            1,
+            10,
+            "ok",
+            vec![("iii.session.id", "s1"), ("function_id", "harness::turn")],
+        );
+        root.events = vec![otel::StoredSpanEvent {
+            name: "invocation".to_string(),
+            timestamp_unix_nano: 1,
+            attributes: vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))],
+        }];
+        let child = make_span(
+            "t-1",
+            "s-2",
+            Some("s-1"),
+            "tool",
+            "svc",
+            2,
+            5,
+            "error",
+            vec![],
+        );
+        span_storage.add_spans(vec![root, child]);
+
+        let before = span_storage.full_payload_snapshot_reads();
+        let result = module
+            .list_traces(TracesListInput {
+                trace_ids: Some(vec!["t-1".to_string()]),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(
+            span_storage.full_payload_snapshot_reads(),
+            before,
+            "a summary must not copy any span's events or links"
+        );
+        match result {
+            FunctionResult::Success(value) => {
+                let value = serde_json::to_value(&value).unwrap();
+                let trace = &value["traces"][0];
+                assert_eq!(trace["trace_id"], "t-1");
+                assert_eq!(trace["name"], "turn");
+                assert_eq!(trace["function_id"], "harness::turn");
+                assert_eq!(trace["trace_tags"]["iii.session.id"], "s1");
+                assert_eq!(trace["span_count"], 2);
+                assert_eq!(trace["error_count"], 1);
+                assert_eq!(trace["status"], "error");
+            }
+            _ => panic!("expected list_traces success"),
+        }
+    }
+
+    #[test]
+    fn test_status_is_pushed_down_only_when_no_span_of_another_status_matters() {
+        let sentinel_page = TracesListInput {
+            trace_id: Some("t-1".to_string()),
+            status: Some("error".to_string()),
+            search_all_spans: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(pushed_down_status(&sentinel_page).as_deref(), Some("error"));
+
+        let roots_only = TracesListInput {
+            search_all_spans: None,
+            ..sentinel_page.clone()
+        };
+        assert_eq!(
+            pushed_down_status(&roots_only),
+            None,
+            "root detection needs every span's parent"
+        );
+        let by_name = TracesListInput {
+            name: Some("turn".to_string()),
+            ..sentinel_page.clone()
+        };
+        assert_eq!(
+            pushed_down_status(&by_name),
+            None,
+            "a name matches at trace level, over spans of any status"
+        );
+        let by_attribute = TracesListInput {
+            attributes: Some(vec![vec!["k".to_string(), "v".to_string()]]),
+            ..sentinel_page
+        };
+        assert_eq!(pushed_down_status(&by_attribute), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_blocking_queries_past_the_permits_answer_busy() {
+        let permits = Arc::new(tokio::sync::Semaphore::new(1));
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let held = tokio::spawn({
+            let permits = permits.clone();
+            async move {
+                run_limited(
+                    &permits,
+                    std::time::Duration::from_secs(5),
+                    "held",
+                    move || released.recv().ok(),
+                )
+                .await
+            }
+        });
+        while permits.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+
+        let busy = run_limited(
+            &permits,
+            std::time::Duration::from_millis(20),
+            "second",
+            || (),
+        )
+        .await;
+        assert_eq!(
+            busy.err().map(|error| error.code),
+            Some("observability_busy".to_string()),
+            "past the permits a query answers busy instead of queueing a thread"
+        );
+
+        release.send(()).unwrap();
+        drop(held.await.unwrap().unwrap());
+        assert!(
+            run_limited(
+                &permits,
+                std::time::Duration::from_millis(20),
+                "third",
+                || ()
+            )
+            .await
+            .is_ok(),
+            "the permit returns when the query ends"
+        );
     }
 
     #[tokio::test]
