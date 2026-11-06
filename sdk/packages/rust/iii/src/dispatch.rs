@@ -1011,8 +1011,13 @@ mod tests {
 
     /// What the scan of every observer and the index select agree on `doc`
     /// for a call that ended with `success`; returns how many observers the
-    /// index evaluated.
-    fn agree_on_doc(set: &CompiledSet, doc_value: &Value, success: bool, context: &str) -> usize {
+    /// index evaluated and how many it selected.
+    fn agree_on_doc(
+        set: &CompiledSet,
+        doc_value: &Value,
+        success: bool,
+        context: &str,
+    ) -> (usize, usize) {
         let mut doc = Doc::from_value(doc_value);
         if !success {
             // A failed call has no output.
@@ -1026,7 +1031,7 @@ mod tests {
             "{context}: success {success}, doc {doc_value}\n  index {:?}\n  scan  {:?}",
             got.0, expected.0
         );
-        set.accepting(success).candidates(&doc)
+        (set.accepting(success).candidates(&doc), expected.0.len())
     }
 
     fn valid(rng: &mut Rng) -> Value {
@@ -1040,7 +1045,7 @@ mod tests {
 
     #[test]
     fn the_index_selects_what_the_evaluator_selects_on_the_shared_generator() {
-        let mut docs = 0usize;
+        let (mut docs, mut filed_on_error, mut selected_on_error) = (0usize, 0usize, 0usize);
         for seed in 0..150u64 {
             let mut rng = Rng::new(40_000 + seed);
             let count = 8 + rng.below(56);
@@ -1050,16 +1055,26 @@ mod tests {
                 set = set.with(&observer(&mut rng, &id(n), src, n as u64));
             }
             assert_eq!(set.observers.len(), count);
+            filed_on_error += set.on_error.len();
             for src in &sources {
                 for _ in 0..6 {
                     let doc = generator::doc(&mut rng, src);
                     let success = rng.chance(70);
-                    agree_on_doc(&set, &doc, success, &format!("seed {seed}"));
+                    let (_, selected) = agree_on_doc(&set, &doc, success, &format!("seed {seed}"));
+                    if !success {
+                        selected_on_error += selected;
+                    }
                     docs += 1;
                 }
             }
         }
         assert!(docs > 25_000, "only {docs} documents");
+        // Observers of failed calls are generated and selected, so the index
+        // is compared on both outcomes.
+        assert!(
+            filed_on_error > 0 && selected_on_error > 0,
+            "{filed_on_error} observers of failed calls, {selected_on_error} selected"
+        );
     }
 
     /// Values equality filters and calls share: numbers in several
@@ -1231,8 +1246,8 @@ mod tests {
     /// index of the call's outcome select agree on `parts`, as a local call
     /// is matched (its `error` and `caller` serialized only when an observer
     /// of its outcome reads them); returns how many observers the index
-    /// evaluated.
-    fn agree_on_call(set: &CompiledSet, parts: &Parts, context: &str) -> usize {
+    /// evaluated and how many it selected.
+    fn agree_on_call(set: &CompiledSet, parts: &Parts, context: &str) -> (usize, usize) {
         let view = CallView {
             input: Some(&parts.input),
             output: parts.success.then_some(&parts.output),
@@ -1257,12 +1272,12 @@ mod tests {
         let doc = doc_parts.doc(view.input, view.output, view.metadata);
         let index = set.accepting(parts.success);
         assert_eq!(lookup(FUNCTION, &doc, index), expected, "{context}, index");
-        index.candidates(&doc)
+        (index.candidates(&doc), expected.0.len())
     }
 
     #[test]
     fn the_index_selects_what_the_evaluator_selects_on_shared_paths_and_values() {
-        let (mut evaluated, mut held) = (0usize, 0usize);
+        let (mut evaluated, mut held, mut selected_on_error) = (0usize, 0usize, 0usize);
         for seed in 0..40u64 {
             let mut rng = Rng::new(50_000 + seed);
             let count = 50 + rng.below(250);
@@ -1271,10 +1286,18 @@ mod tests {
                 let filters = equality_filter(&mut rng);
                 set = set.with(&observer(&mut rng, &id(n), &filters, n as u64));
             }
+            assert!(
+                !set.on_error.is_empty(),
+                "seed {seed}: no observer of failed calls"
+            );
             for _ in 0..200 {
                 let parts = call(&mut rng);
-                evaluated += agree_on_call(&set, &parts, &format!("seed {seed}"));
+                let (candidates, selected) = agree_on_call(&set, &parts, &format!("seed {seed}"));
+                evaluated += candidates;
                 held += count;
+                if !parts.success {
+                    selected_on_error += selected;
+                }
             }
         }
         // Most observers are indexed, and a lookup rules most of them out.
@@ -1282,6 +1305,7 @@ mod tests {
             evaluated * 3 < held,
             "the index evaluated {evaluated} filters where a scan evaluates {held}"
         );
+        assert!(selected_on_error > 0, "no failed call selected an observer");
     }
 
     /// The roots the filters of `held`'s observers of an outcome read, and
@@ -1320,6 +1344,7 @@ mod tests {
             let mut set = CompiledSet::default();
             let mut held: Vec<Observer> = Vec::new();
             let mut versions: Vec<CompiledSet> = Vec::new();
+            let (mut error_filed, mut legacy_on_error) = (0usize, 0usize);
             for step in 0..500u64 {
                 let n = rng.below(100);
                 let at = held.iter().position(|obs| obs.id() == id(n));
@@ -1348,6 +1373,11 @@ mod tests {
                 let filed = |success: bool| held.iter().filter(|obs| obs.accepts(success)).count();
                 assert_eq!(set.on_success.len(), filed(true), "seed {seed} step {step}");
                 assert_eq!(set.on_error.len(), filed(false), "seed {seed} step {step}");
+                error_filed += filed(false);
+                legacy_on_error += held
+                    .iter()
+                    .filter(|obs| obs.view().fires_on.is_none() && obs.accepts(false))
+                    .count();
                 for success in [true, false] {
                     assert_eq!(
                         (set.reads(success), set.plan(success)),
@@ -1363,6 +1393,14 @@ mod tests {
                     versions.push(set.clone());
                 }
             }
+            // Observers of failed calls are generated, some announced with a
+            // legacy `on` (no `fires_on`), so both outcomes and both
+            // announcements are compared.
+            assert!(error_filed > 0, "seed {seed}: no observer of failed calls");
+            assert!(
+                legacy_on_error > 0,
+                "seed {seed}: no legacy `on` observer of failed calls"
+            );
             for (n, version) in versions.iter().enumerate() {
                 for _ in 0..20 {
                     let parts = call(&mut rng);
