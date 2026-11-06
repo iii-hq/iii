@@ -12,8 +12,8 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, OBSERVE_V1, OBSERVE_V2, Setup, TestEngine, connect, connect_with, eventually,
-    in_process, registered, spawn, spawn_engine, spawn_engine_with,
+    Client, OBSERVE_CAPTURE, OBSERVE_V1, OBSERVE_V2, Setup, TestEngine, connect, connect_with,
+    eventually, in_process, registered, spawn, spawn_engine, spawn_engine_with,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -33,7 +33,12 @@ async fn owner(t: &TestEngine, name: &str, functions: &[&str]) -> (Client, Vec<V
 
 /// A host for `functions` that acks like an accepting SDK.
 async fn host(t: &TestEngine, name: &str, functions: &[&str]) -> Client {
-    let mut client = connect(t, name, true).await;
+    host_with(t, name, OBSERVE_V1, functions).await
+}
+
+/// As [`host`], declaring `features`.
+async fn host_with(t: &TestEngine, name: &str, features: &[&str], functions: &[&str]) -> Client {
+    let mut client = connect_with(t, name, features).await;
     for function in functions {
         client.register_function(function).await;
     }
@@ -2585,7 +2590,8 @@ async fn a_re_announcement_restarts_the_ack_timeout() {
 async fn reports_apply_capture_for_auto_functions_and_count_invalid_items() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = owner(&t, "orders", &["orders::create"]).await;
-    let mut sink = host(&t, "sink", &["sink::errors"]).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut sink = host_with(&t, "sink", OBSERVE_CAPTURE, &["sink::errors"]).await;
     acked_observer(
         &mut orders,
         &mut sink,
@@ -2956,7 +2962,8 @@ async fn a_void_call_cannot_reach_a_private_function() {
 #[tokio::test]
 async fn a_host_without_observe_capture_is_told_the_on_each_observer_fires_on() {
     let t = spawn_engine(ObserversConfig::default()).await;
-    let mut watcher = connect_with(&t, "watcher", OBSERVE_V2).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
     let capture_host: &[&str] = &[
         "observe.v1",
         "observe.v2",

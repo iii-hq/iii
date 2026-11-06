@@ -8,7 +8,7 @@
 mod observe_support;
 
 use iii::observer::ObserversConfig;
-use observe_support::{Client, TestEngine, connect, connect_with, eventually, spawn_engine};
+use observe_support::{Client, TestEngine, connect_with, eventually, spawn_engine};
 use serde_json::{Value, json};
 
 /// A host built on a new SDK: it reads `fires_on`.
@@ -94,7 +94,8 @@ async fn orders_host(t: &TestEngine, name: &str, features: &[&str]) -> (Client, 
 async fn announced_views(features: &[&str]) -> (TestEngine, Client, Vec<Value>, Vec<Value>) {
     let t = spawn_engine(ObserversConfig::default()).await;
     let (mut orders, _) = orders_host(&t, "orders", features).await;
-    let mut sink = connect(&t, "sink", true).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut sink = connect_with(&t, "sink", CAPTURE_HOST).await;
     sink.register_function("sink::orders").await;
     observe_support::registered(&t.engine, "default", "sink::orders").await;
 
@@ -198,7 +199,8 @@ async fn each_host_gets_the_view_its_own_features_call_for() {
     rc_host.manual_acks();
     rc_host.register_function("rc::run").await;
     function_registered(&mut rc_host, "rc::run").await;
-    let mut sink = connect(&t, "sink", true).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut sink = connect_with(&t, "sink", CAPTURE_HOST).await;
     sink.register_function("sink::all").await;
     observe_support::registered(&t.engine, "default", "sink::all").await;
 

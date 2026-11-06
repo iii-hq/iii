@@ -193,7 +193,10 @@ pub enum Deliver {
 
 /// CONTRACT D4: an older SDK's `source.on` / `source.deliver`, translated at
 /// registration (the first `observe` and every replay) into what the
-/// observer does: `None` when the source carries neither.
+/// observer does: `None` when the source carries neither and `always` is
+/// unset. CONTRACT D8: `always` is set for a worker that did not declare
+/// `observe.capture` (an rc or 0.25 SDK), whose every source keeps the old
+/// semantics, `on` and `deliver` or not.
 ///
 /// Firing comes from `on` alone (absent or `success`: successes; `error`:
 /// failures; `complete`: both), set directly rather than through
@@ -206,8 +209,9 @@ pub(crate) fn translate_legacy(
     on: Option<&Value>,
     deliver: Option<&Value>,
     capture: Option<&[Capture]>,
+    always: bool,
 ) -> Result<Option<(CaptureSet, Deliver)>, String> {
-    if on.is_none() && deliver.is_none() {
+    if on.is_none() && deliver.is_none() && !always {
         return Ok(None);
     }
     let (on_success, on_error) = match on {

@@ -93,14 +93,27 @@ fn reject(code: &str, message: impl Into<String>) -> ErrorBody {
 struct Resolved {
     capture: CaptureSet,
     deliver: Deliver,
-    /// Translated from an older SDK's `on` / `deliver` (CONTRACT D4).
-    legacy: bool,
+    /// Translated to the old semantics, and why.
+    legacy: Option<Legacy>,
+}
+
+/// Why an observer keeps the v0.25 semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Legacy {
+    /// Its source carries `on` / `deliver` (CONTRACT D4).
+    Fields,
+    /// Its worker did not declare `observe.capture`: an rc or 0.25 SDK
+    /// (CONTRACT D8).
+    Worker,
 }
 
 /// What an `observe` source may carry, and what it makes of the observer:
 /// known capture values; an older SDK's `on` / `deliver`, translated
-/// (CONTRACT D4); otherwise a capture that fires on something.
-fn resolve_source(source: &ObserveSource) -> Result<Resolved, ErrorBody> {
+/// (CONTRACT D4); otherwise a capture that fires on something. A worker that
+/// did not declare `observe.capture` (`observe_capture` unset: an rc or 0.25
+/// SDK) keeps the old semantics for every source, through the same
+/// translation (CONTRACT D8).
+fn resolve_source(source: &ObserveSource, observe_capture: bool) -> Result<Resolved, ErrorBody> {
     // Values a newer peer may send and this engine cannot honour
     // (CONTRACT D14). Never defaulted: the observer would silently do
     // something other than what was asked.
@@ -116,13 +129,19 @@ fn resolve_source(source: &ObserveSource) -> Result<Resolved, ErrorBody> {
         source.on.as_ref(),
         source.deliver.as_ref(),
         source.capture.as_deref(),
+        !observe_capture,
     ) {
         Err(message) => return Err(reject(observe_codes::INVALID_ARGS, message)),
         Ok(Some((capture, deliver))) => {
+            let legacy = if source.on.is_some() || source.deliver.is_some() {
+                Legacy::Fields
+            } else {
+                Legacy::Worker
+            };
             return Ok(Resolved {
                 capture,
                 deliver,
-                legacy: true,
+                legacy: Some(legacy),
             });
         }
         Ok(None) => {}
@@ -139,18 +158,28 @@ fn resolve_source(source: &ObserveSource) -> Result<Resolved, ErrorBody> {
         } else {
             Deliver::Payload
         },
-        legacy: false,
+        legacy: None,
     })
 }
 
 /// The deprecation warning of a translated observer, once per registration.
-fn warn_legacy(id: &str, source: &ObserveSource, resolved: Resolved) {
+fn warn_legacy(id: &str, source: &ObserveSource, resolved: Resolved, legacy: Legacy) {
     let fields = source.legacy_fields().join(", ");
     let capture = capture_replacing(resolved.capture, resolved.deliver)
         .iter()
         .map(|capture| format!("\"{capture}\""))
         .collect::<Vec<_>>()
         .join(", ");
+    if legacy == Legacy::Worker {
+        tracing::warn!(
+            observer_id = %id,
+            "observer `{id}` comes from a worker that does not declare `observe.capture` \
+             (an older SDK): it keeps the deprecated v0.25 semantics (it fires on successes \
+             only and its payload carries exactly `source.capture`); they will be removed. \
+             Upgrade the SDK and use `source.capture: [{capture}]`"
+        );
+        return;
+    }
     tracing::warn!(
         observer_id = %id,
         fields = %fields,
@@ -311,9 +340,9 @@ impl ObserverRegistry {
         // an invalid `on` / `deliver` or a capture that fires on nothing is
         // refused too, rather than answered as the observer it claims to be.
         // A translated one warns on every registration, replays included.
-        let resolved = resolve_source(&request.source)?;
-        if resolved.legacy {
-            warn_legacy(&request.id, &request.source, resolved);
+        let resolved = resolve_source(&request.source, worker.features.observe_capture())?;
+        if let Some(legacy) = resolved.legacy {
+            warn_legacy(&request.id, &request.source, resolved, legacy);
         }
 
         // A replay: the same spec from the observing connection is a no-op

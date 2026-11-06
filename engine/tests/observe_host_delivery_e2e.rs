@@ -17,8 +17,8 @@ mod observe_support;
 
 use iii::observer::ObserversConfig;
 use observe_support::{
-    Client, OBSERVE_V1, TestEngine, connect, connect_v2, connect_with, evaluated, eventually,
-    registered, spawn_engine,
+    Client, OBSERVE_CAPTURE, OBSERVE_V1, TestEngine, connect, connect_v2, connect_with, evaluated,
+    eventually, registered, spawn_engine,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -365,7 +365,8 @@ async fn a_fire_and_forget_call_is_answered_and_delivered_too() {
 async fn an_error_answer_activates_the_on_error_observers_whose_filters_match() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", &["payments::charge"]).await;
-    let mut sink = host(&t, "sink", &["sink::failures"]).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut sink = host_with(&t, "sink", OBSERVE_CAPTURE, &["sink::failures"]).await;
     let mut checkout = connect(&t, "checkout", true).await;
     sink.observe_active(observer(
         "failures",

@@ -50,6 +50,18 @@ async fn host(t: &TestEngine, name: &str, features: bool, functions: &[&str]) ->
     client
 }
 
+/// As [`host`], for a worker running a current SDK (`observe.capture`).
+async fn capture_host(t: &TestEngine, name: &str, functions: &[&str]) -> Client {
+    let mut client = connect_with(t, name, OBSERVE_CAPTURE).await;
+    for function in functions {
+        client.register_function(function).await;
+    }
+    for function in functions {
+        registered(&t.engine, "default", function).await;
+    }
+    client
+}
+
 fn fires(t: &TestEngine, id: &str) -> u64 {
     t.engine.observers.fires(id).unwrap_or_default()
 }
@@ -305,10 +317,10 @@ async fn filters_on_output_and_caller() {
 async fn capture_decides_which_outcomes_fire() {
     let t = spawn_engine(ObserversConfig::default()).await;
     let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
-    let mut sink = host(
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut sink = capture_host(
         &t,
         "sink",
-        true,
         &[
             "alerts::raise",
             "metrics::record",
@@ -1795,7 +1807,8 @@ async fn observe_rejections() {
         .await;
     registered(&t.engine, "default", "vault::read").await;
     registered(&t.engine, "default", "vault::secret").await;
-    let mut watcher = connect(&t, "watcher", true).await;
+    // The observing worker runs a current SDK (CONTRACT D8).
+    let mut watcher = connect_with(&t, "watcher", OBSERVE_CAPTURE).await;
 
     let source = |extra: Value| {
         let mut source = json!({ "function_id": "orders::create" });
