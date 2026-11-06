@@ -14,6 +14,9 @@ name: Benchmark Compare
 # the `iii/vX.Y.Z[-pre]` release tag. The first ref listed is the baseline the
 # other columns are compared against.
 #
+# Besides the timings, the report lists the peak memory and the CPU each bench
+# binary used (see "Install the resource-measuring bench runner" below).
+#
 # Constraints:
 #   - GitHub runs issue_comment workflows from the DEFAULT branch only, so this
 #     file must be merged into main before /bench works on any PR (including PRs
@@ -169,6 +172,27 @@ jobs:
           PR: ${{ needs.authorize.outputs.pr }}
         run: git fetch --no-tags origin "refs/pull/$PR/head"
 
+      # Cargo runs every bench binary through this wrapper (a target runner), which
+      # prints the binary's wall time, CPU time and peak memory (GNU time) next to
+      # its timings. It lives outside the checked-out tree, so refs that predate it
+      # are measured the same way.
+      - name: Install the resource-measuring bench runner
+        run: |
+          cat > "$RUNNER_TEMP/bench-runner.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          # cargo runner: bench-runner.sh <bench-binary> [args...]
+          if [[ ! -x /usr/bin/time ]]; then exec "$@"; fi
+          name="$(basename "$1")"; name="${name%-*}"
+          tmp="$(mktemp)"
+          /usr/bin/time -f '%e %U %S %M' -o "$tmp" "$@"
+          rc=$?
+          read -r wall user sys maxrss < <(tail -n1 "$tmp")
+          rm -f "$tmp"
+          echo "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
+          exit "$rc"
+          RUNNER
+          chmod +x "$RUNNER_TEMP/bench-runner.sh"
+
       # All refs run sequentially on the SAME runner so the numbers are
       # comparable (separate runners add 10-20% noise). Each ref is benchmarked
       # with its own benches, so a tag that predates a benchmark simply has no
@@ -180,6 +204,9 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p out
+          # Cargo's per-target runner, set through the environment so it wins over any .cargo/config of a ref.
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          RUNNER_VAR="CARGO_TARGET_$(echo "$HOST" | tr 'a-z-' 'A-Z_')_RUNNER"
           echo "$REFS" > out/refs.json
           N=$(jq length out/refs.json)
           for i in $(seq 0 $((N-1))); do
@@ -192,7 +219,7 @@ jobs:
               git fetch --no-tags origin "$REV" || echo "::warning::pinned commit $REV is not available (PR force-pushed?)"
             fi
             if git worktree add --detach "$DIR" "$REV" && \
-               (cd "$DIR" && cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee "$GITHUB_WORKSPACE/out/$i.txt"; exit "${PIPESTATUS[0]}"); then
+               (cd "$DIR" && env "$RUNNER_VAR=$RUNNER_TEMP/bench-runner.sh" cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee "$GITHUB_WORKSPACE/out/$i.txt"; exit "${PIPESTATUS[0]}"); then
               echo ok > "out/$i.status"
             else
               echo failed > "out/$i.status"
@@ -240,22 +267,31 @@ jobs:
           def line_re():
               return re.compile(r'^test (.+?) \.\.\. bench:\s+([\d,]+) ns/iter \(\+/- ([\d,]+)\)')
 
+          def res_re():
+              # Printed by the bench runner: one line per bench binary.
+              return re.compile(r'^resource (\S+) wall_s=([\d.]+) user_s=([\d.]+) sys_s=([\d.]+) maxrss_kb=(\d+)')
+
           try:
               refs = json.load(open('out/refs.json'))
           except Exception:
               refs = []
 
-          results, status = [], []
+          results, status, resources = [], [], []
           for i, _ in enumerate(refs):
-              data = {}
+              data, res = {}, {}
               try:
                   for line in open(f'out/{i}.txt', errors='replace'):
+                      rm = res_re().match(line.strip())
+                      if rm:
+                          res[rm.group(1)] = {'wall': float(rm.group(2)), 'user': float(rm.group(3)),
+                                              'sys': float(rm.group(4)), 'rss_kb': int(rm.group(5))}
                       m = line_re().match(line.strip())
                       if m:
                           data[m.group(1)] = int(m.group(2).replace(',', ''))
               except FileNotFoundError:
                   pass
               results.append(data)
+              resources.append(res)
               try:
                   status.append(open(f'out/{i}.status').read().strip())
               except FileNotFoundError:
@@ -365,6 +401,60 @@ jobs:
               else:
                   out.append('_Full table omitted (too long for a comment); see the run summary and the artifact attached to the workflow run._')
                   open(os.environ['GITHUB_STEP_SUMMARY'], 'a').write(full + '\n')
+          # CPU and memory of each bench binary: peak resident memory, and the cores it kept busy on
+          # average ((user + sys CPU time) / wall time). Criterion runs for a fixed time, so CPU time
+          # itself barely moves: the cores and the memory are what a change shows up in.
+          def rss_fmt(kb):
+              mb = kb / 1024
+              return f'{mb / 1024:.2f} GiB' if mb >= 1024 else f'{mb:.0f} MiB'
+
+          def cores(v):
+              return (v['user'] + v['sys']) / v['wall'] if v['wall'] > 0 else 0.0
+
+          def chg(d):
+              return f'{pct(d)} {icon(d)}'.strip()
+
+          rnames = sorted({k for r in resources for k in r})
+          if rnames and any(results):
+              def rcell(i, name):
+                  v = resources[i].get(name)
+                  if v is None:
+                      return '—'
+                  base = resources[0].get(name)
+                  txt = f'{rss_fmt(v["rss_kb"])} · {cores(v):.2f} cores'
+                  if i == 0 or base is None:
+                      return txt
+                  return (f'{rss_fmt(v["rss_kb"])} ({chg(delta(base["rss_kb"], v["rss_kb"]))}) · '
+                          f'{cores(v):.2f} cores ({chg(delta(cores(base), cores(v)))})')
+
+              def rchange(name):
+                  base = resources[0].get(name)
+                  if base is None:
+                      return 0.0
+                  ds = []
+                  for r in resources[1:]:
+                      v = r.get(name)
+                      if v is not None:
+                          ds += [abs(delta(base['rss_kb'], v['rss_kb'])), abs(delta(cores(base), cores(v)))]
+                  return max(ds, default=0.0)
+
+              rflagged = [k for k in rnames if rchange(k) >= THRESHOLD]
+              rheaders = ['Benchmark binary'] + [
+                  r['label'] + (' (baseline)' if i == 0 else '') for i, r in enumerate(refs)]
+              rtable = ('| ' + ' | '.join(rheaders) + ' |\n|' + '---|' * len(rheaders) + '\n' + '\n'.join(
+                  '| ' + ' | '.join([f'`{k}`'] + [rcell(i, k) for i in range(n)]) + ' |' for k in rnames))
+              rblock = (
+                  f'<details{" open" if rflagged else ""}><summary>CPU and memory: {len(rflagged)} of {len(rnames)} '
+                  f'bench binaries changed by ≥{THRESHOLD:.0f}%</summary>\n\n'
+                  f'Peak resident memory of each bench binary, and the cores it kept busy on average '
+                  f'((user + sys CPU time) / wall time), with the change versus the baseline '
+                  f'(🔴 more, 🟢 less, threshold ±{THRESHOLD:.0f}%). The process is the benchmark harness, so compare '
+                  f'refs with each other, not against production numbers.\n\n' + rtable + '\n\n</details>')
+              if len('\n'.join(out)) + len(rblock) < LIMIT:
+                  out += ['', rblock]
+              else:
+                  out += ['', '_CPU and memory table omitted (too long for a comment); see the run summary._']
+                  open(os.environ['GITHUB_STEP_SUMMARY'], 'a').write(rblock + '\n')
           open('report.md', 'w').write('\n'.join(out) + '\n')
           PY
           cat report.md >> "$GITHUB_STEP_SUMMARY" || true
