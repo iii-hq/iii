@@ -15,7 +15,7 @@ from iii.trigger import TriggerConfig, TriggerHandler
 
 GUIDE = "https://iii.dev/docs/upgrading/from-0-24-x"
 TRIGGER_MESSAGE = (
-    "register_trigger is deprecated and will be removed in a future release. Use iii.observe(source, target) "
+    "register_trigger is deprecated and will be removed in a future release. Use worker.observe(source, target) "
     f"instead. Migration guide: {GUIDE}"
 )
 TRIGGER_TYPE_MESSAGE = (

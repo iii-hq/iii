@@ -33,7 +33,7 @@ func TestDeprecatedTriggerAPIsWarnOncePerProcessAndKeepWorking(t *testing.T) {
 	_, _ = other.RegisterTrigger(RegisterTriggerInput{ID: "t-c", Type: "webhook", FunctionID: "hooks::in"})
 	_, _ = other.RegisterTriggerType(RegisterTriggerTypeInput{ID: "webhook-3", Description: ""}, handler)
 
-	const trigger = "RegisterTrigger is deprecated and will be removed in a future release. Use client.Observe(source, target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x"
+	const trigger = "RegisterTrigger is deprecated and will be removed in a future release. Use worker.Observe(source, target) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x"
 	const triggerType = "RegisterTriggerType is deprecated and will be removed in a future release. Register a function with an observe descriptor (RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{ ... }})) instead. Migration guide: https://iii.dev/docs/upgrading/from-0-24-x"
 	if n := logs.count(trigger); n != 1 {
 		t.Errorf("RegisterTrigger warned %d times:\n%s", n, logs.String())

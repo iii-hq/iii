@@ -698,7 +698,7 @@ fn warn_register_trigger() {
     warn_deprecated_once(
         &WARNED_REGISTER_TRIGGER,
         "register_trigger is deprecated and will be removed in a future release. Use \
-         iii.observe(Source::function(..).args(..), target) instead.",
+         worker.observe(Source::function(..).args(..), target) instead.",
     );
 }
 
@@ -948,7 +948,7 @@ impl<C: Serialize, R> TriggerTypeRef<C, R> {
     /// Register a trigger with compile-time validated trigger config.
     #[deprecated(
         since = "0.25.0",
-        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+        note = "use worker.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
     )]
     pub fn register_trigger(
         &self,
@@ -2698,7 +2698,7 @@ impl IIIClient {
     /// ```
     #[deprecated(
         since = "0.25.0",
-        note = "use iii.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
+        note = "use worker.observe(Source::function(..).args(..), target) instead; see https://iii.dev/docs/upgrading/from-0-24-x"
     )]
     pub fn register_trigger(&self, input: RegisterTriggerInput) -> Result<Trigger, Error> {
         warn_register_trigger();
