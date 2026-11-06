@@ -199,6 +199,9 @@ sources.
 - Against an engine without `observe.v2`, a function that declares `args_format`, `private`, or
   `observable: false`, or sets `onObservationMatch` or `onObservationDeliver`, stays unregistered and the SDK logs
   `UNSUPPORTED` once; everything else works.
+- Against an engine without `observe.capture` (0.25, or a 0.26 release candidate), observers send
+  the legacy `on` their `capture` implies and the SDK logs a one-time deprecation warning: upgrade
+  the engine. The default `capture` is `[input, output, caller]`; `metadata` is opt-in.
 - `trigger` is a deprecated alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
   `TriggerRequest`, `TriggerAction`, `iii trigger`): the same function or type, marked deprecated
   in types (JSDoc `@deprecated`, Rust `#[deprecated]`, Go `// Deprecated:`, Python docstring) with

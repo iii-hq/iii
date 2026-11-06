@@ -16,8 +16,10 @@ type: "how-to"
 Every function your worker registers can be observed unless you specify otherwise (see
 [Registration options](#registration-options)). By default, iii runs each observer's target after
 each successful call of the function, with what the observer captures: the call's input, the
-handler's return value, the caller and the call's metadata unless its `capture` says otherwise (see
-[Observers](../using-iii/observers)). This page describes
+handler's return value, and the caller unless its `capture` says otherwise (the call's metadata only
+when `capture` names it; see [Observers](../using-iii/observers)). Your hooks receive the call's
+metadata whatever the observers capture, so route on it in `onObservationMatch` or
+`onObservationDeliver`. This page describes
 how to manage this: what the observers of its functions receive, which calls reach which observer,
 what each observer sets up, and what the caller gets back. To observe a function, see
 [Observers](../using-iii/observers).
@@ -1925,7 +1927,7 @@ observer, so the worker can keep it, for example in a map.
 | `filters`               | The observer's filters in [normal form](../reference/filters#normal-form).                                                          |
 | `target`                | The target function id.                                                                                                             |
 | `capture`               | Which parts of the call its payload carries, and with them which calls the observer gets (see [`capture`](../using-iii/observers#capture)). |
-| `matches(call)`         | Evaluates the observer's capture and filters on a call.                                                                             |
+| `matches(call)`         | Evaluates the observer's capture and filters on a call. The outcomes that fire it come from the engine's `fires_on`, or, from an engine without `observe.capture`, from the deprecated legacy `on`. |
 | `accepted()`            | Resolves once the SDK has acknowledged the observer. See [Send an observer its initial state](#send-an-observer-its-initial-state). |
 | `reject(code, message)` | Late rejection of an active observer. See [Reject an observer later](#reject-an-observer-later).                                    |
 

@@ -458,6 +458,8 @@ The target receives the `Observed` payload of the call. It always has the ids, `
 timings. It has `input`, `output`, `error`, `caller`, and `metadata` when [`capture`](#capture)
 includes them and the call has them: `output` only after a successful call, `error` only after a
 failed one. A field that is not captured, or that the call does not have, is absent, never `null`.
+This differs from 0.25, which sent `"output": null` to an observer that captured `output` when a
+successful call reported no output.
 
 | Field                          | Meaning                                                                          |
 | ------------------------------ | -------------------------------------------------------------------------------- |
@@ -544,7 +546,14 @@ failed one. A field that is not captured, or that the call does not have, is abs
 ### `capture`
 
 `capture` lists the fields the payload carries: any of `input`, `output`, `error`, `caller`, and
-`metadata`. The default is `["input", "output", "caller", "metadata"]`.
+`metadata`. The default is `["input", "output", "caller"]`.
+
+`metadata` is opt-in: the call's metadata reaches the target only when `capture` names it. Earlier
+0.26 release candidates of this change added `metadata` to the default; 0.26 does not. To route
+calls by their metadata (for example a `for_observer` key), use the hosting worker's
+[`onObservationMatch` or `onObservationDeliver`](../creating-workers/observable-functions#hooks)
+hook, which receives the call's metadata whatever the observers capture. A [filter](#filters) can
+also read `metadata.*` without `metadata` in `capture`.
 
 The fields also decide after which calls the target runs:
 
@@ -626,14 +635,85 @@ To run the target after failed calls with their error, capture `error`:
 To get the input of every call, successful or failed, capture `input` and `error`: the target runs
 after both, and the payload's `status` says which.
 
+{/* pending-test: error-filter-recipe */}
+
+#### Failed calls with their input
+
+To run the target after failed calls only, and still get each call's input, capture `input` and
+`error` and keep only the calls that have an `error` with a filter:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // After each failed call only: its input and its error.
+    worker.observe(
+      {
+        function_id: "orders::create",
+        capture: ["input", "error"],
+        filters: { error: { $exists: true } },
+      },
+      "alerts::order-failed",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # After each failed call only: its input and its error.
+    worker.observe(
+        {
+            "function_id": "orders::create",
+            "capture": ["input", "error"],
+            "filters": {"error": {"$exists": True}},
+        },
+        "alerts::order-failed",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Capture, Source};
+    use serde_json::json;
+
+    // After each failed call only: its input and its error.
+    worker.observe(
+        Source::function("orders::create")
+            .capture([Capture::Input, Capture::Error])
+            .filters(json!({ "error": { "$exists": true } })),
+        "alerts::order-failed",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // After each failed call only: its input and its error.
+    worker.Observe(iii.Source{
+        FunctionID: "orders::create",
+        Capture:    []iii.Capture{iii.CaptureInput, iii.CaptureError},
+        Filters:    iii.Filters{"error": iii.Op{"$exists": true}},
+    }, "alerts::order-failed")
+    ```
+
+  </Tab>
+</Tabs>
+
+`capture: ["input", "error"]` fires on both outcomes, and the filter drops the successful calls
+before they leave the worker that evaluates it: the hosting worker's SDK for the calls it runs
+itself, or the engine for the calls it routes. The observing worker never receives a successful
+call. Capturing `error` alone would fire on failures only, but its payload would not carry the
+input.
+
 ### Metadata
 
 The observer's `metadata` option, set in the [policy](#policy-and-metadata), reaches the target
 function as its second argument on every activation.
 
 <Note title="Two kinds of metadata">
-  The payload's `metadata` field is the metadata of the observed call, present when `capture`
-  includes `metadata`. The observer's `metadata` option is the target function's second argument.
+  The payload's `metadata` field is the metadata of the observed call, present only when `capture`
+  names `metadata`: the default leaves it out. The observer's `metadata` option is the target
+  function's second argument.
 </Note>
 
 ### The target function's return value
@@ -1065,7 +1145,7 @@ The engine lists observers through three built-in functions:
 
 | Function                     | Input                                   | Returns                                                                                                                                                                   |
 | ---------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, args, normalized filters, target, observing worker, state, reason, fires, drops and activation failures by reason, policy. |
+| `engine::observers::list`    | `{ function_id?, namespace?, worker? }` | `{ observers: [...] }`: id, observed function, args, normalized filters, target, `capture`, `fires_on` (the outcomes that fire the observer: `success`, `error`, or both), observing worker, state, reason, `fires` (the number of activations), drops and activation failures by reason, policy. |
 | `engine::observers::get`     | `{ id }`                                | One observer, or `OBSERVER_NOT_FOUND`.                                                                                                                                    |
 | `engine::observers::dispose` | `{ id }`                                | Disposes an observer. Only the observing worker, or a caller without RBAC restrictions, may do it.                                                                        |
 
@@ -1276,3 +1356,11 @@ To change or deny observers in the RBAC configuration, see
   every routed call, whichever SDK hosts the function, and the hosting SDK reports its own local
   calls.
 - Workers on SDKs older than 0.25 cannot observe.
+- `on` and `deliver` in an observer's source are deprecated. A 0.26 engine translates them to their
+  0.25 behavior and logs a warning, and an observer from a worker on a 0.25 SDK or a 0.26 release
+  candidate SDK always gets the 0.25 semantics. Replace them with `capture`: see
+  [Legacy `on` and `deliver`](../reference/engine-protocol#legacy-on-and-deliver). Support will be
+  removed in a future release.
+- A 0.26 SDK connected to a 0.25 engine or a 0.26 release candidate engine sends each observer with
+  the legacy `on` its `capture` implies, and logs once that this is deprecated. Upgrade the engine.
+  See the [compatibility matrix](../upgrading/from-0-25-x#compatibility).

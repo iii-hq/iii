@@ -341,17 +341,66 @@ differ, this file wins, and the spec is updated to match.
     `output`, `error`: the engine refuses one with only `caller` or
     `metadata` (`INVALID_ARGS`). `[]` is resolved before that check to a
     success carrying the top-level fields only (ids, `status`, timing). The
-    default is `input`, `output`, `caller`, `metadata`, so a default
-    observer runs on success only. The payload carries the captured fields
+    default is `input`, `output`, `caller` (amended: `metadata` is opt-in,
+    see decision 62), so a default observer runs on success only. The
+    payload carries the captured fields
     that apply to the outcome: `output` only on success, `error` only on
     error, and a field that does not apply is absent, never `null`. Hosts
     evaluate the same rule for the calls they deliver. A `source` that
-    carries `on` or `deliver` is refused (`INVALID_ARGS`) rather than read
-    as something else. The engine's own observers (the configuration, stream
+    carries `on` or `deliver` is translated, not refused (amended by
+    decision 60). The engine's own observers (the configuration, stream
     and telemetry workers, engine-owned observers) still hand their targets
     the observed input alone, through an engine-internal setting that never
-    reaches the wire; their announced `capture` names `input`, so a host
-    reports it.
+    reaches the wire; their capture set is input only (successes, `input`),
+    so `Needs` and the announced `capture` are `["input"]` and a host reports
+    no `output`, `caller` or `metadata` for them.
+60. **Legacy `on` / `deliver` are translated, deprecated.** `ObserveSource`
+    keeps two explicit optional fields, `on` and `deliver` (never a catch-all
+    map). When either is present, or when the observing connection did not
+    declare `observe.capture` (a 0.25 SDK, an rc SDK), the engine translates
+    the source at registration, on the first `observe` and on every replay,
+    to the exact 0.25 behaviour: firing from `on` alone (absent/`success`,
+    `error`, `complete`), set directly on the capture set without the public
+    capture gate (`[caller]`, `[metadata]` are accepted); payload fields the
+    capture list exactly (absent: `[input, output, caller]`); `deliver`
+    absent/`envelope` the `Observed` payload, `input` the raw input, `output`
+    the raw output through an engine-internal mode (`null` when absent, so on
+    every failure). It logs one `warn` per registration naming the observer
+    id, the fields and the replacement `capture`. Invalid values (`on:
+    "bogus"`, a non-string) stay `INVALID_ARGS`; `null` is absent. The
+    translation is part of the spec, so replays stay idempotent. All 528
+    combinations of 0.25 `on` x `deliver` x `capture` are a permanent engine
+    test. Accepted difference: the envelope omits absent fields where 0.25
+    sent `"output": null`. Support will be removed in a future release.
+61. **`observe.capture` and `fires_on`.** A connection that declares the
+    feature `observe.capture` (next to `observe.v2`; the 0.26 engine
+    advertises it and 0.26 SDKs declare it) reads the outcomes an observer
+    fires on from `fires_on` (`["success"]`, `["error"]`,
+    `["success", "error"]`) and never derives them from `capture`. Every
+    observer view the engine sends (`functionregistered`, `observeradded`)
+    carries `fires_on`; hosts without the feature (0.25, rc hosts that
+    declare `observe.v2`) also get the legacy `on` (`error`, `complete`,
+    absent for successes), so an rc host's error observers see failures. The
+    engine evaluates a host's features once per `functionregistered`, never
+    per observer. `engine::observers::list` returns `capture` and
+    `fires_on`; its numeric `fires` stays the activation count, and no array
+    is ever sent under `fires`. A 0.26 SDK against an engine without the
+    feature (0.25, rc) sends the legacy `on` its capture implies (first send
+    and replays, never to an engine with the feature), reads views without
+    `fires_on` from `on` (absent = success), precomputes the firing bits per
+    observer, and logs one deprecation warning per client asking to upgrade
+    the engine.
+62. **Call metadata is opt-in in `capture`.** The default capture is
+    `[input, output, caller]` in the engine and every SDK, reverting the rc
+    default that added `metadata`. No production observer target reads the
+    captured `metadata`; routing on call metadata (decision 52's
+    `for_observer`, subscriber and request ids) happens in host match and
+    deliver hooks, which get the call's metadata from the invocation whatever
+    the observers capture, and a filter on `metadata.*` keeps the metadata
+    for evaluation without capturing it. When an observer does capture
+    metadata, the engine shares it (`Arc`) instead of deep-copying it per
+    call and per activation. Embedders: `FunctionHandler::handle_function`,
+    `HandlerFn` and `Message::InvokeFunction` take `Option<Arc<Value>>`.
 
 ## SDKs (all five)
 
@@ -446,7 +495,7 @@ differ, this file wins, and the spec is updated to match.
     such a call that one key. iii delivers it like every call, with that
     observer's `capture`, filters and policy, so a target
     receives every event of the function in one shape. A target that
-    captures `metadata` (the default, decision 59) also sees
+    captures `metadata` (opt-in, decision 62) also sees
     `for_observer` there, like any other metadata. The host makes the
     call after `obs.accepted()` resolves (decision 19). A call through an
     observer (`iii.call({ observer, payload })`) belongs in a deliver hook,

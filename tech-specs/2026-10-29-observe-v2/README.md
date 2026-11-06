@@ -119,7 +119,7 @@ iii.observe(
   59): `input` and `output` fire on success, `error` on error; `caller` and
   `metadata` only add to the payload, so a non-empty `capture` names at least
   one of `input`, `output`, `error` (`INVALID_ARGS`). The default is `input`,
-  `output`, `caller`, and `metadata`: successes only. `capture: []` fires on
+  `output`, and `caller` (`metadata` is opt-in, decision 62): successes only. `capture: []` fires on
   success with ids, status and timing only, which are always there. A success
   never carries `error`, an error never carries `output`. A function whose
   `onObservationDeliver` calls targets itself documents what they receive
@@ -423,7 +423,7 @@ iii.onObservationMatch('tmux::on-changed', {
 
 iii gives `for_observer` no meaning of its own: a function without a match
 hook gives such a call to every observer. A target whose observer captures
-`metadata` (the default) receives `for_observer` like any other metadata, so
+`metadata` (opt-in, decision 62) receives `for_observer` like any other metadata, so
 it can tell a call meant for it alone from an ordinary one (decision 59).
 
 **`isObserved(call?)`** answers whether a call would reach anyone, so a source
@@ -1017,8 +1017,10 @@ connection and message type, naming the replacement, and drops the frame.
 
 | | 0.25 engine | v2 engine |
 |---|---|---|
-| **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. |
-| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. | full |
+| **0.25 SDK** | as shipped | functions, `trigger` and `observe` work. A function registered with `observe.delivery: owner` is refused with `UNSUPPORTED`; trigger messages are dropped as above. Observers keep the 0.25 semantics: `on`/`deliver` are translated with a deprecation warning, and hosts get the legacy `on` (decisions 60, 61). |
+| **v2 SDK** | functions that need `observe.v2` (`args_format`, `private`, `observable: false`, `onObservationMatch` or `onObservationDeliver`) stay unregistered, and the SDK logs `UNSUPPORTED` once per function; it registers them when the worker connects to an engine with `observe.v2`. Every other function, `call` and `observe` work, and the engine evaluates routed calls. Observers are sent with the legacy `on` their capture implies, with a one-time deprecation warning (decision 61). | full |
+
+A 0.26 release candidate (rc) engine or SDK lacks `observe.capture` and behaves like the 0.25 column or row for observers: an rc SDK on a v2 engine gets the 0.25 semantics (decision 60) and its hosts get the legacy `on`; a v2 SDK on an rc engine sends the legacy `on` and warns. The user-facing matrix is in the 0.25 upgrade guide.
 
 Migrating:
 

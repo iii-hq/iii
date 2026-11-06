@@ -210,7 +210,8 @@ as a Function and calls it when the event happens: each HTTP request is a call o
 
 An Observer observes the calls of its observed Function: the input, the output (the value the
 handler returns), and the caller. By default, each successful call runs the target, and the target
-receives a payload with the call's input, output, caller, and metadata. What an Observer captures
+receives a payload with the call's input, output, and caller (its metadata only when the Observer
+captures it). What an Observer captures
 decides what its target receives and which calls run it: capturing `error` gets it the failed calls
 of the observed Function too.
 

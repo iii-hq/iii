@@ -46,9 +46,16 @@ A filter reads one document per call, with five roots:
 }
 ```
 
-- A filter may reference any root, whatever the observer captures in its payload.
+- A filter may reference any root, whatever the observer captures in its payload. A filter on
+  `metadata.*` works without `metadata` in `capture`, and the default capture
+  (`["input", "output", "caller"]`) leaves `metadata` out of the payload.
 - `capture` decides the outcomes first: `input` and `output` fire on success, `error` on error. It
-  is checked before the filter.
+  is checked before the filter. (An observer that uses the deprecated `on` gets its outcomes from
+  `on` instead; see [Legacy `on` and `deliver`](./engine-protocol#legacy-on-and-deliver).)
+- To observe failed calls only and keep their input, capture `["input", "error"]` and filter on
+  `{ "error": { "$exists": true } }`: the successful calls are dropped where the filter runs, in the
+  hosting worker's SDK or in the engine, and never reach the observing worker (see
+  [Failed calls with their input](../using-iii/observers#failed-calls-with-their-input)).
 - `output` is the handler's return value, which is what observers observe. An event source's handler
   returns the event it is called with, so its `input` and `output` are the same value.
 
