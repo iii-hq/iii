@@ -436,6 +436,31 @@ fn observe_depth_of(span: &SpanData) -> u32 {
 }
 
 impl StoredSpan {
+    /// This span without its events and links: everything a trace summary
+    /// reads, without the payloads the SDKs attach as events.
+    pub fn header(&self) -> Self {
+        Self {
+            trace_id: self.trace_id.clone(),
+            span_id: self.span_id.clone(),
+            parent_span_id: self.parent_span_id.clone(),
+            name: self.name.clone(),
+            start_time_unix_nano: self.start_time_unix_nano,
+            end_time_unix_nano: self.end_time_unix_nano,
+            status: self.status.clone(),
+            status_description: self.status_description.clone(),
+            attributes: self.attributes.clone(),
+            service_name: self.service_name.clone(),
+            events: Vec::new(),
+            links: Vec::new(),
+            instrumentation_scope_name: self.instrumentation_scope_name.clone(),
+            instrumentation_scope_version: self.instrumentation_scope_version.clone(),
+            flags: self.flags,
+            trace_state: self.trace_state.clone(),
+            pending: self.pending,
+            observe_depth: self.observe_depth,
+        }
+    }
+
     pub fn from_span_data(span: &SpanData, service_name: &str) -> Self {
         let parent_span_id = if span.parent_span_id.to_string() != "0000000000000000" {
             Some(span.parent_span_id.to_string())
@@ -2181,11 +2206,62 @@ pub fn get_query_spans_by_trace_id(trace_id: &str) -> Vec<StoredSpan> {
 /// Return a merged view for several traces with one archive query per bounded
 /// batch. Hot rows win over durable rows by `(trace_id, span_id)`.
 pub fn get_query_spans_by_trace_ids(trace_ids: &[String]) -> Vec<StoredSpan> {
+    query_spans_by_trace_ids(trace_ids, SpanView::Full, None)
+}
+
+/// The merged spans of these traces for `engine::traces::spans`. Without
+/// events, each span's events and links are dropped as it is read. With a
+/// status filter, archived spans whose status cannot match are skipped before
+/// their payload is decoded; the caller still applies the exact filter.
+pub fn get_query_trace_spans(
+    trace_ids: &[String],
+    include_events: bool,
+    status_contains: Option<&str>,
+) -> Vec<StoredSpan> {
+    let view = if include_events {
+        SpanView::Full
+    } else {
+        SpanView::WithoutEvents
+    };
+    query_spans_by_trace_ids(trace_ids, view, status_contains)
+}
+
+/// [`get_query_spans_by_trace_ids`] without events or links, and without
+/// decoding an archived payload: what a trace summary needs. A harness trace
+/// carries every prompt and reply as payload events, so the full view of a
+/// page of traces could hold gigabytes for a few hundred bytes of summary each.
+pub fn get_query_span_headers_by_trace_ids(trace_ids: &[String]) -> Vec<StoredSpan> {
+    query_spans_by_trace_ids(trace_ids, SpanView::Headers, None)
+}
+
+/// How much of each span a trace-id read returns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpanView {
+    Full,
+    /// Every stored field but events and links; archived payloads are still
+    /// decoded, one at a time.
+    WithoutEvents,
+    /// Indexed columns and attributes only; no archived payload is decoded.
+    Headers,
+}
+
+fn query_spans_by_trace_ids(
+    trace_ids: &[String],
+    view: SpanView,
+    status_contains: Option<&str>,
+) -> Vec<StoredSpan> {
     let started = Instant::now();
     let mut merged = HashMap::<(String, String), StoredSpan>::new();
     let mut archive_count = 0;
     if let Some(archive) = get_trace_disk_storage() {
-        match archive.get_spans_by_trace_ids(trace_ids) {
+        let archived = match view {
+            SpanView::Full => archive.read_spans_by_trace_ids(trace_ids, false, status_contains),
+            SpanView::WithoutEvents => {
+                archive.read_spans_by_trace_ids(trace_ids, true, status_contains)
+            }
+            SpanView::Headers => archive.get_span_headers_by_trace_ids(trace_ids),
+        };
+        match archived {
             Ok(spans) => {
                 archive_count = spans.len();
                 for span in spans {
@@ -2197,17 +2273,27 @@ pub fn get_query_spans_by_trace_ids(trace_ids: &[String]) -> Vec<StoredSpan> {
     }
     let mut hot_count = 0;
     if let Some(storage) = get_span_storage() {
-        for trace_id in trace_ids {
-            let hot = storage.get_spans_by_trace_id(trace_id);
-            hot_count += hot.len();
-            for span in hot {
-                merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
-            }
-        }
+        let status_contains = status_contains.map(str::to_lowercase);
+        storage.for_each_span_in_traces(trace_ids.iter().map(String::as_str), |span| {
+            // A hot span's header keeps every field but events and links. One
+            // of another status still goes in, as a header, so it overrides its
+            // archived version; the caller's status filter then drops it.
+            let full = view == SpanView::Full
+                && status_contains
+                    .as_ref()
+                    .is_none_or(|status| span.status.to_lowercase().contains(status));
+            let span = if full { span.clone() } else { span.header() };
+            hot_count += 1;
+            merged.insert((span.trace_id.clone(), span.span_id.clone()), span);
+        });
     }
     let spans: Vec<_> = merged.into_values().collect();
     tracing::debug!(
-        query_view = "trace_ids",
+        query_view = match view {
+            SpanView::Full => "trace_ids",
+            SpanView::WithoutEvents => "trace_ids_without_events",
+            SpanView::Headers => "trace_id_headers",
+        },
         requested_trace_ids = trace_ids.len(),
         archive_spans = archive_count,
         hot_spans = hot_count,
@@ -2350,13 +2436,14 @@ pub(crate) fn get_query_group_rows_by_attribute(
 
     let mut hot_count = 0;
     if let Some(storage) = get_span_storage() {
-        for span in storage.get_spans() {
+        // Visited in place: a copy of the cache would carry every payload event.
+        storage.for_each_span(|span| {
             let key = (span.trace_id.clone(), span.span_id.clone());
             // A hot span is authoritative even if its final version no longer
             // carries the group attribute that the durable predecessor had.
             merged.remove(&key);
             let Some((_, value)) = span.attributes.iter().find(|(key, _)| key == attribute) else {
-                continue;
+                return;
             };
             hot_count += 1;
             let label = label_attribute.and_then(|label_key| {
@@ -2372,18 +2459,18 @@ pub(crate) fn get_query_group_rows_by_attribute(
             merged.insert(
                 key,
                 super::trace_store::TraceGroupRow {
-                    trace_id: span.trace_id,
-                    span_id: span.span_id,
+                    trace_id: span.trace_id.clone(),
+                    span_id: span.span_id.clone(),
                     value: value.clone(),
                     label,
                     start_time_ns: span.start_time_unix_nano,
                     end_time_ns: span.end_time_unix_nano,
                     pending: span.pending,
-                    status: span.status,
+                    status: span.status.clone(),
                     is_internal,
                 },
             );
-        }
+        });
     }
 
     let rows: Vec<_> = merged.into_values().collect();
