@@ -19,8 +19,9 @@ mod observe_support;
 use iii::observer::ObserversConfig;
 use iii::protocol::ObserverState;
 use observe_support::{
-    Client, Setup, TestEngine, connect, connect_query, evaluated, eventually, in_process,
-    registered, spawn, spawn_engine, spawn_engine_with, unrestricted_listener,
+    Client, OBSERVE_CAPTURE, OBSERVE_V2, Setup, TestEngine, connect, connect_query, connect_with,
+    evaluated, eventually, in_process, registered, spawn, spawn_engine, spawn_engine_with,
+    unrestricted_listener,
 };
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -549,6 +550,112 @@ async fn legacy_on_and_deliver_are_translated_on_the_wire() {
     assert_eq!(fires(&t, "obs-output"), 1, "`on` absent: success only");
     assert_eq!(fires(&t, "obs-caller"), 1);
     assert_eq!(fires(&t, "obs-input-complete"), 2);
+}
+
+/// CONTRACT D8: an `observe` from a worker that did not declare
+/// `observe.capture` (an rc SDK, `observe.v2` only; a 0.25 SDK, no features)
+/// keeps the v0.25 semantics even without `on` / `deliver`: it fires on
+/// successes alone, its payload carries exactly its capture, and a capture
+/// the new gate refuses (`[caller]`) is accepted. A worker that declared it
+/// gets the capture model: `[error]` fires on failures only, `[caller]` is
+/// refused. The replay of each is the same observer.
+#[tokio::test]
+async fn a_worker_without_observe_capture_keeps_the_old_semantics_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+    let kinds: [(&str, &[&str]); 3] = [
+        ("rc", OBSERVE_V2),
+        ("v025", &[]),
+        ("capture", OBSERVE_CAPTURE),
+    ];
+    let mut sinks = Vec::new();
+    for (kind, features) in kinds {
+        let mut sink = connect_with(&t, &format!("sink-{kind}"), features).await;
+        for target in ["error", "caller"] {
+            sink.register_function(&format!("{kind}::{target}")).await;
+            registered(&t.engine, "default", &format!("{kind}::{target}")).await;
+        }
+        for (name, capture) in [("error", json!(["error"])), ("caller", json!(["caller"]))] {
+            let id = format!("obs-{name}-{kind}");
+            let source = json!({ "function_id": "payments::charge", "capture": capture });
+            let target = format!("{kind}::{name}");
+            let first = sink.observe(observer(&id, source.clone(), &target)).await;
+            let replay = sink.observe(observer(&id, source, &target)).await;
+            let refused = kind == "capture" && name == "caller";
+            for (when, answer) in [("observe", &first), ("replay", &replay)] {
+                assert_eq!(
+                    answer["state"] == "error",
+                    refused,
+                    "[{kind}] {id} {when}: {answer}"
+                );
+            }
+        }
+        sinks.push((kind, sink));
+    }
+
+    // A success: the legacy SDKs' observers fire, carrying their capture.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 1 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+    for (kind, sink) in sinks.iter_mut().filter(|(kind, _)| *kind != "capture") {
+        let error = sink.invoked(&format!("{kind}::error")).await;
+        assert_eq!(error["data"]["status"], "success", "[{kind}] {error}");
+        for key in ["input", "output", "error", "caller"] {
+            assert!(
+                error["data"].get(key).is_none(),
+                "[{kind}] capture [error]: {error}"
+            );
+        }
+        sink.reply(&error, Value::Null).await;
+        let caller = sink.invoked(&format!("{kind}::caller")).await;
+        assert_eq!(
+            caller["data"]["caller"]["worker_name"], "checkout",
+            "[{kind}]"
+        );
+        for key in ["input", "output", "error"] {
+            assert!(
+                caller["data"].get(key).is_none(),
+                "[{kind}] capture [caller]: {caller}"
+            );
+        }
+        sink.reply(&caller, Value::Null).await;
+    }
+
+    // A failure: only the current SDK's `[error]` observer fires.
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+    let (_, capture) = sinks
+        .iter_mut()
+        .find(|(kind, _)| *kind == "capture")
+        .unwrap();
+    let error = capture.invoked("capture::error").await;
+    assert_eq!(error["data"]["status"], "error");
+    assert_eq!(error["data"]["error"]["code"], "CARD_DECLINED", "{error}");
+    capture.reply(&error, Value::Null).await;
+
+    assert_eq!(
+        fires(&t, "obs-error-capture"),
+        1,
+        "the capture model: failures only"
+    );
+    for kind in ["rc", "v025"] {
+        assert_eq!(
+            fires(&t, &format!("obs-error-{kind}")),
+            1,
+            "[{kind}] v0.25: successes only"
+        );
+        assert_eq!(fires(&t, &format!("obs-caller-{kind}")), 1, "[{kind}]");
+    }
 }
 
 #[tokio::test]

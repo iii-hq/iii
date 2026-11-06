@@ -16,6 +16,10 @@
 //!   style sources: `capture` alone decides. 19 of them behave differently by
 //!   design (a capture naming `error` fires on failures; `[caller]`,
 //!   `[metadata]`, `[caller,metadata]` are refused) and are pinned as such.
+//!   That holds only for a worker that declared `observe.capture`: every row
+//!   is also sent from an rc SDK (`observe.v2` only) and a 0.25 SDK (no
+//!   features), and from those the 19 rows keep the v0.25 result too
+//!   (CONTRACT D8).
 
 use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
@@ -34,6 +38,13 @@ const MATRIX: &str = include_str!("testdata/legacy_on_deliver_matrix.jsonl");
 const FIELDS: [&str; 5] = ["input", "output", "error", "caller", "metadata"];
 /// The old default capture: `[input, output, caller]`.
 const OLD_DEFAULT: [bool; 5] = [true, true, false, true, false];
+/// The observing connections every row is sent from: a current SDK, an rc
+/// SDK (`observe.v2` only) and a 0.25 SDK (no features).
+const CONNECTIONS: [(&str, &[&str]); 3] = [
+    ("observe.capture", test_support::CURRENT_SDK),
+    ("rc", test_support::RC_SDK),
+    ("0.25", &[]),
+];
 
 fn completed(success: bool, with_output: bool) -> Completed {
     Completed {
@@ -202,6 +213,7 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
 
     let mut failures = Vec::new();
     let mut new_model = Vec::new();
+    let mut legacy_checked = 0;
     for row in &rows {
         let field = |key: &str| row[key].as_str().expect("string column").to_string();
         let (on, deliver, capture_label) = (field("on"), field("deliver"), field("capture"));
@@ -248,11 +260,13 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             expect_summary(fires_err, &old_err),
             "{label}"
         );
-        // Without `on` and `deliver` a source is new-style, whatever SDK
-        // sent it: `capture` alone decides what fires, and the gate refuses
-        // a non-empty capture of `caller` / `metadata` alone.
+        // From a worker that declared `observe.capture`, a source without
+        // `on` and `deliver` is new-style: `capture` alone decides what
+        // fires, and the gate refuses a non-empty capture of `caller` /
+        // `metadata` alone. From any other worker (an rc SDK, a 0.25 SDK)
+        // every source keeps the v0.25 semantics (CONTRACT D8).
         let new_style = on.is_empty() && deliver.is_empty();
-        let (expect_ok, expect_err, expect_refused) = match (&capture, new_style) {
+        let (new_ok, new_err, new_refused) = match (&capture, new_style) {
             (Some(list), true) => {
                 let io = old_capture[0] || old_capture[1];
                 let refused = !list.is_empty() && !io && !old_capture[2];
@@ -260,118 +274,148 @@ async fn every_old_on_deliver_capture_combination_keeps_its_firing_and_payload()
             }
             _ => (fires_ok, fires_err, false),
         };
-        if (expect_ok, expect_err, expect_refused) != (fires_ok, fires_err, false) {
+        let differs = (new_ok, new_err, new_refused) != (fires_ok, fires_err, false);
+        if differs {
             new_model.push(label.clone());
         }
 
-        // The same `observe`, as an older SDK sends it, to this engine.
-        let mut source = json!({ "function_id": "test::src" });
-        if !on.is_empty() {
-            source["on"] = on.into();
-        }
-        if !deliver.is_empty() {
-            source["deliver"] = deliver.into();
-        }
-        if let Some(list) = &capture {
-            source["capture"] = json!(list);
-        }
-        let engine = Arc::new(Engine::new());
-        register(&engine, "test::src");
-        let _target = test_support::capture(&engine, "test::dst");
-        let (worker, mut socket) = test_support::worker(&engine);
-        let request = legacy_request("obs", source);
-        engine
-            .observers
-            .observe(&engine, &worker, request.clone())
-            .await;
-        let created = results(&mut socket);
-        let refused = created
-            .iter()
-            .any(|(state, _)| *state == ObserverState::Error);
-        let stored = engine.observers.get("obs");
-        if refused != expect_refused || stored.is_some() == refused {
-            failures.push(format!("{label}: answered {created:?}"));
-            continue;
-        }
-        let Some(observer) = stored else {
-            continue;
-        };
+        for (kind, features) in CONNECTIONS {
+            let (expect_ok, expect_err, expect_refused) = if kind == "observe.capture" {
+                (new_ok, new_err, new_refused)
+            } else {
+                if differs {
+                    legacy_checked += 1;
+                }
+                (fires_ok, fires_err, false)
+            };
+            let label = format!("[{kind}] {label}");
 
-        // Its replay (a reconnect) is the same spec.
-        engine.observers.observe(&engine, &worker, request).await;
-        let replayed = results(&mut socket);
-        if replayed
-            .iter()
-            .any(|(state, _)| *state == ObserverState::Error)
-        {
-            failures.push(format!("{label}: replay {replayed:?}"));
-        }
-
-        let (fires_ok, fires_err) = (expect_ok, expect_err);
-        let mut wrong = Vec::new();
-        if observer.capture.fires(true) != fires_ok {
-            wrong.push(format!("fires on success: {}", !fires_ok));
-        }
-        if observer.capture.fires(false) != fires_err {
-            wrong.push(format!("fires on error: {}", !fires_err));
-        }
-        if fires_ok {
-            let new_ok = project(&observer, &ok, "a");
-            if new_ok != old_ok {
-                wrong.push(format!("success payload {new_ok} != old {old_ok}"));
+            // The same `observe`, as that SDK sends it, to this engine.
+            let mut source = json!({ "function_id": "test::src" });
+            if !on.is_empty() {
+                source["on"] = on.into();
             }
-            // Accepted: no `"output": null` when the report carried none.
-            let mut old_void = old_void.clone();
-            if let Some(envelope) = old_void.as_object_mut()
-                && envelope.get("output") == Some(&Value::Null)
+            if !deliver.is_empty() {
+                source["deliver"] = deliver.into();
+            }
+            if let Some(list) = &capture {
+                source["capture"] = json!(list);
+            }
+            let engine = Arc::new(Engine::new());
+            register(&engine, "test::src");
+            let _target = test_support::capture(&engine, "test::dst");
+            let (worker, mut socket) = test_support::worker_with(&engine, features);
+            let request = legacy_request("obs", source);
+            engine
+                .observers
+                .observe(&engine, &worker, request.clone())
+                .await;
+            let created = results(&mut socket);
+            let refused = created
+                .iter()
+                .any(|(state, _)| *state == ObserverState::Error);
+            let stored = engine.observers.get("obs");
+            if refused != expect_refused || stored.is_some() == refused {
+                failures.push(format!("{label}: answered {created:?}"));
+                continue;
+            }
+            let Some(observer) = stored else {
+                continue;
+            };
+
+            // Its replay (a reconnect) is the same spec, and the observer it
+            // answers for is the one it made.
+            engine.observers.observe(&engine, &worker, request).await;
+            let replayed = results(&mut socket);
+            if replayed
+                .iter()
+                .any(|(state, _)| *state == ObserverState::Error)
             {
-                envelope.remove("output");
+                failures.push(format!("{label}: replay {replayed:?}"));
             }
-            let new_void = project(&observer, &void, "a");
-            if new_void != old_void {
-                wrong.push(format!("void payload {new_void} != old {old_void}"));
+            let observer = engine
+                .observers
+                .get("obs")
+                .filter(|after| {
+                    after.capture == observer.capture && after.deliver == observer.deliver
+                })
+                .unwrap_or_else(|| {
+                    failures.push(format!("{label}: the replay changed the observer"));
+                    observer
+                });
+
+            let (fires_ok, fires_err) = (expect_ok, expect_err);
+            let mut wrong = Vec::new();
+            if observer.capture.fires(true) != fires_ok {
+                wrong.push(format!("fires on success: {}", !fires_ok));
             }
-        }
-        if fires_err {
-            let new_err = project(&observer, &err, "a");
-            if new_err != old_err {
-                wrong.push(format!("error payload {new_err} != old {old_err}"));
+            if observer.capture.fires(false) != fires_err {
+                wrong.push(format!("fires on error: {}", !fires_err));
             }
-        }
-        // The host of the observed function ships what the payload needs.
-        let needs = observer.capture.with_delivered(&observer.deliver);
-        let shipped = [
-            needs.input,
-            needs.output,
-            needs.error,
-            needs.caller,
-            needs.metadata,
-        ];
-        let wanted: [bool; 5] = match shape {
-            "input" => [true, false, false, false, false],
-            "output" => [false, true, false, false, false],
-            _ => old_capture,
-        };
-        for i in 0..5 {
-            if wanted[i] && !shipped[i] {
-                wrong.push(format!("the host does not ship `{}`", FIELDS[i]));
+            if fires_ok {
+                let new_ok = project(&observer, &ok, "a");
+                if new_ok != old_ok {
+                    wrong.push(format!("success payload {new_ok} != old {old_ok}"));
+                }
+                // Accepted: no `"output": null` when the report carried none.
+                let mut old_void = old_void.clone();
+                if let Some(envelope) = old_void.as_object_mut()
+                    && envelope.get("output") == Some(&Value::Null)
+                {
+                    envelope.remove("output");
+                }
+                let new_void = project(&observer, &void, "a");
+                if new_void != old_void {
+                    wrong.push(format!("void payload {new_void} != old {old_void}"));
+                }
             }
-        }
-        if !wrong.is_empty() {
-            failures.push(format!("{label}: {}", wrong.join("; ")));
+            if fires_err {
+                let new_err = project(&observer, &err, "a");
+                if new_err != old_err {
+                    wrong.push(format!("error payload {new_err} != old {old_err}"));
+                }
+            }
+            // The host of the observed function ships what the payload needs.
+            let needs = observer.capture.with_delivered(&observer.deliver);
+            let shipped = [
+                needs.input,
+                needs.output,
+                needs.error,
+                needs.caller,
+                needs.metadata,
+            ];
+            let wanted: [bool; 5] = match shape {
+                "input" => [true, false, false, false, false],
+                "output" => [false, true, false, false, false],
+                _ => old_capture,
+            };
+            for i in 0..5 {
+                if wanted[i] && !shipped[i] {
+                    wrong.push(format!("the host does not ship `{}`", FIELDS[i]));
+                }
+            }
+            if !wrong.is_empty() {
+                failures.push(format!("{label}: {}", wrong.join("; ")));
+            }
         }
     }
-    // The rows without `on` and `deliver` are new-style sources whichever SDK
-    // sent them: `capture` alone decides. Pinned, by design: the 16 capture
-    // shapes naming `error` fire on failures (and only on successes too with
-    // `input` / `output`), and `[caller]`, `[metadata]`, `[caller,metadata]`
-    // are refused.
+    // The rows without `on` and `deliver` are new-style sources from a worker
+    // that declared `observe.capture`: `capture` alone decides. Pinned, by
+    // design: the 16 capture shapes naming `error` fire on failures (and only
+    // on successes too with `input` / `output`), and `[caller]`, `[metadata]`,
+    // `[caller,metadata]` are refused. From an rc or 0.25 SDK the same 19
+    // rows keep the v0.25 result (CONTRACT D8).
     assert_eq!(new_model.len(), 19, "{}", new_model.join("\n"));
+    assert_eq!(
+        legacy_checked,
+        19 * 2,
+        "each pinned row, from an rc and a 0.25 SDK"
+    );
     assert!(
         failures.is_empty(),
-        "{} of {} combinations differ from v0.25:\n{}",
+        "{} of {} checks differ:\n{}",
         failures.len(),
-        rows.len(),
+        rows.len() * CONNECTIONS.len(),
         failures.join("\n")
     );
 }
@@ -520,4 +564,106 @@ async fn a_translated_observer_logs_one_deprecation_warning_per_registration() {
         .observe(&engine, &worker, legacy_request("obs-modern", modern))
         .await;
     assert_eq!(warnings("obs-modern"), 0, "{}", text());
+}
+
+/// CONTRACT D8: a worker that did not declare `observe.capture` (an rc SDK
+/// with `observe.v2` only, a 0.25 SDK with no features) gets the v0.25
+/// semantics even without `on` / `deliver`: it fires on successes alone, its
+/// payload carries exactly its capture, and the new gate refuses nothing.
+/// Its creation and its replay each log one warning naming the observer and
+/// `observe.capture`. A worker that declared it gets the capture model and
+/// no warning.
+#[tokio::test(flavor = "current_thread")]
+async fn a_worker_without_observe_capture_keeps_the_old_semantics() {
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    tracing::callsite::rebuild_interest_cache();
+    let text = || String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    let warnings = |id: &str| {
+        text()
+            .lines()
+            .filter(|line| line.contains("WARN") && line.contains(&format!("`{id}`")))
+            .count()
+    };
+
+    for (kind, features) in CONNECTIONS {
+        let engine = Arc::new(Engine::new());
+        register(&engine, "test::src");
+        let _target = test_support::capture(&engine, "test::dst");
+        let (worker, mut socket) = test_support::worker_with(&engine, features);
+        let legacy = kind != "observe.capture";
+        for (id, capture) in [
+            ("obs-error", json!(["error"])),
+            ("obs-input-error", json!(["input", "error"])),
+            ("obs-caller", json!(["caller"])),
+            ("obs-metadata", json!(["metadata"])),
+        ] {
+            let id = format!("{id}-{kind}");
+            let source = json!({ "function_id": "test::src", "capture": capture });
+            for registration in 1..=2 {
+                engine
+                    .observers
+                    .observe(&engine, &worker, legacy_request(&id, source.clone()))
+                    .await;
+                let answered = results(&mut socket);
+                let refused = answered
+                    .iter()
+                    .any(|(state, _)| *state == ObserverState::Error);
+                let gate_refuses = capture == json!(["caller"]) || capture == json!(["metadata"]);
+                assert_eq!(
+                    refused,
+                    !legacy && gate_refuses,
+                    "[{kind}] {id} registration {registration}: {answered:?}"
+                );
+                assert_eq!(
+                    warnings(&id),
+                    if legacy { registration } else { 0 },
+                    "[{kind}] {id}: one warning per registration from a legacy SDK\n{}",
+                    text()
+                );
+            }
+            if refused_by_gate(&engine, &id) {
+                continue;
+            }
+            let observer = engine.observers.get(&id).expect("stored");
+            let names_error = capture.as_array().unwrap().contains(&json!("error"));
+            let (on_ok, on_err) = (observer.capture.fires(true), observer.capture.fires(false));
+            if legacy {
+                assert!(
+                    on_ok && !on_err,
+                    "[{kind}] {id}: v0.25 fires on success only"
+                );
+            } else {
+                assert_eq!(on_err, names_error, "[{kind}] {id}");
+            }
+            let fields: Vec<String> = observer
+                .capture
+                .to_list()
+                .iter()
+                .map(|c| c.as_str().to_string())
+                .collect();
+            let wanted: Vec<String> = serde_json::from_value(capture.clone()).unwrap();
+            assert_eq!(
+                fields, wanted,
+                "[{kind}] {id}: the payload carries the capture"
+            );
+        }
+        if legacy {
+            let line = text();
+            assert!(
+                line.contains("observe.capture"),
+                "names the feature: {line}"
+            );
+        }
+    }
+}
+
+fn refused_by_gate(engine: &Engine, id: &str) -> bool {
+    engine.observers.get(id).is_none()
 }

@@ -363,12 +363,43 @@ pub(crate) mod test_support {
         rx
     }
 
-    /// A connected observing worker, and its socket (keep it alive).
+    /// What a current SDK declares on `engine::workers::register`: with
+    /// `observe.capture`, its observers follow the capture model (CONTRACT
+    /// D8).
+    pub const CURRENT_SDK: &[&str] = &[
+        "observe.v1",
+        "observe.v2",
+        "observe.capture",
+        "local-dispatch.v1",
+    ];
+    /// What an rc SDK declares: `observe.v2` without `observe.capture`.
+    pub const RC_SDK: &[&str] = &["observe.v1", "observe.v2", "local-dispatch.v1"];
+
+    /// `observe.capture` alone: observers follow the capture model (CONTRACT
+    /// D8) while, as a host, the connection stays one that does not speak
+    /// observe (no `observe.v1`: no `functionregistered`, no acks).
+    pub const CAPTURE_ONLY: &[&str] = &["observe.capture"];
+
+    /// A connected observing worker whose observers follow the capture model
+    /// ([`CAPTURE_ONLY`]), and its socket (keep it alive).
     pub fn worker(engine: &Engine) -> (WorkerConnection, mpsc::Receiver<Outbound>) {
+        worker_with(engine, CAPTURE_ONLY)
+    }
+
+    /// A connected observing worker that declared `features` (none when
+    /// empty, as a 0.25 SDK), and its socket (keep it alive).
+    pub fn worker_with(
+        engine: &Engine,
+        features: &[&str],
+    ) -> (WorkerConnection, mpsc::Receiver<Outbound>) {
         // Activations record invocation metrics.
         crate::workers::observability::metrics::ensure_default_meter();
         let (tx, rx) = mpsc::channel(1024);
         let worker = WorkerConnection::new(tx);
+        if !features.is_empty() {
+            let features: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+            assert!(worker.features.set(&features), "features declared once");
+        }
         engine.worker_registry.register_worker(worker.clone());
         (worker, rx)
     }
