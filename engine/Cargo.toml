@@ -152,7 +152,7 @@ iii-sandbox-contract = { path = "../crates/iii-sandbox-contract" }
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
-jsonschema = { version = "0.60", default-features = false }
+jsonschema = { version = "0.47", default-features = false }
 inventory = "0.3"
 rand = "0.8"
 rkyv = "0.8.12"
