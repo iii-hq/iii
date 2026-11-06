@@ -343,7 +343,7 @@ impl WorkerFeatures {
         self.declared.get().is_some_and(|d| d.observe_v2)
     }
 
-    /// The connection reads the outcomes an observer fires on from `fires`
+    /// The connection reads the outcomes an observer fires on from `fires_on`
     /// in its announcement: it gets no legacy `on`.
     pub fn observe_capture(&self) -> bool {
         self.declared.get().is_some_and(|d| d.observe_capture)

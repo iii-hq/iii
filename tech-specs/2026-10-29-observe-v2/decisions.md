@@ -361,8 +361,8 @@ differ, this file wins, and the spec is updated to match.
     the source at registration, on the first `observe` and on every replay,
     to the exact 0.25 behaviour: firing from `on` alone (absent/`success`,
     `error`, `complete`), set directly on the capture set without the public
-    capture gate (`[caller]`, `[metadata]` are accepted); payload fields the
-    capture list exactly (absent: `[input, output, caller]`); `deliver`
+    capture gate (`[caller]`, `[metadata]` are accepted); the payload carries
+    exactly the `capture` list (absent: `[input, output, caller]`); `deliver`
     absent/`envelope` the `Observed` payload, `input` the raw input, `output`
     the raw output through an engine-internal mode (`null` when absent, so on
     every failure). It logs one `warn` per registration naming the observer
