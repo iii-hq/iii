@@ -188,7 +188,7 @@ jobs:
           rc=$?
           read -r wall user sys maxrss < <(tail -n1 "$tmp")
           rm -f "$tmp"
-          echo "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
+          printf '\n%s\n' "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
           exit "$rc"
           RUNNER
           chmod +x "$RUNNER_TEMP/bench-runner.sh"

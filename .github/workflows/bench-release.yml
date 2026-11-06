@@ -45,7 +45,7 @@ jobs:
           rc=$?
           read -r wall user sys maxrss < <(tail -n1 "$tmp")
           rm -f "$tmp"
-          echo "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
+          printf '\n%s\n' "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
           exit "$rc"
           RUNNER
           chmod +x "$RUNNER_TEMP/bench-runner.sh"
@@ -80,6 +80,12 @@ jobs:
           comment-on-alert: true
           summary-always: true
           alert-comment-cc-users: '@iii-hq/engine'
+
+      # iii.dev/benchmarks reads the history above when it builds.
+      - name: Rebuild iii.dev/benchmarks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run deploy-website.yml --repo "${{ github.repository }}" --ref main
 
       # Peak memory and the cores kept busy by each bench binary, as a second
       # series on the same gh-pages charts (lower is better). iii.dev/benchmarks
@@ -119,12 +125,6 @@ jobs:
           comment-on-alert: true
           summary-always: true
           alert-comment-cc-users: '@iii-hq/engine'
-
-      # iii.dev/benchmarks reads the history above when it builds.
-      - name: Rebuild iii.dev/benchmarks
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh workflow run deploy-website.yml --repo "${{ github.repository }}" --ref main
 
       - name: Upload raw criterion data
         uses: actions/upload-artifact@v4
