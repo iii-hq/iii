@@ -22,6 +22,9 @@
       "target": "local::cron-handler",
       "capture": [
         "input"
+      ],
+      "fires_on": [
+        "success"
       ]
     },
     {
@@ -35,6 +38,9 @@
         "input",
         "output",
         "caller"
+      ],
+      "fires_on": [
+        "success"
       ]
     }
   ]

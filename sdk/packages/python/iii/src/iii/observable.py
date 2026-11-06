@@ -267,6 +267,9 @@ class Observer:
         self.capture: list[str] = list(info.capture)
         #: The outcomes that fire it, read once from the view (``fires_on``, or the legacy ``on``).
         self._fires_on_success, self._fires_on_error = info.firing()
+        #: The outcomes the engine named in the view (``None`` from an engine
+        #: without ``observe.capture``, whose views carry the legacy ``on``).
+        self.fires_on: list[str] | None = None if info.fires_on is None else list(info.fires_on)
         self._filter = filter_
         #: The revision it was acked with (echoed by a late rejection).
         self._revision = revision
@@ -294,6 +297,7 @@ class Observer:
         self.target = info.target
         self.capture = list(info.capture)
         self._fires_on_success, self._fires_on_error = info.firing()
+        self.fires_on = None if info.fires_on is None else list(info.fires_on)
 
     def _fires(self, ok: bool) -> bool:
         """Whether a call that ended in success (``ok``) or error fires it."""
@@ -419,6 +423,7 @@ class Observer:
             "filters": self.filters,
             "target": self.target,
             "capture": self.capture,
+            **({} if self.fires_on is None else {"fires_on": self.fires_on}),
         }
 
     def __repr__(self) -> str:
