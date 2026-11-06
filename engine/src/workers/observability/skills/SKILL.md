@@ -113,8 +113,8 @@ iii.observe(
 `observability::on-log` is called only when the logs pipeline is enabled. The target's return value
 is ignored; activations run asynchronously after each entry is stored.
 
-Observe `observability::on-span` for a "traces changed" tick: `{ trace_ids }`, the distinct traces
-with span activity in a ~300ms window. Re-read them with `engine::traces::*`.
+Observe `observability::on-span` for a "traces changed" tick: `{ trace_ids, error_trace_ids }`, the
+distinct traces with span activity in a ~300ms window and the ones among them that recorded an error span. Re-read them with `engine::traces::*`.
 
 For the OTel log record shape, call `engine::functions::info { function_id: "observability::on-log" }`:
 its `request_format` is the record.

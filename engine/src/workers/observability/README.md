@@ -443,5 +443,5 @@ iii.registerFunction("devtools::onTracesChanged", async ({ input: { trace_ids } 
 iii.observe("observability::on-span", "devtools::onTracesChanged");
 ```
 
-Event: `{ "trace_ids": string[] }` — the distinct trace ids with span activity in the coalesced
-window.
+Event: `{ "trace_ids": string[], "error_trace_ids": string[] }` — the distinct trace ids with span
+activity in the coalesced window, and the subset of them that recorded a span with status `error`.
