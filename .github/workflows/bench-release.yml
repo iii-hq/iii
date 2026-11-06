@@ -30,8 +30,31 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Cargo runs every bench binary through this wrapper (a target runner), which
+      # prints the binary's wall time, CPU time and peak memory (GNU time) next to
+      # its timings. The same wrapper is used by /bench (bench-compare.yml).
+      - name: Install the resource-measuring bench runner
+        run: |
+          cat > "$RUNNER_TEMP/bench-runner.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          # cargo runner: bench-runner.sh <bench-binary> [args...]
+          if [[ ! -x /usr/bin/time ]]; then exec "$@"; fi
+          name="$(basename "$1")"; name="${name%-*}"
+          tmp="$(mktemp)"
+          /usr/bin/time -f '%e %U %S %M' -o "$tmp" "$@"
+          rc=$?
+          read -r wall user sys maxrss < <(tail -n1 "$tmp")
+          rm -f "$tmp"
+          echo "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
+          exit "$rc"
+          RUNNER
+          chmod +x "$RUNNER_TEMP/bench-runner.sh"
+
       - name: Run benchmarks
-        run: cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee bench-output.txt
+        run: |
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          RUNNER_VAR="CARGO_TARGET_$(echo "$HOST" | tr 'a-z-' 'A-Z_')_RUNNER"
+          env "$RUNNER_VAR=$RUNNER_TEMP/bench-runner.sh" cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee bench-output.txt
 
       - name: Extract version from tag
         id: meta
@@ -54,6 +77,45 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           alert-threshold: '120%'
+          comment-on-alert: true
+          summary-always: true
+          alert-comment-cc-users: '@iii-hq/engine'
+
+      # Peak memory and the cores kept busy by each bench binary, as a second
+      # series on the same gh-pages charts (lower is better). iii.dev/benchmarks
+      # reads only the timing series above, so this one does not change the site.
+      - name: Collect CPU and memory
+        run: |
+          python3 - <<'PY'
+          import json, re
+          out = []
+          pat = re.compile(r'^resource (\S+) wall_s=([\d.]+) user_s=([\d.]+) sys_s=([\d.]+) maxrss_kb=(\d+)')
+          for line in open('bench-output.txt', errors='replace'):
+              m = pat.match(line.strip())
+              if not m:
+                  continue
+              name = m.group(1)
+              wall, user, sys_ = float(m.group(2)), float(m.group(3)), float(m.group(4))
+              out.append({'name': f'{name} / peak memory', 'unit': 'MiB', 'value': round(int(m.group(5)) / 1024, 1)})
+              if wall > 0:
+                  out.append({'name': f'{name} / cores busy', 'unit': 'cores', 'value': round((user + sys_) / wall, 2)})
+          if out:
+              json.dump(out, open('resources.json', 'w'), indent=1)
+          print(f'{len(out)} resource series')
+          PY
+
+      - name: Store CPU and memory result
+        if: hashFiles('resources.json') != ''
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: iii Engine Benchmarks (CPU and memory)
+          tool: 'customSmallerIsBetter'
+          output-file-path: resources.json
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: dev/bench
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          alert-threshold: '150%'
           comment-on-alert: true
           summary-always: true
           alert-comment-cc-users: '@iii-hq/engine'
