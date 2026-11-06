@@ -1,31 +1,48 @@
 ---
 title: "Worker manifest"
-description: "Field reference for iii.worker.yaml: name, dependencies, runtime base image, setup and start scripts, env, resources, and publish metadata."
+description:
+  "Field reference for iii.worker.yaml: name, description, runtime base image, scripts, env,
+  dependencies, resources, and publish metadata."
 owner: "devrel"
 type: "reference"
 ---
 
 This page covers `iii.worker.yaml` configuration options. `iii.worker.yaml` exists at a worker's
 root and tells iii how to provision the worker's runtime, install its dependencies, start its
-process, and pass through configuration. Compose reads it when preparing a `path://` worker or a
-registry package. Project workers are declared and operated through
-[`worker-compose.yaml`](../using-iii/compose), not the engine's `config.yaml`.
+process, and pass through configuration. Compose uses it when it starts a `path://` worker or a
+registry bundle. Declare and operate project workers in
+[`worker-compose.yaml`](../using-iii/compose).
 
 For how to connect a worker into a project once its manifest exists, see
 [Creating Workers / Workers](./workers).
 
 <Note>
-  `iii.worker.yaml` only matters when iii provisions and runs the worker in its built-in
-  virtualization. If you run the worker process yourself, for example `node ./myworker/src/index.js`
-  on your own machine, container, or server, you do not need the manifest at all. Any process that
-  uses a iii SDK, calls `registerWorker()`, and connects to a iii instance is a worker, and behaves
-  identically whether iii started it or not.
+  A worker process that you start yourself, for example with `node ./myworker/src/index.js`, does
+  not need a manifest. Any process that uses a iii SDK and connects to a iii engine is a worker,
+  whether Compose started it or not.
 </Note>
+
+Compose reads two fields from the manifest of a `path://` worker: `scripts.start` and
+`runtime.base_image`. A [`scripts.run`](../using-iii/compose#scripts) value on the container in
+`worker-compose.yaml` replaces `scripts.start`. The container key sets the worker name. Without
+`runtime.base_image`, the worker runs as a host process, and Compose ignores the other fields. With
+`runtime.base_image`, the worker runs in a VM. The VM also uses `scripts.setup`, `scripts.install`,
+`env`, and `resources`. For how each kind of worker runs, see
+[Worker kinds](../using-iii/compose#worker-kinds).
 
 ## `name`
 
-Required. Must satisfy the registry's worker-name rules (the same validation the registry applies to
-published names). A worker cannot list itself in `dependencies`.
+Required. The worker id: one path segment of ASCII letters, digits, `-`, `_`, and `.`. It cannot
+start with `.` or contain `..`. A registry bundle must use its package name. For a `path://` worker,
+Compose uses the container key in `worker-compose.yaml` as the worker name. A `path://` worker that
+sets `runtime.base_image` still needs `name`. Without it, the VM start fails with
+`Could not detect project type`. The `name` of a registry bundle must also equal its container key
+in `worker-compose.yaml`. `compose::add` sets that key to the package name.
+
+## `description`
+
+Optional. A one-line summary of what the worker does. The release pipeline of the workers repository
+requires it to publish the worker to the registry.
 
 ## `runtime`
 
@@ -33,9 +50,14 @@ Declares details about the worker's environment.
 
 ### `base_image`
 
-Optional. Overrides the default OCI rootfs. Must be a valid OCI reference (alphanumerics plus
-`. _ - / : @ +`, max 512 characters). Invalid references are dropped with a warning and the default
-is used.
+Optional. Names the OCI image for the root filesystem of the worker VM. Must be a valid OCI
+reference (alphanumerics plus `. _ - / : @ +`, max 512 characters). A `path://` worker that sets
+`base_image` runs in a VM built from this image. A `path://` worker without `base_image` runs as a
+host process. A registry bundle without `base_image` runs in a VM on `docker.io/iiidev/node:latest`,
+or on the image for its deprecated `runtime.kind`. Set `base_image` for a bundle that needs another
+image, for example `docker.io/iiidev/python:latest` for a Python bundle. Compose fails the start of
+a worker with an invalid reference. Compose rejects a registry bundle with an invalid reference with
+`W180 BundleManifestRejected`.
 
 ```yaml
 runtime:
@@ -46,12 +68,13 @@ runtime:
 
 The images that ship with iii come in two variants:
 
-| Image                                                              | Contents                                                          | Use it when                                                                                                |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. This is the default.              |
-| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution. |
+| Image                                                              | Contents                                                          | Use it when                                                                                                                                   |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docker.io/iiidev/node:latest`, `docker.io/iiidev/python:latest`   | The language runtime and its package manager. No build toolchain. | The dependencies of the worker install from prebuilt binaries or wheels. `docker.io/iiidev/node:latest` is the default for a registry bundle. |
+| `docker.io/iiidev/node:builder`, `docker.io/iiidev/python:builder` | The same runtime plus a C toolchain and the development tools.    | A dependency compiles from source at install time, for example a node-gyp module or a source distribution.                                    |
 
-Select the builder variant when an install fails because a compiler is absent:
+An install that compiles a dependency fails on the default variant, because that image has no
+compiler. This `runtime` block selects the builder variant:
 
 ```yaml
 runtime:
@@ -71,18 +94,22 @@ scripts:
   start: "npx tsx src/index.ts"
 ```
 
-When `scripts` is omitted, the engine infers `install` and `start` from `runtime.kind` and
-`runtime.package_manager`. The per-field examples below show common values for each language.
+`scripts.start` is required, unless the container in `worker-compose.yaml` sets `scripts.run`. When
+neither is set, Compose fails with `MISSING_START_COMMAND`. The per-field examples below show common
+values for each language.
 
-{/* <Note> */}
-{/* There is a special setup required for bundling workers for distribution in the iii registry at */}
-{/* [workers.iii.dev](https://workers.iii.dev). See [Registry / Bundle */}
-{/* workers](./workers-registry#bundle-workers-targz-archives). */} {/* </Note> */}
+The keys `runtime.kind`, `runtime.package_manager`, `runtime.entry`, `runtime.language`, and the
+top-level `entry` are deprecated. Use explicit `scripts`, and set `runtime.base_image` for a bundle.
+`iii-worker` also warns about the top-level `language` and `config`, and Compose ignores both. The
+release pipeline of the workers repository still requires `language`. It publishes `config` as the
+default configuration of the package. To change the configuration for one project, use
+`config_override` in [`worker-compose.yaml`](../using-iii/compose#configuration-precedence).
 
 ### `setup`
 
-Runs once when the sandbox is provisioned. Use it for system-level packages your dependencies need
-to build.
+Runs once when iii creates the VM of the worker. Use it for system packages that your dependencies
+need to build. A registry bundle cannot declare `setup`. It is rejected with
+`W180 BundleManifestRejected`.
 
 <CodeGroup>
 
@@ -151,9 +178,13 @@ scripts:
 
 ## `env`
 
-Map of environment variables injected into the worker process. Keys and values must be strings. The
-keys `III_URL` and `III_ENGINE_URL` are silently filtered out; the engine sets the connection URL
-itself.
+Map of environment variables for the worker process. Keys and values must be strings. Only a worker
+that runs in a VM gets these values: a registry bundle, or a `path://` worker with
+`runtime.base_image`. Every worker that Compose starts, on the host or in a VM, inherits the
+environment of the Compose daemon and gets `environment` and `env_file` from its container in
+`worker-compose.yaml`. For these keys, see
+[The worker environment](../using-iii/compose#the-worker-environment). The keys `III_URL` and
+`III_ENGINE_URL` are silently dropped, because Compose sets the connection URL itself.
 
 ```yaml
 env:
@@ -161,19 +192,21 @@ env:
   MY_API_KEY: replace-me
 ```
 
-For managed and reusable workers, configure the namespace in the compose file that deploys the
-worker rather than baking it into the shipped worker. Set `III_NAMESPACE` in the worker service's
-environment; the SDK reads it when no explicit `namespace` option is passed. `config.yaml` does not
-support a per-worker `namespace:` key.
-
-When registering a worker programmatically, you may instead pass `namespace` directly to
-`registerWorker` / `register_worker`. The explicit option takes precedence over `III_NAMESPACE`.
-When neither is set, the worker registers in the `default` namespace.
+Compose sets reserved variables for every worker that it starts, and a value for a reserved variable
+in `env` has no effect. For the list, see
+[The worker environment](../using-iii/compose#the-worker-environment). The reserved `III_NAMESPACE`
+holds the project namespace. To change it, see [Precedence](../using-iii/compose#precedence) and
+[Set a worker namespace](../using-iii/namespaces#set-a-worker-namespace).
 
 ## `dependencies`
 
-Map of `<worker-name>: <semver range>` declaring other workers this worker depends on, resolved
-against the registry.
+Map of `<worker-name>: <semver range>` that declares other workers that this worker depends on. The
+workers-repository release pipeline publishes this map to the registry. When `compose::add` adds a
+registry worker, Compose resolves the dependency graph against the registry. Compose then declares
+each dependency in `worker-compose.yaml`. Compose does not read `dependencies` for a `path://`
+worker. A `path://` worker gets its dependencies from other containers in `worker-compose.yaml`, and
+`start_after` sets their start order. For these keys, see
+[Worker fields](../using-iii/compose#worker-fields).
 
 ```yaml
 dependencies:
@@ -192,8 +225,9 @@ Rules:
 
 ## `resources`
 
-Optional CPU and memory requests for the worker's sandbox. Requests above the cap are clamped to the
-cap. For bundle workers this emits a `W182 BundleResourceClamped` warning at install time.
+Optional CPU and memory requests for the VM of the worker. A registry bundle is capped at 4 vCPUs
+and 4096 MiB. A larger bundle request is clamped to the cap when the bundle starts. A local VM
+worker gets the values as written.
 
 ```yaml
 resources:
@@ -203,22 +237,22 @@ resources:
 
 ### `cpus`
 
-Optional integer. Number of vCPUs. Defaults to `2`, capped at `4`.
+Optional integer. Number of vCPUs. Defaults to `2`. Bundle workers are capped at `4`.
 
 ### `memory`
 
-Optional integer. Memory in MiB. Defaults to `2048`, capped at `4096`.
+Optional integer. Memory in MiB. Defaults to `2048`. Bundle workers are capped at `4096`.
 
 ## Publish metadata: `iii`, `deploy`, `manifest`, `tags`, `license`
 
-Optional metadata used by the workers-repository release pipeline, not by the engine. The engine
-accepts these keys (so a manifest published from the workers repo also works with a local Compose
-worker) but never reads them at runtime.
+The workers-repository release pipeline reads these keys. Compose and `iii-worker` accept them and
+do not use them, so a manifest published from the workers repository also works for a local Compose
+worker.
 
 ```yaml
 iii: v1 # manifest format marker
-deploy: image # release artifact type: binary | image | bundle
-manifest: pyproject.toml # file the release version is read from
+deploy: binary # release artifact type: binary | image | bundle
+manifest: Cargo.toml # file the release version is read from
 tags: # search aliases sent to the workers registry
   - http
   - rest
@@ -226,8 +260,11 @@ tags: # search aliases sent to the workers registry
 license: Apache-2.0 # SPDX id the registry publishes the worker under
 ```
 
-`iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of strings used for agent
-and user discovery in the workers registry. Keep tags short, lowercase, and focused on terms someone
-would search for rather than repeating the worker description. `license` is an
+`iii`, `deploy`, `manifest`, and `license` are strings. `tags` is a list of search aliases. The
+workers registry uses them for agent and user discovery. Use short, lowercase terms that people
+search for, and do not repeat the worker description. `license` is an
 [SPDX license id](https://spdx.org/licenses/), for example `Apache-2.0`. The release pipeline of the
 workers repository requires it.
+
+Compose runs `binary` and `bundle` packages. It refuses an `image` package with
+`UNSUPPORTED_PACKAGE_KIND`. See [Worker kinds](../using-iii/compose#worker-kinds).

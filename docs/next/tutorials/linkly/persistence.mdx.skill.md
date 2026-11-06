@@ -3,14 +3,15 @@
 # Ch. 3: Persist everything
 
 
-Linkly's links live in `state`, which you set to in-memory back in Chapter 1. Restart the engine and
-everything is gone. In this chapter you add a `database` worker (SQLite) that holds the durable
-record of links and a timestamped row for every click on a short code. `state` stays in the picture
-as a fast read cache in front of the database.
+Linkly keeps its links in `state`, and `state` keeps its data in memory. When you restart the
+project, all of the links are gone. In this chapter you add a `database` worker (SQLite) that holds
+the durable record of links and a timestamped row for every click on a short code. `state` stays in
+the picture as a fast read cache in front of the database.
 
 <Info>
-  `state` can also persist on its own (`store_method: file_based` with a `file_path`). This chapter
-  uses a dedicated `database` worker instead, which gives you durable storage plus SQL to query it.
+  `state` can also keep its data across restarts on its own, with `store_method: file_based` and a
+  `file_path`. This chapter uses a dedicated `database` worker, which gives durable storage and SQL
+  to query the data.
 </Info>
 
 ## Add the database worker
@@ -39,30 +40,16 @@ database:
         url: sqlite:./data/iii.db
 ```
 
-{/* TODO: Improve this doc once we can add workers w/ config in compose. Move users to compose::add. */}
-
-<Note>
-  For simplicity and ease of configuration we've pre-included the database configuration and are
-  instructing you to uncomment entries and restart the entire project. This is not necessary, you
-  can also:
-
-1. Add a worker with `iii trigger compose::add worker=database`
-2. Configure it in `worker-compose.yaml`
-3. Restart that worker with `iii trigger compose::restart worker=database`.
-
-In this way you can modify a running system without restarting the entire thing.
-
-</Note>
-
 <Info>
   The database worker supports more than SQLite, refer to the [`database` worker
   docs](https://workers.iii.dev/workers/database) for all supported databases.
 </Info>
 
-Restart the project with:
+Restart the project. The first restart can take a few minutes because Compose downloads the
+`database` worker. Set a longer timeout on the call:
 
 ```bash
-iii trigger compose::restart
+iii trigger compose::restart --timeout-ms 600000
 ```
 
 The links you created in Chapters 1 and 2 lived only in the in-memory `state`: the restart clears
@@ -72,11 +59,18 @@ them, and the new `links` table starts empty. Once this chapter's code is in, cr
 The worker will be in charge of defining its own schema. We'll build up the necessary changes to
 `link/src/index.ts` in pieces.
 
+<Note>
+  Some Ch. 3 blocks in `link/src/index.ts` replace a Ch. 1 block. Their tag line includes `(replaces
+  Ch. 1)`, for example `// --- Ch. 3 | link::create (replaces Ch. 1) ---`. Comment out the Ch. 1
+  block before you uncomment the Ch. 3 block. For more information, see [The worker entry
+  point](./foundations#the-worker-entry-point).
+</Note>
+
 ### Define the database
 
 First add the `DB` constant **near the top of `link/src/index.ts`**:
 
-```typescript {4} src/index.ts
+```typescript src/index.ts {4}
 import { InvocationError, registerWorker } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 
@@ -130,16 +124,16 @@ async function ensureSchema(): Promise<void> {
 ensureSchema().catch((err) => logger.error("database: schema init failed", { error: String(err) }));
 ```
 
-#### Setup database writing
+#### Write links to the database
 
 **Modify `link::create`** to write to both the database (durable record) and `state` (hot cache).
 The `code` column is the table's primary key, so the database itself refuses a second link with the
-same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of a
-database error, and `database::execute` reports the count as `affected_rows`. Zero means the code is
-taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering `409`
-with `link::create`'s own message rather than the database's.
+same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of
+a database error, and `database::execute` reports the count as `affected_rows`. Zero means the code
+is taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering
+`409` with `link::create`'s own message rather than the database's.
 
-```typescript src/index.ts {4-17}
+```typescript src/index.ts {2,4-17}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   const code = payload.code ?? makeCode();
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
@@ -166,7 +160,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 });
 ```
 
-#### Setup database retrieval
+#### Read links from the database
 
 **Modify `link::resolve` to check the cache first**; on a miss, fall back to the database and warm
 the cache for the next read. It's easiest to replace the existing `link::resolve` function with our
@@ -251,11 +245,6 @@ worker.registerFunction("http::redirect", async (req) => {
 });
 ```
 
-<Note>
-  The database write for clicks adds latency to every redirect. The next chapter moves it onto a
-  durable queue that removes the latency while also adding recovery from database failures.
-</Note>
-
 ### Try the click tracking
 
 Now let's see the click tracking in action. Save the file, create a few links, and simulate a click
@@ -292,15 +281,13 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 }
 ```
 
-<Info>
-  Did you know that `--help` works with function id's as well? Try running: `iii trigger
-  database::query --help` to see what arguments `database::query` accepts.
-</Info>
+`--help` also works with a function ID. Run `iii trigger database::query --help` to see the
+arguments that `database::query` accepts.
 
 Run the loop a second time and each `POST /links` answers `409`, because the codes are taken:
 
 ```json
-{"error":"code `iii-example-1` is already taken"}
+{ "error": "code `iii-example-1` is already taken" }
 ```
 
 The redirects still go through, so the click count above grows by three on every run.
@@ -310,5 +297,5 @@ The redirects still go through, so the click count above grows by three on every
 Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast, and
 every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
-[Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so
-redirects stay fast.
+[Ch. 4: Make it durable](./durable-execution), you move that write onto a queue so redirects stay
+fast.
