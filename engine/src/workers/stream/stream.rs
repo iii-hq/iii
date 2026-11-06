@@ -2341,7 +2341,7 @@ mod tests {
         assert_eq!(payload_built_count(), before, "unobserved: nothing built");
 
         let mut sink = test_support::capture(&engine, "test::on-changed");
-        let _socket = test_support::observe(
+        let _socket = test_support::observe_input(
             &engine,
             "obs-changed",
             STREAM_ON_CHANGED,

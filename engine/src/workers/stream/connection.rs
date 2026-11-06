@@ -394,7 +394,7 @@ mod tests {
         let (engine, _module, connection, _rx) = build_connection(Some(context));
         let mut joins = test_support::capture(&engine, "test::on-join");
         let mut leaves = test_support::capture(&engine, "test::on-leave");
-        let _join_socket = test_support::observe(
+        let _join_socket = test_support::observe_input(
             &engine,
             "obs-join",
             STREAM_ON_JOIN,
@@ -402,7 +402,7 @@ mod tests {
             Some(json!({ "input.stream_name": { "$eq": "orders" } })),
         )
         .await;
-        let _leave_socket = test_support::observe(
+        let _leave_socket = test_support::observe_input(
             &engine,
             "obs-leave",
             STREAM_ON_LEAVE,
@@ -521,7 +521,7 @@ mod tests {
         assert!(matches!(set_result, FunctionResult::Success(_)));
 
         let mut leaves = test_support::capture(&engine, "test::on-leave");
-        let _leave_socket = test_support::observe(
+        let _leave_socket = test_support::observe_input(
             &engine,
             "obs-leave",
             STREAM_ON_LEAVE,

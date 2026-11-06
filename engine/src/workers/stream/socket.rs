@@ -552,7 +552,7 @@ mod tests {
         let (engine, _module, server, url) = spawn_server(adapter.clone()).await;
         let (leave_tx, mut leave_rx) = mpsc::unbounded_channel::<String>();
         register_leave_handler(&engine, leave_tx);
-        let _observer = test_support::observe(
+        let _observer = test_support::observe_input(
             &engine,
             "obs-leave",
             STREAM_ON_LEAVE,

@@ -4077,7 +4077,7 @@ mod tests {
             .expect("register function");
 
         let mut sink = test_support::capture(&engine, "test::sink");
-        let _observing = test_support::observe(
+        let _observing = test_support::observe_input(
             &engine,
             "obs-http",
             "external::lambda",

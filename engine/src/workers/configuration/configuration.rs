@@ -637,7 +637,7 @@ mod tests {
             "unobserved: zero cost"
         );
         let mut sink = test_support::capture(&engine, "test::config-sink");
-        let _socket = test_support::observe(
+        let _socket = test_support::observe_input(
             &engine,
             "obs-config",
             CONFIGURATION_ON_UPDATED,
@@ -699,7 +699,7 @@ mod tests {
         let (engine, worker, _dir) = setup().await;
         register_configuration_event_source(&engine);
         let mut sink = test_support::capture(&engine, "test::config-sink");
-        let _socket = test_support::observe(
+        let _socket = test_support::observe_input(
             &engine,
             "obs-values",
             CONFIGURATION_ON_UPDATED,

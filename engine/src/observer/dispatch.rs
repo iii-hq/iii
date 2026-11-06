@@ -2454,6 +2454,7 @@ mod tests {
         let (worker, _socket) = test_support::worker(&engine);
         let mut request = test_support::request("obs", "test::src", "test::panicky", None);
         request.max_in_flight = Some(1);
+        request.source.raw_input = true;
         test_support::observe_request(&engine, &worker, request).await;
 
         for n in 1..=2 {
@@ -2616,14 +2617,16 @@ mod tests {
         let a = test_support::capture(engine, "test::a");
         let b = test_support::capture(engine, "test::b");
         let (worker, socket) = test_support::worker(engine);
-        let filtered = test_support::request(
+        let mut filtered = test_support::request(
             "a",
             "test::src",
             "test::a",
             Some(json!({ "input.n": { "$eq": 99 } })),
         );
+        filtered.source.raw_input = true;
         test_support::observe_request(engine, &worker, filtered).await;
-        let unfiltered = test_support::request("b", "test::src", "test::b", None);
+        let mut unfiltered = test_support::request("b", "test::src", "test::b", None);
+        unfiltered.source.raw_input = true;
         test_support::observe_request(engine, &worker, unfiltered).await;
         let host = Uuid::new_v4();
         engine.function_owners.insert(
@@ -3138,6 +3141,7 @@ mod tests {
         for id in ["a", "b"] {
             let mut request = test_support::request(id, "test::src", "test::held", None);
             request.max_in_flight = Some(1);
+            request.source.raw_input = true;
             test_support::observe_request(&engine, &worker, request).await;
         }
         for n in 1..=2 {
@@ -3211,6 +3215,7 @@ mod tests {
             sinks.push(test_support::capture(&engine, target));
             let mut request = test_support::request(id, source, target, None);
             request.max_in_flight = Some(1);
+            request.source.raw_input = true;
             test_support::observe_request(&engine, &worker, request).await;
         }
 

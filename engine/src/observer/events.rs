@@ -404,8 +404,8 @@ pub(crate) mod test_support {
         (worker, rx)
     }
 
-    /// `source ~> target` with `deliver: input` (the call's input alone),
-    /// defaults otherwise.
+    /// `source ~> target` with the wire defaults: its target gets the
+    /// `Observed` envelope. Set `source.raw_input` for the input alone.
     pub fn request(id: &str, source: &str, target: &str, filters: Option<Value>) -> ObserveRequest {
         ObserveRequest {
             id: id.to_string(),
@@ -417,7 +417,7 @@ pub(crate) mod test_support {
                 capture: None,
                 on: None,
                 deliver: None,
-                raw_input: true,
+                raw_input: false,
             },
             target: ObserveTarget {
                 function_id: target.to_string(),
@@ -469,6 +469,22 @@ pub(crate) mod test_support {
         rx
     }
 
+    /// [`observe`] with `source.raw_input`: its target gets the call's input
+    /// alone.
+    pub async fn observe_input(
+        engine: &Arc<Engine>,
+        id: &str,
+        source: &str,
+        target: &str,
+        filters: Option<Value>,
+    ) -> mpsc::Receiver<Outbound> {
+        let (worker, rx) = worker(engine);
+        let mut request = request(id, source, target, filters);
+        request.source.raw_input = true;
+        observe_request(engine, &worker, request).await;
+        rx
+    }
+
     /// The next input `rx` gets.
     pub async fn next(rx: &mut mpsc::UnboundedReceiver<Value>) -> Value {
         tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -509,7 +525,7 @@ mod tests {
         assert_eq!(built.load(Ordering::SeqCst), 0, "unobserved: nothing built");
 
         let mut sink = test_support::capture(&engine, "test::workers");
-        let _socket = test_support::observe(
+        let _socket = test_support::observe_input(
             &engine,
             "obs-workers",
             ON_WORKERS_CHANGED,
@@ -601,7 +617,7 @@ mod tests {
         let engine = std::sync::Arc::new(Engine::new());
         register_engine_event_sources(&engine);
         let mut changes = test_support::capture(&engine, "test::changes");
-        let _changes_socket = test_support::observe(
+        let _changes_socket = test_support::observe_input(
             &engine,
             "obs-changes",
             ON_OBSERVERS_CHANGED,
