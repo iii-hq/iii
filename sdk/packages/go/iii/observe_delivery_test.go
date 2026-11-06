@@ -1004,7 +1004,7 @@ func TestIsObservedAndObserversFollowTheActiveSet(t *testing.T) {
 // empty Status reads as error when Error is set.
 func TestObserverMatchesACall(t *testing.T) {
 	f := newFunctionObservers(New("ws://unused.invalid"), "pay::fn", true, false)
-	onError, err := newObserver(f, ObserverInfo{ID: "e", Target: "x", Capture: []Capture{CaptureError}, Filters: json.RawMessage(`{"$and":[{"input.amount":{"$gte":500}}]}`)}, 1)
+	onError, err := newObserver(f, ObserverInfo{ID: "e", Target: "x", Capture: []Capture{CaptureError}, FiresOn: []string{"error"}, Filters: json.RawMessage(`{"$and":[{"input.amount":{"$gte":500}}]}`)}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

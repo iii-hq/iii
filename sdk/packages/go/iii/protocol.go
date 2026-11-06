@@ -540,6 +540,12 @@ type ObserverInfo struct {
 	Filters json.RawMessage `json:"filters,omitempty"`
 	Target  string          `json:"target"`
 	Capture []Capture       `json:"capture,omitzero"`
+	// FiresOn is the outcomes that fire it ("success", "error"), from an engine with
+	// observe.capture; nil from an older one, whose observers fire as On says.
+	FiresOn []string `json:"fires_on,omitzero"`
+	// On is the legacy on of an engine without observe.capture (absent: success;
+	// "error"; "complete"), read only when FiresOn is nil. Deprecated.
+	On json.RawMessage `json:"on,omitempty"`
 }
 
 // ObserveResultMessage is the engine's reply to an observe (also on a replay).

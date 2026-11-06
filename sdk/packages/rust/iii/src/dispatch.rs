@@ -1404,17 +1404,21 @@ mod tests {
         assert!(set.on_error.is_empty(), "no observer of failed calls");
     }
 
-    /// An active observer of [`FUNCTION`] with `filters`, firing on `on`
+    /// An active observer of [`FUNCTION`] with `filters`, firing on `on`:
     /// `success` (the default capture), `error` (`[error]`) or `complete`
-    /// (`[input, error]`).
+    /// (`[input, error]`), announced as an engine with `observe.capture`
+    /// announces it, with its `fires_on`.
     fn with_filters(id: &str, on: &str, filters: Value) -> Observer {
-        let capture = match on {
-            "error" => json!(["error"]),
-            "complete" => json!(["input", "error"]),
-            _ => json!(["input", "output", "caller", "metadata"]),
+        let (capture, fires) = match on {
+            "error" => (json!(["error"]), json!(["error"])),
+            "complete" => (json!(["input", "error"]), json!(["success", "error"])),
+            _ => (
+                json!(["input", "output", "caller", "metadata"]),
+                json!(["success"]),
+            ),
         };
         Observer::test_view(
-            json!({ "id": id, "target": "t", "capture": capture, "filters": filters }),
+            json!({ "id": id, "target": "t", "capture": capture, "fires_on": fires, "filters": filters }),
             0,
             true,
         )

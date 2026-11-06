@@ -403,7 +403,7 @@ def test_invokefunction_workers_register_json_features_in_the_payload(engine: Fa
     assert frame["action"] == {"type": "void"}
     assert "invocation_id" not in frame  # a void call
     assert data["features"] == expected["data"]["features"]
-    assert data["features"] == ["observe.v1", "observe.v2", "local-dispatch.v1", "large-messages.v1"]
+    assert data["features"] == ["observe.v1", "observe.v2", "observe.capture", "local-dispatch.v1", "large-messages.v1"]
     assert "isolation" not in data  # unset: left out, never null
     assert (data["runtime"], data["name"], data["namespace"]) == ("python", "billing", "default")
     assert set(expected["data"]["telemetry"]) <= set(data["telemetry"])
@@ -702,9 +702,10 @@ def test_accepts_null_for_optional_fields_and_keeps_unknown_enum_values() -> Non
         {"id": "o", "args": None, "filters": None, "target": "t", "capture": ["input", "telemetry"], "on": "start"}
     )
     assert (info.args, info.filters, info.capture) == ({}, {}, ["input", "telemetry"])
-    assert not hasattr(info, "on"), "a field this SDK no longer reads is dropped"
+    # a legacy on is kept (D6): an unknown value fires on success, as absent does
+    assert info.on == "start" and info.firing() == (True, False)
     defaults = ObserverInfoWire.model_validate({"id": "o", "target": "t"})
-    assert defaults.capture == ["input", "output", "caller", "metadata"]
+    assert defaults.capture == ["input", "output", "caller"]  # D1
     registered = FunctionRegisteredMessage.model_validate(
         {"id": "f", "namespace": "default", "revision": None, "observers": None}
     )

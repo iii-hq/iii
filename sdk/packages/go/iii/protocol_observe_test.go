@@ -496,7 +496,7 @@ func TestObserveFixturesLenientDecode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("null filters compile as {}: %v", err)
 	}
-	if len(obs.Capture) != 4 || obs.Args == nil {
+	if len(obs.Capture) != 3 || obs.Args == nil { // D1: [input output caller]
 		t.Errorf("defaults: capture %v args %v", obs.Capture, obs.Args)
 	}
 	if _, err := newObserver(f, ObserverInfo{ID: "o2", Target: "t", Filters: json.RawMessage(`[1]`)}, 3); err == nil {

@@ -25,7 +25,7 @@ import (
 const observeHookTimeout = 30 * time.Second
 
 // defaultCapture is what an absent capture means.
-var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller, CaptureMetadata}
+var defaultCapture = []Capture{CaptureInput, CaptureOutput, CaptureCaller}
 
 // errNotActive is what Accepted returns for an observer removed, or whose function was
 // released, before the SDK accepted it: it never became active. OBSERVER_NOT_ACTIVE is
@@ -801,11 +801,32 @@ func legacyOn(capture []Capture) string {
 	return "error"
 }
 
-// legacyOnDeprecation is logged once per client, the first time it sends source.on to an
-// engine without observe.v2.
-const legacyOnDeprecation = "iii: observe: this engine lacks observe.v2 (0.25), so observers are sent with " +
-	"`source.on`, derived from `capture`. `source.on` is deprecated and will be removed in a future release: " +
-	"upgrade the engine to 0.26 or later."
+// legacyOnDeprecation is logged once per client, the first time it reads an observer view
+// without fires_on or sends source.on: the engine lacks observe.capture.
+const legacyOnDeprecation = "iii: observe: the connected engine does not support observe.capture; legacy `on` " +
+	"semantics are deprecated and will be removed in a future version; upgrade the engine."
+
+// buildLegacyObserveFrame builds the observe frame with source.on, when it is sent to
+// an engine without observe.capture (a variable so a test can count the builds).
+var buildLegacyObserveFrame = withSourceOn
+
+// viewFiring is the outcomes an observer announced as info fires on: its fires_on, or
+// else its legacy on (absent, "success" or unknown: success; "error"; "complete":
+// both), never its capture.
+func viewFiring(info ObserverInfo) (onSuccess, onError bool) {
+	if info.FiresOn != nil {
+		return slices.Contains(info.FiresOn, "success"), slices.Contains(info.FiresOn, "error")
+	}
+	var on string
+	_ = json.Unmarshal(info.On, &on)
+	switch on {
+	case "error":
+		return false, true
+	case "complete":
+		return true, true
+	}
+	return true, false
+}
 
 // withSourceOn is the observe frame with source.on set.
 func withSourceOn(frame []byte, on string) ([]byte, error) {
@@ -876,6 +897,9 @@ type Observer struct {
 	capture []Capture
 	argsRaw json.RawMessage
 	filter  *filter.Filter
+	// firesOnSuccess and firesOnError are the outcomes that fire it, read once from the
+	// view (viewFiring): the hot paths read them.
+	firesOnSuccess, firesOnError bool
 	// argsKey and viewKey identify the engine's view of the observer (viewKeysOf): its
 	// args, and the rest, to tell a replay with the same args and a changed view.
 	argsKey, viewKey string
@@ -937,6 +961,7 @@ func observerView(f *functionObservers, info ObserverInfo) (*Observer, error) {
 		owner:      f,
 	}
 	obs.id, obs.target, obs.capture = info.ID, info.Target, slices.Clone(capture)
+	obs.firesOnSuccess, obs.firesOnError = viewFiring(info)
 	obs.argsRaw = objectOrEmpty(info.Args)
 	_ = json.Unmarshal(obs.argsRaw, &obs.Args)
 	filtersRaw := objectOrEmpty(info.Filters)
@@ -964,8 +989,10 @@ func viewDefaults(info ObserverInfo) []Capture {
 // capture.
 func viewKeysOf(info ObserverInfo) (argsKey, viewKey string) {
 	capture := viewDefaults(info)
+	onSuccess, onError := viewFiring(info)
 	return canonicalJSON(objectOrEmpty(info.Args)),
-		canonicalJSON(objectOrEmpty(info.Filters)) + "\x00" + info.Target + "\x00" + fmt.Sprint(capture)
+		canonicalJSON(objectOrEmpty(info.Filters)) + "\x00" + info.Target + "\x00" + fmt.Sprint(capture) +
+			"\x00" + fmt.Sprint(onSuccess, onError)
 }
 
 // settle resolves Accepted, once.
@@ -979,7 +1006,8 @@ func (o *Observer) settle(err error) {
 // DecodeArgs unmarshals the observer's args into v (a struct, typically).
 func (o *Observer) DecodeArgs(v any) error { return json.Unmarshal(o.argsRaw, v) }
 
-// Matches reports whether call reaches the observer: its capture fires on the call's status
+// Matches reports whether call reaches the observer: it fires on the call's status (its
+// view's fires_on)
 // and its filters match the call. A deliver hook that calls targets itself checks it
 // before calling through the observer; iii's delivery applies it on its own. On a call
 // the SDK hands a hook, the observers share the call's decoded document and its values
@@ -994,7 +1022,15 @@ func (o *Observer) Matches(call *Call) bool {
 			return v.matches(o)
 		}
 	}
-	return captureFires(o.capture, call.succeeded()) && o.filter.Matches(call.doc())
+	return o.fires(call.succeeded()) && o.filter.Matches(call.doc())
+}
+
+// fires reports whether a call that ended in success (ok) or error fires the observer.
+func (o *Observer) fires(ok bool) bool {
+	if ok {
+		return o.firesOnSuccess
+	}
+	return o.firesOnError
 }
 
 // Accepted waits until the SDK has acked the observer as accepted, and returns nil. A

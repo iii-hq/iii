@@ -49,6 +49,7 @@ from .iii_constants import (
     InitOptions,
 )
 from .iii_types import (
+    FEATURE_OBSERVE_CAPTURE,
     FEATURE_OBSERVE_V1,
     FEATURE_OBSERVE_V2,
     LEGACY_ON_DEPRECATION,
@@ -65,6 +66,7 @@ from .iii_types import (
     ObserveMessage,
     ObserverAddedMessage,
     ObserveResultMessage,
+    ObserverInfoWire,
     ObserverRemovedMessage,
     ObserverStateChangedMessage,
     RegisterFunctionFormat,
@@ -1187,6 +1189,7 @@ class III:
             )
         elif msg_type == MessageType.FUNCTION_REGISTERED.value:
             registered = FunctionRegisteredMessage.model_validate(data)
+            self._warn_legacy_views(registered.observers)
             state = self._observe_state(registered.id)
             if state is not None and state.sent_epoch != self._connection_epoch:
                 # The answer to a registration this connection withdrew (a
@@ -1206,6 +1209,7 @@ class III:
             self._reporter.flush()
         elif msg_type == MessageType.OBSERVER_ADDED.value:
             added = ObserverAddedMessage.model_validate(data)
+            self._warn_legacy_views([added.observer])
             state = self._observe_state(added.function_id)
             if state is not None and state.sent_epoch != self._connection_epoch:
                 # An observer of a registration this connection withdrew: no hook runs, no ack goes out.
@@ -1527,19 +1531,31 @@ class III:
                     del self._observe_sent[handle.id]
         handle._set_state(state, cast(ObserveReason, body) if body else None)
 
+    def _warn_legacy_on(self) -> None:
+        """Warns, once per client, that the connected engine lacks
+        ``observe.capture`` and its legacy ``on`` semantics are deprecated."""
+        if not self._legacy_on_warned:
+            self._legacy_on_warned = True
+            warnings.warn(LEGACY_ON_DEPRECATION, FutureWarning, stacklevel=3)
+
+    def _warn_legacy_views(self, views: list[ObserverInfoWire]) -> None:
+        """A view without ``fires_on`` fires as its legacy ``on`` says: warns once."""
+        if any(view.fires_on is None for view in views):
+            self._warn_legacy_on()
+
     def _observe_frame(self, message: ObserveMessage) -> Any:
         """The ``observe`` frame for this connection's engine. One without
-        ``observe.v2`` (0.25) decides the outcomes that fire from ``source.on``
-        alone, so it gets the ``on`` that ``capture`` implies; the first such
-        frame warns that this is deprecated."""
-        if FEATURE_OBSERVE_V2 in self._engine_features:
+        ``observe.capture`` (0.25, or an rc engine with ``observe.v2`` only)
+        decides the outcomes that fire from ``source.on`` alone, so it gets the
+        ``on`` that ``capture`` implies (initial observe and replay alike); the
+        first such frame warns that this is deprecated. An engine with
+        ``observe.capture`` never gets ``on``."""
+        if FEATURE_OBSERVE_CAPTURE in self._engine_features:
             return message
         on = legacy_on(message.source.capture)
         if on is None:
             return message
-        if not self._legacy_on_warned:
-            self._legacy_on_warned = True
-            warnings.warn(LEGACY_ON_DEPRECATION, FutureWarning, stacklevel=2)
+        self._warn_legacy_on()
         frame = self._to_dict(message)
         frame["source"] = {**frame["source"], "on": on}
         return frame

@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -26,13 +27,17 @@ import (
 // FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to
 // 64 MiB, so the engine sends it messages of that size whatever version it reports.
 const (
-	FeatureObserveV1       = "observe.v1"
-	FeatureObserveV2       = "observe.v2"
+	FeatureObserveV1 = "observe.v1"
+	FeatureObserveV2 = "observe.v2"
+	// FeatureObserveCapture: the host reads the outcomes that fire an observer from the
+	// fires_on of its observer views, never from capture, and sends no source.on. An
+	// engine with it announces fires_on on every view.
+	FeatureObserveCapture  = "observe.capture"
 	FeatureLocalDispatchV1 = "local-dispatch.v1"
 	FeatureLargeMessagesV1 = "large-messages.v1"
 )
 
-var sdkFeatures = []string{FeatureObserveV1, FeatureObserveV2, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
+var sdkFeatures = []string{FeatureObserveV1, FeatureObserveV2, FeatureObserveCapture, FeatureLocalDispatchV1, FeatureLargeMessagesV1}
 
 // Engine functions of the observer registry.
 const (
@@ -146,12 +151,6 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	if err != nil {
 		return nil, err
 	}
-	var legacyFrame []byte
-	if on := legacyOn(msg.Source.Capture); on != "" {
-		if legacyFrame, err = withSourceOn(frame, on); err != nil {
-			return nil, err
-		}
-	}
 
 	c.mu.Lock()
 	if _, held := c.observers[id]; held {
@@ -160,7 +159,7 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	}
 	c.observerSeq++
 	h := newObserverHandle(c, id, frame, c.observerSeq)
-	h.legacyFrame = legacyFrame
+	h.legacyOn = legacyOn(msg.Source.Capture)
 	c.observers[id] = h
 	live := c.state == StateConnected && c.registeredOnConnection
 	supported, epoch := c.engineFeatures[FeatureObserveV1], c.epoch
@@ -238,18 +237,42 @@ func (c *Client) sendObserve(h *ObserverHandle, epoch uint64) {
 // which orders observe and unobserve frames, so the list is in the order the frames go
 // out.
 func (c *Client) sendObserveLocked(h *ObserverHandle, epoch uint64) {
+	// An engine without observe.capture (0.25, or an rc engine with observe.v2 only)
+	// decides the outcomes that fire from source.on alone: it gets the on the capture
+	// implies, deprecated with it. That frame is built here, outside mu and only for
+	// such an engine: the handle keeps one frame. The features are the connection's,
+	// so they still hold below while epoch is the registered connection.
+	c.mu.Lock()
+	legacy := h.legacyOn != "" && c.registeredLocked(epoch) && !c.engineFeatures[FeatureObserveCapture]
+	c.mu.Unlock()
+	data := h.frame
+	if legacy {
+		frame, err := buildLegacyObserveFrame(h.frame, h.legacyOn)
+		if err == nil {
+			frame, err = prepareFrame(frame)
+		}
+		if err != nil {
+			// never the frame without on, which would observe other outcomes
+			log.Printf("iii: observe %s not sent: %v", h.id, err)
+			code := "payload_too_large"
+			var ie *InvocationError
+			if errors.As(err, &ie) && ie.Code != "" {
+				code = ie.Code
+			}
+			h.setState(ObserverError, &ObserveReason{Code: code, Message: err.Error()})
+			return
+		}
+		data = frame
+	}
 	c.mu.Lock()
 	live := c.registeredLocked(epoch) && c.engineFeatures[FeatureObserveV1] && c.observers[h.id] == h && !h.refused
-	data, warn := h.frame, false
+	warn := false
 	if live {
 		if c.observeSent == nil {
 			c.observeSent = map[string][]sentObserve{}
 		}
 		c.observeSent[h.id] = append(c.observeSent[h.id], sentObserve{handle: h})
-		// An engine without observe.v2 (0.25) decides the outcomes that fire from
-		// source.on alone: it gets the on the capture implies, deprecated with it.
-		if !c.engineFeatures[FeatureObserveV2] && h.legacyFrame != nil {
-			data = h.legacyFrame
+		if legacy {
 			warn = !c.legacyOnWarned
 			c.legacyOnWarned = true
 		}
@@ -642,10 +665,29 @@ func isObserveFrame(frame []byte) (family bool, unobserveID string) {
 }
 
 // dispatchObserve handles the observe messages from the read loop.
+// warnLegacyViews logs the legacy on deprecation, once per client, when a view comes
+// without fires_on: the engine lacks observe.capture, and the observer fires as its
+// legacy on says.
+func (c *Client) warnLegacyViews(views ...ObserverInfo) {
+	for _, view := range views {
+		if view.FiresOn == nil {
+			c.mu.Lock()
+			warn := !c.legacyOnWarned
+			c.legacyOnWarned = true
+			c.mu.Unlock()
+			if warn {
+				log.Print(legacyOnDeprecation)
+			}
+			return
+		}
+	}
+}
+
 func (c *Client) dispatchObserve(dec *DecodedMessage) {
 	switch dec.Type {
 	case MsgFunctionRegistered:
 		msg := dec.FunctionRegistered
+		c.warnLegacyViews(msg.Observers...)
 		c.mu.Lock()
 		epoch := c.epoch
 		fn, ok := c.functions[msg.ID]
@@ -658,6 +700,7 @@ func (c *Client) dispatchObserve(dec *DecodedMessage) {
 		}
 	case MsgObserverAdded:
 		msg := dec.ObserverAdded
+		c.warnLegacyViews(msg.Observer)
 		c.mu.Lock()
 		epoch := c.epoch
 		fn, ok := c.functions[msg.FunctionID]
