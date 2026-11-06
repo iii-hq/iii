@@ -8,10 +8,12 @@ name: Benchmark Compare
 #   /bench 0.25.0 0.26.0-rc.1   -> both releases vs PR head
 #   /bench base 0.25.0          -> v0.25.0 vs PR base branch vs PR head
 #   /bench 0.25.0 --no-head     -> releases only (no PR head)
+#   /bench 0.25.1-alpha.2       -> alpha release (tag iii-alpha/v0.25.1-alpha.2)
 #
 # Tokens: `base` = tip of the PR's base branch, `head` = PR head (always
-# included unless --no-head), `X.Y.Z[-pre]` (optional `v` / `iii/v` prefix) =
-# the `iii/vX.Y.Z[-pre]` release tag. The first ref listed is the baseline the
+# included unless --no-head), `X.Y.Z[-pre]` (optional `v` / `iii/v` / `iii-alpha/v`
+# prefix) = the `iii/vX.Y.Z[-pre]` release tag, falling back to the
+# `iii-alpha/vX.Y.Z-alpha.N` alpha tag. The first ref listed is the baseline the
 # other columns are compared against.
 #
 # Besides the timings, the report lists the peak memory and the CPU each bench
@@ -111,12 +113,22 @@ jobs:
               head) WANT_HEAD=true ;;
               --no-head) WANT_HEAD=false ;;
               *)
-                V="${T#iii/}"; V="${V#v}"
+                # Accept X.Y.Z[-pre], vX.Y.Z, iii/vX.Y.Z or iii-alpha/vX.Y.Z
+                V="${T#iii-alpha/}"; V="${V#iii/}"; V="${V#v}"
                 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
                   || fail "unknown argument \`$T\`. Usage: \`/bench [base] [X.Y.Z ...] [--no-head]\`"
-                gh api "repos/$REPO/git/ref/tags/iii/v$V" >/dev/null 2>&1 \
-                  || fail "release tag \`iii/v$V\` does not exist."
-                VERSIONS+=("$V")
+                # Stable releases and RCs are tagged iii/vX, alphas iii-alpha/vX.
+                case "$T" in
+                  iii-alpha/*) CANDIDATES=("iii-alpha/v$V") ;;
+                  iii/*)       CANDIDATES=("iii/v$V") ;;
+                  *)           CANDIDATES=("iii/v$V" "iii-alpha/v$V") ;;
+                esac
+                TAG=""
+                for C in "${CANDIDATES[@]}"; do
+                  if gh api "repos/$REPO/git/ref/tags/$C" >/dev/null 2>&1; then TAG="$C"; break; fi
+                done
+                [[ -n "$TAG" ]] || fail "no release tag found for \`$V\` (tried: ${CANDIDATES[*]})."
+                VERSIONS+=("$TAG")
                 ;;
             esac
           done
@@ -124,8 +136,8 @@ jobs:
           if [[ ${#VERSIONS[@]} -eq 0 ]]; then WANT_BASE=true; fi
 
           REFS='[]'
-          for V in "${VERSIONS[@]}"; do
-            REFS=$(jq -c --arg l "v$V" --arg r "refs/tags/iii/v$V" '. + [{label:$l, rev:$r}]' <<< "$REFS")
+          for TAG in "${VERSIONS[@]}"; do
+            REFS=$(jq -c --arg l "${TAG#*/}" --arg r "refs/tags/$TAG" '. + [{label:$l, rev:$r}]' <<< "$REFS")
           done
           if [[ "$WANT_BASE" == true ]]; then
             REFS=$(jq -c --arg l "base ($BASE_NAME)" --arg r "$BASE_SHA" '. + [{label:$l, rev:$r}]' <<< "$REFS")
