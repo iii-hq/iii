@@ -1514,8 +1514,16 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
         let (inbox_a, inbox_b) = (Inbox::default(), Inbox::default());
         watcher.register_function(&to_a, inbox_a.function());
         watcher.register_function(&to_b, inbox_b.function());
+        // A names metadata in its capture (CONTRACT D1: the default has none).
         let a = watcher.observe(
-            Source::function(&source).args(json!({ "session": "s1" })),
+            Source::function(&source)
+                .args(json!({ "session": "s1" }))
+                .capture([
+                    Capture::Input,
+                    Capture::Output,
+                    Capture::Caller,
+                    Capture::Metadata,
+                ]),
             &to_a,
         );
         tokio::time::timeout(WAIT, a.ready())
@@ -1563,7 +1571,7 @@ async fn a_call_for_one_observer_reaches_its_target_alone() {
 
         // A gets the payload of every call; B the output of every call alone
         let ordinary = &got_a[1];
-        // A captures metadata by default, so the calls that carry for_observer
+        // A captures metadata, so the calls that carry for_observer
         // show it; the ordinary call carries none, so its envelope has no
         // metadata field.
         assert!(
@@ -1631,7 +1639,7 @@ fn capture_rows() -> Vec<CaptureRow> {
         CaptureRow {
             name: "default",
             capture: None,
-            success: Some(&["caller", "input", "metadata", "output"]),
+            success: Some(&["caller", "input", "output"]),
             error: None,
         },
         CaptureRow {

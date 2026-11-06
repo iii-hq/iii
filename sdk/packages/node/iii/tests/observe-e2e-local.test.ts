@@ -457,7 +457,11 @@ describe('calls for one observer (decision 52)', () => {
       const gotB = collector(watcher, `d52::output-${form}-${RUN}`)
       await localDispatchReady(owner, fn)
 
-      const a = watcher.observe({ function_id: fn, args: { session: 's1' } }, `d52::envelope-${form}-${RUN}`)
+      // A names metadata in its capture (CONTRACT D1: the default has none).
+      const a = watcher.observe(
+        { function_id: fn, args: { session: 's1' }, capture: ['input', 'output', 'caller', 'metadata'] },
+        `d52::envelope-${form}-${RUN}`,
+      )
       await a.ready()
       await exactly(gotA, 1, "A's initial state")
       const b = watcher.observe(
@@ -478,7 +482,7 @@ describe('calls for one observer (decision 52)', () => {
       expect(gotB).toHaveLength(2)
 
       // A receives the envelope it receives for every call: same fields, the observer's own id.
-      // A captures metadata by default, so the calls that carry for_observer show it;
+      // A captures metadata, so the calls that carry for_observer show it;
       // the ordinary call carries none, so its envelope has no metadata field.
       const [initial, ordinary, forA] = gotA.map((g) => g.data)
       expect(ordinary).not.toHaveProperty('metadata')
@@ -667,7 +671,7 @@ describe('capture alone decides which outcomes fire (the observers guide, row by
   type Field = (typeof ALL)[number]
   // The payload fields each outcome carries, or null when it does not fire the target.
   const ROWS: { name: string; capture?: Field[]; success: Field[] | null; error: Field[] | null }[] = [
-    { name: 'default', success: ['caller', 'input', 'metadata', 'output'], error: null },
+    { name: 'default', success: ['caller', 'input', 'output'], error: null },
     { name: 'errors-only', capture: ['error', 'caller'], success: null, error: ['caller', 'error'] },
     { name: 'full', capture: ['input', 'output', 'error'], success: ['input', 'output'], error: ['error', 'input'] },
     { name: 'empty', capture: [], success: [], error: null },

@@ -742,7 +742,8 @@ func TestObserveCallForOneObserver(t *testing.T) {
 			localDispatchReady(t, owner, fn)
 			gotA, gotB := collector(t, watcher, toA), collector(t, watcher, toB)
 
-			a, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}}, toA)
+			// A names metadata in its capture (CONTRACT D1: the default has none).
+			a, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Capture: []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureCaller, iii.CaptureMetadata}}, toA)
 			ready(t, a)
 			exactly(t, gotA, 1, "A's state", 10*time.Second)
 			b, _ := watcher.Observe(iii.Source{FunctionID: fn, Args: iii.Args{"session": "s1"}, Capture: []iii.Capture{iii.CaptureOutput}}, toB)
@@ -768,7 +769,7 @@ func TestObserveCallForOneObserver(t *testing.T) {
 			}
 
 			ordinary := envelopes[1].Data
-			// A captures metadata by default, so the calls that carry for_observer show it;
+			// A captures metadata, so the calls that carry for_observer show it;
 			// the ordinary call carries none, so its envelope has no metadata field.
 			if metadata, ok := ordinary["metadata"]; ok {
 				t.Errorf("the ordinary call's envelope has metadata %v", metadata)
@@ -815,7 +816,7 @@ type captureRow struct {
 }
 
 var captureRows = []captureRow{
-	{"default", nil, []string{"caller", "input", "metadata", "output"}, nil},
+	{"default", nil, []string{"caller", "input", "output"}, nil},
 	{"errors-only", []iii.Capture{iii.CaptureError, iii.CaptureCaller}, nil, []string{"caller", "error"}},
 	{"full", []iii.Capture{iii.CaptureInput, iii.CaptureOutput, iii.CaptureError}, []string{"input", "output"}, []string{"error", "input"}},
 	{"empty", []iii.Capture{}, []string{}, nil},

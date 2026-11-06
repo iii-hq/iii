@@ -506,7 +506,11 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     got_a = collector(watcher, fid("py-d52::envelope"))
     got_b = collector(watcher, fid("py-d52::output"))
 
-    a = watcher.observe({"function_id": source, "args": {"session": "s1"}}, fid("py-d52::envelope"))
+    # A names metadata in its capture (CONTRACT D1: the default has none).
+    a = watcher.observe(
+        {"function_id": source, "args": {"session": "s1"}, "capture": ["input", "output", "caller", "metadata"]},
+        fid("py-d52::envelope"),
+    )
     a.ready(timeout=10)
     exactly(got_a, 1, "A's state")
     b = watcher.observe(
@@ -527,7 +531,7 @@ def test_a_call_for_one_observer_reaches_its_target_alone_in_the_shape_of_every_
     assert len(got_b) == 2
 
     state, ordinary, for_a = (g.data for g in got_a)
-    # A captures metadata by default, so the calls that carry for_observer show it;
+    # A captures metadata, so the calls that carry for_observer show it;
     # the ordinary call carries none, so its envelope has no metadata field.
     assert "metadata" not in ordinary
     for full in (state, for_a):
@@ -604,7 +608,7 @@ def test_reconnect_local_dispatch_keeps_serving_reports_flush_after_and_the_diff
 # capture alone decides which outcomes fire (the observers guide, row by row): the
 # payload fields each outcome carries, or None when it does not fire the target.
 CAPTURE_ROWS: list[tuple[str, list[str] | None, list[str] | None, list[str] | None]] = [
-    ("default", None, ["caller", "input", "metadata", "output"], None),
+    ("default", None, ["caller", "input", "output"], None),
     ("errors-only", ["error", "caller"], None, ["caller", "error"]),
     ("full", ["input", "output", "error"], ["input", "output"], ["error", "input"]),
     ("empty", [], [], None),
