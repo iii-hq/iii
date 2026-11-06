@@ -171,6 +171,17 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &worker_registry,
                         )
                         .await;
+                        // The registries outlive a worker's cleanup in the
+                        // engine: returned, they are dropped after the
+                        // measurement.
+                        (
+                            worker,
+                            functions,
+                            service_registry,
+                            invocations,
+                            observers,
+                            worker_registry,
+                        )
                     },
                     BatchSize::SmallInput,
                 );
@@ -232,6 +243,17 @@ fn worker_cleanup_benchmark(c: &mut Criterion) {
                             &worker_registry,
                         )
                         .await;
+                        // The registries outlive a worker's cleanup in the
+                        // engine: returned, they are dropped after the
+                        // measurement.
+                        (
+                            worker,
+                            functions,
+                            service_registry,
+                            invocations,
+                            observers,
+                            worker_registry,
+                        )
                     },
                     BatchSize::SmallInput,
                 );
