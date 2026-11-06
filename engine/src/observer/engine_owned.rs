@@ -139,7 +139,17 @@ impl ObserverRegistry {
                 settings.max_queue_per_observer,
             )
         };
-        let capture = CaptureSet::DEFAULT;
+        // What it hands its target is all it captures, so all its
+        // function's host ships (CONTRACT D2).
+        let capture = match deliver {
+            Deliver::Input => CaptureSet::INPUT_ONLY,
+            Deliver::Output => CaptureSet {
+                output: true,
+                on_success: true,
+                ..CaptureSet::default()
+            },
+            Deliver::Payload => CaptureSet::DEFAULT,
+        };
 
         if let Some(existing) = self.get(&id) {
             if !existing.is_engine_owned() {
@@ -153,7 +163,7 @@ impl ObserverRegistry {
                 target: target.clone(),
                 args: args.clone(),
                 filters: filter.normalized().clone(),
-                capture: capture.to_list(),
+                capture,
                 deliver,
                 metadata: metadata.clone(),
                 max_fires: None,
@@ -380,6 +390,20 @@ mod tests {
         let observer = engine.observers.get("engine::test-watch").unwrap();
         assert!(observer.is_engine_owned());
         assert_eq!(observer.state(), ObserverState::Active);
+        // CONTRACT D2: it hands its target the input alone, so it captures
+        // (and its function's host ships) the input alone, on success.
+        assert_eq!(
+            observer.capture,
+            CaptureSet {
+                input: true,
+                on_success: true,
+                ..CaptureSet::default()
+            }
+        );
+        assert_eq!(
+            observer.capture.with_delivered(&observer.deliver).to_list(),
+            vec![crate::protocol::Capture::Input]
+        );
         engine
             .call("test::source", json!({ "n": 1 }))
             .await

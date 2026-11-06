@@ -62,7 +62,20 @@ impl CaptureSet {
         output: true,
         error: false,
         caller: true,
-        metadata: true,
+        metadata: false,
+        on_success: true,
+        on_error: false,
+    };
+
+    /// What an engine-owned observer that hands its target the input alone
+    /// captures (CONTRACT D2): the input, on success; its host ships nothing
+    /// else.
+    pub const INPUT_ONLY: Self = Self {
+        input: true,
+        output: false,
+        error: false,
+        caller: false,
+        metadata: false,
         on_success: true,
         on_error: false,
     };
@@ -141,8 +154,10 @@ impl CaptureSet {
     /// hands its target, which the engine has no other way to get for a call
     /// the host reports.
     pub fn with_delivered(mut self, deliver: &Deliver) -> Self {
-        if *deliver == Deliver::Input {
-            self.input = true;
+        match deliver {
+            Deliver::Payload => {}
+            Deliver::Input => self.input = true,
+            Deliver::Output => self.output = true,
         }
         self
     }
@@ -161,14 +176,104 @@ impl CaptureSet {
     }
 }
 
-/// What the target's first argument is. Engine-internal, never on the wire:
-/// observers made by `observe` always receive the payload; the engine's own
-/// observers receive the observed input alone.
+/// What the target's first argument is. Engine-internal, never a new-style
+/// wire field: observers made by `observe` receive the payload; the engine's
+/// own observers receive the observed input alone; an older SDK's
+/// `deliver: input` / `deliver: output` is translated to [`Self::Input`] /
+/// [`Self::Output`] (CONTRACT D4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Deliver {
     #[default]
     Payload,
     Input,
+    /// The observed output alone, `null` when there is none (on a failure
+    /// too), as v0.25's `deliver: output`.
+    Output,
+}
+
+/// CONTRACT D4: an older SDK's `source.on` / `source.deliver`, translated at
+/// registration (the first `observe` and every replay) into what the
+/// observer does: `None` when the source carries neither.
+///
+/// Firing comes from `on` alone (absent or `success`: successes; `error`:
+/// failures; `complete`: both), set directly rather than through
+/// [`CaptureSet::resolve`], since an old capture such as `[caller]` was
+/// valid with any `on`. The payload carries exactly the `capture` list (the
+/// old default `[input, output, caller]` when absent). `deliver` absent or
+/// `envelope` is the payload, `input` / `output` the raw value. Any other
+/// value of either is an error message for `INVALID_ARGS`.
+pub(crate) fn translate_legacy(
+    on: Option<&Value>,
+    deliver: Option<&Value>,
+    capture: Option<&[Capture]>,
+) -> Result<Option<(CaptureSet, Deliver)>, String> {
+    if on.is_none() && deliver.is_none() {
+        return Ok(None);
+    }
+    let (on_success, on_error) = match on {
+        None => (true, false),
+        Some(value) => match value.as_str() {
+            Some("success") => (true, false),
+            Some("error") => (false, true),
+            Some("complete") => (true, true),
+            _ => {
+                return Err(format!(
+                    "`source.on` must be `success`, `error` or `complete`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let deliver = match deliver {
+        None => Deliver::Payload,
+        Some(value) => match value.as_str() {
+            Some("envelope") => Deliver::Payload,
+            Some("input") => Deliver::Input,
+            Some("output") => Deliver::Output,
+            _ => {
+                return Err(format!(
+                    "`source.deliver` must be `envelope`, `input` or `output`, not {value} \
+                     (deprecated: use `source.capture`)"
+                ));
+            }
+        },
+    };
+    let mut set = match capture {
+        None => CaptureSet::DEFAULT,
+        Some(list) => CaptureSet::from_list(list),
+    };
+    set.on_success = on_success;
+    set.on_error = on_error;
+    Ok(Some((set, deliver)))
+}
+
+/// The new-style `capture` closest to a translated observer, for its
+/// deprecation warning: what fires on its outcomes, plus what its payload
+/// carries.
+pub(crate) fn capture_replacing(set: CaptureSet, deliver: Deliver) -> Vec<Capture> {
+    let mut new = match deliver {
+        Deliver::Payload => set,
+        Deliver::Input => CaptureSet {
+            input: true,
+            ..CaptureSet::default()
+        },
+        Deliver::Output => CaptureSet {
+            output: true,
+            ..CaptureSet::default()
+        },
+    };
+    if set.on_success && !new.input && !new.output {
+        new.input = deliver != Deliver::Output;
+        new.output = deliver == Deliver::Output;
+    }
+    if !set.on_success {
+        new.output = false;
+        if deliver != Deliver::Input {
+            new.input = false;
+        }
+    }
+    new.error |= set.on_error;
+    new.to_list()
 }
 
 /// An observer's spec as its observing worker asked for it, with the defaults
@@ -181,7 +286,8 @@ pub(crate) struct ObserveSpec {
     pub target: FnKey,
     pub args: Value,
     pub filters: Value,
-    pub capture: Vec<Capture>,
+    /// With the outcomes it fires on: a translated `on` is part of the spec.
+    pub capture: CaptureSet,
     pub deliver: Deliver,
     pub metadata: Option<Value>,
     pub max_fires: Option<u64>,
@@ -761,7 +867,7 @@ impl Observer {
             && spec.target == self.target
             && spec.args == self.args
             && spec.filters == *self.filter.normalized()
-            && spec.capture == self.capture.to_list()
+            && spec.capture == self.capture
             && spec.deliver == self.deliver
             && spec.metadata == self.metadata
             && spec.max_fires == self.policy.max_fires
@@ -1699,6 +1805,11 @@ mod tests {
         assert_eq!(
             CaptureSet::from_list(&crate::protocol::default_capture()),
             CaptureSet::DEFAULT
+        );
+        // CONTRACT D1: `[input, output, caller]`, no `metadata`.
+        assert_eq!(
+            CaptureSet::DEFAULT.to_list(),
+            vec![Capture::Input, Capture::Output, Capture::Caller]
         );
     }
 

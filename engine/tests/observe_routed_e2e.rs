@@ -336,7 +336,7 @@ async fn capture_decides_which_outcomes_fire() {
         ))
         .await;
     }
-    // No capture: the default, input, output, caller and metadata.
+    // No capture: the default, input, output and caller (CONTRACT D1).
     sink.observe_active(observer(
         "obs-default",
         json!({ "function_id": "payments::charge" }),
@@ -425,6 +425,130 @@ async fn capture_decides_which_outcomes_fire() {
         1,
         "the default capture ignores an error: errors are not observed by default"
     );
+}
+
+/// CONTRACT D4: an older SDK's `source.on` / `source.deliver` are translated,
+/// not refused: `on` alone decides the outcomes that fire, the `capture`
+/// (default `[input, output, caller]`) exactly what the payload carries, and
+/// `deliver: input` / `output` hand the target the raw input / output. Its
+/// replay is the same spec. CONTRACT D1: the default captures no `metadata`.
+#[tokio::test]
+async fn legacy_on_and_deliver_are_translated_on_the_wire() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut payments = host(&t, "payments", true, &["payments::charge"]).await;
+    let targets = [
+        "legacy::on-error",
+        "legacy::output",
+        "legacy::input-complete",
+        "legacy::caller",
+        "modern::default",
+        "modern::metadata",
+    ];
+    let mut sink = host(&t, "sink", true, &targets).await;
+    let mut checkout = connect(&t, "checkout", true).await;
+
+    for (id, extra, target) in [
+        ("obs-on-error", json!({ "on": "error" }), targets[0]),
+        ("obs-output", json!({ "deliver": "output" }), targets[1]),
+        (
+            "obs-input-complete",
+            json!({ "on": "complete", "deliver": "input" }),
+            targets[2],
+        ),
+        (
+            "obs-caller",
+            json!({ "on": "success", "deliver": "envelope", "capture": ["caller"] }),
+            targets[3],
+        ),
+        ("obs-default", json!({}), targets[4]),
+        (
+            "obs-metadata",
+            json!({ "capture": ["input", "metadata"] }),
+            targets[5],
+        ),
+    ] {
+        let mut source = json!({ "function_id": "payments::charge" });
+        for (key, value) in extra.as_object().unwrap() {
+            source[key] = value.clone();
+        }
+        let result = sink
+            .observe_active(observer(id, source.clone(), target))
+            .await;
+        assert!(result.get("error").is_none(), "{id}: {result}");
+        let replay = sink.observe(observer(id, source, target)).await;
+        assert_eq!(replay["state"], "active", "{id} replay: {replay}");
+    }
+
+    let call = checkout
+        .call_with(
+            "payments::charge",
+            json!({ "amount": 1 }),
+            json!({ "metadata": { "session": "s-1" } }),
+        )
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments.reply(&invoke, json!({ "ok": true })).await;
+    checkout.result(call).await;
+
+    let output = sink.invoked("legacy::output").await;
+    assert_eq!(output["data"], json!({ "ok": true }), "the raw output");
+    sink.reply(&output, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(input["data"], json!({ "amount": 1 }), "the raw input");
+    sink.reply(&input, Value::Null).await;
+    let caller = sink.invoked("legacy::caller").await;
+    assert_eq!(caller["data"]["status"], "success");
+    assert_eq!(caller["data"]["caller"]["worker_name"], "checkout");
+    for key in ["input", "output", "error", "metadata"] {
+        assert!(caller["data"].get(key).is_none(), "{caller}");
+    }
+    sink.reply(&caller, Value::Null).await;
+    let default = sink.invoked("modern::default").await;
+    assert_eq!(default["data"]["output"], json!({ "ok": true }));
+    assert!(
+        default["data"].get("metadata").is_none(),
+        "D1: no metadata by default: {default}"
+    );
+    sink.reply(&default, Value::Null).await;
+    let metadata = sink.invoked("modern::metadata").await;
+    assert_eq!(metadata["data"]["metadata"], json!({ "session": "s-1" }));
+    sink.reply(&metadata, Value::Null).await;
+    assert_eq!(
+        fires(&t, "obs-on-error"),
+        0,
+        "`on: error` ignores a success"
+    );
+
+    let call = checkout
+        .call("payments::charge", json!({ "amount": 2 }))
+        .await;
+    let invoke = payments.invoked("payments::charge").await;
+    payments
+        .reply_error(&invoke, "CARD_DECLINED", "declined")
+        .await;
+    checkout.result(call).await;
+
+    let on_error = sink.invoked("legacy::on-error").await;
+    let envelope = &on_error["data"];
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["input"], json!({ "amount": 2 }));
+    assert_eq!(envelope["caller"]["worker_name"], "checkout");
+    assert!(
+        envelope.get("error").is_none() && envelope.get("output").is_none(),
+        "the old default capture has neither on a failure: {on_error}"
+    );
+    sink.reply(&on_error, Value::Null).await;
+    let input = sink.invoked("legacy::input-complete").await;
+    assert_eq!(
+        input["data"],
+        json!({ "amount": 2 }),
+        "complete: errors too"
+    );
+    sink.reply(&input, Value::Null).await;
+    assert_eq!(fires(&t, "obs-on-error"), 1);
+    assert_eq!(fires(&t, "obs-output"), 1, "`on` absent: success only");
+    assert_eq!(fires(&t, "obs-caller"), 1);
+    assert_eq!(fires(&t, "obs-input-complete"), 2);
 }
 
 #[tokio::test]
@@ -1580,11 +1704,11 @@ async fn observe_rejections() {
         ),
         (
             "INVALID_ARGS",
-            json!({ "source": source(json!({ "on": "error" })), "target": { "function_id": "sink::x" } }),
+            json!({ "source": source(json!({ "on": "bogus" })), "target": { "function_id": "sink::x" } }),
         ),
         (
             "INVALID_ARGS",
-            json!({ "source": source(json!({ "deliver": "input" })), "target": { "function_id": "sink::x" } }),
+            json!({ "source": source(json!({ "deliver": 7 })), "target": { "function_id": "sink::x" } }),
         ),
         (
             "INVALID_ARGS",
@@ -1654,7 +1778,7 @@ async fn observe_rejections() {
         "id": "good",
         "source": source(json!({
             "namespace": "default",
-            "capture": ["metadata", "caller", "input", "output"], "args": {}, "filters": {}
+            "capture": ["caller", "input", "output"], "args": {}, "filters": {}
         })),
         "target": { "function_id": "sink::x", "namespace": "default" },
         "max_in_flight": 64
@@ -1664,23 +1788,33 @@ async fn observe_rejections() {
         "pending",
         "a replay"
     );
-    // A replay is checked like a new observe: one that adds a removed field or
-    // a capture that fires on nothing is refused, not answered as the observer
-    // it names.
-    for change in [
-        json!({ "on": "error" }),
-        json!({ "deliver": "input" }),
-        json!({ "capture": ["caller"] }),
+    // An older SDK's replay spelling out the defaults (`on: success`,
+    // `deliver: envelope`) is translated to the same spec (CONTRACT D4).
+    let mut legacy = good.clone();
+    legacy["source"]["on"] = json!("success");
+    legacy["source"]["deliver"] = json!("envelope");
+    assert_eq!(watcher.observe(legacy).await["state"], "pending");
+    // A replay is checked like a new observe: a capture that fires on nothing
+    // is refused, not answered as the observer it names; `on` / `deliver`
+    // that change what fires or what is delivered, and the `metadata` the
+    // default no longer captures (CONTRACT D1), are another spec.
+    for (change, code) in [
+        (json!({ "capture": ["caller"] }), "INVALID_ARGS"),
+        (json!({ "on": "bogus" }), "INVALID_ARGS"),
+        (json!({ "on": "error" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "input" }), "OBSERVER_ID_CONFLICT"),
+        (json!({ "deliver": "output" }), "OBSERVER_ID_CONFLICT"),
+        (
+            json!({ "capture": ["input", "output", "caller", "metadata"] }),
+            "OBSERVER_ID_CONFLICT",
+        ),
     ] {
         let mut replay = good.clone();
         for (key, value) in change.as_object().unwrap() {
             replay["source"][key] = value.clone();
         }
         let refused = watcher.observe(replay).await;
-        assert_eq!(
-            refused["error"]["code"], "INVALID_ARGS",
-            "{change} → {refused}"
-        );
+        assert_eq!(refused["error"]["code"], code, "{change} → {refused}");
     }
     let mut changed = good.clone();
     changed["max_fires"] = json!(5);

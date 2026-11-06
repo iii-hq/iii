@@ -264,7 +264,8 @@ async fn an_observer_waits_for_its_owners_ack() {
     assert_eq!(view["args"], json!({}));
     assert_eq!(
         view["capture"],
-        json!(["input", "output", "caller", "metadata"])
+        json!(["input", "output", "caller"]),
+        "CONTRACT D1: the default captures no metadata"
     );
     for key in [
         "metadata",

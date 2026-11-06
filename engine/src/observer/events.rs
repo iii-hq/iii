@@ -384,7 +384,8 @@ pub(crate) mod test_support {
                 args: None,
                 filters,
                 capture: None,
-                removed: Default::default(),
+                on: None,
+                deliver: None,
                 raw_input: true,
             },
             target: ObserveTarget {

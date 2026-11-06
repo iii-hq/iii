@@ -670,15 +670,10 @@ wire_string_enum! {
     }
 }
 
-/// CONTRACT D1: `["input", "output", "caller", "metadata"]`: every field
-/// but `error`, so the default fires on success only.
+/// CONTRACT D1: `["input", "output", "caller"]`, so the default fires on
+/// success only and carries the call's `metadata` only when asked for.
 pub fn default_capture() -> Vec<Capture> {
-    vec![
-        Capture::Input,
-        Capture::Output,
-        Capture::Caller,
-        Capture::Metadata,
-    ]
+    vec![Capture::Input, Capture::Output, Capture::Caller]
 }
 
 wire_string_enum! {
@@ -755,30 +750,35 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
-    /// The fields `observe` no longer takes (`on`, `deliver`), as they
-    /// arrived: decoded only so the engine refuses them with
-    /// `INVALID_ARGS` instead of silently doing something else.
-    #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub removed: serde_json::Map<String, Value>,
+    /// Deprecated: an older SDK's `on` (`success` | `error` | `complete`),
+    /// kept as it arrived. The engine translates it at registration
+    /// (CONTRACT D4) and refuses any other value with `INVALID_ARGS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Value>,
+    /// Deprecated: an older SDK's `deliver` (`envelope` | `input` |
+    /// `output`), translated like `on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliver: Option<Value>,
     /// Engine-internal, never on the wire: the target receives the observed
     /// input alone instead of the payload (the engine's own observers).
     #[serde(skip)]
     pub raw_input: bool,
 }
 
-/// The `source` fields `observe` no longer takes.
-pub const REMOVED_SOURCE_FIELDS: [&str; 2] = ["on", "deliver"];
-
 impl ObserveSource {
     pub fn capture(&self) -> Vec<Capture> {
         self.capture.clone().unwrap_or_else(default_capture)
     }
 
-    /// The first removed field this source carries, if any.
-    pub fn removed_field(&self) -> Option<&'static str> {
-        REMOVED_SOURCE_FIELDS
-            .into_iter()
-            .find(|field| self.removed.contains_key(*field))
+    /// The deprecated fields this source carries, as `source.<field>`.
+    pub fn legacy_fields(&self) -> Vec<&'static str> {
+        [
+            (self.on.is_some(), "source.on"),
+            (self.deliver.is_some(), "source.deliver"),
+        ]
+        .into_iter()
+        .filter_map(|(present, field)| present.then_some(field))
+        .collect()
     }
 }
 
@@ -1750,14 +1750,15 @@ mod tests {
         assert_eq!(source.capture(), default_capture());
         assert_eq!(
             source.capture(),
-            vec![
-                Capture::Input,
-                Capture::Output,
-                Capture::Caller,
-                Capture::Metadata
-            ]
+            vec![Capture::Input, Capture::Output, Capture::Caller],
+            "CONTRACT D1: no `metadata` unless asked for"
         );
-        assert!(source.removed_field().is_none() && !source.raw_input);
+        assert!(!source.raw_input);
+        let encoded = serde_json::to_value(&source).unwrap();
+        assert!(
+            encoded.get("on").is_none() && encoded.get("deliver").is_none(),
+            "{encoded}"
+        );
         assert!(source.namespace.is_none() && source.args.is_none() && source.filters.is_none());
         assert!(target.namespace.is_none());
         assert!(
@@ -1893,10 +1894,12 @@ mod tests {
             source.capture.as_deref(),
             Some(&[Capture::Input, Capture::Unknown("timing".into())][..])
         );
-        // A removed field decodes (so `observe` can refuse it) and re-encodes
-        // as it arrived.
-        assert_eq!(source.removed_field(), Some("on"));
-        assert_eq!(source.removed.get("deliver"), Some(&json!("both")));
+        // An older SDK's `on` / `deliver` decode into their own fields (the
+        // engine translates them at registration) and re-encode as they
+        // arrived; a key `observe` never had is dropped, as before.
+        let mut with_extra = frame.clone();
+        with_extra["source"]["timing_mode"] = json!("x");
+        let msg: Message = serde_json::from_value(with_extra).expect("decodes");
         assert_eq!(serde_json::to_value(&msg).unwrap(), frame);
 
         let state: Message = serde_json::from_value(

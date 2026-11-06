@@ -86,7 +86,8 @@ fn observe_request(idx: usize) -> ObserveRequest {
             args: None,
             filters: None,
             capture: None,
-            removed: Default::default(),
+            on: None,
+            deliver: None,
             raw_input: false,
         },
         target: ObserveTarget {
