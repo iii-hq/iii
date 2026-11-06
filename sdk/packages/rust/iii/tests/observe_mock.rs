@@ -15,7 +15,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use common::mock_engine::{MockEngine, message_type};
@@ -894,7 +893,6 @@ struct Recorder {
     observers: Arc<Mutex<Vec<Observer>>>,
 }
 
-#[async_trait]
 impl ObserveHandler for Recorder {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         if let Some(delay) = obs.args_value().get("delay_ms").and_then(Value::as_u64) {
@@ -1832,7 +1830,6 @@ struct HeldHook {
     release: Arc<tokio::sync::Notify>,
 }
 
-#[async_trait]
 impl ObserveHandler for HeldHook {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         *self.seen.lock().unwrap() = Some(obs.clone());
@@ -2082,7 +2079,6 @@ struct HeldAndRemoved {
     removed: Arc<Mutex<Vec<String>>>,
 }
 
-#[async_trait]
 impl ObserveHandler for HeldAndRemoved {
     async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
         self.held.on_observer_added(obs).await
