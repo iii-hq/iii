@@ -103,6 +103,7 @@ test("landing page keeps its section anchors, llms hooks and structured data", a
   const html = await read("index.html")
   const sections = [
     "hero",
+    "app",
     "overview",
     "ownership",
     "demo",
@@ -132,6 +133,46 @@ test("landing page keeps its section anchors, llms hooks and structured data", a
     /<link rel="canonical" href="https:\/\/iii\.dev"\/>|<link rel="canonical" href="https:\/\/iii\.dev\/"\/>/,
   )
   assert.match(html, /property="og:type" content="website"/)
+})
+
+/** The markup from the first match of `open` (an opening tag) up to the next `</tag>`; fails when `open` is absent. */
+function element(html: string, open: RegExp, tag: string): string {
+  const start = html.search(open)
+  assert.ok(start >= 0, `${open} missing from the page`)
+  return html.slice(start, html.indexOf(`</${tag}>`, start))
+}
+
+test("the landing links the iii app launch from the hero, the header, its section and the footer", async () => {
+  const html = await read("index.html")
+  const app = 'href="https://iii\\.dev/registry/app"'
+  const link = (attrs: string, text: string) => new RegExp(`<a[^>]*${attrs}[^>]*>(?:(?!</a>).)*${text}`)
+
+  // The pill over the headline: the New badge and the platforms line, in one link to the launch page.
+  const hero = element(html, /<section id="hero"/, "section")
+  assert.match(hero, link(app, "New(?:(?!</a>).)*The iii app for Mac, iPhone, iPad &amp; Android"), "hero pill")
+
+  // The header's desktop nav. The mobile menu is rendered only once it is opened, so it is not in the static HTML;
+  // it lists the same entries (components/site/header.tsx, plainLinks).
+  const header = element(html, /<header class="[^"]*\bfixed\b/, "header")
+  assert.match(header, link(app, ">App<"), "header nav entry")
+
+  // The section's two calls to action.
+  const section = element(html, /<section id="app"/, "section")
+  assert.match(
+    section,
+    link('href="https://iii\\.dev/registry/app/download/mac"', "Download for Mac"),
+    "section: Download for Mac",
+  )
+  assert.match(section, link(app, "See the app"), "section: See the app")
+
+  // The footer's Product column.
+  const footer = element(html, /<footer/, "footer")
+  assert.match(footer, link(app, "iii app"), "footer link")
+
+  // Every device screenshot the section draws ships in dist (copied from public/iii-app/).
+  const shots = new Set([...section.matchAll(/src="(\/iii-app\/[^"]+\.webp)"/g)].map((m) => m[1]))
+  assert.ok(shots.size >= 3, "the app section should draw a Mac and two phones")
+  for (const shot of shots) assert.ok(has(shot.slice(1)), `app screenshot missing from dist: ${shot}`)
 })
 
 test("/a, the retired test variant, refreshes to the homepage and stays out of the index", async () => {
@@ -263,7 +304,10 @@ test("the shared header and footer are on every surface, roadmap included", asyn
     assert.match(html, /href="\/roadmap"/, `${page}: roadmap link missing from header`)
     assert.match(html, /<footer/, `${page}: shared site footer missing`)
     assert.match(html, /Pronounced <span[^>]*>&quot;three eye&quot;<\/span>/, `${page}: footer tagline missing`)
-    assert.match(html, /viewBox="0 0 933\.61 1050\.31"/, `${page}: iii logo SVG viewBox missing`)
+    // The iii mark as drawn since #2418: the header's (components/site/nav-graphics.tsx, room above for its dots'
+    // drop) and the footer's (components/site/logo.tsx).
+    assert.match(html, /viewBox="0 -160 1075\.74 1235\.74"/, `${page}: header iii logo SVG viewBox missing`)
+    assert.match(html, /viewBox="0 0 1075\.74 1075\.74"/, `${page}: footer iii logo SVG viewBox missing`)
   }
 })
 
@@ -320,6 +364,11 @@ test("llms.txt and AGENTS.md are generated from the built homepage and read as p
     llms,
     /### Hero\n\*\*More application\. Less infrastructure\.\*\*\n/,
     "hero headline should read as one sentence pair",
+  )
+  assert.match(
+    llms,
+    /### The iii app\n\*\*Leave the desk\. Keep the agents\.\*\*\n/,
+    "the app section head should be extracted",
   )
   assert.match(llms, /### Questions\n\*\*What is iii\?\*\*\n/, "FAQ should read as question / answer pairs")
   assert.match(llms, /### Footer \/ links\n/)
