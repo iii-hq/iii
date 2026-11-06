@@ -18,14 +18,14 @@ iii.observe("orders::create", "alerts::big-order");
 ```
 
 Every function is observable. By default, each successful call of `orders::create` runs
-`alerts::big-order` with the `Observed` payload of that call (its input, output, caller, and metadata). Events are
+`alerts::big-order` with the `Observed` payload of that call (its input, output, and caller; the call's metadata only when `capture` names it). Events are
 function calls too: an HTTP request is a call of `http::on-request`, a cron tick a call of
 `cron::on-tick`, a row change a call of `database::on-row-changed`. Observing one of them is how a
 function runs on that event.
 
 | Part | Fields | Notes |
 | --- | --- | --- |
-| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, capture? }` | `args` are for the function's worker (a route, a cron expression, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `capture`: which parts of the call the payload carries (`input`, `output`, `error`, `caller`, `metadata`), and with them which calls run the target: `input`/`output` fire on success, `error` on error, `caller`/`metadata` only add fields (a `capture` must name one of `input`, `output`, `error`: `INVALID_ARGS` otherwise). Default `['input', 'output', 'caller', 'metadata']` (success only). Ids, status, and timing are always there; `capture: []` fires on success and moves no payloads |
+| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, capture? }` | `args` are for the function's worker (a route, a cron expression, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `capture`: which parts of the call the payload carries (`input`, `output`, `error`, `caller`, `metadata`), and with them which calls run the target: `input`/`output` fire on success, `error` on error, `caller`/`metadata` only add fields (a `capture` must name one of `input`, `output`, `error`: `INVALID_ARGS` otherwise). Default `['input', 'output', 'caller']` (success only; `metadata` is opt-in). `on` and `deliver` are deprecated: the engine translates them with a warning (see [Code written for 0.25](#code-written-for-025)). Ids, status, and timing are always there; `capture: []` fires on success and moves no payloads |
 | `target` (right side) | a registered function id (or `{ function_id, namespace }`) | No inline handler. The observer stays `pending` until the target is registered |
 | `options` | `id?`, `max_fires?`, `expires_in_ms?`, `max_in_flight?`, `metadata?` | `id` defaults to a UUID kept across replays. `metadata` is the sidecar of every activation |
 
@@ -208,7 +208,14 @@ client.Observe(iii.Source{
   second argument, Python `metadata` parameter, the `Option<Value>` of a Rust
   `Fn(Value, Option<Value>)` handler, Go `iii.MetadataFromContext(ctx)`), on iii's delivery and on
   a call through the observer alike. The observed call's own metadata reaches the target only in
-  the payload's `metadata` field, when `capture` includes `metadata`.
+  the payload's `metadata` field, when `capture` includes `metadata` (the default does not). Route
+  on call metadata (`for_observer`, a request id) in the hosting worker's `onObservationMatch` or
+  `onObservationDeliver`, which get it whatever the observers capture; a filter on `metadata.*`
+  also works without capturing it.
+- **Failed calls with their input**: `capture: ["input", "error"]` plus
+  `filters: { "error": { "$exists": true } }`. The capture fires on both outcomes; the filter runs
+  in the hosting worker's SDK (or the engine, for routed calls), so successes never reach the
+  observing worker. `capture: ["error"]` alone fires on failures only but carries no input.
 - iii's delivery is fire-and-forget and at most once: the target's result is discarded, and drops
   are counted. A source whose worker calls targets itself documents what its target receives and
   what its result does (an `http::on-request` target returns the response; a `queue::on-message`
@@ -615,6 +622,21 @@ iii.observe(
 
 To move code written for 0.25 to 0.26, follow the upgrade guide:
 https://iii.dev/docs/upgrading/from-0-25-x.
+
+- `source.on` and `source.deliver` are deprecated, not refused. A 0.26 engine translates them to
+  the 0.25 behavior (`deliver: "output"` hands the target the bare output, `null` after a failure)
+  and logs one warning per registration. Only invalid values get `INVALID_ARGS`. Replace them:
+  `on: "error"` -> `capture: ["error", "caller"]` (or the failed-calls-with-input recipe above),
+  `on: "complete"` -> add `"error"`, `deliver: "input"`/`"output"` -> `capture: ["input"]`/
+  `["output"]` read from the payload. Support will be removed in a future release.
+- A worker without the `observe.capture` feature (0.25 SDK, 0.26 release candidate SDK) always gets
+  the 0.25 semantics on a 0.26 engine: outcomes from `on` (absent = success), whatever `capture`
+  names. Its hosted functions get the legacy `on` in their observer views.
+- A 0.26 SDK on an engine without `observe.capture` (0.25, 0.26 release candidate) sends the `on`
+  its `capture` implies, reads views without `fires_on` from `on`, and logs a one-time deprecation
+  warning. Upgrade the engine.
+- The `Observed` payload omits absent fields; 0.25 sent `"output": null` for a captured output a
+  successful call did not report.
 
 ## Error codes
 
