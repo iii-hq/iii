@@ -639,8 +639,6 @@ To run the target after failed calls with their error, capture `error`:
 To get the input of every call, successful or failed, capture `input` and `error`: the target runs
 after both, and the payload's `status` says which.
 
-{/* pending-test: error-filter-recipe */}
-
 #### Failed calls with their input
 
 To run the target after failed calls only, and still get each call's input, capture `input` and
@@ -704,10 +702,15 @@ To run the target after failed calls only, and still get each call's input, capt
 </Tabs>
 
 `capture: ["input", "error"]` fires on both outcomes, and the filter drops the successful calls
-before they leave the worker that evaluates it: the hosting worker's SDK for the calls it runs
-itself, or the engine for the calls it routes. The observing worker never receives a successful
-call. Capturing `error` alone would fire on failures only, but its payload would not carry the
-input.
+before they reach the observing worker. The engine evaluates it for the calls it routes and starts
+no target for a successful one. For the calls a worker on a 0.26 SDK runs in-process, that SDK
+evaluates it and does not report a successful call to the engine at all. After each failed call
+the target gets `status: "error"`, the `input`, and the `error`. Capturing `error` alone would
+fire on failures only, but its payload would not carry the input.
+
+The observing worker needs a 0.26 SDK. An observer from a worker without the `observe.capture`
+feature keeps the 0.25 semantics and fires on successful calls only, so with this filter it never
+fires (see [Compatibility](#compatibility)).
 
 ### Metadata
 

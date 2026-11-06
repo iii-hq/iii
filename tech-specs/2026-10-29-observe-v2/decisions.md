@@ -366,7 +366,9 @@ differ, this file wins, and the spec is updated to match.
     absent/`envelope` the `Observed` payload, `input` the raw input, `output`
     the raw output through an engine-internal mode (`null` when absent, so on
     every failure). It logs one `warn` per registration naming the observer
-    id, the fields and the replacement `capture`. Invalid values (`on:
+    id, the fields and the replacement `capture` (for a source with neither
+    field, from a worker without `observe.capture`, the `warn` says the worker
+    does not declare `observe.capture` instead of naming fields). Invalid values (`on:
     "bogus"`, a non-string) stay `INVALID_ARGS`; `null` is absent. The
     translation is part of the spec, so replays stay idempotent. All 528
     combinations of 0.25 `on` x `deliver` x `capture` are a permanent engine

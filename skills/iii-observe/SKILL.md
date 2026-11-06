@@ -214,8 +214,10 @@ client.Observe(iii.Source{
   also works without capturing it.
 - **Failed calls with their input**: `capture: ["input", "error"]` plus
   `filters: { "error": { "$exists": true } }`. The capture fires on both outcomes; the filter runs
-  in the hosting worker's SDK (or the engine, for routed calls), so successes never reach the
-  observing worker. `capture: ["error"]` alone fires on failures only but carries no input.
+  in the engine for routed calls and in the hosting 0.26 SDK for its in-process calls (it never
+  reports a success), so successes never reach the observing worker. The observing worker must be
+  on a 0.26 SDK: without `observe.capture` the observer fires on successes only and never matches.
+  `capture: ["error"]` alone fires on failures only but carries no input.
 - iii's delivery is fire-and-forget and at most once: the target's result is discarded, and drops
   are counted. A source whose worker calls targets itself documents what its target receives and
   what its result does (an `http::on-request` target returns the response; a `queue::on-message`

@@ -193,7 +193,7 @@ Rules:
   engines without `observe.capture` will be removed in a future release.
 - If the namespace grace timer drains before `engine::workers::register` arrives, the connection is
   treated as legacy until it does; the engine then sends `FunctionRegistered` for the functions the
-  connection already registered.
+  connection already registered. An `Observe` registered in that window gets the 0.25 semantics.
 
 ## Message types
 
@@ -917,7 +917,9 @@ translates them when it registers the observer, on the first `Observe` and on ev
 - **Connections without `observe.capture`.** An `Observe` from a connection that did not declare
   `observe.capture` (a 0.25 SDK, or a 0.26 release candidate SDK) gets these semantics even when it
   carries neither `on` nor `deliver`. Its outcomes come from `on`, so `capture: ["error"]` without
-  `on` fires on success, as it did on 0.25.
+  `on` fires on success, as it did on 0.25. When the source carries neither field, the one `warn`
+  per registration says that the worker does not declare `observe.capture` and names the
+  `source.capture` to use after upgrading the SDK.
 
 The translated payload differs from 0.25 in one way: the `Observed` payload omits a field it does
 not have instead of sending it as `null`. On 0.25, an observer that captured `output` got
