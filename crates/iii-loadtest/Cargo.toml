@@ -12,7 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 hdrhistogram = { version = "7", default-features = false }

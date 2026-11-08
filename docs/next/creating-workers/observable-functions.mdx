@@ -345,7 +345,6 @@ To run code when an observer is added or removed, give the function `onObserverA
 
     struct LogObservers;
 
-    #[async_trait::async_trait]
     impl ObserveHandler for LogObservers {
         async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
             Logger::new().info(&format!("{} now observes prices::on-change", obs.target()), None);
@@ -667,7 +666,6 @@ learns that an observer arrived or left.
         }
     }
 
-    #[async_trait::async_trait]
     impl ObserveHandler for Watched {
         async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
             // 1. Keep the observer, and start polling its path if nobody else watches it.
@@ -964,7 +962,6 @@ of the example code. The SDK does not compare the args of different observers.
     #[derive(Clone, Default)]
     struct Commands(Arc<Mutex<HashMap<String, Observer>>>);
 
-    #[async_trait::async_trait]
     impl ObserveHandler for Commands {
         async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
             let CommandArgs { command } = obs.args()?;

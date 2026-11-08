@@ -1,0 +1,113 @@
+---
+title: "Upgrading from 0.25.x to 0.26.x"
+description:
+  "Rust only: ObserveHandler callbacks are native async fn. Remove #[async_trait] from your
+  ObserveHandler impls."
+owner: "devrel"
+type: "how-to"
+---
+
+0.26 changes one Rust SDK contract. `ObserveHandler`, the callbacks of an observable function, uses
+native `async fn` in traits instead of the `async-trait` crate. The Node, browser, Python, and Go
+SDKs, the engine, and the wire protocol do not change.
+
+`TriggerHandler` and `IStream` keep using `#[async_trait]`. Both are deprecated, so their contracts
+stay as they are until they are removed.
+
+## What changes
+
+- `on_observer_added` and `on_observer_removed` return `impl Future<Output = ..> + Send`. Implement
+  them with plain `async fn`. An `ObserveHandler` impl with `#[async_trait]` no longer compiles.
+- Both callbacks continue to support borrowing `self` and `obs` across `.await`, without requiring an
+  upfront clone.
+- Their futures must be `Send`. A `std::sync::MutexGuard` held across an `.await` fails to compile:
+  drop the guard before the `.await`, or use `tokio::sync::Mutex`.
+- `ObserveHandler` is not dyn-compatible, so `Arc<dyn ObserveHandler>` and `Box<dyn ObserveHandler>`
+  no longer compile. Pass the concrete handler, or an `Arc` of it, to `Observe::handler`.
+
+## Migrate an ObserveHandler
+
+Remove the attribute. The method signatures and bodies stay the same.
+
+**Before (0.25)**
+
+```rust
+#[async_trait::async_trait]
+impl ObserveHandler for Schedules {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let CronArgs { expression } = obs.args()?;
+        self.0.lock().unwrap().entry(expression).or_default().push(obs.clone());
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        for list in self.0.lock().unwrap().values_mut() {
+            list.retain(|o| o.id() != obs.id());
+        }
+    }
+}
+```
+
+**After (0.26)**
+
+```rust
+impl ObserveHandler for Schedules {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        let CronArgs { expression } = obs.args()?;
+        self.0.lock().unwrap().entry(expression).or_default().push(obs.clone());
+        Ok(())
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        for list in self.0.lock().unwrap().values_mut() {
+            list.retain(|o| o.id() != obs.id());
+        }
+    }
+}
+```
+
+Then remove `async-trait` from `Cargo.toml` if nothing else in the crate uses it. Code that still
+implements `TriggerHandler` or `IStream` needs it.
+
+## Handlers stored as `dyn ObserveHandler`
+
+To share one handler between functions, wrap it in an `Arc`. `Arc<T>` implements `ObserveHandler`
+for any handler `T`:
+
+```rust
+let schedules = Arc::new(Schedules::default());
+
+iii.register_function(
+    "scheduler::on-tick",
+    RegisterFunction::new(on_tick).observe(Observe::owner().handler(schedules.clone())),
+);
+iii.register_function(
+    "scheduler::on-tick-utc",
+    RegisterFunction::new(on_tick_utc).observe(Observe::owner().handler(schedules)),
+);
+```
+
+To pick a handler at runtime, use an enum that forwards to its variants:
+
+```rust
+enum Handler {
+    Cron(Schedules),
+    Webhook(Routes),
+}
+
+impl ObserveHandler for Handler {
+    async fn on_observer_added(&self, obs: &Observer) -> Result<(), ObserveRejection> {
+        match self {
+            Handler::Cron(h) => h.on_observer_added(obs).await,
+            Handler::Webhook(h) => h.on_observer_added(obs).await,
+        }
+    }
+
+    async fn on_observer_removed(&self, obs: &Observer) {
+        match self {
+            Handler::Cron(h) => h.on_observer_removed(obs).await,
+            Handler::Webhook(h) => h.on_observer_removed(obs).await,
+        }
+    }
+}
+```
