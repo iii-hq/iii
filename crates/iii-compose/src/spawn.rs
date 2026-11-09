@@ -174,6 +174,15 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     spawn_plan_with_env(ctx, env)
 }
 
+/// The environment a VM guest boots with: the container's `env_file` and
+/// `environment` and the reserved contract, never this machine's. A process
+/// Compose spawns runs here and inherits the machine environment; a guest is
+/// another machine, and the host's variables (provider keys among them) are not
+/// its to read. `iii sandbox run` hands its guest the same set.
+pub fn guest_env(ctx: &SpawnCtx<'_>) -> BTreeMap<String, String> {
+    spawn_plan_with_env(ctx, BTreeMap::new()).env
+}
+
 /// Match the OS's ordinal case folding, including non-ASCII environment names.
 #[cfg(windows)]
 pub(crate) fn windows_env_key_eq(left: &str, right: &str) -> bool {
@@ -402,6 +411,33 @@ mod tests {
         assert_eq!(plan.env["III_WORKER_NAME"], "api");
         assert!(!plan.env.contains_key("III_CONFIG"));
         assert_eq!(plan.working_dir, PathBuf::from("/srv/app/workers/api"));
+    }
+
+    #[test]
+    fn a_vm_guest_gets_no_machine_environment() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = env_of(&[("DECLARED", "yes")]);
+        let context = ctx(&start, None, &user_env);
+        let machine = env_of(&[("OPENAI_API_KEY", "sk-host"), ("PATH", "/host/bin")]);
+        // A host process inherits the machine environment...
+        let host = spawn_plan_with_env(&context, machine).env;
+        assert_eq!(host["OPENAI_API_KEY"], "sk-host");
+        assert_eq!(host["PATH"], "/host/bin");
+
+        // ...a VM guest gets only what the container declares and the contract.
+        let guest = guest_env(&context);
+        assert!(!guest.contains_key("OPENAI_API_KEY"));
+        assert!(!guest.contains_key("PATH"));
+        assert_eq!(guest["DECLARED"], "yes");
+        assert_eq!(guest["III_URL"], "ws://127.0.0.1:49134");
+        assert_eq!(guest["III_WORKER_NAME"], "api");
+        for (name, value) in &guest {
+            assert_eq!(
+                host.get(name),
+                Some(value),
+                "{name} differs from the host plan"
+            );
+        }
     }
 
     #[test]
