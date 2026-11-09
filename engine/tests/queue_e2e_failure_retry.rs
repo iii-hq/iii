@@ -25,10 +25,10 @@ use common::queue_helpers::{
 // move_delayed_to_waiting (uses SystemTime::now()) -> re-pop. This requires
 // real wall-clock time (not start_paused) for the delayed-to-waiting transition.
 //
-// Using standard queue with small backoff_ms for fast execution.
+// Keep backoff delays well above the poll interval and instrumentation jitter.
 // With max_retries=4 (-> max_attempts=4): 4 handler calls, 3 retry intervals.
 // Backoff formula: backoff_ms * 2^(attempts_made - 1)
-// Intervals: 50ms, 100ms, 200ms
+// Intervals: 500ms, 1000ms, 2000ms
 
 #[tokio::test]
 async fn retry_backoff_timing_is_exponential() {
@@ -38,7 +38,7 @@ async fn retry_backoff_timing_is_exponential() {
                 "type": "standard",
                 "concurrency": 1,
                 "max_retries": 4,
-                "backoff_ms": 50,
+                "backoff_ms": 500,
                 "poll_interval_ms": 25
             }
         }
@@ -77,10 +77,15 @@ async fn retry_backoff_timing_is_exponential() {
     .await
     .expect("enqueue should succeed");
 
-    // Wait for all retries to exhaust.
-    // Total backoff: 50 + 100 + 200 = 350ms plus poll intervals (~75ms) + overhead.
-    // 3 seconds gives ample headroom.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // Wait for exhaustion instead of assuming the runner finishes within a
+    // fixed sleep. A DLQ entry also confirms the final nack completed.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while dlq_count(&module, "backoff-test").await == 0 {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("retry attempts should exhaust within the test deadline");
 
     assert_eq!(
         call_count.load(Ordering::SeqCst),
@@ -91,30 +96,30 @@ async fn retry_backoff_timing_is_exponential() {
     let ts = timestamps.lock().await;
     assert_eq!(ts.len(), 4, "Should have 4 timestamps recorded");
 
-    // Interval between 1st and 2nd call: ~50ms (backoff_ms * 2^0) + poll overhead
+    // Interval between 1st and 2nd call: ~500ms (backoff_ms * 2^0) + poll overhead
     let interval_1 = ts[1].duration_since(ts[0]);
-    // Interval between 2nd and 3rd call: ~100ms (backoff_ms * 2^1) + poll overhead
+    // Interval between 2nd and 3rd call: ~1000ms (backoff_ms * 2^1) + poll overhead
     let interval_2 = ts[2].duration_since(ts[1]);
-    // Interval between 3rd and 4th call: ~200ms (backoff_ms * 2^2) + poll overhead
+    // Interval between 3rd and 4th call: ~2000ms (backoff_ms * 2^2) + poll overhead
     let interval_3 = ts[3].duration_since(ts[2]);
 
     // Threshold assertions with generous tolerance for poll interval + scheduling overhead.
-    // The backoff delay is the dominant factor; poll_interval_ms (25ms) adds some jitter.
+    // The delays dominate the 25ms poll interval, even under coverage.
     // Lower bound: at least the backoff delay
-    // Upper bound: backoff delay + poll interval + 100ms scheduling tolerance
+    // Keep the original relative upper bounds and exponential-ratio assertions.
     assert!(
-        interval_1 >= Duration::from_millis(50) && interval_1 <= Duration::from_millis(250),
-        "1st retry interval should be ~50ms + overhead, got {:?}",
+        interval_1 >= Duration::from_millis(500) && interval_1 <= Duration::from_millis(2500),
+        "1st retry interval should be ~500ms + overhead, got {:?}",
         interval_1
     );
     assert!(
-        interval_2 >= Duration::from_millis(100) && interval_2 <= Duration::from_millis(350),
-        "2nd retry interval should be ~100ms + overhead, got {:?}",
+        interval_2 >= Duration::from_millis(1000) && interval_2 <= Duration::from_millis(3500),
+        "2nd retry interval should be ~1000ms + overhead, got {:?}",
         interval_2
     );
     assert!(
-        interval_3 >= Duration::from_millis(200) && interval_3 <= Duration::from_millis(500),
-        "3rd retry interval should be ~200ms + overhead, got {:?}",
+        interval_3 >= Duration::from_millis(2000) && interval_3 <= Duration::from_millis(5000),
+        "3rd retry interval should be ~2000ms + overhead, got {:?}",
         interval_3
     );
 

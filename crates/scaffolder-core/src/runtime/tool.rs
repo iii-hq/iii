@@ -6,13 +6,16 @@
 use anyhow::Result;
 use colored::Colorize;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::time::timeout;
 
 /// Timeout for installation (30 seconds)
 const INSTALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time to wait for an installation check's version command.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for a CLI tool
 #[derive(Debug, Clone)]
@@ -48,13 +51,34 @@ impl ToolManager {
         format!("curl -fsSL {} | sh", self.config.install_script_url)
     }
 
-    /// Check if the tool is installed and available in PATH
+    /// Check whether `--version` exits successfully within five seconds.
+    ///
+    /// Discard output to keep full pipes from blocking the probe. A missing,
+    /// failing or stalled command returns false; stalled children are killed
+    /// and reaped. Version retrieval through `get_version` is unchanged.
     pub fn is_installed(&self) -> bool {
-        std::process::Command::new("which")
-            .arg(self.config.name)
-            .output()
-            .map(|output| output.status.success())
-            .unwrap_or(false)
+        let Ok(mut child) = std::process::Command::new(self.config.name)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            return false;
+        };
+        let deadline = Instant::now() + VERSION_PROBE_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+            }
+        }
     }
 
     /// Get the installed tool version (if available)
