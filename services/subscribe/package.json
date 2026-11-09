@@ -1,0 +1,16 @@
+{
+  "name": "iii-subscribe",
+  "version": "1.0.0",
+  "private": true,
+  "description": "iii.dev email signup API, deployed on iii Cloud",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "iii-sdk": "0.24.6"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.1"
+  }
+}
