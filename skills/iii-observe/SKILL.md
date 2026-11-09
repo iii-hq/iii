@@ -226,9 +226,11 @@ client.Observe(iii.Source{
 ## Handle and states
 
 `pending` (no host, no ack, or no target yet) → `active` or `error`. `suspended` while the target
-is away, or while the observing worker is disconnected (30 s grace, then `disposed`). `disposed`
-after `dispose()`, `max_fires`, or expiry. `observe()` returns synchronously, works before the
-connection is up, and is replayed with the same id on reconnect. A worker back on a new connection
+is away, or while the observing worker is disconnected (30 s grace, then `disposed`; when the worker
+comes back later, its SDK observes again, under the same id, each observer with neither `max_fires`
+nor `expires_in_ms`). `disposed` after `dispose()`, `max_fires`, or expiry. `observe()` returns
+synchronously, works before the connection is up, and is replayed with the same id on reconnect.
+A worker back on a new connection
 (a restart), under the same worker name in the same namespace (and the same principal: both on
 ports without `rbac`, or both on RBAC ports with the same non-empty auth `context`), takes over its
 own `suspended` observer's `id`: its `observe` of that `id` replaces the suspended observer, and the

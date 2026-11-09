@@ -1022,6 +1022,17 @@ connection, and does not create the observer again with new counters. A `Reattac
 grace period gets the same answer, within `observers.disposed_retention_ms`. After that answer, or
 an `Unobserve` of the `id` from the connection, the `id` is free there.
 
+An SDK uses that free `id` when the engine disposed the observer because its worker stayed away past
+`observers.observer_grace_ms`. When the answer to a replayed `Observe`, or an
+`ObserverStateChanged`, is `disposed` with `OBSERVER_DISCONNECTED` and the observer has neither
+`max_fires` nor `expires_in_ms`, the SDK sends a new `Observe` with the same `id`, source, target,
+metadata and options on the same connection, and the engine creates a new observer with its counters
+at 0. The handle keeps its `id`, goes to `pending` without reporting `disposed`, and takes the new
+`ObserveResult`. The SDK does not observe again an observer with either limit (it becomes
+`disposed`, so the limits hold across the absence), one whose dispose has started, or one it already
+observed again on this connection (a second such `disposed` disposes it). This is SDK behavior: the
+engine's answers are the ones above.
+
 ### `FunctionRegistered`
 
 Engine -> host (only to connections that declared `observe.v1`). The success ack of

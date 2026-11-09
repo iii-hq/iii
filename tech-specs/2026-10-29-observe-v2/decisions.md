@@ -593,7 +593,9 @@ differ, this file wins, and the spec is updated to match.
       `disposed` may have been lost with the earlier connection. A
       `Reattach` after the grace period gets the same answer, within
       `observers.disposed_retention_ms`. That answer, or an `unobserve` of
-      the id from the connection, frees the id there.
+      the id from the connection, frees the id there. An SDK that hears
+      that answer with `OBSERVER_DISCONNECTED` observes the id again at
+      once when decision 63 applies.
     - **A refusal is the handle's last answer.** An `observeresult` that
       refuses an `observe` (state `error`) answers the oldest listed handle
       of the id that has no answer yet (rule 2), and that handle leaves the
@@ -615,6 +617,40 @@ differ, this file wins, and the spec is updated to match.
     with `_for` forms in Rust; `OnObservationMatch`, `OnObservationDeliver`
     and their `For` forms in Go). rc.1 and rc.2 named them `onObserverMatch` and
     `onObserverDeliver`.
+63. **An observer disposed while its worker was away is observed again.**
+    A worker whose connection stays down longer than
+    `observers.observer_grace_ms` comes back to find its observers disposed
+    with `OBSERVER_DISCONNECTED`, and within
+    `observers.disposed_retention_ms` its replayed `observe`s are answered
+    `disposed` (decision 56). If the SDK let those handles go, a
+    long-running worker would lose every observer until its process
+    restarts. So when the engine reports a handle `disposed` with the code
+    `OBSERVER_DISCONNECTED` (the answer to its replay, or an
+    `observerstatechanged`), the SDK observes again instead, if:
+    1. the handle has neither `max_fires` nor `expires_in_ms`;
+    2. its `dispose()` has not been called;
+    3. it is not in `error`;
+    4. it has not been observed again on this connection already.
+
+    The SDK keeps the handle, which still holds its id, and sends a new
+    `observe` with the same id, source, target, metadata and options on the
+    current connection. It lists and answers that `observe` like any other
+    of the id (decision 56, rules 1 and 2), and replays it on later
+    reconnects like any live handle. The `disposed` answer freed the id on
+    this connection, so the engine creates a new observer, its counters
+    at 0. The handle goes to `pending` with no reason, then follows the new
+    `observeresult` (`active`, `pending` or `error`): it never reports
+    `disposed`, and its fire count starts again at 0. The SDK logs one line
+    naming the observer id: the engine disposed it while the worker was
+    away past the grace period, and it is observed again. An observer with
+    `max_fires` or `expires_in_ms` is disposed and its id freed as before:
+    observing it again would reset the counters that the `disposed` answer
+    to its replay keeps in effect. A second `disposed` with
+    `OBSERVER_DISCONNECTED` on the same connection disposes the handle as
+    before, so the SDK never loops. Any other disposal (`unobserve`,
+    `max_fires`, expiry, an admin, `FORBIDDEN` on a `Reattach`) and any
+    refusal are unchanged, and so is the wire: the engine's answers are the
+    ones decision 56 describes.
 
 ## CLI and crates
 

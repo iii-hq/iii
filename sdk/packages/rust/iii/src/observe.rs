@@ -316,6 +316,10 @@ pub(crate) struct ObserverEntry {
     pub(crate) sent_epoch: AtomicU64,
     /// `dispose` was called: never replayed again.
     pub(crate) disposing: AtomicBool,
+    /// The connection epoch it was last observed again on, after the engine
+    /// disposed it while the worker was away ([`NOT_SENT`] before that):
+    /// once per connection, so a second such disposal there is final.
+    pub(crate) observed_again_epoch: AtomicU64,
     /// The engine refused its `observe` (an `observeresult` in `error`, to
     /// a first `observe` or a replay): that is its final answer. The engine
     /// holds no observer for it, so it is never sent again and `dispose`
@@ -351,6 +355,7 @@ impl ObserverEntry {
             sent: AtomicBool::new(false),
             sent_epoch: AtomicU64::new(NOT_SENT),
             disposing: AtomicBool::new(false),
+            observed_again_epoch: AtomicU64::new(NOT_SENT),
             refused: AtomicBool::new(false),
             send_lock: Mutex::new(()),
         }

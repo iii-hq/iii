@@ -920,6 +920,13 @@ after a number of calls or after a time, set `max_fires` or `expires_in_ms` in t
   hour by default). In this time, the engine does not create the observer again, and the handle
   becomes `disposed`, so `max_fires` and `expires_in_ms` stay in effect after a reconnect. After
   this time, the engine creates the observer again with new counters, as after an engine restart.
+- An observer with neither `max_fires` nor `expires_in_ms` is not lost when its worker is away for
+  longer than the grace period. When the engine answers that it was disposed because the worker was
+  away (`OBSERVER_DISCONNECTED`), the SDK observes it again at once, with the same `id`, source,
+  target, metadata and options, and logs a line naming the `id`. The handle goes to `pending` and
+  then `active`, and does not become `disposed`. The engine creates a new observer, so its count of
+  fires starts again at 0, and the worker that hosts the observed function gets it as a new observer
+  (`onObserverAdded` runs). An observer you are disposing is not observed again.
 - To know when an observer becomes `disposed`, and why, use `onStateChange` on its handle.
   `engine::observers::list` and `get` do not show disposed observers.
 - When the worker that hosts the observed function disconnects, its observers go back to `pending`

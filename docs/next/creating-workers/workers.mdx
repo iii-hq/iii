@@ -408,7 +408,9 @@ When a worker's WebSocket closes, the engine cleans up after it automatically. I
 the live registry, observers of those functions go `pending` until a worker registers them again,
 and any in-flight invocations of those functions are cancelled. The worker's own observers go
 `suspended` for `observers.observer_grace_ms` (30 s by default): if it reconnects in that time it
-keeps them, and otherwise they are disposed.
+keeps them, and otherwise they are disposed. When it reconnects later, its SDK observes again, under
+the same id, each of them that has neither `max_fires` nor `expires_in_ms` (see
+[Observer states](../using-iii/observers#observer-states)).
 
 #### In flight requests
 

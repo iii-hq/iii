@@ -140,7 +140,9 @@ iii.observe(
   while it was away, as the replay of an observer whose `disposed` was lost
   (after a `Reattach` within the grace period, or a later one within
   `observers.disposed_retention_ms`); that answer, or an `unobserve` of the
-  id, frees it.
+  id, frees it. When that answer's code is `OBSERVER_DISCONNECTED` and the
+  observer has neither `max_fires` nor `expires_in_ms`, the SDK keeps the
+  handle and observes the id again at once (decision 63).
 - **A refused `observe`** (its `observeresult` is `error`) gets no other
   answer. Its handle's `dispose()` sends nothing and resolves at once; a
   `dispose()` called before the refusal arrived resolves at once in Node,

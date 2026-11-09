@@ -911,3 +911,146 @@ def test_dispose_racing_the_refusal_leaves_nothing_listed_or_held(engine: FakeEn
     assert errors == []
     settle(client, engine)
     assert len(engine.frames_of("unobserve")) <= REFUSAL_RACE_ROUNDS
+
+
+# disposed while the worker was away past the grace period: observed again (E17)
+
+
+_DISCONNECTED = {"code": "OBSERVER_DISCONNECTED", "message": "the observing worker was away past the grace period"}
+
+
+def _disposed_while_away(engine: FakeEngine, observer_id: str) -> None:
+    """The engine's answer to a replay of an observer it disposed after the grace period."""
+    engine.deliver({"type": "observeresult", "id": observer_id, "state": "disposed", "error": _DISCONNECTED})
+
+
+def _reconnect(client: III, engine: FakeEngine, replays: int) -> int:
+    """Drops the connection; returns the new one's index once its ``replays`` replays arrived."""
+    connection = len(engine.connections)
+    engine.drop()
+    wait_until(
+        lambda: len(engine.connections) == connection + 1 and client._registered_on_connection, what="the reconnect"
+    )
+    engine.wait_for(lambda: len(engine.frames_of("observe", connection)) == replays, what="the replays")
+    return connection
+
+
+@pytest.mark.parametrize("via", ["observeresult", "observerstatechanged"])
+def test_an_observer_disposed_while_the_worker_was_away_is_observed_again_with_its_id(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture, via: str
+) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x", "metadata": {"m": 1}, "max_in_flight": 2})
+    [first] = engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="active")
+    changes: list[tuple[str, Any]] = []
+    handle.on_state_change(lambda state, reason: changes.append((state, reason)))
+    caplog.set_level("INFO", logger="iii.iii")
+    connection = _reconnect(client, engine, 1)
+    if via == "observeresult":
+        _disposed_while_away(engine, "x")
+    else:
+        _answer(engine, "x", "suspended")
+        _state(engine, "x", "disposed", _DISCONNECTED)
+    replay, again = engine.wait_for(
+        lambda: len(engine.frames_of("observe", connection)) == 2 and engine.frames_of("observe", connection),
+        what="the observe again",
+    )
+    assert replay == again == first  # the same id, source, target, metadata and options
+    assert client._observers["x"] is handle
+    assert client._observe_sent["x"] == [handle]  # the next answer for x is this observe's
+    _answer(engine, "x", "active")
+    wait_until(lambda: handle.state == "active", what="active again")
+    settle(client, engine)
+    expected = [("pending", None), ("active", None)]
+    if via == "observerstatechanged":
+        expected.insert(0, ("suspended", None))
+    wait_until(lambda: changes == expected, what="the listener")  # never disposed
+    assert [r.getMessage() for r in caplog.records if "observing it again" in r.getMessage()] == [
+        "Observer x: the engine disposed it while this worker was away past the grace period; observing it again."
+    ]
+    # a live handle: replayed on the next connection, and its dispose() unobserves it
+    connection = _reconnect(client, engine, 1)
+    handle.dispose()
+    engine.wait_for(lambda: engine.frames_of("unobserve", connection), what="the unobserve")
+
+
+@pytest.mark.parametrize("counter", [{"max_fires": 5}, {"expires_in_ms": 60_000}], ids=["max_fires", "expires_in"])
+def test_an_observer_with_counters_disposed_while_the_worker_was_away_is_forgotten(
+    engine: FakeEngine, connect: Any, counter: dict[str, int]
+) -> None:
+    client = connect(engine)
+    counted = client.observe({"function_id": "f::a"}, "t::a", {"id": "x", **counter})
+    plain = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    connection = _reconnect(client, engine, 2)
+    _disposed_while_away(engine, "x")
+    _disposed_while_away(engine, "y")
+    engine.wait_for(lambda: len(engine.frames_of("observe", connection)) == 3, what="y observed again")
+    settle(client, engine)
+    assert [f["id"] for f in engine.frames_of("observe", connection)] == ["x", "y", "y"]
+    assert counted.state == "disposed" and counted.reason == _DISCONNECTED
+    assert plain.state == "pending"
+    assert client._observers == {"y": plain}
+    connection = _reconnect(client, engine, 1)
+    settle(client, engine)
+    assert [f["id"] for f in engine.frames_of("observe", connection)] == ["y"]
+
+
+def test_an_observer_its_worker_disposed_is_not_observed_again(
+    engine: FakeEngine, connect: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("INFO", logger="iii.iii")
+    client = connect(engine)
+    gone = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    kept = client.observe({"function_id": "f::b"}, "t::b", {"id": "y"})
+    engine.wait_for(lambda: len(engine.frames_of("observe")) == 2, what="both observes")
+    connection = _reconnect(client, engine, 2)
+    gone.dispose()
+    engine.wait_for(lambda: engine.frames_of("unobserve", connection), what="the unobserve")
+    _disposed_while_away(engine, "x")
+    _disposed_while_away(engine, "y")
+    engine.wait_for(lambda: len(engine.frames_of("observe", connection)) == 3, what="y observed again")
+    settle(client, engine)
+    assert _types_and_ids(engine, connection) == [
+        ("observe", "x"),
+        ("observe", "y"),
+        ("unobserve", "x"),
+        ("observe", "y"),
+    ]
+    assert gone.state == "disposed"
+    assert gone.reason == {"code": "UNOBSERVED", "message": "disposed by the observing worker"}
+    assert client._observers == {"y": kept}
+    assert not [r for r in caplog.records if r.getMessage().startswith("Observer x:")]
+
+
+def test_an_observer_in_error_disposed_while_the_worker_was_away_is_forgotten(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    _answer(engine, "x", "active")
+    _state(engine, "x", "error", {"code": "NOT_OBSERVABLE", "message": "the function went away"})
+    wait_until(lambda: handle.state == "error", what="error")
+    assert not handle._refused  # an error after the answer is not a refusal
+    connection = _reconnect(client, engine, 1)
+    _disposed_while_away(engine, "x")
+    wait_until(lambda: handle.state == "disposed", what="disposed")
+    settle(client, engine)
+    assert len(engine.frames_of("observe", connection)) == 1  # the replay only
+    assert "x" not in client._observers
+
+
+def test_a_second_disconnected_disposal_on_the_same_connection_disposes_it(engine: FakeEngine, connect: Any) -> None:
+    client = connect(engine)
+    handle = client.observe({"function_id": "f::a"}, "t::a", {"id": "x"})
+    engine.wait_for(lambda: engine.frames_of("observe"), what="the observe")
+    connection = _reconnect(client, engine, 1)
+    _disposed_while_away(engine, "x")
+    engine.wait_for(lambda: len(engine.frames_of("observe", connection)) == 2, what="the observe again")
+    _disposed_while_away(engine, "x")  # the loop guard: once per connection
+    wait_until(lambda: handle.state == "disposed", what="disposed")
+    settle(client, engine)
+    assert handle.reason == _DISCONNECTED
+    assert len(engine.frames_of("observe", connection)) == 2
+    assert "x" not in client._observers and "x" not in client._observe_sent

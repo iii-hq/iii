@@ -42,6 +42,11 @@ export class ObserverHandleImpl implements ObserverHandle {
    * disposed.
    */
   refused = false
+  /**
+   * @internal The connection (epoch) on which it was observed again after
+   * the engine disposed it with `OBSERVER_DISCONNECTED`: at most once each.
+   */
+  observedAgainOn?: number
 
   constructor(
     readonly id: string,

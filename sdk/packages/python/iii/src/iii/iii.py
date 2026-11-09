@@ -1520,17 +1520,47 @@ class III:
         state = to_observer_state(wire_state)
         body = decode_error(reason)
         if state == "disposed":
-            # The engine disposed it: the id is free, nothing is replayed, and
-            # its dispose() sends no unobserve.
-            handle._engine_disposed = True
-            with self._observers_lock:
-                if self._observers.get(handle.id) is handle:
-                    del self._observers[handle.id]
             listed = self._observe_sent.get(handle.id)
             if listed is not None and handle in listed:
                 listed.remove(handle)
                 if not listed:
                     del self._observe_sent[handle.id]
+            epoch = self._connection_epoch
+            with self._observers_lock:
+                # Disposed while this worker was away past the grace period:
+                # an observer without counters is observed again, as a new one
+                # with the same id (E17), once per connection. Resetting the
+                # counters of one with them is what decision 56 forbids.
+                again = (
+                    body is not None
+                    and body["code"] == "OBSERVER_DISCONNECTED"
+                    and handle._message.max_fires is None
+                    and handle._message.expires_in_ms is None
+                    and self._observers.get(handle.id) is handle
+                    and not handle._refused
+                    and handle._state != "error"
+                    and handle._observed_again_epoch != epoch
+                )
+                if not again:
+                    # The engine disposed it: the id is free, nothing is
+                    # replayed, and its dispose() sends no unobserve.
+                    handle._engine_disposed = True
+                    if self._observers.get(handle.id) is handle:
+                        del self._observers[handle.id]
+            if again:
+                log.warning(
+                    "Observer %s: the engine disposed it while this worker was away past the grace period; "
+                    "observing it again.",
+                    handle.id,
+                )
+                handle._observed_again_epoch = epoch
+                # The engine holds nothing for it until the observe below goes
+                # out: a dispose() racing it sends an unobserve only if it did.
+                handle._sent = False
+                handle._sent_epoch = -1
+                handle._set_state("pending")
+                self._send_observe(handle)
+                return
         handle._set_state(state, cast(ObserveReason, body) if body else None)
 
     def _warn_legacy_on(self) -> None:
@@ -3362,7 +3392,10 @@ class III:
         Returns synchronously, also before the connection is up; the observer
         is replayed with the same id on every reconnect. The handle holds its
         id until its ``dispose()`` is called or the engine disposes it; the
-        id is free again at once after that. Errors
+        id is free again at once after that. An observer without
+        ``max_fires`` or ``expires_in_ms`` that the engine disposed because
+        this worker was away past its grace period (``OBSERVER_DISCONNECTED``)
+        is not: it is observed again, with the same id, and goes ``pending``. Errors
         (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
         ``NOT_OBSERVABLE``, the rejection of the source's worker,
         ``UNSUPPORTED`` against an engine without observe) show up as state
