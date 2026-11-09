@@ -98,9 +98,9 @@ pub enum ComposeError {
     EngineRestartRequired { path: PathBuf },
 
     #[error(
-        "{path} declares engine:, but this daemon's engine is already owned by {owner}. Start the \
-         second file in a separate Compose invocation, or remove its engine section and pass the \
-         first engine's URL"
+        "{path} declares engine:, but this daemon's engine belongs to {owner}. To act on that \
+         project, pass file={owner}. To run {path} as well, start it in its own Compose \
+         invocation, or remove its engine: section so it joins this daemon"
     )]
     EngineAlreadyOwned { owner: PathBuf, path: PathBuf },
 
@@ -588,6 +588,15 @@ pub enum ComposeError {
          in a project directory"
     )]
     NoComposeFileHere { expected: &'static str },
+
+    /// A call named no file and reached a daemon serving several projects, none
+    /// of them the `worker-compose.yaml` in its own directory. Which one it
+    /// meant is a guess this daemon does not make.
+    #[error(
+        "the call named no file, and this daemon serves several projects: {loaded}. Pass \
+         file=<PATH> to name one"
+    )]
+    ComposeFileAmbiguous { loaded: String },
 }
 
 impl ComposeError {
@@ -685,6 +694,7 @@ impl ComposeError {
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
+            Self::ComposeFileAmbiguous { .. } => "COMPOSE_FILE_AMBIGUOUS",
         }
     }
 }

@@ -941,7 +941,8 @@ impl Daemon {
         frozen: bool,
     ) -> Result<Option<OpResult>> {
         let shutdown = shutdown.or(self.cancellation(&operation_id));
-        let file = self.resolve_file(file)?;
+        let file = self.resolve_file(file).await?;
+        let file = file.as_path();
         let Some(_mutation) = shutdown.run(self.lock_mutation(file)).await else {
             return Ok(None);
         };
@@ -995,7 +996,8 @@ impl Daemon {
         workers: &[crate::edit::WorkerInput],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         crate::report::in_project_scope(
             path,
             self.add_configured_scoped(Some(path), workers, operation_id),
@@ -1017,7 +1019,9 @@ impl Daemon {
             });
         }
 
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+
+        let path = path.as_path();
         self.validate_engine_policy_file(path)?;
         let mut asked = workers
             .iter()
@@ -1313,7 +1317,8 @@ impl Daemon {
         workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         let result = crate::report::in_project_scope(
             path,
             self.update_scoped(Some(path), workers, operation_id.clone()),
@@ -1331,7 +1336,8 @@ impl Daemon {
         workers: &[String],
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1657,7 +1663,9 @@ impl Daemon {
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+
+        let path = path.as_path();
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1761,7 +1769,8 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<MutationOutcome> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         self.validate_engine_policy_file(path)?;
         if let Some(key) = container {
             let _mutation = self
@@ -1860,21 +1869,49 @@ impl Daemon {
         container: Option<&str>,
         operation_id: String,
     ) -> Result<OpResult> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         self.validate_engine_policy_file(path)?;
         crate::report::mutation_begin(path);
         let project = self.project(path).await?;
         Ok(project.down(container, operation_id).await)
     }
 
-    /// The file a call meant: the one it named, else `worker-compose.yaml` in
-    /// the daemon's own directory when that exists.
-    fn resolve_file<'a>(&self, file: Option<&'a Path>) -> Result<&'a Path> {
+    /// The file a call meant: the one it named, else the project this daemon
+    /// serves. A daemon started with `--up -f worker-compose.dev.yaml` holds
+    /// that file, and a bare `compose::down` means it, not a
+    /// `worker-compose.yaml` that happens to sit beside it. With no project
+    /// loaded, a bare call means `worker-compose.yaml` in the daemon's own
+    /// directory; with several, that file when it is one of them, and
+    /// otherwise the call has to name one.
+    async fn resolve_file(&self, file: Option<&Path>) -> Result<PathBuf> {
         static DEFAULT: &str = crate::cli::DEFAULT_COMPOSE_FILE;
-        match file {
-            Some(file) => Ok(file),
-            None if Path::new(DEFAULT).exists() => Ok(Path::new(DEFAULT)),
-            None => Err(ComposeError::NoComposeFileHere { expected: DEFAULT }),
+        if let Some(file) = file {
+            return Ok(file.to_path_buf());
+        }
+        let default = Path::new(DEFAULT);
+        let mut loaded = self.project_files().await;
+        match loaded.len() {
+            0 if default.exists() => Ok(default.to_path_buf()),
+            0 => Err(ComposeError::NoComposeFileHere { expected: DEFAULT }),
+            1 => Ok(loaded.remove(0)),
+            _ => {
+                let default_key = default.canonicalize().ok();
+                let is_default = |path: &PathBuf| {
+                    default_key.is_some() && path.canonicalize().ok() == default_key
+                };
+                if loaded.iter().any(is_default) {
+                    return Ok(default.to_path_buf());
+                }
+                loaded.sort();
+                Err(ComposeError::ComposeFileAmbiguous {
+                    loaded: loaded
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                })
+            }
         }
     }
 
@@ -1883,7 +1920,8 @@ impl Daemon {
     /// The file is read and answered for, and nothing is kept: this is the
     /// call a CI job makes, and it must not leave the daemon holding a project.
     pub async fn validate(&self, file: Option<&Path>) -> Result<crate::manifest::ValidationReport> {
-        let file = self.resolve_file(file)?;
+        let file = self.resolve_file(file).await?;
+        let file = file.as_path();
         if file.is_relative() && !file.exists() {
             return Err(ComposeError::RelativeFileMissing {
                 path: file.to_path_buf(),
@@ -1897,7 +1935,8 @@ impl Daemon {
     }
 
     pub async fn status(&self, file: Option<&Path>) -> Result<Arc<Project>> {
-        let path = self.resolve_file(file)?;
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
         self.validate_engine_policy_file(path)?;
         self.project(path).await
     }
@@ -2579,6 +2618,46 @@ mod tests {
             .expect("daemon shutdown must interrupt replacement")
             .unwrap();
         assert_eq!(up.primary_error.unwrap().code, "OPERATION_CANCELLED");
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_call_without_a_file_means_the_project_this_daemon_serves() {
+        let dir = tempfile::tempdir().unwrap();
+        let text =
+            "containers:\n  worker:\n    worker: path://.\n    scripts: { run: echo ready }\n";
+        let dev = dir.path().join("worker-compose.dev.yaml");
+        std::fs::write(&dev, text).unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("default-file-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        daemon.project(&dev).await.unwrap();
+
+        // The only project is the one a bare call means, whatever its name.
+        let resolved = daemon.resolve_file(None).await.unwrap();
+        assert_eq!(
+            resolved.canonicalize().unwrap(),
+            dev.canonicalize().unwrap()
+        );
+        // A named file still wins.
+        let named = dir.path().join("named.yaml");
+        assert_eq!(daemon.resolve_file(Some(&named)).await.unwrap(), named);
+
+        // With two projects, neither of them this directory's
+        // worker-compose.yaml, a bare call is refused instead of guessed.
+        // Its own directory: two files in one directory share a state dir.
+        let other_dir = dir.path().join("other");
+        std::fs::create_dir(&other_dir).unwrap();
+        let other = other_dir.join("other.yaml");
+        std::fs::write(&other, text).unwrap();
+        daemon.project(&other).await.unwrap();
+        let err = daemon.resolve_file(None).await.unwrap_err();
+        assert_eq!(err.code(), "COMPOSE_FILE_AMBIGUOUS");
+        assert!(err.to_string().contains("worker-compose.dev.yaml"), "{err}");
+        assert!(err.to_string().contains("other.yaml"), "{err}");
         daemon.shutdown().await;
     }
 
