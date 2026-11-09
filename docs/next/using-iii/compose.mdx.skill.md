@@ -855,7 +855,10 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `path`   | A path to a worker stored locally on disk.                                      |
 
 A bundle's VM, like a `path://` worker with `runtime.base_image`, runs in the `sandbox-libkrun`
-worker, which Compose installs from the registry when the project has such a worker. The adapter is
+worker, which Compose installs from the registry when the project has such a worker. Its guest
+receives the container's `environment` and `env_file` variables and the reserved `III_*` variables,
+not the host's environment: declare under `environment` what the worker needs, such as a provider
+key. The adapter is
 built for three targets only: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and
 `aarch64-unknown-linux-gnu`. On a musl Linux or Intel Mac host Compose fails with
 `UNSUPPORTED_PLATFORM`. On Linux the user running Compose needs read and write access to `/dev/kvm`,

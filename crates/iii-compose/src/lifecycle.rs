@@ -1295,7 +1295,8 @@ async fn start_one_until_shutdown(
         }
         // A VM worker is booted by its adapter instead of run here. The handle
         // that comes back is an ordinary child, so readiness, stop and crash
-        // cascade below are unchanged; its poller streams the VM's logs.
+        // cascade below are unchanged; its poller streams the VM's logs. The
+        // guest boots with `guest_env`, not this machine's environment.
         None => {
             report::starting(key, "preparing VM runtime");
             if let Some(operation) = operation_id.and_then(crate::operation::active) {
@@ -1303,8 +1304,14 @@ async fn start_one_until_shutdown(
                     .emit(Some(key), "preparing", "preparing VM runtime")
                     .await;
             }
-            let Some(started) =
-                crate::sandbox::start_vm_until(ctx, key, &start, plan.env, shutdown.as_ref()).await
+            let Some(started) = crate::sandbox::start_vm_until(
+                ctx,
+                key,
+                &start,
+                crate::spawn::guest_env(&spawn_ctx),
+                shutdown.as_ref(),
+            )
+            .await
             else {
                 return Err(StartFailure::Interrupted);
             };
