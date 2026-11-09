@@ -1,0 +1,493 @@
+name: Benchmark Compare
+
+# Comment `/bench [refs...]` on a pull request to benchmark the PR against one or
+# more released versions and get a comparison table posted back on the PR.
+#
+#   /bench                      -> PR base branch vs PR head
+#   /bench 0.25.0               -> v0.25.0 vs PR head
+#   /bench 0.25.0 0.26.0-rc.1   -> both releases vs PR head
+#   /bench base 0.25.0          -> v0.25.0 vs PR base branch vs PR head
+#   /bench 0.25.0 --no-head     -> releases only (no PR head)
+#   /bench 0.25.1-alpha.2       -> alpha release (tag iii-alpha/v0.25.1-alpha.2)
+#
+# Tokens: `base` = tip of the PR's base branch, `head` = PR head (always
+# included unless --no-head), `X.Y.Z[-pre]` (optional `v` / `iii/v` / `iii-alpha/v`
+# prefix) = the `iii/vX.Y.Z[-pre]` release tag, falling back to the
+# `iii-alpha/vX.Y.Z-alpha.N` alpha tag. Versions match exactly: an alpha needs
+# its suffix (`0.25.1-alpha.2`; `0.25.1` only resolves to the stable `iii/v0.25.1`).
+# The first ref listed is the baseline the other columns are compared against.
+#
+# Besides the timings, the report lists the peak memory and the CPU each bench
+# binary used (see "Install the resource-measuring bench runner" below).
+#
+# Constraints:
+#   - GitHub runs issue_comment workflows from the DEFAULT branch only, so this
+#     file must be merged into main before /bench works on any PR (including PRs
+#     that target another branch, e.g. a feature branch).
+#   - Only users with write/maintain/admin permission on the repo can trigger it.
+#   - PR code is executed by the `bench` job, so that job gets a read-only token
+#     and no secrets. Posting the comment happens in a separate job that never
+#     runs PR code.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  III_TELEMETRY_ENABLED: "false"
+  MAX_REFS: "6"
+
+jobs:
+  authorize:
+    name: Authorize and parse
+    # Cheap pre-filter; the exact `/bench` token is re-checked in the script.
+    if: >-
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/bench')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    outputs:
+      ok: ${{ steps.parse.outputs.ok }}
+      refs: ${{ steps.parse.outputs.refs }}
+      pr: ${{ github.event.issue.number }}
+    steps:
+      - name: Check the commenter is a maintainer
+        id: perm
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+          PERM=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
+          echo "permission of $ACTOR: $PERM"
+          case "$PERM" in
+            admin|maintain|write) echo "allowed=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "allowed=false" >> "$GITHUB_OUTPUT"
+              gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=-1 >/dev/null || true
+              ;;
+          esac
+
+      - name: Parse the command
+        id: parse
+        if: steps.perm.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR" --repo "$REPO" --body "**/bench:** $1"
+            exit 0
+          }
+
+          # 0 = tag exists, 1 = confirmed missing (HTTP 404), 2 = any other API failure
+          tag_exists() {
+            local out
+            if out=$(gh api "repos/$REPO/git/ref/tags/$1" 2>&1); then return 0; fi
+            if grep -q 'HTTP 404' <<< "$out"; then return 1; fi
+            echo "$out" >&2
+            return 2
+          }
+
+          LINE=$(printf '%s' "$COMMENT_BODY" | head -n1 | tr -d '\r')
+          read -r -a TOKENS <<< "$LINE"
+          if [[ "${TOKENS[0]:-}" != "/bench" ]]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"   # e.g. /benchmark, not for us
+            exit 0
+          fi
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes >/dev/null || true
+
+          INFO=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,baseRefName,baseRefOid)
+          HEAD_SHA=$(jq -r .headRefOid <<< "$INFO")
+          BASE_SHA=$(jq -r .baseRefOid <<< "$INFO")
+          BASE_NAME=$(jq -r .baseRefName <<< "$INFO")
+
+          WANT_BASE=false; WANT_HEAD=true; VERSIONS=()
+          for T in "${TOKENS[@]:1}"; do
+            case "$T" in
+              base) WANT_BASE=true ;;
+              head) WANT_HEAD=true ;;
+              --no-head) WANT_HEAD=false ;;
+              *)
+                # Accept X.Y.Z[-pre], vX.Y.Z, iii/vX.Y.Z or iii-alpha/vX.Y.Z.
+                # Strip exactly one namespace; anything left over fails the check below.
+                case "$T" in
+                  iii-alpha/*) V="${T#iii-alpha/}"; CANDIDATES=("iii-alpha/v${V#v}") ;;
+                  iii/*)       V="${T#iii/}";       CANDIDATES=("iii/v${V#v}") ;;
+                  *)           V="$T";              CANDIDATES=() ;;
+                esac
+                V="${V#v}"
+                [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+                  || fail "unknown argument \`$T\`. Usage: \`/bench [base] [X.Y.Z ...] [--no-head]\`"
+                # Stable releases and RCs are tagged iii/vX, alphas iii-alpha/vX.
+                [[ ${#CANDIDATES[@]} -gt 0 ]] || CANDIDATES=("iii/v$V" "iii-alpha/v$V")
+                TAG=""
+                for C in "${CANDIDATES[@]}"; do
+                  RC=0; tag_exists "$C" || RC=$?
+                  if [[ $RC -eq 0 ]]; then TAG="$C"; break; fi
+                  # Fall back to the next namespace only for a confirmed missing tag.
+                  [[ $RC -eq 1 ]] || fail "could not look up tag \`$C\` (GitHub API error), please retry."
+                done
+                [[ -n "$TAG" ]] || fail "no release tag found for \`$V\` (tried: ${CANDIDATES[*]})."
+                VERSIONS+=("$TAG")
+                ;;
+            esac
+          done
+          # Bare `/bench` compares the PR against its base branch.
+          if [[ ${#VERSIONS[@]} -eq 0 ]]; then WANT_BASE=true; fi
+
+          REFS='[]'
+          for TAG in "${VERSIONS[@]}"; do
+            REFS=$(jq -c --arg l "${TAG#*/}" --arg r "refs/tags/$TAG" '. + [{label:$l, rev:$r}]' <<< "$REFS")
+          done
+          if [[ "$WANT_BASE" == true ]]; then
+            REFS=$(jq -c --arg l "base ($BASE_NAME)" --arg r "$BASE_SHA" '. + [{label:$l, rev:$r}]' <<< "$REFS")
+          fi
+          if [[ "$WANT_HEAD" == true ]]; then
+            REFS=$(jq -c --arg l "PR #$PR (${HEAD_SHA:0:7})" --arg r "$HEAD_SHA" '. + [{label:$l, rev:$r}]' <<< "$REFS")
+          fi
+
+          N=$(jq length <<< "$REFS")
+          [[ "$N" -ge 2 ]] || fail "need at least two refs to compare."
+          [[ "$N" -le "$MAX_REFS" ]] || fail "at most $MAX_REFS refs per run (got $N)."
+
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+          echo "refs=$REFS" >> "$GITHUB_OUTPUT"
+
+  bench:
+    name: Run benchmarks
+    needs: authorize
+    if: needs.authorize.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    # Runs untrusted PR code: read-only token, no secrets.
+    permissions:
+      contents: read
+    concurrency:
+      group: bench-compare-pr-${{ needs.authorize.outputs.pr }}
+      # Queue every accepted /bench instead of replacing the single pending job.
+      queue: max
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Fetch PR head
+        env:
+          PR: ${{ needs.authorize.outputs.pr }}
+        run: git fetch --no-tags origin "refs/pull/$PR/head"
+
+      # Cargo runs every bench binary through this wrapper (a target runner), which
+      # prints the binary's wall time, CPU time and peak memory (GNU time) next to
+      # its timings. It lives outside the checked-out tree, so refs that predate it
+      # are measured the same way.
+      - name: Install the resource-measuring bench runner
+        run: |
+          cat > "$RUNNER_TEMP/bench-runner.sh" <<'RUNNER'
+          #!/usr/bin/env bash
+          # cargo runner: bench-runner.sh <bench-binary> [args...]
+          if [[ ! -x /usr/bin/time ]]; then exec "$@"; fi
+          name="$(basename "$1")"; name="${name%-*}"
+          tmp="$(mktemp)"
+          /usr/bin/time -f '%e %U %S %M' -o "$tmp" "$@"
+          rc=$?
+          read -r wall user sys maxrss < <(tail -n1 "$tmp")
+          rm -f "$tmp"
+          printf '\n%s\n' "resource $name wall_s=${wall:-0} user_s=${user:-0} sys_s=${sys:-0} maxrss_kb=${maxrss:-0}"
+          exit "$rc"
+          RUNNER
+          chmod +x "$RUNNER_TEMP/bench-runner.sh"
+
+      # All refs run sequentially on the SAME runner so the numbers are
+      # comparable (separate runners add 10-20% noise). Each ref is benchmarked
+      # with its own benches, so a tag that predates a benchmark simply has no
+      # row for it.
+      - name: Benchmark each ref
+        env:
+          REFS: ${{ needs.authorize.outputs.refs }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          # Cargo's per-target runner, set through the environment so it wins over any .cargo/config of a ref.
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          RUNNER_VAR="CARGO_TARGET_$(echo "$HOST" | tr 'a-z-' 'A-Z_')_RUNNER"
+          echo "$REFS" > out/refs.json
+          N=$(jq length out/refs.json)
+          for i in $(seq 0 $((N-1))); do
+            LABEL=$(jq -r ".[$i].label" out/refs.json)
+            REV=$(jq -r ".[$i].rev" out/refs.json)
+            echo "::group::$LABEL ($REV)"
+            DIR="$RUNNER_TEMP/wt-$i"
+            # Make sure the pinned commit exists locally even if the PR was force-pushed since the comment.
+            if [[ "$REV" =~ ^[0-9a-f]{40}$ ]] && ! git cat-file -e "${REV}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$REV" || echo "::warning::pinned commit $REV is not available (PR force-pushed?)"
+            fi
+            if git worktree add --detach "$DIR" "$REV" && \
+               (cd "$DIR" && env "$RUNNER_VAR=$RUNNER_TEMP/bench-runner.sh" cargo bench -p iii --bench '*' -- --output-format bencher 2>&1 | tee "$GITHUB_WORKSPACE/out/$i.txt"; exit "${PIPESTATUS[0]}"); then
+              echo ok > "out/$i.status"
+            else
+              echo failed > "out/$i.status"
+              echo "::warning::benchmarks failed for $LABEL"
+            fi
+            git worktree remove --force "$DIR" || true
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-compare-${{ needs.authorize.outputs.pr }}-${{ github.run_id }}
+          path: out/
+          retention-days: 30
+
+  report:
+    name: Post report
+    needs: [authorize, bench]
+    if: always() && needs.authorize.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    # Never checks out or runs PR code.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: bench-compare-${{ needs.authorize.outputs.pr }}-${{ github.run_id }}
+          path: out
+
+      - name: Build the report
+        env:
+          BENCH_RESULT: ${{ needs.bench.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMAND: ${{ github.event.comment.body }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+
+          THRESHOLD = 10.0  # % change flagged as regression / improvement
+          LIMIT = 60000     # GitHub comment cap is 65536 chars
+
+          def line_re():
+              return re.compile(r'^test (.+?) \.\.\. bench:\s+([\d,]+) ns/iter \(\+/- ([\d,]+)\)')
+
+          def res_re():
+              # Printed by the bench runner: one line per bench binary.
+              return re.compile(r'^resource (\S+) wall_s=([\d.]+) user_s=([\d.]+) sys_s=([\d.]+) maxrss_kb=(\d+)')
+
+          try:
+              refs = json.load(open('out/refs.json'))
+          except Exception:
+              refs = []
+
+          results, status, resources = [], [], []
+          for i, _ in enumerate(refs):
+              data, res = {}, {}
+              try:
+                  for line in open(f'out/{i}.txt', errors='replace'):
+                      rm = res_re().match(line.strip())
+                      if rm:
+                          res[rm.group(1)] = {'wall': float(rm.group(2)), 'user': float(rm.group(3)),
+                                              'sys': float(rm.group(4)), 'rss_kb': int(rm.group(5))}
+                      m = line_re().match(line.strip())
+                      if m:
+                          data[m.group(1)] = int(m.group(2).replace(',', ''))
+              except FileNotFoundError:
+                  pass
+              results.append(data)
+              resources.append(res)
+              try:
+                  status.append(open(f'out/{i}.status').read().strip())
+              except FileNotFoundError:
+                  status.append('failed')
+              # A ref that exited cleanly but yielded no parsable measurements is incomplete.
+              if not data and status[-1] == 'ok':
+                  status[-1] = 'failed'
+
+          def fmt(ns):
+              if ns >= 1e9: return f'{ns/1e9:.2f} s'
+              if ns >= 1e6: return f'{ns/1e6:.2f} ms'
+              if ns >= 1e3: return f'{ns/1e3:.2f} µs'
+              return f'{ns} ns'
+
+          def delta(base, val):
+              if not base:
+                  # zero baseline: the change is undefined (infinite) when the value grew
+                  return float('inf') if val > 0 else 0.0
+              return (val - base) / base * 100.0
+
+          def pct(d):
+              return '+∞%' if d == float('inf') else f'{d:+.1f}%'
+
+          def icon(d):
+              return '🔴' if d >= THRESHOLD else ('🟢' if d <= -THRESHOLD else '')
+
+          n = len(refs)
+          # With 2 refs the baseline delta already is last-vs-previous.
+          show_prev = n >= 3
+          names = sorted({k for r in results for k in r})
+          headers = ['Benchmark'] + [
+              r['label'] + (' ⚠️' if status[i] != 'ok' else '') + (' (baseline)' if i == 0 else '')
+              for i, r in enumerate(refs)
+          ]
+          if show_prev:
+              headers.append('Last vs previous')
+
+          def state(name):
+              # 'new' / 'removed' are judged between the last two refs.
+              if status[-1] != 'ok' or status[-2] != 'ok': return ''  # a failed run is not a removal
+              last, prev = results[-1].get(name), results[-2].get(name)
+              if last is not None and prev is None: return 'new'
+              if last is None and prev is not None: return 'removed'
+              return ''
+
+          def row(name):
+              cells = [f'`{name}`']
+              base = results[0].get(name)
+              st = state(name)
+              for i, r in enumerate(results):
+                  v = r.get(name)
+                  tag = ''
+                  if i == n - 1 and st == 'new': tag = ' 🆕'
+                  if i == n - 1 and st == 'removed': tag = ' ⚠️'
+                  if v is None:
+                      cells.append('—' + tag)
+                  elif i == 0 or base is None:
+                      cells.append(fmt(v) + tag)
+                  else:
+                      d = delta(base, v)
+                      cells.append(f'{fmt(v)} ({pct(d)}) {icon(d)}{tag}'.strip())
+              if show_prev:
+                  last, prev = results[-1].get(name), results[-2].get(name)
+                  if last is not None and prev is not None:
+                      d = delta(prev, last)
+                      cells.append(f'{pct(d)} {icon(d)}'.strip())
+                  else:
+                      cells.append({'new': '🆕 new', 'removed': '⚠️ removed'}.get(st, '—'))
+              return '| ' + ' | '.join(cells) + ' |'
+
+          def table(rows):
+              head = '| ' + ' | '.join(headers) + ' |\n|' + '---|' * len(headers)
+              return head + '\n' + '\n'.join(rows)
+
+          def magnitude(name):
+              base, last, prev = results[0].get(name), results[-1].get(name), results[-2].get(name)
+              ds = [delta(base, r[name]) for r in results[1:] if base is not None and name in r]
+              if show_prev and last is not None and prev is not None:
+                  ds.append(delta(prev, last))
+              return max((abs(d) for d in ds), default=0.0)
+
+          flagged = [k for k in names if state(k) or magnitude(k) >= THRESHOLD]
+          # removed first (most important), then new, then by size of the change
+          flagged.sort(key=lambda k: ({'removed': 0, 'new': 1}.get(state(k), 2), -magnitude(k)))
+
+          cmd = os.environ.get('COMMAND', '').splitlines()[0][:200] if os.environ.get('COMMAND') else '/bench'
+          out = [f'## Benchmark comparison', f'`{cmd}` — [workflow run]({os.environ["RUN_URL"]})', '']
+          if not any(results):
+              out.append(f'❌ The benchmark job finished with `{os.environ.get("BENCH_RESULT")}` and produced no results.')
+          else:
+              legend = (f'Baseline: **{refs[0]["label"]}**. Cells show ns/iter and the change versus the baseline '
+                        f'(🔴 slower, 🟢 faster, threshold ±{THRESHOLD:.0f}%).')
+              if show_prev:
+                  legend += (f' **Last vs previous** compares **{refs[-1]["label"]}** with **{refs[-2]["label"]}**.')
+              legend += (' 🆕 = benchmark exists in the last ref but not the one before; ⚠️ = it disappeared in the last ref. '
+                         'All refs ran sequentially, in the listed order, on one GitHub-hosted runner; expect a few % of noise (run order can bias results slightly).')
+              out.append(legend)
+              bad = [r['label'] for i, r in enumerate(refs) if status[i] != 'ok']
+              if bad:
+                  out += ['', '⚠️ Benchmarks failed or were incomplete for: ' + ', '.join(f'**{b}**' for b in bad)]
+              out += ['', f'**{len(flagged)}** of {len(names)} benchmarks changed by ≥{THRESHOLD:.0f}% or were added/removed.', '']
+              if flagged:
+                  out += [table([row(k) for k in flagged]), '']
+              full = f'<details><summary>All {len(names)} benchmarks</summary>\n\n' + table([row(k) for k in names]) + '\n\n</details>'
+              if len('\n'.join(out)) + len(full) < LIMIT:
+                  out.append(full)
+              else:
+                  out.append('_Full table omitted (too long for a comment); see the run summary and the artifact attached to the workflow run._')
+                  open(os.environ['GITHUB_STEP_SUMMARY'], 'a').write(full + '\n')
+          # CPU and memory of each bench binary: peak resident memory, and the cores it kept busy on
+          # average ((user + sys CPU time) / wall time). Criterion runs for a fixed time, so CPU time
+          # itself barely moves: the cores and the memory are what a change shows up in.
+          def rss_fmt(kb):
+              mb = kb / 1024
+              return f'{mb / 1024:.2f} GiB' if mb >= 1024 else f'{mb:.0f} MiB'
+
+          def cores(v):
+              return (v['user'] + v['sys']) / v['wall'] if v['wall'] > 0 else 0.0
+
+          def chg(d):
+              return f'{pct(d)} {icon(d)}'.strip()
+
+          rnames = sorted({k for r in resources for k in r})
+          if rnames and any(results):
+              def rcell(i, name):
+                  v = resources[i].get(name)
+                  if v is None:
+                      return '—'
+                  base = resources[0].get(name)
+                  txt = f'{rss_fmt(v["rss_kb"])} · {cores(v):.2f} cores'
+                  if i == 0 or base is None:
+                      return txt
+                  return (f'{rss_fmt(v["rss_kb"])} ({chg(delta(base["rss_kb"], v["rss_kb"]))}) · '
+                          f'{cores(v):.2f} cores ({chg(delta(cores(base), cores(v)))})')
+
+              def rchange(name):
+                  base = resources[0].get(name)
+                  if base is None:
+                      return 0.0
+                  ds = []
+                  for r in resources[1:]:
+                      v = r.get(name)
+                      if v is not None:
+                          ds += [abs(delta(base['rss_kb'], v['rss_kb'])), abs(delta(cores(base), cores(v)))]
+                  return max(ds, default=0.0)
+
+              rflagged = [k for k in rnames if rchange(k) >= THRESHOLD]
+              rheaders = ['Benchmark binary'] + [
+                  r['label'] + (' (baseline)' if i == 0 else '') for i, r in enumerate(refs)]
+              rtable = ('| ' + ' | '.join(rheaders) + ' |\n|' + '---|' * len(rheaders) + '\n' + '\n'.join(
+                  '| ' + ' | '.join([f'`{k}`'] + [rcell(i, k) for i in range(n)]) + ' |' for k in rnames))
+              rblock = (
+                  f'<details{" open" if rflagged else ""}><summary>CPU and memory: {len(rflagged)} of {len(rnames)} '
+                  f'bench binaries changed by ≥{THRESHOLD:.0f}%</summary>\n\n'
+                  f'Peak resident memory of each bench binary, and the cores it kept busy on average '
+                  f'((user + sys CPU time) / wall time), with the change versus the baseline '
+                  f'(🔴 more, 🟢 less, threshold ±{THRESHOLD:.0f}%). The process is the benchmark harness, so compare '
+                  f'refs with each other, not against production numbers.\n\n' + rtable + '\n\n</details>')
+              if len('\n'.join(out)) + len(rblock) < LIMIT:
+                  out += ['', rblock]
+              else:
+                  out += ['', '_CPU and memory table omitted (too long for a comment); see the run summary._']
+                  open(os.environ['GITHUB_STEP_SUMMARY'], 'a').write(rblock + '\n')
+          open('report.md', 'w').write('\n'.join(out) + '\n')
+          PY
+          cat report.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Comment on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ needs.authorize.outputs.pr }}
+        run: gh pr comment "$PR" --repo "${{ github.repository }}" --body-file report.md

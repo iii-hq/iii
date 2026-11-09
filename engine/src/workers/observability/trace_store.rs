@@ -5159,7 +5159,7 @@ mod tests {
 
     /// Review R3/P2-7: emptying a 57 MB archive by retention returns the space
     /// in checkpointed steps; the directory never exceeds limit plus
-    /// tolerance and the space is back when `retain` returns.
+    /// tolerance and the space is back when the retention pass completes.
     #[test]
     fn retention_returns_space_without_exceeding_limit_plus_tolerance() {
         let directory = tempfile::tempdir().unwrap();
@@ -5187,7 +5187,21 @@ mod tests {
         let physical_before = directory_size(directory.path()).unwrap();
         let peak = DirectoryPeak::watch(directory.path());
         let started = Instant::now();
-        store.retain().unwrap();
+        // Measure one complete retention pass, not the control API's latency.
+        // Coverage and concurrent disk tests can exceed retain()'s five-second
+        // caller deadline. Keep that production deadline and the disk limits
+        // unchanged, but allow this resource regression to await completion.
+        let (response_tx, response_rx) = mpsc::channel();
+        store
+            .control_tx
+            .send(ControlMessage::Retain {
+                response: response_tx,
+            })
+            .unwrap();
+        response_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("retention pass must complete under coverage")
+            .unwrap();
         let elapsed = started.elapsed();
         let after = directory_size(directory.path()).unwrap();
         let max_directory = peak.finish();

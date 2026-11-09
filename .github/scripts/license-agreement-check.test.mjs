@@ -7,6 +7,7 @@ import {
   buildPendingComment,
   buildSatisfiedComment,
   evaluateAgreement,
+  evaluateOrgMember,
   findStickyComment,
   hasCheckedCheckbox,
   isInContributorsFile,
@@ -142,4 +143,18 @@ test('buildSatisfiedComment includes the username and contributors.md reference'
   const comment = buildSatisfiedComment('alice');
   assert.ok(comment.includes('@alice'));
   assert.ok(comment.includes('contributors.md'));
+});
+
+// ── evaluateOrgMember ─────────────────────────────────────────────────────────
+
+test('passes org members who leave the checkbox unchecked', () => {
+  assert.deepEqual(evaluateOrgMember({ prBody: `- [ ] ${CHECKBOX_TEXT}` }), { ok: true, checkboxChecked: false });
+});
+
+test('passes org members whose PR body omits the checkbox', () => {
+  assert.deepEqual(evaluateOrgMember({ prBody: '' }), { ok: true, checkboxChecked: false });
+});
+
+test('fails org members who check the checkbox', () => {
+  assert.deepEqual(evaluateOrgMember({ prBody: `- [x] ${CHECKBOX_TEXT}` }), { ok: false, checkboxChecked: true });
 });

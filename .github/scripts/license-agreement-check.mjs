@@ -31,6 +31,14 @@ export function evaluateAgreement({ prBody = "", inContributorsFile = false } = 
   return { acknowledged, checkboxChecked, inContributorsFile };
 }
 
+// Org members are exempt from the agreement and must NOT check the box: their
+// contributions are covered by their relationship with the org, not by the
+// external contributor license. A checked box from an org member fails the check.
+export function evaluateOrgMember({ prBody = "" } = {}) {
+  const checkboxChecked = hasCheckedCheckbox(prBody);
+  return { ok: !checkboxChecked, checkboxChecked };
+}
+
 export function buildCommitMessage(prAuthor) {
   return `docs: add @${prAuthor} to contributors.md\n\n@${prAuthor} agrees to license contributions to iii under Apache 2.0.`;
 }
@@ -281,6 +289,21 @@ export async function run() {
   const prBody = pullRequest.body || "";
 
   if (await isOrgMember({ org: owner, username: prAuthor })) {
+    if (!evaluateOrgMember({ prBody }).ok) {
+      await createCommitStatus({
+        owner,
+        repo,
+        sha: headSha,
+        state: "failure",
+        description: "Org members must not check the license agreement box.",
+      });
+      console.error(
+        `::error::${prAuthor} is a member of ${owner} and must not check the license agreement box. Uncheck or remove it from the PR description.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     await createCommitStatus({
       owner,
       repo,
