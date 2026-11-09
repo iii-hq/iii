@@ -16,6 +16,8 @@
 //! Every test is `#[serial]`: the observability worker manages process-global
 //! state (the global config snapshot, log/metric storages, the alert
 //! manager), so concurrent tests in this binary would race each other.
+//! Serial is not isolated: that state outlives each test, so `build_harness`
+//! clears the global config snapshot before every boot.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +43,13 @@ struct Harness {
 }
 
 async fn build_harness(dir: &std::path::Path) -> Harness {
+    // Boot every test from an unset global config snapshot. `for_test` seeds
+    // the global only when it is unset and `initialize` reads the global, so
+    // the snapshot the previous test left behind would decide this test's
+    // boot: after `disabled_boot_still_registers_the_configuration_entry`
+    // (`enabled: false`) the next worker skipped initialize, and with it the
+    // one-shot alert manager that `alert_rules_hot_swap_and_prune` needs.
+    iii::workers::observability::otel::clear_otel_config_for_test();
     iii::workers::observability::metrics::ensure_default_meter();
     let adapter = Arc::new(
         FsAdapter::new(Some(json!({ "directory": dir.to_str().unwrap() })))
@@ -116,9 +125,8 @@ async fn set_value_expect_rejection(harness: &Harness, value: Value) {
 /// Poll until `predicate` returns true or the deadline elapses. Trigger
 /// fan-out is spawned, so observable effects are eventually consistent.
 async fn wait_for(mut predicate: impl FnMut() -> bool, what: &str) {
-    // ponytail: 20s, not 5s — the happy path returns the moment `predicate`
-    // holds (polled every 25ms), so this only bounds the failure case. 5s was
-    // borderline under llvm-cov instrumentation and flaked the coverage job.
+    // ponytail: 20s — the happy path returns the moment `predicate` holds
+    // (polled every 25ms), so this only bounds the failure case.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         if predicate() {
@@ -281,9 +289,8 @@ async fn alert_rules_hot_swap_and_prune() {
         }),
     )
     .await;
-    // Drive the handler synchronously so the assertion cannot time out waiting
-    // on async trigger fan-out (that 5s window flakes under slow coverage
-    // instrumentation); the other config tests use the same pattern.
+    // Drive the handler synchronously so the assertion does not depend on
+    // async trigger fan-out; the other config tests use the same pattern.
     drive_apply(&harness).await;
 
     wait_for(
