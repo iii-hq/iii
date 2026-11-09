@@ -48,7 +48,7 @@ const migrationGuide = "https://iii.dev/docs/upgrading/from-0-24-x"
 // CONTRACT §5: one warning per process per deprecated API.
 const (
 	deprecatedRegisterTrigger = "RegisterTrigger is deprecated and will be removed in a future release. " +
-		"Use client.Observe(source, target) instead. Migration guide: " + migrationGuide
+		"Use worker.Observe(source, target) instead. Migration guide: " + migrationGuide
 	deprecatedRegisterTriggerType = "RegisterTriggerType is deprecated and will be removed in a future release. " +
 		"Register a function with an observe descriptor (RegisterFunction(id, handler, iii.RegisterFunctionOptions{Observe: &iii.ObserveHooks{ ... }})) instead. " +
 		"Migration guide: " + migrationGuide
