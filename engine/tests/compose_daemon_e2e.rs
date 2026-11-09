@@ -512,6 +512,65 @@ async fn a_file_that_is_not_there_is_said_so() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn down_keeps_its_target_and_rejects_invalid_selectors_over_the_engine() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+
+    // The engine adds caller metadata to every payload below. Keep these
+    // checks on the wire: transportless dispatch tests missed that field.
+    for (mut payload, expected) in [
+        (json!({"worker": null}), "invalid type"),
+        (json!({"worker": ""}), "target must not be blank"),
+        (json!({"workers": ["api"]}), "unknown field `workers`"),
+        (json!({"wroker": "api"}), "unknown field `wroker`"),
+        (
+            json!({"container": "api", "worker": "database"}),
+            "must name the same target",
+        ),
+    ] {
+        payload["file"] = json!("/nowhere/worker-compose.yaml");
+        let error = call(port, "compose::down", payload.clone())
+            .await
+            .expect_err("invalid selectors must be rejected before loading a project");
+        assert!(
+            error.contains(expected)
+                && !error.contains("unknown field `_caller_worker_id`")
+                && !error.contains("/nowhere"),
+            "wrong validation for {payload}: {error}"
+        );
+    }
+    assert!(daemon.list().await.is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = project(dir.path(), TWO_WORKERS, &["database", "api"]);
+    // Nothing is started; the temporary project only exercises target routing.
+    for target in ["api", "missing"] {
+        let result = call(
+            port,
+            "compose::down",
+            json!({"file": file, "worker": target}),
+        )
+        .await
+        .expect("engine metadata must not invalidate a down request");
+        assert_eq!(result["worker"], target, "{result}");
+        assert_eq!(result["changed"], false, "{result}");
+        if target == "missing" {
+            assert_eq!(result["status"], "failed", "{result}");
+            assert_eq!(result["error"]["code"], "UNKNOWN_CONTAINER", "{result}");
+        } else {
+            assert_eq!(result["status"], "ok", "{result}");
+        }
+    }
+    let result = call(port, "compose::down", json!({"file": file}))
+        .await
+        .expect("an intentional project-wide down accepts engine metadata too");
+    assert_eq!(result["status"], "ok", "{result}");
+    assert!(result.get("worker").is_none(), "{result}");
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_daemon_holds_several_projects_at_once() {
     isolate_state();
     let port = spawn_engine().await;

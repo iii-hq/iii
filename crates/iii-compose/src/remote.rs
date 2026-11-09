@@ -103,6 +103,10 @@ struct DaemonOptions {
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 struct DownOptions {
+    /// Transport metadata injected by the engine, not a user-selected target.
+    /// Accept only this known field; unknown selectors must still be rejected.
+    #[schemars(skip)]
+    _caller_worker_id: Option<String>,
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
@@ -1381,6 +1385,33 @@ mod tests {
         }
         let bare = parse_request(Operation::Down, json!({})).unwrap();
         assert_eq!(down_target(&bare).unwrap(), None);
+    }
+
+    #[test]
+    fn down_accepts_engine_caller_metadata_without_relaxing_target_validation() {
+        let caller = "550e8400-e29b-41d4-a716-446655440000";
+        let targeted = parse_request(
+            Operation::Down,
+            json!({"_caller_worker_id": caller, "worker": "harness"}),
+        )
+        .unwrap();
+        assert_eq!(down_target(&targeted).unwrap(), Some("harness"));
+        let bare = parse_request(Operation::Down, json!({"_caller_worker_id": caller})).unwrap();
+        assert_eq!(down_target(&bare).unwrap(), None);
+
+        for invalid in [
+            json!({"_caller_worker_id": caller, "worker": null}),
+            json!({"_caller_worker_id": caller, "workers": ["harness"]}),
+            json!({"_caller_worker_id": caller, "wroker": "harness"}),
+            json!({"_caller_worker_id": caller, "_worker": "harness"}),
+        ] {
+            assert!(
+                parse_request(Operation::Down, invalid.clone()).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        let schema = schema_entry("compose::down").1.as_ref().unwrap();
+        assert!(schema["properties"].get("_caller_worker_id").is_none());
     }
 
     #[test]
