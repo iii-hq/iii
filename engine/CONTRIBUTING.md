@@ -26,7 +26,7 @@ respectful and constructive in all interactions.
 
 ### Prerequisites
 
-- **Rust 1.89+** - Install via [rustup](https://rustup.rs/)
+- **Rust 1.91+** - Install via [rustup](https://rustup.rs/)
 - **Redis** (optional) - Required for event bus, state, and cron modules
 - **RabbitMQ** (optional) - Alternative event bus adapter
 - **pre-commit** - For Git hooks (`pip install pre-commit`)
