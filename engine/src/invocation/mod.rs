@@ -470,22 +470,24 @@ impl InvocationHandler {
             // In scope while the handler runs, so a worker-hosted function's
             // `InvokeFunction` frame carries this call's caller, depth and
             // activation (`WorkerConnection::handle_function`).
-            let handler = async move {
-                match dispatch {
-                    Dispatch::Value { handler, body } => {
-                        call_handler_with_metadata(
-                            handler,
-                            Some(invocation_id),
-                            body,
-                            session,
-                            metadata,
-                        )
-                        .await
-                    }
-                    Dispatch::Encoded { handler, body } => {
-                        handler(Some(invocation_id), body, session, metadata).await
-                    }
+            // `Either`, not an `async` block: a block adds a state machine to
+            // every call (about 80 ns in `concurrent_invocation_bench`).
+            let handler = match dispatch {
+                Dispatch::Value { handler, body } => {
+                    futures::future::Either::Left(call_handler_with_metadata(
+                        handler,
+                        Some(invocation_id),
+                        body,
+                        session,
+                        metadata,
+                    ))
                 }
+                Dispatch::Encoded { handler, body } => futures::future::Either::Right(handler(
+                    Some(invocation_id),
+                    body,
+                    session,
+                    metadata,
+                )),
             };
             let result = match &ctx {
                 Some(ctx) => InvocationCtx::scope(ctx.clone(), handler).await,
