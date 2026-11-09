@@ -61,7 +61,8 @@ pub struct ComposeRequest {
     ///
     /// `compose::update` reads a spec: `name` or `name@version`. Omit both
     /// worker fields to update every declared package worker to latest.
-    /// `compose::remove` and `compose::restart` read a container key, where it
+    /// `compose::down`, `compose::remove` and `compose::restart` read a
+    /// container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
     /// have to know which of the two words this call wanted. `compose::add`,
     /// `compose::update`, and `compose::remove` keep this field as a
@@ -104,11 +105,13 @@ struct DaemonOptions {
 struct LifecycleOptions {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Restrict the lifecycle operation to one container.
     container: Option<String>,
+    /// Alias for `container`.
+    worker: Option<String>,
 }
 
 /// Request fields used by `compose::up`.
@@ -117,8 +120,8 @@ struct LifecycleOptions {
 struct UpOptions {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Restrict startup to one container and its dependencies.
     container: Option<String>,
@@ -133,8 +136,8 @@ struct UpOptions {
 struct ProjectOptions {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
 }
 
@@ -144,8 +147,8 @@ struct ProjectOptions {
 struct BatchWorkerOptions<T> {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Canonical list of workers to mutate together. Add accepts worker names,
     /// `name@version` references, registry references, local paths, or container
@@ -165,8 +168,8 @@ struct BatchWorkerOptions<T> {
 struct RestartOptions {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Container key to restart.
     container: Option<String>,
@@ -180,8 +183,8 @@ struct RestartOptions {
 struct LogsOptions {
     /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Container whose process output should be read. Omit for every worker.
     container: Option<String>,
@@ -438,6 +441,13 @@ fn stop_target(request: &ComposeRequest) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
+/// The container a lifecycle call names: `container`, else `worker`, the
+/// spelling an operator who thinks in workers reaches for. `compose::down` once
+/// read only `container`, so `worker=api` stopped the whole project.
+fn named_container(request: &ComposeRequest) -> Option<&str> {
+    request.container.as_deref().or(request.worker.as_deref())
+}
+
 /// Canonical list of functions exposed by the compose daemon.
 const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("up", Operation::Up),
@@ -579,7 +589,7 @@ async fn dispatch(
             .restart(
                 file.as_deref(),
                 // Either spelling names the same thing here.
-                request.container.as_deref().or(request.worker.as_deref()),
+                named_container(&request),
                 operation_id(),
             )
             .await
@@ -630,11 +640,7 @@ async fn dispatch(
             Ok(to_value(&accepted))
         }
         Operation::Down => match daemon
-            .down(
-                file.as_deref(),
-                request.container.as_deref(),
-                operation_id(),
-            )
+            .down(file.as_deref(), named_container(&request), operation_id())
             .await
         {
             Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
@@ -1821,6 +1827,27 @@ mod tests {
             assert!(logs.contains_key(field), "compose::logs is missing {field}");
         }
         assert!(!logs.contains_key("workers"));
+    }
+
+    #[test]
+    fn down_reads_worker_as_the_spelling_for_container() {
+        let (_, down, _) = schema_entry("compose::down");
+        let down = down.as_ref().unwrap()["properties"].as_object().unwrap();
+        assert!(down.contains_key("container"));
+        assert!(down.contains_key("worker"));
+
+        let worker = ComposeRequest {
+            worker: Some("queue".into()),
+            ..Default::default()
+        };
+        assert_eq!(named_container(&worker), Some("queue"));
+        let both = ComposeRequest {
+            container: Some("api".into()),
+            worker: Some("queue".into()),
+            ..Default::default()
+        };
+        assert_eq!(named_container(&both), Some("api"));
+        assert_eq!(named_container(&ComposeRequest::default()), None);
     }
 
     #[test]

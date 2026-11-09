@@ -170,10 +170,13 @@ with it and making basic changes to the `worker-compose.yaml` file.
 | `compose::stop`     | nothing                                                     | The daemon name, its pid, and the projects it is about to stop.            |
 | `compose::schema`   | `function_id`                                               | Request/response JSON Schemas, descriptions, timeouts, and retry safety.   |
 
-`file` is not required. Left out, it falls back to a `worker-compose.yaml` in the daemon's own
-working directory; without one, the call fails with `NO_COMPOSE_FILE`. A relative `file` path is
-considered relative to the daemon's directory, not the caller's working directory. You may pass an
-absolute path as well.
+`file` is not required. Left out, it names the project the daemon serves when it holds exactly one,
+such as the file it was started with by `iii compose --up -f worker-compose.dev.yaml`. A daemon that
+holds no project falls back to a `worker-compose.yaml` in its own working directory, and fails with
+`NO_COMPOSE_FILE` without one. A daemon that holds several projects uses that `worker-compose.yaml`
+when it is one of them, and otherwise fails with `COMPOSE_FILE_AMBIGUOUS`, which lists them. A
+relative `file` path is considered relative to the daemon's directory, not the caller's working
+directory. You may pass an absolute path as well.
 
 ```bash
 iii call compose::up      --namespace dev file=./worker-compose.yaml
@@ -1154,7 +1157,7 @@ Compose can output the following error codes:
 | Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                       |
 | Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `CONFIG_PUBLISH_FAILED`, `ENGINE_CALL_FAILED`, `PROJECT_DID_NOT_START`                            |
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED` |
-| Daemon and project  | `NO_COMPOSE_FILE`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                   |
+| Daemon and project  | `NO_COMPOSE_FILE`, `COMPOSE_FILE_AMBIGUOUS`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                         |
 | Command line        | `FILE_REQUIRES_UP`, `BUILD_CONFLICTS_WITH_SERVE_OPTIONS`                                                                                                                                                                                                                                                                                                        |
 
 These are literal diagnostic identifiers emitted by Compose, not worker categories.
