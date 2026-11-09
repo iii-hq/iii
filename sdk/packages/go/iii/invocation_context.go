@@ -5,27 +5,25 @@ import (
 	"encoding/json"
 )
 
-// This file is the current-invocation context (sdk.md §4.3): a context.Context value,
-// set around every handler, remote (an inbound InvokeFunction) and local (in-process
-// dispatch). Outgoing calls read it to send caller and observe_depth, and obs.Emit /
-// obs.Call read it for the caller rules of an event. Go handlers already receive a
-// ctx, so propagation is explicit: pass the handler's ctx to Trigger, Emit and Call.
+// This file is the current-invocation context: a context.Context value, set around
+// every handler and its deliver hook, remote (an inbound InvokeFunction) and local
+// (in-process dispatch). Outgoing calls read it to send caller and observe_depth. Go
+// handlers already receive a ctx, so propagation is explicit: pass the handler's (or
+// the deliver hook's) ctx to Call.
 
 type invocationKey struct{}
 
-// invocation is the context value. Its address identifies the invocation: emits of one
-// event to several observers from the same invocation coalesce into one report item.
+// invocation is the context value.
 type invocation struct {
 	functionID   string
 	invocationID string
 	caller       *Caller
 	activation   *Activation
 	observeDepth uint32
-	// metadata is the invocation's metadata sidecar: what an emitted event's filters
-	// see as metadata.
+	// metadata is the invocation's metadata sidecar, as the call's observers see it.
 	metadata json.RawMessage
-	// trace is the W3C trace context the invocation arrived with; obs.Emit report
-	// items carry it, so the target's activation joins the observed trace.
+	// trace is the W3C trace context the invocation arrived with; local report items
+	// carry it, so the target's activation joins the observed trace.
 	trace traceContext
 	// localDepth counts the local calls nested above this one (0 for a remote one).
 	localDepth int

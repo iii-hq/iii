@@ -26,7 +26,7 @@ link:
 
 database:
   worker: package://database
-  version: "0.5.13"
+  version: "latest"
   config_name: database
   working_dir: .
   config_override:
@@ -46,9 +46,9 @@ database:
   instructing you to uncomment entries and restart the entire project. This is not necessary, you
   can also:
 
-1. Add a worker with `iii trigger compose::add worker=database`
+1. Add a worker with `iii call compose::add worker=database`
 2. Configure it in `worker-compose.yaml`
-3. Restart that worker with `iii trigger compose::restart worker=database`.
+3. Restart that worker with `iii call compose::restart worker=database`.
 
 In this way you can modify a running system without restarting the entire thing.
 
@@ -62,7 +62,7 @@ In this way you can modify a running system without restarting the entire thing.
 Restart the project with:
 
 ```bash
-iii trigger compose::restart
+iii call compose::restart
 ```
 
 The links you created in Chapters 1 and 2 lived only in the in-memory `state`: the restart clears
@@ -104,14 +104,14 @@ register a moment after `link`, so add a few retries:
 async function ensureSchema(): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
-      await worker.trigger({
+      await worker.call({
         function_id: "database::execute",
         payload: {
           db: DB,
           sql: "CREATE TABLE IF NOT EXISTS links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created_at TEXT NOT NULL)",
         },
       });
-      await worker.trigger({
+      await worker.call({
         function_id: "database::execute",
         payload: {
           db: DB,
@@ -134,10 +134,10 @@ ensureSchema().catch((err) => logger.error("database: schema init failed", { err
 
 **Modify `link::create`** to write to both the database (durable record) and `state` (hot cache).
 The `code` column is the table's primary key, so the database itself refuses a second link with the
-same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of a
-database error, and `database::execute` reports the count as `affected_rows`. Zero means the code is
-taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering `409`
-with `link::create`'s own message rather than the database's.
+same code. `ON CONFLICT(code) DO NOTHING` turns that refusal into an insert of zero rows instead of
+a database error, and `database::execute` reports the count as `affected_rows`. Zero means the code
+is taken: `link::create` throws the same error as in Chapter 1, so `POST /links` keeps answering
+`409` with `link::create`'s own message rather than the database's.
 
 ```typescript src/index.ts {4-17}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
@@ -145,7 +145,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   // ON CONFLICT DO NOTHING turns a taken code into zero inserted rows instead
   // of a database error, so link::create can say so in its own words.
-  const { affected_rows } = await worker.trigger<
+  const { affected_rows } = await worker.call<
     { db: string; sql: string; params: string[] },
     { affected_rows: number }
   >({
@@ -157,7 +157,7 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
     },
   });
   if (affected_rows === 0) throw new Error(`code \`${code}\` is already taken`);
-  await worker.trigger({
+  await worker.call({
     function_id: "state::set",
     payload: { scope: "links", key: code, value: { url } },
   });
@@ -174,7 +174,7 @@ new version:
 
 ```typescript src/index.ts
 worker.registerFunction("link::resolve", async (payload: { code: string }) => {
-  const cached = await worker.trigger<{ scope: string; key: string }, { url: string } | null>({
+  const cached = await worker.call<{ scope: string; key: string }, { url: string } | null>({
     function_id: "state::get",
     payload: { scope: "links", key: payload.code },
   });
@@ -182,7 +182,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
     logger.info("link resolved", { code: payload.code, found: true });
     return { url: cached.url };
   }
-  const { rows } = await worker.trigger<
+  const { rows } = await worker.call<
     { db: string; sql: string; params: string[] },
     { rows: Array<{ url: string }> }
   >({
@@ -191,7 +191,7 @@ worker.registerFunction("link::resolve", async (payload: { code: string }) => {
   });
   const url = rows[0]?.url ?? null;
   if (url) {
-    await worker.trigger({
+    await worker.call({
       function_id: "state::set",
       payload: { scope: "links", key: payload.code, value: { url } },
     });
@@ -211,7 +211,7 @@ onto a queue so that it can run without touching the redirect's logic. Add it be
 worker.registerFunction(
   "link::record_click",
   async (payload: { code: string; clicked_at: string }) => {
-    await worker.trigger({
+    await worker.call({
       function_id: "database::execute",
       payload: {
         db: DB,
@@ -226,12 +226,12 @@ worker.registerFunction(
 
 ### Update `http::redirect` to call `link::record_click`
 
-**Now update `http::redirect` to trigger it directly**, right before returning the redirect:
+**Now update `http::redirect` to call it directly**, right before returning the redirect:
 
 ```typescript src/index.ts {14-18}
 worker.registerFunction("http::redirect", async (req) => {
   const code = req.path_params.code;
-  const { url } = await worker.trigger<{ code: string }, { url: string | null }>({
+  const { url } = await worker.call<{ code: string }, { url: string | null }>({
     function_id: "link::resolve",
     payload: { code },
   });
@@ -242,8 +242,8 @@ worker.registerFunction("http::redirect", async (req) => {
       headers: { "Content-Type": "application/json" },
     };
   }
-  // This Trigger is slow because it waits on link::record_click's completion, we'll move its work to a queue soon
-  await worker.trigger({
+  // This call waits for link::record_click to finish; Chapter 4 moves the work to a queue
+  await worker.call({
     function_id: "link::record_click",
     payload: { code, clicked_at: new Date().toISOString() },
   });
@@ -272,7 +272,7 @@ done
 The durable history is now queryable with SQL:
 
 ```bash
-iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
+iii call database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code LIKE 'iii-example-%'"
 ```
 
 ```json
@@ -293,14 +293,14 @@ iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM click
 ```
 
 <Info>
-  Did you know that `--help` works with function id's as well? Try running: `iii trigger
+  Did you know that `--help` works with function id's as well? Try running: `iii call
   database::query --help` to see what arguments `database::query` accepts.
 </Info>
 
 Run the loop a second time and each `POST /links` answers `409`, because the codes are taken:
 
 ```json
-{"error":"code `iii-example-1` is already taken"}
+{ "error": "code `iii-example-1` is already taken" }
 ```
 
 The redirects still go through, so the click count above grows by three on every run.
@@ -310,5 +310,5 @@ The redirects still go through, so the click count above grows by three on every
 Linkly's links are now durable: the database is the source of truth, `state` keeps lookups fast, and
 every redirect appends a timestamped row to the `clicks` table. But that row is written on the
 redirect's hot path, so a slow database write slows the redirect. Next, in
-[Ch. 4: Make it durable](/tutorials/linkly/durable-execution), you move that write onto a queue so
-redirects stay fast.
+[Ch. 4: Make it durable](./durable-execution), you move that write onto a queue so redirects stay
+fast.

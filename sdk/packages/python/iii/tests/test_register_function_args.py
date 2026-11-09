@@ -254,7 +254,7 @@ class UserOutput(BaseModel):
 
 
 def test_register_function_str_id_auto_extracts_formats(monkeypatch: pytest.MonkeyPatch) -> None:
-    """String ID triggers auto-extraction of request/response formats from handler."""
+    """Registering by string ID auto-extracts request/response formats from the handler."""
     ws = _patch_ws(monkeypatch)
     client = _make_client()
 

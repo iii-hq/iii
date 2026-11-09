@@ -1,4 +1,4 @@
-import { Logger, TriggerAction } from 'iii-sdk'
+import { Logger, CallAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -18,24 +18,24 @@ useApi(
     logger.info('Creating order', { orderId, email, total })
 
     // 1. Enqueue payment processing (FIFO — ordered by orderId)
-    await iii.trigger({
+    await iii.call({
       function_id: 'orders::process-payment',
       payload: { orderId, amount: total, currency: 'USD' },
-      action: TriggerAction.Enqueue({ queue: 'payment' }),
+      action: CallAction.Enqueue({ queue: 'payment' }),
     })
 
     // 2. Enqueue confirmation email (standard queue)
-    await iii.trigger({
+    await iii.call({
       function_id: 'emails::confirmation',
       payload: { email, orderId },
-      action: TriggerAction.Enqueue({ queue: 'email' }),
+      action: CallAction.Enqueue({ queue: 'email' }),
     })
 
     // 3. Fire-and-forget analytics tracking
-    await iii.trigger({
+    await iii.call({
       function_id: 'analytics::track',
       payload: { event: 'order_created', orderId },
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
     })
 
     logger.info('Order created', { orderId })

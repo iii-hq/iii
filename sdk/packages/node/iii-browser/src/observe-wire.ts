@@ -7,12 +7,13 @@
  */
 import type {
   ActivationWire,
+  CallAction,
   CallerWire,
   CaptureWire,
   ErrorBody,
   FunctionRegisteredMessage,
+  InvocationResultMessage,
   InvokeFunctionMessage,
-  ObserveDescriptorWire,
   ObserveMessage,
   ObserveResultMessage,
   ObserverAckMessage,
@@ -20,13 +21,71 @@ import type {
   ObserverInfoWire,
   ObserverRemovedMessage,
   ObserverStateChangedMessage,
-  TriggerAction,
+  RegistrationRejectedMessage,
   WorkerRegisteredMessage,
 } from './iii-types'
-import type { ObserveHooks, ObserverOptions, ObserveSource, Target } from './observe-types'
+import type { ObserverOptions, ObserveSource, Target } from './observe-types'
 
-/** CONTRACT D1: what an absent `capture` means. */
+/** Decision 62: what an absent `capture` means: `input`, `output` and `caller` (no `metadata`, no `error`). */
 export const DEFAULT_CAPTURE: readonly CaptureWire[] = ['input', 'output', 'caller']
+
+/**
+ * Whether a call that ended in success (`ok`) or error fires an observer
+ * with this `capture`, as the engine decides it: `input` and `output` fire on
+ * success, `error` on error; `caller` and `metadata` fire on nothing. `[]`
+ * fires on success, with the top-level fields only. Used only to derive the
+ * legacy `source.on` sent to an engine without `observe.capture`: a host
+ * reads the engine's `fires_on` instead ({@link observerFires}).
+ */
+export function captureFires(capture: readonly string[], ok: boolean): boolean {
+  if (capture.length === 0) return ok
+  return ok ? capture.includes('input') || capture.includes('output') : capture.includes('error')
+}
+
+/**
+ * The `source.on` an engine without `observe.capture` (0.25, rc) needs for
+ * this `capture`, since it decides the outcomes that fire from `on` alone:
+ * `error` or `complete`, or none for an observer that fires on success, its
+ * default. Deprecated with those engines.
+ */
+export function legacyOn(capture: readonly string[] | undefined): 'error' | 'complete' | undefined {
+  const list = capture ?? DEFAULT_CAPTURE
+  if (!captureFires(list, false)) return undefined
+  return captureFires(list, true) ? 'complete' : 'error'
+}
+
+/**
+ * Logged once per client, the first time it talks legacy `on` with an engine
+ * without `observe.capture`: sending an observer's `source.on`, or reading an
+ * observer view that has no `fires_on`.
+ */
+export const LEGACY_ON_DEPRECATION =
+  'observe: the connected engine does not support observe.capture; legacy `on` semantics are deprecated ' +
+  'and will be removed in a future version; upgrade the engine.'
+
+/** The outcomes that fire a hosted observer, computed once per view it is announced with. */
+export type ObserverFires = {
+  onSuccess: boolean
+  onError: boolean
+  /** The view had no `fires_on` (an engine without `observe.capture`): read from the legacy `on`. */
+  legacy: boolean
+}
+
+/**
+ * When a hosted observer fires (decision 61): from the view's `fires_on` when the
+ * engine sent it; otherwise from the legacy `on` alone, never from `capture`:
+ * absent (or `success`) fires on success, `error` on error, `complete` on both.
+ */
+export function observerFires(info: Pick<ObserverInfoWire, 'fires_on' | 'on'>): ObserverFires {
+  if (info.fires_on !== undefined) {
+    return { onSuccess: info.fires_on.includes('success'), onError: info.fires_on.includes('error'), legacy: false }
+  }
+  return {
+    onSuccess: info.on !== 'error',
+    onError: info.on === 'error' || info.on === 'complete',
+    legacy: true,
+  }
+}
 
 type Raw = Record<string, unknown>
 
@@ -71,7 +130,7 @@ function decodeActivation(v: unknown): ActivationWire | undefined {
   return activation
 }
 
-/** An observer as the owner sees it (`observeradded.observer`, `functionregistered.observers[]`). */
+/** An observer as its host sees it (`observeradded.observer`, `functionregistered.observers[]`). */
 export function decodeObserverInfo(v: unknown): ObserverInfoWire {
   const raw = isRecord(v) ? v : {}
   const info: ObserverInfoWire = {
@@ -84,11 +143,10 @@ export function decodeObserverInfo(v: unknown): ObserverInfoWire {
     capture: Array.isArray(raw.capture)
       ? raw.capture.filter((c): c is string => typeof c === 'string')
       : [...DEFAULT_CAPTURE],
-    on: str(raw.on) ?? 'success',
   }
-  if (isRecord(raw.legacy) && typeof raw.legacy.trigger_type === 'string') {
-    info.legacy = { trigger_type: raw.legacy.trigger_type, config: raw.legacy.config ?? null }
-  }
+  // `fires_on`, never `fires` (the activation count elsewhere: decision 61).
+  if (Array.isArray(raw.fires_on)) info.fires_on = raw.fires_on.filter((f): f is string => typeof f === 'string')
+  if (typeof raw.on === 'string') info.on = raw.on
   return info
 }
 
@@ -155,7 +213,7 @@ export function decodeInvokeFunction(v: Raw): Omit<InvokeFunctionMessage, 'messa
   if (typeof v.invocation_id === 'string') msg.invocation_id = v.invocation_id
   if (typeof v.traceparent === 'string') msg.traceparent = v.traceparent
   if (typeof v.baggage === 'string') msg.baggage = v.baggage
-  if (isRecord(v.action)) msg.action = v.action as TriggerAction
+  if (isRecord(v.action)) msg.action = v.action as CallAction
   if (v.metadata !== undefined && v.metadata !== null) msg.metadata = v.metadata
   if (typeof v.namespace === 'string') msg.namespace = v.namespace
   const caller = decodeCaller(v.caller)
@@ -164,6 +222,41 @@ export function decodeInvokeFunction(v: Raw): Omit<InvokeFunctionMessage, 'messa
   if (depth !== undefined && depth > 0) msg.observe_depth = depth
   const activation = decodeActivation(v.activation)
   if (activation) msg.activation = activation
+  return msg
+}
+
+/**
+ * An `invocationresult`. `result: null` is a value; an absent one is a
+ * function that returned nothing. `matched` and `delivered` are read as the
+ * engine reads them (decision 55): `matched: null` is absent, an array is its
+ * string ids (`[]` included), and any other value is `[]`; `delivered` is
+ * kept only when it is `true`.
+ */
+export function decodeInvocationResult(v: Raw): Omit<InvocationResultMessage, 'message_type'> {
+  const msg: Omit<InvocationResultMessage, 'message_type'> = {
+    invocation_id: String(v.invocation_id ?? ''),
+    function_id: String(v.function_id ?? ''),
+  }
+  if (v.result !== undefined) msg.result = v.result
+  const error = errorBody(v.error)
+  if (error) msg.error = error
+  if (typeof v.traceparent === 'string') msg.traceparent = v.traceparent
+  if (typeof v.baggage === 'string') msg.baggage = v.baggage
+  if (v.matched !== undefined && v.matched !== null) {
+    msg.matched = Array.isArray(v.matched) ? v.matched.filter((id): id is string => typeof id === 'string') : []
+  }
+  if (v.delivered === true) msg.delivered = true
+  return msg
+}
+
+export function decodeRegistrationRejected(v: Raw): Omit<RegistrationRejectedMessage, 'message_type'> {
+  const msg: Omit<RegistrationRejectedMessage, 'message_type'> = {
+    code: String(v.code ?? ''),
+    namespace: String(v.namespace ?? ''),
+    owner_worker_id: String(v.owner_worker_id ?? ''),
+  }
+  if (typeof v.worker_name === 'string') msg.worker_name = v.worker_name
+  if (typeof v.function_id === 'string') msg.function_id = v.function_id
   return msg
 }
 
@@ -203,8 +296,6 @@ export function buildObserveMessage(
       args: source.args,
       filters: source.filters,
       capture: source.capture,
-      on: source.on,
-      deliver: source.deliver,
     },
     target: { function_id: targetRef.function_id, namespace: targetNamespace },
     metadata: options?.metadata,
@@ -212,18 +303,6 @@ export function buildObserveMessage(
     expires_in_ms: options?.expires_in_ms,
     max_in_flight: options?.max_in_flight,
   })
-}
-
-/** `registerfunction.observe`: the four fields that travel, or `undefined` when none is set. */
-export function observeDescriptor(hooks: ObserveHooks | undefined): ObserveDescriptorWire | undefined {
-  if (!hooks) return undefined
-  const descriptor: ObserveDescriptorWire = snapshot({
-    delivery: hooks.delivery,
-    args_format: hooks.args_format,
-    legacy_trigger_type: hooks.legacy_trigger_type,
-    allow: hooks.allow,
-  })
-  return Object.keys(descriptor).length > 0 ? descriptor : undefined
 }
 
 export function buildObserverAck(ack: {
@@ -253,7 +332,7 @@ export function buildInvokeFunction(init: {
   data: unknown
   traceparent?: string
   baggage?: string
-  action?: TriggerAction
+  action?: CallAction
   metadata?: unknown
   namespace?: string
   caller?: CallerWire
@@ -272,6 +351,33 @@ export function buildInvokeFunction(init: {
   if (init.caller !== undefined) msg.caller = init.caller
   if (init.observe_depth !== undefined && init.observe_depth > 0) msg.observe_depth = init.observe_depth
   if (init.activation !== undefined) msg.activation = init.activation
+  return msg
+}
+
+/**
+ * An outbound `invocationresult`: `result` is left out when the function
+ * returned nothing (`undefined`). A routed call's answer says how the call
+ * is delivered (decision 55): `delivered: true` (its deliver hook delivered
+ * it), or `matched` (the observers its match hook matched, `[]` when none),
+ * or neither; `delivered` outweighs `matched`, and only one is sent.
+ */
+export function buildInvocationResult(init: {
+  invocation_id: string
+  function_id: string
+  result?: unknown
+  error?: ErrorBody
+  traceparent?: string
+  baggage?: string
+  matched?: readonly string[]
+  delivered?: boolean
+}): Record<string, unknown> {
+  const msg: Record<string, unknown> = { invocation_id: init.invocation_id, function_id: init.function_id }
+  if (init.result !== undefined) msg.result = init.result
+  if (init.error !== undefined) msg.error = init.error
+  if (init.traceparent !== undefined) msg.traceparent = init.traceparent
+  if (init.baggage !== undefined) msg.baggage = init.baggage
+  if (init.delivered === true) msg.delivered = true
+  else if (init.matched !== undefined) msg.matched = [...init.matched]
   return msg
 }
 

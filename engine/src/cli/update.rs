@@ -111,7 +111,7 @@ pub fn print_targets() {
     println!("{}", "Examples:".bold());
     println!("  iii update              # update everything");
     println!("  iii update self         # update only iii");
-    println!("  iii update worker       # update only iii-worker");
+    println!("  iii update cloud        # update only iii-cloud");
 }
 
 /// Get the CLI command name for a binary name.
@@ -253,7 +253,7 @@ pub async fn update_binary(
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::binary_target(spec.name).to_string(),
+                platform: platform::current_target().to_string(),
             },
         ))
     })?;
@@ -364,7 +364,7 @@ pub async fn self_update(
         UpdateError::Github(IiiGithubError::Network(
             super::error::NetworkError::AssetNotFound {
                 binary: spec.name.to_string(),
-                platform: platform::binary_target(spec.name).to_string(),
+                platform: platform::current_target().to_string(),
             },
         ))
     })?;
@@ -428,8 +428,7 @@ pub async fn self_update(
 }
 
 /// Update all installed binaries (including iii itself).
-/// Silently skips binaries not supported on the current platform
-/// (e.g., iii-init on Windows).
+/// Silently skips binaries not supported on the current platform.
 pub async fn update_all(
     client: &reqwest::Client,
     state: &mut AppState,
@@ -443,6 +442,36 @@ pub async fn update_all(
         }
     }
     results
+}
+
+/// VM binaries `iii update` no longer manages: sandboxes and VM workers now run
+/// in the sandbox-libkrun worker, which `iii compose` installs.
+const RETIRED_BINARIES: [&str; 2] = ["iii-worker", "iii-init"];
+
+/// Retired binaries still sitting in the managed bin dir.
+fn retired_binaries() -> Vec<std::path::PathBuf> {
+    RETIRED_BINARIES
+        .into_iter()
+        .filter_map(platform::binary_path)
+        .filter(|path| path.exists())
+        .collect()
+}
+
+/// Tell the user which retired binaries they can delete. Prints nothing when
+/// none are left. Never deletes anything.
+pub fn print_retired_binaries_note() {
+    let retired = retired_binaries();
+    if retired.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "  {} iii-worker and iii-init are no longer used: sandboxes and VM workers run in the sandbox-libkrun worker, which iii compose installs. You can delete:",
+        "note:".cyan(),
+    );
+    for path in retired {
+        eprintln!("    {}", path.display());
+    }
 }
 
 /// Result of an update operation.
@@ -652,8 +681,8 @@ mod tests {
     // ── cli_command_for_binary tests ────────────────────────────────
 
     #[test]
-    fn cli_command_for_binary_resolves_worker() {
-        assert_eq!(cli_command_for_binary("iii-worker"), Some("worker"));
+    fn cli_command_for_binary_resolves_cloud() {
+        assert_eq!(cli_command_for_binary("iii-cloud"), Some("cloud"));
     }
 
     #[test]
@@ -677,7 +706,7 @@ mod tests {
     #[test]
     fn print_update_notifications_with_updates_does_not_panic() {
         let updates = vec![UpdateInfo {
-            binary_name: "iii-worker".to_string(),
+            binary_name: "iii-cloud".to_string(),
             current_version: Version::new(0, 8, 0),
             latest_version: Version::new(0, 9, 0),
         }];
@@ -727,5 +756,38 @@ mod tests {
     #[test]
     fn is_binary_installed_false_for_nonexistent() {
         assert!(!is_binary_installed("nonexistent-binary-zzz-12345"));
+    }
+
+    // ── retired_binaries tests ──────────────────────────────────────
+
+    /// Hermetic like `platform::tests::test_ensure_dirs_creates_bin_dir`:
+    /// HOME moves to a tempdir, both results are collected, HOME is restored,
+    /// then the asserts run. `#[serial]` because it mutates the process env.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    #[serial_test::serial]
+    fn retired_binaries_lists_leftover_vm_binaries() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let orig_home = std::env::var_os("HOME");
+        // SAFETY: #[serial] guarantees no parallel env mutation.
+        unsafe {
+            std::env::set_var("HOME", home.path());
+        }
+
+        let before = retired_binaries();
+        std::fs::write(bin.join("iii-worker"), "").unwrap();
+        let after = retired_binaries();
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert!(before.is_empty());
+        assert_eq!(after, vec![bin.join("iii-worker")]);
     }
 }

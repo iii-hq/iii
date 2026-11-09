@@ -24,6 +24,8 @@ colored = { workspace = true }
 console = { workspace = true }
 # The daemon is an ordinary worker: it talks to the engine through the SDK.
 iii-sdk = { workspace = true }
+# The router's default adapter name is the contract's, so both sides agree on it.
+iii-sandbox-contract = { path = "../iii-sandbox-contract" }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
 url = { workspace = true }
@@ -76,7 +78,7 @@ windows-sys = { version = "0.60", features = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
-jsonschema = { version = "0.30", default-features = false }
+jsonschema = { version = "0.47", default-features = false }
 wiremock = { workspace = true }
 vt100 = "0.16"
 tokio-tungstenite = "0.28"

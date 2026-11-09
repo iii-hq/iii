@@ -124,22 +124,22 @@ over `III_NAMESPACE`.
 The browser SDK cannot read a process environment. Pass its namespace explicitly or obtain it from
 trusted runtime configuration.
 
-## Trigger a function in a namespace
+## Call a function in a namespace
 
-Set `namespace` on the invocation. The call resolves only in that namespace. Omit the field and the
-call resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with
-no namespace of its own resolves in `default`, as before.
+Set `namespace` on the call. The call resolves only in that namespace. Omit the field and the call
+resolves in the caller's own namespace, which is where a worker's neighbours are. A worker with no
+namespace of its own resolves in `default`.
 
 <Tabs>
   <Tab title="CLI">
     ```bash
-    iii trigger --namespace orders state::get key=cart
+    iii call --namespace orders state::get key=cart
     ```
 
   </Tab>
   <Tab title="Node / TypeScript">
     ```typescript
-    const result = await worker.trigger({
+    const result = await worker.call({
       function_id: "state::get",
       payload: { key: "cart" },
       namespace: "orders",
@@ -148,7 +148,7 @@ no namespace of its own resolves in `default`, as before.
   </Tab>
   <Tab title="Python">
     ```python
-    result = worker.trigger({
+    result = worker.call({
         "function_id": "state::get",
         "payload": {"key": "cart"},
         "namespace": "orders",
@@ -157,26 +157,18 @@ no namespace of its own resolves in `default`, as before.
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::protocol::TriggerRequest;
+    use iii_sdk::protocol::CallRequest;
     use serde_json::json;
 
     let result = worker
-        .trigger(
-            TriggerRequest {
-                function_id: "state::get".into(),
-                payload: json!({ "key": "cart" }),
-                action: None,
-                timeout_ms: None,
-            }
-            .namespace("orders"),
-        )
+        .call(CallRequest::new("state::get", json!({ "key": "cart" })).namespace("orders"))
         .await?;
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    result, err := client.Trigger(ctx, iii.TriggerRequest{
+    result, err := client.Call(ctx, iii.CallRequest{
         FunctionID: "state::get",
         Payload:    json.RawMessage(`{"key":"cart"}`),
         Namespace:  "orders",
@@ -193,39 +185,16 @@ no namespace of its own resolves in `default`, as before.
 A miss returns `function_not_found`. The error lists other namespaces where the function id exists.
 
 <Note>
-  `iii trigger --namespace <NS>` calls a function in that namespace. Without the flag it resolves in
+  `iii call --namespace <NS>` calls a function in that namespace. Without the flag it resolves in
   `default`: a CLI invocation has no namespace of its own to inherit.
 </Note>
 
-## Point a trigger at a namespaced function
-
-Both the typed helpers returned by `registerTriggerType` and the low-level `registerTrigger` bind
-the target to the worker's namespace. Set `namespace` (Go: `RegisterTriggerInput.Namespace`) to bind
-it elsewhere, which is what a trigger pointing at an engine builtin needs, since those exist only in
-`default`.
-
-```typescript
-// Bound to this worker's namespace.
-worker.registerTrigger({
-  type: "http",
-  function_id: "state::get",
-  config: { api_path: "/orders/state", http_method: "GET" },
-});
-
-// Bound to `default`, where the engine's own functions live.
-worker.registerTrigger({
-  type: "cron",
-  function_id: "engine::workers::list",
-  config: { schedule: "0 * * * *" },
-  namespace: "default",
-});
-```
-
 ## Observe a namespaced function
 
-An observer resolves its source like a call: `source.namespace` when set, else the observing
-worker's namespace (`engine::*` and `configuration::*` resolve to `default`). The target resolves the
-same way; name another namespace with the object form of the target (Go: `ObserverOptions.TargetNamespace`).
+An observer resolves the function it observes like a call: the `namespace` you give with the
+`function_id`, else the observing worker's namespace (`engine::*` and `configuration::*` resolve to
+`default`). The target resolves the same way; name another namespace with the object form of the
+target (Go: `ObserverOptions.TargetNamespace`).
 
 ```typescript
 worker.observe(
@@ -244,7 +213,7 @@ The list functions return all namespaces.
 Pass `namespace` to an info function for strict lookup:
 
 ```bash
-iii trigger engine::workers::info --json '{"name":"state","namespace":"orders"}'
+iii call engine::workers::info --json '{"name":"state","namespace":"orders"}'
 ```
 
 Without a namespace, `engine::functions::info` and `engine::workers::info` first use a `default`

@@ -1,14 +1,15 @@
 export type {
   ActivationWire,
   CallerWire,
+  CallRequest,
   CaptureWire,
   DroppedReportStatsWire,
   ErrorBody,
   FunctionRegisteredMessage,
+  InvocationResultMessage,
   InvocationsObservedMessage,
   LocalFunctionStatsWire,
   LocalInvocationStatsMessage,
-  ObserveDescriptorWire,
   ObservedItemWire,
   ObserveMessage,
   ObserveResultMessage,
@@ -20,8 +21,7 @@ export type {
   ObserveSourceWire,
   RegisterFunctionFormat,
   RegisterFunctionMessage,
-  RegisterTriggerMessage,
-  RegisterTriggerTypeMessage,
+  RegistrationRejectedMessage,
   TriggerRequest,
   UnobserveMessage,
 } from './iii-types'
@@ -29,12 +29,8 @@ export {
   FEATURE_LARGE_MESSAGES_V1,
   FEATURE_LOCAL_DISPATCH_V1,
   FEATURE_OBSERVE_V1,
+  FEATURE_OBSERVE_V2,
   MessageType,
   SDK_FEATURES,
 } from './iii-types'
-export type {
-  RegisterFunctionInput,
-  RegisterFunctionOptions,
-  RegisterTriggerInput,
-  RegisterTriggerTypeInput,
-} from './types'
+export type { RegisterFunctionInput, RegisterFunctionOptions } from './types'

@@ -16,6 +16,7 @@ from typing import Any
 
 from ._compile import compile_source
 from ._errors import FilterError, FilterErrorCode
+from ._index import Term
 
 __all__ = ["CompiledFilter", "FilterError", "FilterErrorCode", "MATCH_ALL", "compile_filter"]
 
@@ -28,16 +29,21 @@ class CompiledFilter:
         match_all: ``{}``: every document matches.
         roots: The roots any clause references (``input``, ``output``,
             ``error``, ``caller``, ``metadata``).
+        equality_terms: The ``$eq`` / ``$in`` conditions of scalars in the
+            clauses of the top-level ``$and``, ``(path, resolver, value
+            keys)``: a document whose value at a path equals none of the
+            values does not match. What ``FilterIndex`` files a filter under.
     """
 
-    __slots__ = ("_pred", "match_all", "roots", "source")
+    __slots__ = ("_pred", "equality_terms", "match_all", "roots", "source")
 
     def __init__(self, src: Any, trusted: bool = False) -> None:
-        pred, roots, source, match_all = compile_source(src, trusted)
+        pred, roots, source, match_all, terms = compile_source(src, trusted)
         self._pred = pred
         self.roots: frozenset[str] = roots
         self.source: dict[str, Any] = source
         self.match_all: bool = match_all
+        self.equality_terms: tuple[Term, ...] = terms
 
     def matches(self, doc: Mapping[str, Any]) -> bool:
         """Evaluates the filter on a document ``{input?, output?, error?,

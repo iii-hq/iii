@@ -10,6 +10,16 @@ yanked = "deny"
 # (bincode via msb_krun, rustls-pemfile via lapin 3's tcp-stream) are upstream's
 # to fix and would otherwise need a growing ignore list.
 unmaintained = "workspace"
+# zstd 0.13.3 / zstd-safe 7.2.4 reach the graph only through msb_krun_vmm 0.1.16 (msb_krun),
+# whose sole use is `zstd::stream::copy_decode` (a `read::Decoder` on a fresh context) on an
+# x86_64 external kernel image in `ImageZstd` format, which iii never configures. The fixed
+# releases are zstd 0.14.3 / zstd-safe 8.2.0, and every msb_krun_vmm release (0.1.42 included)
+# requires zstd ^0.13, so no update applies. Drop these once msb_krun moves to zstd 0.14.
+ignore = [
+  { id = "RUSTSEC-2026-0391", reason = "stream with_context reuse; msb_krun_vmm decodes once with read::Decoder::new" },
+  { id = "RUSTSEC-2026-0398", reason = "zstd `seekable` feature, which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0403", reason = "legacy frames through write::Decoder; msb_krun_vmm reads through read::Decoder" },
+]
 
 [bans]
 # reqwest 0.12/0.13 and a few proc-macro crates legitimately coexist today.

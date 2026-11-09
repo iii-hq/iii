@@ -10,7 +10,7 @@
 //! reached rather than another:
 //!
 //! ```text
-//! iii trigger compose::up --namespace dev file=./worker-compose.yaml
+//! iii call compose::up --namespace dev file=./worker-compose.yaml
 //! ```
 //!
 //! The flag picks the daemon; `file=` picks the project. Nothing else names a
@@ -61,7 +61,8 @@ pub struct ComposeRequest {
     ///
     /// `compose::update` reads a spec: `name` or `name@version`. Omit both
     /// worker fields to update every declared package worker to latest.
-    /// `compose::remove` and `compose::restart` read a container key, where it
+    /// `compose::down`, `compose::remove` and `compose::restart` read a
+    /// container key, where it
     /// is the spelling for `container` — an operator naming a worker should not
     /// have to know which of the two words this call wanted. `compose::add`,
     /// `compose::update`, and `compose::remove` keep this field as a
@@ -94,7 +95,7 @@ pub struct ComposeRequest {
 #[derive(JsonSchema)]
 struct DaemonOptions {
     /// Which daemon the caller believed it reached. This is a guard, not a
-    /// route; use the trigger `--namespace` flag to select the daemon.
+    /// route; use the `iii call --namespace` flag to select the daemon.
     namespace: Option<String>,
 }
 
@@ -102,23 +103,25 @@ struct DaemonOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct LifecycleOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Restrict the lifecycle operation to one container.
     container: Option<String>,
+    /// Alias for `container`.
+    worker: Option<String>,
 }
 
 /// Request fields used by `compose::up`.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct UpOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Restrict startup to one container and its dependencies.
     container: Option<String>,
@@ -131,10 +134,10 @@ struct UpOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct ProjectOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
 }
 
@@ -142,10 +145,10 @@ struct ProjectOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct BatchWorkerOptions<T> {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Canonical list of workers to mutate together. Add accepts worker names,
     /// `name@version` references, registry references, local paths, or container
@@ -163,10 +166,10 @@ struct BatchWorkerOptions<T> {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct RestartOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Container key to restart.
     container: Option<String>,
@@ -178,10 +181,10 @@ struct RestartOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct LogsOptions {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
-    /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
-    /// the daemon working directory.
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
     /// Container whose process output should be read. Omit for every worker.
     container: Option<String>,
@@ -201,7 +204,7 @@ struct LogsOptions {
 #[allow(dead_code)]
 #[derive(JsonSchema)]
 struct SchemaRequest {
-    /// Optional daemon guard. Use the trigger `--namespace` flag to route.
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
     namespace: Option<String>,
     /// Function id such as `compose::up`, or the `worker-compose.yaml`
     /// pseudo-id. Omit to return every schema.
@@ -222,6 +225,14 @@ struct ListOutcome {
     daemon: String,
     daemon_namespace: String,
     daemon_pid: u32,
+    /// Target triple this daemon resolves `package://` workers for: the
+    /// `target` it sends to the registry's `POST /resolve` first. Absent when
+    /// this build of iii has no triple for its platform.
+    target: Option<String>,
+    /// Every target triple this host runs, preferred first. Compose resolves
+    /// for a later one only when the registry answers `unsupported_platform`
+    /// and lists it as available. Absent with `target`.
+    targets: Option<Vec<String>>,
     projects: Vec<ProjectSummary>,
 }
 
@@ -232,6 +243,14 @@ struct StatusOutcome {
     file: PathBuf,
     state_dir: PathBuf,
     daemon_pid: u32,
+    /// Target triple this daemon resolves `package://` workers for: the
+    /// `target` it sends to the registry's `POST /resolve` first. Absent when
+    /// this build of iii has no triple for its platform.
+    target: Option<String>,
+    /// Every target triple this host runs, preferred first. Compose resolves
+    /// for a later one only when the registry answers `unsupported_platform`
+    /// and lists it as available. Absent with `target`.
+    targets: Option<Vec<String>>,
     containers: Vec<ContainerStatus>,
 }
 
@@ -422,6 +441,13 @@ fn stop_target(request: &ComposeRequest) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
+/// The container a lifecycle call names: `container`, else `worker`, the
+/// spelling an operator who thinks in workers reaches for. `compose::down` once
+/// read only `container`, so `worker=api` stopped the whole project.
+fn named_container(request: &ComposeRequest) -> Option<&str> {
+    request.container.as_deref().or(request.worker.as_deref())
+}
+
 /// Canonical list of functions exposed by the compose daemon.
 const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("up", Operation::Up),
@@ -457,7 +483,7 @@ async fn dispatch(
             code: "WRONG_DAEMON".to_string(),
             message: format!(
                 "this daemon serves namespace '{}', not '{addressed}'. The namespace is a flag, \
-                 not a payload field: iii trigger compose::{function} --namespace {addressed} …",
+                 not a payload field: iii call compose::{function} --namespace {addressed} …",
                 daemon.daemon_namespace
             ),
             stacktrace: None,
@@ -563,7 +589,7 @@ async fn dispatch(
             .restart(
                 file.as_deref(),
                 // Either spelling names the same thing here.
-                request.container.as_deref().or(request.worker.as_deref()),
+                named_container(&request),
                 operation_id(),
             )
             .await
@@ -614,17 +640,13 @@ async fn dispatch(
             Ok(to_value(&accepted))
         }
         Operation::Down => match daemon
-            .down(
-                file.as_deref(),
-                request.container.as_deref(),
-                operation_id(),
-            )
+            .down(file.as_deref(), named_container(&request), operation_id())
             .await
         {
             Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
-                request.container.as_deref(),
+                named_container(&request),
                 None,
                 None,
                 std::iter::once(&result),
@@ -633,7 +655,7 @@ async fn dispatch(
         },
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
-        Operation::List => Ok(json!({
+        Operation::List => Ok(with_host_targets(json!({
             "daemon": daemon.worker_name,
             // Which machine answered. Several daemons share an engine, so a
             // caller who reached one by namespace can confirm it was the one
@@ -641,9 +663,9 @@ async fn dispatch(
             "daemon_namespace": daemon.daemon_namespace,
             "daemon_pid": std::process::id(),
             "projects": daemon.list().await,
-        })),
+        }))),
         Operation::Status => match daemon.status(file.as_deref()).await {
-            Ok(project) => Ok(json!({
+            Ok(project) => Ok(with_host_targets(json!({
                 "namespace": project.project_namespace,
                 "file": project.file_path(),
                 // Derived from the file, so nobody can guess it: where this
@@ -653,7 +675,7 @@ async fn dispatch(
                 // daemon would otherwise answer for the one being launched.
                 "daemon_pid": std::process::id(),
                 "containers": project.status().await,
-            })),
+            }))),
             Err(err) => Err(compose_error(&err)),
         },
         // What the operating system sees, which is not always what the daemon
@@ -895,6 +917,32 @@ fn report_mutation(
     report_op(op, &reported, elapsed);
 }
 
+/// Adds what this host asks the registry for, so a caller checking for
+/// updates asks for a build compose would install.
+fn with_host_targets(mut answer: Value) -> Value {
+    insert_host_targets(
+        &mut answer,
+        crate::registry::host_target(),
+        crate::registry::host_targets(),
+    );
+    answer
+}
+
+/// Inserts `target` and `targets` into an object answer. `target` is the
+/// triple compose sends first to the registry's `POST /resolve`, and `targets`
+/// every triple it tries, in order. A build with no triple for its platform
+/// reports `unknown`, which no registry serves, so the answer leaves both out
+/// rather than offer it to a caller.
+fn insert_host_targets(answer: &mut Value, target: &str, targets: &[&str]) {
+    if target == "unknown" {
+        return;
+    }
+    if let Some(fields) = answer.as_object_mut() {
+        fields.insert("target".to_string(), json!(target));
+        fields.insert("targets".to_string(), json!(targets));
+    }
+}
+
 /// Serialize the generated root schema into the value carried over the wire.
 fn schema_for_value<T: JsonSchema>() -> Option<Value> {
     serde_json::to_value(schema_for!(T)).ok()
@@ -996,12 +1044,17 @@ fn op_description(function_id: &str) -> &'static str {
             "Stop a compose project, or one container and its dependents, in \
              reverse dependency order."
         }
-        "compose::list" => "List every project loaded by this compose daemon.",
+        "compose::list" => {
+            "List every project loaded by this compose daemon, and the target \
+             triples this host resolves packages for."
+        }
         "compose::status" => {
-            "Report the project namespace, state directory, daemon pid, and \
-             current state of every declared container. A container declaring \
-             a 'restart' policy reports as 'restarting' while it waits for the \
-             supervisor's next attempt."
+            "Report the project namespace, state directory, daemon pid, the \
+             target triples this host resolves packages for, and current state \
+             of every declared container, with a package's declared version \
+             selector as 'requested'. A container declaring a 'restart' policy \
+             reports as 'restarting' while it waits for the supervisor's next \
+             attempt."
         }
         "compose::ps" => {
             "List the operating-system processes of this daemon's projects, or of \
@@ -1307,6 +1360,246 @@ mod tests {
         }
     }
 
+    /// A project with a tag, a range and an exact version, one selector the
+    /// file changed after its lock was written, and a path worker.
+    fn project_with_selectors(dir: &std::path::Path) -> std::path::PathBuf {
+        let file = dir.join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:
+  tagged:
+    worker: package://api.workers.iii.dev/state
+    version: latest
+  ranged:
+    worker: package://api.workers.iii.dev/queue
+    version: ^0.22
+  pinned:
+    worker: package://api.workers.iii.dev/cache
+    version: 0.22.8
+  edited:
+    worker: package://api.workers.iii.dev/stream
+    version: ^0.23
+  api:
+    worker: path://.
+    scripts:
+      run: ./api
+",
+        )
+        .unwrap();
+        let entry = |name: &str, requested: &str, version: &str| {
+            json!({
+                "worker": format!("package://api.workers.iii.dev/{name}"),
+                "requested": requested,
+                "resolved": {
+                    "name": name,
+                    "version": version,
+                    "type": "binary",
+                    "artifacts": {
+                        (crate::registry::host_target()): {
+                            "url": format!("https://example.com/{name}.tar.gz"),
+                            "sha256": "a".repeat(64),
+                        },
+                    },
+                },
+            })
+        };
+        let lock = json!({
+            "version": 1,
+            "containers": {
+                "tagged": entry("state", "latest", "0.22.8"),
+                "ranged": entry("queue", "^0.22", "0.22.3"),
+                "pinned": entry("cache", "0.22.8", "0.22.8"),
+                // Locked while the file still declared `^0.22`.
+                "edited": entry("stream", "^0.22", "0.22.5"),
+            },
+        });
+        std::fs::write(
+            crate::lockfile::lock_path(&file),
+            serde_yaml::to_string(&lock).unwrap(),
+        )
+        .unwrap();
+        file
+    }
+
+    fn selector_daemon() -> Arc<Daemon> {
+        Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "status-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        )
+    }
+
+    async fn status_of(daemon: &Arc<Daemon>, file: &std::path::Path) -> Value {
+        dispatch(
+            Arc::clone(daemon),
+            Operation::Status,
+            "status".to_string(),
+            ComposeRequest {
+                file: Some(file.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn status_reports_each_declared_selector_beside_its_locked_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project_with_selectors(tmp.path());
+        let daemon = selector_daemon();
+
+        let status = status_of(&daemon, &file).await;
+
+        let containers = status["containers"].as_array().unwrap();
+        let reported = |key: &str| {
+            let container = containers
+                .iter()
+                .find(|container| container["container"] == key)
+                .unwrap_or_else(|| panic!("status is missing {key}"));
+            (
+                container.get("requested").cloned(),
+                container.get("version").cloned(),
+            )
+        };
+        assert_eq!(
+            reported("tagged"),
+            (Some(json!("latest")), Some(json!("0.22.8")))
+        );
+        assert_eq!(
+            reported("ranged"),
+            (Some(json!("^0.22")), Some(json!("0.22.3")))
+        );
+        assert_eq!(
+            reported("pinned"),
+            (Some(json!("0.22.8")), Some(json!("0.22.8")))
+        );
+        // The selector is the file's, which is what `compose::update` reads.
+        // The lock entry for the old selector supplies neither field.
+        assert_eq!(reported("edited"), (Some(json!("^0.23")), None));
+        assert_eq!(reported("api"), (None, Some(json!("local"))));
+        daemon.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn status_and_list_carry_the_targets_the_registry_is_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project_with_selectors(tmp.path());
+        let daemon = selector_daemon();
+        let status = status_of(&daemon, &file).await;
+
+        let list = dispatch(
+            Arc::clone(&daemon),
+            Operation::List,
+            "list".to_string(),
+            ComposeRequest::default(),
+        )
+        .await
+        .unwrap();
+
+        // Wiring: both answers carry the values resolution sends. What those
+        // values are per platform is tested in the registry module.
+        assert_eq!(status["target"], crate::registry::host_target());
+        assert_eq!(status["targets"], json!(crate::registry::host_targets()));
+        assert_eq!(status["targets"][0], status["target"]);
+        assert_eq!(
+            (&list["target"], &list["targets"]),
+            (&status["target"], &status["targets"])
+        );
+        assert_eq!(list["projects"][0]["containers"], status["containers"]);
+        daemon.shutdown().await;
+    }
+
+    #[test]
+    fn host_targets_are_reported_in_resolution_order() {
+        let mut answer = json!({ "daemon_pid": 1 });
+
+        insert_host_targets(
+            &mut answer,
+            "x86_64-unknown-linux-musl",
+            &["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+        );
+
+        assert_eq!(
+            answer,
+            json!({
+                "daemon_pid": 1,
+                "target": "x86_64-unknown-linux-musl",
+                "targets": ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"],
+            })
+        );
+    }
+
+    #[test]
+    fn a_platform_without_a_triple_reports_no_targets() {
+        let mut answer = json!({ "daemon_pid": 1 });
+
+        insert_host_targets(&mut answer, "unknown", &["unknown"]);
+
+        assert_eq!(answer, json!({ "daemon_pid": 1 }));
+    }
+
+    #[tokio::test]
+    async fn status_and_list_answers_match_their_published_schemas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = project_with_selectors(tmp.path());
+        let daemon = selector_daemon();
+        let status = status_of(&daemon, &file).await;
+        let list = dispatch(
+            Arc::clone(&daemon),
+            Operation::List,
+            "list".to_string(),
+            ComposeRequest::default(),
+        )
+        .await
+        .unwrap();
+        daemon.shutdown().await;
+
+        for (function_id, answer, containers) in [
+            ("compose::status", &status, &status["containers"]),
+            ("compose::list", &list, &list["projects"][0]["containers"]),
+        ] {
+            let schema = schema_entry(function_id).2.as_ref().unwrap();
+            let validator = jsonschema::Validator::new(schema).unwrap();
+            assert!(
+                validator.is_valid(answer),
+                "{function_id} answer does not match its schema: {answer}"
+            );
+            // Nothing the answer carries is missing from the published schema.
+            let envelope = schema["properties"].as_object().unwrap();
+            for key in answer.as_object().unwrap().keys() {
+                assert!(
+                    envelope.contains_key(key),
+                    "{function_id} schema is missing {key}"
+                );
+            }
+            let container = schema["definitions"]["ContainerStatus"]["properties"]
+                .as_object()
+                .unwrap();
+            for key in containers
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|entry| entry.as_object().unwrap().keys())
+            {
+                assert!(
+                    container.contains_key(key),
+                    "{function_id} container schema is missing {key}"
+                );
+            }
+            // Absent on a platform with no triple, and from older daemons.
+            let required = schema["required"].as_array().unwrap();
+            assert!(!required.contains(&json!("target")));
+            assert!(!required.contains(&json!("targets")));
+            assert!(envelope.contains_key("target") && envelope.contains_key("targets"));
+            let container_required = schema["definitions"]["ContainerStatus"]["required"]
+                .as_array()
+                .unwrap();
+            assert!(!container_required.contains(&json!("requested")));
+        }
+    }
+
     #[test]
     fn stop_target_checks_both_fields_and_ignores_blanks() {
         let bare = ComposeRequest::default();
@@ -1534,6 +1827,27 @@ mod tests {
             assert!(logs.contains_key(field), "compose::logs is missing {field}");
         }
         assert!(!logs.contains_key("workers"));
+    }
+
+    #[test]
+    fn down_reads_worker_as_the_spelling_for_container() {
+        let (_, down, _) = schema_entry("compose::down");
+        let down = down.as_ref().unwrap()["properties"].as_object().unwrap();
+        assert!(down.contains_key("container"));
+        assert!(down.contains_key("worker"));
+
+        let worker = ComposeRequest {
+            worker: Some("queue".into()),
+            ..Default::default()
+        };
+        assert_eq!(named_container(&worker), Some("queue"));
+        let both = ComposeRequest {
+            container: Some("api".into()),
+            worker: Some("queue".into()),
+            ..Default::default()
+        };
+        assert_eq!(named_container(&both), Some("api"));
+        assert_eq!(named_container(&ComposeRequest::default()), None);
     }
 
     #[test]

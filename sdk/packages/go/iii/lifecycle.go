@@ -8,10 +8,10 @@ import (
 )
 
 // This file is the connection lifecycle a worker can follow: connection-state listeners
-// (OnConnectionStateChange) and the wait for the engine's acknowledgement of the worker
+// (AddConnectionStateListener) and the wait for the engine's acknowledgement of the worker
 // (WaitUntilRegistered).
 
-// connStateListener is one OnConnectionStateChange subscription.
+// connStateListener is one AddConnectionStateListener subscription.
 type connStateListener struct {
 	fn           func(ConnectionState)
 	unsubscribed atomic.Bool
@@ -79,7 +79,7 @@ func callConnStateListener(fn func(ConnectionState), state ConnectionState) {
 	fn(state)
 }
 
-// OnConnectionStateChange calls listener with the current [ConnectionState], then with
+// AddConnectionStateListener calls listener with the current [ConnectionState], then with
 // every later change of state ([StateConnecting], [StateConnected],
 // [StateReconnecting], [StateDisconnected], [StateFailed]), in the order the changes
 // happen. Calls are made one at a time on a goroutine of the client's own, never on the
@@ -90,9 +90,9 @@ func callConnStateListener(fn func(ConnectionState), state ConnectionState) {
 //
 // It returns the function that unsubscribes listener: changes not yet delivered when
 // it returns are dropped for this listener (a call already under way completes).
-// Calling it more than once does nothing. It mirrors the Python SDK's
-// add_connection_state_listener.
-func (c *Client) OnConnectionStateChange(listener func(ConnectionState)) (unsubscribe func()) {
+// Calling it more than once does nothing. It mirrors addConnectionStateListener in the
+// browser SDK and add_connection_state_listener in the Python SDK.
+func (c *Client) AddConnectionStateListener(listener func(ConnectionState)) (unsubscribe func()) {
 	if listener == nil {
 		return func() {}
 	}

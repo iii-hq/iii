@@ -1,7 +1,7 @@
-//! Engine-hosted event sources (README §9), over real WebSockets:
-//! `engine::on-functions-changed` and `engine::on-workers-changed` are
-//! observed like any function, and the engine emits their events where it
-//! fires `engine::functions-available` / `engine::workers-available`.
+//! Engine-hosted sources over real WebSockets: `engine::on-functions-changed`,
+//! `engine::on-workers-changed` and `engine::on-observers-changed` are
+//! observed like any function, and the engine calls them once per change of
+//! its functions, workers or observers.
 
 mod observe_support;
 
@@ -30,7 +30,7 @@ async fn on_functions_changed_lists_the_functions_after_a_change() {
     let mut sink = host(&t, "sink", &["sink::functions"]).await;
     sink.observe_active(observer(
         "obs-functions",
-        json!({ "function_id": "engine::on-functions-changed", "deliver": "input" }),
+        json!({ "function_id": "engine::on-functions-changed", "capture": ["input"] }),
         "sink::functions",
     ))
     .await;
@@ -41,7 +41,7 @@ async fn on_functions_changed_lists_the_functions_after_a_change() {
     loop {
         let activation = sink.invoked("sink::functions").await;
         sink.reply(&activation, Value::Null).await;
-        let event = &activation["data"];
+        let event = &activation["data"]["input"];
         assert_eq!(event["event"], "functions_changed");
         let listed = event["functions"]
             .as_array()
@@ -62,7 +62,7 @@ async fn on_workers_changed_reports_a_worker_announcing_itself() {
         "obs-workers",
         json!({
             "function_id": "engine::on-workers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.event": { "$eq": "worker_metadata_updated" } }
         }),
         "sink::workers",
@@ -72,11 +72,80 @@ async fn on_workers_changed_reports_a_worker_announcing_itself() {
     let newcomer = connect(&t, "newcomer", true).await;
     let activation = sink.invoked("sink::workers").await;
     assert_eq!(
-        activation["data"],
+        activation["data"]["input"],
         json!({ "event": "worker_metadata_updated", "worker_id": newcomer.worker_id.to_string() })
     );
     assert_eq!(activation["caller"]["worker_name"], "iii-engine");
     sink.reply(&activation, Value::Null).await;
+}
+
+/// The next activation of `sink::changes`, answered.
+async fn next_change(sink: &mut Client) -> Value {
+    let activation = sink.invoked("sink::changes").await;
+    sink.reply(&activation, Value::Null).await;
+    activation
+}
+
+/// One call of `engine::on-observers-changed` per observer creation, with
+/// the state it starts in, and per state change after it (decision 6), with
+/// the `reason` when there is one; the engine is its caller.
+#[tokio::test]
+async fn on_observers_changed_reports_each_state_change() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut sink = host(&t, "sink", &["sink::changes", "sink::orders"]).await;
+    sink.observe_active(observer(
+        "obs-changes",
+        json!({
+            "function_id": "engine::on-observers-changed",
+            "capture": ["input"],
+            "filters": { "input.observer_id": { "$eq": "watched" } }
+        }),
+        "sink::changes",
+    ))
+    .await;
+    let orders = host(&t, "orders", &["orders::create"]).await;
+    let mut watcher = connect(&t, "watcher", true).await;
+    watcher
+        .observe_active(observer(
+            "watched",
+            json!({ "function_id": "orders::create" }),
+            "sink::orders",
+        ))
+        .await;
+
+    // Created pending: its host has not acked it yet.
+    let created = next_change(&mut sink).await;
+    assert_eq!(created["data"]["input"]["state"], "pending");
+    assert!(
+        created["data"]["input"].get("reason").is_none(),
+        "{created}"
+    );
+    let active = next_change(&mut sink).await;
+    assert_eq!(
+        active["data"]["input"],
+        json!({
+            "observer_id": "watched",
+            "function_id": "orders::create",
+            "target": "sink::orders",
+            "state": "active"
+        })
+    );
+    assert_eq!(active["caller"]["worker_name"], "iii-engine");
+
+    orders.disconnect().await;
+    let pending = next_change(&mut sink).await;
+    assert_eq!(pending["data"]["input"]["state"], "pending");
+    assert_eq!(
+        pending["data"]["input"]["reason"]["code"],
+        "OWNER_UNAVAILABLE"
+    );
+
+    watcher
+        .send(json!({ "type": "unobserve", "id": "watched" }))
+        .await;
+    let disposed = next_change(&mut sink).await;
+    assert_eq!(disposed["data"]["input"]["state"], "disposed");
+    assert_eq!(disposed["data"]["input"]["reason"]["code"], "UNOBSERVED");
 }
 
 #[tokio::test]
@@ -99,7 +168,7 @@ async fn an_event_source_is_observed_not_called() {
 
     sink.observe_active(observer(
         "obs-every",
-        json!({ "function_id": "engine::on-workers-changed", "on": "complete" }),
+        json!({ "function_id": "engine::on-workers-changed", "capture": ["input", "error"] }),
         "sink::any",
     ))
     .await;
@@ -115,12 +184,83 @@ async fn an_event_source_is_observed_not_called() {
         Some(0),
         "a call is not one of its events"
     );
+}
+
+/// The engine hosts its sources (v2 §7): a worker registering one's id is
+/// refused, the source keeps refusing calls, and its observers keep getting
+/// the engine's events, before and after that worker leaves.
+#[tokio::test]
+async fn a_worker_cannot_host_an_engine_hosted_source() {
+    let t = spawn_engine(ObserversConfig::default()).await;
+    let mut sink = host(&t, "sink", &["sink::workers"]).await;
+    sink.observe_active(observer(
+        "obs-connects",
+        json!({
+            "function_id": "engine::on-workers-changed",
+            "capture": ["input"],
+            "filters": { "input.event": { "$eq": "worker_connected" } }
+        }),
+        "sink::workers",
+    ))
+    .await;
+
+    let mut hijacker = connect(&t, "hijacker", true).await;
+    hijacker
+        .register_function("engine::on-workers-changed")
+        .await;
+    let rejected = hijacker
+        .expect("registrationrejected", |f| {
+            f["type"] == "registrationrejected" && f["function_id"] == "engine::on-workers-changed"
+        })
+        .await;
+    assert_eq!(
+        rejected["code"], "FUNCTION_NAMESPACE_CONFLICT",
+        "{rejected}"
+    );
+    assert_eq!(rejected["owner_worker_id"], "", "no worker owns it");
+
+    let mut caller = connect(&t, "caller", true).await;
+    let call = caller
+        .call(
+            "engine::on-workers-changed",
+            json!({ "event": "worker_connected", "worker_id": "forged" }),
+        )
+        .await;
+    assert_eq!(caller.result(call).await["error"]["code"], "FORBIDDEN");
+    assert!(
+        !hijacker.has_seen(|f| {
+            f["type"] == "functionregistered"
+                || (f["type"] == "invokefunction"
+                    && f["function_id"] == "engine::on-workers-changed")
+        }),
+        "the hijacker hosts nothing"
+    );
+
+    let hijacker_id = hijacker.worker_id;
+    hijacker.disconnect().await;
+    assert!(
+        eventually(|| !t.engine.worker_registry.workers.contains_key(&hijacker_id)).await,
+        "the hijacker is gone"
+    );
     assert!(
         t.engine
-            .observers
-            .watch_routed("default", "engine::on-workers-changed")
-            .is_none(),
-        "the routed hook leaves event sources alone"
+            .functions
+            .get("default", "engine::on-workers-changed")
+            .is_some()
+    );
+    let visitor = connect(&t, "visitor", true).await;
+    let visitor_id = visitor.worker_id.to_string();
+    loop {
+        let event = sink.invoked("sink::workers").await;
+        sink.reply(&event, Value::Null).await;
+        assert_ne!(event["data"]["input"]["worker_id"], "forged", "{event}");
+        if event["data"]["input"]["worker_id"] == visitor_id.as_str() {
+            break;
+        }
+    }
+    assert_eq!(
+        t.engine.observers.get("obs-connects").map(|o| o.state()),
+        Some(iii::protocol::ObserverState::Active)
     );
 }
 
@@ -132,7 +272,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
         "obs-lifecycle",
         json!({
             "function_id": "engine::on-workers-changed",
-            "deliver": "input",
+            "capture": ["input"],
             "filters": { "input.event": { "$ne": "worker_metadata_updated" } }
         }),
         "sink::workers",
@@ -143,7 +283,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
     let id = visitor.worker_id.to_string();
     let connected = sink.invoked("sink::workers").await;
     assert_eq!(
-        connected["data"],
+        connected["data"]["input"],
         json!({ "event": "worker_connected", "worker_id": id })
     );
     sink.reply(&connected, Value::Null).await;
@@ -151,7 +291,7 @@ async fn on_workers_changed_reports_connects_and_disconnects() {
     visitor.disconnect().await;
     let disconnected = sink.invoked("sink::workers").await;
     assert_eq!(
-        disconnected["data"],
+        disconnected["data"]["input"],
         json!({ "event": "worker_disconnected", "worker_id": id })
     );
     sink.reply(&disconnected, Value::Null).await;

@@ -1,5 +1,5 @@
 import type { EnqueueResult } from '@iii-dev/helpers/queue'
-import { Logger, TriggerAction } from 'iii-sdk'
+import { Logger, CallAction } from 'iii-sdk'
 import { useApi } from './hooks'
 import { iii } from './iii'
 
@@ -24,10 +24,10 @@ useApi(
 
     logger.info('Submitting transaction', { account_id, type, amount })
 
-    const receipt = await iii.trigger<unknown, EnqueueResult>({
+    const receipt = await iii.call<unknown, EnqueueResult>({
       function_id: 'ledger::apply',
       payload: { account_id, type, amount },
-      action: TriggerAction.Enqueue({ queue: 'ledger' }),
+      action: CallAction.Enqueue({ queue: 'ledger' }),
     })
 
     return {

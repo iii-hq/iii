@@ -4,6 +4,7 @@
   "reattach_token": "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f",
   "features": [
     "observe.v1",
+    "observe.v2",
     "local-dispatch.v1"
   ]
 }

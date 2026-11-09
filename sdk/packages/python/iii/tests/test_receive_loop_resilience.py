@@ -214,9 +214,7 @@ def test_bad_frames_do_not_stop_the_receive_loop(
         await _until(lambda: _registered(frames, "test::echo"))
         await ws.send("not json")
         await ws.send("[]")
-        await ws.send(
-            json.dumps({"type": "triggerregistrationresult", "id": "t1", "trigger_type": "x", "error": "boom"})
-        )
+        await ws.send(json.dumps({"type": "nosuchmessage", "id": "t1", "error": "boom"}))
         await ws.send(_probe())
 
     engine = start_engine(garbage_then_probe)
@@ -250,7 +248,7 @@ def test_late_result_after_caller_gave_up_is_dropped(
 
     async def impatient() -> Any:
         # Shorter than the invocation timeout: cancels the SDK's own await.
-        return await asyncio.wait_for(client.trigger_async({"function_id": "test::slow", "payload": {}}), 0.05)
+        return await asyncio.wait_for(client.call_async({"function_id": "test::slow", "payload": {}}), 0.05)
 
     with pytest.raises(asyncio.TimeoutError):
         client._run_on_loop(impatient())
@@ -265,7 +263,7 @@ def test_late_result_after_caller_gave_up_is_dropped(
 @pytest.mark.parametrize("failure", ["cancelled", "raises"])
 def test_pending_entry_released_when_send_does_not_complete(failure: str) -> None:
     async def scenario() -> None:
-        # Bare client: only what trigger_async touches before and during the send.
+        # Bare client: only what call_async touches before and during the send.
         client = III.__new__(III)
         client._options = InitOptions()
         client._fatal_error = None
@@ -284,7 +282,7 @@ def test_pending_entry_released_when_send_does_not_complete(failure: str) -> Non
             await asyncio.Future()  # e.g. write backpressure that never clears
 
         client._send = send
-        task = asyncio.create_task(client.trigger_async({"function_id": "test::slow", "payload": {}}))
+        task = asyncio.create_task(client.call_async({"function_id": "test::slow", "payload": {}}))
         await entered.wait()
         if failure == "cancelled":
             assert len(client._pending) == 1

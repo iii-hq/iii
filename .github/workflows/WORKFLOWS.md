@@ -40,7 +40,7 @@ The workflows are organized into two categories:
         │  bumps + tags iii-alpha/v* (isolated; never touches main)
         ▼
         ├─► sdk-node (pnpm) / _py / _rust-cargo / _go   (SDK packages)
-        ├─► _rust-binary.yml + init-build job            (engine/worker/init binaries → iii-alpha prerelease)
+        ├─► _rust-binary.yml                             (iii engine binary → iii-alpha prerelease)
         └─► _publish-engine-workers / -skills            (builtin workers → `alpha` registry tag)
 ```
 
@@ -58,19 +58,20 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 |-----|-----------|--------------|
 | `changes` | — | Detects changed paths (engine/crates/Cargo) for scoping downstream jobs |
 | `engine-build` | — | Builds debug `iii` with all features, uploads `iii-binary` artifact (critical path) |
-| `engine-coverage` | `changes` | Tests `iii-worker`, `iii-filesystem`, `iii-network`, `iii-init` and `iii --all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
+| `engine-coverage` | `changes` | Tests `iii` and `iii-sandbox-contract` with `--all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
 | `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
 | `engine-fmt` | — | `cargo fmt --all -- --check` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
-| `sdk-node-ci` | `engine-build` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
-| `sdk-node-browser-ci` | `engine-build` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
-| `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
-| `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
+| `sdk-test-workers` | — | Builds the `state`, `http`, `pubsub`, `cron` and `queue` workers from `iii-hq/workers` at `sdk/fixtures/workers-ref` against this checkout's Rust SDK (`scripts/ci/sdk-test-workers.sh build`), uploads them as the `sdk-test-workers` artifact. Cached on the workers commit and the Rust SDK sources |
+| `sdk-node-ci` | `engine-build`, `sdk-test-workers` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
+| `sdk-node-browser-ci` | `engine-build`, `sdk-test-workers` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
+| `sdk-python-ci` | `engine-build`, `sdk-test-workers` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
+| `sdk-rust-ci` | `engine-build`, `sdk-test-workers` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
+| `sdk-go-ci` | `engine-build`, `sdk-test-workers` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
 
-All SDK tests download the engine binary artifact and start a live engine instance before running.
+All SDK tests download the engine binary and the `sdk-test-workers` artifacts, write fixture variants whose containers run those workers (`scripts/ci/sdk-test-workers.sh fixtures`), and start a live engine instance from them before running.
 
-Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`, so the committed `Cargo.lock` is what gets tested; the Makefile targets omit it for local use.
+Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`, so the committed `Cargo.lock` is what gets tested; the Makefile targets omit it for local use. The `sdk-test-workers` build runs without it: its `[patch.crates-io]` override resolves each worker's own lockfile to this checkout's SDK crates.
 
 ---
 
@@ -102,7 +103,8 @@ Entry point for stable and RC releases. Provides a form with:
    - **release candidates** (`rc`) leave docs untouched.
    - In-content links are version-relative, so files move verbatim; only `docs.json` nav paths carry the version prefix.
 8. Commits the version bump (including any docs changes) and creates an annotated tag with the source branch and SHA. On `main`, pushes the branch and tag; on any other branch, pushes **only the tag**, leaving both the source branch and `main` unchanged
-9. Posts a Slack notification
+9. Dispatches an `iii-release` event with the version to `iii-hq/workers`, whose `loadtest.yml` benchmarks the new tag (prereleases included), and on stable releases to `iii-hq/templates` to bump its pins. Both need the `III_CI_APP` GitHub App installed with `contents: write`; a failed workers dispatch only skips the benchmark run
+10. Posts a Slack notification
 
 > **Docs layout:** `Latest` lives at the docs root (unprefixed paths); `Next` lives in the fixed `docs/next/` folder; archived versions live in `docs/MAJOR-MINOR-0/` folders. `docs/changelog/` is shared by all versions — it stays at the root, is never copied into a version folder, and every version's Changelog tab points at it. Rotation assumes this shape already exists (a `Latest` root block + a `Next` block pointing at `docs/next/`).
 
@@ -243,7 +245,7 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
 4. Pushes **only** the `iii-alpha/v{version}` tag — never a branch, never `main`
 5. Publishes, all checking out that tag:
    - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
-   - **Engine binaries** — `iii` and `iii-worker` via `_rust-binary.yml`, and `iii-init` via an inline `init-build` job; all attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
+   - **Engine binary** — `iii` via `_rust-binary.yml`, attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
 **Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Docker and Homebrew are intentionally excluded.**
@@ -414,11 +416,11 @@ Only runs for stable (non-prerelease) versions.
 
 ### `_publish-engine-workers.yml` — Publish Builtin Engine Worker
 
-Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker.
+Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker. The interface is the worker's function rows (`engine::workers::info`, then `engine::functions::info`), read with `iii call`; each Registry row states `args_format`, `private` (an event source) and `observable`.
 
 ### `_publish-worker-skills.yml` — Publish Worker Skills
 
-Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide, including e.g. `crates/iii-worker/src/sandbox_daemon`), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml` (after builtin worker publish) and by the manual `publish-worker-skills.yml` workflow.
+Discovers worker directories with an `iii.worker.yaml` manifest and a non-empty `skills/` tree (repo-wide), builds payloads via `build_skills_payload.py`, and POSTs to `POST /w/{slug}/skills`. Called by `release-iii.yml` (after builtin worker publish) and by the manual `publish-worker-skills.yml` workflow.
 
 | Input | Purpose |
 |-------|---------|

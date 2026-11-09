@@ -10,7 +10,7 @@
 // III_URL / III_HTTP_URL environment variables the sdk-rust-ci job sets. With no env
 // vars they target the same SDK test engine as the Rust, Python and Node suites
 // (sdk/fixtures/config-test.yaml on :49199 / :3199), never an engine on the default
-// port, which would get this suite's functions and triggers registered on it.
+// port, which would get this suite's functions and observers registered on it.
 package iii_test
 
 import (
@@ -32,7 +32,7 @@ var suffixCounter atomic.Uint64
 
 // uniqueSuffix returns a short token unique to this test invocation, derived from the
 // test name plus a monotonic counter. Use it to build engine-global identifiers (HTTP
-// routes, trigger ids) so retries and repeated runs don't collide.
+// routes, function ids) so retries and repeated runs don't collide.
 func uniqueSuffix(t *testing.T) string {
 	t.Helper()
 	name := strings.NewReplacer("/", "-", " ", "-").Replace(t.Name())
@@ -48,7 +48,7 @@ func engineWSURL() string {
 	return "ws://localhost:49199"
 }
 
-// engineHTTPURL is the engine HTTP API base, for exercising HTTP triggers.
+// engineHTTPURL is the engine HTTP API base, for exercising HTTP routes.
 func engineHTTPURL() string {
 	if v := os.Getenv("III_HTTP_URL"); v != "" {
 		return v
@@ -92,5 +92,5 @@ func ctxFor(t *testing.T, d time.Duration) context.Context {
 	return ctx
 }
 
-// httpClient is a plain HTTP client for hitting HTTP triggers on the engine.
+// httpClient is a plain HTTP client for hitting HTTP routes on the engine.
 func httpClient() *http.Client { return &http.Client{Timeout: 10 * time.Second} }

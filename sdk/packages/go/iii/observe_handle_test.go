@@ -258,6 +258,7 @@ func TestObserveEngineDisposedIsNotReplayed(t *testing.T) {
 	c := fe.client()
 	h, _ := c.Observe(Source{FunctionID: "orders::create"}, "audit::log", ObserverOptions{MaxFires: 1})
 	fe.waitFrames(MsgObserve, 1, nil)
+	fe.send(&ObserveResultMessage{ID: h.ID(), State: "active"})
 	fe.send(&ObserverStateChangedMessage{ID: h.ID(), State: "disposed", Reason: &ErrorBody{Code: "MAX_FIRES", Message: "fired once"}, Fires: 1})
 	waitUntil(t, "disposed", func() bool { return h.State() == ObserverDisposed })
 	if h.Reason().Code != "MAX_FIRES" {
@@ -294,13 +295,14 @@ func TestObserveRefusesBadRequests(t *testing.T) {
 	if _, err := c.Observe(Source{FunctionID: "a::b"}, "x::y", ObserverOptions{ID: "same"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Observe(Source{FunctionID: "a::b"}, "x::y", ObserverOptions{ID: "same"}); err == nil {
-		t.Error("reused id accepted")
+	var rej *ObserveRejectionError
+	if _, err := c.Observe(Source{FunctionID: "a::b"}, "x::y", ObserverOptions{ID: "same"}); !errors.As(err, &rej) || rej.Code != "OBSERVER_ID_CONFLICT" {
+		t.Errorf("held id: %v, want OBSERVER_ID_CONFLICT", err)
 	}
 }
 
 // SDK-PARITY decision 27: state listeners never run on the read loop: a listener that
-// blocks (or calls Trigger) does not hold up the engine's other messages, and changes
+// blocks (or calls Call) does not hold up the engine's other messages, and changes
 // reach a listener in order.
 func TestStateListenersDoNotRunOnTheReadLoop(t *testing.T) {
 	fe := newFakeEngine(t)
@@ -321,7 +323,7 @@ func TestStateListenersDoNotRunOnTheReadLoop(t *testing.T) {
 		close(answered)
 		return "pong", nil
 	})
-	fe.send(&ObserverStateChangedMessage{ID: h.ID(), State: "active"})
+	fe.send(&ObserveResultMessage{ID: h.ID(), State: "active"})
 	fe.send(&ObserverStateChangedMessage{ID: h.ID(), State: "suspended", Reason: &ErrorBody{Code: "TARGET_UNAVAILABLE", Message: "x"}})
 	id := uuid.New()
 	fe.send(&InvokeFunctionMessage{InvocationID: &id, FunctionID: "ping::fn", Data: json.RawMessage(`{}`)})

@@ -320,7 +320,7 @@ export const REVEAL_STAGES: RevealStage[] = [
 /* ---- reactive fan-out (A7) ---- */
 
 export const FAN_SOURCE = { label: 'store::write', sub: 'one commit, no publish step' }
-export const FAN_TRIGGER = 'store::written'
+export const FAN_FUNCTION = 'store::written'
 export const FAN_HANDLERS: FanHandler[] = [
   { id: 'watcher', label: 'watcher::react', desc: 'escalate or act on the change' },
   { id: 'index', label: 'search::index', desc: 'keep the index current' },

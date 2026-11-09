@@ -14,6 +14,10 @@ description = "Wire contract between the iii engine's sandbox router and sandbox
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = "0.8"
+# Scoped worker auth (contract 1.2): HMAC-SHA256 of the project token over a state key.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 [dev-dependencies]
 iii-sdk = { workspace = true }

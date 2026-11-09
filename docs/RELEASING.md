@@ -34,6 +34,24 @@ Two generated trees must be regenerated and committed into `docs/next/` first:
 CI gates drift: the `cli-docs-built` job in `.github/workflows/ci.yml` fails if
 `docs/next/cli-reference/` is stale relative to the CLI definitions.
 
+### Redirects for pages Next removed
+
+`pin_docs.py rotate` does not touch the `redirects` in `docs/docs.json`. A page deleted from
+`docs/next/` gets a `/next/...` redirect when it is deleted, but its unprefixed path still serves the
+old Latest page until the release. When the release promotes Next, that page moves into the archive
+and its root path returns 404. Before cutting a minor or major release, add an unprefixed redirect
+for every `/next/...` redirect whose source page is still at the root, in the same commit as the
+release:
+
+| Release | Source                          | Destination                             |
+| ------- | ------------------------------- | --------------------------------------- |
+| 0.26    | `/using-iii/triggers`           | `/using-iii/observers`                  |
+| 0.26    | `/creating-workers/triggers`    | `/creating-workers/observable-functions` |
+| 0.26    | `/how-to/use-trigger-conditions` | `/reference/filters`                    |
+
+`docs/changelog/index.mdx` is never rotated, so its links to those root paths (for example
+`[Triggers](../using-iii/triggers)` in an older entry) resolve through these redirects.
+
 ## Cut a release
 
 Releases are driven entirely by the **Create Tag** workflow (`.github/workflows/create-tag.yml`,

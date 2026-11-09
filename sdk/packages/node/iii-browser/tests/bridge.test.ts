@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { registerWorker, TriggerAction } from '../src/iii'
+import { CallAction, registerWorker } from '../src/iii'
 import type { ISdk } from '../src/types'
 import { MockEngine } from './mock-websocket'
 
@@ -40,8 +40,8 @@ describe('Bridge Operations', () => {
     expect(() => sdk.registerFunction('test.dup', async () => ({}))).toThrow('function id already registered: test.dup')
   })
 
-  it('should trigger sync invocation and resolve on result', async () => {
-    const triggerPromise = sdk.trigger<{ msg: string }, { echoed: { msg: string } }>({
+  it('should call synchronously and resolve on result', async () => {
+    const callPromise = sdk.call<{ msg: string }, { echoed: { msg: string } }>({
       function_id: 'remote.echo',
       payload: { msg: 'hello' },
     })
@@ -55,17 +55,17 @@ describe('Bridge Operations', () => {
 
     engine.respondToInvocation(invokeMsg?.invocation_id as string, { echoed: { msg: 'hello' } })
 
-    const result = await triggerPromise
+    const result = await callPromise
     expect(result).toEqual({ echoed: { msg: 'hello' } })
   })
 
-  it('should trigger void and return undefined', async () => {
+  it('should call void and return undefined', async () => {
     sdk.registerFunction('test.void-target', async () => ({}))
 
-    const result = await sdk.trigger({
+    const result = await sdk.call({
       function_id: 'test.void-target',
       payload: { value: 42 },
-      action: TriggerAction.Void(),
+      action: CallAction.Void(),
     })
 
     expect(result).toBeUndefined()
@@ -76,11 +76,11 @@ describe('Bridge Operations', () => {
     expect(invokeMsg?.invocation_id).toBeUndefined()
   })
 
-  it('should trigger enqueue and resolve with receipt', async () => {
-    const triggerPromise = sdk.trigger({
+  it('should call enqueue and resolve with receipt', async () => {
+    const callPromise = sdk.call({
       function_id: 'queue.job',
       payload: { task: 'process' },
-      action: TriggerAction.Enqueue({ queue: 'work' }),
+      action: CallAction.Enqueue({ queue: 'work' }),
     })
 
     await new Promise<void>((r) => queueMicrotask(r))
@@ -92,21 +92,21 @@ describe('Bridge Operations', () => {
 
     engine.respondToInvocation(invokeMsg?.invocation_id as string, { messageReceiptId: 'receipt-123' })
 
-    const result = await triggerPromise
+    const result = await callPromise
     expect(result).toEqual({ messageReceiptId: 'receipt-123' })
   })
 
-  it('should reject trigger on timeout', async () => {
-    const triggerPromise = sdk.trigger({
+  it('should reject a call on timeout', async () => {
+    const callPromise = sdk.call({
       function_id: 'slow.function',
       payload: {},
       timeoutMs: 50,
     })
 
-    await expect(triggerPromise).rejects.toThrow('Invocation timeout after 50ms: slow.function')
+    await expect(callPromise).rejects.toThrow('Invocation timeout after 50ms: slow.function')
 
     // Absorb the shutdown rejection that would otherwise be unhandled
-    triggerPromise.catch(() => {
+    callPromise.catch(() => {
       //
     })
   })
@@ -173,7 +173,7 @@ describe('Bridge Operations', () => {
   })
 
   it('should close WS and reject pending invocations on shutdown', async () => {
-    const triggerPromise = sdk.trigger({
+    const callPromise = sdk.call({
       function_id: 'remote.fn',
       payload: {},
     })
@@ -182,16 +182,12 @@ describe('Bridge Operations', () => {
 
     await sdk.shutdown()
 
-    await expect(triggerPromise).rejects.toThrow('iii is shutting down')
+    await expect(callPromise).rejects.toThrow('iii is shutting down')
   })
 
-  it('should re-register functions and triggers on reconnect', async () => {
+  it('should re-register functions and observers on reconnect', async () => {
     sdk.registerFunction('test.persist', async () => ({ ok: true }))
-    sdk.registerTrigger({
-      type: 'cron',
-      function_id: 'test.persist',
-      config: { expression: '* * * * *' },
-    })
+    const handle = sdk.observe({ function_id: 'cron::on-tick', args: { expression: '* * * * * *' } }, 'test.persist')
 
     const firstSocket = engine.socket
 
@@ -207,13 +203,16 @@ describe('Bridge Operations', () => {
     expect(secondSocket).not.toBe(firstSocket)
 
     secondSocket.simulateOpen()
+    engine.sendWorkerRegistered('worker-2', ['observe.v1', 'observe.v2', 'local-dispatch.v1'])
     await new Promise<void>((r) => queueMicrotask(r))
 
     const reRegistered = secondSocket.findAllSent('registerfunction')
     expect(reRegistered.length).toBeGreaterThanOrEqual(1)
     expect(reRegistered.some((m) => m.id === 'test.persist')).toBe(true)
 
-    const reRegisteredTriggers = secondSocket.findAllSent('registertrigger')
-    expect(reRegisteredTriggers.length).toBeGreaterThanOrEqual(1)
+    // the observer is replayed with the same id, after the functions
+    expect(secondSocket.findAllSent('observe')).toMatchObject([
+      { id: handle.id, source: { function_id: 'cron::on-tick', args: { expression: '* * * * * *' } } },
+    ])
   })
 })

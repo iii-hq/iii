@@ -46,9 +46,20 @@ pub enum ComposeError {
     #[error(
         "engine worker '{worker}' is not configurable inside worker-compose.yaml. Move project \
          workers under containers; engine.workers accepts configuration, iii-worker-manager, \
-         iii-http-functions, iii-stream, and iii-sandbox"
+         iii-http-functions and iii-stream. Sandboxes are configured under engine.sandbox"
     )]
     UnsupportedEngineWorker { worker: String },
+
+    /// The pre-0.26 `engine.workers.iii-sandbox` block. `replacement` is the
+    /// `containers:` entry that carries its settings to `sandbox-libkrun`.
+    #[error(
+        "engine.workers.iii-sandbox was removed in iii 0.26: sandboxes now run in the \
+         sandbox-libkrun worker, which Compose installs for you. Replace the block with \
+         `engine.sandbox.adapter: sandbox-libkrun` (optional, the default) and move \
+         image_allowlist/custom_images/default_* to `containers.sandbox-libkrun.config_override`. \
+         Guide: https://iii.dev/docs/upgrading/sandbox-worker\n\n{replacement}"
+    )]
+    SandboxConfigMoved { replacement: String },
 
     #[error(
         "engine worker '{worker}' is injected automatically and must not be declared under \
@@ -87,9 +98,9 @@ pub enum ComposeError {
     EngineRestartRequired { path: PathBuf },
 
     #[error(
-        "{path} declares engine:, but this daemon's engine is already owned by {owner}. Start the \
-         second file in a separate Compose invocation, or remove its engine section and pass the \
-         first engine's URL"
+        "{path} declares engine:, but this daemon's engine belongs to {owner}. To act on that \
+         project, pass file={owner}. To run {path} as well, start it in its own Compose \
+         invocation, or remove its engine: section so it joins this daemon"
     )]
     EngineAlreadyOwned { owner: PathBuf, path: PathBuf },
 
@@ -145,6 +156,9 @@ pub enum ComposeError {
 
     #[error("{path} is not a valid iii.worker.yaml: {message}")]
     InvalidManifest { path: PathBuf, message: String },
+
+    #[error("container '{container}': {message}")]
+    IncompatibleEngine { container: String, message: String },
 
     #[error("container '{container}': worker directory {path} does not exist")]
     MissingWorkerDirectory { container: String, path: PathBuf },
@@ -284,6 +298,22 @@ pub enum ComposeError {
         version: String,
         target: String,
         available: String,
+    },
+
+    #[error(
+        "{needed_by} needs the sandbox adapter '{adapter}', and --frozen does not edit the file. \
+         Run up once without --frozen, or: iii call compose::add worker=iii-sandbox"
+    )]
+    SandboxAdapterNotDeclared { adapter: String, needed_by: String },
+
+    #[error(
+        "container '{container}' is the sandbox adapter '{expected}', but adapter::info names \
+         '{found}'. Set engine.sandbox.adapter to '{found}' or install '{expected}'"
+    )]
+    SandboxAdapterMismatch {
+        container: String,
+        expected: String,
+        found: String,
     },
 
     #[error("container '{container}': its package has not been installed yet")]
@@ -477,7 +507,7 @@ pub enum ComposeError {
     #[error(
         "a worker named '{container}' is already registered in namespace '{namespace}'. \
          Another daemon owns this project, or a worker from an earlier run is still \
-         connected. `iii trigger engine::workers::list` names it"
+         connected. `iii call engine::workers::list` names it"
     )]
     ContainerNameTaken {
         container: String,
@@ -489,7 +519,7 @@ pub enum ComposeError {
 
     #[error(
         "no project '{id}' here. Name the compose file on the first call: \
-         iii trigger compose::up id={id} file=./worker-compose.yaml"
+         iii call compose::up id={id} file=./worker-compose.yaml"
     )]
     UnknownProject { id: String },
 
@@ -504,6 +534,11 @@ pub enum ComposeError {
         "{path} changed {replans} times while compose::add was resolving its graph; nothing was          written. Retry the add."
     )]
     AddPlanStale { path: PathBuf, replans: u32 },
+
+    /// `build` runs outside the daemon's mutation lock, so a file edited while
+    /// it prepared is not overwritten from its stale snapshot.
+    #[error("{} changed while build was preparing it; nothing was written. Run the build again.", .path.display())]
+    BuildPlanStale { path: PathBuf },
 
     /// A relative `file=` that missed. The path is resolved by the daemon, in
     /// the directory the daemon was started in — which is rarely the directory
@@ -522,7 +557,7 @@ pub enum ComposeError {
     /// already there rather than to debug a rejection.
     #[error(
         "another compose daemon already serves {engine_url}. \
-         Use it (iii trigger compose::list) or stop it (iii trigger compose::stop).\n  \
+         Use it (iii call compose::list) or stop it (iii call compose::stop).\n  \
          the engine said: {detail}"
     )]
     DaemonAlreadyServing { engine_url: String, detail: String },
@@ -553,6 +588,15 @@ pub enum ComposeError {
          in a project directory"
     )]
     NoComposeFileHere { expected: &'static str },
+
+    /// A call named no file and reached a daemon serving several projects, none
+    /// of them the `worker-compose.yaml` in its own directory. Which one it
+    /// meant is a guess this daemon does not make.
+    #[error(
+        "the call named no file, and this daemon serves several projects: {loaded}. Pass \
+         file=<PATH> to name one"
+    )]
+    ComposeFileAmbiguous { loaded: String },
 }
 
 impl ComposeError {
@@ -570,6 +614,7 @@ impl ComposeError {
             Self::FrozenLockOutOfDate { .. } => "COMPOSE_LOCK_OUT_OF_DATE",
             Self::EmptyContainers => "EMPTY_CONTAINERS",
             Self::UnsupportedEngineWorker { .. } => "UNSUPPORTED_ENGINE_WORKER",
+            Self::SandboxConfigMoved { .. } => "SANDBOX_CONFIG_MOVED",
             Self::EngineWorkerIsInjected { .. } => "ENGINE_WORKER_IS_INJECTED",
             Self::InvalidEngineWorkerConfig { .. } => "INVALID_ENGINE_WORKER_CONFIG",
             Self::InvalidEngineObservers => "INVALID_ENGINE_OBSERVERS",
@@ -593,6 +638,7 @@ impl ComposeError {
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
             Self::MissingStartCommand { .. } => "MISSING_START_COMMAND",
             Self::InvalidManifest { .. } => "INVALID_MANIFEST",
+            Self::IncompatibleEngine { .. } => "INCOMPATIBLE_ENGINE",
             Self::MissingWorkerDirectory { .. } => "MISSING_WORKER_DIRECTORY",
             Self::MissingEnvFile { .. } => "MISSING_ENV_FILE",
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
@@ -609,6 +655,8 @@ impl ComposeError {
             Self::WorkerSourceChanged { .. } => "WORKER_SOURCE_CHANGED",
             Self::NotAPackageContainer { .. } => "NOT_A_PACKAGE_CONTAINER",
             Self::UnsupportedPlatform { .. } => "UNSUPPORTED_PLATFORM",
+            Self::SandboxAdapterNotDeclared { .. } => "SANDBOX_ADAPTER_NOT_DECLARED",
+            Self::SandboxAdapterMismatch { .. } => "SANDBOX_ADAPTER_MISMATCH",
             Self::PackageNotInstalled { .. } => "PACKAGE_NOT_INSTALLED",
             Self::PackageDownloadFailed { .. } => "PACKAGE_DOWNLOAD_FAILED",
             Self::PackageDigestMismatch { .. } => "PACKAGE_DIGEST_MISMATCH",
@@ -639,12 +687,14 @@ impl ComposeError {
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
             Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
             Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
+            Self::BuildPlanStale { .. } => "BUILD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
             Self::DaemonAlreadyServing { .. } => "DAEMON_ALREADY_SERVING",
             Self::DaemonNamespaceTaken { .. } => "DAEMON_NAMESPACE_TAKEN",
             Self::InvalidNamespace { .. } => "INVALID_NAMESPACE",
             Self::StateDirUnavailable => "STATE_DIR_UNAVAILABLE",
             Self::NoComposeFileHere { .. } => "NO_COMPOSE_FILE",
+            Self::ComposeFileAmbiguous { .. } => "COMPOSE_FILE_AMBIGUOUS",
         }
     }
 }

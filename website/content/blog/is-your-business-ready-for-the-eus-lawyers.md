@@ -125,7 +125,7 @@ const subjectIds = ["cand_8f21c", "cand_3b90a", "cand_c74e2", ...] //+300 more u
 const traceIdsBySubject = new Map()
 
 for (const subjectId of subjectIds) {
-  const { spans } = await iii.trigger({
+  const { spans } = await iii.call({
     function_id: "engine::traces::list",
     payload: {
       attributes: { "subject.id": subjectId },

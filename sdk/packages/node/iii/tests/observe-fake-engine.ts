@@ -22,7 +22,12 @@ const registry: Registry = ((globalThis as Record<symbol, unknown>)[REGISTRY] as
 }
 ;(globalThis as Record<symbol, unknown>)[REGISTRY] = registry
 
-export const ENGINE_FEATURES = ['observe.v1', 'local-dispatch.v1']
+/** What a current engine advertises: it announces `fires_on` in observer views (`observe.capture`). */
+export const ENGINE_FEATURES = ['observe.v1', 'observe.v2', 'observe.capture', 'local-dispatch.v1']
+/** What an rc engine advertises: `observe.v2` without `observe.capture` (no `fires_on` in observer views). */
+export const ENGINE_FEATURES_RC = ['observe.v1', 'observe.v2', 'local-dispatch.v1']
+/** What a 0.25 engine advertises: observe without `observe.v2`. */
+export const ENGINE_FEATURES_V1 = ['observe.v1', 'local-dispatch.v1']
 
 export type Frame = Record<string, unknown>
 
@@ -157,20 +162,33 @@ export function functionRegistered(
   }
 }
 
-/** An observer as the engine pushes it to the owner. */
+/**
+ * The `fires_on` an engine with `observe.capture` announces for `capture`:
+ * `input`, `output` (or `[]`) fire on success, `error` on error.
+ */
+export function firesFor(capture: readonly string[]): string[] {
+  const fires: string[] = []
+  if (capture.length === 0 || capture.includes('input') || capture.includes('output')) fires.push('success')
+  if (capture.includes('error')) fires.push('error')
+  return fires.length > 0 ? fires : ['success']
+}
+
+/**
+ * An observer as the engine pushes it to its function's host. It carries the
+ * `fires_on` an `observe.capture` engine announces (derived from `capture` unless
+ * given); `fires_on: null` leaves it out, as an rc or 0.25 engine does, and `on`
+ * is that engine's legacy field.
+ */
 export function observerInfo(
   id: string,
   target: string,
-  opts: { args?: Frame; filters?: Frame; capture?: string[]; on?: string } = {},
+  opts: { args?: Frame; filters?: Frame; capture?: string[]; fires_on?: string[] | null; on?: string } = {},
 ): Frame {
-  return {
-    id,
-    args: opts.args ?? {},
-    filters: opts.filters ?? {},
-    target,
-    capture: opts.capture ?? ['input', 'output', 'caller'],
-    on: opts.on ?? 'success',
-  }
+  const capture = opts.capture ?? ['input', 'output', 'caller', 'metadata']
+  const info: Frame = { id, args: opts.args ?? {}, filters: opts.filters ?? {}, target, capture }
+  if (opts.fires_on !== null) info.fires_on = opts.fires_on ?? firesFor(capture)
+  if (opts.on !== undefined) info.on = opts.on
+  return info
 }
 
 export function observerAdded(functionId: string, revision: number, observer: Frame, namespace = 'default'): Frame {
@@ -184,4 +202,25 @@ export function observerRemoved(functionId: string, revision: number, id: string
 /** The items of every `invocationsobserved` frame sent so far. */
 export function reportedItems(socket: FakeSocket): Frame[] {
   return socket.framesOf('invocationsobserved').flatMap((f) => f.items as Frame[])
+}
+
+/** A routed call of a function the worker hosts, as the engine forwards it. */
+export function invokeFunction(
+  functionId: string,
+  data: unknown,
+  opts: {
+    invocation_id?: string
+    traceparent?: string
+    caller?: Frame
+    metadata?: Frame
+    observe_depth?: number
+    activation?: Frame
+  } = {},
+): Frame {
+  return { type: 'invokefunction', function_id: functionId, data, ...opts }
+}
+
+/** The `invocationresult` the worker answered `invocationId` with. */
+export function resultOf(socket: FakeSocket, invocationId: string): Frame | undefined {
+  return socket.framesOf('invocationresult').find((f) => f.invocation_id === invocationId)
 }

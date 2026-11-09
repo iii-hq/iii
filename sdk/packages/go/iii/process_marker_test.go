@@ -1,11 +1,13 @@
 package iii
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func readMarkers(t *testing.T, dir string) map[string]map[string]any {
@@ -74,4 +76,72 @@ func TestAnnounceProcessIgnoresAnUnwritableDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	announceProcess("ws://x", "y", filepath.Join(blocker, "run"))()
+}
+
+// A short-lived program returns from main right after Close, before the
+// supervisor goroutine ends, so Close itself must take the marker.
+func TestCloseRemovesTheWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	c := RegisterWorker("ws://127.0.0.1:1")
+	if markers := readMarkers(t, dir); len(markers) != 1 {
+		t.Fatalf("expected one marker, got %v", markers)
+	}
+	_ = c.Close()
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("marker outlived Close: %v", markers)
+	}
+}
+
+// A Connect that starts the supervisor after Close (or racing it) writes its
+// marker after Close took the nil one, so it must remove that marker itself.
+func TestStartAfterCloseLeavesNoWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	c := New("ws://127.0.0.1:1")
+	_ = c.Close()
+	c.startSupervisor()
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("marker written after Close: %v", markers)
+	}
+}
+
+func TestShutdownRemovesTheWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	c := RegisterWorker("ws://127.0.0.1:1")
+	if markers := readMarkers(t, dir); len(markers) != 1 {
+		t.Fatalf("expected one marker, got %v", markers)
+	}
+	_ = c.Shutdown(context.Background())
+	if markers := readMarkers(t, dir); len(markers) != 0 {
+		t.Fatalf("marker outlived Shutdown: %v", markers)
+	}
+}
+
+func TestASupervisorThatGivesUpRemovesTheWorkerMarker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir on Windows
+	dir := filepath.Join(home, ".iii", "run")
+
+	// Nothing listens there, and no retries: the supervisor gives up after one dial.
+	c := RegisterWorker("ws://127.0.0.1:1", WithReconnectConfig(ReconnectConfig{MaxRetries: 0}))
+	defer c.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(readMarkers(t, dir)) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the marker outlived a supervisor that gave up")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

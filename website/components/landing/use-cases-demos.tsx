@@ -162,9 +162,9 @@ export function PlatformVisual({ running, frame, still }: { running: boolean; fr
   return (
     <div className={styles.visualBody} data-leaving={leaving(playhead, workloadTotal(workload), still)}>
       <div key={workload.id} className={styles.workloadHead}>
-        <span className={styles.trigger}>
-          <code>{workload.trigger.type}</code>
-          <code className={styles.triggerDetail}>{workload.trigger.detail}</code>
+        <span className={styles.source}>
+          <code>{workload.source.fn}</code>
+          <code className={styles.sourceDetail}>{workload.source.detail}</code>
         </span>
         <span className={styles.workloadName}>{workload.label}</span>
       </div>

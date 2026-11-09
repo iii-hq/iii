@@ -6,26 +6,23 @@ import { engineWsUrl, iii, sleep } from './utils'
 
 describe('Data Channels', () => {
   it('should create a channel and send text messages between functions', async () => {
-    const receiver = iii.registerFunction(
-      'browser.test.channel.receiver',
-      async (input: { reader: ChannelReader }) => {
-        const messages: string[] = []
+    const receiver = iii.registerFunction('browser.test.channel.receiver', async (input: { reader: ChannelReader }) => {
+      const messages: string[] = []
 
-        return new Promise<{ messages: string[] }>((resolve) => {
-          input.reader.onMessage((msg) => {
-            messages.push(msg)
-            if (messages.length === 3) {
-              resolve({ messages })
-            }
-          })
+      return new Promise<{ messages: string[] }>((resolve) => {
+        input.reader.onMessage((msg) => {
+          messages.push(msg)
+          if (messages.length === 3) {
+            resolve({ messages })
+          }
         })
-      },
-    )
+      })
+    })
 
     const sender = iii.registerFunction('browser.test.channel.sender', async (input: { items: string[] }) => {
       const channel = await createChannel(iii)
 
-      const resultPromise = iii.trigger({
+      const resultPromise = iii.call({
         function_id: 'browser.test.channel.receiver',
         payload: { reader: channel.readerRef },
       })
@@ -43,7 +40,7 @@ describe('Data Channels', () => {
 
     try {
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<{ items: string[] }, any>({
+      const result = await iii.call<{ items: string[] }, any>({
         function_id: 'browser.test.channel.sender',
         payload: { items: ['hello', 'world', 'test'] },
       })
@@ -65,29 +62,26 @@ describe('Data Channels', () => {
       },
     )
 
-    const sender = iii.registerFunction(
-      'browser.test.channel.binary.sender',
-      async (input: { text: string }) => {
-        const channel = await createChannel(iii)
+    const sender = iii.registerFunction('browser.test.channel.binary.sender', async (input: { text: string }) => {
+      const channel = await createChannel(iii)
 
-        const resultPromise = iii.trigger({
-          function_id: 'browser.test.channel.binary.processor',
-          payload: { reader: channel.readerRef },
-        })
+      const resultPromise = iii.call({
+        function_id: 'browser.test.channel.binary.processor',
+        payload: { reader: channel.readerRef },
+      })
 
-        const encoded = new TextEncoder().encode(input.text)
-        channel.writer.sendBinary(encoded)
-        channel.writer.close()
+      const encoded = new TextEncoder().encode(input.text)
+      channel.writer.sendBinary(encoded)
+      channel.writer.close()
 
-        return await resultPromise
-      },
-    )
+      return await resultPromise
+    })
 
     await sleep(300)
 
     try {
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<{ text: string }, any>({
+      const result = await iii.call<{ text: string }, any>({
         function_id: 'browser.test.channel.binary.sender',
         payload: { text: 'Hello from binary channel!' },
       })
@@ -118,23 +112,20 @@ describe('Data Channels', () => {
       },
     )
 
-    const sender = iii.registerFunction(
-      'browser.test.channel.json.sender',
-      async (input: { records: Record[] }) => {
-        const channel = await createChannel(iii)
+    const sender = iii.registerFunction('browser.test.channel.json.sender', async (input: { records: Record[] }) => {
+      const channel = await createChannel(iii)
 
-        const resultPromise = iii.trigger({
-          function_id: 'browser.test.channel.json.processor',
-          payload: { reader: channel.readerRef },
-        })
+      const resultPromise = iii.call({
+        function_id: 'browser.test.channel.json.processor',
+        payload: { reader: channel.readerRef },
+      })
 
-        const encoded = new TextEncoder().encode(JSON.stringify(input.records))
-        channel.writer.sendBinary(encoded)
-        channel.writer.close()
+      const encoded = new TextEncoder().encode(JSON.stringify(input.records))
+      channel.writer.sendBinary(encoded)
+      channel.writer.close()
 
-        return await resultPromise
-      },
-    )
+      return await resultPromise
+    })
 
     await sleep(300)
 
@@ -146,7 +137,7 @@ describe('Data Channels', () => {
       ]
 
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<{ records: Record[] }, any>({
+      const result = await iii.call<{ records: Record[] }, any>({
         function_id: 'browser.test.channel.json.sender',
         payload: { records },
       })
@@ -205,7 +196,7 @@ describe('Data Channels', () => {
 
     try {
       // biome-ignore lint/suspicious/noExplicitAny: test code
-      const result = await iii.trigger<Record<string, never>, any>({
+      const result = await iii.call<Record<string, never>, any>({
         function_id: 'browser.test.channel.progress',
         payload: {},
       })

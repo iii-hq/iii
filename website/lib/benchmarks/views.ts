@@ -172,7 +172,7 @@ const deliveryPath: Path = {
   fallback: (r) => !measured(r).some((s) => (num(s.extra.delivery_ratio) ?? 1) < 0.95),
 }
 
-/** `emit` (paced ladder): activations delivered per second against what the owner offered. */
+/** `emit` (paced ladder; `source` from 0.26): activations delivered per second against what the event source offered. */
 export function delivery(summary: Summary): Series[] {
   return seriesFor(
     summary,

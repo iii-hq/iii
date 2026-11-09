@@ -6,8 +6,8 @@ from iii import helpers
 from iii.iii import III
 
 
-def test_trigger_async_is_coroutine_function():
-    assert hasattr(III, "trigger_async")
+def test_call_async_and_its_alias_trigger_async_are_coroutine_functions():
+    assert inspect.iscoroutinefunction(III.call_async)
     assert inspect.iscoroutinefunction(III.trigger_async)
 
 
@@ -28,6 +28,7 @@ def test_shutdown_async_is_coroutine_function():
 def test_async_methods_have_docstrings():
     """All public async methods must have docstrings."""
     async_methods = [
+        "call_async",
         "trigger_async",
         "connect_async",
         "shutdown_async",

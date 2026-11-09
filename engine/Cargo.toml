@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -33,7 +33,7 @@ name = "concurrent_invocation_bench"
 harness = false
 
 [[bench]]
-name = "trigger_fanout_bench"
+name = "observe_fanout_bench"
 harness = false
 
 [[bench]]
@@ -61,7 +61,7 @@ name = "ws_roundtrip_bench"
 harness = false
 
 [[bench]]
-name = "queue_enqueue_bench"
+name = "channel_relay_bench"
 harness = false
 
 [[bench]]
@@ -69,13 +69,31 @@ name = "worker_invocation_tracking_bench"
 harness = false
 
 [[bench]]
+name = "observe_metadata_alloc_bench"
+harness = false
+
+[[bench]]
 name = "observe_dispatch_bench"
 harness = false
 
+[[bench]]
+name = "observe_routed_bench"
+harness = false
+
+[[bench]]
+name = "observe_activation_ws_bench"
+harness = false
+
+[[bench]]
+name = "observe_control_scaling_bench"
+harness = false
+
+[[bench]]
+name = "observe_route_lookup_bench"
+harness = false
+
 [features]
-default = ["rabbitmq"]
-rabbitmq = ["lapin"]
-# Registers an in-process `memory` queue adapter for this crate's own tests.
+# Test-only controls (the durable trace archive's) for this crate's own tests.
 # Enabled only through the self dev-dependency below; never in a normal build.
 test-adapters = []
 
@@ -109,7 +127,7 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 rusqlite = { version = "0.41.1", features = ["bundled", "hooks"] }
 schemars = "0.8"
 serde_yaml = "0.9"
@@ -117,14 +135,15 @@ url = { workspace = true }
 
 anyhow = "1.0.100"
 uuid = { version = "1", features = ["v4", "serde"] }
-dashmap = "6"
+# raw-api: its `RwLock` (lock_api over parking_lot_core), which observer
+# statuses and function entries are kept under.
+dashmap = { version = "6", features = ["raw-api"] }
 # observe: lock-free snapshots of the observed-function set on the invocation
 # hot path, and the filter language shared with every SDK.
 arc-swap = "1"
 iii-filter = { workspace = true }
 indexmap = { version = "2", features = ["serde"] }
 redis = { version = "1.0.1", features = ["tokio-comp", "connection-manager"] }
-lapin = { version = "3", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 async-trait = "0.1.89"
 colored = "3.0.0"
@@ -136,10 +155,12 @@ iii-clap-docs = { path = "../crates/iii-clap-docs" }
 # `iii compose`: declarative multi-worker lifecycle. Owns its own CLI surface;
 # the engine only mounts the subcommand and delegates.
 iii-compose = { path = "../crates/iii-compose" }
+# Operation table and adapter-name rules shared with the sandbox adapters.
+iii-sandbox-contract = { path = "../crates/iii-sandbox-contract" }
 regex = "1"
 hex = "0.4"
 notify = "8.2.0"
-jsonschema = { version = "0.30", default-features = false }
+jsonschema = { version = "0.47", default-features = false }
 inventory = "0.3"
 rand = "0.8"
 rkyv = "0.8.12"
@@ -160,14 +181,13 @@ tar = "0.4"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 thiserror = "2"
 tokio-tungstenite = "0.28"
-# Used by workers::external::resolve_external_module to locate
-# iii-worker on $PATH for the iii-sandbox well-known name.
+# Used by bin_resolve::find_existing_binary to locate helper binaries on $PATH.
 which = "7"
 
 [dev-dependencies]
 # Self-dependency trick: turns on `test-adapters` for this crate's own test
-# targets (the `memory` pub/sub adapter the pubsub config e2e suite swaps to)
-# without enabling it for a normal build.
+# targets (the trace archive's test controls) without enabling it for a
+# normal build.
 iii = { path = ".", features = ["test-adapters"] }
 tokio = { version = "1", features = ["test-util"] }
 mockall = "0.13"
@@ -176,6 +196,4 @@ temp-env = "0.3"
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 tempfile = "3"
 wiremock = "0.6"
-testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["rabbitmq"] }
 libc = "0.2"

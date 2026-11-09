@@ -6,12 +6,17 @@ import { parseHelpersGriffe, parseGriffe } from './parsers/parse-griffe.mjs'
 import { parseHelpersRustdoc, parseRustdoc } from './parsers/parse-rustdoc.mjs'
 import { parseBrowserTypedoc, parseHelpersTypedoc, parseNodeTypedoc } from './parsers/parse-typedoc.mjs'
 import { renderSdkMdx } from './renderers/render-mdx.mjs'
+import { findBrokenTableRows } from './renderers/components.mjs'
 import type { SdkDoc } from './types.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Inputs are resolved relative to the repo root (the pipeline runs from there).
 const ROOT = process.cwd()
 const DOCS_OUTPUT = resolve(__dirname, '../reference')
+// rustdoc writes its JSON under the cargo target dir.
+const CARGO_TARGET = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : resolve(ROOT, 'target')
+// --strict: a missing extraction JSON fails the run (the drift check needs every page).
+const STRICT = process.argv.includes('--strict')
 
 interface GenerationTarget {
   name: string
@@ -42,11 +47,11 @@ const targets: GenerationTarget[] = [
   },
   {
     name: 'Rust SDK',
-    jsonPath: resolve(ROOT, 'target/doc/iii_sdk.json'),
+    jsonPath: resolve(CARGO_TARGET, 'doc/iii_sdk.json'),
     outputPath: resolve(DOCS_OUTPUT, 'sdk-rust.mdx'),
     parser: parseRustdoc,
     sourcePath: 'sdk/packages/rust/iii/src',
-    helpersJsonPath: resolve(ROOT, 'target/doc/iii_helpers.json'),
+    helpersJsonPath: resolve(CARGO_TARGET, 'doc/iii_helpers.json'),
   },
   {
     // One go/doc dump (docs/next/scripts/godoc-json) covers the whole module:
@@ -81,7 +86,7 @@ const targets: GenerationTarget[] = [
   },
   {
     name: 'Helpers (Rust)',
-    jsonPath: resolve(ROOT, 'target/doc/iii_helpers.json'),
+    jsonPath: resolve(CARGO_TARGET, 'doc/iii_helpers.json'),
     outputPath: resolve(DOCS_OUTPUT, 'helpers-rust.mdx'),
     parser: parseHelpersRustdoc,
     sourcePath: 'sdk/packages/rust/helpers/src',
@@ -104,8 +109,10 @@ for (const target of targets) {
   console.log(`\n[generate-api-docs] Processing ${target.name}...`)
 
   if (!existsSync(target.jsonPath)) {
-    console.warn(`  [SKIP] JSON file not found: ${target.jsonPath}`)
-    console.warn(`  Run the extraction step first (see .github/workflows/generate-api-docs.yml).`)
+    const log = STRICT ? console.error : console.warn
+    log(`  [${STRICT ? 'ERROR' : 'SKIP'}] JSON file not found: ${target.jsonPath}`)
+    log(`  Run the extraction step first (see .github/workflows/generate-api-docs.yml).`)
+    if (STRICT) hasErrors = true
     continue
   }
 
@@ -114,6 +121,13 @@ for (const target of targets) {
     doc.metadata.docSourcePath = target.sourcePath
     const mdx = renderSdkMdx(doc)
     writeFileSync(target.outputPath, mdx, 'utf-8')
+    // A table row MDX cannot read fails the page's build (Mintlify then drops the page), so fail here.
+    const broken = findBrokenTableRows(mdx)
+    if (broken.length) {
+      console.error(`  [ERROR] ${target.outputPath} has table rows MDX cannot parse:`)
+      for (const problem of broken) console.error(`    ${problem}`)
+      hasErrors = true
+    }
     const counts = doc.isLibrary
       ? `Modules: ${doc.modules?.length ?? 0}, Types: ${(doc.modules ?? []).reduce((n, m) => n + m.types.length, 0)}`
       : `Methods: ${doc.methods.length}, Types: ${doc.types.length}`

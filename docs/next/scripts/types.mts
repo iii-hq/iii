@@ -2,7 +2,7 @@
  * Doc-comment marker that flags a method for `expandParams` (see
  * `FunctionDoc.expandParams`). An HTML comment renders as nothing in every
  * language's native doc tooling; parsers detect it and strip it from prose.
- * An optional type list (`<!-- docs:expand-params: TriggerRequest -->`) names
+ * An optional type list (`<!-- docs:expand-params: CallRequest -->`) names
  * additional types to expand when the signature type is a wrapper the reader
  * would not construct directly.
  */
@@ -65,16 +65,16 @@ export interface FunctionDoc {
   /**
    * Extra documented type names to expand under this method's parameters, from
    * the marker's optional type list. Covers wrapper signatures (e.g. Rust's
-   * `impl Into<TriggerRequestWithMetadata>`) where the type the reader
+   * `impl Into<CallRequestWithMetadata>`) where the type the reader
    * actually constructs never appears in the parameter type.
    */
   expandTypes?: string[]
   /**
    * Set when the method is deprecated but still part of the client surface
-   * (e.g. `registerTrigger` in 0.25, which bindings to unmigrated providers
-   * still need). Built from the item's own deprecation text (TS `@deprecated`,
-   * rustdoc `#[deprecated(since, note)]`, Python `.. deprecated::`) and
-   * rendered as a callout above the method's description.
+   * (e.g. `trigger`, the alias of `call`). Built from the item's own
+   * deprecation text (TS `@deprecated`, rustdoc `#[deprecated(since, note)]`,
+   * Python `.. deprecated::`) and rendered as a callout above the method's
+   * description.
    */
   deprecated?: { since?: string; note: string }
 }
@@ -179,8 +179,8 @@ export interface SdkDoc {
   types: TypeDoc[]
   /**
    * Deprecated types that are not listed in the Types section but still
-   * expand under the parameters of a deprecated method (e.g. the
-   * `RegisterTriggerInput` fields under `registerTrigger`).
+   * expand under the parameters of a deprecated method (e.g. the fields of an
+   * input type only that method takes).
    */
   paramOnlyTypes?: TypeDoc[]
   /**

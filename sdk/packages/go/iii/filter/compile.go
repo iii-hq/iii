@@ -21,6 +21,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/iii-hq/iii/sdk/packages/go/iii/internal/filterlink"
 )
 
 // pred is a compiled filter node; el is the current $any element ("@").
@@ -71,15 +73,17 @@ func and(clauses []pred) pred {
 
 func (c *compiler) parseFilter(src any, depth int, inAny bool) (pred, error) {
 	var clauses []pred
-	if err := c.collectClauses(src, depth, inAny, &clauses); err != nil {
+	if err := c.collectClauses(src, depth, inAny, &clauses, nil); err != nil {
 		return nil, err
 	}
 	return and(clauses), nil
 }
 
 // collectClauses collects the clauses of src and of every filter its $ands
-// hold. $and adds no depth, so it is walked with an explicit stack.
-func (c *compiler) collectClauses(src any, depth int, inAny bool, out *[]pred) error {
+// hold. $and adds no depth, so it is walked with an explicit stack. For the
+// top-level filter, terms collects the equality conditions of its path clauses
+// (appendTerms); it is nil below a $or, a $not or a $any.
+func (c *compiler) collectClauses(src any, depth int, inAny bool, out *[]pred, terms *[]filterlink.Term) error {
 	if depth > MaxDepth {
 		return invalid("filters nested deeper than %d levels", MaxDepth)
 	}
@@ -155,6 +159,9 @@ func (c *compiler) collectClauses(src any, depth int, inAny bool, out *[]pred) e
 					return err
 				}
 				*out = append(*out, pathClause(p, ops))
+				if terms != nil {
+					*terms = appendTerms(*terms, p, value.(map[string]any))
+				}
 			}
 		}
 	}

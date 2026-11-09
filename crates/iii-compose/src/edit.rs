@@ -432,7 +432,7 @@ fn dependency_removals(
         let Some(colon) = body.find("start_after:") else {
             continue;
         };
-        let value = &body[colon + "start_after:".len()..];
+        let value = without_comment(&body[colon + "start_after:".len()..]);
 
         if let Some(open_relative) = value.find('[')
             && let Some(close_relative) = value[open_relative + 1..].find(']')
@@ -507,7 +507,15 @@ fn is_container_head(line: &str, indent: &str) -> bool {
     let Some(rest) = line.strip_prefix(indent) else {
         return false;
     };
-    !rest.starts_with([' ', '\t', '#']) && rest.trim_end().ends_with(':')
+    !rest.starts_with([' ', '\t', '#']) && without_comment(rest).trim_end().ends_with(':')
+}
+
+/// `line` without its trailing YAML comment, whose `#` must follow whitespace:
+/// `key:#text` is a plain scalar.
+fn without_comment(line: &str) -> &str {
+    line.char_indices()
+        .find(|(at, c)| *c == '#' && line[..*at].ends_with([' ', '\t']))
+        .map_or(line, |(at, _)| &line[..at])
 }
 
 fn leading_whitespace(line: &str) -> &str {
@@ -515,11 +523,7 @@ fn leading_whitespace(line: &str) -> &str {
 }
 
 fn dependency_name(value: &str) -> &str {
-    value
-        .trim()
-        .split_once(" #")
-        .map_or_else(|| value.trim(), |(name, _)| name.trim())
-        .trim_matches(['"', '\''])
+    without_comment(value).trim().trim_matches(['"', '\''])
 }
 
 /// Keeps the file's final newline as it was: adding one to a file without it,
@@ -562,7 +566,7 @@ struct Block {
 fn find_containers(lines: &[&str]) -> Result<Block> {
     let key = lines
         .iter()
-        .position(|line| line.trim_end() == "containers:")
+        .position(|line| without_comment(line).trim_end() == "containers:")
         .ok_or_else(|| ComposeError::InvalidWorkerSpec {
             spec: "containers".to_string(),
             reason: "the compose file has no top-level `containers:` mapping to add to".to_string(),
@@ -1269,6 +1273,84 @@ containers:
         assert_eq!(out.matches("queue:").count(), 1, "duplicated: {out}");
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml")
             .expect("the edited file should load");
+    }
+
+    #[test]
+    fn the_containers_key_may_carry_a_comment() {
+        for line in [
+            "containers:",
+            "containers:  ",
+            "containers:\r\n",
+            "containers: # my workers",
+            "containers:   # my workers  ",
+            "containers:\t# my workers",
+            "containers: #",
+            "containers: # my workers\r\n",
+        ] {
+            let block = find_containers(&["namespace: a\n", line, "  api:\n"]);
+            assert_eq!(block.map(|block| block.start).ok(), Some(2), "{line:?}");
+        }
+        for line in [
+            // No whitespace before the `#`: YAML reads a plain scalar.
+            "containers:#not a comment",
+            "containers: {} # inline",
+            "containers: value # comment",
+            "  containers: # nested",
+            "# containers:",
+            "containers_old: # comment",
+        ] {
+            assert!(find_containers(&[line]).is_err(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn every_edit_works_under_a_commented_containers_key() {
+        let text =
+            "namespace: default\ncontainers: # my workers\n  api:\n    worker: path://./api\n";
+        let out = added(text);
+        assert!(out.starts_with(text), "the file above the end moved: {out}");
+        assert!(is_generated_container(&out, "state").unwrap(), "{out}");
+        assert!(!is_generated_container(&out, "api").unwrap(), "{out}");
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should load");
+
+        let out = remove_container(&out, "state").unwrap().expect("removed");
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn a_commented_container_key_is_read_like_a_bare_one() {
+        let text = "containers:\n  # added by compose::add\n  state: # pinned\n    worker: package://state\n    version: '1.0.0'\n";
+        assert!(is_generated_container(text, "state").unwrap());
+    }
+
+    #[test]
+    fn removing_rewrites_dependency_edges_under_commented_keys() {
+        let text = "containers:\n  database:\n    worker: path://./workers/database\n  api: # the front door\n    worker: path://./workers/api\n    start_after: [database]\n  queue:\t# drained on stop\n    worker: path://./workers/queue\n    start_after: # [in boot order]\n      - database\n      - api\n";
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert_eq!(
+            out,
+            "containers:\n  api: # the front door\n    worker: path://./workers/api\n  queue:\t# drained on stop\n    worker: path://./workers/queue\n    start_after: # [in boot order]\n      - api\n"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
+    }
+
+    #[test]
+    fn removing_reads_a_tab_before_a_dependency_comment_as_a_comment() {
+        let text = "containers:\n  database:\n    worker: path://./workers/database\n  api:\n    worker: path://./workers/api\n    start_after:\n      - database\t# first\n";
+
+        let out = remove_container(text, "database")
+            .unwrap()
+            .expect("database should be removed");
+
+        assert_eq!(
+            out,
+            "containers:\n  api:\n    worker: path://./workers/api\n"
+        );
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").expect("should still load");
     }
 
     #[test]

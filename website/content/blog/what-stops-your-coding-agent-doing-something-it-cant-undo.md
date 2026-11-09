@@ -138,7 +138,7 @@ Recovery works the same way, by design. Anthony describes the approach:
 
 `engine::traces::list` returns every span across a turn, and `engine::traces::tree` shows the span tree for one trace, including which Function called which other Function, in what order, with what arguments and results; the console's Waterfall view makes that sequence readable without querying the API directly.
 
-Start with the harness via the [iii install guide](https://iii.dev/docs/install), then run `iii trigger compose::add worker=approval-gate` to get started with the approval-gate.
+Start with the harness via the [iii install guide](https://iii.dev/docs/install), then run `iii call compose::add worker=approval-gate` to get started with the approval-gate.
 
 ## What else to know before an agent touches production
 

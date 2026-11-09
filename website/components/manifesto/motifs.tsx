@@ -33,7 +33,11 @@ const MOTIFS: { strokes: Stroke[]; dots?: [number, number][] }[] = [
   { strokes: meshLines, dots: mesh5.map(([x, y]) => [x, y]) },
   // 02 one primitive: a single function, called from the left, observed on the right
   {
-    strokes: [{ circle: [48, 48, 14] }, { d: 'M 12 48 H 30 M 25 43 L 30 48 L 25 53' }, { d: 'M 66 48 H 84 M 79 43 L 84 48 L 79 53' }],
+    strokes: [
+      { circle: [48, 48, 14] },
+      { d: 'M 12 48 H 30 M 25 43 L 30 48 L 25 53' },
+      { d: 'M 66 48 H 84 M 79 43 L 84 48 L 79 53' },
+    ],
   },
   // 03 paradigms collapse categories: six boxes become one
   {

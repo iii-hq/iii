@@ -4,11 +4,11 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, value::RawValue};
 use uuid::Uuid;
 
 use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
@@ -59,7 +59,7 @@ pub const INVALID_NAMESPACE: &str = "INVALID_NAMESPACE";
 /// Absent and blank are opposite intents. Absent asks for [`DEFAULT_NAMESPACE`];
 /// blank names a namespace and gives nothing to name it with. Reading blank as
 /// absent puts the worker in `default` — somewhere it never asked for, where
-/// every call and trigger it makes then follows it, and the one place an
+/// every call and observer it makes then follows it, and the one place an
 /// operator cannot see by reading the declaration. Filing it under the empty
 /// string is worse still: a namespace nobody can address or type.
 ///
@@ -88,9 +88,11 @@ fn default_http_method() -> HttpMethod {
     HttpMethod::Post
 }
 
+/// How a caller wants an `InvokeFunction` handled: queued (`enqueue`) or
+/// fire-and-forget (`void`). Absent means request/response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum TriggerAction {
+pub enum CallAction {
     Enqueue { queue: String },
     Void,
 }
@@ -136,72 +138,72 @@ where
     Value::deserialize(deserializer).map(Some)
 }
 
+/// [`deserialize_present`] for a payload kept as its JSON text.
+fn deserialize_present_raw<'de, D>(deserializer: D) -> Result<Option<RawJson>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    RawJson::deserialize(deserializer).map(Some)
+}
+
+/// Reads `null` as `true`, like an absent field defaulting to `true`.
+fn deserialize_null_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<bool>::deserialize(deserializer).map(|flag| flag.unwrap_or(true))
+}
+
+/// Reads `invocationresult.matched` leniently, so a malformed list never
+/// costs the caller its result: `null` is absent (the host did not narrow
+/// the call's observers), an array is its string ids (any other element is
+/// skipped), and any other value is an empty list (the host narrowed them to
+/// none).
+fn deserialize_matched<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Value::deserialize(deserializer)? {
+        Value::Null => None,
+        Value::Array(ids) => Some(
+            ids.into_iter()
+                .filter_map(|id| match id {
+                    Value::String(id) => Some(id),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => Some(Vec::new()),
+    })
+}
+
+/// Reads a flag that only `true` sets: `null` and any other value read as
+/// `false`, like an absent field.
+fn deserialize_only_true<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(matches!(
+        Value::deserialize(deserializer)?,
+        Value::Bool(true)
+    ))
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_false(flag: &bool) -> bool {
+    !*flag
+}
+
+fn is_true(flag: &bool) -> bool {
+    *flag
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Message {
-    /// Worker→engine. Every SDK has always sent this when a provider retires a
-    /// trigger type; until 0.25 no engine decoded it and the frame was dropped
-    /// with a decode warning. The engine removes the type only when the sending
-    /// connection is its provider.
-    UnregisterTriggerType {
-        id: String,
-        /// Namespace the provider was registered in. Absent means the sending
-        /// connection's namespace, mirroring `RegisterTriggerType`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
-    RegisterTriggerType {
-        id: String,
-        description: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        trigger_request_format: Option<Value>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        call_request_format: Option<Value>,
-        /// Namespace this provider serves. Absent means the registering
-        /// connection's namespace, which is what every SDK wants and what
-        /// keeps two projects providing the same type id from overwriting each
-        /// other. In-process engine providers register in
-        /// [`DEFAULT_NAMESPACE`], where the resolution in
-        /// [`crate::trigger::TriggerRegistry`] falls back to find them.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-    },
-    RegisterTrigger {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        config: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
-        /// Namespace the trigger's target function resolves in. Optional and
-        /// additive: absent means the engine's default namespace, independent
-        /// of the registering connection's namespace. Older peers that never
-        /// send it stay wire-compatible.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        namespace: Option<String>,
-        /// Namespace to find `trigger_type`'s provider in.
-        ///
-        /// Absent is not "default": it asks the engine to resolve, taking the
-        /// registering connection's namespace first and [`DEFAULT_NAMESPACE`]
-        /// second. That is what lets a project ship its own provider for a
-        /// type id the engine also provides, while every worker that has not
-        /// been migrated keeps reaching the engine's one without saying so.
-        /// Naming a namespace here is strict: that namespace or nothing.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        trigger_namespace: Option<String>,
-    },
-    TriggerRegistrationResult {
-        id: String,
-        trigger_type: String,
-        function_id: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        error: Option<ErrorBody>,
-    },
-    UnregisterTrigger {
-        id: String,
-        #[serde(default)]
-        trigger_type: Option<String>,
-    },
     RegisterFunction {
         id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,9 +216,28 @@ pub enum Message {
         metadata: Option<Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         invocation: Option<HttpInvocationRef>,
-        /// How observers of this function are delivered (protocol.md §2.2).
-        /// Absent means `delivery: auto`, observable, no args. The SDK-local
-        /// callbacks never travel. Boxed like `Observe.source`.
+        /// JSON Schema the engine validates observers' `args` against. A
+        /// function without one takes no args.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args_format: Option<Value>,
+        /// Only the connection that hosts the function may invoke it; anyone
+        /// may observe it, and it is never an observer's target.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_null_default",
+            skip_serializing_if = "is_false"
+        )]
+        private: bool,
+        /// `false`: every `observe` of the function fails with
+        /// `NOT_OBSERVABLE`.
+        #[serde(
+            default = "default_true",
+            deserialize_with = "deserialize_null_true",
+            skip_serializing_if = "is_true"
+        )]
+        observable: bool,
+        /// The 0.25 `observe` object, which 0.25 SDKs send and v2 SDKs never
+        /// do. Boxed like `Observe.source`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         observe: Option<Box<ObserveDescriptor>>,
     },
@@ -237,13 +258,13 @@ pub enum Message {
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        action: Option<TriggerAction>,
+        action: Option<CallAction>,
         /// Per-invocation metadata sidecar, delivered to the target handler as a
         /// distinct argument (not folded into `data`). Optional and additive:
         /// omitted when absent, so older peers that don't send/expect it stay
         /// wire-compatible.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        metadata: Option<Value>,
+        metadata: Option<std::sync::Arc<Value>>,
         /// Target namespace for routing. Optional and additive: absent means
         /// [`DEFAULT_NAMESPACE`], so older peers that don't send it stay
         /// wire-compatible.
@@ -269,8 +290,9 @@ pub enum Message {
             skip_serializing_if = "Option::is_none"
         )]
         observe_depth: Option<u32>,
-        /// Engine→worker: present on every observer activation.
-        /// Worker→engine: marks an owner delivery (`obs.call`).
+        /// Engine→worker: present on every observer activation and on every
+        /// call through an observer. Worker→engine: a call through the
+        /// observer `observer_id` (`iii.call({ observer, payload })`).
         #[serde(
             default,
             deserialize_with = "deserialize_lenient",
@@ -298,6 +320,32 @@ pub enum Message {
         /// W3C baggage header for cross-cutting context propagation
         #[serde(skip_serializing_if = "Option::is_none")]
         baggage: Option<String>,
+        /// Host→engine: the observers the function's match hook matched for
+        /// this routed call (v2 §8.2, decision 55). The engine delivers it to
+        /// those of them that are active observers of the function and whose
+        /// `on` and filters match it. Absent when the host did not narrow the
+        /// call's observers (the function has no match hook): the engine then
+        /// evaluates every active observer of the function. Read from a
+        /// connection that declared `observe.v2` only, and leniently
+        /// (`null` is absent; a malformed list is empty). The engine never
+        /// forwards it.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_matched",
+            skip_serializing_if = "Option::is_none"
+        )]
+        matched: Option<Vec<String>>,
+        /// Host→engine: the function's deliver hook delivered this routed
+        /// call, and the engine delivers it to no observer (decision 55).
+        /// Sent only as `true`, which outweighs `matched`. Read from a
+        /// connection that declared `observe.v2` only; anything but `true`
+        /// reads as `false`. The engine never forwards it.
+        #[serde(
+            default,
+            deserialize_with = "deserialize_only_true",
+            skip_serializing_if = "is_false"
+        )]
+        delivered: bool,
     },
     RegisterService {
         id: String,
@@ -363,7 +411,7 @@ pub enum Message {
         source: Box<ObserveSource>,
         /// The right side: the function each activation invokes.
         target: ObserveTarget,
-        /// The activation's metadata sidecar. Never shown to the owner.
+        /// The activation's metadata sidecar. Never shown to the host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,7 +447,7 @@ pub enum Message {
         #[serde(default)]
         fires: u64,
     },
-    /// Engine → owner: the `RegisterFunction` success ack, with the full current
+    /// Engine → host: the `RegisterFunction` success ack, with the full current
     /// observer set. Sent once per registration (and after a re-registration).
     FunctionRegistered {
         id: String,
@@ -412,7 +460,7 @@ pub enum Message {
         #[serde(default)]
         observers: Vec<ObserverView>,
     },
-    /// Engine → owner: one observer attached to a function the connection
+    /// Engine → host: one observer attached to a function the connection
     /// hosts. Awaits `observerack`.
     ObserverAdded {
         function_id: String,
@@ -421,7 +469,7 @@ pub enum Message {
         revision: u64,
         observer: ObserverView,
     },
-    /// Engine → owner: one observer detached.
+    /// Engine → host: one observer detached.
     ObserverRemoved {
         function_id: String,
         #[serde(default = "default_namespace")]
@@ -429,7 +477,7 @@ pub enum Message {
         revision: u64,
         id: String,
     },
-    /// Owner → engine: acknowledges one added observer, or rejects it with
+    /// Host → engine: acknowledges one added observer, or rejects it with
     /// `error` (also later, for an active observer: a late rejection).
     ObserverAck {
         function_id: String,
@@ -442,15 +490,14 @@ pub enum Message {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorBody>,
     },
-    /// Owner → engine: matched local invocations of auto functions and
-    /// `obs.emit` events of owner functions, batched.
+    /// Host → engine: the matched calls of the functions it hosts, batched.
     InvocationsObserved {
         /// Decoded one by one: an item a newer or buggy SDK got wrong is set
         /// aside on its own instead of failing the whole batch.
         #[serde(default)]
         items: ObservedItems,
     },
-    /// Owner → engine: periodic local invocation counts and SDK-side drops,
+    /// Host → engine: periodic local invocation counts and SDK-side drops,
     /// sent only when non-zero.
     LocalInvocationStats {
         window_ms: u64,
@@ -465,11 +512,26 @@ pub enum Message {
 
 /// Engine feature: observers, `functionregistered` and the observe messages.
 pub const FEATURE_OBSERVE_V1: &str = "observe.v1";
+/// Feature: `observe.v1`, plus a host that delivers its own functions' calls
+/// (`invocationresult.matched` and `delivered`, `output_is_input`) and the
+/// function options `args_format`, `private` and `observable`.
+pub const FEATURE_OBSERVE_V2: &str = "observe.v2";
+/// Feature: the connection reads the outcomes an observer fires on from
+/// `fires_on` in its announcement, never from `capture` or the legacy `on`. A
+/// host without it (0.25, and an rc host that declares `observe.v2`) also
+/// gets `on`.
+pub const FEATURE_OBSERVE_CAPTURE: &str = "observe.capture";
 /// Engine feature: SDKs may run their own functions in-process once the engine
 /// confirms them with `functionregistered { local_dispatch: true }`.
 pub const FEATURE_LOCAL_DISPATCH_V1: &str = "local-dispatch.v1";
-/// What this engine advertises in [`Message::WorkerRegistered`].
-pub const ENGINE_FEATURES: [&str; 2] = [FEATURE_OBSERVE_V1, FEATURE_LOCAL_DISPATCH_V1];
+/// What this engine advertises in [`Message::WorkerRegistered`], in this
+/// order.
+pub const ENGINE_FEATURES: [&str; 4] = [
+    FEATURE_OBSERVE_V1,
+    FEATURE_OBSERVE_V2,
+    FEATURE_OBSERVE_CAPTURE,
+    FEATURE_LOCAL_DISPATCH_V1,
+];
 /// Worker feature, declared on `engine::workers::register` and never
 /// advertised by the engine: the connection receives JSON messages up to
 /// 64 MiB, so the engine sends it messages of that size whatever `version` it
@@ -508,7 +570,8 @@ pub mod observe_codes {
     // creation and registration
     pub const UNSUPPORTED: &str = "UNSUPPORTED";
     pub const INVALID_ARGS: &str = "INVALID_ARGS";
-    pub const INVALID_OBSERVE_DESCRIPTOR: &str = "INVALID_OBSERVE_DESCRIPTOR";
+    /// A registration whose `args_format` is not a valid JSON Schema.
+    pub const INVALID_ARGS_FORMAT: &str = "INVALID_ARGS_FORMAT";
     pub const INVALID_FILTER: &str = "INVALID_FILTER";
     pub const INVALID_FILTER_PATH: &str = "INVALID_FILTER_PATH";
     pub const NOT_OBSERVABLE: &str = "NOT_OBSERVABLE";
@@ -517,19 +580,15 @@ pub mod observe_codes {
     pub const LIMIT_EXCEEDED: &str = "LIMIT_EXCEEDED";
     pub const OBSERVER_ID_CONFLICT: &str = "OBSERVER_ID_CONFLICT";
     pub const OWNER_TIMEOUT: &str = "OWNER_TIMEOUT";
-    /// An owner's `onObserverAdded` threw a plain error.
+    /// A host's `onObserverAdded` threw a plain error.
     pub const OBSERVE_REJECTED: &str = "OBSERVE_REJECTED";
 
-    // owner delivery (protocol.md §3.5)
+    // calls through an observer (v2 §4.6)
     pub const OBSERVER_NOT_FOUND: &str = "OBSERVER_NOT_FOUND";
     pub const NOT_FUNCTION_OWNER: &str = "NOT_FUNCTION_OWNER";
-    pub const NOT_OWNER_DELIVERED: &str = "NOT_OWNER_DELIVERED";
     pub const OBSERVER_NOT_ACTIVE: &str = "OBSERVER_NOT_ACTIVE";
-    pub const TARGET_MISMATCH: &str = "TARGET_MISMATCH";
     pub const OVERFLOW: &str = "OVERFLOW";
     pub const LOOP_GUARD: &str = "LOOP_GUARD";
-    /// SDK-side: `obs.call` on a payload the observer's filters reject.
-    pub const FILTERS_NOT_MATCHED: &str = "FILTERS_NOT_MATCHED";
 
     // state reasons
     pub const OWNER_UNAVAILABLE: &str = "OWNER_UNAVAILABLE";
@@ -546,6 +605,9 @@ pub mod observe_codes {
     pub const BUFFER_FULL: &str = "BUFFER_FULL";
     /// SDK-side, reported through `localinvocationstats`.
     pub const TOO_LARGE: &str = "TOO_LARGE";
+    /// SDK-side: report items lost to a closed connection, reported through
+    /// `localinvocationstats`.
+    pub const DISCONNECTED: &str = "DISCONNECTED";
 }
 
 /// Declares a wire enum carried as a lowercase string, with an
@@ -612,20 +674,6 @@ macro_rules! wire_string_enum {
 }
 
 wire_string_enum! {
-    /// How a function's observers are delivered (README §4.2).
-    #[derive(Default)]
-    pub enum Delivery {
-        /// The function's invocations are the events; every observer is
-        /// offered every invocation.
-        #[default]
-        Auto => "auto",
-        /// The owner routes events to observers by their args
-        /// (`obs.emit` / `obs.call`).
-        Owner => "owner",
-    }
-}
-
-wire_string_enum! {
     /// What an activation ships to the target.
     pub enum Capture {
         Input => "input",
@@ -636,36 +684,10 @@ wire_string_enum! {
     }
 }
 
-/// CONTRACT D1: `["input", "output", "caller"]`.
+/// Decision 62: `["input", "output", "caller"]`, so the default fires on
+/// success only and carries the call's `metadata` only when asked for.
 pub fn default_capture() -> Vec<Capture> {
     vec![Capture::Input, Capture::Output, Capture::Caller]
-}
-
-wire_string_enum! {
-    /// Which outcomes of an auto function's invocation activate an observer.
-    /// Defaults to `success` (CONTRACT D1).
-    #[derive(Default)]
-    pub enum On {
-        #[default]
-        Success => "success",
-        Error => "error",
-        Complete => "complete",
-    }
-}
-
-wire_string_enum! {
-    /// What the target's first argument is. Defaults to `envelope`
-    /// (CONTRACT D1).
-    #[derive(Default)]
-    pub enum Deliver {
-        /// The `Observed` envelope.
-        #[default]
-        Envelope => "envelope",
-        /// The observed invocation's input alone.
-        Input => "input",
-        /// The observed invocation's output alone.
-        Output => "output",
-    }
 }
 
 wire_string_enum! {
@@ -681,7 +703,7 @@ wire_string_enum! {
 }
 
 wire_string_enum! {
-    /// Outcome of a reported invocation. An emitted event is always `success`.
+    /// Outcome of a reported invocation.
     pub enum InvocationStatus {
         Success => "success",
         Error => "error",
@@ -692,30 +714,30 @@ fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
-/// `RegisterFunction.observe`: the wire half of a function's observe hooks.
-/// Every field is optional so an absent one is not re-encoded.
+/// `RegisterFunction.observe`: the object a 0.25 SDK sends to describe a
+/// function's observers. The engine reads `delivery` and `allow`; every other
+/// key is decoded, kept for re-encoding and ignored.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObserveDescriptor {
-    /// Absent means [`Delivery::Auto`].
+    /// `auto` (or absent) is the only delivery this engine accepts: any other
+    /// value refuses the registration with `UNSUPPORTED`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery: Option<Delivery>,
-    /// JSON Schema the engine validates observers' `args` against. Owner
-    /// delivery only; with `auto` the registration is rejected
-    /// (`INVALID_OBSERVE_DESCRIPTOR`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args_format: Option<Value>,
-    /// Phase 5 shim: old `RegisterTrigger { trigger_type }` binds to this
-    /// function when no live provider of that type exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_trigger_type: Option<String>,
-    /// Absent means `true`. `false` refuses observers (`NOT_OBSERVABLE`).
+    pub delivery: Option<String>,
+    /// Absent means `true`. `false` registers the function as
+    /// `observable: false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow: Option<bool>,
+    /// The keys this engine ignores, as they arrived.
+    #[serde(flatten)]
+    pub ignored: serde_json::Map<String, Value>,
 }
 
 impl ObserveDescriptor {
-    pub fn delivery(&self) -> Delivery {
-        self.delivery.clone().unwrap_or_default()
+    /// The delivery this engine accepts: `delivery` absent or `auto`.
+    pub fn is_supported(&self) -> bool {
+        self.delivery
+            .as_deref()
+            .is_none_or(|delivery| delivery == "auto")
     }
 
     pub fn allow(&self) -> bool {
@@ -724,15 +746,16 @@ impl ObserveDescriptor {
 }
 
 /// The left side of `iii.observe`: the observed function, its args and filters,
-/// and the facet (`on`, `capture`, `deliver`). Absent fields stay absent; the
-/// accessors apply the defaults (CONTRACT D1).
+/// and what to `capture`. `capture` alone decides which outcomes fire the
+/// target and what its payload carries. Absent fields stay absent; the
+/// accessors apply the defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserveSource {
     pub function_id: String,
     /// Same resolution as `InvokeFunction.namespace`: absent means `default`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
-    /// For the owner of an owner-delivered function, validated against its
+    /// For the worker that hosts the function, validated against its
     /// `args_format`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Value>,
@@ -741,23 +764,35 @@ pub struct ObserveSource {
     pub filters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<Vec<Capture>>,
+    /// Deprecated: an older SDK's `on` (`success` | `error` | `complete`),
+    /// kept as it arrived. The engine translates it at registration
+    /// (decision 60) and refuses any other value with `INVALID_ARGS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on: Option<On>,
+    pub on: Option<Value>,
+    /// Deprecated: an older SDK's `deliver` (`envelope` | `input` |
+    /// `output`), translated like `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deliver: Option<Deliver>,
+    pub deliver: Option<Value>,
+    /// Engine-internal, never on the wire: the target receives the observed
+    /// input alone instead of the payload (the engine's own observers).
+    #[serde(skip)]
+    pub raw_input: bool,
 }
 
 impl ObserveSource {
-    pub fn on(&self) -> On {
-        self.on.clone().unwrap_or_default()
-    }
-
     pub fn capture(&self) -> Vec<Capture> {
         self.capture.clone().unwrap_or_else(default_capture)
     }
 
-    pub fn deliver(&self) -> Deliver {
-        self.deliver.clone().unwrap_or_default()
+    /// The deprecated fields this source carries, as `source.<field>`.
+    pub fn legacy_fields(&self) -> Vec<&'static str> {
+        [
+            (self.on.is_some(), "source.on"),
+            (self.deliver.is_some(), "source.deliver"),
+        ]
+        .into_iter()
+        .filter_map(|(present, field)| present.then_some(field))
+        .collect()
     }
 }
 
@@ -770,10 +805,10 @@ pub struct ObserveTarget {
     pub namespace: Option<String>,
 }
 
-/// An observer as its function's owner sees it (`functionregistered`,
-/// `observeradded`; CONTRACT D15): never its `deliver`, metadata, policy or
-/// observing connection. The engine always sends `capture` and `on` resolved,
-/// so the defaults here only matter when decoding a sparse frame.
+/// An observer as its function's host sees it (`functionregistered`,
+/// `observeradded`): never its metadata, policy or observing
+/// connection. The engine always sends `capture` resolved, so the default
+/// here only matters when decoding a sparse frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObserverView {
     pub id: String,
@@ -783,24 +818,19 @@ pub struct ObserverView {
     /// The observer's filters, normalized (filters.md §5).
     #[serde(default = "empty_object")]
     pub filters: Value,
-    /// Target function id; its namespace is not disclosed (CONTRACT D6).
+    /// Target function id; its namespace is not disclosed.
     pub target: String,
     #[serde(default = "default_capture")]
     pub capture: Vec<Capture>,
-    #[serde(default)]
-    pub on: On,
-    /// Phase 5 shim: the old trigger's type and config. Absent otherwise; SDKs
-    /// must also accept `null`.
+    /// The outcomes the observer fires on: `success`, `error` or both.
+    /// Never empty from this engine; absent from an older one's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fires_on: Vec<String>,
+    /// For a host without `observe.capture` (0.25, rc) only, which decides the outcomes
+    /// that fire from it alone: `error` or `complete` as `capture` implies,
+    /// absent for success. Deprecated with those hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy: Option<LegacyTrigger>,
-}
-
-/// The `RegisterTrigger` an observer was created from by the legacy shim
-/// (protocol.md §6). The owner reads `config` as the observer's args.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LegacyTrigger {
-    pub trigger_type: String,
-    pub config: Value,
+    pub on: Option<String>,
 }
 
 /// Who made an invocation (README §4.3). Every field is optional on the wire:
@@ -840,16 +870,18 @@ pub struct ParentCaller {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Activation {
     pub observer_id: String,
-    /// Engine→worker: unique per activation. Absent on an owner's `obs.call`.
+    /// Engine→worker: unique per activation. Absent on a host's call through
+    /// an observer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation_id: Option<String>,
 }
 
-/// One item of `invocationsobserved`: a matched local invocation of an auto
-/// function, or an `obs.emit` event of an owner function.
+/// One item of `invocationsobserved`: a local call of a function the
+/// reporting connection hosts, with the observers its delivery matched.
 ///
 /// `input` / `output` / `error` / `metadata` keep `null` apart from absent: a
 /// function that returned `null` is not one whose output was not captured.
+/// They stay the JSON text the host sent ([`RawJson`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObservedItem {
     pub function_id: String,
@@ -857,38 +889,37 @@ pub struct ObservedItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespace: Option<String>,
     pub invocation_id: String,
-    /// Auto: observer ids whose filters matched. Owner: the emitted-to
-    /// observers whose filters matched (one event, coalesced).
+    /// The observers the host's delivery matched.
     #[serde(default)]
     pub matched: Vec<String>,
     pub status: InvocationStatus,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub input: Option<Value>,
+    pub input: Option<RawJson>,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub output: Option<Value>,
+    pub output: Option<RawJson>,
     /// `{ code, message, stacktrace? }`, as in `InvocationResult.error`.
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub error: Option<Value>,
+    pub error: Option<RawJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<Caller>,
     #[serde(
         default,
-        deserialize_with = "deserialize_present",
+        deserialize_with = "deserialize_present_raw",
         skip_serializing_if = "Option::is_none"
     )]
-    pub metadata: Option<Value>,
+    pub metadata: Option<RawJson>,
     pub started_at_ms: u64,
     pub duration_ms: f64,
     #[serde(default)]
@@ -897,12 +928,20 @@ pub struct ObservedItem {
     pub traceparent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baggage: Option<String>,
+    /// The handler returned its input: the item carries it once, as `input`,
+    /// and `output` is the same value.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "is_false"
+    )]
+    pub output_is_input: bool,
 }
 
-/// The items of one `invocationsobserved`. Each is decoded on its own, in one
-/// pass (payload fields are moved, never re-parsed): an item a newer or buggy
-/// SDK got wrong lands in `rejected` instead of failing the batch. Only
-/// `items` is on the wire.
+/// The items of one `invocationsobserved`. Each is decoded on its own, its
+/// payloads kept as JSON text ([`RawJson`]): an item a newer or buggy SDK got
+/// wrong lands in `rejected` instead of failing the batch. Only `items` is on
+/// the wire.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObservedItems {
     pub items: Vec<ObservedItem>,
@@ -934,6 +973,9 @@ impl Serialize for ObservedItems {
 
 impl<'de> Deserialize<'de> for ObservedItems {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Through `Message`, whose tag buffers the frame first, there is no
+        // raw text left to lend: each item is decoded, then encoded again
+        // for `ObservedItem::from_value_lenient` (see `Message::from_frame`).
         let mut out = ObservedItems::default();
         match Value::deserialize(deserializer)? {
             Value::Null => {}
@@ -955,17 +997,24 @@ impl<'de> Deserialize<'de> for ObservedItems {
 }
 
 impl ObservedItem {
-    /// Builds an item from its JSON, moving the payload fields out instead of
-    /// decoding them again. Unknown fields are ignored; an unknown `status`
-    /// is kept (as [`InvocationStatus::Unknown`]) for the engine to drop.
+    /// Builds an item from its JSON value: encoded once and read as
+    /// [`ObservedItem::from_raw_lenient`] reads an item off a frame.
     pub fn from_value_lenient(value: Value) -> Result<ObservedItem, RejectedItem> {
-        let Value::Object(mut map) = value else {
+        Self::from_raw_lenient(&value.to_string())
+    }
+
+    /// Builds an item from its JSON text, each payload field left the raw
+    /// text it is. Unknown fields are ignored and a field given twice reads
+    /// as its last value, as in a decoded object; an unknown `status` is kept
+    /// (as [`InvocationStatus::Unknown`]) for the engine to drop.
+    pub fn from_raw_lenient(text: &str) -> Result<ObservedItem, RejectedItem> {
+        let Ok(fields) = serde_json::from_str::<RawItemFields>(text) else {
             return Err(RejectedItem {
                 function_id: None,
                 reason: "not an object".to_string(),
             });
         };
-        let Some(Value::String(function_id)) = map.remove("function_id") else {
+        let Some(function_id) = fields.function_id.and_then(decode_raw::<String>) else {
             return Err(RejectedItem {
                 function_id: None,
                 reason: "`function_id` is missing or not a string".to_string(),
@@ -975,73 +1024,369 @@ impl ObservedItem {
             function_id: Some(function_id.clone()),
             reason: format!("`{field}` is missing or malformed"),
         };
-        let optional_string = |value: Option<Value>| match value {
-            None | Some(Value::Null) => Ok(None),
-            Some(Value::String(s)) => Ok(Some(s)),
-            Some(_) => Err(()),
-        };
 
-        let namespace =
-            optional_string(map.remove("namespace")).map_err(|_| reject("namespace"))?;
-        let Some(Value::String(invocation_id)) = map.remove("invocation_id") else {
+        let namespace = optional_string(fields.namespace).map_err(|_| reject("namespace"))?;
+        let Some(invocation_id) = fields.invocation_id.and_then(decode_raw::<String>) else {
             return Err(reject("invocation_id"));
         };
-        let matched = match map.remove("matched") {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(ids)) => ids
-                .into_iter()
-                .map(|id| match id {
-                    Value::String(id) => Ok(id),
-                    _ => Err(()),
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| reject("matched"))?,
-            Some(_) => return Err(reject("matched")),
+        let matched = match present(fields.matched) {
+            None => Vec::new(),
+            Some(ids) => decode_raw::<Vec<String>>(ids).ok_or_else(|| reject("matched"))?,
         };
-        let status = match map.remove("status") {
-            Some(Value::String(status)) => InvocationStatus::from(status.as_str()),
-            _ => return Err(reject("status")),
+        let Some(status) = fields.status.and_then(decode_raw::<String>) else {
+            return Err(reject("status"));
         };
-        let caller = match map.remove("caller") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(serde_json::from_value(value).map_err(|_| reject("caller"))?),
+        let caller = match present(fields.caller) {
+            None => None,
+            // Through a value, as a decoded item reads it: a key given twice
+            // keeps its last value.
+            Some(caller) => Some(
+                decode_raw::<Value>(caller)
+                    .and_then(|caller| serde_json::from_value(caller).ok())
+                    .ok_or_else(|| reject("caller"))?,
+            ),
         };
-        let started_at_ms = map
-            .remove("started_at_ms")
-            .and_then(|v| v.as_u64())
+        let started_at_ms = fields
+            .started_at_ms
+            .and_then(decode_raw::<u64>)
             .ok_or_else(|| reject("started_at_ms"))?;
-        let duration_ms = map
-            .remove("duration_ms")
-            .and_then(|v| v.as_f64())
+        let duration_ms = fields
+            .duration_ms
+            .and_then(decode_raw::<f64>)
             .ok_or_else(|| reject("duration_ms"))?;
-        let observe_depth = match map.remove("observe_depth") {
-            None | Some(Value::Null) => 0,
-            Some(value) => value
-                .as_u64()
+        let observe_depth = match present(fields.observe_depth) {
+            None => 0,
+            Some(depth) => decode_raw::<u64>(depth)
                 .and_then(|depth| u32::try_from(depth).ok())
                 .ok_or_else(|| reject("observe_depth"))?,
         };
-        let traceparent =
-            optional_string(map.remove("traceparent")).map_err(|_| reject("traceparent"))?;
-        let baggage = optional_string(map.remove("baggage")).map_err(|_| reject("baggage"))?;
+        let traceparent = optional_string(fields.traceparent).map_err(|_| reject("traceparent"))?;
+        let baggage = optional_string(fields.baggage).map_err(|_| reject("baggage"))?;
+        let output_is_input = match present(fields.output_is_input) {
+            None => false,
+            Some(flag) => decode_raw::<bool>(flag).ok_or_else(|| reject("output_is_input"))?,
+        };
 
         Ok(ObservedItem {
             function_id,
             namespace,
             invocation_id,
             matched,
-            status,
-            input: map.remove("input"),
-            output: map.remove("output"),
-            error: map.remove("error"),
+            status: InvocationStatus::from(status.as_str()),
+            input: fields.input.map(RawJson::of),
+            output: fields.output.map(RawJson::of),
+            error: fields.error.map(RawJson::of),
             caller,
-            metadata: map.remove("metadata"),
+            metadata: fields.metadata.map(RawJson::of),
             started_at_ms,
             duration_ms,
             observe_depth,
             traceparent,
             baggage,
+            output_is_input,
         })
+    }
+}
+
+/// A JSON value kept as its text: an `invocationsobserved` payload, read off
+/// the frame without being decoded, sent on as is, and decoded only for a
+/// reader that needs a [`Value`]. Always valid JSON; two are equal when their
+/// texts are.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RawJson(Arc<str>);
+
+impl RawJson {
+    /// `value`'s JSON text.
+    pub fn from_value(value: &Value) -> Self {
+        Self(Arc::from(value.to_string()))
+    }
+
+    fn of(raw: &RawValue) -> Self {
+        Self(Arc::from(raw.get()))
+    }
+
+    /// Its JSON text.
+    pub fn get(&self) -> &str {
+        &self.0
+    }
+
+    /// Its JSON text, shared.
+    pub fn into_shared(self) -> Arc<str> {
+        self.0
+    }
+
+    /// The value it encodes; `None` for valid JSON a [`Value`] cannot hold
+    /// (a number out of range, nesting past the decoder's limit).
+    pub fn to_value(&self) -> Option<Value> {
+        serde_json::from_str(&self.0).ok()
+    }
+}
+
+impl fmt::Debug for RawJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for RawJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Valid JSON: written as it is.
+        let raw: &RawValue = serde_json::from_str(&self.0).map_err(serde::ser::Error::custom)?;
+        raw.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for RawJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Box::<RawValue>::deserialize(deserializer).map(|raw| Self::of(&raw))
+    }
+}
+
+/// A raw field unless absent or `null`, which an optional field reads alike.
+fn present(raw: Option<&RawValue>) -> Option<&RawValue> {
+    raw.filter(|raw| raw.get() != "null")
+}
+
+/// A raw field decoded as a `T`; `None` when it is not one.
+fn decode_raw<'a, T: Deserialize<'a>>(raw: &'a RawValue) -> Option<T> {
+    serde_json::from_str(raw.get()).ok()
+}
+
+/// An optional string field: `Err` when present and not a string.
+fn optional_string(raw: Option<&RawValue>) -> Result<Option<String>, ()> {
+    match present(raw) {
+        None => Ok(None),
+        Some(raw) => decode_raw(raw).map(Some).ok_or(()),
+    }
+}
+
+/// The fields of one `invocationsobserved` item, each the raw JSON text it
+/// was given, for [`ObservedItem::from_raw_lenient`] to read.
+#[derive(Default)]
+struct RawItemFields<'a> {
+    function_id: Option<&'a RawValue>,
+    namespace: Option<&'a RawValue>,
+    invocation_id: Option<&'a RawValue>,
+    matched: Option<&'a RawValue>,
+    status: Option<&'a RawValue>,
+    input: Option<&'a RawValue>,
+    output: Option<&'a RawValue>,
+    error: Option<&'a RawValue>,
+    caller: Option<&'a RawValue>,
+    metadata: Option<&'a RawValue>,
+    started_at_ms: Option<&'a RawValue>,
+    duration_ms: Option<&'a RawValue>,
+    observe_depth: Option<&'a RawValue>,
+    traceparent: Option<&'a RawValue>,
+    baggage: Option<&'a RawValue>,
+    output_is_input: Option<&'a RawValue>,
+}
+
+/// The fields of an `invocationsobserved` item the engine reads.
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum ItemField {
+    FunctionId,
+    Namespace,
+    InvocationId,
+    Matched,
+    Status,
+    Input,
+    Output,
+    Error,
+    Caller,
+    Metadata,
+    StartedAtMs,
+    DurationMs,
+    ObserveDepth,
+    Traceparent,
+    Baggage,
+    OutputIsInput,
+    #[serde(other)]
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for RawItemFields<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Fields;
+
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = RawItemFields<'de>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an invocationsobserved item")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut fields = RawItemFields::default();
+                while let Some(field) = map.next_key()? {
+                    let slot = match field {
+                        ItemField::FunctionId => &mut fields.function_id,
+                        ItemField::Namespace => &mut fields.namespace,
+                        ItemField::InvocationId => &mut fields.invocation_id,
+                        ItemField::Matched => &mut fields.matched,
+                        ItemField::Status => &mut fields.status,
+                        ItemField::Input => &mut fields.input,
+                        ItemField::Output => &mut fields.output,
+                        ItemField::Error => &mut fields.error,
+                        ItemField::Caller => &mut fields.caller,
+                        ItemField::Metadata => &mut fields.metadata,
+                        ItemField::StartedAtMs => &mut fields.started_at_ms,
+                        ItemField::DurationMs => &mut fields.duration_ms,
+                        ItemField::ObserveDepth => &mut fields.observe_depth,
+                        ItemField::Traceparent => &mut fields.traceparent,
+                        ItemField::Baggage => &mut fields.baggage,
+                        ItemField::OutputIsInput => &mut fields.output_is_input,
+                        ItemField::Unknown => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                            continue;
+                        }
+                    };
+                    // A field given twice: its last value, as in a decoded
+                    // object.
+                    *slot = Some(map.next_value()?);
+                }
+                Ok(fields)
+            }
+        }
+
+        deserializer.deserialize_map(Fields)
+    }
+}
+
+/// The text an `invocationsobserved` frame starts with as the SDKs write it.
+const OBSERVED_FRAME_HEAD: &[u8] = br#"{"type":"invocationsobserved""#;
+
+/// The fields of an `invocationsobserved` frame [`Message::from_frame`]
+/// reads.
+#[derive(Deserialize)]
+#[serde(field_identifier, rename_all = "snake_case")]
+enum FrameField {
+    Type,
+    Items,
+    #[serde(other)]
+    Unknown,
+}
+
+/// An `invocationsobserved` frame's items, read in the one pass that scans
+/// the frame (see [`Message::from_frame`]).
+struct ObservedFrame(ObservedItems);
+
+impl<'de> Deserialize<'de> for ObservedFrame {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Frame;
+
+        impl<'de> serde::de::Visitor<'de> for Frame {
+            type Value = ObservedFrame;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an invocationsobserved frame")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::Error;
+                let (mut tagged, mut items) = (false, None);
+                while let Some(field) = map.next_key()? {
+                    match field {
+                        FrameField::Type if !tagged => {
+                            tagged = map.next_value::<&str>()? == "invocationsobserved";
+                            if !tagged {
+                                return Err(A::Error::custom("another type"));
+                            }
+                        }
+                        FrameField::Items if items.is_none() => {
+                            items = Some(map.next_value::<RawItems>()?.0);
+                        }
+                        // Given twice: what `Message` makes of it.
+                        FrameField::Type | FrameField::Items => {
+                            return Err(A::Error::custom("a field given twice"));
+                        }
+                        FrameField::Unknown => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                if !tagged {
+                    return Err(A::Error::custom("no type"));
+                }
+                Ok(ObservedFrame(items.unwrap_or_default()))
+            }
+        }
+
+        deserializer.deserialize_map(Frame)
+    }
+}
+
+/// An `invocationsobserved` frame's `items`: `null` as none, an array as its
+/// items, each decoded on its own off its raw text. Anything else is refused,
+/// for `Message` to read it as one rejected item.
+struct RawItems(ObservedItems);
+
+impl<'de> Deserialize<'de> for RawItems {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Items;
+
+        impl<'de> serde::de::Visitor<'de> for Items {
+            type Value = RawItems;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an array of items, or null")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(RawItems(ObservedItems::default()))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = ObservedItems::default();
+                while let Some(item) = seq.next_element::<&'de RawValue>()? {
+                    match ObservedItem::from_raw_lenient(item.get()) {
+                        Ok(item) => out.items.push(item),
+                        Err(rejected) => out.rejected.push(rejected),
+                    }
+                }
+                Ok(RawItems(out))
+            }
+        }
+
+        deserializer.deserialize_any(Items)
+    }
+}
+
+impl Message {
+    /// Decodes a frame a worker sent, as `serde_json::from_str::<Message>`
+    /// does. An `invocationsobserved` frame written as the SDKs write it
+    /// (`type` first) is read in one pass instead, its items' payloads kept as
+    /// the raw text they came in ([`RawJson`]): through `Message`, its tag
+    /// buffers the whole frame as a tree, which is then decoded again into
+    /// values. What that pass does not take (a field given twice, malformed
+    /// JSON) decodes as any other frame does, to the same result.
+    pub fn from_frame(text: &str) -> serde_json::Result<Message> {
+        if text.as_bytes().starts_with(OBSERVED_FRAME_HEAD)
+            && let Ok(ObservedFrame(items)) = serde_json::from_str(text)
+        {
+            return Ok(Message::InvocationsObserved { items });
+        }
+        serde_json::from_str(text)
+    }
+
+    /// [`Message::from_frame`] for a binary frame.
+    pub fn from_frame_bytes(bytes: &[u8]) -> serde_json::Result<Message> {
+        if bytes.starts_with(OBSERVED_FRAME_HEAD)
+            && let Ok(text) = std::str::from_utf8(bytes)
+        {
+            return Self::from_frame(text);
+        }
+        serde_json::from_slice(bytes)
     }
 }
 
@@ -1057,7 +1402,7 @@ pub struct LocalFunctionStats {
 }
 
 /// SDK-side report drops in `localinvocationstats`. `reason` is a drop reason
-/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`).
+/// from [`observe_codes`] (`BUFFER_FULL`, `TOO_LARGE`, `DISCONNECTED`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DroppedReportStats {
     pub function_id: String,
@@ -1150,9 +1495,86 @@ pub struct StreamChannelRef {
     pub direction: ChannelDirection,
 }
 
+/// The text of an engine-to-worker `invokefunction` whose `data` is already
+/// encoded: the message [`Message::InvokeFunction`] with these fields is,
+/// with `data` written last (and no `action` or `namespace`, which no
+/// invocation the engine sends a worker carries). The activations of one
+/// observed event share its encoded payloads this way instead of each
+/// copying and encoding them, also while they wait for the connection's
+/// writer: the text stays in `data`'s pieces, and the writer sends the
+/// pieces without joining them. A frame of up to
+/// [`INVOKE_FRAME_WHOLE_UP_TO`] bytes is written whole instead. `Err` gives
+/// `data` back when a field does not encode (not expected: every one does).
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_frame(
+    invocation_id: Option<Uuid>,
+    function_id: &str,
+    data: crate::invocation::encoded::EncodedJson,
+    traceparent: Option<&str>,
+    baggage: Option<&str>,
+    metadata: Option<&Value>,
+    caller: Option<&Caller>,
+    observe_depth: Option<u32>,
+    activation: Option<&Activation>,
+) -> Result<crate::invocation::encoded::EncodedJson, crate::invocation::encoded::EncodedJson> {
+    /// Every field of `Message::InvokeFunction` but `data`, written as it
+    /// writes them.
+    #[derive(Serialize)]
+    struct Head<'a> {
+        #[serde(rename = "type")]
+        kind: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invocation_id: Option<Uuid>,
+        function_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        traceparent: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        baggage: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        metadata: Option<&'a Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        caller: Option<&'a Caller>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        observe_depth: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        activation: Option<&'a Activation>,
+    }
+    let Ok(mut head) = serde_json::to_string(&Head {
+        kind: "invokefunction",
+        invocation_id,
+        function_id,
+        traceparent,
+        baggage,
+        metadata,
+        caller,
+        observe_depth,
+        activation,
+    }) else {
+        return Err(data);
+    };
+    // `head` is an object with at least `type` and `function_id`: `data`
+    // goes before its closing brace.
+    head.pop();
+    head.push_str(",\"data\":");
+    if head.len() + data.len() < INVOKE_FRAME_WHOLE_UP_TO {
+        head.reserve_exact(data.len() + 1);
+        data.write_to(&mut head);
+        head.push('}');
+        return Ok(crate::invocation::encoded::EncodedJson::owned(head));
+    }
+    Ok(data.enclosed(head, "}"))
+}
+
+/// The largest `invokefunction` frame [`invoke_frame`] writes whole, in one
+/// piece, instead of sharing `data`'s pieces. The writer joins a frame of up
+/// to 1 MiB into one text when it sends it anyway, so for a small frame the
+/// pieces would only add allocations (three per activation) and a second
+/// copy while saving little memory as it waits.
+pub const INVOKE_FRAME_WHOLE_UP_TO: usize = 2 * 1024;
+
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_NAMESPACE, Message, TriggerAction, effective_namespace};
+    use super::{CallAction, DEFAULT_NAMESPACE, Message, effective_namespace};
     use crate::{
         invocation::{auth::HttpAuthConfig, method::HttpMethod},
         protocol::HttpInvocationRef,
@@ -1189,20 +1611,6 @@ mod tests {
             !wire.contains(r#""result""#),
             "absent must stay absent: {wire}"
         );
-    }
-
-    #[test]
-    fn deserialize_unregister_trigger_without_type() {
-        let raw = r#"{"type":"unregistertrigger","id":"abc"}"#;
-        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
-
-        match message {
-            Message::UnregisterTrigger { id, trigger_type } => {
-                assert_eq!(id, "abc");
-                assert_eq!(trigger_type, None);
-            }
-            _ => panic!("unexpected message variant"),
-        }
     }
 
     #[test]
@@ -1247,20 +1655,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn deserialize_unregister_trigger_with_type() {
-        let raw = r#"{"type":"unregistertrigger","id":"abc","trigger_type":"http"}"#;
-        let message: Message = serde_json::from_str(raw).expect("message should deserialize");
-
-        match message {
-            Message::UnregisterTrigger { id, trigger_type } => {
-                assert_eq!(id, "abc");
-                assert_eq!(trigger_type.as_deref(), Some("http"));
-            }
-            _ => panic!("unexpected message variant"),
-        }
     }
 
     #[test]
@@ -1333,7 +1727,7 @@ mod tests {
             } => {
                 assert_eq!(function_id, "payment.process");
                 match action {
-                    Some(TriggerAction::Enqueue { queue }) => {
+                    Some(CallAction::Enqueue { queue }) => {
                         assert_eq!(queue, "payment");
                     }
                     other => panic!("expected Enqueue action, got {other:?}"),
@@ -1362,7 +1756,7 @@ mod tests {
             } => {
                 assert_eq!(function_id, "audit.log");
                 assert!(
-                    matches!(action, Some(TriggerAction::Void)),
+                    matches!(action, Some(CallAction::Void)),
                     "expected Void action, got {action:?}"
                 );
             }
@@ -1438,7 +1832,9 @@ mod tests {
             traceparent: None,
             baggage: None,
             action: None,
-            metadata: Some(serde_json::json!({ "session_id": "s_1" })),
+            metadata: Some(std::sync::Arc::new(
+                serde_json::json!({ "session_id": "s_1" }),
+            )),
             namespace: None,
             caller: None,
             observe_depth: None,
@@ -1448,7 +1844,10 @@ mod tests {
         assert!(json.contains("\"metadata\""));
         match serde_json::from_str::<Message>(&json).expect("deserialize") {
             Message::InvokeFunction { metadata, data, .. } => {
-                assert_eq!(metadata, Some(serde_json::json!({ "session_id": "s_1" })));
+                assert_eq!(
+                    metadata.as_deref(),
+                    Some(&serde_json::json!({ "session_id": "s_1" }))
+                );
                 // Payload is untouched — metadata is not folded into `data`.
                 assert_eq!(data, serde_json::json!({ "k": 1 }));
             }
@@ -1533,19 +1932,24 @@ mod tests {
     // ── observe (0.25) wire compatibility ─────────────────────────────────
 
     use super::{
-        Activation, Caller, Capture, Deliver, Delivery, InvocationStatus, ObserveDescriptor,
-        ObserverState, On, default_capture,
+        Activation, Caller, Capture, InvocationStatus, ObserveDescriptor, ObservedItem,
+        ObserverState, RawJson, default_capture,
     };
     use serde_json::{Value, json};
 
-    /// Keys a 0.25 engine may add to existing variants. None of them may appear
-    /// on the wire unless set.
-    const NEW_KEYS: [&str; 5] = [
+    /// Keys observe adds to existing variants. None of them may appear on the
+    /// wire unless set.
+    const NEW_KEYS: [&str; 10] = [
         "observe",
+        "args_format",
+        "private",
+        "observable",
         "caller",
         "observe_depth",
         "activation",
         "features",
+        "matched",
+        "delivered",
     ];
 
     fn assert_no_new_keys(msg: &Message) {
@@ -1583,12 +1987,16 @@ mod tests {
             observe,
             request_format,
             response_format,
+            args_format,
+            private,
+            observable,
             ..
         } = register
         else {
             panic!("expected RegisterFunction");
         };
         assert!(observe.is_none() && request_format.is_none() && response_format.is_none());
+        assert!(args_format.is_none() && !private && observable);
 
         let registered: Message = serde_json::from_str(
             r#"{"type":"workerregistered","worker_id":"w-1","reattach_token":"t-1"}"#,
@@ -1622,7 +2030,20 @@ mod tests {
             response_format: None,
             metadata: None,
             invocation: None,
+            args_format: None,
+            private: false,
+            observable: true,
             observe: None,
+        });
+        assert_no_new_keys(&Message::InvocationResult {
+            invocation_id: uuid::Uuid::new_v4(),
+            function_id: "orders::create".into(),
+            result: Some(json!({ "id": 1 })),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            matched: None,
+            delivered: false,
         });
         assert_no_new_keys(&Message::WorkerRegistered {
             worker_id: "w-1".into(),
@@ -1639,7 +2060,7 @@ mod tests {
             data: json!({}),
             traceparent: None,
             baggage: None,
-            action: Some(TriggerAction::Void),
+            action: Some(CallAction::Void),
             metadata: None,
             namespace: None,
             caller: None,
@@ -1727,13 +2148,18 @@ mod tests {
         else {
             panic!("expected Observe");
         };
-        assert_eq!(source.on(), On::Success);
         assert_eq!(source.capture(), default_capture());
         assert_eq!(
             source.capture(),
-            vec![Capture::Input, Capture::Output, Capture::Caller]
+            vec![Capture::Input, Capture::Output, Capture::Caller],
+            "decision 62: no `metadata` unless asked for"
         );
-        assert_eq!(source.deliver(), Deliver::Envelope);
+        assert!(!source.raw_input);
+        let encoded = serde_json::to_value(&source).unwrap();
+        assert!(
+            encoded.get("on").is_none() && encoded.get("deliver").is_none(),
+            "{encoded}"
+        );
         assert!(source.namespace.is_none() && source.args.is_none() && source.filters.is_none());
         assert!(target.namespace.is_none());
         assert!(
@@ -1744,16 +2170,106 @@ mod tests {
         );
     }
 
+    /// The 0.25 `observe` object: `auto` or no delivery is supported, `allow`
+    /// defaults to `true`, and the keys the engine ignores survive a round
+    /// trip.
     #[test]
-    fn observe_descriptor_defaults() {
+    fn the_025_observe_object_is_decoded() {
         let empty = ObserveDescriptor::default();
-        assert_eq!(empty.delivery(), Delivery::Auto);
-        assert!(empty.allow());
+        assert!(empty.is_supported() && empty.allow());
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({}));
 
-        let refused: ObserveDescriptor = serde_json::from_value(json!({ "allow": false })).unwrap();
-        assert!(!refused.allow());
-        assert_eq!(refused.delivery(), Delivery::Auto);
+        let refused: ObserveDescriptor =
+            serde_json::from_value(json!({ "delivery": "auto", "allow": false })).unwrap();
+        assert!(refused.is_supported() && !refused.allow());
+
+        for delivery in ["owner", "broadcast"] {
+            let descriptor: ObserveDescriptor =
+                serde_json::from_value(json!({ "delivery": delivery })).unwrap();
+            assert!(!descriptor.is_supported(), "{delivery}");
+        }
+
+        let wire = json!({ "delivery": "owner", "args_format": { "type": "object" } });
+        let descriptor: ObserveDescriptor = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(descriptor.ignored.len(), 1);
+        assert_eq!(serde_json::to_value(&descriptor).unwrap(), wire);
+    }
+
+    /// `private: false`, `observable: true`, an absent `matched` and
+    /// `delivered: false` are the defaults: left out on the wire, and `null`
+    /// reads as the default.
+    #[test]
+    fn function_options_and_routed_answers_default_when_absent_or_null() {
+        let register: Message = serde_json::from_value(json!({
+            "type": "registerfunction", "id": "vault::read",
+            "args_format": null, "private": null, "observable": null
+        }))
+        .unwrap();
+        let Message::RegisterFunction {
+            args_format,
+            private,
+            observable,
+            ..
+        } = &register
+        else {
+            panic!("expected RegisterFunction");
+        };
+        assert!(args_format.is_none() && !private && *observable);
+        assert_no_new_keys(&register);
+
+        let id = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f";
+        let answer = |fields: Value| -> (Option<Vec<String>>, bool) {
+            let mut frame = json!({
+                "type": "invocationresult", "invocation_id": id,
+                "function_id": "orders::create", "result": 1
+            });
+            frame
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let message: Message =
+                serde_json::from_value(frame).expect("a malformed field does not cost the result");
+            let Message::InvocationResult {
+                matched, delivered, ..
+            } = message
+            else {
+                panic!("expected InvocationResult");
+            };
+            (matched, delivered)
+        };
+        let ids = |ids: &[&str]| Some(ids.iter().map(|id| id.to_string()).collect::<Vec<_>>());
+        // Not narrowed: absent, or `null`.
+        assert_eq!(answer(json!({})), (None, false));
+        assert_eq!(
+            answer(json!({ "matched": null, "delivered": null })),
+            (None, false)
+        );
+        // Narrowed: the string ids, possibly none; a malformed list is none.
+        assert_eq!(
+            answer(json!({ "matched": ["o-1", 7, null, "o-2"] })),
+            (ids(&["o-1", "o-2"]), false),
+            "a malformed id is skipped"
+        );
+        assert_eq!(answer(json!({ "matched": [] })), (ids(&[]), false));
+        assert_eq!(answer(json!({ "matched": "o-1" })), (ids(&[]), false));
+        // Delivered by the host: only `true`.
+        assert_eq!(answer(json!({ "delivered": true })), (None, true));
+        assert_eq!(answer(json!({ "delivered": "yes" })), (None, false));
+        assert_eq!(answer(json!({ "delivered": 1 })), (None, false));
+        // An empty list is sent; an absent one and `false` are not.
+        let wire = serde_json::to_value(Message::InvocationResult {
+            invocation_id: uuid::Uuid::parse_str(id).unwrap(),
+            function_id: "orders::create".into(),
+            result: Some(json!(1)),
+            error: None,
+            traceparent: None,
+            baggage: None,
+            matched: Some(Vec::new()),
+            delivered: false,
+        })
+        .unwrap();
+        assert_eq!(wire["matched"], json!([]));
+        assert!(wire.get("delivered").is_none());
     }
 
     /// A value added by a newer peer decodes as `Unknown`, keeps its spelling
@@ -1779,9 +2295,12 @@ mod tests {
             source.capture.as_deref(),
             Some(&[Capture::Input, Capture::Unknown("timing".into())][..])
         );
-        assert_eq!(source.on, Some(On::Unknown("start".into())));
-        assert!(!source.on().is_known());
-        assert_eq!(source.deliver, Some(Deliver::Unknown("both".into())));
+        // An older SDK's `on` / `deliver` decode into their own fields (the
+        // engine translates them at registration) and re-encode as they
+        // arrived; a key `observe` never had is dropped, as before.
+        let mut with_extra = frame.clone();
+        with_extra["source"]["timing_mode"] = json!("x");
+        let msg: Message = serde_json::from_value(with_extra).expect("decodes");
         assert_eq!(serde_json::to_value(&msg).unwrap(), frame);
 
         let state: Message = serde_json::from_value(
@@ -1793,30 +2312,12 @@ mod tests {
         };
         assert_eq!(state, ObserverState::Unknown("paused".into()));
         assert_eq!(fires, 3);
-
-        let register: Message = serde_json::from_value(json!({
-            "type": "registerfunction",
-            "id": "events::on-broadcast",
-            "observe": { "delivery": "broadcast" }
-        }))
-        .unwrap();
-        let Message::RegisterFunction {
-            observe: Some(descriptor),
-            ..
-        } = register
-        else {
-            panic!("expected a descriptor");
-        };
-        assert_eq!(descriptor.delivery(), Delivery::Unknown("broadcast".into()));
     }
 
     #[test]
     fn wire_enums_spell_their_values_in_lowercase() {
         for (value, wire) in [
-            (serde_json::to_value(Delivery::Owner).unwrap(), "owner"),
             (serde_json::to_value(Capture::Metadata).unwrap(), "metadata"),
-            (serde_json::to_value(On::Complete).unwrap(), "complete"),
-            (serde_json::to_value(Deliver::Output).unwrap(), "output"),
             (
                 serde_json::to_value(ObserverState::Suspended).unwrap(),
                 "suspended",
@@ -1851,19 +2352,52 @@ mod tests {
         };
         let item = &items.items[0];
         assert_eq!(
-            item.input,
-            Some(Value::Null),
+            item.input.as_ref().map(RawJson::get),
+            Some("null"),
             "the function was called with null"
         );
-        assert_eq!(item.output, Some(Value::Null), "the function returned null");
+        assert_eq!(
+            item.output.as_ref().map(RawJson::get),
+            Some("null"),
+            "the function returned null"
+        );
         assert_eq!(item.error, None);
         assert_eq!(item.metadata, None);
         assert_eq!(item.observe_depth, 0);
         assert_eq!(item.status, InvocationStatus::Success);
+        assert!(!item.output_is_input);
 
         let wire = serde_json::to_value(&msg).unwrap();
         assert_eq!(wire["items"][0]["output"], Value::Null);
         assert!(wire["items"][0].get("error").is_none());
+        assert!(wire["items"][0].get("output_is_input").is_none());
+    }
+
+    /// An event source's item carries its event once, as `input`, with
+    /// `output_is_input`; a value that is not a boolean sets the item aside.
+    #[test]
+    fn output_is_input_is_read_from_an_item() {
+        let item = |flag: Value| {
+            json!({
+                "function_id": "database::on-row-changed", "invocation_id": "i-1",
+                "matched": ["o-1"], "status": "success", "input": { "op": "insert" },
+                "output_is_input": flag, "started_at_ms": 1, "duration_ms": 0.5
+            })
+        };
+        let msg: Message = serde_json::from_value(json!({
+            "type": "invocationsobserved",
+            "items": [item(json!(true)), item(Value::Null), item(json!("yes"))]
+        }))
+        .unwrap();
+        let Message::InvocationsObserved { items } = &msg else {
+            panic!("expected InvocationsObserved");
+        };
+        assert!(items.items[0].output_is_input);
+        assert!(!items.items[1].output_is_input, "null reads as false");
+        assert_eq!(items.rejected.len(), 1);
+        let wire = serde_json::to_value(&msg).unwrap();
+        assert_eq!(wire["items"][0]["output_is_input"], json!(true));
+        assert!(wire["items"][1].get("output_is_input").is_none());
     }
 
     #[test]
@@ -1908,6 +2442,142 @@ mod tests {
         assert!(items.items.is_empty() && items.rejected.is_empty());
     }
 
+    /// A report written as the SDKs write it keeps its payloads as the text
+    /// they came in, `null` apart from absent; read through `Message`, the
+    /// same frame gives the same values.
+    #[test]
+    fn a_reports_payloads_stay_the_text_they_came_in() {
+        let frame = r#"{"type":"invocationsobserved","items":[{"function_id":"orders::archive","invocation_id":"i-1","matched":["o-1"],"status":"error","input":{"z": 1, "a": [1.50, "\u00e9"]},"output":null,"error":{"code":"E","message":"m"},"started_at_ms":1,"duration_ms":0.5}]}"#;
+        let Message::InvocationsObserved { items } = Message::from_frame(frame).unwrap() else {
+            panic!("expected InvocationsObserved");
+        };
+        let item = &items.items[0];
+        let text = |part: &Option<RawJson>| part.as_ref().map(|raw| raw.get().to_string());
+        assert_eq!(
+            text(&item.input).as_deref(),
+            Some(r#"{"z": 1, "a": [1.50, "\u00e9"]}"#)
+        );
+        assert_eq!(text(&item.output).as_deref(), Some("null"));
+        assert_eq!(
+            text(&item.error).as_deref(),
+            Some(r#"{"code":"E","message":"m"}"#)
+        );
+        assert_eq!(item.metadata, None);
+
+        let Message::InvocationsObserved { items: through } =
+            serde_json::from_str::<Message>(frame).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        let value = |item: &ObservedItem| item.input.as_ref().and_then(RawJson::to_value);
+        assert_eq!(value(&through.items[0]), value(item));
+        assert_eq!(value(item), Some(json!({ "z": 1, "a": [1.5, "\u{e9}"] })));
+    }
+
+    /// `Message::from_frame` reads every frame as `Message` does: the same
+    /// items, field by field and payload by payload value, the same rejected
+    /// items, the same errors.
+    #[test]
+    fn a_frame_reads_alike_through_from_frame() {
+        // Over a valid item: a field given here is given twice, and its last
+        // value counts.
+        let with = |field: &str| {
+            format!(
+                r#"{{"function_id":"f","invocation_id":"i-9","status":"success","started_at_ms":5,"duration_ms":0.5,{field}}}"#
+            )
+        };
+        let mut items = vec![
+            r#"{"function_id":"f","namespace":"ns","invocation_id":"i-1","matched":["o-1","o-2"],"status":"success","input":{"n":1,"_caller_worker_id":"w"},"output":[1,2.5,null],"error":null,"caller":{"worker_name":"w","worker_name":"x"},"metadata":{"t":1},"started_at_ms":5,"duration_ms":1,"observe_depth":2,"traceparent":"00-ab","baggage":"k=v","output_is_input":false,"unknown":{"x":[1]}}"#.to_string(),
+            r#"{"function_id":"f","invocation_id":"i-2","\u006fbserve_depth":3,"status":"error","started_at_ms":5,"duration_ms":0.5,"matched":null,"output_is_input":null,"traceparent":null}"#.to_string(),
+            r#"{"function_id":"f","invocation_id":"i-3","status":"paused","started_at_ms":5,"duration_ms":0.5}"#.to_string(),
+            r#""not an item""#.to_string(),
+            "[1]".to_string(),
+            r#"{"invocation_id":"i-4"}"#.to_string(),
+            r#"{"function_id":7}"#.to_string(),
+            r#"{"function_id":"f","status":"success","started_at_ms":5,"duration_ms":0.5}"#.to_string(),
+        ];
+        items.extend(
+            [
+                r#""namespace":7"#,
+                r#""invocation_id":"i-10""#,
+                r#""matched":[1]"#,
+                r#""matched":"o-1""#,
+                r#""status":7"#,
+                r#""caller":"w""#,
+                r#""started_at_ms":1.5"#,
+                r#""started_at_ms":-1"#,
+                r#""duration_ms":"1""#,
+                r#""observe_depth":4294967296"#,
+                r#""observe_depth":1.0"#,
+                r#""traceparent":1"#,
+                r#""baggage":false"#,
+                r#""output_is_input":"yes""#,
+                r#""output_is_input":true,"input":{"op":"insert"}"#,
+            ]
+            .map(with),
+        );
+        let items = format!("[{}]", items.join(","));
+        let frames = [
+            format!(r#"{{"type":"invocationsobserved","items":{items}}}"#),
+            format!(r#"{{"items":{items},"type":"invocationsobserved"}}"#),
+            r#"{"type":"invocationsobserved","items":null}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":"nope"}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":{"a":1}}"#.to_string(),
+            r#"{"type":"invocationsobserved"}"#.to_string(),
+            r#"{"type":"invocationsobserved","extra":{"x":[1]},"items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[],"items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","type":"invocationsobserved","items":[]}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[{"function_id":"f"}"#.to_string(),
+            r#"{"type":"invocationsobserved","items":[]} trailing"#.to_string(),
+            r#"{"type":"invocationsobservedx","items":[]}"#.to_string(),
+            r#"{"type":"unobserve","id":"o-1"}"#.to_string(),
+        ];
+        for frame in &frames {
+            match (
+                Message::from_frame(frame),
+                serde_json::from_str::<Message>(frame),
+            ) {
+                (Ok(fast), Ok(slow)) => {
+                    assert_eq!(
+                        serde_json::to_value(&fast).unwrap(),
+                        serde_json::to_value(&slow).unwrap(),
+                        "{frame}"
+                    );
+                    if let (
+                        Message::InvocationsObserved { items: fast },
+                        Message::InvocationsObserved { items: slow },
+                    ) = (&fast, &slow)
+                    {
+                        assert_eq!(fast.rejected, slow.rejected, "{frame}");
+                    }
+                }
+                (Err(fast), Err(slow)) => assert_eq!(fast.to_string(), slow.to_string(), "{frame}"),
+                (fast, slow) => panic!("{frame}: {fast:?} / {slow:?}"),
+            }
+        }
+        let Message::InvocationsObserved { items } = Message::from_frame(&frames[0]).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        assert_eq!((items.items.len(), items.rejected.len()), (5, 18));
+        assert_eq!(
+            items.items[1].observe_depth, 3,
+            "an escaped key reads as its name"
+        );
+        assert_eq!(
+            items.items[3].invocation_id, "i-10",
+            "the last value counts"
+        );
+        assert!(items.items[4].output_is_input);
+        // The binary path reads it alike.
+        let Message::InvocationsObserved { items: binary } =
+            Message::from_frame_bytes(frames[0].as_bytes()).unwrap()
+        else {
+            panic!("expected InvocationsObserved");
+        };
+        assert_eq!(binary, items);
+    }
+
     #[test]
     fn caller_parent_is_one_level_only() {
         let caller: Caller = serde_json::from_value(json!({
@@ -1927,11 +2597,42 @@ mod tests {
     }
 
     #[test]
-    fn engine_advertises_observe_and_local_dispatch() {
+    fn engine_advertises_observe_v1_v2_capture_and_local_dispatch() {
         assert_eq!(
             super::engine_features(),
-            vec!["observe.v1".to_string(), "local-dispatch.v1".to_string()]
+            vec![
+                "observe.v1".to_string(),
+                "observe.v2".to_string(),
+                "observe.capture".to_string(),
+                "local-dispatch.v1".to_string()
+            ]
         );
+        assert_eq!(super::FEATURE_OBSERVE_CAPTURE, "observe.capture");
+    }
+
+    #[test]
+    fn an_observer_view_carries_fires_on_and_on_only_when_set() {
+        let view = super::ObserverView {
+            id: "o-1".to_string(),
+            args: json!({}),
+            filters: json!({}),
+            target: "sink::x".to_string(),
+            capture: vec![super::Capture::Error],
+            fires_on: vec!["error".to_string()],
+            on: None,
+        };
+        let wire = serde_json::to_value(&view).unwrap();
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
+        assert!(wire.get("on").is_none(), "{wire}");
+        let legacy = super::ObserverView {
+            on: Some("error".to_string()),
+            ..view
+        };
+        let wire = serde_json::to_value(&legacy).unwrap();
+        assert_eq!(wire["on"], "error", "{wire}");
+        assert_eq!(wire["fires_on"], json!(["error"]), "{wire}");
+        assert!(wire.get("fires").is_none(), "{wire}");
     }
 
     #[test]
@@ -1953,5 +2654,172 @@ mod tests {
         assert!(read(json!({ "features": "observe.v1" })).is_empty());
         assert!(read(json!({ "features": null })).is_empty());
         assert!(read(json!({})).is_empty());
+    }
+
+    /// An encoded `invokefunction` frame is the message the engine would
+    /// write for the same fields.
+    #[test]
+    fn an_invoke_frame_is_the_invokefunction_message() {
+        use super::{Activation, Caller, invoke_frame};
+        use crate::invocation::encoded::EncodedJson;
+        use serde_json::{Value, json};
+
+        let data = json!({ "observer_id": "o-1", "input": { "k": [1, "\"two\""] } });
+        let caller = Caller {
+            worker_name: Some("iii-engine".to_string()),
+            function_id: Some("orders::create".to_string()),
+            ..Caller::default()
+        };
+        let activation = Activation {
+            observer_id: "o-1".to_string(),
+            activation_id: Some("a-1".to_string()),
+        };
+        let invocation_id = uuid::Uuid::new_v4();
+        let metadata = json!({ "tenant": "t" });
+        let message = Message::InvokeFunction {
+            invocation_id: Some(invocation_id),
+            function_id: "audit::record".to_string(),
+            data: data.clone(),
+            traceparent: Some(
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
+            ),
+            baggage: Some("k=v".to_string()),
+            action: None,
+            metadata: Some(std::sync::Arc::new(metadata.clone())),
+            namespace: None,
+            caller: Some(Box::new(caller.clone())),
+            observe_depth: Some(2),
+            activation: Some(activation.clone()),
+        };
+        let frame = invoke_frame(
+            Some(invocation_id),
+            "audit::record",
+            EncodedJson::of(&data),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            Some("k=v"),
+            Some(&metadata),
+            Some(&caller),
+            Some(2),
+            Some(&activation),
+        )
+        .unwrap()
+        .into_text();
+        assert_eq!(
+            serde_json::from_str::<Value>(&frame).unwrap(),
+            serde_json::to_value(&message).unwrap()
+        );
+        assert!(matches!(
+            serde_json::from_str::<Message>(&frame).unwrap(),
+            Message::InvokeFunction { data: decoded, .. } if decoded == data
+        ));
+
+        // The optional fields absent, as on a worker without `observe.v1`.
+        let bare = invoke_frame(
+            None,
+            "f",
+            EncodedJson::of(&Value::Null),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+        .into_text();
+        assert_eq!(
+            serde_json::from_str::<Value>(&bare).unwrap(),
+            json!({ "type": "invokefunction", "function_id": "f", "data": null })
+        );
+    }
+
+    /// The exact text of an encoded `invokefunction` frame, the message a
+    /// worker reassembles: the same whichever pieces the engine keeps it in.
+    #[test]
+    fn an_invoke_frame_is_this_exact_text() {
+        use super::{Activation, Caller, invoke_frame};
+        use crate::invocation::encoded::ObjectWriter;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        let payload: Arc<str> = Arc::from(json!({ "k": [1, "\u{e9}\"two\""] }).to_string());
+        let mut writer = ObjectWriter::new();
+        writer.field("observer_id", &"o-1");
+        writer.shared_field("input", &payload);
+        writer.field("duration_ms", &1.5);
+        let data = writer.finish();
+        let caller = Caller {
+            worker_name: Some("iii-engine".to_string()),
+            function_id: Some("orders::create".to_string()),
+            ..Caller::default()
+        };
+        let activation = Activation {
+            observer_id: "o-1".to_string(),
+            activation_id: Some("a-1".to_string()),
+        };
+        let invocation_id: uuid::Uuid = "8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f".parse().unwrap();
+        let frame = invoke_frame(
+            Some(invocation_id),
+            "audit::record",
+            data,
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            Some("k=v"),
+            Some(&json!({ "tenant": "t" })),
+            Some(&caller),
+            Some(2),
+            Some(&activation),
+        )
+        .unwrap();
+        // The text the engine wrote before it kept frames in pieces.
+        let before = concat!(
+            r#"{"type":"invokefunction","invocation_id":"8d3c6f9e-0f4b-4e6a-9c1d-2b3a4c5d6e7f","#,
+            r#""function_id":"audit::record","#,
+            r#""traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","#,
+            r#""baggage":"k=v","metadata":{"tenant":"t"},"#,
+            r#""caller":{"worker_name":"iii-engine","function_id":"orders::create"},"#,
+            r#""observe_depth":2,"activation":{"observer_id":"o-1","activation_id":"a-1"},"#,
+            "\"data\":{\"observer_id\":\"o-1\",\"input\":{\"k\":[1,\"\u{e9}\\\"two\\\"\"]},\"duration_ms\":1.5}}",
+        );
+        assert_eq!(frame.len(), before.len());
+        // A frame this small is written whole: it holds no share of the
+        // payload (see `a_large_invoke_frame_shares_the_payload`).
+        assert_eq!(Arc::strong_count(&payload), 1);
+        assert_eq!(frame.into_text(), before);
+    }
+
+    /// A frame above [`super::INVOKE_FRAME_WHOLE_UP_TO`] bytes shares the
+    /// event's payload instead of copying it; one up to that size is
+    /// written whole. Both are the same text.
+    #[test]
+    fn a_large_invoke_frame_shares_the_payload() {
+        use super::{INVOKE_FRAME_WHOLE_UP_TO, invoke_frame};
+        use crate::invocation::encoded::EncodedJson;
+        use std::sync::Arc;
+
+        let head = r#"{"type":"invokefunction","function_id":"f","data":"#;
+        // The largest payload whose frame is written whole, and one byte more.
+        let whole = INVOKE_FRAME_WHOLE_UP_TO - head.len() - 1;
+        for (len, shares) in [(whole, false), (whole + 1, true)] {
+            let payload: Arc<str> = Arc::from(format!("\"{}\"", "x".repeat(len - 2)));
+            let frame = invoke_frame(
+                None,
+                "f",
+                EncodedJson::shared(payload.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(frame.len(), head.len() + len + 1);
+            assert_eq!(
+                Arc::strong_count(&payload) == 2,
+                shares,
+                "payload of {len} bytes"
+            );
+            assert_eq!(frame.into_text(), format!("{head}{payload}}}"));
+        }
     }
 }

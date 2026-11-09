@@ -45,6 +45,8 @@ export const metadata: Metadata = pageMetadata({
 
 const bench = data as unknown as BenchmarksData
 const source = 'https://github.com/iii-hq/iii'
+// The load test lives next to the microVM substrate it boots (sandbox-libkrun).
+const loadtestSource = 'https://github.com/iii-hq/workers'
 const rawData = 'https://iii-hq.github.io/iii/loadtest/index.json'
 
 const linkClass =
@@ -295,9 +297,11 @@ function Benchmarks({ run }: { run: Summary }) {
         lede={
           <>
             <p>
-              A source like cron or a database hands each event to the observers that asked for it, with{' '}
-              <code className="font-mono text-[0.9em] text-foreground">obs.emit()</code>. We offer a steady rate, from
-              1k to 500k events a second over 16 observers, and count what arrives.
+              A source like cron or a database calls its event function (
+              <code className="font-mono text-[0.9em] text-foreground">cron::on-tick</code>,{' '}
+              <code className="font-mono text-[0.9em] text-foreground">database::on-row-changed</code>) for each event,
+              and iii delivers each call to the observers whose args and filters match. We offer a steady rate, from 1k
+              to 500k events a second over 16 observers, and count what arrives.
             </p>
             <p className="mt-3">
               Up to some rate, everything does. That rate is the size&rsquo;s sustained capacity, and past it the engine
@@ -328,7 +332,7 @@ function Benchmarks({ run }: { run: Summary }) {
           <ChartCard
             title="Activations delivered, by events offered"
             subtitle="Per second, over 16 observers, on logarithmic scales: a line on the diagonal delivers everything."
-            read="On the dashed line, everything offered arrives. Where a size's line leaves it, its engine is full: it keeps delivering at capacity, and the excess is dropped and counted instead of queueing without bound. While the observers' queues are full, the engine stops reading the emitting worker, whose SDK drops what it cannot hold (BUFFER_FULL)."
+            read="On the dashed line, everything offered arrives. Where a size's line leaves it, its engine is full: it keeps delivering at capacity, and the excess is dropped and counted instead of queueing without bound. While the observers' queues are full, the engine stops reading the reporting worker, whose SDK drops what it cannot hold (BUFFER_FULL)."
           >
             <Chart
               series={views.delivery(run)}
@@ -593,7 +597,7 @@ function Benchmarks({ run }: { run: Summary }) {
                 ],
                 [
                   'The load',
-                  'Real SDK workers (the Rust SDK) call, host, observe and emit, as an application would. Idle workers are raw WebSockets, so ten thousand fit in one process.',
+                  'Real SDK workers (the Rust SDK) call, host, observe and report observed calls, as an application would. Idle workers are raw WebSockets, so ten thousand fit in one process.',
                 ],
                 [
                   'A step',
@@ -619,19 +623,22 @@ function Benchmarks({ run }: { run: Summary }) {
             <div className="rounded-xl border bg-card">
               <p className="px-5 pt-4 font-medium text-[14px] text-foreground sm:px-6">Run it yourself</p>
               <p className="px-5 pt-1 text-[13px] text-muted-foreground sm:px-6">
-                Linux with KVM. The report lands in target/loadtest/.
+                x86_64 Linux with KVM, in the workers repo next to sandbox-libkrun, against an engine built from iii.
+                The report lands in target/loadtest/.
               </p>
               <pre className="mt-3 overflow-x-auto border-t px-5 py-4 font-mono text-[12.5px] text-foreground leading-relaxed sm:px-6">
-                {`cargo build --release -p iii -p iii-loadtest
-target/release/iii-loadtest suite --profiles 2x1024`}
+                {`cd sandbox-libkrun && BUILD_TARGET=x86_64-unknown-linux-gnu scripts/build-init.sh
+cargo build --release -p iii-loadtest
+target/release/iii-loadtest suite --engine <iii>/target/release/iii --profiles 2x1024 \\
+  --init target/x86_64-unknown-linux-musl/release/iii-init --krunfw firmware/libkrunfw-linux-x86_64.so`}
               </pre>
             </div>
           </Reveal>
           <Reveal>
             <p className={paragraph}>
-              <Ext href={`${source}/tree/main/crates/iii-loadtest`}>The load test</Ext>
+              <Ext href={`${loadtestSource}/tree/main/sandbox-libkrun/crates/iii-loadtest`}>The load test</Ext>
               {' · '}
-              <Ext href={`${source}/blob/main/.github/workflows/loadtest.yml`}>The pipeline</Ext>
+              <Ext href={`${loadtestSource}/blob/main/.github/workflows/loadtest.yml`}>The pipeline</Ext>
               {run.url ? (
                 <>
                   {' · '}

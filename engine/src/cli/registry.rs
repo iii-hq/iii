@@ -18,7 +18,7 @@ pub struct BinarySpec {
 
 #[derive(Debug, Clone)]
 pub struct CommandMapping {
-    /// The command name as exposed by iii (e.g., "cloud", "worker")
+    /// The command name as exposed by iii (e.g., "cloud")
     pub cli_command: &'static str,
     /// The subcommand to pass to the binary, or None for direct passthrough
     pub binary_subcommand: Option<&'static str>,
@@ -43,58 +43,25 @@ pub static SELF_SPEC: BinarySpec = BinarySpec {
     tag_prefix: Some("iii"),
 };
 
-pub static REGISTRY: &[BinarySpec] = &[
-    BinarySpec {
-        name: "iii-init",
-        repo: "iii-hq/iii",
-        has_checksum: true,
-        supported_targets: &[
-            "x86_64-unknown-linux-musl",
-            "x86_64-unknown-linux-gnu",
-            "aarch64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-        ],
-        commands: &[],
-        tag_prefix: Some("iii"),
-    },
-    BinarySpec {
-        name: "iii-cloud",
-        repo: "iii-hq/iii-cloud-cli",
-        has_checksum: true,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-pc-windows-msvc",
-            "aarch64-pc-windows-msvc",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "cloud",
-            binary_subcommand: None,
-        }],
-        tag_prefix: None,
-    },
-    BinarySpec {
-        name: "iii-worker",
-        repo: "iii-hq/iii",
-        has_checksum: true,
-        supported_targets: &[
-            "aarch64-apple-darwin",
-            "x86_64-apple-darwin",
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-musl",
-            "aarch64-unknown-linux-gnu",
-            "aarch64-unknown-linux-musl",
-        ],
-        commands: &[CommandMapping {
-            cli_command: "worker",
-            binary_subcommand: None,
-        }],
-        tag_prefix: Some("iii"),
-    },
-];
+pub static REGISTRY: &[BinarySpec] = &[BinarySpec {
+    name: "iii-cloud",
+    repo: "iii-hq/iii-cloud-cli",
+    has_checksum: true,
+    supported_targets: &[
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+    ],
+    commands: &[CommandMapping {
+        cli_command: "cloud",
+        binary_subcommand: None,
+    }],
+    tag_prefix: None,
+}];
 
 pub fn resolve_command(
     command: &str,
@@ -151,14 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_worker() {
-        let (spec, sub) = resolve_command("worker").unwrap();
-        assert_eq!(spec.name, "iii-worker");
-        assert_eq!(spec.repo, "iii-hq/iii");
-        assert!(sub.is_none());
-    }
-
-    #[test]
     fn test_create_no_longer_resolves() {
         // `create` was a managed-binary dispatch to iii-tools; the command
         // has moved to `iii project init --template`, and iii-tools is gone
@@ -181,8 +140,8 @@ mod tests {
 
     #[test]
     fn test_resolve_binary_for_update() {
-        let spec = resolve_binary_for_update("iii-worker").unwrap();
-        assert_eq!(spec.name, "iii-worker");
+        let spec = resolve_binary_for_update("iii-cloud").unwrap();
+        assert_eq!(spec.name, "iii-cloud");
     }
 
     #[test]
@@ -192,24 +151,9 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_has_checksum() {
-        let (spec, _) = resolve_command("worker").unwrap();
+    fn test_cloud_has_checksum() {
+        let (spec, _) = resolve_command("cloud").unwrap();
         assert!(spec.has_checksum);
-    }
-
-    #[test]
-    fn test_init_supported_targets_match_linux_guest_release_matrix() {
-        let init = resolve_binary_for_update("iii-init").unwrap();
-
-        assert_eq!(
-            init.supported_targets,
-            &[
-                "x86_64-unknown-linux-musl",
-                "x86_64-unknown-linux-gnu",
-                "aarch64-unknown-linux-musl",
-                "aarch64-unknown-linux-gnu",
-            ]
-        );
     }
 
     #[test]

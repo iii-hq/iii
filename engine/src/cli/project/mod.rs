@@ -56,7 +56,7 @@ pub struct InitArgs {
     #[arg(long)]
     pub docker: bool,
 
-    /// Scaffold from a named template (e.g. "quickstart"). Triggers the
+    /// Scaffold from a named template (e.g. "quickstart"). Opens the
     /// interactive scaffolder TUI.
     #[arg(short, long)]
     pub template: Option<String>,
@@ -106,7 +106,7 @@ pub struct GenerateDockerArgs {
 }
 
 fn template_flow_requested(args: &InitArgs) -> bool {
-    // Only --template triggers the interactive scaffolder TUI. The bare flow
+    // Only --template opens the interactive scaffolder TUI. The bare flow
     // also uses scaffolder-core under the hood, but goes through the
     // non-interactive `apply_template` helper.
     args.template.is_some()
@@ -149,7 +149,7 @@ async fn run_init(args: InitArgs) -> i32 {
         return code;
     }
 
-    if let Err(e) = check_directory_state(&root, args.allow_non_empty, "project.ini") {
+    if let Err(e) = check_directory_state(&root, args.allow_non_empty) {
         let code = print_err(
             "target directory is not empty",
             &e,
@@ -270,6 +270,8 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         if CHILD_OWNS_TERMINAL.load(Ordering::Relaxed) {
             return;
         }
+        // The tour's key reader may still hold stdin in cbreak mode.
+        restore_terminal_mode();
         std::process::exit(130);
     });
 
@@ -280,7 +282,6 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         directory: target_dir.clone(),
         languages: None,
         skip_tool_check: args.skip_iii,
-        skip_install: false,
         // --learn-iii prints its own "starting the tour" line right after.
         skip_next_steps: args.learn_iii,
         yes: false,
@@ -354,82 +355,6 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
 }
 
 const LEARN_III_TEMPLATE: &str = "harness";
-/// The base image every worker in the `--learn-iii` project starts from.
-/// Also `oci_image_for_kind`'s answer for JavaScript and TypeScript, and its
-/// fallback for an unrecognised kind, so it is the right first guess before
-/// the template has been written and its manifests can be read.
-const LEARN_III_BASE_IMAGE: &str = "docker.io/iiidev/node:latest";
-
-/// Start downloading base images in the background.
-///
-/// The first boot of a new project waits on an image that is hundreds of
-/// megabytes, and the operator spends the minute before it choosing a
-/// template and pasting a provider key. This puts the download in that
-/// minute instead of after it.
-///
-/// The work runs in `iii-worker`, which owns the rootfs cache; the engine
-/// does not link that crate. Both processes share the cache on disk and take
-/// its per-image lock, so this racing the real pull costs at worst a wait.
-///
-/// `None` when `iii-worker` cannot be found or will not start. That is not
-/// worth reporting: nothing is missing yet, and the spawn that needs the
-/// image pulls it in the usual place with the usual errors.
-fn start_image_prefetch(images: &[String]) -> Option<tokio::process::Child> {
-    if images.is_empty() {
-        return None;
-    }
-    let worker = iii::bin_resolve::find_existing_binary("iii-worker")?;
-    tokio::process::Command::new(worker)
-        .arg("__pull-images")
-        .args(images)
-        // The operator is reading a menu. A pull that printed onto it, or a
-        // failure line for an image nothing has asked for yet, would only be
-        // noise.
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()
-}
-
-/// Every distinct `runtime.base_image` declared by a worker under `dir`.
-///
-/// Read after scaffolding to catch whatever the template actually shipped,
-/// which need not be the image [`start_image_prefetch`] was already given.
-fn declared_base_images(dir: &Path) -> Vec<String> {
-    fn walk(dir: &Path, depth: usize, out: &mut Vec<String>) {
-        // Worker manifests sit at the top of a worker directory. A handful of
-        // levels reaches them under `workers/<name>/` without descending into
-        // `node_modules` and friends.
-        if depth > 3 {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        if let Ok(Some(manifest)) = iii_compose::manifest::read_manifest(dir)
-            && let Some(image) = manifest.base_image
-            && !out.contains(&image)
-        {
-            out.push(image);
-        }
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with('.') || name == "node_modules" || name == "target" {
-                continue;
-            }
-            walk(&path, depth + 1, out);
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, 0, &mut out);
-    out
-}
-
 const LEARN_III_DIR: &str = "learn-iii";
 
 /// `iii project init --learn-iii [NAME]`: same as `iii project init -t harness
@@ -444,11 +369,6 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     args.template = Some(LEARN_III_TEMPLATE.to_string());
     args.directory = Some(dir.to_string_lossy().into_owned());
 
-    // Before the scaffolder's own menu, not after it: `run_init_with_template`
-    // runs an interactive TUI, so this is the earliest moment the download can
-    // start and the longest stretch of thinking time it can hide behind.
-    let mut prefetch = start_image_prefetch(&[LEARN_III_BASE_IMAGE.to_string()]);
-
     let code = run_init_with_template(args).await;
     if code != 0 {
         return code;
@@ -457,14 +377,6 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     // The tour's own worker is declared in the compose file, not added at
     // runtime.
     seed_onboarding_container(&dir);
-
-    // The template is on disk now, so its manifests can say what they really
-    // need. Anything beyond the image already being fetched gets its own pass.
-    let extra: Vec<String> = declared_base_images(&dir)
-        .into_iter()
-        .filter(|image| image != LEARN_III_BASE_IMAGE)
-        .collect();
-    let mut extra_prefetch = start_image_prefetch(&extra);
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -482,21 +394,13 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     eprintln!("  {} starting the tour: {}", "▶".green(), hint.bold());
     eprintln!();
 
-    // Let the downloads finish before compose asks for the same images.
-    // `ensure_rootfs` takes a per-image lock, so an overlap would be safe but
-    // pointless: compose would sit on the lock with nothing on screen, while
-    // waiting here keeps one pull visible in one place. By now the operator
-    // has read a menu, so this is usually already done.
-    for child in [prefetch.as_mut(), extra_prefetch.as_mut()]
-        .into_iter()
-        .flatten()
-    {
-        let _ = child.wait().await;
-    }
-
-    // Aborted when compose exits, so the poll inside needs no deadline of its
+    // Stopped when compose exits, so the poll inside needs no deadline of its
     // own: the tour's life is the deadline.
-    let announcer = tokio::spawn(announce_console_when_ready(dir.join("worker-compose.yaml")));
+    let (stop_announcer, announcer_stopped) = tokio::sync::oneshot::channel();
+    let announcer = tokio::spawn(announce_console_when_ready(
+        dir.join("worker-compose.yaml"),
+        announcer_stopped,
+    ));
     CHILD_OWNS_TERMINAL.store(true, Ordering::Relaxed);
 
     let code = match tokio::process::Command::new(exe)
@@ -510,7 +414,8 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     };
 
     CHILD_OWNS_TERMINAL.store(false, Ordering::Relaxed);
-    announcer.abort();
+    let _ = stop_announcer.send(());
+    let _ = announcer.await;
     // The key reader may still be parked on stdin in cbreak mode; the shell
     // must not get its terminal back with ECHO off.
     restore_terminal_mode();
@@ -540,6 +445,8 @@ const ONBOARDING_CONTAINER: &str = "  # The guided tour. It serves the `onboardi
     version: \"latest\"
     start_after:
       - state
+      - queue
+      - ade
 
 ";
 
@@ -585,14 +492,35 @@ fn seed_onboarding_container(dir: &Path) {
 /// leaves the interrupt to compose.
 static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 
-/// The console worker's configuration entry, and its own default port for
-/// when that entry has no `http_port` yet.
+/// The console worker's configuration entry when it runs outside Compose, and
+/// its own default port for when that entry has no `http_port` yet.
 const CONSOLE_CONFIG: &str = "console";
 const DEFAULT_CONSOLE_PORT: u16 = 3113;
 const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Room for compose's startup renderer to print its closing line and stop
 /// repainting before anything else writes to the terminal.
 const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+
+/// The configuration entry the project's console reads.
+///
+/// Compose gives every container its own entry and hands it over as
+/// `III_CONFIG_NAME`: the container's `config_name`, or
+/// `<namespace>-<container>` (`default-ade` for the harness template). So find
+/// the container running the `ade` package (or its `console` alias) and
+/// resolve its name the way Compose does. `console` is the entry of a direct
+/// run, and the answer when no such container is declared.
+fn console_config_name(file: &iii_compose::config::ComposeFile, namespace: &str) -> String {
+    file.containers
+        .iter()
+        .find(|(_, container)| match &container.worker {
+            iii_compose::config::WorkerSource::Package { reference } => {
+                matches!(reference.rsplit('/').next(), Some("ade") | Some("console"))
+            }
+            iii_compose::config::WorkerSource::Path { .. } => false,
+        })
+        .and_then(|(key, container)| container.resolved_config_name(namespace, key).ok())
+        .unwrap_or_else(|| CONSOLE_CONFIG.to_string())
+}
 
 /// Waits for the tour's project to serve, then points the user at the console
 /// and opens it on request.
@@ -602,7 +530,10 @@ const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000
 /// repaints it, so a banner printed before then is overwritten and the user
 /// never sees it. A ready console has not necessarily bound its listener yet,
 /// so the port is checked too.
-async fn announce_console_when_ready(compose_path: PathBuf) {
+async fn announce_console_when_ready(
+    compose_path: PathBuf,
+    stopped: tokio::sync::oneshot::Receiver<()>,
+) {
     let Ok(file) = iii_compose::config::ComposeFile::load(&compose_path) else {
         return;
     };
@@ -617,41 +548,50 @@ async fn announce_console_when_ready(compose_path: PathBuf) {
     let client =
         iii_compose::engine::EngineClient::connect(&engine.url, "iii-cli:learn-iii", &namespace);
 
-    wait_until_settled(&client, &file.path, &namespace).await;
+    let announce = async {
+        wait_until_settled(&client, &file.path, &namespace).await;
 
-    let port = client
-        .fetch_config(CONSOLE_CONFIG)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|config| {
-            config
-                .get("http_port")
-                .and_then(|port| port.as_u64())
-                .and_then(|port| u16::try_from(port).ok())
-        })
-        .unwrap_or(DEFAULT_CONSOLE_PORT);
+        let port = client
+            .fetch_config(&console_config_name(&file, &namespace))
+            .await
+            .ok()
+            .flatten()
+            .and_then(|config| {
+                config
+                    .get("http_port")
+                    .and_then(|port| port.as_u64())
+                    .and_then(|port| u16::try_from(port).ok())
+            })
+            .unwrap_or(DEFAULT_CONSOLE_PORT);
 
-    while tokio::net::TcpStream::connect(("127.0.0.1", port))
-        .await
-        .is_err()
-    {
-        tokio::time::sleep(READY_POLL_INTERVAL).await;
+        while tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_err()
+        {
+            tokio::time::sleep(READY_POLL_INTERVAL).await;
+        }
+
+        let url = format!("http://127.0.0.1:{port}");
+        eprintln!();
+        eprintln!(
+            "  {} Open your browser to continue: {}",
+            "▶".green(),
+            url.bold()
+        );
+        eprintln!("    Press {} to open it here.", "b".bold());
+        eprintln!();
+
+        // A blocking read on its own thread, not a blocking task: the process
+        // must be free to exit with compose while this is still parked on stdin.
+        std::thread::spawn(move || open_console_on_request(&url));
+    };
+    tokio::select! {
+        () = announce => {}
+        _ = stopped => {}
     }
-
-    let url = format!("http://127.0.0.1:{port}");
-    eprintln!();
-    eprintln!(
-        "  {} Open your browser to continue: {}",
-        "▶".green(),
-        url.bold()
-    );
-    eprintln!("    Press {} to open it here.", "b".bold());
-    eprintln!();
-
-    // A blocking read on its own thread, not a blocking task: the process must
-    // be free to exit with compose while this is still parked on stdin.
-    std::thread::spawn(move || open_console_on_request(&url));
+    // `iii project` exits right after compose: a client it only drops leaves
+    // its `iii ps` marker behind.
+    client.shutdown().await;
 }
 
 /// Waits for the project to stop moving, then for compose's startup renderer
@@ -705,7 +645,7 @@ async fn project_progress(
     compose_path: &Path,
     namespace: &str,
 ) -> Option<Progress> {
-    let request = iii_sdk::protocol::TriggerRequest {
+    let request = iii_sdk::protocol::CallRequest {
         function_id: "compose::status".to_string(),
         payload: serde_json::json!({ "file": compose_path }),
         action: None,
@@ -713,7 +653,7 @@ async fn project_progress(
     }
     .namespace(namespace);
 
-    let value = client.client().trigger(request).await.ok()?;
+    let value = client.client().call(request).await.ok()?;
     let containers = value.get("containers")?.as_array()?;
     read_progress(containers)
 }
@@ -1210,6 +1150,36 @@ mod tests {
 
         // Compose rejects a `package://` container with no version.
         assert!(patched.contains("version: \"latest\""));
+
+        // The tour needs the console and the queue as well as state.
+        assert!(
+            patched.contains("start_after:\n      - state\n      - queue\n      - ade\n"),
+            "{patched}"
+        );
+    }
+
+    /// Under Compose the console reads its own container's entry, not
+    /// `console`, so the announcer has to look up the same name.
+    #[test]
+    fn the_console_entry_is_the_ade_containers_compose_name() {
+        let parse = |text: &str| {
+            iii_compose::config::ComposeFile::parse(text, "/tmp/worker-compose.yaml").unwrap()
+        };
+
+        let harness = parse(
+            "containers:\n  state:\n    worker: package://state\n    version: \"latest\"\n  ade:\n    worker: package://ade\n    version: \"latest\"\n",
+        );
+        assert_eq!(console_config_name(&harness, "default"), "default-ade");
+        assert_eq!(console_config_name(&harness, "demo"), "demo-ade");
+
+        let renamed = parse(
+            "containers:\n  web:\n    worker: package://ade\n    version: \"latest\"\n    config_name: my-console\n",
+        );
+        assert_eq!(console_config_name(&renamed, "default"), "my-console");
+
+        let none =
+            parse("containers:\n  state:\n    worker: package://state\n    version: \"latest\"\n");
+        assert_eq!(console_config_name(&none, "default"), CONSOLE_CONFIG);
     }
 
     #[test]
@@ -1254,59 +1224,5 @@ mod tests {
             next_free_dir(tmp.path(), "learn-iii"),
             tmp.path().join("learn-iii-2")
         );
-    }
-
-    #[test]
-    fn base_images_are_collected_from_every_worker_and_deduplicated() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-
-        let write = |dir: &std::path::Path, image: Option<&str>| {
-            std::fs::create_dir_all(dir).unwrap();
-            let runtime = match image {
-                Some(image) => format!("runtime:\n  base_image: {image}\n"),
-                None => String::new(),
-            };
-            std::fs::write(
-                dir.join("iii.worker.yaml"),
-                format!("name: w\nlanguage: javascript\n{runtime}"),
-            )
-            .unwrap();
-        };
-
-        write(
-            &root.join("workers/alpha"),
-            Some("docker.io/iiidev/node:latest"),
-        );
-        write(
-            &root.join("workers/beta"),
-            Some("docker.io/iiidev/node:latest"),
-        );
-        write(
-            &root.join("workers/gamma"),
-            Some("docker.io/iiidev/python:latest"),
-        );
-        // A worker with no `base_image` runs on the engine, not in a VM.
-        write(&root.join("workers/delta"), None);
-        // Never descended into, however deep a manifest sits inside it.
-        write(
-            &root.join("workers/alpha/node_modules/pkg"),
-            Some("docker.io/library/never:pulled"),
-        );
-
-        let mut images = declared_base_images(root);
-        images.sort();
-        assert_eq!(
-            images,
-            vec![
-                "docker.io/iiidev/node:latest".to_string(),
-                "docker.io/iiidev/python:latest".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn an_empty_image_list_starts_no_prefetch() {
-        assert!(start_image_prefetch(&[]).is_none());
     }
 }

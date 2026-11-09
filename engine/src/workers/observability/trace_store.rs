@@ -29,6 +29,8 @@ use super::otel::StoredSpan;
 
 const BATCH_MAX_SPANS: usize = 512;
 const BATCH_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// Longest the writer sleeps between ticks, and the shortest gap between two
+/// ticks while less than a batch waits (see `writer_loop`).
 const BATCH_INTERVAL: Duration = Duration::from_millis(250);
 const CAP_HIGH_WATERMARK: f64 = 0.90;
 const CAP_LOW_WATERMARK: f64 = 0.80;
@@ -127,6 +129,24 @@ fn reclaim_free_pages(connection: &Connection) -> rusqlite::Result<()> {
         if busy != 0 || free_after == 0 || free_after >= free_before {
             return Ok(());
         }
+    }
+}
+
+/// Copy the WAL into the database and truncate it. Free pages stay in the
+/// file for the next writes.
+fn checkpoint_truncate(connection: &Connection) {
+    let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+}
+
+/// Return free pages to the filesystem only while the file is over the limit
+/// (a lowered limit). Below it they stay for the next writes: shrinking moves
+/// the newest pages into the holes and writes them again.
+fn shrink_file_over_limit(store: &TraceDiskStore, connection: &Connection) {
+    let max_bytes = store.capacity_limits().max_bytes;
+    if page_stats(connection).is_ok_and(|stats| {
+        stats.free > 0 && stats.pages.saturating_mul(stats.page_size) > max_bytes
+    }) {
+        let _ = reclaim_free_pages(connection);
     }
 }
 
@@ -437,6 +457,12 @@ impl TraceDiskStore {
             return directory;
         }
         std::env::temp_dir()
+    }
+
+    /// Whether a whole batch of finalized spans waits for the writer.
+    fn has_full_batch(&self) -> bool {
+        self.hot_storage()
+            .is_some_and(|hot| hot.dirty_len() >= BATCH_MAX_SPANS)
     }
 
     fn hot_storage(&self) -> Option<Arc<InMemorySpanStorage>> {
@@ -841,6 +867,21 @@ impl TraceDiskStore {
     /// trace turns a 500-row page into hundreds of connection opens and JSON
     /// decodes.
     pub fn get_spans_by_trace_ids(&self, trace_ids: &[String]) -> Result<Vec<StoredSpan>, String> {
+        self.read_spans_by_trace_ids(trace_ids, false, None)
+    }
+
+    /// The archived spans of these traces, decoded one row at a time.
+    /// `without_events` drops each span's events and links as soon as it is
+    /// decoded, so the read never holds more than one span's payloads.
+    /// `status_contains` skips, before decoding, spans whose status does not
+    /// contain it (ASCII case-insensitive, as `traces::spans` filters): a page
+    /// of a long trace's error spans no longer decodes the whole trace.
+    pub fn read_spans_by_trace_ids(
+        &self,
+        trace_ids: &[String],
+        without_events: bool,
+        status_contains: Option<&str>,
+    ) -> Result<Vec<StoredSpan>, String> {
         if trace_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -855,30 +896,170 @@ impl TraceDiskStore {
             .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
         configure_read_connection(&mut connection)?;
         let epoch = self.epoch.load(Ordering::Acquire) as i64;
-        let mut rows = Vec::new();
+        let mut spans = Vec::new();
 
         for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
             let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(", ");
+            // No ORDER BY: callers merge by key, and sorting by start time made
+            // SQLite walk the epoch's whole start-time index instead of
+            // looking the traces up by id.
+            let status_clause = if status_contains.is_some() {
+                " AND instr(lower(status), lower(?)) > 0"
+            } else {
+                ""
+            };
             let query = format!(
-                "SELECT payload FROM spans WHERE epoch = ? AND trace_id IN ({placeholders})\n                 ORDER BY start_time_ns ASC, trace_id ASC, span_id ASC"
+                "SELECT payload FROM spans WHERE epoch = ? AND trace_id IN ({placeholders}){status_clause}"
             );
             let mut statement = connection
                 .prepare(&query)
                 .map_err(|err| format!("cannot prepare batched trace read: {err}"))?;
+            let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 2);
+            parameters.push(&epoch);
+            parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
+            if let Some(status) = &status_contains {
+                parameters.push(status);
+            }
+            let mut rows = statement
+                .query(params_from_iter(parameters))
+                .map_err(|err| format!("cannot query batched trace archive: {err}"))?;
+            // One row at a time, straight from SQLite's buffer: collecting
+            // every raw payload of a page of long traces before decoding any
+            // held them all twice over.
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| format!("cannot read batched trace archive row: {err}"))?
+            {
+                let payload = row
+                    .get_ref(0)
+                    .map_err(|err| format!("cannot read batched trace archive row: {err}"))?
+                    .as_str()
+                    .map_err(|err| format!("cannot read batched trace archive payload: {err}"))?;
+                if let Some(mut span) = self.decode_payload(payload) {
+                    if without_events {
+                        span.events = Vec::new();
+                        span.links = Vec::new();
+                    }
+                    spans.push(span);
+                }
+            }
+        }
+
+        Ok(spans)
+    }
+
+    /// The spans of these traces without events or links, built from the
+    /// columns stored ahead of `payload` and from `span_attributes`: no payload
+    /// is read or decoded. A trace summary needs nothing else, and decoding the
+    /// payloads of a long harness trace (every prompt and reply is an event)
+    /// for a few hundred bytes of summary is what ran the engine out of memory.
+    /// Fields kept only in the payload (instrumentation scope, flags,
+    /// `trace_state`) come back empty; no summary reads them.
+    pub fn get_span_headers_by_trace_ids(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<Vec<StoredSpan>, String> {
+        if trace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut unique_ids = HashSet::with_capacity(trace_ids.len());
+        let trace_ids: Vec<&str> = trace_ids
+            .iter()
+            .filter_map(|id| unique_ids.insert(id.as_str()).then_some(id.as_str()))
+            .collect();
+
+        let mut connection = Connection::open(&self.database_path)
+            .map_err(|err| format!("cannot open trace archive for reading: {err}"))?;
+        configure_read_connection(&mut connection)?;
+        // One snapshot for both statements below: the writer can evict a
+        // trace between them, which would return its spans without attributes.
+        let snapshot = connection
+            .transaction()
+            .map_err(|err| format!("cannot begin trace archive read: {err}"))?;
+        let epoch = self.epoch.load(Ordering::Acquire) as i64;
+        let mut spans = Vec::new();
+        let mut index = HashMap::<(String, String), usize>::new();
+
+        for chunk in trace_ids.chunks(TRACE_ID_QUERY_CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
             let mut parameters: Vec<&dyn ToSql> = Vec::with_capacity(chunk.len() + 1);
             parameters.push(&epoch);
             parameters.extend(chunk.iter().map(|id| id as &dyn ToSql));
-            let chunk_rows = statement
-                .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
-                .map_err(|err| format!("cannot query batched trace archive: {err}"))?
+
+            // No ORDER BY: callers merge by key, and sorting by start time made
+            // SQLite walk the epoch's whole start-time index instead of
+            // looking the traces up by id.
+            let query = format!(
+                "SELECT trace_id, span_id, parent_span_id, name, start_time_ns, end_time_ns,
+                        status, status_description, service_name
+                 FROM spans WHERE epoch = ? AND trace_id IN ({placeholders})"
+            );
+            let mut statement = snapshot
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched span header read: {err}"))?;
+            let chunk_spans = statement
+                .query_map(params_from_iter(parameters.iter()), |row| {
+                    Ok(StoredSpan {
+                        trace_id: row.get(0)?,
+                        span_id: row.get(1)?,
+                        parent_span_id: row.get(2)?,
+                        name: row.get(3)?,
+                        start_time_unix_nano: row.get::<_, i64>(4)?.max(0) as u64,
+                        end_time_unix_nano: row.get::<_, i64>(5)?.max(0) as u64,
+                        status: row.get(6)?,
+                        status_description: row.get(7)?,
+                        attributes: Vec::new(),
+                        service_name: row.get(8)?,
+                        events: Vec::new(),
+                        links: Vec::new(),
+                        instrumentation_scope_name: None,
+                        instrumentation_scope_version: None,
+                        flags: None,
+                        trace_state: None,
+                        // The writer never archives a pending snapshot.
+                        pending: false,
+                        observe_depth: 0,
+                    })
+                })
+                .map_err(|err| format!("cannot query batched span headers: {err}"))?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| format!("cannot read batched trace archive row: {err}"))?;
-            rows.extend(chunk_rows);
+                .map_err(|err| format!("cannot read batched span header row: {err}"))?;
+            for span in chunk_spans {
+                index.insert((span.trace_id.clone(), span.span_id.clone()), spans.len());
+                spans.push(span);
+            }
+
+            let query = format!(
+                "SELECT trace_id, span_id, key, value FROM span_attributes
+                 WHERE epoch = ? AND trace_id IN ({placeholders})
+                 ORDER BY trace_id ASC, span_id ASC, ordinal ASC"
+            );
+            let mut statement = snapshot
+                .prepare(&query)
+                .map_err(|err| format!("cannot prepare batched span attribute read: {err}"))?;
+            let mut rows = statement
+                .query(params_from_iter(parameters.iter()))
+                .map_err(|err| format!("cannot query batched span attributes: {err}"))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|err| format!("cannot read batched span attribute row: {err}"))?
+            {
+                let read = |column| {
+                    row.get::<_, String>(column)
+                        .map_err(|err| format!("cannot read span attribute column: {err}"))
+                };
+                if let Some(&owner) = index.get(&(read(0)?, read(1)?)) {
+                    spans[owner].attributes.push((read(2)?, read(3)?));
+                }
+            }
         }
 
-        Ok(self.decode_payloads(rows))
+        Ok(spans)
     }
 
     /// Read every trace-level tag for a set of traces in bounded SQLite
@@ -1139,6 +1320,12 @@ impl TraceDiskStore {
         };
 
         Ok(self.decode_payloads(rows))
+    }
+
+    fn decode_payload(&self, payload: &str) -> Option<StoredSpan> {
+        serde_json::from_str::<StoredSpan>(payload)
+            .map_err(|err| self.record_error(format!("corrupt trace payload skipped: {err}")))
+            .ok()
     }
 
     fn decode_payloads(&self, rows: Vec<String>) -> Vec<StoredSpan> {
@@ -1435,6 +1622,7 @@ fn writer_loop(
     control_rx: mpsc::Receiver<ControlMessage>,
 ) {
     let mut writer = WriterState::default();
+    let mut last_tick = Instant::now();
     loop {
         let Some(store) = weak.upgrade() else { break };
         while let Ok(control) = control_rx.try_recv() {
@@ -1445,7 +1633,25 @@ fn writer_loop(
 
         match wake_rx.recv_timeout(BATCH_INTERVAL) {
             Ok(()) | Err(RecvTimeoutError::Timeout) => {
+                // Ingest wakes the writer for every batch it stores, often a
+                // few spans, and each tick pays a commit and a checkpoint.
+                // Ticking at most once per interval lets one commit carry what
+                // arrived meanwhile. A full batch does not wait, and control
+                // messages (flush, shutdown) are served during the wait.
+                let wait = BATCH_INTERVAL.saturating_sub(last_tick.elapsed());
+                if !wait.is_zero() && !store.has_full_batch() {
+                    match control_rx.recv_timeout(wait) {
+                        Ok(control) => {
+                            if handle_control(&store, &mut connection, &mut writer, control) {
+                                return;
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    }
+                }
                 archive_tick(&store, &mut connection, &mut writer);
+                last_tick = Instant::now();
             }
             Err(RecvTimeoutError::Disconnected) => break,
         }
@@ -2262,6 +2468,16 @@ fn used_bytes(store: &TraceDiskStore, connection: &Connection) -> Result<u64, St
         .saturating_add(store.sidecar_bytes()))
 }
 
+/// What eviction measures: the bytes in use plus the WAL. Free pages are
+/// left out: the next writes fill them, so the file stays at its high mark,
+/// within the limit.
+fn occupied_bytes(store: &TraceDiskStore, connection: &Connection) -> Result<u64, String> {
+    let mut wal = store.database_path.clone().into_os_string();
+    wal.push("-wal");
+    let wal = fs::metadata(PathBuf::from(wal)).map_or(0, |metadata| metadata.len());
+    Ok(used_bytes(store, connection)?.saturating_add(wal))
+}
+
 /// The most `group` could ever be given beside its trace's own durable rows,
 /// as a terminal (drop) bound:
 /// - exact when no other trace holds rows: the room the archive has now
@@ -2653,17 +2869,19 @@ fn try_commit(
             .map_err(|err| database_error(path, "dropped-count update", err))?;
     }
     let after = page_stats(&tx).map_err(|err| database_error(path, "page count", err))?;
-    // The directory once the WAL is checkpointed: pages plus the -shm index.
+    // Used pages plus the -shm index. Free pages are room: SQLite fills them
+    // before the file grows, so the file stays within the limit too.
     let sidecars = store.sidecar_bytes();
-    let image = after
+    let used = after
         .pages
+        .saturating_sub(after.free)
         .saturating_mul(after.page_size)
         .saturating_add(sidecars);
-    if image > limits.threshold {
+    if used > limits.threshold {
         tx.rollback()
             .map_err(|err| database_error(path, "oversized batch rollback", err))?;
         // A rollback can leave spilled WAL frames behind; return them.
-        let _ = reclaim_free_pages(connection);
+        checkpoint_truncate(connection);
         let growth = after
             .pages
             .saturating_add(before.free)
@@ -2713,7 +2931,7 @@ fn try_commit(
     if directory_size(&store.directory)
         .is_ok_and(|bytes| bytes > (limits.max_bytes as f64 * CAP_HIGH_WATERMARK) as u64)
     {
-        let _ = reclaim_free_pages(connection);
+        checkpoint_truncate(connection);
     }
     Ok(Trial::Committed)
 }
@@ -2811,6 +3029,19 @@ fn ensure_capacity(
     incoming: &[(&str, u64)],
     protected: &HashSet<String>,
 ) -> Result<HashSet<String>, CapacityError> {
+    let result = make_room(store, connection, writer, incoming, protected);
+    shrink_file_over_limit(store, connection);
+    result
+}
+
+/// The eviction of `ensure_capacity`, measured in `occupied_bytes`.
+fn make_room(
+    store: &Arc<TraceDiskStore>,
+    connection: &mut Connection,
+    writer: &mut WriterState,
+    incoming: &[(&str, u64)],
+    protected: &HashSet<String>,
+) -> Result<HashSet<String>, CapacityError> {
     let mut incoming_bytes = incoming
         .iter()
         .map(|(_, bytes)| *bytes)
@@ -2818,24 +3049,18 @@ fn ensure_capacity(
     let mut cannot_fit_now = HashSet::new();
     let limits = store.capacity_limits();
     let high_watermark = ((limits.max_bytes as f64) * CAP_HIGH_WATERMARK) as u64;
-    let measure = || {
-        directory_size(&store.directory).map_err(|err| {
-            CapacityError::Storage(format!(
-                "cannot measure trace storage directory '{}': {err}",
-                store.directory.display()
-            ))
-        })
-    };
-    let current = measure()?;
+    let measure =
+        |connection: &Connection| occupied_bytes(store, connection).map_err(CapacityError::Storage);
+    let current = measure(connection)?;
     if current.saturating_add(incoming_bytes) <= high_watermark {
         return Ok(cannot_fit_now);
     }
 
     // Reclaim the write-ahead log before deleting anything: accumulated WAL
-    // frames count toward the measured directory but represent no history,
-    // and reclaiming them alone can put the directory back under the cap.
-    let _ = reclaim_free_pages(connection);
-    let current = measure().unwrap_or(current);
+    // frames count toward the cap but represent no history, and reclaiming
+    // them alone can put the archive back under the cap.
+    checkpoint_truncate(connection);
+    let current = measure(connection).unwrap_or(current);
     if current.saturating_add(incoming_bytes) <= high_watermark {
         return Ok(cannot_fit_now);
     }
@@ -2919,11 +3144,10 @@ fn ensure_capacity(
     }
 
     // Evict oldest-first in batches sized by the estimated excess,
-    // re-measuring the DIRECTORY after each batch. `approx_bytes` undercounts
-    // real file usage (indexes, attribute rows, free pages), so it only
-    // SIZES a batch — never decides success: an accounting-driven pass can
-    // delete the entire archive while the file never shrinks. A batch that
-    // frees no bytes (even after the rate-limited full-VACUUM fallback) means
+    // re-measuring the used pages after each batch. `approx_bytes`
+    // undercounts real usage (indexes, attribute rows, page slack), so it
+    // only SIZES a batch — never decides success. A batch that frees no
+    // bytes (even after the rate-limited full-VACUUM fallback) means
     // deleting more history cannot help, so the remaining traces are kept.
     let mut next_candidate = 0usize;
     let mut remaining_approx: u64 = candidates.iter().map(|(_, bytes)| *bytes).sum();
@@ -2971,20 +3195,19 @@ fn ensure_capacity(
             .map_err(|err| storage_error("eviction transaction commit", err))?;
         writer.forget_floor_of(chunk.iter().copied());
         evicted_any = true;
-        // Vacuum BEFORE the checkpoint (reclaim_free_pages does both, in
-        // steps): in WAL mode the freed pages land in the write-ahead log and
-        // only the checkpoint that follows returns them to the filesystem.
-        let _ = reclaim_free_pages(connection);
-        let mut now_measured = measure().unwrap_or(measured);
+        // The freed pages stay in the file for the next writes; only the
+        // WAL the deletes wrote is returned.
+        checkpoint_truncate(connection);
+        let mut now_measured = measure(connection).unwrap_or(measured);
         if now_measured >= measured {
-            // No physical progress: free pages are not returning to the
-            // filesystem. Spend the rate-limited full VACUUM; if the file
-            // still does not shrink, stop evicting instead of wiping history.
+            // No progress: the deletes freed no page. Spend the rate-limited
+            // full VACUUM; if that does not help either, stop evicting
+            // instead of wiping history.
             if !full_vacuum_fallback(store, connection, writer) {
                 measured = now_measured;
                 break;
             }
-            now_measured = measure().unwrap_or(now_measured);
+            now_measured = measure(connection).unwrap_or(now_measured);
             if now_measured >= measured {
                 measured = now_measured;
                 break;
@@ -2999,7 +3222,8 @@ fn ensure_capacity(
     if next_candidate >= candidates.len() {
         writer.held_floor = Some(HeldFloor {
             traces: held.iter().map(|(trace_id, _)| trace_id.clone()).collect(),
-            bytes: used_bytes(store, connection).unwrap_or_else(|_| measure().unwrap_or(measured)),
+            bytes: used_bytes(store, connection)
+                .unwrap_or_else(|_| measure(connection).unwrap_or(measured)),
             attributed: held
                 .iter()
                 .map(|(_, bytes)| *bytes)
@@ -3007,17 +3231,17 @@ fn ensure_capacity(
         });
     }
 
-    // Deleting rows can show phantom "progress" (a truncated WAL) while the
-    // main file never shrinks. If eviction ran and the directory is still
-    // over the limit, spend the rate-limited full VACUUM before concluding.
+    // Deleting rows can show phantom "progress" (a truncated WAL) while no
+    // page is freed. If eviction ran and the archive is still over the
+    // limit, spend the rate-limited full VACUUM before concluding.
     if evicted_any
         && measured.saturating_add(incoming_bytes) > limits.threshold
         && full_vacuum_fallback(store, connection, writer)
     {
-        measured = measure().unwrap_or(measured);
+        measured = measure(connection).unwrap_or(measured);
     }
 
-    let measured = measure().unwrap_or(measured);
+    let measured = measure(connection).unwrap_or(measured);
     if measured.saturating_add(incoming_bytes) > limits.threshold {
         let message = format!(
             "trace storage limit reached: {measured} bytes used, {incoming_bytes} bytes incoming, limit {} bytes, tolerance {} bytes",
@@ -3102,8 +3326,12 @@ fn retain_database(
             })?;
         }
         writer.forget_floor_of(traces.iter().map(String::as_str));
-        // Return the space in bounded steps; see `reclaim_free_pages`.
-        let _ = reclaim_free_pages(connection);
+        // Return the space of expired history in bounded steps; see
+        // `reclaim_free_pages`. With nothing expired, the free pages are
+        // eviction's, kept for the next writes.
+        if !traces.is_empty() {
+            let _ = reclaim_free_pages(connection);
+        }
     }
     let protected = store
         .hot_storage()
@@ -3216,6 +3444,10 @@ fn add_image_bytes_column(connection: &Connection) -> rusqlite::Result<()> {
 // initializes the database header, and auto_vacuum declared after that point
 // is a silent no-op on the file (while reading the pragma back on the same
 // connection still reports the wished value).
+//
+// The writer's page cache is 16 MiB instead of SQLite's 2 MiB: span ids and
+// attribute values land at random places in the indexes, and with 2 MiB most
+// inserts read a page back from the file or spill one mid-transaction.
 fn configure_connection(connection: &mut Connection) -> Result<(), String> {
     connection
         .execute_batch(
@@ -3223,7 +3455,8 @@ fn configure_connection(connection: &mut Connection) -> Result<(), String> {
              PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=1000;",
+             PRAGMA busy_timeout=1000;
+             PRAGMA cache_size=-16384;",
         )
         .and_then(|()| connection.execute_batch(SCHEMA_SQL))
         .and_then(|()| add_image_bytes_column(connection))
@@ -3523,6 +3756,58 @@ mod tests {
         store.shutdown();
     }
 
+    /// Below the cap, eviction leaves the freed pages in the file for the
+    /// next writes. Shrinking the file after each eviction moved the newest
+    /// pages into the holes and wrote them again, only for the next writes
+    /// to grow the file back.
+    #[test]
+    fn sustained_writes_past_the_cap_reuse_freed_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).unwrap();
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(512, 128 * 1024 * 1024));
+        store.attach_hot_storage(&hot);
+        let database = directory.path().join("traces.sqlite3");
+        let (mut peak, mut shrinks) = (0, 0);
+        for index in 0..60 {
+            let spans = (0..63)
+                .map(|part| {
+                    let mut span =
+                        test_span(&format!("reuse-{index:04}-{part:02}"), "span", "reuse");
+                    span.attributes = vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))];
+                    span
+                })
+                .collect();
+            hot.add_spans(spans);
+            flush_settled(&store, &hot).expect("bounded batch persists");
+            let file = fs::metadata(&database).unwrap().len();
+            if file < peak {
+                shrinks += 1;
+            }
+            peak = peak.max(file);
+            assert!(
+                store.status().physical_bytes <= config.max_disk_bytes + 8 * 1024 * 1024,
+                "over the cap at batch {index}"
+            );
+        }
+        assert!(
+            store
+                .get_spans_by_trace_id("reuse-0000-00")
+                .unwrap()
+                .is_empty(),
+            "the oldest trace must be evicted"
+        );
+        assert_eq!(
+            store.get_spans_by_trace_id("reuse-0059-62").unwrap().len(),
+            1
+        );
+        assert_eq!(
+            shrinks, 0,
+            "the file shrank after an eviction below the cap"
+        );
+        store.shutdown();
+    }
+
     #[test]
     fn age_retention_removes_old_ingested_trace_and_keeps_recent_trace() {
         let directory = tempfile::tempdir().unwrap();
@@ -3544,6 +3829,35 @@ mod tests {
         store.retain().unwrap();
         assert!(store.get_spans_by_trace_id("old").unwrap().is_empty());
         assert_eq!(store.get_spans_by_trace_id("new").unwrap().len(), 1);
+        store.shutdown();
+    }
+
+    /// The one-minute retention pass leaves the pages eviction freed in the
+    /// file when no trace expired: returning them would move the newest
+    /// pages, only for the next writes to grow the file back.
+    #[test]
+    fn retention_with_nothing_expired_keeps_freed_pages() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TraceDiskStore::open(&test_config(directory.path())).unwrap();
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(512, 128 * 1024 * 1024));
+        store.attach_hot_storage(&hot);
+        for index in 0..30 {
+            let spans = (0..63)
+                .map(|part| {
+                    let mut span = test_span(&format!("kept-{index:04}-{part:02}"), "span", "kept");
+                    span.attributes = vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))];
+                    span
+                })
+                .collect();
+            hot.add_spans(spans);
+            flush_settled(&store, &hot).expect("bounded batch persists");
+        }
+        let database = directory.path().join("traces.sqlite3");
+        let before = fs::metadata(&database).unwrap().len();
+        let spans = store.span_count().unwrap();
+        store.retain().unwrap();
+        assert_eq!(store.span_count().unwrap(), spans, "nothing expired");
+        assert_eq!(fs::metadata(&database).unwrap().len(), before);
         store.shutdown();
     }
 
@@ -3758,6 +4072,132 @@ mod tests {
         assert_eq!(tags[0].value, "earlier");
         assert_eq!(tags[2].trace_id, "trace-2");
         assert_eq!(tags[2].key, "iii.session.name");
+        store.shutdown();
+    }
+
+    #[test]
+    fn span_headers_match_archived_spans_without_reading_a_payload() {
+        let directory = tempfile::tempdir().expect("temp trace directory");
+        let config = test_config(directory.path());
+        let store = TraceDiskStore::open(&config).expect("open trace store");
+        let hot = Arc::new(InMemorySpanStorage::new_with_limits(32, 1_000_000));
+        store.attach_hot_storage(&hot);
+
+        let mut root = test_span("trace-1", "span-1", "turn");
+        root.attributes
+            .push(("iii.tag.session".to_string(), "s1".to_string()));
+        root.attributes
+            .push(("function_id".to_string(), "harness::turn".to_string()));
+        root.events = vec![crate::workers::observability::otel::StoredSpanEvent {
+            name: "invocation".to_string(),
+            timestamp_unix_nano: 1_000_000_001,
+            attributes: vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))],
+        }];
+        root.instrumentation_scope_name = Some("iii-sdk".to_string());
+        root.flags = Some(1);
+        root.trace_state = Some("vendor=1".to_string());
+        let mut child = test_span("trace-1", "span-2", "tool");
+        child.parent_span_id = Some("span-1".to_string());
+        child.status = "error".to_string();
+        child.status_description = Some("boom".to_string());
+        hot.add_spans(vec![root, child, test_span("trace-2", "span-3", "other")]);
+        store.flush().expect("flush trace store");
+
+        let ids = ["trace-1".to_string()];
+        // What a trace summary reads; payload-only fields are not in a header.
+        let summary_fields = |mut spans: Vec<StoredSpan>| {
+            spans.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+            spans
+                .into_iter()
+                .map(|span| {
+                    (
+                        span.trace_id,
+                        span.span_id,
+                        span.parent_span_id,
+                        span.name,
+                        span.start_time_unix_nano,
+                        span.end_time_unix_nano,
+                        span.status,
+                        span.status_description,
+                        span.service_name,
+                        span.attributes,
+                        span.pending,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut full = store.get_spans_by_trace_ids(&ids).expect("full read");
+        full.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+        assert!(
+            full.iter().any(|span| !span.events.is_empty()),
+            "the archive kept the payload event"
+        );
+        let headers = store
+            .get_span_headers_by_trace_ids(&ids)
+            .expect("header read");
+        assert!(headers.iter().all(|span| span.events.is_empty()
+            && span.instrumentation_scope_name.is_none()
+            && span.flags.is_none()));
+        assert_eq!(
+            summary_fields(headers),
+            summary_fields(full.clone()),
+            "a header carries every field a summary reads, attributes in order"
+        );
+
+        let mut without_events = store
+            .read_spans_by_trace_ids(&ids, true, None)
+            .expect("read without events");
+        without_events.sort_by(|a, b| a.span_id.cmp(&b.span_id));
+        let full_minus_events: Vec<_> = full
+            .iter()
+            .map(|span| serde_json::to_value(span.header()).expect("serialize span"))
+            .collect();
+        assert_eq!(
+            without_events
+                .iter()
+                .map(|span| serde_json::to_value(span).expect("serialize span"))
+                .collect::<Vec<_>>(),
+            full_minus_events,
+            "without events, a read keeps every other stored field"
+        );
+
+        let errors = store
+            .read_spans_by_trace_ids(&ids, false, Some("ERR"))
+            .expect("read error spans");
+        assert_eq!(
+            errors
+                .iter()
+                .map(|span| span.span_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["span-2"],
+            "a status filter decodes only the spans whose status contains it"
+        );
+
+        let corrupt = |payload: &str| {
+            Connection::open(&store.database_path)
+                .expect("open archive")
+                .execute(&format!("UPDATE spans SET payload = {payload}"), [])
+                .expect("corrupt payloads");
+        };
+        corrupt("'not json'");
+        assert!(
+            store
+                .get_spans_by_trace_ids(&ids)
+                .expect("full read")
+                .is_empty(),
+            "a full read decodes payloads and skips the corrupt ones"
+        );
+        // Not even text: any read of the column fails.
+        corrupt("X'FF'");
+        assert!(store.get_spans_by_trace_ids(&ids).is_err());
+        assert_eq!(
+            store
+                .get_span_headers_by_trace_ids(&ids)
+                .expect("header read")
+                .len(),
+            2,
+            "a header read never reads the payload column"
+        );
         store.shutdown();
     }
 

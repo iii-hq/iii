@@ -3,26 +3,26 @@
 
 ## How workers expand iii
 
-Workers add capability to a iii system. Each one contributes functions and triggers the engine can
-route to. This page covers deploying and wiring workers into a project.
+Workers add capability to an iii system. Each one contributes functions the engine can route to.
+This page covers deploying and wiring workers into a project.
 
 Once connected, a worker exposes:
 
 - Functions, callable by `function_id` from anywhere in the system (see
   [Using iii / Functions](../using-iii/functions)).
-- Triggers it advertises, which other workers can bind their functions to (see
-  [Using iii / Triggers](../using-iii/triggers)).
+- The same functions as event sources: any worker can observe them, so its own functions run each
+  time they run (see [Using iii / Observers](../using-iii/observers)).
 
 <Note>
-  For the full SDK surface each Worker can use when interacting with iii, see the complete SDK
+  For the full SDK surface each worker can use when interacting with iii, see the complete SDK
   reference by language: [Node](../reference/sdk-node), [Python](../reference/sdk-python),
   [Rust](../reference/sdk-rust), [Go](../reference/sdk-go), or [Browser](../reference/sdk-browser).
 </Note>
 
 ## Create a new worker
 
-A worker is any process that installs a iii SDK, connects to an engine, and registers functions or
-triggers. Create a normal TypeScript, JavaScript, Python, Rust, or Go project using that language's
+A worker is any process that installs an iii SDK, connects to an engine, and registers functions or
+observers. Create a normal TypeScript, JavaScript, Python, Rust, or Go project using that language's
 package tools, then add the corresponding iii SDK and an entrypoint such as `src/index.ts`,
 `src/main.py`, or `main.go`.
 
@@ -36,8 +36,10 @@ scripts:
 ```
 
 Declare the directory in `worker-compose.yaml`, or add it through a running daemon with
-`iii trigger -n dev compose::add worker=./workers/my-worker`. See
-[Using iii / Workers](../using-iii/workers#finding-workers) for the registry and local-path surface.
+`iii call -n dev compose::add worker=./workers/my-worker`. See
+[Declare workers with Compose](../using-iii/workers#declare-workers-with-compose) for `path://`
+workers and [Add a registry worker](../using-iii/workers#add-a-registry-worker) for registry
+packages.
 
 <Info title="Engine and SDK versions">
   The engine and SDK packages can have different patch versions within the same minor line. Keep the
@@ -48,15 +50,14 @@ Declare the directory in `worker-compose.yaml`, or add it through a running daem
 ## Connecting to the engine
 
 A worker connects to the engine over WebSocket. The convention is to set the engine URL via the
-`III_URL` environment variable, but it can also be passed explicitly to `register_worker`. The
+`III_URL` environment variable, but it can also be passed explicitly to `registerWorker`. The
 connection string is the only coupling between a worker and the iii instance it joins, so the worker
 process can be deployed anywhere reachable on the network.
 
 <Note>
   This connects with full trust, appropriate for workers you run. For an untrusted worker (a browser
   client or a third party's), connect through the `iii-worker-manager` RBAC listener and gate it
-  with an auth function instead. See [Untrusted workers and access
-  control](../using-iii/workers#untrusted-workers-and-access-control) and the [iii-worker-manager
+  with an auth function instead. See [Access Control](./worker-manager) and the [iii-worker-manager
   worker page](https://workers.iii.dev/workers/iii-worker-manager).
 </Note>
 
@@ -68,9 +69,9 @@ process can be deployed anywhere reachable on the network.
     const url = process.env.III_URL;
     if (!url) throw new Error("III_URL must be set");
     const worker = registerWorker(url, {
-      workerName: "my-worker",
-      workerDescription: "One-line summary of what this worker does",
-      namespace: "orders", // scopes this worker's registrations
+      workerName: "math-worker",
+      workerDescription: "Evaluate math expressions over iii functions",
+      namespace: "math", // scopes this worker's registrations
     });
     ```
 
@@ -78,14 +79,19 @@ process can be deployed anywhere reachable on the network.
   <Tab title="Python">
     ```python
     import os
-    from iii import register_worker, InitOptions
+
+    from iii import InitOptions, register_worker
+
+    url = os.environ.get("III_URL")
+    if url is None:
+        raise RuntimeError("III_URL must be set")
 
     worker = register_worker(
-        os.environ.get("III_URL"),
+        url,
         InitOptions(
-            worker_name="my-worker",
-            worker_description="One-line summary of what this worker does",
-            namespace="orders",  # scopes this worker's registrations
+            worker_name="math-worker",
+            worker_description="Evaluate math expressions over iii functions",
+            namespace="math",  # scopes this worker's registrations
         ),
     )
     ```
@@ -96,74 +102,125 @@ process can be deployed anywhere reachable on the network.
     use iii_sdk::runtime::WorkerMetadata;
     use iii_sdk::{InitOptions, register_worker};
 
-    let url = std::env::var("III_URL").expect("III_URL must be set");
-    let worker = register_worker(
-        &url,
-        InitOptions {
-            metadata: Some(WorkerMetadata {
-                name: "my-worker".into(),
-                description: Some("One-line summary of what this worker does".into()),
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let _worker = register_worker(
+            &url,
+            InitOptions {
+                metadata: Some(WorkerMetadata {
+                    name: "math-worker".into(),
+                    description: Some("Evaluate math expressions over iii functions".into()),
+                    ..Default::default()
+                }),
+                namespace: Some("math".into()), // scopes this worker's registrations
                 ..Default::default()
-            }),
-            namespace: Some("orders".into()), // scopes this worker's registrations
-            ..Default::default()
-        },
-    );
+            },
+        );
+    }
     ```
 
   </Tab>
   <Tab title="Go">
     ```go
-    client := iii.RegisterWorker(os.Getenv("III_URL"),
-        iii.WithName("my-worker"),
-        iii.WithDescription("One-line summary of what this worker does"),
-        iii.WithNamespace("orders"), // scopes this worker's registrations
+    package main
+
+    import (
+        "os"
+
+        iii "github.com/iii-hq/iii/sdk/packages/go/iii"
     )
+
+    func main() {
+        client := iii.RegisterWorker(os.Getenv("III_URL"),
+            iii.WithName("math-worker"),
+            iii.WithDescription("Evaluate math expressions over iii functions"),
+            iii.WithNamespace("math"), // scopes this worker's registrations
+        )
+
+        defer client.Close()
+
+        // Register functions on client: they are resent on each connection.
+        select {
+        }
+    }
     ```
 
   </Tab>
 </Tabs>
 
 `namespace` scopes everything this worker registers, so an identically-named worker or function id
-can coexist in another namespace.
+can coexist in another namespace. The SDK reads it from the option, then from the `III_NAMESPACE`
+environment variable, then falls back to `default`.
 
-Leave the option out and the SDK reads the `III_NAMESPACE` environment variable itself, so these two
-are equivalent when `III_NAMESPACE` is set in the worker's environment:
+With `III_NAMESPACE` set in the worker's environment, these two are equivalent:
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL ?? "ws://127.0.0.1:49134";
+
     registerWorker(url, { namespace: process.env.III_NAMESPACE });
     registerWorker(url);
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    url = os.environ.get("III_URL", "ws://127.0.0.1:49134")
+
     register_worker(url, InitOptions(namespace=os.environ.get("III_NAMESPACE")))
     register_worker(url)
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
-    register_worker(&url, InitOptions {
-        namespace: std::env::var("III_NAMESPACE").ok(),
-        ..Default::default()
-    });
-    register_worker(&url, InitOptions::default());
+    use iii_sdk::{InitOptions, register_worker};
+
+    fn main() {
+        let url = "ws://127.0.0.1:49134";
+
+        let explicit = register_worker(
+            url,
+            InitOptions {
+                namespace: std::env::var("III_NAMESPACE").ok(),
+                ..Default::default()
+            },
+        );
+        let from_env = register_worker(url, InitOptions::default());
+
+        drop((explicit, from_env));
+    }
     ```
+
   </Tab>
   <Tab title="Go">
     ```go
-    // WithNamespace refuses a blank name, so the first form needs III_NAMESPACE set.
-    iii.RegisterWorker(url, iii.WithNamespace(os.Getenv("III_NAMESPACE")))
-    iii.RegisterWorker(url)
+    package main
+
+    import (
+        "os"
+
+        iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+        url := os.Getenv("III_URL")
+
+        // WithNamespace refuses a blank name, so the first form needs III_NAMESPACE set.
+        iii.RegisterWorker(url, iii.WithNamespace(os.Getenv("III_NAMESPACE")))
+        iii.RegisterWorker(url)
+    }
     ```
 
   </Tab>
 </Tabs>
-
-The SDK falls back to the `default` namespace when neither the option nor `III_NAMESPACE` gives it
-one. The browser SDK has no environment to read, so it takes the option only.
 
 Omit the option to serve many tenants from one worker package: set `III_NAMESPACE` per deployment,
 and each deployment of the same image registers in its own namespace.
@@ -173,170 +230,167 @@ and each deployment of the same image registers in its own namespace.
   namespaces](../using-iii/namespaces).
 </Note>
 
+<Note>The browser SDK has no environment to read, so it takes the option only.</Note>
+
 ## Worker lifecycle
 
 ### States
 
 Workers transition through a small set of states after connecting:
-`connecting → connected → available / busy → disconnected`. `connecting` is the WebSocket handshake.
-`connected` means the Worker has joined the Engine's registry. `available` and `busy` describe
-whether the Worker is currently handling invocations. `disconnected` is the terminal state when the
-WebSocket closes. The Engine tracks these transitions and surfaces them to other Workers and tooling
-through its discovery functions, so the rest of the system can react.
+`connected → available / busy → disconnected`. `connected` means the worker has joined the engine's
+registry. `available` and `busy` describe whether the worker is currently handling invocations.
+`disconnected` is the terminal state when the WebSocket closes. The engine tracks these transitions
+and surfaces them to other workers and tooling through its discovery functions, so the rest of the
+system can react. The WebSocket handshake that precedes `connected` is not one of these states.
 
 ### Inspecting the live registry
 
-To see what's currently connected to the Engine, invoke one of the `engine::*::list` Functions to
+To see what's currently connected to the engine, invoke one of the `engine::*::list` functions to
 get the current state of the registry. Each returns a list:
 
-| Function                            | What it returns                                                      |
-| ----------------------------------- | -------------------------------------------------------------------- |
-| `engine::workers::list`             | Every connected Worker with metrics.                                 |
-| `engine::functions::list`           | Every registered Function. Filterable by `include_internal`.         |
-| `engine::triggers::list`            | Every advertised Trigger type with its config and call schemas.      |
-| `engine::registered-triggers::list` | Every registered Trigger instance. Filterable by `include_internal`. |
+| Function                  | What it returns                                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `engine::workers::list`   | Every connected worker with metrics.                                                                                               |
+| `engine::functions::list` | Every registered function, with its `args_format`, `private`, `observable` and `observer_count`. Filterable by `include_internal`. |
+| `engine::observers::list` | Every observer, with its observed function, target, and state.                                                                     |
 
-<Accordion title="Example: list registry contents">
+<Accordion title="List workers, functions and observers">
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
+      import { type Observed, registerWorker } from "iii-sdk";
+
+      const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134");
+
       // engine::workers::list, pass { worker_id: "<uuid>" } to look up one worker
-      const { workers } = await worker.trigger({
+      const { workers } = await worker.call({
         function_id: "engine::workers::list",
         payload: {},
       });
 
       // engine::functions::list
-      const { functions } = await worker.trigger({
+      const { functions } = await worker.call({
         function_id: "engine::functions::list",
         payload: { include_internal: false },
       });
 
-      // engine::triggers::list
-      const { triggers } = await worker.trigger({
-        function_id: "engine::triggers::list",
-        payload: { include_internal: false },
+      // engine::observers::list
+      const { observers } = await worker.call({
+        function_id: "engine::observers::list",
+        payload: {},
       });
 
-      // engine::registered-triggers::list
-      const { registered_triggers } = await worker.trigger({
-        function_id: "engine::registered-triggers::list",
-        payload: { include_internal: false },
-      });
+      console.log(workers, functions, observers);
       ```
     </Tab>
     <Tab title="Python">
       ```python
+      import os
+
+      from iii import register_worker
+
+      worker = register_worker(os.environ.get("III_URL", "ws://127.0.0.1:49134"))
+
       # engine::workers::list, pass {"worker_id": "<uuid>"} to look up one worker
-      workers = worker.trigger({
+      workers = worker.call({
           "function_id": "engine::workers::list",
           "payload": {},
       })["workers"]
 
       # engine::functions::list
-      functions = worker.trigger({
+      functions = worker.call({
           "function_id": "engine::functions::list",
           "payload": {"include_internal": False},
       })["functions"]
 
-      # engine::triggers::list
-      triggers = worker.trigger({
-          "function_id": "engine::triggers::list",
-          "payload": {"include_internal": False},
-      })["triggers"]
+      # engine::observers::list
+      observers = worker.call({
+          "function_id": "engine::observers::list",
+          "payload": {},
+      })["observers"]
 
-      # engine::registered-triggers::list
-      registered_triggers = worker.trigger({
-          "function_id": "engine::registered-triggers::list",
-          "payload": {"include_internal": False},
-      })["registered_triggers"]
+      print(workers, functions, observers)
       ```
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::protocol::TriggerRequest;
+      use iii_sdk::protocol::CallRequest;
+      use iii_sdk::{InitOptions, register_worker};
       use serde_json::json;
 
-      // engine::workers::list, pass json!({ "worker_id": "<uuid>" }) to look up one worker
-      let workers = worker
-          .trigger(TriggerRequest {
-              function_id: "engine::workers::list".into(),
-              payload: json!({}),
-              action: None,
-              timeout_ms: None,
-          })
-          .await?;
+      #[tokio::main]
+      async fn main() -> Result<(), iii_sdk::Error> {
+          let worker = register_worker("ws://127.0.0.1:49134", InitOptions::default());
 
-      // engine::functions::list
-      let functions = worker
-          .trigger(TriggerRequest {
-              function_id: "engine::functions::list".into(),
-              payload: json!({ "include_internal": false }),
-              action: None,
-              timeout_ms: None,
-          })
-          .await?;
+          // engine::workers::list, pass json!({ "worker_id": "<uuid>" }) to look up one worker
+          let workers = worker
+              .call(CallRequest::new("engine::workers::list", json!({})))
+              .await?;
 
-      // engine::triggers::list
-      let triggers = worker
-          .trigger(TriggerRequest {
-              function_id: "engine::triggers::list".into(),
-              payload: json!({ "include_internal": false }),
-              action: None,
-              timeout_ms: None,
-          })
-          .await?;
+          // engine::functions::list
+          let functions = worker
+              .call(CallRequest::new(
+                  "engine::functions::list",
+                  json!({ "include_internal": false }),
+              ))
+              .await?;
 
-      // engine::registered-triggers::list
-      let registered_triggers = worker
-          .trigger(TriggerRequest {
-              function_id: "engine::registered-triggers::list".into(),
-              payload: json!({ "include_internal": false }),
-              action: None,
-              timeout_ms: None,
-          })
-          .await?;
+          // engine::observers::list
+          let observers = worker
+              .call(CallRequest::new("engine::observers::list", json!({})))
+              .await?;
+
+          println!("{workers}\n{functions}\n{observers}");
+          Ok(())
+      }
       ```
     </Tab>
     <Tab title="Go">
       ```go
-      // engine::workers::list, pass {"worker_id":"<uuid>"} to look up one worker
-      workers, err := client.Trigger(ctx, iii.TriggerRequest{
-          FunctionID: "engine::workers::list",
-          Payload:    json.RawMessage(`{}`),
-      })
-      if err != nil {
-          log.Fatal(err)
-      }
+      package main
 
-      // engine::functions::list
-      functions, err := client.Trigger(ctx, iii.TriggerRequest{
-          FunctionID: "engine::functions::list",
-          Payload:    json.RawMessage(`{"include_internal":false}`),
-      })
-      if err != nil {
-          log.Fatal(err)
-      }
+      import (
+          "context"
+          "encoding/json"
+          "log"
+          "os"
 
-      // engine::triggers::list
-      triggers, err := client.Trigger(ctx, iii.TriggerRequest{
-          FunctionID: "engine::triggers::list",
-          Payload:    json.RawMessage(`{"include_internal":false}`),
-      })
-      if err != nil {
-          log.Fatal(err)
-      }
+          iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+      )
 
-      // engine::registered-triggers::list
-      registeredTriggers, err := client.Trigger(ctx, iii.TriggerRequest{
-          FunctionID: "engine::registered-triggers::list",
-          Payload:    json.RawMessage(`{"include_internal":false}`),
-      })
-      if err != nil {
-          log.Fatal(err)
-      }
+      func main() {
+          client := iii.RegisterWorker(os.Getenv("III_URL"))
+          ctx := context.Background()
 
-      log.Printf("%s\n%s\n%s\n%s", workers, functions, triggers, registeredTriggers)
+          // engine::workers::list, pass {"worker_id":"<uuid>"} to look up one worker
+          workers, err := client.Call(ctx, iii.CallRequest{
+              FunctionID: "engine::workers::list",
+              Payload:    json.RawMessage(`{}`),
+          })
+          if err != nil {
+              log.Fatal(err)
+          }
+
+          // engine::functions::list
+          functions, err := client.Call(ctx, iii.CallRequest{
+              FunctionID: "engine::functions::list",
+              Payload:    json.RawMessage(`{"include_internal":false}`),
+          })
+          if err != nil {
+              log.Fatal(err)
+          }
+
+          // engine::observers::list
+          observers, err := client.Call(ctx, iii.CallRequest{
+              FunctionID: "engine::observers::list",
+              Payload:    json.RawMessage(`{}`),
+          })
+          if err != nil {
+              log.Fatal(err)
+          }
+
+          log.Printf("%s\n%s\n%s", workers, functions, observers)
+      }
       ```
 
     </Tab>
@@ -344,36 +398,46 @@ get the current state of the registry. Each returns a list:
   </Tabs>
 </Accordion>
 
-### Handling Worker disconnects
+### Handling worker disconnects
 
-When a Worker's WebSocket closes, the Engine cleans up after it automatically. Its Functions and
-Triggers leave the live registry, and any in-flight invocations of those Functions are cancelled.
+When a worker's WebSocket closes, the engine cleans up after it automatically. Its functions leave
+the live registry, observers of those functions go `pending` until a worker registers them again,
+and any in-flight invocations of those functions are cancelled. The worker's own observers go
+`suspended` for `observers.observer_grace_ms` (30 s by default): if it reconnects in that time it
+keeps them, and otherwise they are disposed. When it reconnects later, its SDK observes again, under
+the same id, each of them that has neither `max_fires` nor `expires_in_ms` (see
+[Observer states](../using-iii/observers#observer-states)).
 
 #### In flight requests
 
 In flight requests will get a `invocation_stopped` error, catch these errors and treat them like a
-cancellation. Retrying will fail until the Worker that owns this function reconnects.
+cancellation. Retrying will fail until the worker that owns this function reconnects.
 
-{/* TODO: Revisit and check code sample after SDK surface is reworked */}
-
-<Accordion title="Example: catch `invocation_stopped`">
+<Accordion title="Handle a stopped invocation">
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
+      import { type Observed, registerWorker } from "iii-sdk";
       import { InvocationError } from "iii-sdk/errors";
 
-      try {
-        const result = await worker.trigger({
-          function_id: "math::add",
-          payload: { a: 1, b: 2 },
-        });
-      } catch (err) {
-        if (err instanceof InvocationError && err.code === "invocation_stopped") {
-          // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
-          // (see "Subscribe to changes" below) to know when to retry.
-          return;
+      type Worker = ReturnType<typeof registerWorker>;
+
+      async function addNumbers(worker: Worker): Promise<void> {
+        try {
+          const result = await worker.call({
+            function_id: "math::add",
+            payload: { a: 1, b: 2 },
+          });
+          console.log(result);
+        } catch (err) {
+          if (err instanceof InvocationError && err.code === "invocation_stopped") {
+            // The worker hosting math::add disconnected mid-invocation. Observe
+            // `engine::on-functions-changed` (see "Observe registry changes" below)
+            // to know when to retry.
+            return;
+          }
+          throw err;
         }
-        throw err;
       }
       ```
     </Tab>
@@ -381,60 +445,77 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
       ```python
       from iii.errors import InvocationError
 
-      try:
-          result = worker.trigger({
-              "function_id": "math::add",
-              "payload": {"a": 1, "b": 2},
-          })
-      except InvocationError as err:
-          if err.code == "invocation_stopped":
-              # Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
-              # (see "Subscribe to changes" below) to know when to retry.
-              return
-          raise
+
+      def add_numbers(worker) -> None:
+          try:
+              result = worker.call({
+                  "function_id": "math::add",
+                  "payload": {"a": 1, "b": 2},
+              })
+          except InvocationError as err:
+              if err.code == "invocation_stopped":
+                  # The worker hosting math::add disconnected mid-invocation. Observe
+                  # `engine::on-functions-changed` (see "Observe registry changes" below)
+                  # to know when to retry.
+                  return
+              raise
+          print(result)
       ```
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::Error;
-      use iii_sdk::protocol::TriggerRequest;
+      use iii_sdk::protocol::CallRequest;
+      use iii_sdk::{Error, IIIClient};
       use serde_json::json;
 
-      let result = worker
-          .trigger(TriggerRequest {
-              function_id: "math::add".into(),
-              payload: json!({ "a": 1, "b": 2 }),
-              action: None,
-              timeout_ms: None,
-          })
-          .await;
-
-      match result {
-          Err(Error::Remote { code, .. }) if code == "invocation_stopped" => {
-              // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
-              // (see "Subscribe to changes" below) to know when to retry.
+      async fn add_numbers(worker: &IIIClient) -> Result<(), Error> {
+          match worker
+              .call(CallRequest::new("math::add", json!({ "a": 1, "b": 2 })))
+              .await
+          {
+              Ok(value) => println!("{value}"),
+              Err(Error::Remote { code, .. }) if code == "invocation_stopped" => {
+                  // The worker hosting math::add disconnected mid-invocation. Observe
+                  // `engine::on-functions-changed` (see "Observe registry changes" below)
+                  // to know when to retry.
+              }
+              Err(err) => return Err(err),
           }
-          Err(e) => return Err(e.into()),
-          Ok(value) => { /* use value */ }
+          Ok(())
       }
       ```
     </Tab>
     <Tab title="Go">
       ```go
-      result, err := client.Trigger(ctx, iii.TriggerRequest{
-          FunctionID: "math::add",
-          Payload:    json.RawMessage(`{"a":1,"b":2}`),
-      })
-      var ie *iii.InvocationError
-      if errors.As(err, &ie) && ie.Code == "invocation_stopped" {
-          // Worker disconnected mid-invocation. Subscribe to `engine::functions-available`
-          // (see "Subscribe to changes" below) to know when to retry.
+      package mathworker
+
+      import (
+          "context"
+          "encoding/json"
+          "errors"
+          "log"
+
+          iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+      )
+
+      func addNumbers(ctx context.Context, client *iii.Client) error {
+          result, err := client.Call(ctx, iii.CallRequest{
+              FunctionID: "math::add",
+              Payload:    json.RawMessage(`{"a":1,"b":2}`),
+          })
+          var ie *iii.InvocationError
+          if errors.As(err, &ie) && ie.Code == "invocation_stopped" {
+              // The worker hosting math::add disconnected mid-invocation. Observe
+              // `engine::on-functions-changed` (see "Observe registry changes" below)
+              // to know when to retry.
+              return nil
+          }
+          if err != nil {
+              return err
+          }
+          log.Printf("math::add returned %s", result)
           return nil
       }
-      if err != nil {
-          return err
-      }
-      log.Printf("math::add returned %s", result)
       ```
 
     </Tab>
@@ -442,176 +523,216 @@ cancellation. Retrying will fail until the Worker that owns this function reconn
   </Tabs>
 </Accordion>
 
-#### Subscribe to changes
+#### Observe registry changes
 
-{/* TODO: Link out to SDK reference once SDK surface is stable */}
+The engine hosts three functions that run when the registry changes. Observe them to react to
+topology changes as they happen, for example to continue work when a worker comes back online.
 
-You can register a Trigger against one of the engine's discovery events to react to topology changes
-as they happen. This is particularly useful for continuing work when a Worker comes back online.
+| Function                       | Runs when                                                                  | Event (`input`)                                        |
+| ------------------------------ | -------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `engine::on-workers-changed`   | A worker connects, disconnects, or updates its metadata.                   | `{ event, worker_id }`                                 |
+| `engine::on-functions-changed` | A function is registered or unregistered.                                  | `{ event, functions }`, the full list after the change |
+| `engine::on-observers-changed` | An observer changes state (for example `pending` to `active`, or removed). | `{ observer_id, function_id, target, state, reason? }` |
 
-| Trigger                       | When it fires                             |
-| ----------------------------- | ----------------------------------------- |
-| `engine::workers-available`   | A Worker connects or disconnects.         |
-| `engine::functions-available` | A Function is registered or unregistered. |
+`event` on `engine::on-workers-changed` is `worker_connected`, `worker_disconnected`, or
+`worker_metadata_updated`.
 
-<Note>
-  From 0.25, observe the engine-hosted sources `engine::on-workers-changed` and
-  `engine::on-functions-changed` instead; the trigger types keep firing. With `deliver: "input"` the
-  target receives the same payload:
-  `worker.observe({ function_id: "engine::on-workers-changed", deliver: "input" }, "discovery::on-workers")`.
-  See [Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
-</Note>
+With `capture: ["input"]`, the target receives the event as the payload's `input`. See
+[Engine-hosted event sources](../using-iii/observers#engine-hosted-event-sources).
 
-<Accordion title="Example: subscribe to discovery events">
+<Accordion title="React to registry changes">
   <Tabs>
     <Tab title="Node / TypeScript">
       ```typescript
+      import { type Observed, registerWorker } from "iii-sdk";
+
+      const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134");
+
       worker.registerFunction(
-        "discovery::on-workers",
-        async (data: { event: string; worker_id: string }) => {
-          if (data.event === "worker_connected") {
-            // A Worker joined the registry; its Functions are callable now.
+        "math::refresh-workers",
+        async ({ input }: Observed<{ event: string; worker_id: string }>) => {
+          if (input?.event === "worker_connected") {
+            // The worker joined the registry; its functions are callable now.
           }
         },
       );
-      worker.registerTrigger({
-        type: "engine::workers-available",
-        function_id: "discovery::on-workers",
-        config: {},
-      });
+      worker.observe(
+        { function_id: "engine::on-workers-changed", capture: ["input"] },
+        "math::refresh-workers",
+      );
 
       worker.registerFunction(
-        "discovery::on-functions",
-        async (data: { event: string; functions: { function_id: string }[] }) => {
+        "math::refresh-functions",
+        async ({ input }: Observed<{ event: string; functions: { function_id: string }[] }>) => {
           // `functions` is the full snapshot after the change.
-          const ids = data.functions.map((f) => f.function_id);
+          const ids = (input?.functions ?? []).map((f) => f.function_id);
+          console.log(ids);
         },
       );
-      worker.registerTrigger({
-        type: "engine::functions-available",
-        function_id: "discovery::on-functions",
-        config: {},
-      });
+      worker.observe(
+        { function_id: "engine::on-functions-changed", capture: ["input"] },
+        "math::refresh-functions",
+      );
       ```
     </Tab>
     <Tab title="Python">
       ```python
-      async def on_workers(data: dict) -> None:
-          if data["event"] == "worker_connected":
-              # A Worker joined the registry; its Functions are callable now.
+      import os
+
+      from iii import register_worker
+
+      worker = register_worker(os.environ.get("III_URL", "ws://127.0.0.1:49134"))
+
+
+      async def refresh_workers(observed: dict) -> None:
+          if observed["input"]["event"] == "worker_connected":
+              # The worker joined the registry; its functions are callable now.
               pass
 
-      worker.register_function("discovery::on-workers", on_workers)
-      worker.register_trigger({
-          "type": "engine::workers-available",
-          "function_id": "discovery::on-workers",
-          "config": {},
-      })
 
-      async def on_functions(data: dict) -> None:
+      worker.register_function("math::refresh-workers", refresh_workers)
+      worker.observe(
+          {"function_id": "engine::on-workers-changed", "capture": ["input"]},
+          "math::refresh-workers",
+      )
+
+
+      async def refresh_functions(observed: dict) -> None:
           # `functions` is the full snapshot after the change.
-          ids = [f["function_id"] for f in data.get("functions", [])]
+          ids = [f["function_id"] for f in observed["input"].get("functions", [])]
+          print(ids)
 
-      worker.register_function("discovery::on-functions", on_functions)
-      worker.register_trigger({
-          "type": "engine::functions-available",
-          "function_id": "discovery::on-functions",
-          "config": {},
-      })
+
+      worker.register_function("math::refresh-functions", refresh_functions)
+      worker.observe(
+          {"function_id": "engine::on-functions-changed", "capture": ["input"]},
+          "math::refresh-functions",
+      )
       ```
     </Tab>
     <Tab title="Rust">
       ```rust
-      use iii_sdk::RegisterFunction;
-      use iii_sdk::protocol::RegisterTriggerInput;
+      use iii_sdk::{Capture, IIIClient, Observed, RegisterFunction, Source};
       use schemars::JsonSchema;
       use serde::Deserialize;
-      use serde_json::{Value, json};
+      use serde_json::Value;
 
       #[derive(Deserialize, JsonSchema)]
-      struct WorkersAvailable { event: String, worker_id: String }
+      struct WorkersChanged {
+          event: String,
+          worker_id: String,
+      }
 
       #[derive(Deserialize, JsonSchema)]
-      struct FunctionsAvailable { event: String, functions: Vec<Value> }
+      struct FunctionsChanged {
+          event: String,
+          functions: Vec<Value>,
+      }
 
-      worker.register_function(
-          "discovery::on-workers",
-          RegisterFunction::new_async(|input: WorkersAvailable| async move {
-              if input.event == "worker_connected" {
-                  // A Worker joined the registry; its Functions are callable now.
-              }
-              Ok::<_, iii_sdk::Error>(())
-          }),
-      );
-      worker.register_trigger(RegisterTriggerInput::new(
-          "engine::workers-available",
-          "discovery::on-workers",
-          json!({}),
-      ))?;
+      async fn wire(worker: &IIIClient) -> Result<(), iii_sdk::Error> {
+          worker.register_function(
+              "math::refresh-workers",
+              RegisterFunction::new_async(|observed: Observed<WorkersChanged>| async move {
+                  if observed.input.is_some_and(|input| input.event == "worker_connected") {
+                      // The worker joined the registry; its functions are callable now.
+                  }
+                  Ok::<_, iii_sdk::Error>(())
+              }),
+          );
+          worker.observe(
+              Source::function("engine::on-workers-changed").capture([Capture::Input]),
+              "math::refresh-workers",
+          );
 
-      worker.register_function(
-          "discovery::on-functions",
-          RegisterFunction::new_async(|input: FunctionsAvailable| async move {
-              // `functions` is the full snapshot after the change.
-              let _count = input.functions.len();
-              Ok::<_, iii_sdk::Error>(())
-          }),
-      );
-      worker.register_trigger(RegisterTriggerInput::new(
-          "engine::functions-available",
-          "discovery::on-functions",
-          json!({}),
-      ))?;
+          worker.register_function(
+              "math::refresh-functions",
+              RegisterFunction::new_async(|observed: Observed<FunctionsChanged>| async move {
+                  // `functions` is the full snapshot after the change.
+                  let count = observed.input.map_or(0, |input| input.functions.len());
+                  println!("{count} functions");
+                  Ok::<_, iii_sdk::Error>(())
+              }),
+          );
+          worker.observe(
+              Source::function("engine::on-functions-changed").capture([Capture::Input]),
+              "math::refresh-functions",
+          );
+
+          Ok(())
+      }
       ```
     </Tab>
     <Tab title="Go">
       ```go
-      client.RegisterFunction("discovery::on-workers", func(ctx context.Context, data json.RawMessage) (any, error) {
-          var event struct {
-              Event    string `json:"event"`
-              WorkerID string `json:"worker_id"`
-          }
-          if err := json.Unmarshal(data, &event); err != nil {
-              return nil, err
-          }
-          if event.Event == "worker_connected" {
-              // A Worker joined the registry; its Functions are callable now.
-              log.Printf("worker %s connected", event.WorkerID)
-          }
-          return nil, nil
-      })
-      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-          Type:       "engine::workers-available",
-          FunctionID: "discovery::on-workers",
-          Config:     json.RawMessage(`{}`),
-      }); err != nil {
-          log.Fatal(err)
-      }
+      package main
 
-      client.RegisterFunction("discovery::on-functions", func(ctx context.Context, data json.RawMessage) (any, error) {
-          var event struct {
-              Event     string `json:"event"`
-              Functions []struct {
-                  FunctionID string `json:"function_id"`
-              } `json:"functions"`
+      import (
+          "context"
+          "encoding/json"
+          "log"
+          "os"
+
+          iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+      )
+
+      func main() {
+          client := iii.RegisterWorker(os.Getenv("III_URL"))
+
+          if _, err := client.RegisterFunction("math::refresh-workers", func(ctx context.Context, data json.RawMessage) (any, error) {
+              var observed struct {
+                  Input struct {
+                      Event    string `json:"event"`
+                      WorkerID string `json:"worker_id"`
+                  } `json:"input"`
+              }
+              if err := json.Unmarshal(data, &observed); err != nil {
+                  return nil, err
+              }
+              event := observed.Input
+              if event.Event == "worker_connected" {
+                  // The worker joined the registry; its functions are callable now.
+                  log.Printf("worker %s connected", event.WorkerID)
+              }
+              return nil, nil
+          }); err != nil {
+              log.Fatal(err)
           }
-          if err := json.Unmarshal(data, &event); err != nil {
-              return nil, err
+          if _, err := client.Observe(iii.Source{
+              FunctionID: "engine::on-workers-changed",
+              Capture:    []iii.Capture{iii.CaptureInput},
+          }, "math::refresh-workers"); err != nil {
+              log.Fatal(err)
           }
-          // `functions` is the full snapshot after the change.
-          ids := make([]string, 0, len(event.Functions))
-          for _, f := range event.Functions {
-              ids = append(ids, f.FunctionID)
+
+          if _, err := client.RegisterFunction("math::refresh-functions", func(ctx context.Context, data json.RawMessage) (any, error) {
+              var observed struct {
+                  Input struct {
+                      Event     string `json:"event"`
+                      Functions []struct {
+                          FunctionID string `json:"function_id"`
+                      } `json:"functions"`
+                  } `json:"input"`
+              }
+              if err := json.Unmarshal(data, &observed); err != nil {
+                  return nil, err
+              }
+              event := observed.Input
+              // `functions` is the full snapshot after the change.
+              ids := make([]string, 0, len(event.Functions))
+              for _, f := range event.Functions {
+                  ids = append(ids, f.FunctionID)
+              }
+              log.Printf("functions: %v", ids)
+              return nil, nil
+          }); err != nil {
+              log.Fatal(err)
           }
-          log.Printf("functions: %v", ids)
-          return nil, nil
-      })
-      if _, err := client.RegisterTrigger(iii.RegisterTriggerInput{
-          Type:       "engine::functions-available",
-          FunctionID: "discovery::on-functions",
-          Config:     json.RawMessage(`{}`),
-      }); err != nil {
-          log.Fatal(err)
+          if _, err := client.Observe(iii.Source{
+              FunctionID: "engine::on-functions-changed",
+              Capture:    []iii.Capture{iii.CaptureInput},
+          }, "math::refresh-functions"); err != nil {
+              log.Fatal(err)
+          }
       }
       ```
 
@@ -623,8 +744,9 @@ as they happen. This is particularly useful for continuing work when a Worker co
 ## Worker manifest
 
 `iii.worker.yaml` is the manifest at the worker's root that tells Compose how to start a local or
-bundled worker. A local Compose container can override the manifest with its own `scripts.run` and
-use `pre_run` or `post_run` for lifecycle hooks.
+bundled worker. A local Compose container can replace the start command with its own `scripts.run`,
+and add `scripts.pre_run` or `scripts.post_run` lifecycle hooks. The container cannot change the
+manifest's `name` or `runtime.base_image`; those stay as the manifest declares them.
 
 ```yaml
 name: math-worker
@@ -639,43 +761,61 @@ scripts:
 `description` is an optional one-line, human/LLM-readable summary of what the worker does.
 
 `scripts.start` launches the worker. Here, `watchfiles` reloads it whenever you edit a source file.
-`runtime.base_image` selects the OCI image used for a bundled worker's root filesystem.
+`runtime.base_image` selects the OCI image used for a bundled worker's root filesystem. The manifest
+is metadata about starting the worker.
 
-The manifest is metadata about _starting_ the Worker. Once the Worker is running, iii treats a
-Compose-managed process and a manually run process that uses the iii SDK identically.
+See [Worker manifest](./worker-manifest) for the field reference.
 
 <Note>
-  If a worker isn't starting correctly, check its manifest, the Compose daemon output, and
-  `iii trigger -n dev compose::status`.
+  If a worker isn't starting correctly, check its manifest, the Compose daemon output, and `iii call
+  -n dev compose::status`.
 </Note>
 
-{/* TODO: link to the canonical iii.worker.yaml reference page once it exists. */}
+<Note>
+  iii does not distinguish a Compose-managed process from a manually run process that uses the iii
+  SDK. Both connect to the engine and register the same way.
+</Note>
 
 ## Shutting down a worker
 
-Call the SDK's `shutdown` to close the WebSocket cleanly. The engine removes the worker's Functions
-and Triggers from the registry, fires `engine::workers-available` with `worker_disconnected`, and
-cancels in-flight invocations targeting them with `invocation_stopped`.
+Call the SDK's `shutdown` to close the WebSocket cleanly. The engine then applies the cleanup
+described in [Handling worker disconnects](#handling-worker-disconnects) at once, instead of waiting
+for the dropped socket.
 
 Without `shutdown`, an abrupt process exit reaches the same state once the engine notices the
-dropped socket; graceful shutdown makes it deterministic and faster.
+dropped socket. Graceful shutdown makes it deterministic and faster.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL ?? "ws://127.0.0.1:49134");
+
     process.on("SIGTERM", async () => {
       await worker.shutdown();
       process.exit(0);
     });
     ```
+
   </Tab>
   <Tab title="Python">
     ```python
+    import os
     import signal
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ.get("III_URL", "ws://127.0.0.1:49134"),
+        InitOptions(worker_name="math-worker"),
+    )
+
 
     def _on_term(*_):
         worker.shutdown()
         raise SystemExit(0)
+
 
     signal.signal(signal.SIGTERM, _on_term)
     ```
@@ -683,22 +823,50 @@ dropped socket; graceful shutdown makes it deterministic and faster.
   </Tab>
   <Tab title="Rust">
     ```rust
-    // Rust threads do not keep the process alive on their own; await this
-    // before `main` returns so the connection thread exits cleanly.
-    worker.shutdown_async().await;
+    use iii_sdk::{InitOptions, register_worker};
+    use tokio::signal;
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let worker = register_worker("ws://127.0.0.1:49134", InitOptions::default());
+
+        // Rust threads do not keep the process alive on their own; await this
+        // before `main` returns so the connection thread exits cleanly.
+        signal::unix::signal(signal::unix::SignalKind::terminate())?.recv().await;
+        worker.shutdown_async().await;
+        Ok(())
+    }
     ```
+
   </Tab>
   <Tab title="Go">
     ```go
-    // Block until SIGTERM, then shut the worker down gracefully.
-    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
-    defer stop()
-    <-ctx.Done()
+    package main
 
-    shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-    defer cancel()
-    if err := client.Shutdown(shutdownCtx); err != nil {
-        log.Printf("shutdown cut short: %v", err)
+    import (
+        "context"
+        "log"
+        "os"
+        "os/signal"
+        "syscall"
+        "time"
+
+        iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+        client := iii.RegisterWorker(os.Getenv("III_URL"))
+
+        // Block until SIGTERM, then shut the worker down gracefully.
+        ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+        defer stop()
+        <-ctx.Done()
+
+        shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
+        if err := client.Shutdown(shutdownCtx); err != nil {
+            log.Printf("shutdown cut short: %v", err)
+        }
     }
     ```
 
@@ -706,9 +874,6 @@ dropped socket; graceful shutdown makes it deterministic and faster.
 </Tabs>
 
 <Note>
-  Shutdown is useful for **One-shot / ephemeral workers**. Kubernetes Jobs, serverless containers,
-  or scheduled scripts can connect like any other Worker, do their work, and `shutdown()`
-  (`shutdown_async().await` in Rust, `client.Shutdown(ctx)` in Go).
+  Shutdown is useful for one-shot and ephemeral workers. Kubernetes Jobs, serverless containers, and
+  scheduled scripts connect like any other worker, do their work, and call `shutdown()`.
 </Note>
-
-{/* TODO: confirm the SDK shutdown call (e.g. `worker.shutdown()`) and add a minimal Node / TypeScript, Python, Rust example that registers a function, awaits a single invocation, and exits cleanly. */}

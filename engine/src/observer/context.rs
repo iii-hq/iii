@@ -40,7 +40,8 @@ pub struct InvocationCtx {
 }
 
 enum CallerOrigin {
-    /// Engine orchestration (hooks, middleware, trigger fires): no caller.
+    /// Engine orchestration (hooks, middleware, engine-hosted sources): no
+    /// caller.
     None,
     /// A call from a worker connection. `worker_id` / `worker_name` are
     /// stamped from the connection and cannot be forged; the rest is what the
@@ -62,9 +63,23 @@ impl InvocationCtx {
 
     /// Engine orchestration inside a chain of observers: no caller, the
     /// enclosing depth kept, so a chain that passes through an engine-hosted
-    /// function or a trigger fan-out keeps counting toward the loop guard.
+    /// function or an engine-hosted source keeps counting toward the loop
+    /// guard.
     pub fn engine_internal_at(observe_depth: u32) -> Self {
         Self::with_origin(CallerOrigin::None, observe_depth, None)
+    }
+
+    /// A call of an engine-hosted source: the engine is the caller
+    /// (`{ worker_name: "iii-engine" }`), at the depth of what caused it.
+    pub fn engine_source(observe_depth: u32) -> Self {
+        Self::with_origin(
+            CallerOrigin::Engine(Caller {
+                worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                ..Caller::default()
+            }),
+            observe_depth,
+            None,
+        )
     }
 
     /// The depth of the invocation whose handler is running; 0 outside one.
@@ -92,9 +107,10 @@ impl InvocationCtx {
         )
     }
 
-    /// An owner delivery (`obs.call`): the owner's connection is the caller,
-    /// as for any call it makes, and the call carries the activation.
-    pub fn owner_delivery(
+    /// A call through an observer (`iii.call({ observer, payload })`): the
+    /// host's connection is the caller, as for any call it makes, and the
+    /// call carries the activation.
+    pub fn observer_call(
         worker_id: Uuid,
         workers: Arc<WorkerConnectionRegistry>,
         asserted: Option<Box<Caller>>,
@@ -134,8 +150,6 @@ impl InvocationCtx {
         }
     }
 
-    /// Whether the call came from a worker connection, whose payload the
-    /// engine stamped with `_caller_worker_id`.
     /// Engine orchestration at depth 0, outside any activation: nothing to
     /// carry.
     pub fn is_blank(&self) -> bool {
@@ -144,29 +158,27 @@ impl InvocationCtx {
             && self.activation.is_none()
     }
 
-    pub fn is_from_connection(&self) -> bool {
-        matches!(self.origin, CallerOrigin::Connection { .. })
-    }
-
     /// The caller as the engine reports it: the connection's `worker_id` and
     /// `worker_name` over whatever the SDK asserted for them.
     pub fn caller(&self) -> Option<&Caller> {
-        self.resolved
-            .get_or_init(|| match &self.origin {
-                CallerOrigin::None => None,
-                CallerOrigin::Engine(caller) => Some(caller.clone()),
-                CallerOrigin::Connection {
-                    worker_id,
-                    workers,
-                    asserted,
-                } => {
+        match &self.origin {
+            CallerOrigin::None => None,
+            // Built whole by the engine: read in place, not copied.
+            CallerOrigin::Engine(caller) => Some(caller),
+            CallerOrigin::Connection {
+                worker_id,
+                workers,
+                asserted,
+            } => self
+                .resolved
+                .get_or_init(|| {
                     let mut caller = asserted.as_deref().cloned().unwrap_or_default();
                     caller.worker_id = Some(worker_id.to_string());
                     caller.worker_name = workers.get_worker_name(worker_id);
                     Some(caller)
-                }
-            })
-            .as_ref()
+                })
+                .as_ref(),
+        }
     }
 
     /// The context of the invocation whose handler is running, if any.
@@ -224,6 +236,31 @@ mod tests {
     #[test]
     fn engine_orchestration_has_no_caller() {
         assert!(InvocationCtx::engine_internal().caller().is_none());
+    }
+
+    #[test]
+    fn an_activation_reads_the_caller_the_engine_built_in_place() {
+        let ctx = InvocationCtx::activation(
+            Caller {
+                worker_name: Some(ENGINE_CALLER_NAME.to_string()),
+                function_id: Some("orders::create".into()),
+                invocation_id: Some("i-1".into()),
+                ..Caller::default()
+            },
+            1,
+            Activation {
+                observer_id: "o-1".into(),
+                activation_id: Some("a-1".into()),
+            },
+        );
+        let caller = ctx.caller().expect("a caller");
+        assert_eq!(caller.worker_name.as_deref(), Some(ENGINE_CALLER_NAME));
+        assert_eq!(caller.function_id.as_deref(), Some("orders::create"));
+        assert_eq!(caller.invocation_id.as_deref(), Some("i-1"));
+        assert!(caller.worker_id.is_none());
+        // The same caller each time, never a copy.
+        assert!(std::ptr::eq(caller, ctx.caller().expect("a caller")));
+        assert!(ctx.resolved.get().is_none());
     }
 
     #[tokio::test]

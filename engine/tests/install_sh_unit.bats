@@ -116,13 +116,6 @@ EOF
   fi
 }
 
-@test "iii-init uses Linux guest artifacts for every supported host" {
-  [ "$(init_target_for_host Linux x86_64)" = "x86_64-unknown-linux-musl" ]
-  [ "$(init_target_for_host Linux aarch64)" = "aarch64-unknown-linux-gnu" ]
-  [ "$(init_target_for_host Darwin x86_64)" = "x86_64-unknown-linux-musl" ]
-  [ "$(init_target_for_host Darwin aarch64)" = "aarch64-unknown-linux-gnu" ]
-}
-
 # ─────────────────────────────────────────────────────────────
 # End-to-end: --help flag
 # ─────────────────────────────────────────────────────────────
@@ -219,54 +212,6 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"curl is required"* ]]
   [[ "$output" == *"install"* ]]
-}
-
-# MOT-4783: the worker must match the host libc, not the engine target.
-@test "worker selects musl on Alpine x86_64" {
-  run worker_target_for_host Linux x86_64 musl
-  [ "$status" -eq 0 ]
-  [ "$output" = "x86_64-unknown-linux-musl" ]
-}
-
-@test "worker selects musl on Alpine aarch64" {
-  run worker_target_for_host Linux aarch64 musl
-  [ "$status" -eq 0 ]
-  [ "$output" = "aarch64-unknown-linux-musl" ]
-}
-
-@test "worker keeps GNU on glibc despite static musl engine target" {
-  export TARGET=x86_64-unknown-linux-musl
-  run worker_target_for_host Linux x86_64 gnu
-  [ "$status" -eq 0 ]
-  [ "$output" = "x86_64-unknown-linux-gnu" ]
-}
-
-@test "worker keeps GNU on glibc aarch64" {
-  run worker_target_for_host Linux aarch64 gnu
-  [ "$status" -eq 0 ]
-  [ "$output" = "aarch64-unknown-linux-gnu" ]
-}
-
-@test "worker libc selection ignores engine glibc override" {
-  export III_USE_GLIBC=1
-  run worker_target_for_host Linux x86_64 musl
-  [ "$status" -eq 0 ]
-  [ "$output" = "x86_64-unknown-linux-musl" ]
-}
-
-@test "worker preserves macOS Apple Silicon support" {
-  run worker_target_for_host Darwin aarch64 gnu
-  [ "$status" -eq 0 ]
-  [ "$output" = "aarch64-apple-darwin" ]
-}
-
-@test "worker does not invent assets on unsupported platforms" {
-  run worker_target_for_host Darwin x86_64 gnu
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-  run worker_target_for_host Linux armv7 gnu
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
 }
 
 # ─────────────────────────────────────────────────────────────
@@ -375,4 +320,45 @@ EOF
   run cleanup
   [ "$status" -eq 0 ]
   [ ! -d "$tmpdir" ]
+}
+
+# ─────────────────────────────────────────────────────────────
+# note_missing_vm_binaries: releases that still need what this script skips
+# ─────────────────────────────────────────────────────────────
+
+RELEASE_WITH_WORKER='{"html_url":"https://example.test/iii/v0.25.0","assets":[{"name":"iii-aarch64-apple-darwin.tar.gz"},{"name":"iii-worker-aarch64-apple-darwin.tar.gz"}]}'
+RELEASE_WITHOUT_WORKER='{"html_url":"https://example.test/iii/v0.26.0","assets":[{"name":"iii-aarch64-apple-darwin.tar.gz"}]}'
+
+@test "note_missing_vm_binaries names both binaries and where to get them" {
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iii-worker"* ]]
+  [[ "$output" == *"iii-init"* ]]
+  [[ "$output" == *"$BATS_TEST_TMPDIR"* ]]
+  [[ "$output" == *"https://example.test/iii/v0.25.0"* ]]
+}
+
+@test "note_missing_vm_binaries is silent for a release that needs neither" {
+  run note_missing_vm_binaries "$RELEASE_WITHOUT_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "note_missing_vm_binaries is silent once both are next to iii" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-worker"
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-init"
+  chmod +x "$BATS_TEST_TMPDIR/iii-worker" "$BATS_TEST_TMPDIR/iii-init"
+
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "note_missing_vm_binaries speaks when only one is next to iii" {
+  printf '#!/bin/sh\n' > "$BATS_TEST_TMPDIR/iii-worker"
+  chmod +x "$BATS_TEST_TMPDIR/iii-worker"
+
+  run note_missing_vm_binaries "$RELEASE_WITH_WORKER" "$BATS_TEST_TMPDIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"iii-init"* ]]
 }

@@ -1,13 +1,55 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Request and response types of the `<adapter>::worker::*` operations. Only Compose calls
-//! them, to run a worker's VM container through the adapter.
+//! Request and response types of the `<adapter>::worker::*` operations. `iii sandbox` calls
+//! them to run one Compose container's VM through the adapter.
+//!
+//! Every request carries `auth`: the project token, or, with
+//! [`FEATURE_SCOPED_AUTH`](crate::FEATURE_SCOPED_AUTH), the token scoped to the VM's state key
+//! ([`scoped_auth_token`]). A scoped token controls that one VM and no other.
 
 use crate::channel::StreamChannelRef;
+use hmac::{Hmac, Mac};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::BTreeMap;
+
+/// What the scoped token's MAC covers before the state key, so it can never equal another MAC
+/// of the project token over the same bytes. A different derivation gets a new version.
+const SCOPED_AUTH_DOMAIN: &[u8] = b"iii-sandbox/worker-scope/v1\0";
+
+/// The token that authorizes `worker::*` calls for the VM of `state_key` alone: the lowercase
+/// hex of HMAC-SHA256 keyed with the project token over `iii-sandbox/worker-scope/v1\0`
+/// followed by the state key. Compose hands it to the container that runs the VM; the adapter
+/// recomputes it from the project token it already holds, so neither side stores a token per VM.
+/// `tests/fixtures/scoped_auth.json` pins it.
+pub fn scoped_auth_token(project_token: &str, state_key: &str) -> String {
+    hex::encode(scoped_mac(project_token, state_key).finalize().into_bytes())
+}
+
+/// Whether `presented` is the scoped token for `state_key`, compared in constant time. Never
+/// with an empty project token, whose MAC anyone can compute, or an empty state key.
+pub fn scoped_auth_matches(project_token: &str, state_key: &str, presented: &str) -> bool {
+    if project_token.is_empty() || state_key.is_empty() {
+        return false;
+    }
+    let Ok(tag) = hex::decode(presented) else {
+        return false;
+    };
+    scoped_mac(project_token, state_key)
+        .verify_slice(&tag)
+        .is_ok()
+}
+
+fn scoped_mac(project_token: &str, state_key: &str) -> Hmac<Sha256> {
+    // HMAC takes a key of any length; only fixed-size MACs can refuse one.
+    let mut mac = Hmac::<Sha256>::new_from_slice(project_token.as_bytes())
+        .expect("HMAC accepts a key of any length");
+    mac.update(SCOPED_AUTH_DOMAIN);
+    mac.update(state_key.as_bytes());
+    mac
+}
 
 /// Where the worker's code comes from.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -29,9 +71,13 @@ pub enum WorkerSource {
 /// Idempotent image and base-layer pull; long-running.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerPrepareRequest {
-    /// Per-project token.
+    /// The project token or the VM's scoped token.
     pub auth: String,
     pub source: WorkerSource,
+    /// The VM the prepare is for. Required with a scoped token, which the adapter checks
+    /// against it. Since contract 1.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -40,7 +86,7 @@ pub struct WorkerPrepareResponse {}
 /// Boots the VM. The adapter reads resources from the worker's manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerStartRequest {
-    /// Per-project token.
+    /// The project token or the VM's scoped token.
     pub auth: String,
     /// Hash of the compose state dir and container key; the same key gets the same persistent upper.
     pub state_key: String,
@@ -99,17 +145,30 @@ pub struct WorkerLogsRequest {
     pub auth: String,
     pub vm_id: String,
     /// `LogRecord.cursor` of the last record the caller has; reading resumes right after it.
-    /// Opaque to Compose. A cursor past the end of the log (after a rotation) reads from the start.
+    /// Opaque to the caller. A cursor past the end of the log (after a rotation) reads from the
+    /// start.
     pub cursor: Option<u64>,
     /// Keep the channel open while the instance runs.
     pub follow: bool,
-    /// Writer end of a channel Compose created; one `LogRecord` JSON per text frame.
+    /// Writer end of a channel the caller created; one `LogRecord` JSON per text frame.
     pub channel: StreamChannelRef,
+    /// Start after the record that is last when the request arrives, ignoring `cursor`: a client
+    /// that reattaches to a running instance gets only what follows, not the log again. Since
+    /// contract 1.2 ([`FEATURE_LOGS_FROM_END`](crate::FEATURE_LOGS_FROM_END)); an older adapter
+    /// ignores it. The response's `cursor` says where the stream started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_end: bool,
 }
 
 /// Returned once the log pump starts; the records travel over the channel.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WorkerLogsResponse {}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerLogsResponse {
+    /// With `from_end`: the cursor of the record that was last when the request arrived, the
+    /// one the stream starts after, so a stream reopened later resumes there instead of at the
+    /// end again; `None` when the log was empty. Since contract 1.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -74,9 +74,7 @@ fn session_with(
         namespaces: Default::default(),
         allowed_functions: vec![],
         forbidden_functions: forbidden,
-        allowed_trigger_types: None,
         allow_function_registration: true,
-        allow_trigger_type_registration: true,
         context: json!({}),
         function_registration_prefix: None,
     }
@@ -86,8 +84,6 @@ fn restrictive_rbac() -> RbacConfig {
     RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("api::*")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     }
@@ -200,8 +196,7 @@ async fn discovery_function_denied_under_restricted_expose() {
     );
 }
 
-/// The new `::info` and `registered-triggers::*` discovery IDs added in the
-/// engine_fn rework must be gated identically to the existing list IDs.
+/// The `::info` discovery IDs must be gated identically to the list IDs.
 #[tokio::test]
 async fn new_discovery_functions_denied_under_restricted_expose() {
     ensure_default_meter();
@@ -209,9 +204,7 @@ async fn new_discovery_functions_denied_under_restricted_expose() {
     let new_discovery_ids = [
         "engine::functions::info",
         "engine::workers::info",
-        "engine::triggers::info",
-        "engine::registered-triggers::list",
-        "engine::registered-triggers::info",
+        "engine::observers::get",
     ];
 
     for id in new_discovery_ids {
@@ -311,8 +304,6 @@ async fn listener_middleware_runs_in_caller_namespace() {
     let orders_rbac = RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("api::*").in_namespace("orders")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     };
@@ -450,6 +441,9 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
                 response_format: None,
                 metadata: None,
                 invocation: None,
+                args_format: None,
+                private: false,
+                observable: true,
                 observe: None,
             },
         )
@@ -479,8 +473,6 @@ async fn middleware_runs_for_non_infrastructure_engine_prefix() {
     let rbac = RbacConfig {
         auth_function_id: None,
         expose_functions: vec![FunctionFilter::match_pattern("engine::custom::*")],
-        on_trigger_registration_function_id: None,
-        on_trigger_type_registration_function_id: None,
         on_function_registration_function_id: None,
         on_observer_registration_function_id: None,
     };

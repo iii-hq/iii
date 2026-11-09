@@ -122,7 +122,7 @@ const featured: { id: string; title: string; description: string }[] = [
     id: 'observe_dispatch',
     title: 'Observing a call',
     description:
-      'A call with N observers on it: auto delivers to every one, filtered evaluates every filter and matches one. Fan-out is inside the time.',
+      'A call with N observers on it: default delivery reaches every one, filtered evaluates every filter and matches one. Fan-out is inside the time.',
   },
   {
     id: 'concurrent_invocation',
@@ -136,13 +136,13 @@ const featured: { id: string; title: string; description: string }[] = [
   },
   {
     id: 'trigger_fanout',
-    title: 'Trigger fan-out',
-    description: 'One event delivered to N triggers at once.',
+    title: 'Observer fan-out',
+    description: 'One call delivered to N observers at once.',
   },
   {
     id: 'control_plane_churn',
     title: 'Registration churn',
-    description: 'Registering and removing functions, workers and triggers by the hundred and the thousand.',
+    description: 'Registering and removing functions, workers and observers by the hundred and the thousand.',
   },
 ]
 
