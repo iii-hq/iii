@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -313,5 +316,181 @@ func TestTooLargeAnswerActivatesNoObserver(t *testing.T) {
 	}
 	if res == nil || res.Error == nil || res.Error.Code != "payload_too_large" || res.Matched == nil || len(res.Matched) != 0 || res.Delivered {
 		t.Fatalf("answer %+v", res)
+	}
+}
+
+// The engine disposes an observer whose worker stayed away past the grace period, and
+// answers its replay on the next connection with disposed, OBSERVER_DISCONNECTED. That
+// connection heard the disposal, so it may observe the id again as a new observer
+// (acceptance E17).
+var disconnected = &ErrorBody{Code: "OBSERVER_DISCONNECTED", Message: "the observing worker disconnected and the grace period ended"}
+
+// An observer without counters is observed again at once, with the same id and frame:
+// it never reports disposed, goes pending, follows the new answer, keeps its id and is
+// replayed on later connections, where an observerstatechanged disposal is handled the
+// same way.
+func TestDisconnectedDisposalObservesAgain(t *testing.T) {
+	const id = "long-lived"
+	logs := captureLog(t)
+	fe := newFakeEngine(t)
+	c := fe.client()
+	h, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: id, Metadata: json.RawMessage(`{"team":"ops"}`)})
+	fe.waitFrames(MsgObserve, 1, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "active"})
+	waitUntil(t, "active", func() bool { return h.State() == ObserverActive })
+	var mu sync.Mutex
+	var seen []ObserverState
+	h.OnStateChange(func(s ObserverState, _ *ObserveReason) { mu.Lock(); seen = append(seen, s); mu.Unlock() })
+
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 2, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "disposed", Error: disconnected})
+	fe.waitFrames(MsgObserve, 3, nil)
+	if frames := observeFrames(fe, id); !reflect.DeepEqual(frames[2], frames[0]) {
+		t.Errorf("observed again with %+v, want the first observe %+v", frames[2], frames[0])
+	}
+	waitUntil(t, "pending", func() bool { return h.State() == ObserverPending })
+	if r := h.Reason(); r != nil {
+		t.Errorf("pending with reason %+v", r)
+	}
+	fe.send(&ObserveResultMessage{ID: id, State: "active"})
+	if err := readyErr(t, h); err != nil {
+		t.Fatalf("Ready: %v (state %s)", err, h.State())
+	}
+	waitUntil(t, "two state changes", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) == 2 })
+	mu.Lock()
+	if !slices.Equal(seen, []ObserverState{ObserverPending, ObserverActive}) {
+		t.Errorf("listener saw %v, want pending then active (never disposed)", seen)
+	}
+	mu.Unlock()
+	if n := logs.count("observer " + id + " was disposed by the engine while this worker was away past the grace period; observing it again"); n != 1 {
+		t.Errorf("%d log lines, want 1: %q", n, logs.String())
+	}
+	var rej *ObserveRejectionError
+	if _, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id}); !errors.As(err, &rej) || rej.Code != "OBSERVER_ID_CONFLICT" {
+		t.Errorf("the handle no longer holds its id: %v", err)
+	}
+
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 4, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "active"})
+	fe.send(&ObserverStateChangedMessage{ID: id, State: "disposed", Reason: disconnected})
+	fe.waitFrames(MsgObserve, 5, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "active"})
+	waitUntil(t, "active again", func() bool { return h.State() == ObserverActive })
+}
+
+// An observer with counters (max_fires, expires_in) is disposed and forgotten as
+// before: a new observer would reset them (decision 56). Its id is free.
+func TestDisconnectedDisposalForgetsObserversWithCounters(t *testing.T) {
+	fe := newFakeEngine(t)
+	c := fe.client()
+	opts := []ObserverOptions{{ID: "fires", MaxFires: 5}, {ID: "expires", ExpiresIn: time.Hour}, {ID: "plain"}}
+	handles := map[string]*ObserverHandle{}
+	for _, o := range opts {
+		handles[o.ID], _ = c.Observe(idSource, "audit::log", o)
+	}
+	fe.waitFrames(MsgObserve, 3, nil)
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 6, nil)
+	for _, o := range opts {
+		fe.send(&ObserveResultMessage{ID: o.ID, State: "disposed", Error: disconnected})
+	}
+	// plain, answered last, is observed again: the earlier answers were applied
+	fe.waitFrames(MsgObserve, 7, nil)
+	for _, id := range []string{"fires", "expires"} {
+		h := handles[id]
+		if h.State() != ObserverDisposed || h.Reason() == nil || h.Reason().Code != "OBSERVER_DISCONNECTED" {
+			t.Errorf("%s: %s %+v, want disposed OBSERVER_DISCONNECTED", id, h.State(), h.Reason())
+		}
+		if n := len(observeFrames(fe, id)); n != 2 {
+			t.Errorf("%s sent %d times, want 2", id, n)
+		}
+		if _, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id}); err != nil {
+			t.Errorf("%s: the id is still held: %v", id, err)
+		}
+	}
+	if s := handles["plain"].State(); s != ObserverPending {
+		t.Errorf("plain: %s, want pending", s)
+	}
+}
+
+// A handle its Dispose released is not observed again: the disposal stands.
+func TestDisconnectedDisposalOfADisposedHandle(t *testing.T) {
+	logs := captureLog(t)
+	fe := newFakeEngine(t)
+	c := fe.client()
+	gone, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: "gone"})
+	kept, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: "kept"})
+	fe.waitFrames(MsgObserve, 2, nil)
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 4, nil)
+	_ = gone.Dispose(context.Background())
+	fe.waitFrames(MsgUnobserve, 1, nil)
+	fe.send(&ObserveResultMessage{ID: "gone", State: "disposed", Error: disconnected})
+	fe.send(&ObserveResultMessage{ID: "kept", State: "disposed", Error: disconnected})
+	fe.waitFrames(MsgObserve, 5, nil) // kept is observed again
+	if n := len(observeFrames(fe, "gone")); n != 2 {
+		t.Errorf("disposed handle sent %d times, want 2", n)
+	}
+	if gone.State() != ObserverDisposed || gone.Reason().Code != "UNOBSERVED" {
+		t.Errorf("disposed handle %s %+v", gone.State(), gone.Reason())
+	}
+	if n := logs.count("observer gone was disposed"); n != 0 {
+		t.Errorf("the disposed handle was observed again: %q", logs.String())
+	}
+	if kept.State() != ObserverPending {
+		t.Errorf("kept: %s, want pending", kept.State())
+	}
+}
+
+// Loop guard: when the observe sent again is disposed with OBSERVER_DISCONNECTED on the
+// same connection too, the handle is disposed and forgotten.
+func TestDisconnectedDisposalObservesAgainOncePerConnection(t *testing.T) {
+	const id = "twice"
+	fe := newFakeEngine(t)
+	c := fe.client()
+	h, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
+	fe.waitFrames(MsgObserve, 1, nil)
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 2, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "disposed", Error: disconnected})
+	fe.waitFrames(MsgObserve, 3, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "disposed", Error: disconnected})
+	waitUntil(t, "disposed", func() bool { return h.State() == ObserverDisposed })
+	if h.Reason().Code != "OBSERVER_DISCONNECTED" {
+		t.Errorf("reason %+v", h.Reason())
+	}
+	fe.reconnect(c)
+	time.Sleep(30 * time.Millisecond)
+	if n := len(observeFrames(fe, id)); n != 3 {
+		t.Errorf("sent %d times, want 3 (forgotten after the second disposal)", n)
+	}
+}
+
+// A handle in error (here an observerstatechanged, which leaves it replayed) is not
+// observed again: the disposal of its replay stands and frees its id.
+func TestDisconnectedDisposalOfAHandleInError(t *testing.T) {
+	const id = "failing"
+	fe := newFakeEngine(t)
+	c := fe.client()
+	h, _ := c.Observe(idSource, "audit::log", ObserverOptions{ID: id})
+	fe.waitFrames(MsgObserve, 1, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "active"})
+	fe.send(&ObserverStateChangedMessage{ID: id, State: "error", Reason: &ErrorBody{Code: "OWNER_TIMEOUT", Message: "the owner did not answer"}})
+	waitUntil(t, "error", func() bool { return h.State() == ObserverError })
+	fe.reconnect(c)
+	fe.waitFrames(MsgObserve, 2, nil)
+	fe.send(&ObserveResultMessage{ID: id, State: "disposed", Error: disconnected})
+	waitUntil(t, "disposed", func() bool { return h.State() == ObserverDisposed })
+	if h.Reason().Code != "OBSERVER_DISCONNECTED" {
+		t.Errorf("reason %+v", h.Reason())
+	}
+	time.Sleep(30 * time.Millisecond)
+	if n := len(observeFrames(fe, id)); n != 2 {
+		t.Errorf("sent %d times, want 2 (not observed again)", n)
+	}
+	if _, err := c.Observe(idSource, "audit::log", ObserverOptions{ID: id}); err != nil {
+		t.Errorf("the id is still held: %v", err)
 	}
 }

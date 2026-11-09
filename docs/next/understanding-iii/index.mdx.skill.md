@@ -246,9 +246,10 @@ An Observer is `pending` until its observed Function and target are registered a
 hosts the observed Function has accepted it, and then it is `active`. When the observing Worker
 disconnects, its Observers become `suspended`. If the Worker connects again within
 `observers.observer_grace_ms` (30 s by default), it keeps its Observers. If not, they become
-`disposed`. When the Worker that hosts the observed Function disconnects, its Observers wait as
-`pending` until a Worker registers it again. An Observer that the Engine or the hosting Worker
-rejects is `error`.
+`disposed`, and when it connects again later its SDK observes again, under the same id, each
+Observer that has neither `max_fires` nor `expires_in_ms`. When the Worker that hosts the observed
+Function disconnects, its Observers wait as `pending` until a Worker registers it again. An Observer
+that the Engine or the hosting Worker rejects is `error`.
 
 ### Chains and the loop guard
 

@@ -588,7 +588,7 @@ use crate::{
         AddedHook, Call, DeliverHook, ErasedDeliverHook, HookStore, Match, Matcher, RemovedHook,
     },
     observable::{FunctionEntry, HookOp, Observer},
-    observe::{ObserverEntry, ObserverReason},
+    observe::{NOT_SENT, ObserverEntry, ObserverReason},
     protocol::{
         Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Dispatch, ErrorBody,
         FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, FUNCTION_NAMESPACE_CONFLICT, Message,
@@ -4399,16 +4399,67 @@ impl IIIClient {
 
     fn apply_observer_state(
         &self,
-        entry: &ObserverEntry,
+        entry: &Arc<ObserverEntry>,
         state: ObserverState,
         reason: Option<ErrorBody>,
         fires: Option<u64>,
     ) {
         if state == ObserverState::Disposed {
+            if self.observe_again(entry, reason.as_ref()) {
+                return;
+            }
             // Disposed by the engine (policy, expiry, grace): not replayed.
             self.forget_observer(entry);
         }
         entry.set(state, reason.map(ObserverReason::from), fires);
+    }
+
+    /// The engine disposed `entry`'s observer while this worker was away
+    /// past the grace period (`OBSERVER_DISCONNECTED`, normally its answer to
+    /// the replay), and the connection that hears it may observe the id
+    /// again at once, as a new observer (acceptance E17). A handle without
+    /// `max_fires` or `expires_in`, neither disposing, refused nor in
+    /// `error`, does so once per connection: it keeps its id, goes `pending` with its fires
+    /// back at 0, and its `observe` goes out like a first one. Returns
+    /// false, changing nothing, for any other handle.
+    fn observe_again(&self, entry: &Arc<ObserverEntry>, reason: Option<&ErrorBody>) -> bool {
+        if reason.is_none_or(|reason| reason.code != observe_codes::OBSERVER_DISCONNECTED)
+            // a new observer would restart its counters (decision 56)
+            || !matches!(
+                entry.message,
+                Message::Observe {
+                    max_fires: None,
+                    expires_in_ms: None,
+                    ..
+                }
+            )
+        {
+            return false;
+        }
+        let epoch = self.connection_epoch();
+        {
+            let _order = entry.send_lock.lock_or_recover();
+            if entry.disposing.load(Ordering::Acquire)
+                || entry.is_refused()
+                || entry.state() == ObserverState::Error
+                || entry.observed_again_epoch.swap(epoch, Ordering::AcqRel) == epoch
+            {
+                return false;
+            }
+            // its `observe` goes out on this connection again
+            entry.sent_epoch.store(NOT_SENT, Ordering::Release);
+        }
+        tracing::info!(
+            observer_id = %entry.id,
+            "the engine disposed observer {} while this worker was away past the grace period; observing it again",
+            entry.id
+        );
+        entry.set(ObserverState::Pending, None, Some(0));
+        // otherwise the next connection's replay sends it
+        if self.inner.observers.lock_or_recover().open_epoch == Some(epoch) {
+            self.send_observe(entry, epoch);
+        }
+        true
     }
 }
 

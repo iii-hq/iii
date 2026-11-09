@@ -74,6 +74,9 @@ class ObserverHandle:
         self._engine_disposed = False
         #: Its ``dispose()`` released the id (once, whichever thread called it).
         self._disposed_by_worker = False
+        #: The connection it was last observed again on after the engine
+        #: disposed it with ``OBSERVER_DISCONNECTED``: once per connection.
+        self._observed_again_epoch = -1
 
     @property
     def state(self) -> ObserverState:

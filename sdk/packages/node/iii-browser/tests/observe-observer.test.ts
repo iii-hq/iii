@@ -854,3 +854,161 @@ describe('a refused observe', () => {
     expect(observeFrames(next)).toEqual(['observe:r'])
   })
 })
+
+describe('an observer the engine disposed while its worker was away past the grace period (OBSERVER_DISCONNECTED)', () => {
+  const DISCONNECTED = { code: 'OBSERVER_DISCONNECTED', message: 'the observing worker disconnected' }
+  const observeFrames = (socket: ReturnType<typeof fake.lastSocket>) =>
+    socket
+      .frames()
+      .filter((f) => f.type === 'observe' || f.type === 'unobserve')
+      .map((f) => `${f.type}:${f.id}`)
+  /** Drops `socket`; the next connection opens and replays. */
+  async function reconnect(socket: ReturnType<typeof fake.lastSocket>) {
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(50)
+    const next = fake.lastSocket()
+    next.open()
+    return next
+  }
+  const disposedAnswer = (id: string) => ({ type: 'observeresult', id, state: 'disposed', error: DISCONNECTED })
+
+  it('is observed again with the same frame on the connection that heard it: pending, never disposed, then the new answer', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'o', metadata: { team: 'a' } })
+    socket.deliver({ type: 'observeresult', id: 'o', state: 'active' })
+    const states: string[] = []
+    handle.onStateChange((s) => states.push(s))
+
+    const next = await reconnect(socket)
+    next.deliver(disposedAnswer('o'))
+    expect(handle.state).toBe('pending')
+    expect(handle.reason).toBeUndefined()
+    const sent = next.framesOf('observe')
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toEqual(socket.framesOf('observe')[0])
+    expect(warn.mock.calls.map((c) => String(c[0]))).toContainEqual(
+      expect.stringMatching(/Observer o: .*away past the grace period; observing it again/),
+    )
+    next.deliver({ type: 'observeresult', id: 'o', state: 'active' })
+    await expect(handle.ready()).resolves.toBeUndefined()
+    expect(states).toEqual(['active', 'pending', 'active'])
+
+    // Still held: replayed on the next connection, observed again there too, and its dispose() sends unobserve.
+    const after = await reconnect(next)
+    after.deliver(disposedAnswer('o'))
+    expect(handle.state).toBe('pending')
+    expect(observeFrames(after)).toEqual(['observe:o', 'observe:o'])
+    await handle.dispose()
+    expect(observeFrames(after)).toEqual(['observe:o', 'observe:o', 'unobserve:o'])
+    warn.mockRestore()
+  })
+
+  it('an observerstatechanged disposed with OBSERVER_DISCONNECTED is handled the same way', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 's' })
+    socket.deliver({ type: 'observeresult', id: 's', state: 'active' })
+    socket.deliver({ type: 'observerstatechanged', id: 's', state: 'disposed', reason: DISCONNECTED, fires: 3 })
+    expect(handle.state).toBe('pending')
+    expect(observeFrames(socket)).toEqual(['observe:s', 'observe:s'])
+    socket.deliver({ type: 'observeresult', id: 's', state: 'active' })
+    expect(handle.state).toBe('active')
+    vi.restoreAllMocks()
+  })
+
+  it('one with max_fires or expires_in_ms is disposed and forgotten, as before', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const source = { function_id: 'orders::create' }
+    const plain = sdk.observe(source, 'audit::record', { id: 'plain' })
+    const counted = [
+      sdk.observe(source, 'audit::record', { id: 'fires', max_fires: 5 }),
+      sdk.observe(source, 'audit::record', { id: 'expires', expires_in_ms: 60_000 }),
+    ]
+    for (const id of ['plain', 'fires', 'expires']) socket.deliver({ type: 'observeresult', id, state: 'active' })
+
+    const next = await reconnect(socket)
+    for (const id of ['plain', 'fires', 'expires']) next.deliver(disposedAnswer(id))
+    expect(plain.state).toBe('pending')
+    for (const handle of counted) {
+      expect(handle.state).toBe('disposed')
+      expect(handle.reason).toEqual(DISCONNECTED)
+    }
+    expect(observeFrames(next)).toEqual(['observe:plain', 'observe:fires', 'observe:expires', 'observe:plain'])
+    const after = await reconnect(next)
+    expect(observeFrames(after)).toEqual(['observe:plain'])
+    vi.restoreAllMocks()
+  })
+
+  it('one its worker is disposing is not observed again', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const kept = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'kept' })
+    const gone = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'gone' })
+    socket.deliver({ type: 'observeresult', id: 'kept', state: 'active' })
+    socket.deliver({ type: 'observeresult', id: 'gone', state: 'active' })
+
+    const next = await reconnect(socket)
+    // dispose() is synchronous: the answer to its replay is dropped before any state applies, as before.
+    await gone.dispose()
+    next.deliver(disposedAnswer('kept'))
+    next.deliver(disposedAnswer('gone'))
+    expect(kept.state).toBe('pending')
+    expect(gone.state).toBe('disposed')
+    expect(gone.reason?.code).toBe('UNOBSERVED')
+    expect(observeFrames(next)).toEqual(['observe:kept', 'observe:gone', 'unobserve:gone', 'observe:kept'])
+    vi.restoreAllMocks()
+  })
+
+  it('one held in error (its host rejected it) is disposed and forgotten, not observed again', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const active = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'a' })
+    const errored = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'e' })
+    socket.deliver({ type: 'observeresult', id: 'a', state: 'active' })
+    socket.deliver({ type: 'observeresult', id: 'e', state: 'active' })
+    const rejected = { code: 'REJECTED', message: 'rejected by its host' }
+    socket.deliver({ type: 'observerstatechanged', id: 'e', state: 'error', fires: 0, reason: rejected })
+
+    const next = await reconnect(socket)
+    next.deliver(disposedAnswer('a'))
+    next.deliver(disposedAnswer('e'))
+    expect(active.state).toBe('pending')
+    expect(errored.state).toBe('disposed')
+    expect(errored.reason).toEqual(DISCONNECTED)
+    expect(observeFrames(next)).toEqual(['observe:a', 'observe:e', 'observe:a'])
+    const after = await reconnect(next)
+    expect(observeFrames(after)).toEqual(['observe:a'])
+    vi.restoreAllMocks()
+  })
+
+  it('is observed again once per connection: a second OBSERVER_DISCONNECTED on it disposes the handle and frees the id', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const { sdk, socket } = worker()
+    socket.open()
+    const handle = sdk.observe({ function_id: 'orders::create' }, 'audit::record', { id: 'l' })
+    socket.deliver({ type: 'observeresult', id: 'l', state: 'active' })
+
+    const next = await reconnect(socket)
+    next.deliver(disposedAnswer('l'))
+    expect(handle.state).toBe('pending')
+    next.deliver(disposedAnswer('l'))
+    expect(handle.state).toBe('disposed')
+    expect(handle.reason).toEqual(DISCONNECTED)
+    expect(observeFrames(next)).toEqual(['observe:l', 'observe:l'])
+    const after = await reconnect(next)
+    expect(observeFrames(after)).toEqual([])
+    vi.restoreAllMocks()
+  })
+})

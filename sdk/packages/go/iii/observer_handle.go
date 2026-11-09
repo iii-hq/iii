@@ -24,6 +24,13 @@ type ObserverHandle struct {
 	// the engine holds no observer for it; h is not sent again, and its Dispose sends
 	// nothing. Guarded by client.mu, kept across connections.
 	refused bool
+	// counted: created with max_fires or expires_in, which a new observer would reset
+	// (decision 56); the engine's OBSERVER_DISCONNECTED disposal forgets such a handle.
+	counted bool
+	// observedAgainOn is the connection epoch on which h was observed again after that
+	// disposal (0: never); a second one on the same connection forgets h. Guarded by
+	// client.mu.
+	observedAgainOn uint64
 
 	mu        sync.Mutex
 	state     ObserverState

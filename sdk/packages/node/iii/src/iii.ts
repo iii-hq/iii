@@ -894,7 +894,9 @@ class Sdk implements IIIClient {
    * {@link ObserveSource} with `args` for the worker that hosts the function.
    *
    * Returns synchronously, also before the connection is up; the observer is
-   * replayed with the same id on every reconnect. Errors (`INVALID_ARGS`,
+   * replayed with the same id on every reconnect; one without `max_fires` or
+   * `expires_in_ms` that the engine disposed while the worker was away past the
+   * grace period (`OBSERVER_DISCONNECTED`) is observed again. Errors (`INVALID_ARGS`,
    * `INVALID_FILTER`, `FORBIDDEN`, `NOT_OBSERVABLE`, the host's rejection,
    * `UNSUPPORTED` against an engine without observe) show up as state `error`
    * and reject `ready()`. An `error` answer to the `observe` is the engine's
@@ -2371,13 +2373,38 @@ class Sdk implements IIIClient {
     }
   }
 
-  /** A state from the engine for `handle`; `disposed` frees its id. */
+  /** A state from the engine for `handle`; `disposed` frees its id, unless it is observed again. */
   private applyObserverState(handle: ObserverHandleImpl, wireState: string, reason?: ErrorBody): void {
     const state = toObserverState(wireState)
+    if (state === 'disposed' && reason?.code === 'OBSERVER_DISCONNECTED' && this.observeAgain(handle)) return
     handle.setState(state, reason ? { code: reason.code, message: reason.message } : undefined)
     if (state !== 'disposed') return
     this.unlistObserve(handle)
     if (this.observerHandles.get(handle.id) === handle) this.observerHandles.delete(handle.id)
+  }
+
+  /**
+   * The engine disposed `handle`'s observer while this worker was away past
+   * the grace period (`OBSERVER_DISCONNECTED`): the id is free on this
+   * connection, so the handle observes it again as a new observer and stays
+   * held (E17). Not one with `max_fires` or `expires_in_ms` (a new observer
+   * would restart its counters, decision 56), one refused or in `error`, or
+   * one already observed again on this connection. One its worker disposed
+   * never gets here: what the engine says about it later is dropped.
+   */
+  private observeAgain(handle: ObserverHandleImpl): boolean {
+    const { max_fires, expires_in_ms } = handle.message
+    if (max_fires != null || expires_in_ms != null || handle.state === 'error') return false
+    if (handle.observedAgainOn === this.connectionEpoch) return false
+    this.logWarn(
+      `Observer ${handle.id}: the engine disposed it while this worker was away past the grace period; observing it again`,
+    )
+    handle.observedAgainOn = this.connectionEpoch
+    // Answered: out of the list, then in again as the newest observe of the id.
+    this.unlistObserve(handle)
+    handle.setState('pending')
+    this.sendObserve(handle)
+    return true
   }
 
   private unlistObserve(handle: ObserverHandleImpl): void {

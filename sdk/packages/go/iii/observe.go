@@ -74,6 +74,10 @@ var unsupportedReason = &ObserveReason{
 // [ObserverHandle.Dispose] or by the engine); an Observe of a held id sends nothing,
 // leaves the holder alone and returns an *ObserveRejectionError with code
 // OBSERVER_ID_CONFLICT. Once the holder is disposed the id is free at once.
+// An observer without MaxFires or ExpiresIn that the engine disposed while this worker
+// was away past its grace period (OBSERVER_DISCONNECTED) is not reported disposed: the
+// handle observes again, with the same id, as a new observer (pending, then the
+// engine's answer).
 //
 //	client.RegisterFunction("alerts::payment-failed", notify)
 //	failures, err := client.Observe(iii.Source{
@@ -160,6 +164,7 @@ func (c *Client) Observe(source Source, target string, opts ...ObserverOptions) 
 	c.observerSeq++
 	h := newObserverHandle(c, id, frame, c.observerSeq)
 	h.legacyOn = legacyOn(msg.Source.Capture)
+	h.counted = msg.MaxFires != nil || msg.ExpiresInMs != nil
 	c.observers[id] = h
 	live := c.state == StateConnected && c.registeredOnConnection
 	supported, epoch := c.engineFeatures[FeatureObserveV1], c.epoch
@@ -567,7 +572,8 @@ type sentObserve struct {
 
 // onObserveResult applies an observeresult to the oldest listed handle of id still
 // unanswered; with none it is dropped. A refusal unlists the handle for good, and its
-// Dispose sends nothing; one in state disposed frees its id too.
+// Dispose sends nothing; one in state disposed frees its id too, unless the handle is
+// observed again (engineDisposedLocked).
 func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
 	st := toObserverState(state)
 	c.mu.Lock()
@@ -582,15 +588,20 @@ func (c *Client) onObserveResult(id, state string, reason *ErrorBody) {
 	list = slices.Delete(list, 0, i)
 	list[0].answered = true
 	c.observeSent[id] = list
+	again := false
 	switch {
 	case st == ObserverDisposed:
-		c.forgetLocked(h)
+		again = c.engineDisposedLocked(h, reason)
 	case st == ObserverError:
 		// set before the state, so a Dispose that sees the error sends nothing
 		h.refused = true
 		c.unlistLocked(h)
 	}
 	c.mu.Unlock()
+	if again {
+		c.observeAgain(h)
+		return
+	}
 	h.setState(st, observeReason(reason))
 }
 
@@ -611,12 +622,45 @@ func (c *Client) onObserverStateChanged(id, state string, reason *ErrorBody) {
 		return
 	}
 	h := list[i].handle
+	again := false
 	if st == ObserverDisposed {
 		// disposed by the engine (unobserve, max_fires, expiry): not replayed
-		c.forgetLocked(h)
+		again = c.engineDisposedLocked(h, reason)
 	}
 	c.mu.Unlock()
+	if again {
+		c.observeAgain(h)
+		return
+	}
 	h.setState(st, observeReason(reason))
+}
+
+// engineDisposedLocked forgets h, which the engine disposed, and reports false; or,
+// when the engine disposed it because this worker was away past the grace period
+// (OBSERVER_DISCONNECTED), it unlists h and reports true, and the caller observes it
+// again (observeAgain): the connection that heard the disposal may observe the id again
+// as a new observer (acceptance E17). Not a handle with counters, which a new observer
+// would reset (decision 56), one its Dispose released, a refused one or one in error,
+// or one already observed again on this connection (its new observe was disposed too).
+// The caller holds mu, on the read loop.
+func (c *Client) engineDisposedLocked(h *ObserverHandle, reason *ErrorBody) bool {
+	if reason == nil || reason.Code != "OBSERVER_DISCONNECTED" || h.counted || h.refused ||
+		c.observers[h.id] != h || h.observedAgainOn == c.epoch || h.State() == ObserverError {
+		c.forgetLocked(h)
+		return false
+	}
+	c.unlistLocked(h)
+	h.observedAgainOn = c.epoch
+	return true
+}
+
+// observeAgain sends h's observe again, keeping its id, as a first observe on this
+// connection: h turns pending, and the engine's answer is its next state. Called on the
+// read loop, so the epoch is the one engineDisposedLocked marked.
+func (c *Client) observeAgain(h *ObserverHandle) {
+	log.Printf("iii: observer %s was disposed by the engine while this worker was away past the grace period; observing it again", h.id)
+	h.setState(ObserverPending, nil)
+	c.sendObserve(h, c.currentEpoch())
 }
 
 // forgetLocked drops h, which the engine disposed, from the answer list and frees its

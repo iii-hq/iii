@@ -1248,6 +1248,286 @@ async fn observers_are_sent_and_replayed_in_creation_order() {
     iii.shutdown_async().await;
 }
 
+/// The engine's answer to the replay of `id`: it disposed that observer
+/// while the worker was away past the grace period.
+fn disposed_while_away(mock: &MockEngine, id: &str) {
+    mock.send_to_client(json!({
+        "type": "observeresult", "id": id, "state": "disposed",
+        "error": { "code": "OBSERVER_DISCONNECTED", "message": "OBSERVER_DISCONNECTED" }
+    }));
+}
+
+/// Drops the connection; returns once the worker processed the new hello.
+async fn reconnected(mock: &MockEngine, iii: &IIIClient) {
+    mock.clear();
+    mock.close_active_connection();
+    until("the disconnect", || iii.engine_supports_observe().is_none()).await;
+    connected(mock, iii, true).await;
+}
+
+fn observes_of(mock: &MockEngine, id: &str) -> usize {
+    frames(mock, "observe")
+        .iter()
+        .filter(|m| m["id"] == id)
+        .count()
+}
+
+/// An observer without `max_fires` or `expires_in` whose replay the engine
+/// answers `disposed` with `OBSERVER_DISCONNECTED` is observed again at
+/// once, as a new observer under its id (E17): the same `observe`, `pending`
+/// with its fires back at 0 until the engine answers, never `disposed`, and
+/// replayed on the next connection as before.
+#[tokio::test]
+async fn an_observer_disposed_while_away_is_observed_again() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let handle = iii.observe_with(
+        Source::function("a::b").args(json!({ "k": 1 })),
+        "c::d",
+        ObserverOptions::default()
+            .id("v")
+            .metadata(json!({ "m": 1 })),
+    );
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let _listener = handle.on_state_change({
+        let states = states.clone();
+        move |state, _| states.lock().unwrap().push(state.clone())
+    });
+    observes(&mock, "v", 1).await;
+    observe_result(&mock, "v", "active");
+    mock.send_to_client(json!({
+        "type": "observerstatechanged", "id": "v", "state": "active",
+        "reason": { "code": "OK", "message": "OK" }, "fires": 3
+    }));
+    until("the fires", || handle.fires() == 3).await;
+
+    reconnected(&mock, &iii).await;
+    observes(&mock, "v", 1).await;
+    disposed_while_away(&mock, "v");
+    observes(&mock, "v", 2).await;
+    let sent = frames(&mock, "observe");
+    assert_eq!(sent[0], sent[1], "the same observe");
+    assert_eq!(handle.state(), ObserverState::Pending);
+    assert_eq!(handle.reason(), None);
+    assert_eq!(handle.fires(), 0);
+    observe_result(&mock, "v", "active");
+    tokio::time::timeout(WAIT, handle.ready())
+        .await
+        .unwrap()
+        .unwrap();
+    until("the listener", || {
+        states
+            .lock()
+            .unwrap()
+            .ends_with(&[ObserverState::Pending, ObserverState::Active])
+    })
+    .await;
+    assert!(
+        !states.lock().unwrap().contains(&ObserverState::Disposed),
+        "{states:?}"
+    );
+    // still holds its id
+    let held = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("v"));
+    assert_eq!(held.reason().unwrap().code, "OBSERVER_ID_CONFLICT");
+
+    // replayed on the next connection, and observed again there too
+    reconnected(&mock, &iii).await;
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "v").await;
+    disposed_while_away(&mock, "v");
+    observes(&mock, "v", 2).await;
+    assert_eq!(observes_of(&mock, "v"), 2);
+    assert_eq!(handle.state(), ObserverState::Pending);
+    iii.shutdown_async().await;
+}
+
+/// An observer with `max_fires` or `expires_in` the engine disposed while
+/// the worker was away stays disposed and frees its id: a new observer would
+/// restart its counters. One without them on the connection is observed again.
+#[tokio::test]
+async fn an_observer_with_counters_disposed_while_away_stays_disposed() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let counted = iii.observe_with(
+        "a::b",
+        "c::d",
+        ObserverOptions::default().id("mf").max_fires(5),
+    );
+    let expiring = iii.observe_with(
+        "a::b",
+        "c::d",
+        ObserverOptions::default()
+            .id("ex")
+            .expires_in(Duration::from_secs(60)),
+    );
+    let plain = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("pl"));
+    observes(&mock, "pl", 1).await;
+    for id in ["mf", "ex", "pl"] {
+        observe_result(&mock, id, "active");
+    }
+    tokio::time::timeout(WAIT, plain.ready())
+        .await
+        .unwrap()
+        .unwrap();
+
+    reconnected(&mock, &iii).await;
+    // replayed in creation order: `pl` last
+    observes(&mock, "pl", 1).await;
+    for id in ["mf", "ex", "pl"] {
+        disposed_while_away(&mock, id);
+    }
+    observes(&mock, "pl", 2).await;
+    for handle in [&counted, &expiring] {
+        assert_eq!(handle.state(), ObserverState::Disposed);
+        assert_eq!(handle.reason().unwrap().code, "OBSERVER_DISCONNECTED");
+        assert_eq!(observes_of(&mock, handle.id()), 1, "{}", handle.id());
+    }
+    assert_eq!(plain.state(), ObserverState::Pending);
+    for id in ["mf", "ex"] {
+        let again = iii.observe_with("a::b", "c::d", ObserverOptions::default().id(id));
+        assert_eq!(
+            again.state(),
+            ObserverState::Pending,
+            "{:?}",
+            again.reason()
+        );
+    }
+    iii.shutdown_async().await;
+}
+
+/// A handle whose `dispose()` is under way is not observed again: the
+/// engine's `disposed` while away resolves it. Another handle is.
+#[tokio::test]
+async fn a_handle_being_disposed_is_not_observed_again() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let gone = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("dw"));
+    let kept = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("kp"));
+    observes(&mock, "kp", 1).await;
+    observe_result(&mock, "dw", "active");
+    observe_result(&mock, "kp", "active");
+    tokio::time::timeout(WAIT, kept.ready())
+        .await
+        .unwrap()
+        .unwrap();
+
+    reconnected(&mock, &iii).await;
+    observes(&mock, "kp", 1).await;
+    let disposing = tokio::spawn({
+        let gone = gone.clone();
+        async move { gone.dispose().await }
+    });
+    frame(&mock, |m| m["type"] == "unobserve" && m["id"] == "dw").await;
+    disposed_while_away(&mock, "dw");
+    disposed_while_away(&mock, "kp");
+    observes(&mock, "kp", 2).await;
+    tokio::time::timeout(WAIT, disposing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(gone.state(), ObserverState::Disposed);
+    assert_eq!(observes_of(&mock, "dw"), 1);
+    assert_eq!(kept.state(), ObserverState::Pending);
+    iii.shutdown_async().await;
+}
+
+/// Observed again once per connection: when the engine answers that
+/// `observe` `disposed` while away too, the handle is disposed and frees
+/// its id.
+#[tokio::test]
+async fn an_observer_disposed_while_away_twice_on_one_connection_is_disposed() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let handle = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("lg"));
+    observes(&mock, "lg", 1).await;
+    observe_result(&mock, "lg", "active");
+    tokio::time::timeout(WAIT, handle.ready())
+        .await
+        .unwrap()
+        .unwrap();
+
+    reconnected(&mock, &iii).await;
+    observes(&mock, "lg", 1).await;
+    disposed_while_away(&mock, "lg");
+    observes(&mock, "lg", 2).await;
+    disposed_while_away(&mock, "lg");
+    until("the disposal", || handle.state() == ObserverState::Disposed).await;
+    assert_eq!(handle.reason().unwrap().code, "OBSERVER_DISCONNECTED");
+    let _barrier = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("bb"));
+    observes(&mock, "bb", 1).await;
+    assert_eq!(observes_of(&mock, "lg"), 2);
+    let again = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("lg"));
+    assert_eq!(
+        again.state(),
+        ObserverState::Pending,
+        "{:?}",
+        again.reason()
+    );
+    iii.shutdown_async().await;
+}
+
+/// A handle in `error` the engine disposed while away stays disposed and
+/// frees its id: only a live observer is observed again.
+#[tokio::test]
+async fn an_observer_in_error_disposed_while_away_stays_disposed() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let handle = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("er"));
+    observes(&mock, "er", 1).await;
+    observe_result(&mock, "er", "active");
+    state_changed(&mock, "er", "error", "TARGET_FAILED");
+    until("the error", || handle.state() == ObserverState::Error).await;
+
+    reconnected(&mock, &iii).await;
+    frame(&mock, |m| m["type"] == "observe" && m["id"] == "er").await;
+    disposed_while_away(&mock, "er");
+    until("the disposal", || handle.state() == ObserverState::Disposed).await;
+    assert_eq!(handle.reason().unwrap().code, "OBSERVER_DISCONNECTED");
+    let _barrier = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("bb"));
+    observes(&mock, "bb", 1).await;
+    assert_eq!(observes_of(&mock, "er"), 1);
+    let again = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("er"));
+    assert_eq!(
+        again.state(),
+        ObserverState::Pending,
+        "{:?}",
+        again.reason()
+    );
+    iii.shutdown_async().await;
+}
+
+/// An `observerstatechanged` to `disposed` with `OBSERVER_DISCONNECTED` is
+/// handled like that answer to a replay: the observer is observed again.
+#[tokio::test]
+async fn an_observer_changed_to_disposed_while_away_is_observed_again() {
+    let mock = MockEngine::start().await;
+    let iii = worker(&mock, "observer");
+    connected(&mock, &iii, true).await;
+    let handle = iii.observe_with("a::b", "c::d", ObserverOptions::default().id("sc"));
+    observes(&mock, "sc", 1).await;
+    observe_result(&mock, "sc", "active");
+    mock.send_to_client(json!({
+        "type": "observerstatechanged", "id": "sc", "state": "active",
+        "reason": { "code": "OK", "message": "OK" }, "fires": 2
+    }));
+    until("the fires", || handle.fires() == 2).await;
+
+    state_changed(&mock, "sc", "disposed", "OBSERVER_DISCONNECTED");
+    observes(&mock, "sc", 2).await;
+    assert_eq!(observes_of(&mock, "sc"), 2);
+    assert_eq!(handle.state(), ObserverState::Pending);
+    assert_eq!(handle.reason(), None);
+    assert_eq!(handle.fires(), 0);
+    observe_result(&mock, "sc", "active");
+    until("active", || handle.state() == ObserverState::Active).await;
+    iii.shutdown_async().await;
+}
+
 // ───────────────────────────── local dispatch ────────────────────────────
 
 #[tokio::test]
