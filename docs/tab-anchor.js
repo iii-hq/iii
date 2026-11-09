@@ -14,6 +14,10 @@
   // anchoring doesn't fight the correction.
   const SETTLE_MS = 400
 
+  // Keys Mintlify's tab list handles itself. Arrow Up/Down, Page Up/Down and
+  // the like scroll the page, so they must not start a correction.
+  const TAB_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', ' '])
+
   let release = null
 
   function anchor(tablist) {
@@ -23,9 +27,23 @@
     const until = performance.now() + SETTLE_MS
     let frame = 0
 
+    let lastY = window.scrollY
+
     const tick = () => {
+      // Navigated away: Mintlify replaced the page and this strip is gone.
+      if (!tablist.isConnected) return release()
+
+      // Our corrections leave scrollY at lastY, and with scroll anchoring off a
+      // panel swap doesn't move it either. Any other change is the reader
+      // scrolling (scrollbar drag, keys), unless the page got shorter and the
+      // browser clamped scrollY to the new bottom.
+      const y = window.scrollY
+      const maxY = document.documentElement.scrollHeight - window.innerHeight
+      if (Math.abs(y - lastY) > 1 && !(y < lastY && y >= maxY - 1)) return release()
+
       const drift = tablist.getBoundingClientRect().top - startTop
-      if (drift) window.scrollBy(0, drift)
+      if (drift) window.scrollBy({ top: drift, behavior: 'instant' })
+      lastY = window.scrollY
       if (performance.now() < until) frame = requestAnimationFrame(tick)
       else release()
     }
@@ -61,7 +79,8 @@
     'keydown',
     event => {
       const tablist = event.target && event.target.closest && event.target.closest('[role="tablist"]')
-      if (tablist) anchor(tablist)
+      if (tablist && TAB_KEYS.has(event.key)) anchor(tablist)
+      else if (release) release()
     },
     true,
   )
