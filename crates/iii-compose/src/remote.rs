@@ -646,7 +646,7 @@ async fn dispatch(
             Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
                 result.status,
                 result.changed,
-                request.container.as_deref(),
+                named_container(&request),
                 None,
                 None,
                 std::iter::once(&result),
