@@ -61,7 +61,7 @@ their behalf, or your employer must have waived such rights for your contributio
 
 ### Prerequisites
 
-- Rust 1.80+ (edition 2024)
+- Rust 1.91+ (edition 2024)
 - Redis (only if you enable the event/cron/stream workers)
 
 ### Setting Up Your Development Environment
