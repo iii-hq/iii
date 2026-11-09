@@ -17,7 +17,7 @@ base64 = "0.22"
 thiserror = "2"
 tracing = "0.1"
 libc = "0.2"
-dirs = "5"
+dirs = "6"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
