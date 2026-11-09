@@ -29,7 +29,7 @@ use nix::{
 use serde_json::{Value, json};
 
 /// Pinned so a new registry release cannot turn iii's CI red (D5).
-const SANDBOX_LIBKRUN: &str = "0.2.2";
+const SANDBOX_LIBKRUN: &str = "0.3.1";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
