@@ -3,6 +3,7 @@ import type { ComponentType } from 'react'
 
 import { assistantIcons } from '@/components/icons/assistants'
 import { IconDiscord, IconGitHub, IconLinkedIn, IconX } from '@/components/icons/iconly'
+import { SeasonalLink } from '@/components/seasonal/seasonal-link'
 import { askAbout, links } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import { Logo } from './logo'
@@ -52,13 +53,15 @@ export function Footer({ container }: { container?: string } = {}) {
       <div className={cn(container ?? 'mx-auto max-w-[1240px] px-5 sm:px-6 md:px-5', 'pt-14 md:pt-16')}>
         <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] lg:gap-20">
           <div className="flex flex-col">
-            <a
+            {/* Wears a seasonal mark during its date window (Thanksgiving week), playing on its own every few seconds. */}
+            <SeasonalLink
               href="#hero"
-              aria-label="iii, back to top"
+              label="iii, back to top"
+              size={32}
               className="inline-flex w-fit items-center rounded-sm outline-none focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-4"
             >
               <Logo className="h-7 text-foreground" />
-            </a>
+            </SeasonalLink>
             <p className="mt-4 max-w-[320px] text-pretty text-[15px] text-muted-foreground leading-relaxed">
               A next-generation software system. Workers. Triggers. Functions.
             </p>
