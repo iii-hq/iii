@@ -61,8 +61,8 @@ pub struct ComposeRequest {
     ///
     /// `compose::update` reads a spec: `name` or `name@version`. Omit both
     /// worker fields to update every declared package worker to latest.
-    /// `compose::remove` and `compose::restart` read a container key, where it
-    /// is the spelling for `container` — an operator naming a worker should not
+    /// `compose::down`, `compose::remove`, and `compose::restart` read a container
+    /// key, where it is the spelling for `container` — an operator naming a worker should not
     /// have to know which of the two words this call wanted. `compose::add`,
     /// `compose::update`, and `compose::remove` keep this field as a
     /// compatibility alias for a single list item.
@@ -98,17 +98,50 @@ struct DaemonOptions {
     namespace: Option<String>,
 }
 
-/// Request fields used by project lifecycle operations.
-#[allow(dead_code)]
-#[derive(JsonSchema)]
-struct LifecycleOptions {
+/// `compose::down` rejects unsupported fields rather than silently widening
+/// a misspelled or invalid target into a project-wide stop.
+#[derive(Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+struct DownOptions {
     /// Optional daemon guard. Use the trigger `--namespace` flag to route.
     namespace: Option<String>,
     /// Compose file on the daemon host. Defaults to `worker-compose.yaml` in
     /// the daemon working directory.
     file: Option<String>,
-    /// Restrict the lifecycle operation to one container.
+    /// Restrict shutdown to one container and its dependents. Omit both target
+    /// fields to stop the whole project.
+    #[serde(deserialize_with = "down_target_field")]
     container: Option<String>,
+    /// Alias for `container`. If both are supplied, they must name the same key.
+    #[serde(deserialize_with = "down_target_field")]
+    worker: Option<String>,
+}
+
+fn down_target_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let target = String::deserialize(deserializer)?;
+    if target.trim().is_empty() {
+        return Err(serde::de::Error::custom(
+            "compose::down target must not be blank; omit container and worker to stop the project",
+        ));
+    }
+    Ok(Some(target))
+}
+
+fn parse_request(operation: Operation, payload: Value) -> Result<ComposeRequest, Error> {
+    if matches!(operation, Operation::Down) {
+        let request: DownOptions = serde_json::from_value(payload)?;
+        Ok(ComposeRequest {
+            namespace: request.namespace,
+            file: request.file,
+            container: request.container,
+            worker: request.worker,
+            ..Default::default()
+        })
+    } else {
+        Ok(serde_json::from_value(payload)?)
+    }
 }
 
 /// Request fields used by `compose::up`.
@@ -315,10 +348,11 @@ fn register_matching(daemon: &Arc<Daemon>, include: impl Fn(Operation) -> bool) 
         let function = format!("compose::{name}");
         let guard_name = name.to_string();
 
-        let registration = RegisterFunction::new_async(move |request: ComposeRequest| {
+        let registration = RegisterFunction::new_async(move |payload: Value| {
             let daemon = Arc::clone(&daemon);
             let guard_name = guard_name.clone();
             async move {
+                let request = parse_request(kind, payload)?;
                 let Some(op) = reported_op(kind) else {
                     return dispatch(daemon, kind, guard_name, request).await;
                 };
@@ -420,6 +454,27 @@ fn stop_target(request: &ComposeRequest) -> Option<&str> {
         .flatten()
         .map(str::trim)
         .find(|value| !value.is_empty())
+}
+
+/// A targeted down must never become a project-wide down because an alias
+/// was ignored. Reject blank or conflicting selectors before touching a project.
+fn down_target(request: &ComposeRequest) -> Result<Option<&str>, Error> {
+    let container = request.container.as_deref().map(str::trim);
+    let worker = request.worker.as_deref().map(str::trim);
+    if container == Some("") || worker == Some("") {
+        return Err(Error::Handler(
+            "compose::down target must not be blank; omit container and worker to stop the project"
+                .to_string(),
+        ));
+    }
+    if let (Some(container), Some(worker)) = (container, worker)
+        && container != worker
+    {
+        return Err(Error::Handler(
+            "compose::down container and worker must name the same target".to_string(),
+        ));
+    }
+    Ok(container.or(worker))
 }
 
 /// Canonical list of functions exposed by the compose daemon.
@@ -613,24 +668,20 @@ async fn dispatch(
             spawn_mutation(operation, mutation, UPDATE_DETAILS);
             Ok(to_value(&accepted))
         }
-        Operation::Down => match daemon
-            .down(
-                file.as_deref(),
-                request.container.as_deref(),
-                operation_id(),
-            )
-            .await
-        {
-            Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
-                result.status,
-                result.changed,
-                request.container.as_deref(),
-                None,
-                None,
-                std::iter::once(&result),
-            ))),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Down => {
+            let target = down_target(&request)?;
+            match daemon.down(file.as_deref(), target, operation_id()).await {
+                Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
+                    result.status,
+                    result.changed,
+                    target,
+                    None,
+                    None,
+                    std::iter::once(&result),
+                ))),
+                Err(err) => Err(compose_error(&err)),
+            }
+        }
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
         Operation::List => Ok(json!({
@@ -981,6 +1032,16 @@ fn add_worker_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// Keep the published down contract aligned with strict target deserialization.
+fn down_options_schema() -> Option<Value> {
+    let mut schema = schema_for_value::<DownOptions>()?;
+    for field in ["container", "worker"] {
+        schema["properties"][field]["type"] = json!("string");
+        schema["properties"][field]["pattern"] = json!(r"\S");
+    }
+    Some(schema)
+}
+
 /// One source of truth for function registration and `compose::schema`.
 fn op_description(function_id: &str) -> &'static str {
     match function_id {
@@ -994,7 +1055,8 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
-             reverse dependency order."
+             reverse dependency order. Use container or its worker alias to target one; \
+             omit both to stop the whole project."
         }
         "compose::list" => "List every project loaded by this compose daemon.",
         "compose::status" => {
@@ -1093,7 +1155,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::down",
-                schema_for_value::<LifecycleOptions>(),
+                down_options_schema(),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
@@ -1304,6 +1366,141 @@ mod tests {
             .await
             .unwrap_err();
             assert!(matches!(error, Error::Remote { code, .. } if code == "INVALID_WORKER_SPEC"));
+        }
+    }
+
+    #[test]
+    fn down_accepts_either_target_spelling_and_only_omission_means_all() {
+        for payload in [
+            json!({"container": "harness"}),
+            json!({"worker": "harness"}),
+            json!({"container": " harness ", "worker": "harness"}),
+        ] {
+            let request = parse_request(Operation::Down, payload).unwrap();
+            assert_eq!(down_target(&request).unwrap(), Some("harness"));
+        }
+        let bare = parse_request(Operation::Down, json!({})).unwrap();
+        assert_eq!(down_target(&bare).unwrap(), None);
+    }
+
+    #[test]
+    fn down_rejects_invalid_and_unsupported_targets_before_dispatch() {
+        for payload in [
+            json!({"worker": ""}),
+            json!({"container": "  "}),
+            json!({"worker": null}),
+            json!({"container": null}),
+            json!({"worker": 1}),
+            json!({"container": []}),
+            json!({"worker": "harness", "container": ""}),
+            json!({"workers": ["harness"]}),
+            json!({"contianer": "harness"}),
+        ] {
+            assert!(
+                parse_request(Operation::Down, payload.clone()).is_err(),
+                "accepted {payload}"
+            );
+        }
+        let conflicting = parse_request(
+            Operation::Down,
+            json!({"container": "api", "worker": "harness"}),
+        )
+        .unwrap();
+        assert!(down_target(&conflicting).is_err());
+    }
+
+    #[test]
+    fn down_schema_advertises_alias_and_rejects_invalid_selectors() {
+        let schema = schema_entry("compose::down").1.as_ref().unwrap();
+        let validator = jsonschema::Validator::new(schema).unwrap();
+        for payload in [
+            json!({}),
+            json!({"file": "worker-compose.dev.yaml"}),
+            json!({"container": "harness"}),
+            json!({"worker": "harness"}),
+            json!({"container": "harness", "worker": "harness"}),
+        ] {
+            assert!(validator.is_valid(&payload), "rejected {payload}");
+        }
+        for payload in [
+            json!({"worker": ""}),
+            json!({"container": "  "}),
+            json!({"worker": null}),
+            json!({"container": null}),
+            json!({"worker": false}),
+            json!({"workers": ["harness"]}),
+            json!({"contianer": "harness"}),
+        ] {
+            assert!(!validator.is_valid(&payload), "accepted {payload}");
+        }
+    }
+
+    #[tokio::test]
+    async fn down_dispatch_preserves_the_worker_alias_and_unknown_target() {
+        // These workers are never started. Only this temporary project is
+        // loaded, so the regression cannot stop a developer's running services.
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("worker-compose.dev.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  harness:\n    worker: path://.\n    scripts:\n      run: ./harness\n  api:\n    worker: path://.\n    scripts:\n      run: ./api\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "down-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        for (target, status) in [("harness", "ok"), ("missing", "failed")] {
+            let request =
+                parse_request(Operation::Down, json!({"file": file, "worker": target})).unwrap();
+            let result = dispatch(
+                Arc::clone(&daemon),
+                Operation::Down,
+                "down".to_string(),
+                request,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result["worker"], target);
+            assert_eq!(result["status"], status);
+            assert_eq!(result["changed"], false);
+            if target == "missing" {
+                assert_eq!(result["error"]["code"], "UNKNOWN_CONTAINER");
+            }
+        }
+        let request = parse_request(Operation::Down, json!({"file": file})).unwrap();
+        let result = dispatch(daemon, Operation::Down, "down".to_string(), request)
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "ok");
+        assert!(result.get("worker").is_none());
+    }
+
+    #[tokio::test]
+    async fn down_rejects_conflicting_or_blank_targets_before_loading_a_project() {
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            "down-test".to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        for (container, worker) in [("api", "harness"), ("", "harness")] {
+            let result = dispatch(
+                Arc::clone(&daemon),
+                Operation::Down,
+                "down".to_string(),
+                ComposeRequest {
+                    file: Some("/does-not-exist/worker-compose.yaml".to_string()),
+                    container: Some(container.to_string()),
+                    worker: Some(worker.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(matches!(result, Err(Error::Handler(_))));
+            assert!(daemon.list().await.is_empty());
         }
     }
 
