@@ -56,8 +56,7 @@ A file that already declares the adapter at `version: '^0.2'` stays on 0.2 acros
 `compose::restart`, and `compose::update worker=sandbox-libkrun`. To move it, stop Compose, change
 the range to `'^0.3'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
 which rewrites the range to `^0.3` and [updates every other package
-worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token, and
-`iii sandbox run` refuses to start.
+worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token.
 
 Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
 project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and

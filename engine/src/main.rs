@@ -182,6 +182,9 @@ enum Commands {
     ///
     /// Compose starts `iii sandbox run` as the `scripts.run` of a container
     /// whose worker sets `runtime.base_image`; stopping it stops the VM.
+    // Hidden from `--help` and the CLI reference until the explicit VM mode is
+    // settled: Compose still runs it for a container that opts in.
+    #[command(hide = true)]
     Sandbox(iii_compose::sandbox_cli::SandboxCli),
 
     /// List iii processes on this machine: engines, compose daemons and
