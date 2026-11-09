@@ -26,8 +26,9 @@ as they can open a WebSocket to the Engine.
 ### Function
 
 A Function is a named handler inside a Worker. It takes a payload and returns a result. Function
-identifiers follow a `service::name` convention so they remain stable across worker restarts and
-language boundaries.
+identifiers use the `service::name` convention. A caller invokes a Function by its identifier. The
+Engine finds a Worker that provides that identifier at call time, so the caller does not change when
+the Worker restarts or uses a different language.
 
 ### Observer
 
@@ -50,8 +51,8 @@ The Quickstart tutorial produces a running system with two Workers connected to 
    `math::add` through the Engine.
 
 By the end of the Quickstart, the system also includes the `state` and `http` Workers, an HTTP route
-at `POST /math/add-two-numbers` that calls `math::add_two_numbers`, and a key-value scope named
-`math` holding a `running_total`.
+at `POST /math/add-two-numbers`, and a key-value scope named `math` that holds a `running_total`.
+The route calls `http::add_two_numbers` in `caller-worker`, which calls `math::add_two_numbers`.
 
 The runtime topology looks like this:
 
@@ -61,19 +62,19 @@ graph TD
   HTTP["curl / HTTP"] <-->|HTTP :3111| HttpWorker
 
   Engine <--> Math["math-worker (Python) math::add"]
-  Engine <--> Caller["caller-worker (TypeScript) math::add_two_numbers"]
+  Engine <--> Caller["caller-worker (TypeScript) math::add_two_numbers, http::add_two_numbers"]
   Engine <--> State["state"]
   Engine <--> HttpWorker["http"]
 ```
 
-Every arrow is a WebSocket connection between a Worker and the Engine. There is no direct
-worker-to-worker traffic. When `caller-worker` invokes `math::add`, the call goes through the
-Engine, which looks up the current location of `math::add` in its registry and routes the invocation
-to `math-worker`.
+Every arrow to the Engine is a WebSocket connection between a Worker and the Engine. The `curl`
+arrow is an HTTP request to the `http` Worker on port 3111. There is no direct worker-to-worker
+traffic. When `caller-worker` invokes `math::add`, the call goes through the Engine, which looks up
+the current location of `math::add` in its registry and routes the invocation to `math-worker`.
 
 ## Workers
 
-Workers do the work in an iii system. Every category of capability is built as a Worker: queues,
+Workers do the work in a iii system. Every category of capability is built as a Worker: queues,
 scheduling, sandboxing, observability, agents, business logic, devices, and even code executing in a
 browser.
 
@@ -82,20 +83,19 @@ of Functions it can run. Once connected, those Functions are invocable from anyw
 without per-pair integration code between the caller and the Worker. A Worker can also observe
 Functions, so that its own Functions run when other Functions have events.
 
-The Worker concept is intentionally narrow. A Worker is not a microservice, a job runner, or a
-sidecar. It is a participant in the Engine's live registry that contributes Functions and observers.
-Whether the Worker is a long-lived process serving thousands of invocations per second or a
-short-lived process that connects, registers, runs once, and shuts down, the Engine treats it the
-same.
+The Worker concept is intentionally narrow. A Worker is a participant in the live registry of the
+Engine that contributes Functions and observers. Whether the Worker is a long-lived process serving
+thousands of invocations per second or a short-lived process that connects, registers, runs once,
+and shuts down, the Engine treats it the same.
 
 ### Worker isolation
 
 Workers are intended and designed to be independent processes. One Worker crashing does not affect
-others. The Engine connects to each Worker over a separate WebSocket and routes invocations only to
-Workers that are currently connected. A crash, restart, or network partition affecting one Worker
-does not propagate to the others. The crashed Worker's Functions drop out of the routing table on
-disconnect, and every other Worker keeps serving. Its observers wait as `suspended`. If the Worker
-does not connect again in time, the Engine removes them.
+others. Each Worker connects to the Engine over its own WebSocket, and the Engine routes invocations
+only to Workers that are currently connected. A crash, restart, or network partition affecting one
+Worker does not propagate to the others. The crashed Worker's Functions drop out of the routing
+table on disconnect, and every other Worker keeps serving. Its observers wait as `suspended`. If the
+Worker does not connect again in time, the Engine removes them.
 
 ### In the Quickstart
 
@@ -119,27 +119,25 @@ same regardless of how it was built or where it runs.
 
 ## Functions
 
-A Function is a named handler inside a Worker. It takes a payload and returns a result. From the iii
-system's perspective, a Function is identified by its name and addressable across language and
-location boundaries. Callers do not know what Worker is providing the Function, what language the
-handler is written in, or where the Worker is running. The Engine routes each invocation to a Worker
-that currently provides the target Function.
+From the iii system's perspective, a Function is identified by its name and addressable across
+language and location boundaries. Callers do not know what Worker is providing the Function, what
+language the handler is written in, or where the Worker is running. The Engine routes each
+invocation to a Worker that currently provides the target Function.
 
 A Function has no fixed shape beyond payload-in / result-out. Some Functions are pure computation.
 Some perform side effects (state writes, HTTP calls, queue enqueues). Some are agentic, invoking
-other Functions in turn. The Engine does not distinguish: routing is the same for all of them.
+other Functions in turn. The Engine routes all of them the same way.
 
 ### Function identifiers
 
 Function identifiers use the `service::name` convention. The `service` segment groups related
-Functions together as a namespace, scope, or worker name. The `name` segment is the specific
-handler. Identifiers like `math::add`, `state::get`, and `http::serve` follow this convention.
+Functions, often by worker name. The `name` segment is the specific handler. `math::add`,
+`state::get`, and `state::set` follow this convention.
 
-The convention is a recommendation, not a hard rule. Any string is a valid function ID at the engine
-level, but the `service::name` form makes the Function's intent obvious to readers and avoids
-collisions between unrelated Functions registered by different Workers.
-
-{/* TODO: Confirm if we still have restricted string prefixes */}
+The Engine does not enforce the convention. The Engine reserves the `engine::` prefix for its own
+Functions. See [Reserved ids](../reference/engine-protocol#reserved-ids). The `service::name` form
+makes the intent of a Function clear and lowers the chance that two Workers register the same
+identifier.
 
 ### Calling a Function
 
@@ -178,9 +176,9 @@ The Quickstart binds the HTTP route with `worker.registerTrigger()`. This API is
 and the http Worker still uses it for routes. See
 [Upgrading from 0.24.x](../upgrading/from-0-24-x#providers-not-migrated-yet).
 
-Function IDs are stable across worker restarts. When `math-worker` stops and restarts, callers do
-not need to know: they keep invoking `math::add`, and the Engine routes the calls to whichever
-instance currently provides that Function.
+Function IDs are stable across worker restarts. When `math-worker` stops and restarts, callers keep
+invoking `math::add`, and the Engine routes the calls to whichever instance currently provides that
+Function.
 
 ## Observers
 

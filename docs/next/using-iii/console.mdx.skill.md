@@ -6,9 +6,9 @@
 <Note>
   The iii console is the web UI of ADE: a standalone application that connects to your running
   engine. It ships as a single binary, published in the registry as `ade`, that serves the UI and
-  proxies the engine WebSocket on one port (`3113` by default). Use it to chat
-  with agents, follow traces and logs, manage the workers in your Compose project, and edit worker
-  configuration. For scripting or agent integration, call worker functions directly.
+  proxies the engine WebSocket on one port (`3113` by default). Use it to chat with agents, follow
+  traces and logs, manage the workers in your Compose project, and edit worker configuration. For
+  scripting or agent integration, call worker functions directly.
 </Note>
 
 <Warning title="The iii-console binary was removed">
@@ -23,8 +23,7 @@ The console runs next to the engine in your Compose project.
 
 - Projects created by the installer or by `iii project init` (see [Install](../install)) already
   open the console at `http://127.0.0.1:3113` once `iii compose --up` is running.
-- In any other project, start the project, then add ADE from a second terminal in the
-  same folder:
+- In any other project, start the project, then add ADE from a second terminal in the same folder:
 
 ```bash
 iii compose --up
@@ -34,8 +33,8 @@ iii compose --up
 iii trigger compose::add worker=ade
 ```
 
-`compose::add` resolves `ade` from the registry, declares it in `worker-compose.yaml`, and starts
-it next to the engine. Then open `http://127.0.0.1:3113` in your browser.
+`compose::add` resolves `ade` from the registry, declares it in `worker-compose.yaml`, and starts it
+next to the engine. Then open `http://127.0.0.1:3113` in your browser.
 
 If you run more than one Compose daemon, pass its namespace, for example
 `iii trigger -n dev compose::add worker=ade`.
@@ -54,10 +53,10 @@ worker. Add the agent stack with:
 iii trigger compose::add worker=harness
 ```
 
-The first time you open the console on a machine, a setup wizard helps you connect a model
-provider. In the composer you can pick a model, mention any registered function or a file in the
-working directory with `@`, and approve or deny function calls that need approval. Each
-conversation links to its traces.
+The first time you open the console on a machine, a setup wizard helps you connect a model provider.
+In the composer you can pick a model, mention any registered function or a file in the working
+directory with `@`, and approve or deny function calls that need approval. Each conversation links
+to its traces.
 
 ### Traces
 
@@ -76,9 +75,9 @@ waterfall. A span's detail shows its attributes, events, errors, logs, and conte
 
 Lists every worker that the Compose daemon runs, and every worker connected to the engine outside
 Compose. For a Compose worker you can follow its logs, change its version or source, edit its
-settings (run script, start order, environment), and see the functions it registered. **Add
-worker** declares a new worker from the registry or a local directory. Changes go through the
-daemon's own `compose::*` functions; see [Compose](./compose).
+settings (run script, start order, environment), and see the functions it registered. **Add worker**
+declares a new worker from the registry or a local directory. Changes go through the daemon's own
+`compose::*` functions; see [Compose](./compose).
 
 ### Settings
 
@@ -87,9 +86,9 @@ daemon's own `compose::*` functions; see [Compose](./compose).
 
 ## Configure the console
 
-The console registers its own `console` entry with the configuration worker. Its `http_port`
-setting (default `3113`) moves the listener without a restart. You can edit the entry under
-**Settings**, or set it like any other configuration entry.
+The console registers its own `console` entry with the configuration worker. Its `http_port` setting
+(default `3113`) moves the listener without a restart. You can edit the entry under **Settings**, or
+set it like any other configuration entry.
 
-For every option, see the [ADE worker
-README](https://github.com/iii-hq/workers/tree/main/ade#configuration).
+For every option, see the
+[ADE worker README](https://github.com/iii-hq/workers/tree/main/ade#configuration).

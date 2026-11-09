@@ -8,14 +8,15 @@ type: "tutorial"
 
 <Note>
   Earlier versions of this chapter published `link.created` with the `pubsub` worker. If your
-  project still has it, see [Migrate from iii-stream and pubsub](../../upgrading/migrate-from-streams).
+  project still has it, see [Migrate from iii-stream and
+  pubsub](../../upgrading/migrate-from-streams).
 </Note>
 
-In Chapter 3 every redirect triggers `link::record_click` directly, so the database write runs on
-the redirect's hot path and a slow write slows the redirect. In this chapter you move that work onto
-a **queue** so redirects return immediately, then publish link events on **durable topics** that
-independent subscribers receive: a Python analytics worker and a cache refresher, both decoupled
-from the `link` worker.
+In Chapter 3 every redirect triggers `link::record_click` directly. The database write runs on the
+redirect's hot path, so a slow write slows the redirect. In this chapter you move that work onto a
+**queue**, so redirects return immediately. Then you publish link events on **durable topics**. Two
+subscribers receive them: a Python `analytics` worker and a cache refresher in the `link` worker.
+The functions that publish the events do not call the subscribers.
 
 ## Add the workers
 
@@ -61,8 +62,8 @@ database:
         url: sqlite:./data/analytics.db
 ```
 
-If `database::query db=analytics` later answers `UNKNOWN_DB`, the `analytics` entry is nested at
-the wrong level.
+If `database::query db=analytics` later answers `UNKNOWN_DB`, the `analytics` entry is nested at the
+wrong level.
 
 ## Make redirects fast with a queue
 
@@ -70,25 +71,28 @@ A queue holds work that is accepted now and run later. The `clicks` queue you un
 the one `link::record_click` uses.
 
 <Note>
-  Queue names are references to the queue and do not place any restrictions on what can be put into
-  a given queue.
+  A queue accepts calls to any function. `TriggerAction.Enqueue` works only for a queue that the
+  `queue` worker knows, such as `clicks` in `queue_configs`. A call to an unknown queue fails.
 </Note>
 
 You already wrote `link::record_click` in Chapter 3, where `http::redirect` triggers it directly.
 Nothing about that function needs to change to make it queuable. You only change how it's triggered
 with a `TriggerAction`.
 
+In `link/src/index.ts`, uncomment each `Ch. 4` block and comment out the `Ch. 3` block that it
+replaces, as described in [The worker entry point](./foundations#the-worker-entry-point).
+
 **First import `TriggerAction`** into `link/src/index.ts`:
 
-```typescript {1} src/index.ts
+```typescript link/src/index.ts {1}
 import { InvocationError, registerWorker, TriggerAction } from "iii-sdk";
 import { Logger } from "@iii-dev/helpers/observability";
 ```
 
-Then add an `action` to the existing `link::record_click` call in `http::redirect` so the `queue`
-worker enqueues it instead of running it inline:
+Then add an `action` to the existing `link::record_click` call in `http::redirect`. The action puts
+the call onto the `clicks` queue:
 
-```typescript src/index.ts {6}
+```typescript link/src/index.ts {6}
 worker.registerFunction("http::redirect", async (req) => {
   // ...unchanged from the Chapter 3 http::redirect: the code, link::resolve and the 404...
   await worker.trigger({
@@ -100,39 +104,42 @@ worker.registerFunction("http::redirect", async (req) => {
 });
 ```
 
-The redirect now returns as soon as the click is accepted onto the queue. `link::record_click`
-drains the queue in the background, with retries and a dead-letter queue if a write keeps failing.
+The redirect now returns when the queue accepts the click. The `queue` worker then calls
+`link::record_click` in the background. If the write fails, the queue retries it up to 5 times
+(`max_retries: 5`). After that, the queue moves the message to a dead-letter queue.
 
 ## Broadcast events with durable topics
 
 A queue delivers each message to one consumer. When several unrelated parts of the system need to
-react to the same event, publish it on a **topic** instead. The `queue` worker serves topics too:
-`iii::durable::publish` sends a message to a topic, and every function bound to that topic with a
+react to the same event, publish the event on a **topic**. The `queue` worker serves topics too.
+`iii::durable::publish` sends a message to a topic. Every function bound to that topic with a
 `durable:subscriber` trigger receives its own copy.
 
 <Info>
-  Topic messages are durable: each subscriber's copy is kept until it is handled, retried when the
-  handler fails, and moved to a dead-letter queue when it keeps failing. Delivery is at least once,
-  so make subscribers safe to run twice for the same message.
+  Topic messages are durable. The `queue` worker keeps each subscriber's copy until the subscriber
+  handles it. It retries the copy when the handler fails, and moves the copy to a dead-letter queue
+  when it keeps failing. Delivery is at least once, so make subscribers safe to run twice for the
+  same message.
 
 For notifications that nobody needs to replay, such as a live click counter, a worker can declare
-its own trigger type instead. You'll build one in Chapter 5.
+its own trigger type. You build one in Chapter 5. The [queue](https://workers.iii.dev/workers/queue)
+worker docs list its trigger types and functions.
 
 </Info>
 
-Here we'll publish an event when a link is created, and another when a link is updated. Later
-we'll make an `analytics` worker that collects data from these events. We don't have link updating
+Here we'll publish an event when a link is created, and another when a link is updated. Later we'll
+make an `analytics` worker that collects data from these events. We don't have link updating
 functionality yet, so we'll add that and an HTTP endpoint for it too.
 
 ### Publish on link.created
 
-Publish an event whenever a link is created. Replace `link::create` with this version: it keeps the
-creation time in a `created_at` variable, writes it with the row, and after `state::set` publishes
-it on the `link.created` topic along with the code and URL. A subscriber then knows when the link
-was created, even when its copy arrives later. A taken code throws before the publish, so it
-publishes nothing:
+Publish an event each time a link is created. Replace `link::create` with this version. It keeps the
+creation time in a `created_at` variable and writes it with the row. After `state::set`, it
+publishes the code, the URL, and `created_at` on the `link.created` topic. A subscriber then knows
+when the link was created, even when its copy arrives later. A taken code throws before the publish,
+so it publishes nothing:
 
-```typescript {4-6,17,25-28} src/index.ts
+```typescript link/src/index.ts {4-6,17,25-28}
 worker.registerFunction("link::create", async (payload: { url: string; code?: string }) => {
   const code = payload.code ?? makeCode();
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
@@ -171,9 +178,9 @@ worker.registerFunction("link::create", async (payload: { url: string; code?: st
 Now add an update path to the `link` worker so a link's target can change, and announce it.
 
 First, the domain function: it updates the database row and publishes a `link.updated` event on its
-own topic, the same way. Place it at the end of `link/src/index.ts`:
+own topic, the same way. It is the `Ch. 4 | link::update` block in `link/src/index.ts`:
 
-```typescript src/index.ts
+```typescript link/src/index.ts
 worker.registerFunction("link::update", async (payload: { code: string; url: string }) => {
   const url = /^https?:\/\//i.test(payload.url) ? payload.url : `https://${payload.url}`;
   await worker.trigger({
@@ -196,7 +203,7 @@ worker.registerFunction("link::update", async (payload: { code: string; url: str
 
 Then connect `link::update` with an HTTP handler that validates input and calls the domain function:
 
-```typescript src/index.ts
+```typescript link/src/index.ts
 worker.registerFunction("http::update", async (req) => {
   const code = req.path_params.code;
   const url = req.body?.url;
@@ -217,7 +224,7 @@ worker.registerFunction("http::update", async (req) => {
 
 And finally the trigger that binds `http::update` to `PUT /links/:code`:
 
-```typescript src/index.ts
+```typescript link/src/index.ts
 worker.registerTrigger({
   type: "http",
   function_id: "http::update",
@@ -230,18 +237,18 @@ end of the chapter.
 
 ## Add reactive state: Keep the cache correct without coupling
 
-`link::update` changes the database but not the state cache, so a query could serve stale data.
-Rather than handle refreshing the state cache inside `link::update`, subscribe to the `link.updated`
-topic with a `durable:subscriber` trigger:
+`link::update` changes the database row. The state cache still holds the old URL, so `link::resolve`
+returns the old URL. A `durable:subscriber` trigger on the `link.updated` topic refreshes the cache.
+`link::update` then needs no cache code. Add the subscriber:
 
 <Info>
-  **Why durable matters here.** This cache refresher must receive every update: a dropped event
+  **Why durable matters here.** This cache refresher must receive every update. A dropped event
   would leave the cache pointing at a stale URL. A durable topic keeps the message until the
-  subscriber handles it, and retries it when the handler fails. Use a durable topic whenever a
-  missed event would corrupt state.
+  subscriber handles it, and retries it when the handler fails. Use a durable topic when a missed
+  event would corrupt state. See [Durable pub/sub](../../creating-workers/queues#durable-pubsub).
 </Info>
 
-```typescript src/index.ts
+```typescript link/src/index.ts
 worker.registerFunction("link::on_link_updated", async (data: { code: string; url: string }) => {
   await worker.trigger({
     function_id: "state::set",
@@ -281,21 +288,20 @@ scripts:
   # start until the Ch. 4 block is uncommented. -u keeps the startup line
   # visible in the Compose logs instead of buffered.
   start: >-
-    grep -q '^[^#[:space:]]' src/main.py
-    || { echo 'analytics: src/main.py is still fully commented; uncomment its Ch. 4 block, then restart the analytics container' >&2; exit 1; };
-    exec .venv/bin/python -u src/main.py
+    grep -q '^[^#[:space:]]' src/main.py || { echo 'analytics: src/main.py is still fully commented;
+    uncomment its Ch. 4 block, then restart the analytics container' >&2; exit 1; }; exec
+    .venv/bin/python -u src/main.py
 ```
 
 ### Subscribe to link.created events
 
-The scaffold ships `analytics/src/main.py` with this code commented out: uncomment its Ch. 4 block
-(or replace the file with the code below). It binds a `durable:subscriber` trigger to the
-`link.created` topic and records every new short link under the UTC day of the event's
-`created_at`.
+Uncomment the Ch. 4 block in `analytics/src/main.py`, or replace the file with the code below. The
+block binds a `durable:subscriber` trigger to the `link.created` topic. It records each new short
+link under the UTC day of the event's `created_at`.
 
-Delivery is at least once, so the same event can arrive twice. Instead of adding 1 to a counter,
-the worker keeps one row per link in `link_events`, keyed by `code`, and writes it with a single
-`INSERT ... ON CONFLICT(code) DO NOTHING`: a redelivered event finds its row and changes nothing.
+Delivery is at least once, so the same event can arrive twice. For this reason, the worker keeps one
+row for each link in `link_events`, keyed by `code`, and writes it with a single
+`INSERT ... ON CONFLICT(code) DO NOTHING`. A redelivered event finds its row and changes nothing.
 The per-day counts come from `daily_link_counts`, a view that counts those rows by day:
 
 <Accordion title="analytics/src/main.py">
@@ -378,9 +384,9 @@ print("Analytics worker started")
 
 </Accordion>
 
-Analytics keeps its rows in its own database, so the `link` worker never has to know it exists.
-That is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary`
-one from Chapter 3.
+Analytics keeps its rows in its own database, so the `link` worker never has to know it exists. That
+is the `analytics` entry you uncommented at the start of the chapter, alongside the `primary` one
+from Chapter 3.
 
 Restart Compose so it picks up the change:
 
@@ -388,7 +394,7 @@ Restart Compose so it picks up the change:
 iii trigger compose::restart
 ```
 
-### See it work
+## See it work
 
 Create five links, follow one a few times, and change its target:
 
@@ -407,17 +413,51 @@ iii trigger database::query db=analytics sql="SELECT day, count FROM daily_link_
 ```
 
 ```json
-{ "rows": [{ "day": "2026-05-27", "count": 5 }], "row_count": 1 }
+{
+  "columns": [
+    {
+      "name": "day",
+      "type": "TEXT"
+    },
+    {
+      "name": "count",
+      "type": "INTEGER"
+    }
+  ],
+  "row_count": 1,
+  "rows": [
+    {
+      "count": 5,
+      "day": "2026-05-27"
+    }
+  ]
+}
 ```
 
-Now follow one of them a few times (each click goes through the queue instead of a blocking write),
-then change its target. `PUT /links/:code` publishes `link.updated` durably and the subscriber refreshes
-the cache, so `link::resolve` returns the new URL right away:
+The `day` value is the current UTC date.
+
+Now follow one of them a few times. Each click goes through the queue:
 
 ```bash
 for _ in 1 2 3; do curl -s -o /dev/null http://127.0.0.1:3111/s/analyticslink1; done
+```
+
+After a few seconds, check that `link::record_click` wrote the three clicks:
+
+```bash
+iii trigger database::query db=primary sql="SELECT COUNT(*) AS clicks FROM clicks WHERE code = 'analyticslink1'"
+```
+
+The `rows` field shows `"clicks": 3`.
+
+Change its target. `PUT /links/:code` publishes `link.updated` durably, and the subscriber refreshes
+the cache in the background. The `sleep` line gives the subscriber time to finish. Then
+`link::resolve` returns the new URL:
+
+```bash
 curl -s -X PUT http://127.0.0.1:3111/links/analyticslink1 \
   -H 'Content-Type: application/json' -d '{"url":"https://iii.dev/updated"}'
+sleep 3
 iii trigger link::resolve code=analyticslink1
 ```
 
@@ -428,7 +468,7 @@ iii trigger link::resolve code=analyticslink1
 ## Conclusion
 
 Redirects no longer wait on a database write: click rows ride a queue, drained in the background.
-Link events fan out over durable topics to a Python analytics counter and a cache refresher, and the
-`link` worker does not know either of them exists. Next, in
-[Ch. 5: Stream live clicks](/tutorials/linkly/streaming), you broadcast every click in real time
-from a dedicated `click-streamer` worker.
+Link events fan out over durable topics to a Python analytics counter and a cache refresher.
+`link::create` and `link::update` do not call either subscriber. Next, in
+[Ch. 5: Stream live clicks](./streaming), you broadcast every click in real time from a dedicated
+`click-streamer` worker.

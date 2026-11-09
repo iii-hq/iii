@@ -5,42 +5,41 @@ owner: "devrel"
 type: "how-to"
 ---
 
-Channels move large or binary payloads between iii workers without putting the data in a JSON
-function payload. Use one for files, images, datasets, payloads above the JSON message limit, audio
-or video streams, or incremental progress updates during long-running work. For small JSON, use a
-regular `worker.trigger(...)` call.
+Channels move large or binary payloads between iii workers outside the JSON function payload. Use a
+channel for files, images, datasets, payloads above the JSON message limit, audio or video streams,
+or progress updates during long-running work. For small JSON, use a regular `worker.trigger(...)`
+call.
 
 <Note>
-  For the underlying model (how channels are addressed, multiplexed, and torn down), see [Channels
-  architecture](../understanding-iii/channels).
+  For how channels work (refs, lifecycle, and ownership), see
+  [Channels](../understanding-iii/channels).
 </Note>
 
 ## Payload size
 
-The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust,
-Node, Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB**
-outbound limit and does not fragment messages because browser WebSocket APIs do not expose frame
-control. Browser workers also have a **16 MiB** receive limit.
+The limit applies to the complete serialized UTF-8 JSON envelope, measured in bytes. The Rust, Node,
+Python, and Go SDKs support messages up to **64 MiB**. The browser SDK has a **16 MiB** outbound
+limit and does not fragment messages because browser WebSocket APIs do not expose frame control.
+Browser workers also have a **16 MiB** receive limit.
 
 For Rust, Node, Python, and Go, messages up to **16 MiB** are sent as one text frame. Larger
 messages, up to and including 64 MiB, are sent as one fragmented WebSocket text message using
 multiple frames. The engine sends every message larger than **1 MiB** to a worker as one fragmented
-text message of 1 MiB frames, so no frame it sends exceeds a worker's frame size limit.
-Applications send and receive these messages through the usual function APIs.
+text message of 1 MiB frames, so no frame it sends exceeds a worker's frame size limit. Applications
+send and receive these messages through the usual function APIs.
 
-The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than
-16 MiB. An updated engine checks the serialized envelope against the target worker's receive limit
-and returns `payload_too_large` to the caller when the target cannot accept it. The engine sets
-that limit when the worker registers:
+The receiving worker must run SDK version **0.24.5 or later** to accept messages larger than 16 MiB.
+An updated engine checks the serialized envelope against the target worker's receive limit and
+returns `payload_too_large` to the caller when the target cannot accept it. The engine sets that
+limit when the worker registers:
 
 - A browser worker gets **16 MiB**.
-- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**, whatever
-  version it reports. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser SDK
-  does not.
-- Any other worker gets **64 MiB** when the version it reports is an SDK version of 0.24.5 or
-  later, written as semver (`0.24.6`, `0.25.0-rc.5`) or PEP 440 (`0.25.0rc5`, `0.24.5.post1`). It
-  gets **16 MiB** when the version is missing, cannot be parsed, or is older, including
-  pre-releases of 0.24.5. Other features, such as `observe.v1`, do not count.
+- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**, whatever version
+  it reports. The Rust, Node, Python, and Go SDKs declare it from 0.25.0; the browser SDK does not.
+- Any other worker gets **64 MiB** when the version it reports is an SDK version of 0.24.5 or later,
+  written as semver (`0.24.6`, `0.25.0-rc.5`) or PEP 440 (`0.25.0rc5`, `0.24.5.post1`). It gets **16
+  MiB** when the version is missing, cannot be parsed, or is older, including pre-releases of
+  0.24.5. Other features, such as `observe.v1`, do not count.
 
 SDK 0.24.5 through 0.25.0-rc.5 do not declare `large-messages.v1`, so the engine relies on the
 version they report. A Rust worker on one of them that sets `WorkerMetadata.version` to its own
@@ -65,25 +64,28 @@ limit is not delivered: the observer counts a `TOO_LARGE` drop and the engine lo
 [Observers / Event size](../using-iii/observers#event-size).
 
 Use a channel for payloads above **64 MiB**. Channels stream payload bytes separately from the JSON
-function envelope. See [Using channels](#using-channels).
+function envelope. Channel data uses a separate WebSocket connection, and the SDK splits each write
+into 64 KiB frames. See [Using channels](#using-channels).
 
 ## Using channels
 
-A channel is created by one worker and has two local stream ends: `writer` and `reader`; plus two
-serializable refs (`writerRef` / `readerRef`) that can be handed to another function. The
-subsections below cover the local-end API: creating a channel, writing bytes into its `writer`, and
-reading bytes from its `reader`.
+The subsections below use the local ends of one channel. They create a channel, write to its
+`writer`, and read from its `reader`.
 
 ### Create a channel
 
-`worker.createChannel()` returns a channel with two local stream objects and two serializable refs:
-`writer` and `reader` are the local stream ends, and `writerRef` / `readerRef` are the tokens you
-pass to another function so it can read or write the other end.
+`createChannel(worker)` from `iii-sdk/helpers` returns a channel with two local ends and two
+serializable refs. In Python, use `create_channel_async(worker)` from `iii.helpers`. In Rust, use
+`iii_sdk::helpers::create_channel(&worker, None)`. `writer` and `reader` are the local stream ends.
+`writerRef` and `readerRef` (`writer_ref` and `reader_ref` in Python and Rust) are the tokens you
+pass to another function so it can write or read the other end.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
+    import { createChannel } from "iii-sdk/helpers";
+
+    const channel = await createChannel(worker);
 
     // channel.writer
     // channel.reader
@@ -94,7 +96,9 @@ pass to another function so it can read or write the other end.
   </Tab>
   <Tab title="Python">
     ```python
-    channel = iii_client.create_channel()
+    from iii.helpers import create_channel_async
+
+    channel = await create_channel_async(worker)
 
     # channel.writer
     # channel.reader
@@ -105,7 +109,7 @@ pass to another function so it can read or write the other end.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
+    let channel = iii_sdk::helpers::create_channel(&worker, None).await?;
 
     // channel.writer
     // channel.reader
@@ -138,16 +142,12 @@ engine to whichever worker holds the matching `reader`.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
-
     channel.writer.stream.end(Buffer.from("file contents"));
     ```
 
   </Tab>
   <Tab title="Python">
     ```python
-    channel = await iii_client.create_channel_async()
-
     await channel.writer.write(b"file contents")
     await channel.writer.close_async()
     ```
@@ -155,8 +155,6 @@ engine to whichever worker holds the matching `reader`.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
-
     channel.writer.write(b"file contents").await?;
     channel.writer.close().await?;
     ```
@@ -192,8 +190,6 @@ writer aborts.
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const channel = await worker.createChannel();
-
     let bytes = 0;
     for await (const chunk of channel.reader.stream) {
       bytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
@@ -203,8 +199,6 @@ writer aborts.
   </Tab>
   <Tab title="Python">
     ```python
-    channel = await iii_client.create_channel_async()
-
     bytes_total = 0
     async for chunk in channel.reader:
         bytes_total += len(chunk)
@@ -213,8 +207,6 @@ writer aborts.
   </Tab>
   <Tab title="Rust">
     ```rust
-    let channel = worker.create_channel(None).await?;
-
     let mut bytes = 0;
     while let Some(chunk) = channel.reader.next_binary().await? {
         bytes += chunk.len();
@@ -246,57 +238,85 @@ writer aborts.
   </Tab>
 </Tabs>
 
+### Send text messages
+
+Use text messages for small updates, such as progress. Text messages go through the same channel as
+the bytes.
+
+- Node: send with `channel.writer.sendMessage(text)`. Receive with
+  `channel.reader.onMessage(callback)`.
+- Python: send with `await channel.writer.send_message_async(text)`. Receive with
+  `channel.reader.on_message(callback)`.
+- Rust: send with `channel.writer.send_message(&text).await?`. Receive with
+  `channel.reader.on_message(callback).await`.
+
+Register the callback first. Then read the reader as shown in
+[Read from a channel](#read-from-a-channel). The SDK calls the callback for each text message that
+arrives during the read.
+
 ## Using channels across functions
 
-A channel only becomes useful once both ends are owned by different code paths. Typically one
-function that holds the local `writer` / `reader` and another that receives the matching ref in its
-payload. The two subsections below cover that handoff: first how to send a ref alongside a normal
-trigger call, then how the receiving function turns it back into a live stream to read or write.
+A channel is useful when two functions hold its two ends. One function keeps the local `writer` or
+`reader`. The other function receives the matching ref in its payload. The next sections show how to
+send a ref with a trigger call, and how the receiving function reads or writes with it.
 
 ### Pass a channel ref to another function
 
 Pass the `readerRef` (or `writerRef`) as part of a normal function invocation. The receiving
 function uses the ref to read from (or write to) the channel.
 
+The receiving function reads until the writer closes. Do not wait for the result before you close
+the writer. If you do, both sides wait until the call times out (after 30 seconds by default). A
+channel holds only a small amount of data until the reader attaches. For large data, start the call
+first. Then write the data, close the writer, and wait for the result. When you pass a `writerRef`,
+read from the reader while the call runs. Wait for the result after the read ends.
+
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    const result = await worker.trigger({
+    const pending = worker.trigger({
       function_id: "files::process",
-      payload: {
-        filename: "report.csv",
-        reader: channel.readerRef,
-      },
+      payload: { filename: "report.csv", reader: channel.readerRef },
     });
+    channel.writer.stream.end(Buffer.from("file contents"));
+    const result = await pending;
     ```
   </Tab>
   <Tab title="Python">
     ```python
-    result = await iii_client.trigger_async({
+    import asyncio
+
+    pending = asyncio.create_task(worker.trigger_async({
         "function_id": "files::process",
-        "payload": {
-            "filename": "report.csv",
-            "reader": channel.reader_ref.model_dump(),
-        },
-    })
+        "payload": {"filename": "report.csv", "reader": channel.reader_ref.model_dump()},
+    }))
+    await channel.writer.write(b"file contents")
+    await channel.writer.close_async()
+    result = await pending
     ```
+
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::TriggerRequest;
+    use iii_sdk::protocol::TriggerRequest;
     use serde_json::json;
 
-    let result = worker
-        .trigger(TriggerRequest {
-            function_id: "files::process".to_string(),
-            payload: json!({
-                "filename": "report.csv",
-                "reader": channel.reader_ref,
-            }),
-            action: None,
-            timeout_ms: None,
-        })
-        .await?;
+    let call = worker.trigger(TriggerRequest {
+        function_id: "files::process".to_string(),
+        payload: json!({
+            "filename": "report.csv",
+            "reader": channel.reader_ref,
+        }),
+        action: None,
+        timeout_ms: None,
+    });
+    let write = async {
+        channel.writer.write(b"file contents").await?;
+        channel.writer.close().await
+    };
+    let (result, written) = tokio::join!(call, write);
+    written?;
+    let result = result?;
     ```
 
   </Tab>
@@ -329,18 +349,18 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
 `ChannelReader::new(...)` or `ChannelWriter::new(...)`, Go with `iii.ExtractChannelRefs(...)` and
 `client.OpenReader(...)` or `client.OpenWriter(...)`.
 
-<Tip>
+<Warning>
   The channel belongs to the worker that created it. Keep that worker connected until the receiving
   function has attached to the ref. If the creator disconnects first, unattached ends are dropped.
   See [Channel ownership](../understanding-iii/channels#channel-ownership).
-</Tip>
+</Warning>
 
 ### Read from a channel ref
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import type { ChannelReader } from "iii-sdk";
+    import type { ChannelReader } from "iii-sdk/channel";
 
     worker.registerFunction("files::process", async (input: { reader: ChannelReader }) => {
       let bytes = 0;
@@ -367,21 +387,34 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{ChannelDirection, ChannelReader, IIIError};
-    use serde_json::json;
+    use iii_sdk::channel::ChannelReader;
+    use iii_sdk::helpers::{extract_channel_refs, ChannelDirection};
+    use iii_sdk::{Error, RegisterFunction};
+    use serde_json::{json, Value};
 
-    let refs = iii_sdk::extract_channel_refs(&input);
-    let (_, reader_ref) = refs
-        .iter()
-        .find(|(k, r)| k == "reader" && matches!(r.direction, ChannelDirection::Read))
-        .ok_or_else(|| IIIError::Handler("missing reader channel ref".into()))?;
+    worker.register_function(
+        "files::process",
+        RegisterFunction::new_async({
+            let worker = worker.clone();
+            move |input: Value| {
+                let worker = worker.clone();
+                async move {
+                    let refs = extract_channel_refs(&input);
+                    let (_, reader_ref) = refs
+                        .iter()
+                        .find(|(k, r)| k == "reader" && matches!(r.direction, ChannelDirection::Read))
+                        .ok_or_else(|| Error::Handler("missing reader channel ref".into()))?;
 
-    let reader = ChannelReader::new(worker.address(), reader_ref);
-    let mut bytes = 0;
-    while let Some(chunk) = reader.next_binary().await? {
-        bytes += chunk.len();
-    }
-    Ok(json!({ "bytes": bytes }))
+                    let reader = ChannelReader::new(worker.address(), reader_ref);
+                    let mut bytes = 0;
+                    while let Some(chunk) = reader.next_binary().await? {
+                        bytes += chunk.len();
+                    }
+                    Ok(json!({ "bytes": bytes }))
+                }
+            }
+        }),
+    );
     ```
 
   </Tab>
@@ -423,7 +456,7 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
-    import type { ChannelWriter } from "iii-sdk";
+    import type { ChannelWriter } from "iii-sdk/channel";
 
     worker.registerFunction("files::generate", async (input: { writer: ChannelWriter }) => {
       input.writer.stream.write(Buffer.from("hello "));
@@ -448,20 +481,33 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
   </Tab>
   <Tab title="Rust">
     ```rust
-    use iii_sdk::{ChannelDirection, ChannelWriter, IIIError};
-    use serde_json::json;
+    use iii_sdk::channel::ChannelWriter;
+    use iii_sdk::helpers::{extract_channel_refs, ChannelDirection};
+    use iii_sdk::{Error, RegisterFunction};
+    use serde_json::{json, Value};
 
-    let refs = iii_sdk::extract_channel_refs(&input);
-    let (_, writer_ref) = refs
-        .iter()
-        .find(|(k, r)| k == "writer" && matches!(r.direction, ChannelDirection::Write))
-        .ok_or_else(|| IIIError::Handler("missing writer channel ref".into()))?;
+    worker.register_function(
+        "files::generate",
+        RegisterFunction::new_async({
+            let worker = worker.clone();
+            move |input: Value| {
+                let worker = worker.clone();
+                async move {
+                    let refs = extract_channel_refs(&input);
+                    let (_, writer_ref) = refs
+                        .iter()
+                        .find(|(k, r)| k == "writer" && matches!(r.direction, ChannelDirection::Write))
+                        .ok_or_else(|| Error::Handler("missing writer channel ref".into()))?;
 
-    let writer = ChannelWriter::new(worker.address(), writer_ref);
-    writer.write(b"hello ").await?;
-    writer.write(b"world").await?;
-    writer.close().await?;
-    Ok(json!({ "ok": true }))
+                    let writer = ChannelWriter::new(worker.address(), writer_ref);
+                    writer.write(b"hello ").await?;
+                    writer.write(b"world").await?;
+                    writer.close().await?;
+                    Ok(json!({ "ok": true }))
+                }
+            }
+        }),
+    );
     ```
 
   </Tab>
@@ -495,7 +541,6 @@ receive the ref in JSON and reconstruct the reader or writer explicitly: Rust wi
 </Tabs>
 
 <Note>
-  For the per-language channel API surface, see the SDK reference:
-  [Node](../reference/sdk-node), [Python](../reference/sdk-python), [Rust](../reference/sdk-rust),
-  and [Go](../reference/sdk-go).
+  For the per-language channel API surface, see the SDK reference: [Node](../reference/sdk-node),
+  [Python](../reference/sdk-python), [Rust](../reference/sdk-rust), and [Go](../reference/sdk-go).
 </Note>

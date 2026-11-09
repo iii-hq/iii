@@ -1,13 +1,11 @@
 ---
-title: "Welcome to iii"
+title: "What is iii"
 description:
   "A next-generation software system that makes it possible to effortlessly compose, extend, and
   observe every service in real-time for the first time ever."
 owner: "devrel"
 type: "explanation"
 ---
-
-{/* <Tip> The tabs above split the site into Docs (start here), Tutorials, How-tos, Patterns, SDK & Engine Reference, and Changelog. Read this page and the Docs tab in order first. The other tabs make more sense once you have the model. </Tip> */}
 
 ## The Problem
 
@@ -37,13 +35,13 @@ Need a queue? Add a worker. Need real-time streaming, scheduling, sandboxing, ob
 agent, a CRM integration, a browser tab participating as a worker? Add a worker. Some workers are
 deterministic code. Some are stochastic agents.
 
-`compose::add` is the npm moment for systems. What it declares is not a library. It is a complete
-running service: a queue worker, a classifier, or any other project capability, immediately
-available to every other worker in the system and recorded in `worker-compose.yaml`.
+`compose::add` is the npm moment for systems. It adds a complete running service to your project,
+such as a queue worker or a classifier. [Compose](./understanding-iii/compose) records the worker in
+`worker-compose.yaml` and starts it. Then every other worker in the project can call its functions.
 
 ## Same Contract, Both Sides
 
-Application teams register functions and declare triggers, focused entirely on business logic.
+Application teams declare triggers and register functions, focused entirely on business logic.
 Platform teams publish workers, focused entirely on the capabilities they provide. Both sides
 fulfill the same contract. No bespoke SDKs, no internal client libraries, no per-service API
 contracts. The work that used to live between teams disappears.
@@ -51,8 +49,8 @@ contracts. The work that used to live between teams disappears.
 ## Any Language, Any Runtime
 
 A worker in Docker, on Kubernetes, on the edge, in a browser tab, on a Raspberry Pi, or inside a
-hardware-isolated microVM is the same kind of worker. Moving a workload is a redeploy, not a
-rewrite. The engine handles serialization and routing.
+hardware-isolated microVM is the same kind of worker. To move a workload, you redeploy it. Its code
+stays the same. The engine routes every call between workers, wherever they run.
 
 ## Built for Agents
 
@@ -60,11 +58,10 @@ iii gives agents the same runtime the whole system already runs on. This makes i
 agentic. In iii an agent is a worker and can, with permission, act on every part of the system
 through the shared system runtime.
 
-Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
-triggers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
-rest of the system. An agent that hits a task outside its current capabilities can register a worker
-at runtime, expose new functions, and extend the system it operates inside. That is what makes iii
-different.
+Agents are workers. An agent's orchestration is triggers. Its tools are functions. Its memory is
+state. The rest of the system is its runtime. An agent that hits a task outside its current
+capabilities can register a worker at runtime, expose new functions, and extend the system it
+operates inside. That is what makes iii different.
 
 Humans and agents share one mental model. A new engineer is productive on day one because the mental
 model never changes from one capability to the next. AI agents can reliably reason about an entire
@@ -86,6 +83,6 @@ Install the engine and follow the Quickstart to create your first iii-powered pr
     Follow the Quickstart and explore a live iii application.
   </Card>
   <Card title="Real-world tutorial" href="./tutorials/linkly/overview" icon="graduation-cap">
-    Go beyond the basics and explore the full power of iii by building a real-world application.
+    Build a real-world application with iii from start to finish.
   </Card>
 </CardGroup>
