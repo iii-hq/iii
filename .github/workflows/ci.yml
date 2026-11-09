@@ -43,8 +43,8 @@ jobs:
       engine: ${{ steps.filter.outputs.engine }}
       benches: ${{ steps.filter.outputs.benches }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -66,7 +66,7 @@ jobs:
     name: Engine Build (artifact)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -77,7 +77,7 @@ jobs:
       - name: Build iii (debug, all-features)
         run: cargo build --locked -p iii --all-features
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: iii-binary
           path: target/debug/iii
@@ -98,7 +98,7 @@ jobs:
       github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Free up disk space to avoid "No space left on device" — the
       # coverage-instrumented build is large.
@@ -153,7 +153,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: engine-coverage-report
           path: |
@@ -175,7 +175,7 @@ jobs:
     if: needs.changes.outputs.benches == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -194,7 +194,7 @@ jobs:
     name: Engine Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -217,7 +217,7 @@ jobs:
     name: CLI Docs Built
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -252,7 +252,7 @@ jobs:
           - os: macos-latest
           - os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -280,7 +280,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -331,7 +331,7 @@ jobs:
             os: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -368,7 +368,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache keys
         id: keys
@@ -380,14 +380,14 @@ jobs:
       # state of the Rust SDK sources.
       - name: Restore built workers
         id: bin-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/sdk-test-workers/bin
           key: sdk-test-workers-bin-${{ runner.os }}-${{ steps.keys.outputs.workers }}-${{ steps.keys.outputs.sdk }}
 
       - name: Restore workers cargo build
         if: steps.bin-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/
@@ -405,7 +405,7 @@ jobs:
           SDK_TEST_WORKERS_DIR: ${{ runner.temp }}/sdk-test-workers
         run: bash scripts/ci/sdk-test-workers.sh build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
@@ -421,13 +421,13 @@ jobs:
     needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "pnpm"
@@ -451,12 +451,12 @@ jobs:
         run: pnpm --filter iii-sdk build
 
       - name: Download III binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-binary
 
       - name: Download SDK test workers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
@@ -502,13 +502,13 @@ jobs:
     needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           run_install: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "pnpm"
@@ -529,12 +529,12 @@ jobs:
         run: pnpm --filter iii-browser-sdk test
 
       - name: Download III binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-binary
 
       - name: Download SDK test workers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
@@ -576,13 +576,13 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: "sdk/packages/python/iii/uv.lock"
@@ -600,12 +600,12 @@ jobs:
         run: uv run mypy src
 
       - name: Download III binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-binary
 
       - name: Download SDK test workers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
@@ -643,7 +643,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -660,12 +660,12 @@ jobs:
         run: cargo clippy --locked -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter --all-targets --all-features -- -D warnings
 
       - name: Download III binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-binary
 
       - name: Download SDK test workers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
@@ -697,9 +697,9 @@ jobs:
     needs: [engine-build, sdk-test-workers]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: sdk/packages/go/iii/go.sum
@@ -716,12 +716,12 @@ jobs:
         run: go test -race ./...
 
       - name: Download III binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: iii-binary
 
       - name: Download SDK test workers
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sdk-test-workers
           path: ${{ runner.temp }}/sdk-test-workers/bin
