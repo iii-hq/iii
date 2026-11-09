@@ -1,17 +1,90 @@
 ---
 title: "Schedule a cron task"
-description: "Run a function on a recurring schedule with the cron trigger type."
+description: "Run a function on a recurring schedule by observing cron::on-tick."
 owner: "devrel"
 type: "how-to"
 ---
 
-<Note>
-  In 0.25 the cron worker still publishes the `cron` trigger type, so you bind a function to a
-  schedule with `registerTrigger({ type: "cron", function_id, config: { expression } })`.
-  `registerTrigger` is deprecated and logs one warning per process. From cron 0.21.27 you can
-  instead observe `cron::on-tick` with `{ expression }` as its args. 0.26 removes `registerTrigger`,
-  so move your schedules to [observers](../using-iii/observers) before or with that upgrade; see
-  [Upgrading from 0.24.x](../upgrading/from-0-24-x#providers-not-migrated-yet).
-</Note>
+`worker.observe({ function_id: "cron::on-tick", args: { expression } }, target)` means: when the
+cron worker ticks for `expression`, `target` runs. The cron worker starts a job for each expression
+its observers ask for, and stops it when the last observer of that expression goes away.
 
-{/* TODO: write the how-to. Cover installing/enabling cron, registering a function, binding it to a `cron` trigger with a schedule expression, verifying it fires, common schedule strings, timezone behaviour, what happens on overlap (skip vs queue), and how to manually invoke for testing. */}
+`expression` has seven fields: second, minute, hour, day of month, month, day of week, and year.
+This observer runs `reports::daily-summary` every day at 09:00:00:
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { Observed } from "iii-sdk";
+
+    worker.registerFunction("reports::daily-summary", async ({ input }: Observed<{ scheduled_time: string }>) => {
+      // build the report for input.scheduled_time
+      return null;
+    });
+
+    worker.observe(
+      { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" }, capture: ["input"] },
+      "reports::daily-summary",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    def daily_summary(observed: dict) -> None:
+        # build the report for observed["input"]["scheduled_time"]
+        return None
+
+    worker.register_function("reports::daily-summary", daily_summary)
+
+    worker.observe(
+        {"function_id": "cron::on-tick", "args": {"expression": "0 0 9 * * * *"}, "capture": ["input"]},
+        "reports::daily-summary",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Capture, Error, Observed, RegisterFunction, Source};
+    use serde_json::{json, Value};
+
+    worker.register_function(
+        "reports::daily-summary",
+        RegisterFunction::new(|_observed: Observed<Value>| {
+            // build the report for observed.input["scheduled_time"]
+            Ok::<_, Error>(())
+        }),
+    );
+
+    worker.observe(
+        Source::function("cron::on-tick")
+            .args(json!({ "expression": "0 0 9 * * * *" }))
+            .capture([Capture::Input]),
+        "reports::daily-summary",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    client.RegisterFunction("reports::daily-summary", func(ctx context.Context, data json.RawMessage) (any, error) {
+        // build the report for the tick's scheduled_time: data is an iii.Observed, the tick its Input
+        return nil, nil
+    })
+
+    client.Observe(iii.Source{
+        FunctionID: "cron::on-tick",
+        Args:       iii.Args{"expression": "0 0 9 * * * *"},
+        Capture:    []iii.Capture{iii.CaptureInput},
+    }, "reports::daily-summary")
+    ```
+
+  </Tab>
+</Tabs>
+
+With `capture: ["input"]`, the target receives the tick as the payload's `input`:
+`{ expression, scheduled_time, actual_time }`. An expression the cron worker cannot parse rejects
+the observer with `INVALID_CRON_EXPRESSION`.
+
+{/* TODO: expand the how-to. Cover installing/enabling cron, verifying the observer fires, common schedule strings, timezone behaviour, what happens on overlap (skip vs queue), and calling the target by hand with `iii call` for testing. */}

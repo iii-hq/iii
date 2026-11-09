@@ -20,3 +20,42 @@ Then restart your session so the new group membership applies. On WSL2, run `wsl
 Windows terminal and reopen your distribution.
 
 <Info>For why workers run in microVMs, see [Engine](./understanding-iii/engine).</Info>
+
+## An observer's target never runs
+
+List the observers of the observed function:
+
+```bash
+iii call engine::observers::list function_id=orders::create
+```
+
+Find yours by its `target` and read its `state`:
+
+- `pending` or `error`: `reason` says why, for example the source or the target is not registered,
+  the source's worker has not accepted the observer yet, or it refused the observer's args
+  (`INVALID_ARGS`, or a code from the worker such as `INVALID_CRON_EXPRESSION`). See
+  [Observer states](./using-iii/observers#observer-states).
+- `active` with `fires` and `dropped` at 0: no call has reached it. Check these:
+  - Only calls that start after the observer turned `active`, end with an outcome its `capture` fires
+    on (success by default), and pass its filters run the target. A call already running when the
+    observer turned `active` does not, so call the function again.
+  - A function whose worker matches observers to calls (with `onObservationMatch` or
+    `onObservationDeliver`) gives a call only to the observers its `args` select. Compare the
+    observer's `args` with that function's documentation, for example the `method` and `path` of an
+    `http::on-request` observer or the `expression` of a `cron::on-tick` observer. See
+    [Observable functions](./creating-workers/observable-functions).
+- `dropped` or `activation_failures` above 0: calls reached it and were dropped or failed, counted
+  by reason (`OVERFLOW`, `LOOP_GUARD`, ...).
+
+## `Logger` lines do not show up
+
+`Logger` sends its lines to the engine. They do not appear in your worker's output. Look in the
+engine's output (under `iii compose --up`, `.iii/compose/<namespace>/engine.log`), or run:
+
+```bash
+iii call engine::logs::list
+```
+
+If they are not there either, the worker's OpenTelemetry export may be off (`OTEL_ENABLED=false`).
+`Logger` then falls back to the language's own logging, which the Rust SDK prints only with a
+`tracing` subscriber. See [Where the lines go](./creating-workers/observability#where-the-lines-go).

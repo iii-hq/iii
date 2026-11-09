@@ -11,12 +11,12 @@ languages.
 
 ## The model
 
-| Concept | What it does                                                    |
-| ------- | --------------------------------------------------------------- |
-| Channel | A WebSocket-backed pipe managed by the engine.                  |
-| Writer  | Sends bytes or text messages into the pipe.                     |
-| Reader  | Receives bytes or text messages from the pipe.                  |
-| Ref     | A small serializable token passed through `trigger()` payloads. |
+| Concept | What it does                                                 |
+| ------- | ------------------------------------------------------------ |
+| Channel | A WebSocket-backed pipe managed by the engine.               |
+| Writer  | Sends bytes or text messages into the pipe.                  |
+| Reader  | Receives bytes or text messages from the pipe.               |
+| Ref     | A small serializable token passed through `call()` payloads. |
 
 The key idea is that refs travel through regular function calls, but the data itself travels over
 the channel.
@@ -43,7 +43,7 @@ sequenceDiagram
 
     A->>Engine: createChannel()
     Engine-->>A: writer, reader, writerRef, readerRef
-    A->>Engine: trigger B with readerRef
+    A->>Engine: call B with readerRef
     Engine->>B: invoke B with reader ref
     A->>Engine: writer sends chunks
     Engine->>B: reader receives chunks
@@ -62,8 +62,16 @@ Channel streams connect lazily. Creating a channel allocates refs, but the WebSo
 when one side starts reading or writing. Backpressure is handled by the SDK stream implementation so
 writers can pause when readers cannot keep up.
 
-When the writer closes, the reader receives the stream end. When a worker disconnects, its channel
-connections close with it.
+When the writer closes, the reader receives the stream end, so a writer that fails must not close.
+If a writer that has connected stops without closing, the reader gets the data already sent and then
+an error instead of the end. A crash or a lost connection does this on its own. A writer that fails
+on its own error aborts on purpose: in Node call `writer.stream.destroy()` with no argument, and in
+Rust drop the writer without calling `close()`. A Go `Close` after a failed `Write` aborts too. Go,
+Python and browser writers have no other abort call: a writer left open, in any SDK, keeps the
+reader waiting until its socket goes away, at the latest when its process or page exits. A writer
+whose socket never opened never reached the engine, so the reader is not told: check the producer's
+result too. That is a writer that failed before its first write or, in Node, right after one, while
+its socket was still connecting. When a worker disconnects, its channel connections close with it.
 
 ### Channel ownership
 
@@ -72,7 +80,8 @@ A channel belongs to the worker that called `engine::channels::create` (for exam
 
 - Ends that no worker has attached yet are dropped. A later attempt to attach with that ref fails
   with HTTP `404`.
-- A reader already waiting on the channel receives the end of the stream.
+- A reader already waiting for a writer that never attached gets an error, not the end of the
+  stream.
 - Streams with both ends already attached keep running until they complete.
 
 If a worker creates a channel and hands a `writerRef` or `readerRef` to another worker, the creating

@@ -1,0 +1,292 @@
+---
+title: "Filter language"
+description:
+  "Reference for observer filters: syntax, operators, matching rules, limits, and the normal form
+  the engine pushes to workers."
+owner: "engineering"
+type: "reference"
+---
+
+A filter is the `filters` object of an observer's source. It decides whether one event reaches one
+observer's target. The language is declarative JSON (`iii-filter` v1): small, total, without side
+effects or regular expressions, so the same filter gives the same answer wherever it runs:
+
+- in the engine, for routed invocations of auto-delivered functions;
+- in the SDK that hosts the function, for its local invocations;
+- in the owner's SDK, for owner-delivered functions, inside `obs.emit`, `obs.call`, and
+  `obs.matches`.
+
+The engine, the Rust SDK (`iii-filter` crate), and the Node, browser, Python, and Go evaluators all
+run the same conformance vectors
+([`sdk/fixtures/filters`](https://github.com/iii-hq/iii/tree/main/sdk/fixtures/filters)). For how
+observers use filters, see [Observers](../using-iii/observers#filters).
+
+<Note>
+  Filters are not arguments. An owner-delivered function's `args` (a schedule, a route, a table) go
+  to its owner, which decides what to set up and which observers each event is for. Filters decide
+  which of those events reach the target, and the owner never changes them.
+</Note>
+
+## The document
+
+A filter reads one document per event, with five roots:
+
+```jsonc
+{
+  "input": { "order_id": "o-1", "total": 750 }, // what the function was called with
+  "output": { "status": "created" }, // present only on success
+  "error": { "code": "TIMEOUT", "message": "..." }, // present only on failure
+  "caller": {
+    "worker_id": "3f1c...",
+    "worker_name": "billing",
+    "function_id": "billing::close-invoice", // absent for top-level calls
+    "invocation_id": "c3f...",
+    "parent": { "worker_name": "api", "function_id": "api::checkout", "invocation_id": "77..." },
+  },
+  "metadata": { "tenant": "acme" }, // the invocation's metadata sidecar
+}
+```
+
+- A filter may reference any root, whatever the observer captures. `capture` only decides what is
+  shipped to the target.
+- `on` (`success`, `error`, `complete`) is checked before the filter.
+- For an owner-delivered function, the document is built from what the owner passes to `obs.emit` or
+  `obs.call`: `input`, `caller`, and `metadata`. `output` and `error` do not exist at that point.
+
+## Syntax
+
+```text
+Filters   := { Clause, ... }                     // all clauses must match; {} matches everything
+Clause    := "<path>": { "$op": operand, ... }   // all operators on that path must match
+           | "$and": [Filters, ...]
+           | "$or":  [Filters, ...]
+           | "$not": Filters
+Path      := root ("." segment)*                 // root: input | output | error | caller | metadata
+segment   := key | index                         // index: "0" or a decimal without a leading zero
+```
+
+A path clause always takes an **operator object**. There is no literal shorthand:
+`{ "input.op": "insert" }` is `INVALID_FILTER`; write `{ "input.op": { "$eq": "insert" } }`.
+
+- A filter is a JSON object. Anything else, `null` included, is `INVALID_FILTER`. An absent
+  `filters` matches every event.
+- A filter object holds paths, `$and`, `$or`, and `$not`. Any other `$` key is `INVALID_FILTER`,
+  value operators included (`{ "$eq": 1 }` needs a path).
+- `$and` and `$or` take a non-empty array of filters (`[]` is `INVALID_FILTER`). `$not` takes one
+  filter. `{}` is allowed there (`{ "$not": {} }` matches nothing) and as a member of `$and` or
+  `$or` (it matches everything).
+- An operator object is non-empty and holds only value operators. An empty `{}`, a key without `$`,
+  an unknown operator, or `$and` / `$or` / `$not` inside it is `INVALID_FILTER`.
+
+### Paths
+
+- A path splits on unescaped dots. `\.` is a literal dot and `\\` a literal backslash; any other
+  backslash sequence and a trailing backslash are `INVALID_FILTER`. In a JSON string the backslash
+  itself is escaped: `"input.headers.x\\.tenant"`.
+- An empty path or an empty segment (`input.`, `.input`, `input..a`) is `INVALID_FILTER`.
+- The first segment is the root: `input`, `output`, `error`, `caller`, or `metadata`
+  (case-sensitive). A path may be the root alone: `"error": { "$exists": true }`.
+- An index segment (`0`, `1`, `12`) selects an array element. `01` and `-1` are keys, never indexes.
+  On an object, a numeric segment is a key.
+- `@` is a root only inside `$any`, where every path starts at it. After the root, `@` is an
+  ordinary key.
+
+## Operators
+
+| Operator                  | Operand                   | Matches when                                                          |
+| ------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| `$eq`                     | any JSON                  | the value is deep equal to the operand                                |
+| `$ne`                     | any JSON                  | the value is not deep equal to the operand, **or the path is absent** |
+| `$in`                     | array (at most 256 items) | the value is deep equal to some item                                  |
+| `$nin`                    | array (at most 256 items) | the value is deep equal to no item, **or the path is absent**         |
+| `$gt` `$gte` `$lt` `$lte` | number or string          | the value has the operand's JSON type and compares accordingly        |
+| `$exists`                 | boolean                   | the path's presence equals the operand                                |
+| `$prefix`                 | string                    | the value is a string that starts with the operand                    |
+| `$any`                    | operator object or filter | the value is an array and at least one element matches                |
+
+The operators of one operator object must all match:
+`{ "input.total": { "$gte": 100, "$lt": 500 } }` is a range.
+
+### `$any`
+
+There is no implicit fan-out over arrays: `input.items.sku` on an array of items is absent. Use
+`$any`:
+
+- **Scalar elements:** pass an operator object. `{ "input.tags": { "$any": { "$eq": "vip" } } }`
+- **Object elements:** pass a filter whose paths start at `@`, the current element.
+  `{ "input.items": { "$any": { "@.sku": { "$eq": "A-1" }, "@.qty": { "$gte": 10 } } } }`
+
+`{ "$any": {} }` matches any non-empty array. A nested `$any` binds `@` to its own element. An empty
+array, a value that is not an array, and an absent path do not match. Mixing operators and paths in
+one `$any` object is `INVALID_FILTER`.
+
+## Matching rules
+
+- **Absent paths.** A path yields a value or is absent: stepping into a scalar, a missing key, or an
+  out-of-range index yields absent. Only `$ne`, `$nin`, and `$exists: false` match an absent path;
+  every other operator is false. `$not` negates its whole filter, so it matches when the inner path
+  is absent.
+- **`null` is a value.** `{ "$exists": true }` matches `null`, and `{ "$eq": null }` matches only
+  `null`, never an absent path.
+- **Own keys only.** `constructor`, `toString`, and `__proto__` are ordinary keys that resolve only
+  when the document holds them.
+- **Equality** is JSON deep equality. Object key order is ignored; array order is not. There is no
+  coercion between types: `0`, `false`, `null`, `""`, and `"0"` all differ. Strings are equal when
+  their code points are (no Unicode normalization).
+- **Numbers** compare as IEEE-754 doubles: `1` equals `1.0`, and `-0` equals `0`. A payload integer
+  above 2^53 is rounded to the nearest double first. Numeric literals in a filter must be within
+  ±2^53 (9007199254740992), floats included (`1e16` is `INVALID_FILTER`).
+- **Ordering** applies within one type only. Numbers compare numerically; strings compare by Unicode
+  code point (UTF-8 byte order, not JavaScript's UTF-16 order). Any other pairing (mixed types,
+  `null`, booleans, arrays, objects, absent) is false for all four operators.
+- **`$in: []`** matches nothing; **`$nin: []`** matches everything, absent included. An array value
+  is compared with each item as a whole.
+- **`$prefix: ""`** matches every string.
+- **Host values.** SDKs evaluate as if on the JSON encoding of the document: `undefined` is absent,
+  a `Date` is its ISO string, and a `BigInt` or `Decimal` compares through its JSON number.
+- **Totality.** A filter that was valid at creation answers true or false for every document. It
+  never fails.
+
+## Validation
+
+The engine validates every filter when an observer is created and answers `INVALID_FILTER` or
+`INVALID_FILTER_PATH` in the observer's `error` state.
+
+### Limits
+
+| Limit          | Value      | What counts                                                                                                                                                                   |
+| -------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Depth          | 8          | The top-level filter is depth 1. Each `$or` member, `$not` operand, and `$any` operand is one level deeper than the object holding it. `$and` members stay at the same depth. |
+| Nodes          | 64         | Each value operator (`$eq` ... `$any`) and each `$or` / `$not` counts 1. Paths and `$and` are free.                                                                           |
+| `$in` / `$nin` | 256 items  | Per array.                                                                                                                                                                    |
+| Path segments  | 16         | Segments after the root (also after `@`).                                                                                                                                     |
+| Literal depth  | 32         | Arrays and objects nested in one `$eq` / `$ne` operand or one `$in` / `$nin` item. A scalar is 0, `[1]` is 1, `{"a": [1]}` is 2.                                              |
+| JSON depth     | 120        | Arrays and objects nested in the whole filter value, `$and` wrappers and literals included.                                                                                   |
+| Encoded size   | 8192 bytes | UTF-8 bytes of the compact JSON of the filter **as written**.                                                                                                                 |
+
+Every limit fails with `INVALID_FILTER`. Documents have no limits.
+
+### Schema checks
+
+When the observed function registered a `request_format` (for `input.*` paths) or a
+`response_format` (for `output.*` paths), the engine checks each path against the schema's
+`properties` and `items`:
+
+- A property that a closed schema (`additionalProperties: false`) does not declare is
+  `INVALID_FILTER_PATH`, so a typo such as `input.tabel` fails at creation instead of matching
+  nothing.
+- Under an open schema, the same path is accepted with a warning in the observer's result. So is a
+  construct the check cannot follow: a remote `$ref`, `anyOf` / `oneOf` / `allOf` with several
+  branches, `patternProperties`, or `if`. Local `$ref`s and nullable wrappers are followed.
+- A path that reaches a `false` schema is `INVALID_FILTER_PATH`.
+- `@` paths inside `$any` are checked against the array's `items`.
+- When the function is not registered yet, the checks run when it registers.
+
+Schema checks run in the engine only. `args` are validated separately, against the function's
+`args_format` (`INVALID_ARGS`), and filters cannot reference them.
+
+## Normal form
+
+The engine normalizes every filter before it stores it or pushes it to the function's owner
+(`engine::observers::list` shows the normal form too):
+
+- Every filter, nested ones included, becomes `{}` or `{ "$and": [ ... ] }` with one clause per
+  object.
+- Explicit `$and`s are flattened into the filter that holds them.
+- Clauses are sorted by key in byte order (`$not` and `$or` before paths), then by the compact JSON
+  of their operand, and exact duplicates are dropped.
+- Operator object keys are sorted. Operands, `$in` / `$nin` items, paths, and the order of `$or`
+  members are kept as written. `$ne` and `$nin` are not rewritten.
+
+```jsonc
+// as written
+{ "input.b": { "$lt": 5 }, "input.a": { "$eq": 1 } }
+
+// normal form
+{ "$and": [ { "input.a": { "$eq": 1 } }, { "input.b": { "$lt": 5 } } ] }
+```
+
+Normalizing is idempotent and matches exactly the documents its source matches. It never increases
+the depth, node, item, segment, or literal limits; the encoded size can grow, so workers compile the
+normal form they receive without the size limit.
+
+## Examples
+
+```jsonc
+// updates that touched more than 100 rows
+{ "input.op": { "$eq": "update" }, "input.affected_rows": { "$gt": 100 } }
+
+// writes made on behalf of anyone except the search indexer (stops echo loops)
+{ "caller.parent.worker_name": { "$ne": "search-indexer" } }
+
+// failed charges above 500, or any failure with a timeout code
+{ "$or": [
+    { "input.amount": { "$gt": 500 }, "error": { "$exists": true } },
+    { "error.code": { "$eq": "TIMEOUT" } } ] }
+
+// an order with at least one line item of 10 or more units of SKU A-1
+{ "input.items": { "$any": { "@.sku": { "$eq": "A-1" }, "@.qty": { "$gte": 10 } } } }
+
+// requests for one tenant, from a header whose name contains a dot
+{ "input.headers.x\\.tenant": { "$eq": "acme" } }
+
+// everything except health checks
+{ "$not": { "input.path": { "$prefix": "/health" } } }
+```
+
+## From iii lang predicates
+
+A filter maps one to one to a predicate of the iii language, which is why the language accepts
+explicit operators only:
+
+| iii lang predicate         | `filters`                             |
+| -------------------------- | ------------------------------------- |
+| `'p' == v`                 | `{ "p": { "$eq": v } }`               |
+| `'p' != v`                 | `{ "p": { "$ne": v } }`               |
+| `'p' < v`, `<=`, `>`, `>=` | `$lt`, `$lte`, `$gt`, `$gte`          |
+| `'p' in [a, b]`, `not in`  | `$in`, `$nin`                         |
+| `a && b`                   | two clauses (implicit AND), or `$and` |
+| `a \|\| b`                 | `$or`                                 |
+| `!a`                       | `$not`                                |
+
+`$exists`, `$prefix`, and `$any` map to functions of the predicate language.
+
+## Evaluate a filter in code
+
+Owners evaluate an observer's filters with `obs.matches(doc)` (`Matches` in Go), for example to
+answer a request differently before calling `obs.call`. The Python, Rust, and Go SDKs also expose
+the evaluator itself, which is handy in tests:
+
+<Tabs>
+  <Tab title="Python">
+    ```python
+    from iii.filter import compile_filter
+
+    f = compile_filter({"input.amount": {"$gte": 500}})
+    f.matches({"input": {"amount": 750}})  # True
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::Filter;
+    use serde_json::json;
+
+    let filter = Filter::parse(&json!({ "input.amount": { "$gte": 500 } }))?;
+    assert!(filter.matches_value(&json!({ "input": { "amount": 750 } })));
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "github.com/iii-hq/iii/sdk/packages/go/iii/filter"
+
+    f, err := filter.Compile(map[string]any{"input.amount": map[string]any{"$gte": 500}})
+    if err != nil {
+        return err // a *filter.Error with code INVALID_FILTER
+    }
+    f.Matches(filter.Map{"input": map[string]any{"amount": 750}}) // true
+    ```
+
+  </Tab>
+</Tabs>

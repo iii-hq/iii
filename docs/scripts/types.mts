@@ -2,7 +2,7 @@
  * Doc-comment marker that flags a method for `expandParams` (see
  * `FunctionDoc.expandParams`). An HTML comment renders as nothing in every
  * language's native doc tooling; parsers detect it and strip it from prose.
- * An optional type list (`<!-- docs:expand-params: TriggerRequest -->`) names
+ * An optional type list (`<!-- docs:expand-params: CallRequest -->`) names
  * additional types to expand when the signature type is a wrapper the reader
  * would not construct directly.
  */
@@ -65,16 +65,16 @@ export interface FunctionDoc {
   /**
    * Extra documented type names to expand under this method's parameters, from
    * the marker's optional type list. Covers wrapper signatures (e.g. Rust's
-   * `impl Into<TriggerRequestWithMetadata>`) where the type the reader
+   * `impl Into<CallRequestWithMetadata>`) where the type the reader
    * actually constructs never appears in the parameter type.
    */
   expandTypes?: string[]
   /**
    * Set when the method is deprecated but still part of the client surface
-   * (e.g. `registerTrigger` in 0.25, which bindings to unmigrated providers
-   * still need). Built from the item's own deprecation text (TS `@deprecated`,
-   * rustdoc `#[deprecated(since, note)]`, Python `.. deprecated::`) and
-   * rendered as a callout above the method's description.
+   * (e.g. `trigger`, the alias of `call`). Built from the item's own
+   * deprecation text (TS `@deprecated`, rustdoc `#[deprecated(since, note)]`,
+   * Python `.. deprecated::`) and rendered as a callout above the method's
+   * description.
    */
   deprecated?: { since?: string; note: string }
 }
@@ -119,11 +119,38 @@ export interface ModuleDoc {
   description: string
   functions: FunctionDoc[]
   types: TypeDoc[]
+  /** Package-level constants (Go), rendered after the functions. */
+  constants?: ValueGroupDoc[]
+  /** Package-level variables (Go), rendered after the constants. */
+  variables?: ValueGroupDoc[]
+}
+
+/** One package-level constant or variable (Go): its name, source value and doc. */
+export interface ValueDoc {
+  name: string
+  value: string
+  description: string
+}
+
+/**
+ * A `const ( ... )` or `var ( ... )` declaration group (Go). The group's doc
+ * comment introduces its table of values.
+ */
+export interface ValueGroupDoc {
+  description: string
+  values: ValueDoc[]
+}
+
+/** The constants and variables one package (e.g. `iii`, `iii/filter`) declares. */
+export interface PackageValues {
+  subpath: string
+  constants: ValueGroupDoc[]
+  variables: ValueGroupDoc[]
 }
 
 export interface SdkDoc {
   metadata: {
-    language: 'node' | 'python' | 'rust'
+    language: 'node' | 'python' | 'rust' | 'go'
     languageLabel: string
     title: string
     description: string
@@ -152,8 +179,8 @@ export interface SdkDoc {
   types: TypeDoc[]
   /**
    * Deprecated types that are not listed in the Types section but still
-   * expand under the parameters of a deprecated method (e.g. the
-   * `RegisterTriggerInput` fields under `registerTrigger`).
+   * expand under the parameters of a deprecated method (e.g. the fields of an
+   * input type only that method takes).
    */
   paramOnlyTypes?: TypeDoc[]
   /**
@@ -165,4 +192,11 @@ export interface SdkDoc {
   subpathExports?: SubpathExport[]
   loggerSection?: LoggerDoc
   modules?: ModuleDoc[]
+  /**
+   * Package-level constants and variables per package (Go), rendered in
+   * Constants and Variables sections between Functions and Types.
+   */
+  packageValues?: PackageValues[]
+  /** Library page only: shown in place of the modules when there are none. */
+  libraryEmptyNote?: string
 }

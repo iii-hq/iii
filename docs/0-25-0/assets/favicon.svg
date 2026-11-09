@@ -1,0 +1,14 @@
+<svg viewBox="0 0 1075.74 1075.74" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .bar { fill: #000000; }
+    @media (prefers-color-scheme: dark) {
+      .bar { fill: #FFFFFF; }
+    }
+  </style>
+  <rect class="bar" y="0.05" width="268.94" height="268.94"/>
+  <rect class="bar" y="403.45" width="268.94" height="672.24"/>
+  <rect class="bar" x="403.4" y="0.05" width="268.94" height="268.94"/>
+  <rect class="bar" x="403.4" y="403.45" width="268.94" height="672.24"/>
+  <rect class="bar" x="806.81" y="0.05" width="268.94" height="268.94"/>
+  <rect class="bar" x="806.81" y="403.45" width="268.94" height="672.24"/>
+</svg>

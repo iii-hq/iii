@@ -6,15 +6,15 @@
 <Note>
   The iii console is the web UI of ADE: a standalone application that connects to your running
   engine. It ships as a single binary, published in the registry as `ade`, that serves the UI and
-  proxies the engine WebSocket on one port (`3113` by default). Use it to chat
-  with agents, follow traces and logs, manage the workers in your Compose project, and edit worker
-  configuration. For scripting or agent integration, call worker functions directly.
+  proxies the engine WebSocket on one port (`3113` by default). Use it to chat with agents, follow
+  traces and logs, manage the workers in your Compose project, and edit worker configuration. For
+  scripting or agent integration, call worker functions directly.
 </Note>
 
 <Warning title="The iii-console binary was removed">
-  The legacy `iii-console` binary is no longer built or released. `iii console` now only prints a
-  notice that points here, and the command will be removed in an upcoming release. Use the iii
-  console in ADE described on this page instead.
+  iii releases no `iii-console` binary. `iii console` prints a notice that points here and exits,
+  and the command goes away in an upcoming release. The iii console is the ADE console this page
+  describes.
 </Warning>
 
 ## Open the console
@@ -23,22 +23,21 @@ The console runs next to the engine in your Compose project.
 
 - Projects created by the installer or by `iii project init` (see [Install](../install)) already
   open the console at `http://127.0.0.1:3113` once `iii compose --up` is running.
-- In any other project, start the project, then add ADE from a second terminal in the
-  same folder:
+- In any other project, start the project, then add ADE from a second terminal in the same folder:
 
 ```bash
 iii compose --up
 ```
 
 ```bash
-iii trigger compose::add worker=ade
+iii call compose::add worker=ade
 ```
 
-`compose::add` resolves `ade` from the registry, declares it in `worker-compose.yaml`, and starts
-it next to the engine. Then open `http://127.0.0.1:3113` in your browser.
+`compose::add` resolves `ade` from the registry, declares it in `worker-compose.yaml`, and starts it
+next to the engine. Then open `http://127.0.0.1:3113` in your browser.
 
 If you run more than one Compose daemon, pass its namespace, for example
-`iii trigger -n dev compose::add worker=ade`.
+`iii call -n dev compose::add worker=ade`.
 
 ## What you can do in it
 
@@ -51,13 +50,13 @@ Chat with an agent running on the [`harness`](https://github.com/iii-hq/workers/
 worker. Add the agent stack with:
 
 ```bash
-iii trigger compose::add worker=harness
+iii call compose::add worker=harness
 ```
 
-The first time you open the console on a machine, a setup wizard helps you connect a model
-provider. In the composer you can pick a model, mention any registered function or a file in the
-working directory with `@`, and approve or deny function calls that need approval. Each
-conversation links to its traces.
+The first time you open the console on a machine, a setup wizard helps you connect a model provider.
+In the composer you can pick a model, mention any registered function or a file in the working
+directory with `@`, and approve or deny function calls that need approval. Each conversation links
+to its traces.
 
 ### Traces
 
@@ -76,9 +75,9 @@ waterfall. A span's detail shows its attributes, events, errors, logs, and conte
 
 Lists every worker that the Compose daemon runs, and every worker connected to the engine outside
 Compose. For a Compose worker you can follow its logs, change its version or source, edit its
-settings (run script, start order, environment), and see the functions it registered. **Add
-worker** declares a new worker from the registry or a local directory. Changes go through the
-daemon's own `compose::*` functions; see [Compose](./compose).
+settings (run script, start order, environment), and see the functions it registered. **Add worker**
+declares a new worker from the registry or a local directory. Changes go through the daemon's own
+`compose::*` functions; see [Compose](./compose).
 
 ### Settings
 
@@ -87,9 +86,11 @@ daemon's own `compose::*` functions; see [Compose](./compose).
 
 ## Configure the console
 
-The console registers its own `console` entry with the configuration worker. Its `http_port`
-setting (default `3113`) moves the listener without a restart. You can edit the entry under
-**Settings**, or set it like any other configuration entry.
+The console registers its own entry with the configuration worker. Under Compose the entry is named
+`<namespace>-<container>`, so the `ade` container in the `default` namespace reads `default-ade`. A
+console run directly, outside Compose, uses `console`. Its `http_port` setting (default `3113`)
+moves the listener without a restart. You can edit the entry under **Settings**, or set it like any
+other configuration entry.
 
-For every option, see the [ADE worker
-README](https://github.com/iii-hq/workers/tree/main/ade#configuration).
+For every option, see the
+[ADE worker README](https://github.com/iii-hq/workers/tree/main/ade#configuration).
