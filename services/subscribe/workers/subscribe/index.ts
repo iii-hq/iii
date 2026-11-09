@@ -19,6 +19,7 @@ const subscribe = createSubscribe({
   subject: required('RESEND_SUBJECT'),
   segmentId: process.env.RESEND_SEGMENT_ID || undefined,
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean),
+  maxWelcomesPerMinute: process.env.MAX_WELCOMES_PER_MINUTE ? Number(process.env.MAX_WELCOMES_PER_MINUTE) : undefined,
 })
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')

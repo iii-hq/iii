@@ -2,6 +2,7 @@
 // it with a fake Resend that records every call.
 
 import { expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 
 import { type Config, createSubscribe, type Request } from './subscribe'
 
@@ -21,7 +22,7 @@ type Call = {
 }
 
 // contacts: email -> { unsubscribed } for addresses Resend already knows.
-function fakeResend(contacts: Record<string, { unsubscribed: boolean }> = {}, { failSend = false } = {}) {
+function fakeResend(contacts: Record<string, { unsubscribed: boolean }> = {}, opts = { failSend: false }) {
   const calls: Call[] = []
   const fetch = (async (url: string, init: RequestInit) => {
     const path = url.replace('https://api.resend.com', '')
@@ -34,43 +35,44 @@ function fakeResend(contacts: Record<string, { unsubscribed: boolean }> = {}, { 
       return contact ? reply(200, { object: 'contact', ...contact }) : reply(404, { name: 'not_found' })
     }
     if (path.startsWith('/contacts')) return reply(200, { object: 'contact', id: 'c1' })
-    if (path === '/emails') return failSend ? reply(500) : reply(200, { id: 'e1' })
+    if (path === '/emails') return opts.failSend ? reply(500) : reply(200, { id: 'e1' })
     return reply(404)
   }) as unknown as typeof globalThis.fetch
-  return { fetch, calls }
+  return { fetch, calls, opts }
 }
 
 function post(body: unknown, origin = 'https://iii.dev'): Request {
   return { method: 'POST', headers: { origin }, body }
 }
 
-test('new address: creates the contact and sends the welcome template once', async () => {
+test('new address: sends the welcome template, then creates the contact', async () => {
   const resend = fakeResend()
   const res = await createSubscribe(config, resend.fetch)(post({ email: '  Ada@Example.com ' }))
 
   expect(res.status_code).toBe(200)
   expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
     'GET /contacts/ada%40example.com',
-    'POST /contacts',
     'POST /emails',
+    'POST /contacts',
   ])
-  expect(resend.calls[1].body).toEqual({ email: 'ada@example.com', unsubscribed: false })
+  expect(resend.calls[2].body).toEqual({ email: 'ada@example.com', unsubscribed: false })
 
-  const send = resend.calls[2]
+  const send = resend.calls[1]
   expect(send.body).toEqual({
     from: config.from,
     to: 'ada@example.com',
     subject: config.subject,
     template: { id: 'tmpl-123' },
   })
-  expect(send.headers['idempotency-key']).toBe('welcome/ada@example.com')
+  const digest = createHash('sha256').update('ada@example.com').digest('hex')
+  expect(send.headers['idempotency-key']).toBe(`welcome/${digest}`)
   expect(send.headers.authorization).toBe('Bearer re_test')
 })
 
 test('segment id, when configured, is attached to the new contact', async () => {
   const resend = fakeResend()
   await createSubscribe({ ...config, segmentId: 'seg-1' }, resend.fetch)(post({ email: 'ada@example.com' }))
-  expect(resend.calls[1].body?.segments).toEqual([{ id: 'seg-1' }])
+  expect(resend.calls[2].body?.segments).toEqual([{ id: 'seg-1' }])
 })
 
 test('known address: no second welcome', async () => {
@@ -108,6 +110,8 @@ test('rejects bad input without calling Resend', async () => {
     [post(null), 400],
     [post({ email: `${'a'.repeat(250)}@example.com` }), 400],
     [post({ email: 'ada@example.com', pad: 'x'.repeat(2000) }), 400],
+    // 400 three-byte characters: under 1024 characters, over 1024 bytes.
+    [post({ email: 'ada@example.com', pad: '€'.repeat(400) }), 400],
     [post({ email: 'ada@example.com' }, 'https://evil.example'), 403],
     [{ ...post({ email: 'ada@example.com' }), method: 'GET' }, 405],
   ]
@@ -115,16 +119,58 @@ test('rejects bad input without calling Resend', async () => {
   expect(resend.calls.length).toBe(0)
 })
 
-test('Resend failure surfaces as 502', async () => {
-  const resend = fakeResend({}, { failSend: true })
+function quietly<T>(run: () => Promise<T>): Promise<T> {
   const original = console.error
   console.error = () => {
     // the handler logs the Resend failure; keep the test output clean
   }
-  try {
-    const res = await createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' }))
-    expect(res.status_code).toBe(502)
-  } finally {
+  return run().finally(() => {
     console.error = original
-  }
+  })
+}
+
+test('a failed welcome creates no contact, so the next submit sends it', async () => {
+  const resend = fakeResend({}, { failSend: true })
+  const subscribe = createSubscribe(config, resend.fetch)
+
+  const failed = await quietly(() => subscribe(post({ email: 'ada@example.com' })))
+  expect(failed.status_code).toBe(502)
+  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
+
+  resend.opts.failSend = false
+  resend.calls.length = 0
+  const retried = await subscribe(post({ email: 'ada@example.com' }))
+  expect(retried.status_code).toBe(200)
+  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+    'GET /contacts/ada%40example.com',
+    'POST /emails',
+    'POST /contacts',
+  ])
+})
+
+test('the idempotency key stays within 256 characters for the longest address', async () => {
+  const resend = fakeResend()
+  const email = `${'a'.repeat(64)}@${'b'.repeat(185)}.com` // 254 characters
+  await createSubscribe(config, resend.fetch)(post({ email }))
+  expect(resend.calls[1].headers['idempotency-key'].length).toBeLessThanOrEqual(256)
+})
+
+test('welcomes past the per-minute cap get a 429 and no email', async () => {
+  const resend = fakeResend()
+  let t = 0
+  const subscribe = createSubscribe({ ...config, maxWelcomesPerMinute: 2 }, resend.fetch, () => t)
+
+  const codes = []
+  for (const name of ['a', 'b', 'c']) codes.push((await subscribe(post({ email: `${name}@example.com` }))).status_code)
+  expect(codes).toEqual([200, 200, 429])
+  expect(resend.calls.filter((c) => c.path === '/emails').length).toBe(2)
+
+  t += 60_000
+  expect((await subscribe(post({ email: 'c@example.com' }))).status_code).toBe(200)
+})
+
+test('Resend failure surfaces as 502', async () => {
+  const resend = fakeResend({}, { failSend: true })
+  const res = await quietly(() => createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' })))
+  expect(res.status_code).toBe(502)
 })
