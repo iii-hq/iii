@@ -52,6 +52,13 @@ pub const WORKER_DIR_ENV: &str = "III_WORKER_DIR";
 pub const PACKAGE_DIR_ENV: &str = "III_PACKAGE_DIR";
 /// A registry bundle's manifest name, which for an alias is the package it stands for.
 pub const PACKAGE_NAME_ENV: &str = "III_PACKAGE_NAME";
+// The three build variables are set by KAN-280 (spawn) and read by KAN-282 (`iii sandbox`).
+/// The container's build directory, `<project>/.build/<container>`.
+pub const BUILD_DIR_ENV: &str = "III_BUILD_DIR";
+/// The compose file's canonical path, the same as `III_COMPOSE_FILE`, for `iii sandbox build`.
+pub const BUILD_COMPOSE_FILE_ENV: &str = "III_BUILD_COMPOSE_FILE";
+/// `scripts.build_timeout` in milliseconds, for `iii sandbox build`.
+pub const BUILD_TIMEOUT_ENV: &str = "III_BUILD_TIMEOUT_MS";
 /// Comma-separated names of the variables that belong to the worker and reach the guest.
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills this command.

@@ -28,7 +28,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{ComposeError, Result};
+use crate::{
+    error::{ComposeError, Result},
+    lockfile::PreparedLock,
+};
 
 /// Registry used when a `package://` reference names no host.
 pub const DEFAULT_REGISTRY: &str = "https://api.workers.iii.dev";
@@ -466,6 +469,18 @@ pub async fn install_resolved(
         default_config: resolved.default_config.clone(),
         status,
     })
+}
+
+/// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes
+/// the directories of containers no longer locked, rewrites `.workers/.packages.json`.
+// Wired by KAN-280 (`lifecycle.rs`) and KAN-281 (`build.rs`).
+#[expect(unused_variables, reason = "KAN-281 fills this stub")]
+pub async fn materialize_project(
+    compose_dir: &Path,
+    cache_root: &Path,
+    lock: &PreparedLock,
+) -> Result<()> {
+    todo!("KAN-281: copy the locked packages into .workers/ and rewrite .packages.json")
 }
 
 /// The version the registry hands back for `*`, so `compose::add` can pin what

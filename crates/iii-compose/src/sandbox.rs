@@ -303,6 +303,43 @@ pub(crate) async fn adapter_change(
     Ok((!unchanged).then_some(AdapterChange::Upsert(request)))
 }
 
+/// What [`migrate`] changed.
+// Used by KAN-280 (lifecycle) and KAN-281 (`iii compose build`).
+#[expect(dead_code, reason = "KAN-280 and KAN-281 wire this")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Migration {
+    /// The containers rewritten to the explicit VM mode.
+    pub containers: Vec<String>,
+    /// The generated adapter it added or updated, when it did.
+    pub adapter: Option<AdapterChange>,
+}
+
+/// Spec 7.2 and 7.3, run before [`apply_adapter_change`]: updates a generated adapter outside
+/// [`ADAPTER_RANGE`] to the newest release in range (7.2), then rewrites the containers 0.26 ran
+/// in a VM (7.3). Also adds the adapter container when a container it rewrites needs one and
+/// none is declared, as [`adapter_change`] would; [`apply_adapter_change`] keeps re-resolving
+/// (`refresh`) and removing (`allow_remove`) it. Edits `edited`, `file` and `prepared` in place
+/// and logs each rewrite; writes nothing and acquires nothing: when `adapter` is `Some`, the
+/// caller runs `PreparedLock::install`, then writes the file and the lock, as after
+/// [`apply_adapter_change`]. `None` when nothing changed. Not called under `--frozen`: there
+/// [`require_declared_adapter`] (KAN-280) checks for a due migration first and refuses it with
+/// `VM_SCRIPTS_MISSING`, whose `up` without `--frozen` also adds a missing adapter; only then
+/// does it refuse a missing adapter (`SANDBOX_ADAPTER_NOT_DECLARED`) or an out-of-range one
+/// (`SANDBOX_ADAPTER_TOO_OLD`).
+// Used by KAN-280 (lifecycle) and KAN-281 (`iii compose build`).
+#[allow(dead_code)] // KAN-280 or KAN-281, whichever calls it first; KAN-280 removes it with the body.
+#[expect(unused_variables, reason = "KAN-280 fills this stub")]
+#[expect(clippy::ptr_arg, reason = "the body replaces `edited` whole")]
+pub(crate) async fn migrate(
+    path: &Path,
+    edited: &mut String,
+    file: &mut ComposeFile,
+    project_namespace: &str,
+    prepared: &mut PreparedLock,
+) -> Result<Option<Migration>> {
+    todo!("KAN-280: update the adapter, then rewrite the containers 0.26 ran in a VM")
+}
+
 /// The adapter's container would go under the key `adapter`. A container
 /// already there that is not the adapter is the operator's, and their
 /// declaration wins (spec 7.2): refused, never rewritten.

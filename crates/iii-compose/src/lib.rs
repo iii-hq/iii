@@ -17,6 +17,7 @@
 //! they are ready, and adopts whatever survived a restart.
 
 pub mod build;
+pub mod build_record;
 pub mod cli;
 pub mod config;
 pub mod configuration;
@@ -113,6 +114,33 @@ pub fn resolve_engine_mode(
     EngineMode::External {
         url: url.to_string(),
     }
+}
+
+/// Where a project's daemon is reached: its engine, its namespace and the compose file.
+// Wired by KAN-280 (`iii compose logs`) and KAN-282 (`iii sandbox build`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectTarget {
+    /// The engine URL, resolved as [`resolve_engine_mode`] does.
+    pub engine_url: String,
+    /// The namespace the project's daemon serves `compose::*` in.
+    pub daemon_namespace: String,
+    /// The `--file` to send in `compose::*` calls, as given (a path on the daemon host); `None`
+    /// lets the daemon use its default file.
+    pub file: Option<std::path::PathBuf>,
+}
+
+/// The discovery `iii compose logs` does today, shared with `iii sandbox build`. Takes the raw
+/// `--file`, `--namespace` and `--engine`: checks the namespace (`INVALID_NAMESPACE`), ignores a
+/// blank engine, reads `III_URL`, and reads the local file (`--file` or `worker-compose.yaml`)
+/// only for the namespace and the engine.
+// Wired by KAN-280 (`iii compose logs`) and KAN-282 (`iii sandbox build`).
+#[expect(unused_variables, reason = "KAN-280 fills this stub")]
+pub fn resolve_project_target(
+    file: Option<&std::path::Path>,
+    namespace: Option<String>,
+    engine: Option<String>,
+) -> Result<ProjectTarget> {
+    todo!("KAN-280: move the discovery of `iii compose logs` here")
 }
 
 /// Validates a compose project offline: schema, dependency graph, worker
