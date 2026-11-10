@@ -197,6 +197,7 @@ A new key, beside `pre_run`, `run` and `post_run`:
 | Env | The container's env, as for `scripts.run`; for `iii sandbox build`, the guest of the build VM gets `guest_env` (section 9.4) |
 | Timeout | `scripts.build_timeout`, default `20m`; outside `startup_timeout`; passed to `iii sandbox build` as `III_BUILD_TIMEOUT_MS` |
 | Output | Captured into the container's logs (`compose::logs`), each line prefixed with `[build] ` |
+| Nothing to build | `scripts.build: ""` declares that there is no build step: nothing runs and no `build.json` is written |
 | Failure | `BUILD_FAILED`. From `iii sandbox build`: the code and message of its last line (section 8.1). From any other command: code `EXIT_<status>` (or `TIMED_OUT`), message the last 20 lines of output |
 | When | First build (section 5.2), `compose::build` (section 7.4), and a package update (section 5.3) |
 
@@ -208,9 +209,7 @@ A new key, beside `pre_run`, `run` and `post_run`:
 | --- | --- |
 | `scripts.run: iii sandbox run` only on a `bundle` package, or on a `path://` whose manifest sets `runtime.base_image` | `SANDBOX_RUN_NOT_A_VM_WORKER` |
 | `scripts.build: iii sandbox build` only together with `scripts.run: iii sandbox run` | `SANDBOX_BUILD_WITHOUT_RUN` |
-| `scripts.run: iii sandbox run` needs `scripts.build: iii sandbox build` | `SANDBOX_RUN_WITHOUT_BUILD` |
-| `iii sandbox run` needs the adapter's container key in `start_after`, in the file | `SANDBOX_ADAPTER_NOT_IN_START_AFTER` |
-| A `bundle` package needs a `scripts.run` | `VM_SCRIPTS_MISSING` |
+| `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build` | `SANDBOX_RUN_WITHOUT_BUILD` |
 | `iii sandbox run` on Windows | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
 | `scripts.run`/`scripts.build` on a `binary` package | `RUN_NOT_ALLOWED_FOR_PACKAGE` (kept, now for binaries only) |
 | `--command <cmd>` on a bundle | refused by `iii sandbox run`, as today |
@@ -218,8 +217,8 @@ A new key, beside `pre_run`, `run` and `post_run`:
 A project needs the adapter when a container's `scripts.run` starts with `iii sandbox run`, or
 when `engine.sandbox` names the project's own namespace (`Need::Explicit`, unchanged).
 
-These rules apply once the project's migration is done. A file whose migration is due
-(section 7.3) is migrated first, not refused.
+These rules apply after the rewrite of section 7.3: a missing `scripts.build`, a missing
+adapter in `start_after` or a bundle without `scripts.run` is rewritten, not refused.
 
 ## 5. Build
 
@@ -386,7 +385,8 @@ pub struct BaseImageRef {
   the file it booted.
 - **One build per `state_key` at a time:** a second one gets `S509`.
 - **Timeout and cancel:** the build lives as long as its caller reads `logs`. The adapter
-  writes to the channel at least every 5 s (an empty keepalive frame, which readers skip). When
+  writes to the channel at least every 5 s (a one-byte binary frame, as `reader_gone` does today; readers take records from text frames
+  only). When
   the channel closes or a write fails, it stops the build VM, deletes the temporary image,
   keeps the previous `image.erofs` and `image.id`, and releases the `state_key`, so a retry
   does not wait on `S509`. `iii sandbox build` enforces `III_BUILD_TIMEOUT_MS` by closing the
@@ -477,22 +477,28 @@ adapter version: 0.3.x serves those.
 
 ### 7.3 Migration on run
 
-There is no implicit VM path. Instead, a project is migrated once.
+There is no implicit VM path. Instead, Compose rewrites the containers that 0.26 ran in a VM
+and that the file does not place anywhere else. The check is per container and idempotent,
+keyed on `scripts` alone; the lock format does not change.
 
-- **When it is due:** `worker-compose.lock` is missing or at version 1. Compose 0.27 reads
-  version 1 and writes version 2, also for a project without packages, so a migrated file is
-  never migrated again and moving a worker to the host later stays an edit of `scripts`.
+- **Which containers:**
+  - a `bundle` package without `scripts.run` (0.26 refused `scripts.run` on packages);
+  - a `path://` whose manifest sets `runtime.base_image` and that has no `scripts.build` (0.26
+    refused the key), whatever its `scripts.run`: none, a command (`run_override`), or the
+    0.26 opt-in `iii sandbox run`;
+  - any container whose `scripts.run` is `iii sandbox run` and that lacks `scripts.build` or
+    the adapter in `start_after`: only those pieces are added.
+- **Moving to the host:** a `path://` with `runtime.base_image` stays on the host when it
+  declares its own `scripts.build` (its build command, or `""` when there is nothing to
+  build); a bundle, when its `scripts.run` is a host command. Both are edits of `scripts`, and
+  later runs leave them alone, with or without a lock.
 - **Where it runs:** `compose::up` (and `iii compose --up`), `compose::add`,
   `compose::update`, `compose::restart`, `compose::build` and `iii compose build`. Read-only
   paths (`compose::validate`, `compose::ps`, `compose::status`, `iii compose logs`),
   `compose::down` and `compose::remove` never edit the file; `compose::validate` reports a due
   migration as a warning naming the containers.
-- **Which containers:** every container that 0.26 ran in a VM: a `bundle` package, or a
-  `path://` whose manifest sets `runtime.base_image`, whatever its `scripts.run` (none, a
-  command, or the 0.26 opt-in `iii sandbox run`). Only those change, and only with the
-  pieces of section 7.1 they lack. A project with none of them only gets its lock rewritten.
 
-For each of them:
+For each rewritten container:
 
 1. Compose rewrites it as in section 7.1 (`edit.rs`, comments and the rest of the file kept),
    after the adapter step of section 7.2, and logs
@@ -501,19 +507,19 @@ For each of them:
    daemon left running (a `vm` record in `state.json`) is stopped with `worker::stop` and the
    record dropped; then the first build (section 5.2) and the run.
 3. The data the 0.26 VM wrote is not deleted. The adapter tells the disks apart on the host:
-   the first `worker::start` with `build` writes a seal file, `build-mode`, in the VM's
-   directory. A start with `build` that finds an `upper.ext4` without the seal renames it to
-   `upper.ext4.pre-build`, creates a new upper, writes the seal and logs the old disk's path.
+   the first `worker::start` with `build` writes a seal file, `<vm_id>/build-mode`, beside
+   `root/` and out of the guest's reach. A start with `build` that finds an `upper.ext4`
+   without the seal renames it to `upper.ext4.pre-build`, creates a new upper, writes the seal and logs the old disk's path.
    The 0.26 disk mixes installed dependencies with data, and would shadow the build's
-   dependencies if kept as the upper. A legacy-mode directory (a cloned rootfs, no
-   `upper.ext4`) is left in place, unused, and logged the same way. `iii sandbox destroy`
-   removes all of it.
+   dependencies if kept as the upper. In a legacy-mode directory the cloned rootfs
+   is `root/` itself, which the overlay boot reuses as its trampoline: it is renamed to
+   `root.pre-build/`, a fresh `root/` is created, and the path is logged the same way.
+   `iii sandbox destroy` removes all of it.
 
 If the stop or the build fails, the container fails with that error and the file stays
 migrated; the next `up` retries from step 2.
 
-`--frozen` never edits the file or the lock. A project whose migration would only rewrite the
-lock runs as is. A file whose migration would rewrite containers fails under `--frozen` with
+`--frozen` never edits the file. A file with a container to rewrite fails under `--frozen` with
 `VM_SCRIPTS_MISSING`, naming the containers and asking for one `iii compose --up` without
 `--frozen`.
 
@@ -575,7 +581,8 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
   engine or no loaded project: the errors `iii compose logs` gives today (`ENGINE_CALL_FAILED`,
   `UNKNOWN_PROJECT`).
 - **Exit codes:** 0 built; 1 the build failed; 125 `iii sandbox` itself failed (unreachable
-  engine, adapter without the feature, bad env).
+  engine, adapter without the feature, bad env); 130 cancelled. Outside Compose, Ctrl-C sends
+  `compose::cancel` for its operation and waits for it before exiting.
 - **Last line on failure**, parseable by Compose for `BUILD_FAILED`:
   `iii sandbox: build failed: <S-code or error code>: <message>`.
 
@@ -599,8 +606,8 @@ Compose hands `iii sandbox build` and `iii sandbox run` the variables of section
 Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV` and `BUILD_TIMEOUT_ENV` (new),
 `PACKAGE_DIR_ENV` and `PACKAGE_NAME_ENV` (existing). `III_BUILD_DIR` and
 `III_BUILD_TIMEOUT_MS` join `NEVER_FORWARDED`, where the package pair already is. All four
-join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps reserved names out of
-`III_WORKER_ENV_KEYS`.
+join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps these four out of
+`III_WORKER_ENV_KEYS`; the reserved names it includes today stay.
 
 ## 9. The guest
 
@@ -641,13 +648,12 @@ Compose and CLI codes:
 
 | Code | When |
 | --- | --- |
-| `VM_SCRIPTS_MISSING` | `--frozen` on a file whose migration would rewrite containers; a `bundle` without `scripts.run` |
+| `VM_SCRIPTS_MISSING` | `--frozen` on a file with containers to rewrite (section 7.3) |
 | `SANDBOX_ADAPTER_TOO_OLD` | The adapter is outside `ADAPTER_RANGE` and Compose may not update it |
 | `SANDBOX_BUILD_UNSUPPORTED` | The adapter does not advertise `worker.build` |
 | `SANDBOX_RUN_NOT_A_VM_WORKER` | `iii sandbox run` on a container that is not a bundle or a `path://` with `runtime.base_image` |
 | `SANDBOX_BUILD_WITHOUT_RUN` | `iii sandbox build` without `iii sandbox run` |
-| `SANDBOX_ADAPTER_NOT_IN_START_AFTER` | `iii sandbox run` without the adapter in `start_after` |
-| `SANDBOX_RUN_WITHOUT_BUILD` | `iii sandbox run` without `scripts.build: iii sandbox build` |
+| `SANDBOX_RUN_WITHOUT_BUILD` | `iii sandbox run` with another `scripts.build` command |
 | `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run` or `build` on Windows |
 | `BUILD_MISSING` | `iii sandbox run` without `build.json` |
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
@@ -719,8 +725,13 @@ pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf; // <compose 
 pub async fn materialize_project(compose_dir: &Path, cache_root: &Path, lock: &PreparedLock) -> Result<()>;
 
 // crates/iii-compose/src/sandbox.rs (KAN-280)
-/// Section 7.3: rewrites the containers whose migration is due; `None` when none is.
+/// Sections 7.2 and 7.3: updates a too-old generated adapter, then rewrites the containers
+/// 0.26 ran in a VM; `None` when nothing changed.
+pub struct Migration { pub containers: Vec<String>, pub adapter: Option<AdapterChange> }
 pub async fn migrate(path: &Path, edited: &mut String, file: &mut ComposeFile, prepared: &mut PreparedLock) -> Result<Option<Migration>>;
+
+// crates/iii-compose/src/lockfile.rs (KAN-280)
+impl PreparedLock { pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)>; }
 
 // crates/iii-compose/src/lib.rs (KAN-280)
 pub struct ProjectTarget { pub engine_url: String, pub daemon_namespace: String, pub file: Option<PathBuf> }
@@ -790,14 +801,15 @@ KAN-284 closes the phase with: `compose_sandbox_e2e` on real VMs; the Linkly tut
 | 7 | A `path://` worker's code syncs live; its dependencies come from the build | 9.3 |
 | 8 | The data the worker writes is persistent and independent of the build | 9.1 |
 | 9 | An out-of-date build only logs | 5.5 |
-| 10 | No implicit VM path: old files migrate when they run, one container at a time | 7.3 |
+| 10 | No implicit VM path: the containers 0.26 ran in a VM are rewritten when the project next runs | 7.3 |
 | 11 | The migration keeps the 0.26 data disk as `upper.ext4.pre-build` instead of deleting it | 7.3 |
 | 12 | Compose updates a generated adapter that is too old before migrating, only in projects with a VM container | 7.2 |
 | 13 | Contract 1.3, additive, with `sandbox-libkrun` 0.4 as the minimum | 6.6 |
 | 14 | `scripts` on packages: allowed for bundles, still refused for binaries | 4.2 |
 | 15 | Prebuilt images are out of scope | 1 |
-| 16 | The migration runs once per project, keyed on the lock version (2) | 7.3 |
+| 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a project without VM containers still loads in 0.26 | 7.3 |
 | 17 | A build lives as long as its caller reads its output; stopping the caller cancels it | 6.2, 7.4 |
+| 18 | A migrated VM project no longer loads in 0.26 (`scripts.build` is unknown there); going back means restoring the 0.26 file from git, as the upgrade guide says | 7.3, 11.1 |
 
 ## 14. Open questions
 
