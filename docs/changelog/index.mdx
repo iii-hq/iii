@@ -5,7 +5,7 @@ owner: "devrel"
 type: "reference"
 ---
 
-<Update label="0.26.0" description="Upcoming">
+<Update label="0.26.0" description="November 2026">
   ## Functions, observers, and four hooks
 
   iii has workers, functions, and observers. `iii.observe(a, b)` means: when `a` runs, `b` runs.
@@ -150,6 +150,68 @@ type: "reference"
     `onObservationMatch` or `onObservationDeliver`, unregistered on a 0.25 engine. Upgrade the engine, the iii workers, and the
     SDKs together. See [Upgrading from 0.25.x](/next/upgrading/from-0-25-x).
   </Callout>
+
+  ## Channels
+
+  - A channel reader gets an error instead of a normal end of stream when the writer goes away
+    without a clean close: a close code other than 1000, a lost connection, or a socket that ends
+    without a close frame. The reader first receives the data the writer already sent, then a close
+    with code 1011 and a short reason, such as `channel writer aborted: connection lost before
+    close`. A channel owner that disconnects before a writer attached aborts the channel too.
+  - Each SDK reports the abort as an error: Rust returns `Err`, Node emits `'error'` on the stream
+    (`for await` throws and `readAll` rejects), the browser SDK rejects `readAll` with the code and
+    reason, Python raises `ConnectionError`, and Go returns a `websocket.CloseError` instead of
+    `io.EOF`. A close with code 1000 or no code still ends the stream, and a reader's own close is
+    never an error.
+  - A writer that finishes reaches the engine as a clean close. Python runs `write()`, `end()`, and
+    `close()` in call order on the loop that owns the socket, aborts the socket when a write does
+    not finish, and aborts a writer that is garbage-collected without `close()`. In Go, `Close`
+    after a failed `Write` or `SendMessage` does not send a clean close. Node and Python writers
+    wait up to 5 minutes for the close to complete.
+  - Python no longer sends keepalive pings on channel sockets: behind a slow consumer, the pong
+    queued after the data and the ping timeout cut healthy streams. No SDK pings channel sockets.
+
+  See [Channels](/next/creating-workers/channels) and
+  [Channel sockets](/next/reference/engine-protocol#channel-sockets).
+
+  ## Configuration
+
+  - Configuration events (`configuration::on-updated`) name the entry that changed and no longer
+    carry its `old_value` and `new_value`. The engine sent both with `${VAR}` placeholders
+    resolved, secrets included, to every worker allowed to observe configuration changes. Read
+    the current value with `configuration::get`.
+  - `configuration::register`, `configuration::ensure`, `configuration::set`, `configuration::get`,
+    and `configuration::migrate` refuse observers with `NOT_OBSERVABLE`, because their input or
+    output holds a value. `configuration::list` and `configuration::schema` stay observable.
+
+  ## SDK fixes
+
+  - **Python:** `iii-sdk` and `iii-helpers` require `websockets>=14.0`. With websockets 12,
+    `import iii` failed. With websockets 13, every connection attempt failed, and the worker stayed
+    in `reconnecting` without completing a handshake.
+  - **Rust:** `Logger` no longer drops lines when several threads log at once. The lines that lost
+    a lock race went to `tracing`, which prints nothing without a subscriber. `shutdown()` sends a
+    close frame and waits up to 1 second for it, so the engine no longer logs `Connection reset
+    without closing handshake` for every Rust worker that stops.
+  - **Node:** the telemetry connection logs `[OTel] Connection closed during shutdown` before
+    `shutdown()` resolves instead of after, so a test runner that tears down right after
+    `shutdown()` no longer reports an unhandled error.
+
+  ## Other updates
+
+  - Compose never selects its `.iii-compose-integrity.json` cache marker as a worker's binary. On
+    filesystems whose inherited ACLs make the marker executable, such as ZFS on TrueNAS SCALE,
+    Compose picked it and the worker failed to start with `Exec format error (os error 8)`.
+  - `iii project init` finds an installed `iii` on native Windows by running `iii --version`,
+    without Unix `which`. It reported `iii is not installed` unless Git for Windows' `usr/bin` was
+    on `PATH`.
+  - The repository's Docker Compose stack, `engine/docker-compose.yml`, starts again: the engine
+    reaches the `redis` service, and the published stream port accepts traffic. `engine/config.yaml`
+    reads the Redis URL from `REDIS_URL` and the `iii-stream` bind host from `STREAM_HOST`, with
+    the defaults `redis://localhost:6379` and `127.0.0.1`.
+  - This release also includes the Compose fixes for native Windows from 0.25.1.
+
+  [Compare 0.25.1 to 0.26.0](https://github.com/iii-hq/iii/compare/iii%2Fv0.25.1...iii%2Fv0.26.0).
 </Update>
 
 <Update label="0.25.1" description="November 2026">
