@@ -133,8 +133,86 @@ pub enum ComposeError {
         source_uri: String,
     },
 
-    #[error("container '{container}': 'run' is only valid for path:// workers")]
+    #[error(
+        "container '{container}': 'scripts.run' and 'scripts.build' are not valid for a binary \
+         package, which runs as it was published"
+    )]
     RunNotAllowedForPackage { container: String },
+
+    /// A container key is also a directory name, under `.build/` and `.workers/` (spec 3.2).
+    #[error(
+        "container key '{container}' cannot name its directories under .build/ and .workers/: \
+         {reason}. Use a plain name such as 'api'"
+    )]
+    InvalidContainerKey {
+        container: String,
+        reason: &'static str,
+    },
+
+    /// `--frozen` never edits the file, and these containers 0.26 ran in a VM still need the
+    /// explicit VM mode written (spec 7.3).
+    #[error(
+        "{containers}: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and \
+         scripts.run: iii sandbox ...). --frozen does not edit the file: run `iii compose --up` once \
+         without --frozen to rewrite them"
+    )]
+    VmScriptsMissing { containers: String },
+
+    /// The adapter lacks `worker.build` (spec 7.2) and Compose may not update it.
+    #[error(
+        "container '{container}' runs the sandbox adapter at {version}, outside {range}, which the \
+         explicit VM mode needs. Run: iii call compose::update worker={container}@latest, or edit \
+         its version"
+    )]
+    SandboxAdapterTooOld {
+        container: String,
+        version: String,
+        range: String,
+    },
+
+    #[error(
+        "container '{container}': scripts.run is iii sandbox run, but it is neither a bundle package \
+         nor a path:// worker whose iii.worker.yaml sets runtime.base_image"
+    )]
+    SandboxRunNotAVmWorker { container: String },
+
+    #[error(
+        "container '{container}': scripts.build is iii sandbox build, which only builds for \
+         scripts.run: iii sandbox run"
+    )]
+    SandboxBuildWithoutRun { container: String },
+
+    #[error(
+        "container '{container}': scripts.run is iii sandbox run, which boots what iii sandbox build \
+         built, but scripts.build is '{build}'. Set scripts.build: iii sandbox build, or run the \
+         worker on the host with a scripts.run of its own"
+    )]
+    SandboxRunWithoutBuild { container: String, build: String },
+
+    #[error("container '{container}': iii sandbox run and iii sandbox build need Linux or macOS")]
+    SandboxUnsupportedPlatform { container: String },
+
+    #[error(
+        "sandbox adapter {adapter} {version} does not build images (feature worker.build): install \
+         a release that has it, or leave legacy mode (III_ROOTFS_MODE=legacy, or a build without an \
+         embedded iii-init), which cannot boot a build"
+    )]
+    SandboxBuildUnsupported { adapter: String, version: String },
+
+    #[error(
+        "container '{container}': no build at {path}. Run: iii sandbox build {container}",
+        path = path.display()
+    )]
+    BuildMissing { container: String, path: PathBuf },
+
+    /// A first build or a package rebuild failed: `code` and `message` are the build's own
+    /// (spec 4.1).
+    #[error("container '{container}': scripts.build failed: {code}: {message}")]
+    BuildFailed {
+        container: String,
+        code: String,
+        message: String,
+    },
 
     #[error("container '{container}': 'pre_run_timeout' requires 'pre_run'")]
     PreRunTimeoutWithoutPreRun { container: String },
@@ -633,6 +711,16 @@ impl ComposeError {
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
+            Self::InvalidContainerKey { .. } => "INVALID_CONTAINER_KEY",
+            Self::VmScriptsMissing { .. } => "VM_SCRIPTS_MISSING",
+            Self::SandboxAdapterTooOld { .. } => "SANDBOX_ADAPTER_TOO_OLD",
+            Self::SandboxRunNotAVmWorker { .. } => "SANDBOX_RUN_NOT_A_VM_WORKER",
+            Self::SandboxBuildWithoutRun { .. } => "SANDBOX_BUILD_WITHOUT_RUN",
+            Self::SandboxRunWithoutBuild { .. } => "SANDBOX_RUN_WITHOUT_BUILD",
+            Self::SandboxUnsupportedPlatform { .. } => "SANDBOX_UNSUPPORTED_PLATFORM",
+            Self::SandboxBuildUnsupported { .. } => "SANDBOX_BUILD_UNSUPPORTED",
+            Self::BuildMissing { .. } => "BUILD_MISSING",
+            Self::BuildFailed { .. } => "BUILD_FAILED",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
