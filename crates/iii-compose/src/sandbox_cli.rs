@@ -16,7 +16,9 @@
 //! `iii sandbox build`, the container's `scripts.build`, makes that image: it asks the adapter's
 //! `worker::build` for it, prints the build's output as it comes, and records the image in
 //! `build.json` once the adapter answered. The build lives as long as this command reads its
-//! output, so a timeout or a signal stops it by closing the channel.
+//! output, so a timeout or a signal stops it by closing the channel. Run anywhere else,
+//! `iii sandbox build` asks the project's Compose daemon for that build (`compose::build`) and
+//! follows it.
 
 use std::{
     collections::BTreeMap,
@@ -36,14 +38,21 @@ use iii_sandbox_contract::{
     WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerSource, WorkerStartRequest,
     WorkerStartResponse, WorkerStatus, WorkerStopRequest,
 };
-use iii_sdk::{IIIClient, InitOptions, WorkerIdentityMode, iii::WorkerMetadata, register_worker};
+use iii_sdk::{
+    Capture, IIIClient, InitOptions, RegisterFunction, Source, WorkerIdentityMode,
+    iii::WorkerMetadata, register_worker,
+};
+use serde::Deserialize;
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
 
 use crate::{
+    ProjectTarget,
     build_record::{
         self, BuildAdapter, BuildBaseImage, BuildContract, BuildImage, BuildRecord, BuildSource,
     },
     error::ComposeError,
+    logs::{LogCursor, LogsOutcome},
+    operation::{OperationStatus, PROGRESS_FUNCTION_ID, ProgressEvent},
     process::{DEFAULT_STOP_GRACE, Outcome},
     sandbox,
     state::VmRecord,
@@ -159,6 +168,15 @@ const DRAIN_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 }
 const BUILD_COMMAND: &str = "iii sandbox build";
 /// The image's file in the build directory.
 const IMAGE_FILE: &str = "image.erofs";
+/// How long the progress observer may take to become active; without it, the operation is
+/// followed through its snapshots alone.
+const OBSERVE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 5000 });
+/// How often `compose::operation` is read while the daemon builds.
+const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
+/// How long a cancelled `compose::build` may take to end before this command stops waiting.
+const CANCEL_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
+/// How Compose marks a container's build output in its logs (spec 4.1).
+const BUILD_LOG_PREFIX: &str = "[build] ";
 /// How long `worker::status` may go unanswered before this command gives the VM up: the
 /// adapter's reattach grace, after which its lease has stopped a VM no client follows.
 const LOST_AFTER: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
@@ -172,10 +190,14 @@ pub struct SandboxCli {
 
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum SandboxCommand {
-    /// Build this container's image through its sandbox adapter and record it in the
-    /// container's build.json. A running container keeps its image until it restarts. Exits 0
-    /// once built, 1 when the build failed, 125 when `iii sandbox` itself failed and 130 when
-    /// cancelled; on failure the last line is `iii sandbox: build failed: <code>: <message>`.
+    /// Build a container's image through its sandbox adapter.
+    ///
+    /// As a container's scripts.build, builds that container and records the image in its
+    /// build.json. Anywhere else, asks the project's Compose daemon to build CONTAINER, or every
+    /// container with a scripts.build, and follows the build; Ctrl-C cancels it. A running
+    /// container keeps its image until it restarts. Exits 0 once built, 1 when the build failed,
+    /// 125 when `iii sandbox` itself failed and 130 when cancelled; on failure the last line is
+    /// `iii sandbox: build failed: <code>: <message>`.
     Build(BuildArgs),
     /// Boot this container's last build in its VM, or reattach to the VM, and stay with it until
     /// it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM
@@ -196,10 +218,24 @@ pub struct RunArgs {
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct BuildArgs {
-    /// The container to build. Inside Compose, only the container whose `scripts.build` this
-    /// is, which is also the default.
+    /// The container to build. Outside Compose, every container with a scripts.build when
+    /// omitted; as a container's scripts.build, only that container, also the default.
     #[arg(value_name = "CONTAINER")]
     pub container: Option<String>,
+
+    /// Compose file path on the daemon host. The daemon's default file is used when omitted.
+    /// Outside Compose only.
+    #[arg(short = 'f', long, value_name = "PATH")]
+    pub file: Option<PathBuf>,
+
+    /// Namespace of the Compose daemon that owns the project. Outside Compose only.
+    #[arg(short = 'n', long = "namespace", value_name = "NS")]
+    pub namespace: Option<String>,
+
+    /// Existing engine WebSocket address. The compose file and III_URL are used when omitted.
+    /// Outside Compose only.
+    #[arg(long, value_name = "URL")]
+    pub engine: Option<String>,
 }
 
 /// The VM `iii sandbox` acts on, and the adapter that runs it.
@@ -393,28 +429,26 @@ impl Failure {
         }
     }
 
-    /// A build stopped by signal `number`: exit 130.
-    fn cancelled_by(number: i32) -> Self {
-        let signal = match number {
-            2 => "SIGINT".to_string(),
-            15 => "SIGTERM".to_string(),
-            other => format!("signal {other}"),
-        };
+    /// A cancelled build: exit 130.
+    fn cancelled(message: impl Into<String>) -> Self {
         Self {
             exit: CANCELLED_EXIT,
-            ..Self::runner(
-                BUILD_CANCELLED,
-                format!(
-                    "stopped by {signal}; the adapter abandons the build and keeps the previous image"
-                ),
-            )
+            ..Self::runner(BUILD_CANCELLED, message)
         }
+    }
+
+    /// A build stopped by signal `number`: exit 130.
+    fn cancelled_by(number: i32) -> Self {
+        Self::cancelled(format!(
+            "stopped by {}; the adapter abandons the build and keeps the previous image",
+            signal_name(number)
+        ))
     }
 
     /// A build past `III_BUILD_TIMEOUT_MS`: exit 1.
     fn timed_out(timeout: Duration) -> Self {
         let millis = timeout.as_millis();
-        let limit = if millis % 1000 == 0 {
+        let limit = if millis.is_multiple_of(1000) {
             format!("{}s", millis / 1000)
         } else {
             format!("{millis}ms")
@@ -451,6 +485,14 @@ pub fn parse_build_failure(line: &str) -> Option<(&str, &str)> {
     line.trim_end()
         .strip_prefix(BUILD_FAILED_LINE)?
         .split_once(": ")
+}
+
+fn signal_name(number: i32) -> String {
+    match number {
+        2 => "SIGINT".to_string(),
+        15 => "SIGTERM".to_string(),
+        other => format!("signal {other}"),
+    }
 }
 
 fn env_failure(message: String) -> Failure {
@@ -577,6 +619,18 @@ async fn build_command(
     records: &dyn Records,
 ) -> Result<(), Failure> {
     vm_platform(cfg!(windows))?;
+    // Compose hands a container's scripts.build its build directory: there the command builds
+    // that container itself; anywhere else, the project's daemon builds.
+    if present(vars, BUILD_DIR_ENV).is_none() {
+        return remote_build_command(args).await;
+    }
+    if args.file.is_some() || args.namespace.is_some() || args.engine.is_some() {
+        return Err(Failure::runner(
+            SANDBOX_INVALID_ARGUMENTS,
+            "--file, --namespace and --engine find a project's daemon from outside Compose; as a \
+             container's scripts.build, `iii sandbox build` builds that container",
+        ));
+    }
     let bctx = BuildContext::from_vars(vars).map_err(env_failure)?;
     own_container(&bctx, args.container.as_deref())?;
     let shutdown = signal_handlers()?;
@@ -1399,6 +1453,495 @@ fn to_stdout(printer: Printer) -> Printer {
     }))
 }
 
+/// `iii sandbox build` outside Compose: the project's daemon builds, found as `iii compose logs`
+/// finds it.
+async fn remote_build_command(args: BuildArgs) -> Result<(), Failure> {
+    let project = project_target(&args)?;
+    let shutdown = signal_handlers()?;
+    let client = connect_operator(&project.engine_url);
+    let result = remote_build(
+        &client,
+        &project,
+        args.container.as_deref(),
+        &shutdown,
+        Printer::stdio(),
+    )
+    .await;
+    client.shutdown_async().await;
+    result
+}
+
+fn project_target(args: &BuildArgs) -> Result<ProjectTarget, Failure> {
+    crate::resolve_project_target(
+        args.file.as_deref(),
+        args.namespace.clone(),
+        args.engine.clone(),
+    )
+    .map_err(|error| Failure::compose(&error))
+}
+
+/// An operator's connection, which routes every call to the daemon's namespace itself.
+fn connect_operator(engine_url: &str) -> IIIClient {
+    register_worker(
+        engine_url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: CLIENT_NAME.to_string(),
+                ..Default::default()
+            }),
+            // The environment's namespace belongs to managed workers, not to this client.
+            namespace: Some(crate::namespace::DEFAULT_NAMESPACE.to_string()),
+            identity: WorkerIdentityMode::Explicit,
+            ..Default::default()
+        },
+    )
+}
+
+/// Asks `project`'s daemon to build `worker`, or every container with a `scripts.build`
+/// (`compose::build`, spec 7.4), prints the operation's progress on stderr and the containers'
+/// build output on stdout, and waits for its result. A signal sends `compose::cancel` and waits
+/// for the operation to end: 130.
+pub(crate) async fn remote_build(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    worker: Option<&str>,
+    shutdown: &Shutdown,
+    printer: Printer,
+) -> Result<(), Failure> {
+    let operation_id = format!("compose:sandbox-build:{}", uuid::Uuid::new_v4());
+    // Where each container's log ends now, so only what the build adds is printed. It is also
+    // `iii compose logs`' own call: a missing daemon or project fails as it does there.
+    let cursors = compose_logs(client, project, worker, &BTreeMap::new(), 0, 0)
+        .await?
+        .containers
+        .into_iter()
+        .filter_map(|batch| Some((batch.container, batch.cursor?)))
+        .collect();
+    let events = observe_progress(client, project, &operation_id).await;
+    let mut request = serde_json::Map::new();
+    request.insert("operation_id".into(), operation_id.clone().into());
+    if let Some(worker) = worker {
+        request.insert("worker".into(), worker.into());
+    }
+    daemon_call(client, project, "compose::build", request, CALL_TIMEOUT).await?;
+
+    let (stop_output, stopped) = watch::channel(false);
+    let output = tokio::spawn(follow_build_output(
+        client.clone(),
+        project.clone(),
+        worker.map(str::to_string),
+        cursors,
+        printer.clone(),
+        stopped,
+    ));
+    let end = follow_operation(client, project, &operation_id, events, shutdown, &printer).await;
+    stop_output.send_replace(true);
+    let _ = tokio::time::timeout(DRAIN_WAIT, output).await;
+    let (view, cancelled) = end?;
+    build_outcome(view, cancelled, &printer)
+}
+
+/// One `compose::*` call on the project's daemon, naming the project's file. A Compose error
+/// keeps its code (`UNKNOWN_PROJECT`); anything else is `ENGINE_CALL_FAILED`.
+async fn daemon_call(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    function: &str,
+    mut payload: serde_json::Map<String, serde_json::Value>,
+    timeout: Duration,
+) -> Result<serde_json::Value, Failure> {
+    if let Some(file) = &project.file {
+        payload.insert("file".into(), file.to_string_lossy().into_owned().into());
+    }
+    let request = iii_sdk::CallRequest {
+        function_id: function.to_string(),
+        payload: serde_json::Value::Object(payload),
+        action: None,
+        timeout_ms: Some(timeout.as_millis() as u64),
+    }
+    .namespace(&project.daemon_namespace);
+    let reply = tokio::time::timeout(timeout, client.call(request))
+        .await
+        .unwrap_or(Err(iii_sdk::Error::Timeout));
+    reply.map_err(|error| match &error {
+        // Compose's errors cross the wire as their code, which the bus's own never are.
+        iii_sdk::Error::Remote { code, message, .. } if is_compose_code(code) => {
+            Failure::runner(code, message.clone())
+        }
+        _ => Failure::runner(
+            ENGINE_CALL_FAILED,
+            format!(
+                "{function}: {error}; is a Compose daemon serving namespace {} on the engine at \
+                 {}?",
+                project.daemon_namespace, project.engine_url
+            ),
+        ),
+    })
+}
+
+/// `UNKNOWN_PROJECT`, as opposed to the bus's `function_not_found` or `timeout`.
+fn is_compose_code(code: &str) -> bool {
+    !code.is_empty()
+        && code
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// `compose::logs` of `worker`, or of every container, after `cursors`.
+async fn compose_logs(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    worker: Option<&str>,
+    cursors: &BTreeMap<String, LogCursor>,
+    tail: usize,
+    wait_ms: u64,
+) -> Result<LogsOutcome, Failure> {
+    let mut payload = serde_json::Map::new();
+    if let Some(worker) = worker {
+        payload.insert("container".into(), worker.into());
+    }
+    if !cursors.is_empty() {
+        payload.insert(
+            "cursors".into(),
+            serde_json::to_value(cursors).unwrap_or_default(),
+        );
+    }
+    payload.insert("tail".into(), tail.into());
+    if wait_ms > 0 {
+        payload.insert("wait_ms".into(), wait_ms.into());
+    }
+    let timeout = Duration::from_millis(wait_ms) + CALL_TIMEOUT;
+    let reply = daemon_call(client, project, "compose::logs", payload, timeout).await?;
+    serde_json::from_value(reply).map_err(|error| {
+        Failure::runner(
+            ENGINE_CALL_FAILED,
+            format!("compose::logs: the daemon's answer does not read: {error}"),
+        )
+    })
+}
+
+/// What `compose::operation` answers, as far as this command reads it.
+#[derive(Debug, Deserialize)]
+struct OperationView {
+    status: OperationStatus,
+    #[serde(default)]
+    last_event: Option<ProgressEvent>,
+    /// `compose::build`'s result per container (spec 7.4), once it finished.
+    #[serde(default)]
+    results: Vec<BuildResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildResult {
+    worker: String,
+    status: BuildStatus,
+    #[serde(default)]
+    build_id: Option<String>,
+    #[serde(default)]
+    error: Option<BuildError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BuildStatus {
+    Built,
+    Failed,
+    Skipped,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuildError {
+    code: String,
+    message: String,
+}
+
+async fn operation_snapshot(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    operation_id: &str,
+) -> Result<OperationView, Failure> {
+    let mut payload = serde_json::Map::new();
+    payload.insert("operation_id".into(), operation_id.into());
+    let reply = daemon_call(client, project, "compose::operation", payload, CALL_TIMEOUT).await?;
+    serde_json::from_value(reply).map_err(|error| {
+        Failure::runner(
+            ENGINE_CALL_FAILED,
+            format!("compose::operation: the daemon's answer does not read: {error}"),
+        )
+    })
+}
+
+/// The operation's progress events, observed (spec 7.4) into a function of this client's own.
+/// An observer the engine does not make active in time costs only its events: the snapshots
+/// still follow the operation.
+async fn observe_progress(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    operation_id: &str,
+) -> tokio::sync::mpsc::UnboundedReceiver<ProgressEvent> {
+    let (sender, events) = tokio::sync::mpsc::unbounded_channel();
+    let target = format!("iii-cli::sandbox-build::{}", uuid::Uuid::new_v4());
+    let _progress = client.register_function(
+        target.as_str(),
+        RegisterFunction::new(move |call: serde_json::Value| {
+            if let Ok(event) = serde_json::from_value::<ProgressEvent>(call["input"].clone()) {
+                let _ = sender.send(event);
+            }
+            Ok::<_, iii_sdk::Error>(serde_json::Value::Null)
+        })
+        .private(),
+    );
+    let observer = client.observe(
+        Source::function(PROGRESS_FUNCTION_ID)
+            .namespace(project.daemon_namespace.clone())
+            .filters(serde_json::json!({ "input.operation_id": { "$eq": operation_id } }))
+            .capture([Capture::Input]),
+        target.as_str(),
+    );
+    let _ = tokio::time::timeout(OBSERVE_WAIT, observer.ready()).await;
+    events
+}
+
+/// Follows the operation until it ends: prints its progress, reads its snapshot every
+/// [`SNAPSHOT_INTERVAL`] (which also sees an end whose event was lost), and on a signal sends
+/// `compose::cancel` once and keeps waiting, [`CANCEL_WAIT`] at most. Resolves to the last
+/// snapshot and whether this command cancelled the operation.
+async fn follow_operation(
+    client: &IIIClient,
+    project: &ProjectTarget,
+    operation_id: &str,
+    mut events: tokio::sync::mpsc::UnboundedReceiver<ProgressEvent>,
+    shutdown: &Shutdown,
+    printer: &Printer,
+) -> Result<(OperationView, bool), Failure> {
+    let mut printed = 0;
+    let mut cancelled_at: Option<Instant> = None;
+    let mut unanswered_since: Option<Instant> = None;
+    let mut poll = tokio::time::interval(SNAPSHOT_INTERVAL);
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            (number, _) = shutdown.requested(), if cancelled_at.is_none() => {
+                cancelled_at = Some(Instant::now());
+                say(printer, format!("iii sandbox: {}: cancelling {operation_id}", signal_name(number)));
+                let mut payload = serde_json::Map::new();
+                payload.insert("operation_id".into(), operation_id.into());
+                if let Err(failure) =
+                    daemon_call(client, project, "compose::cancel", payload, CALL_TIMEOUT).await
+                {
+                    return Err(Failure::cancelled(format!(
+                        "compose::cancel of {operation_id} failed, so the build may go on: {failure}"
+                    )));
+                }
+            }
+            () = tokio::time::sleep_until(
+                cancelled_at.map_or_else(Instant::now, |at| at + CANCEL_WAIT)
+            ), if cancelled_at.is_some() => {
+                return Err(Failure::cancelled(format!(
+                    "{operation_id} did not end within {}s of its compose::cancel",
+                    CANCEL_WAIT.as_secs()
+                )));
+            }
+            Some(event) = events.recv() => {
+                if event.sequence > printed {
+                    printed = event.sequence;
+                    print_progress(printer, &event);
+                }
+                if !event.terminal {
+                    continue;
+                }
+            }
+            _ = poll.tick() => {}
+        }
+        match operation_snapshot(client, project, operation_id).await {
+            Ok(view) => {
+                unanswered_since = None;
+                if let Some(event) = &view.last_event
+                    && event.sequence > printed
+                {
+                    printed = event.sequence;
+                    print_progress(printer, event);
+                }
+                if view.status != OperationStatus::Running {
+                    return Ok((view, cancelled_at.is_some()));
+                }
+            }
+            Err(failure) => {
+                let since = *unanswered_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= LOST_AFTER {
+                    return Err(failure);
+                }
+            }
+        }
+    }
+}
+
+fn print_progress(printer: &Printer, event: &ProgressEvent) {
+    let what = match &event.container {
+        Some(container) => format!("{container}: {}", event.phase),
+        None => event.phase.clone(),
+    };
+    match event.detail.as_str() {
+        "" => say(printer, format!("iii sandbox: {what}")),
+        detail => say(printer, format!("iii sandbox: {what}: {detail}")),
+    }
+}
+
+/// One line of this command's own, on stderr.
+fn say(printer: &Printer, line: String) {
+    (printer.0)(&LogRecord {
+        stream: LogStream::Stderr,
+        line,
+        ts_ms: 0,
+        cursor: 0,
+    });
+}
+
+/// Prints the containers' new build output (their `[build] ` log lines) on stdout as
+/// `[<container>] [build] ...` until `stop` is set, then what the build's end left.
+async fn follow_build_output(
+    client: IIIClient,
+    project: ProjectTarget,
+    worker: Option<String>,
+    mut cursors: BTreeMap<String, LogCursor>,
+    printer: Printer,
+    mut stop: watch::Receiver<bool>,
+) {
+    let worker = worker.as_deref();
+    loop {
+        let read = tokio::select! {
+            read = compose_logs(
+                &client,
+                &project,
+                worker,
+                &cursors,
+                crate::logs::MAX_TAIL_LINES,
+                crate::logs::MAX_WAIT_MS,
+            ) => read,
+            _ = stop.wait_for(|stop| *stop) => break,
+        };
+        let read = read.map_or(0, |outcome| {
+            print_build_lines(outcome, &mut cursors, &printer)
+        });
+        if read == 0 {
+            // A daemon that answers at once, or fails, is not asked again at once.
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(250)) => {}
+                _ = stop.wait_for(|stop| *stop) => break,
+            }
+        }
+    }
+    for _ in 0..3 {
+        let last = compose_logs(
+            &client,
+            &project,
+            worker,
+            &cursors,
+            crate::logs::MAX_TAIL_LINES,
+            500,
+        )
+        .await;
+        let read = last.map_or(0, |outcome| {
+            print_build_lines(outcome, &mut cursors, &printer)
+        });
+        if read == 0 {
+            return;
+        }
+    }
+}
+
+/// Prints the build lines of `outcome` and moves `cursors` past it. Returns how many lines it
+/// read, build lines or not.
+fn print_build_lines(
+    outcome: LogsOutcome,
+    cursors: &mut BTreeMap<String, LogCursor>,
+    printer: &Printer,
+) -> usize {
+    let mut read = 0;
+    for batch in outcome.containers {
+        read += batch.entries.len();
+        for entry in &batch.entries {
+            if entry.message.starts_with(BUILD_LOG_PREFIX) {
+                (printer.0)(&LogRecord {
+                    stream: LogStream::Stdout,
+                    line: format!("[{}] {}", batch.container, entry.message),
+                    ts_ms: 0,
+                    cursor: 0,
+                });
+            }
+        }
+        if let Some(cursor) = batch.cursor {
+            cursors.insert(batch.container, cursor);
+        }
+    }
+    read
+}
+
+/// What a finished `compose::build` ends this command with: a line per container, the last
+/// failure as the error and each earlier one as a line of its own.
+fn build_outcome(view: OperationView, cancelled: bool, printer: &Printer) -> Result<(), Failure> {
+    let several = view.results.len() > 1;
+    let mut failures = Vec::new();
+    for result in view.results {
+        match result.status {
+            BuildStatus::Built => {
+                let id = result
+                    .build_id
+                    .map(|id| format!(" ({id})"))
+                    .unwrap_or_default();
+                say(printer, format!("iii sandbox: built {}{id}", result.worker));
+            }
+            BuildStatus::Skipped => say(
+                printer,
+                format!(
+                    "iii sandbox: {}: skipped, its scripts.build is empty",
+                    result.worker
+                ),
+            ),
+            BuildStatus::Failed => {
+                let (code, message) = match result.error {
+                    Some(error) => (error.code, error.message),
+                    None => ("BUILD_FAILED".to_string(), "the build failed".to_string()),
+                };
+                let message = if several {
+                    format!("{}: {message}", result.worker)
+                } else {
+                    message
+                };
+                failures.push(Failure::build(&code, message));
+            }
+            BuildStatus::Other => {}
+        }
+    }
+    if cancelled {
+        return Err(Failure::cancelled("compose::cancel stopped the build"));
+    }
+    if view.status == OperationStatus::Cancelled {
+        return Err(Failure::cancelled(
+            "the build was cancelled by compose::cancel or compose::down",
+        ));
+    }
+    let last = failures.pop();
+    for earlier in &failures {
+        say(printer, build_failure_line(&earlier.code, &earlier.message));
+    }
+    if let Some(last) = last {
+        return Err(last);
+    }
+    if view.status == OperationStatus::Failed {
+        let detail = view
+            .last_event
+            .map(|event| event.detail)
+            .filter(|detail| !detail.is_empty())
+            .unwrap_or_else(|| "the build operation failed".to_string());
+        return Err(Failure::build("BUILD_FAILED", detail));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,7 +1949,7 @@ mod tests {
     use iii_sandbox_contract::{ContractVersion, State};
     use serde_json::{Value, json};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn compose_vars() -> BTreeMap<String, String> {
         [
@@ -2439,7 +2982,12 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn build_is_refused_on_windows() {
-        let args = BuildArgs { container: None };
+        let args = BuildArgs {
+            container: None,
+            file: None,
+            namespace: None,
+            engine: None,
+        };
         let failure = build_command(&compose_vars(), args, &FakeRecords::default())
             .await
             .unwrap_err();
@@ -2551,6 +3099,368 @@ mod tests {
         assert_eq!(build_record::read(&build_dir).unwrap(), Some(record));
         let (_, boot) = boot_plan(&vars, None, &BuildRecords).unwrap();
         assert_eq!(boot.build_id, "sha256:7d41");
+    }
+
+    /// The project `iii sandbox build` reaches outside Compose.
+    fn project() -> ProjectTarget {
+        ProjectTarget {
+            engine_url: "ws://127.0.0.1:49134".into(),
+            daemon_namespace: "ops".into(),
+            file: Some(PathBuf::from("/srv/shop/worker-compose.yaml")),
+        }
+    }
+
+    /// A `compose::operation` snapshot whose last event is a build step of `api`.
+    fn snapshot(status: &str, results: Value) -> Value {
+        answered(json!({
+            "operation_id": "compose:x",
+            "status": status,
+            "phase": "building",
+            "requested": 1,
+            "total": 1,
+            "completed": 0,
+            "last_sequence": 1,
+            "last_event": {
+                "sequence": 1,
+                "operation_id": "compose:x",
+                "container": "api",
+                "phase": "building",
+                "detail": "running iii sandbox build",
+                "elapsed_ms": 5,
+                "terminal": false,
+            },
+            "results": results,
+        }))
+    }
+
+    fn api_logs(entries: Value, offset: u64) -> Value {
+        answered(json!({"containers": [{
+            "container": "api",
+            "entries": entries,
+            "cursor": {"generation": "g", "offset": offset},
+            "truncated": false,
+        }]}))
+    }
+
+    /// A Compose daemon whose `compose::build` runs for `polls` snapshots, then answers `end`;
+    /// `compose::cancel` makes the next snapshot say cancelled. `api`'s log ends at offset 10
+    /// when the build starts, then gets two build lines and a line of the running worker.
+    fn daemon(polls: usize, end: Value) -> impl Fn(&str, &Value) -> Value + Send + Sync + 'static {
+        let polled = AtomicUsize::new(0);
+        let followed = AtomicUsize::new(0);
+        let cancelled = AtomicBool::new(false);
+        move |function, payload| match function {
+            "compose::logs" if payload["tail"] == 0 => api_logs(json!([]), 10),
+            "compose::logs" if followed.fetch_add(1, Ordering::SeqCst) == 0 => api_logs(
+                json!([
+                    {"stream": "stdout", "message": "[build] npm ci"},
+                    {"stream": "stdout", "message": "listening on 8080"},
+                    {"stream": "stderr", "message": "[build] added 3 packages"},
+                ]),
+                30,
+            ),
+            "compose::logs" => api_logs(json!([]), 30),
+            "compose::build" => answered(json!({
+                "operation_id": payload["operation_id"],
+                "status": "accepted",
+                "requested": 1,
+            })),
+            "compose::cancel" => {
+                cancelled.store(true, Ordering::SeqCst);
+                answered(json!({"operation_id": payload["operation_id"], "cancelled": true}))
+            }
+            "compose::operation" if cancelled.load(Ordering::SeqCst) => {
+                snapshot("cancelled", json!([]))
+            }
+            "compose::operation" if polled.fetch_add(1, Ordering::SeqCst) < polls => {
+                snapshot("running", json!([]))
+            }
+            "compose::operation" => end.clone(),
+            _ => json!(true),
+        }
+    }
+
+    fn has(printed: &Arc<Mutex<Vec<String>>>, line: &str) -> bool {
+        printed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|printed| printed == line)
+    }
+
+    #[tokio::test]
+    async fn outside_compose_the_daemon_builds_and_its_progress_and_output_are_printed() {
+        let end = snapshot(
+            "succeeded",
+            json!([{"worker": "api", "status": "built", "build_id": "sha256:7d41"}]),
+        );
+        let (client, mut called) = fake_engine(daemon(2, end)).await;
+        let (printer, printed) = captured();
+        remote_build(&client, &project(), Some("api"), &never(), printer)
+            .await
+            .unwrap();
+
+        assert!(has(&printed, "stdout: [api] [build] npm ci"), "{printed:?}");
+        assert!(
+            has(&printed, "stdout: [api] [build] added 3 packages"),
+            "{printed:?}"
+        );
+        assert!(
+            !printed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("listening")),
+            "the running worker's own output is not the build's: {printed:?}"
+        );
+        assert!(
+            has(
+                &printed,
+                "stderr: iii sandbox: api: building: running iii sandbox build"
+            ),
+            "{printed:?}"
+        );
+        assert_eq!(
+            printed.lock().unwrap().last().map(String::as_str),
+            Some("stderr: iii sandbox: built api (sha256:7d41)")
+        );
+
+        let calls = calls(&mut called);
+        let at = |wanted: &str| calls.iter().position(|(function, _)| function == wanted);
+        // The log's end is read before the build starts: only the build's lines are printed.
+        assert!(at("compose::logs") < at("compose::build"), "{calls:?}");
+        let baseline = payload(&calls, "compose::logs");
+        assert_eq!(baseline["tail"], 0);
+        assert_eq!(baseline["container"], "api");
+        assert_eq!(baseline["file"], "/srv/shop/worker-compose.yaml");
+        let followed = payloads(&calls, "compose::logs");
+        assert!(
+            followed[1..]
+                .iter()
+                .all(|request| request["cursors"]["api"]["generation"] == "g"),
+            "{followed:?}"
+        );
+        let build = payload(&calls, "compose::build");
+        assert_eq!(build["worker"], "api");
+        assert_eq!(build["file"], "/srv/shop/worker-compose.yaml");
+        let operation_id = build["operation_id"].as_str().unwrap();
+        assert!(
+            operation_id.starts_with("compose:sandbox-build:"),
+            "{operation_id}"
+        );
+        let snapshots = payloads(&calls, "compose::operation");
+        assert!(snapshots.len() >= 3, "{snapshots:?}");
+        assert!(
+            snapshots
+                .iter()
+                .all(|request| request["operation_id"] == operation_id)
+        );
+        assert!(payloads(&calls, "compose::cancel").is_empty());
+    }
+
+    #[tokio::test]
+    async fn outside_compose_a_failed_build_exits_1_with_its_code() {
+        let end = snapshot(
+            "failed",
+            json!([{
+                "worker": "api",
+                "status": "failed",
+                "error": {"code": "S507", "message": "scripts.install exited 1"},
+            }]),
+        );
+        let (client, _called) = fake_engine(daemon(0, end)).await;
+        let (printer, _) = captured();
+        let failure = remote_build(&client, &project(), Some("api"), &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            failure,
+            Failure {
+                code: "S507".into(),
+                message: "scripts.install exited 1".into(),
+                exit: BUILD_FAILED_EXIT,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn outside_compose_every_failed_container_gets_its_line() {
+        let end = snapshot(
+            "failed",
+            json!([
+                {"worker": "web", "status": "failed", "error": {"code": "TIMED_OUT", "message": "too slow"}},
+                {"worker": "docs", "status": "skipped"},
+                {"worker": "api", "status": "failed", "error": {"code": "S507", "message": "exited 1"}},
+            ]),
+        );
+        let (client, mut called) = fake_engine(daemon(0, end)).await;
+        let (printer, printed) = captured();
+        let failure = remote_build(&client, &project(), None, &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (
+                failure.code.as_str(),
+                failure.message.as_str(),
+                failure.exit
+            ),
+            ("S507", "api: exited 1", BUILD_FAILED_EXIT)
+        );
+        assert!(
+            has(
+                &printed,
+                "stderr: iii sandbox: build failed: TIMED_OUT: web: too slow"
+            ),
+            "{printed:?}"
+        );
+        assert!(
+            has(
+                &printed,
+                "stderr: iii sandbox: docs: skipped, its scripts.build is empty"
+            ),
+            "{printed:?}"
+        );
+        let calls = calls(&mut called);
+        assert!(payload(&calls, "compose::build").get("worker").is_none());
+        assert!(payload(&calls, "compose::logs").get("container").is_none());
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_outside_compose_cancels_the_operation_waits_and_exits_130() {
+        let (client, mut called) = fake_engine(daemon(usize::MAX, json!(true))).await;
+        let (printer, printed) = captured();
+        let shutdown = signal_after(Duration::from_millis(500), 2);
+        let failure = remote_build(&client, &project(), Some("api"), &shutdown, printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (BUILD_CANCELLED, CANCELLED_EXIT)
+        );
+        let calls = calls(&mut called);
+        let operation_id = &payload(&calls, "compose::build")["operation_id"];
+        assert_eq!(
+            payload(&calls, "compose::cancel")["operation_id"],
+            *operation_id
+        );
+        // It waited for the operation to end: a snapshot after the cancel said so.
+        let cancel = calls
+            .iter()
+            .position(|(function, _)| function == "compose::cancel")
+            .unwrap();
+        assert!(
+            calls[cancel..]
+                .iter()
+                .any(|(function, _)| function == "compose::operation"),
+            "{calls:?}"
+        );
+        assert!(
+            printed
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.starts_with("stderr: iii sandbox: SIGINT: cancelling")),
+            "{printed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn outside_compose_no_project_or_no_daemon_fails_as_compose_logs_does() {
+        let (client, mut called) = fake_engine(|function, _| match function {
+            "compose::logs" => json!({"error": {
+                "code": "UNKNOWN_PROJECT",
+                "message": "no project /srv/shop/worker-compose.yaml",
+            }}),
+            _ => json!(true),
+        })
+        .await;
+        let (printer, _) = captured();
+        let failure = remote_build(&client, &project(), Some("api"), &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            ("UNKNOWN_PROJECT", RUNNER_FAILED)
+        );
+        assert!(payloads(&calls(&mut called), "compose::build").is_empty());
+
+        let (client, _called) = fake_engine(|function, _| match function {
+            "compose::logs" => json!({"error": {"code": "function_not_found", "message": "gone"}}),
+            _ => json!(true),
+        })
+        .await;
+        let (printer, _) = captured();
+        let failure = remote_build(&client, &project(), Some("api"), &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (ENGINE_CALL_FAILED, RUNNER_FAILED)
+        );
+        assert!(failure.message.contains("namespace ops"), "{failure}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_daemon_flags_are_refused_inside_compose() {
+        let args = BuildArgs {
+            container: None,
+            file: Some("worker-compose.yaml".into()),
+            namespace: None,
+            engine: None,
+        };
+        let failure = build_command(&compose_vars(), args, &FakeRecords::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_INVALID_ARGUMENTS, RUNNER_FAILED)
+        );
+    }
+
+    /// Outside Compose the daemon is found as `iii compose logs` finds it.
+    #[tokio::test]
+    #[ignore = "needs KAN-280: resolve_project_target"]
+    async fn outside_compose_the_daemon_is_found_as_compose_logs_finds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "namespace: shop\ncontainers:\n  api:\n    worker: path://.\n    scripts:\n      run: ./api\n",
+        )
+        .unwrap();
+        let end = snapshot(
+            "succeeded",
+            json!([{"worker": "api", "status": "built", "build_id": "sha256:7d41"}]),
+        );
+        let (url, mut called) = fake_engine_url(daemon(0, end)).await;
+        let args = BuildArgs {
+            container: Some("api".into()),
+            file: Some(file.clone()),
+            namespace: Some("ops".into()),
+            engine: Some(url.clone()),
+        };
+        let target = project_target(&args).unwrap();
+        assert_eq!(target.engine_url, url);
+        assert_eq!(target.daemon_namespace, "ops");
+        assert_eq!(target.file.as_deref(), Some(file.as_path()));
+        let client = connect_operator(&target.engine_url);
+        let (printer, _) = captured();
+        remote_build(&client, &target, Some("api"), &never(), printer)
+            .await
+            .unwrap();
+        client.shutdown_async().await;
+        let calls = calls(&mut called);
+        assert_eq!(
+            payload(&calls, "compose::build")["file"],
+            file.to_str().unwrap()
+        );
+
+        let bad = BuildArgs {
+            namespace: Some("Not A Namespace!".into()),
+            ..args
+        };
+        assert_eq!(project_target(&bad).unwrap_err().code, "INVALID_NAMESPACE");
     }
 
     /// The real `build_record::read`: a build directory without `build.json` holds no build.
