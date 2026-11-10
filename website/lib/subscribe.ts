@@ -1,8 +1,8 @@
 import { track } from '@/lib/analytics'
 
 // Signup endpoint: CloudFront proxies /api/subscribe to the signup API on iii
-// Cloud (services/subscribe), which adds the address to Resend's "iii dev Website
-// Signups" segment and sends the welcome email.
+// Cloud (services/subscribe). It emails a confirmation link; the address joins
+// Resend's "iii dev Website Signups" segment only once that link is clicked.
 // Production builds post to it unless NEXT_PUBLIC_SUBSCRIBE_URL overrides it; set
 // the variable to an empty string on preview/demo projects so test signups never
 // reach the list. `next dev` sends nothing unless it is set.
@@ -15,7 +15,7 @@ const EMAIL_KEY = 'iii_access_email'
 /**
  * Subscribe an email to development updates. Never throws: the UI marks the
  * form submitted immediately, and delivery is best-effort (an address that is
- * already subscribed also answers 200, without a second welcome email).
+ * already subscribed also answers 200, and gets no email).
  */
 export async function subscribe(email: string, location: string) {
   track('email_submit', { form_location: location })

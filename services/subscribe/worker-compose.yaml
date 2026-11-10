@@ -14,6 +14,12 @@ containers:
       RESEND_TEMPLATE_ID: 2960e2b7-5ece-41e1-901b-a8614d7f5226
       RESEND_FROM: Hello from iii <hello@email.iii.dev>
       RESEND_SUBJECT: Welcome to the iii community
+      # Double opt-in: the confirmation email's template (by alias), which links
+      # to {{{CONFIRM_URL}}}. The welcome above goes out once the link is clicked.
+      RESEND_CONFIRM_TEMPLATE_ID: confirm-subscription
+      RESEND_CONFIRM_SUBJECT: Confirm your iii subscription
+      # Builds the confirmation link and the pages a click lands on.
+      SITE_URL: https://iii.dev
       # source=segment: where a signup came from (the body's `source`, default
       # website) to the Resend segment its contact joins. Add ade=<segment id>
       # here when ade signs people up through this API.

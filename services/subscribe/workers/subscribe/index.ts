@@ -31,29 +31,46 @@ function parseSegments(raw: string): Record<string, string> {
   return segments
 }
 
-const subscribe = createSubscribe({
+const site = (process.env.SITE_URL ?? 'https://iii.dev').replace(/\/$/, '')
+
+const { subscribe, confirm } = createSubscribe({
   apiKey: required('RESEND_API_KEY'),
-  templateId: required('RESEND_TEMPLATE_ID'),
   from: required('RESEND_FROM'),
-  subject: required('RESEND_SUBJECT'),
+  welcome: { templateId: required('RESEND_TEMPLATE_ID'), subject: required('RESEND_SUBJECT') },
+  confirmation: {
+    templateId: required('RESEND_CONFIRM_TEMPLATE_ID'),
+    subject: required('RESEND_CONFIRM_SUBJECT'),
+    url: `${site}/api/subscribe/confirm`,
+  },
+  redirects: { confirmed: `${site}/subscribed`, expired: `${site}/subscribe-expired` },
   segments: parseSegments(process.env.RESEND_SEGMENTS ?? ''),
   defaultSource: 'website',
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean),
-  maxWelcomesPerMinute: process.env.MAX_WELCOMES_PER_MINUTE ? Number(process.env.MAX_WELCOMES_PER_MINUTE) : undefined,
+  maxEmailsPerMinute: process.env.MAX_EMAILS_PER_MINUTE ? Number(process.env.MAX_EMAILS_PER_MINUTE) : undefined,
 })
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction('subscribe::create', (req: Request) => subscribe(req), {
-  description: 'Add an email to Resend Contacts and send the iii welcome email once',
+  description: 'Email a confirmation link to a new iii.dev subscriber (double opt-in)',
 })
+iii.registerFunction('subscribe::confirm', (req: Request) => confirm(req), {
+  description: 'Confirm a subscription from its emailed link: add the contact and send the welcome',
+})
+
 // iii 0.26: an HTTP route is an observer of the http worker's http::on-request
 // (registerTrigger is gone, and a 0.26 engine drops it without an error).
-const route = iii.observe(
-  { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe' } },
-  'subscribe::create',
-)
-await route.ready()
+const routes = [
+  iii.observe(
+    { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe' } },
+    'subscribe::create',
+  ),
+  iii.observe(
+    { function_id: 'http::on-request', args: { method: 'GET', path: '/api/subscribe/confirm' } },
+    'subscribe::confirm',
+  ),
+]
+await Promise.all(routes.map((route) => route.ready()))
 
 process.on('SIGTERM', async () => {
   await iii.shutdown()

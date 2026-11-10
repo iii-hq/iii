@@ -1,16 +1,23 @@
-// createSubscribe takes its config and fetch as arguments, so these tests drive
-// it with a fake Resend that records every call.
+// createSubscribe takes its config, fetch and clock as arguments, so these
+// tests drive it with a fake Resend that records every call.
 
 import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
 
 import { type Config, createSubscribe, type Request } from './subscribe'
 
+const DAY = 86_400_000
+
 const config: Config = {
   apiKey: 're_test',
-  templateId: 'tmpl-123',
   from: 'Hello from iii <hello@email.iii.dev>',
-  subject: 'Welcome to the iii community',
+  welcome: { templateId: 'tmpl-welcome', subject: 'Welcome to the iii community' },
+  confirmation: {
+    templateId: 'confirm-subscription',
+    subject: 'Confirm your iii subscription',
+    url: 'https://iii.dev/api/subscribe/confirm',
+  },
+  redirects: { confirmed: 'https://iii.dev/subscribed', expired: 'https://iii.dev/subscribe-expired' },
   segments: { website: 'seg-website', ade: 'seg-ade', untracked: '' },
   defaultSource: 'website',
   allowedOrigins: ['https://iii.dev', 'https://www.iii.dev'],
@@ -26,7 +33,7 @@ type Call = {
 // contacts: email -> { unsubscribed } for addresses Resend already knows.
 function fakeResend(
   contacts: Record<string, { unsubscribed: boolean }> = {},
-  opts: { failSend: boolean; failSegment?: boolean } = { failSend: false },
+  opts: { failSend?: boolean; failSegment?: boolean } = {},
 ) {
   const calls: Call[] = []
   const fetch = (async (url: string, init: RequestInit) => {
@@ -47,84 +54,147 @@ function fakeResend(
   return { fetch, calls, opts }
 }
 
+const routes = (calls: Call[]) => calls.map((c) => `${c.method} ${c.path}`)
+
 function post(body: unknown, origin = 'https://iii.dev'): Request {
   return { method: 'POST', headers: { origin }, body }
 }
 
-test('new address: sends the welcome template, then creates the contact', async () => {
+function click(token: string | undefined): Request {
+  return { method: 'GET', headers: {}, query_params: token === undefined ? {} : { token }, body: null }
+}
+
+/** The token of the link in the last confirmation email the fake sent. */
+function sentToken(calls: Call[]): string {
+  const send = calls.filter((c) => c.path === '/emails').at(-1)
+  const link = (send?.body?.template as { variables: { CONFIRM_URL: string } }).variables.CONFIRM_URL
+  return new URL(link).searchParams.get('token') as string
+}
+
+function quietly<T>(run: () => Promise<T>): Promise<T> {
+  const original = console.error
+  console.error = () => {
+    // the handler logs Resend failures; keep the test output clean
+  }
+  return run().finally(() => {
+    console.error = original
+  })
+}
+
+test('subscribe: a new address is sent a confirmation link, and nothing is stored', async () => {
   const resend = fakeResend()
-  const res = await createSubscribe(config, resend.fetch)(post({ email: '  Ada@Example.com ' }))
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const res = await subscribe(post({ email: '  Ada@Example.com ' }))
 
   expect(res.status_code).toBe(200)
-  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-    'GET /contacts/ada%40example.com',
-    'POST /emails',
-    'POST /contacts',
-  ])
-  expect(resend.calls[2].body).toEqual({
-    email: 'ada@example.com',
-    unsubscribed: false,
-    segments: [{ id: 'seg-website' }],
-  })
-
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
   const send = resend.calls[1]
-  expect(send.body).toEqual({
-    from: config.from,
-    to: 'ada@example.com',
-    subject: config.subject,
-    template: { id: 'tmpl-123' },
-  })
-  const digest = createHash('sha256').update('ada@example.com').digest('hex')
-  expect(send.headers['idempotency-key']).toBe(`welcome/${digest}`)
+  expect(send.body?.to).toBe('ada@example.com')
+  expect(send.body?.subject).toBe('Confirm your iii subscription')
+  const template = send.body?.template as { id: string; variables: { CONFIRM_URL: string } }
+  expect(template.id).toBe('confirm-subscription')
+  expect(template.variables.CONFIRM_URL).toStartWith('https://iii.dev/api/subscribe/confirm?token=')
   expect(send.headers.authorization).toBe('Bearer re_test')
 })
 
-test('a new contact joins the segment of its source, website by default', async () => {
-  const website = fakeResend()
-  await createSubscribe(config, website.fetch)(post({ email: 'ada@example.com' }))
-  expect(website.calls[2].body?.segments).toEqual([{ id: 'seg-website' }])
+test('confirm: a valid link sends the welcome, then creates the contact in the source segment', async () => {
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  await subscribe(post({ email: 'ada@example.com', source: 'ade' }))
+  const token = sentToken(resend.calls)
 
-  const ade = fakeResend()
-  await createSubscribe(config, ade.fetch)(post({ email: 'ada@example.com', source: 'ade' }))
-  expect(ade.calls[2].body?.segments).toEqual([{ id: 'seg-ade' }])
+  resend.calls.length = 0
+  const res = await confirm(click(token))
+  expect(res.status_code).toBe(302)
+  expect(res.headers.location).toBe('https://iii.dev/subscribed')
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails', 'POST /contacts'])
 
-  const untracked = fakeResend()
-  await createSubscribe(config, untracked.fetch)(post({ email: 'ada@example.com', source: 'untracked' }))
-  expect(untracked.calls[2].body?.segments).toBeUndefined()
+  const welcome = resend.calls[1]
+  expect(welcome.body).toEqual({
+    from: config.from,
+    to: 'ada@example.com',
+    subject: 'Welcome to the iii community',
+    template: { id: 'tmpl-welcome' },
+  })
+  const digest = createHash('sha256').update('ada@example.com').digest('hex')
+  expect(welcome.headers['idempotency-key']).toBe(`welcome/${digest}`)
+  expect(resend.calls[2].body).toEqual({ email: 'ada@example.com', unsubscribed: false, segments: [{ id: 'seg-ade' }] })
 })
 
-test('a source that is not configured is refused before Resend', async () => {
-  const resend = fakeResend()
-  const subscribe = createSubscribe(config, resend.fetch)
-  for (const source of ['nope', 'seg-website', 42, '__proto__', 'toString']) {
-    expect((await subscribe(post({ email: 'ada@example.com', source }))).status_code).toBe(400)
+test('confirm: website is the default source, and a source with no segment joins none', async () => {
+  for (const [source, segments] of [
+    [undefined, [{ id: 'seg-website' }]],
+    ['untracked', undefined],
+  ] as const) {
+    const resend = fakeResend()
+    const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+    await subscribe(post({ email: 'ada@example.com', source }))
+    await confirm(click(sentToken(resend.calls)))
+    expect(resend.calls.at(-1)?.body?.segments).toEqual(segments)
   }
+})
+
+test('confirm: a bad, tampered, forged or expired link goes to the expired page and calls nothing', async () => {
+  let t = 0
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch, () => t)
+  await subscribe(post({ email: 'ada@example.com' }))
+  const token = sentToken(resend.calls)
+  const [payload, sig] = token.split('.')
+
+  const otherKey = fakeResend()
+  const forger = createSubscribe({ ...config, apiKey: 're_other' }, otherKey.fetch, () => t)
+  await forger.subscribe(post({ email: 'ada@example.com' }))
+
+  const swapped = Buffer.from(JSON.stringify({ e: 'eve@example.com', s: 'website', x: 9e15 })).toString('base64url')
+  const bad = [
+    undefined,
+    '',
+    'nonsense',
+    `${payload}.${sig}.x`,
+    `${swapped}.${sig}`,
+    sentToken(otherKey.calls),
+    'a'.repeat(5000),
+  ]
+  resend.calls.length = 0
+  for (const candidate of bad) {
+    const res = await confirm(click(candidate))
+    expect(res.headers.location).toBe('https://iii.dev/subscribe-expired')
+  }
+
+  t = 3 * DAY + 1
+  expect((await confirm(click(token))).headers.location).toBe('https://iii.dev/subscribe-expired')
   expect(resend.calls.length).toBe(0)
 })
 
-test('known address: no second welcome, and it joins the segment of this source', async () => {
-  const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } })
-  const res = await createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com', source: 'ade' }))
+test('confirm: clicking twice sends one welcome', async () => {
+  const contacts: Record<string, { unsubscribed: boolean }> = {}
+  const resend = fakeResend(contacts)
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  await subscribe(post({ email: 'ada@example.com' }))
+  const token = sentToken(resend.calls)
 
-  expect(res.status_code).toBe(200)
-  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+  await confirm(click(token))
+  contacts['ada@example.com'] = { unsubscribed: false }
+  resend.calls.length = 0
+  const again = await confirm(click(token))
+  expect(again.headers.location).toBe('https://iii.dev/subscribed')
+  expect(routes(resend.calls)).toEqual([
     'GET /contacts/ada%40example.com',
-    'POST /contacts/ada%40example.com/segments/seg-ade',
+    'POST /contacts/ada%40example.com/segments/seg-website',
   ])
 })
 
-test('a failed segment add for a known address is logged, the signup still answers 200', async () => {
-  const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } }, { failSend: false, failSegment: true })
-  const res = await quietly(() => createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' })))
-  expect(res.status_code).toBe(200)
-})
-
-test('unsubscribed address that signs up again is re-subscribed, still no welcome', async () => {
+test('subscribe: an unsubscribed contact must confirm again; confirming re-subscribes without a welcome', async () => {
   const resend = fakeResend({ 'ada@example.com': { unsubscribed: true } })
-  const res = await createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' }))
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  await subscribe(post({ email: 'ada@example.com' }))
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
+  const token = sentToken(resend.calls)
 
-  expect(res.status_code).toBe(200)
-  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+  resend.calls.length = 0
+  await confirm(click(token))
+  expect(routes(resend.calls)).toEqual([
     'GET /contacts/ada%40example.com',
     'PATCH /contacts/ada%40example.com',
     'POST /contacts/ada%40example.com/segments/seg-website',
@@ -132,15 +202,35 @@ test('unsubscribed address that signs up again is re-subscribed, still no welcom
   expect(resend.calls[1].body).toEqual({ unsubscribed: false })
 })
 
-test('a raw JSON string body is parsed too', async () => {
-  const resend = fakeResend()
-  const res = await createSubscribe(config, resend.fetch)(post(JSON.stringify({ email: 'ada@example.com' })))
+test('subscribe: a subscribed address gets no email, only the segment of this source', async () => {
+  const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } })
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const res = await subscribe(post({ email: 'ada@example.com', source: 'ade' }))
+
+  expect(res.status_code).toBe(200)
+  expect(routes(resend.calls)).toEqual([
+    'GET /contacts/ada%40example.com',
+    'POST /contacts/ada%40example.com/segments/seg-ade',
+  ])
+})
+
+test('a failed segment add for a known contact is logged, the answer is still a success', async () => {
+  const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } }, { failSegment: true })
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const res = await quietly(() => subscribe(post({ email: 'ada@example.com' })))
   expect(res.status_code).toBe(200)
 })
 
-test('rejects bad input without calling Resend', async () => {
+test('subscribe: a raw JSON string body is parsed too', async () => {
   const resend = fakeResend()
-  const subscribe = createSubscribe(config, resend.fetch)
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const res = await subscribe(post(JSON.stringify({ email: 'ada@example.com' })))
+  expect(res.status_code).toBe(200)
+})
+
+test('subscribe: rejects bad input without calling Resend', async () => {
+  const resend = fakeResend()
+  const { subscribe } = createSubscribe(config, resend.fetch)
   const cases: [Request, number][] = [
     [post({ email: 'not-an-email' }), 400],
     [post('{not json'), 400],
@@ -149,6 +239,10 @@ test('rejects bad input without calling Resend', async () => {
     [post({ email: 'ada@example.com', pad: 'x'.repeat(2000) }), 400],
     // 400 three-byte characters: under 1024 characters, over 1024 bytes.
     [post({ email: 'ada@example.com', pad: '€'.repeat(400) }), 400],
+    [post({ email: 'ada@example.com', source: 'nope' }), 400],
+    [post({ email: 'ada@example.com', source: 'seg-website' }), 400],
+    [post({ email: 'ada@example.com', source: '__proto__' }), 400],
+    [post({ email: 'ada@example.com', source: 42 }), 400],
     [post({ email: 'ada@example.com' }, 'https://evil.example'), 403],
     [{ ...post({ email: 'ada@example.com' }), method: 'GET' }, 405],
   ]
@@ -156,46 +250,10 @@ test('rejects bad input without calling Resend', async () => {
   expect(resend.calls.length).toBe(0)
 })
 
-function quietly<T>(run: () => Promise<T>): Promise<T> {
-  const original = console.error
-  console.error = () => {
-    // the handler logs the Resend failure; keep the test output clean
-  }
-  return run().finally(() => {
-    console.error = original
-  })
-}
-
-test('a failed welcome creates no contact, so the next submit sends it', async () => {
-  const resend = fakeResend({}, { failSend: true })
-  const subscribe = createSubscribe(config, resend.fetch)
-
-  const failed = await quietly(() => subscribe(post({ email: 'ada@example.com' })))
-  expect(failed.status_code).toBe(502)
-  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
-
-  resend.opts.failSend = false
-  resend.calls.length = 0
-  const retried = await subscribe(post({ email: 'ada@example.com' }))
-  expect(retried.status_code).toBe(200)
-  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-    'GET /contacts/ada%40example.com',
-    'POST /emails',
-    'POST /contacts',
-  ])
-})
-
-test('the idempotency key stays within 256 characters for the longest address', async () => {
-  const resend = fakeResend()
-  const email = `${'a'.repeat(64)}@${'b'.repeat(185)}.com` // 254 characters
-  await createSubscribe(config, resend.fetch)(post({ email }))
-  expect(resend.calls[1].headers['idempotency-key'].length).toBeLessThanOrEqual(256)
-})
-
-test('welcomes past the per-minute cap get a 429 and no email', async () => {
+test('subscribe: confirmation emails past the per-minute cap get a 429 and no email', async () => {
   const resend = fakeResend()
   let t = 0
-  const subscribe = createSubscribe({ ...config, maxWelcomesPerMinute: 2 }, resend.fetch, () => t)
+  const { subscribe } = createSubscribe({ ...config, maxEmailsPerMinute: 2 }, resend.fetch, () => t)
 
   const codes = []
   for (const name of ['a', 'b', 'c']) codes.push((await subscribe(post({ email: `${name}@example.com` }))).status_code)
@@ -206,8 +264,43 @@ test('welcomes past the per-minute cap get a 429 and no email', async () => {
   expect((await subscribe(post({ email: 'c@example.com' }))).status_code).toBe(200)
 })
 
-test('Resend failure surfaces as 502', async () => {
+test('subscribe: a Resend failure surfaces as 502', async () => {
   const resend = fakeResend({}, { failSend: true })
-  const res = await quietly(() => createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' })))
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const res = await quietly(() => subscribe(post({ email: 'ada@example.com' })))
   expect(res.status_code).toBe(502)
+})
+
+test('confirm: a failed welcome creates no contact, so a new link works once Resend does', async () => {
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  await subscribe(post({ email: 'ada@example.com' }))
+  const token = sentToken(resend.calls)
+
+  resend.opts.failSend = true
+  resend.calls.length = 0
+  const failed = await quietly(() => confirm(click(token)))
+  expect(failed.headers.location).toBe('https://iii.dev/subscribe-expired')
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
+
+  resend.opts.failSend = false
+  resend.calls.length = 0
+  const retried = await confirm(click(token))
+  expect(retried.headers.location).toBe('https://iii.dev/subscribed')
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails', 'POST /contacts'])
+})
+
+test('the welcome idempotency key stays within 256 characters for the longest address', async () => {
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  const email = `${'a'.repeat(64)}@${'b'.repeat(185)}.com` // 254 characters
+  await subscribe(post({ email }))
+  await confirm(click(sentToken(resend.calls)))
+  const welcome = resend.calls.filter((c) => c.path === '/emails').at(-1)
+  expect(welcome?.headers['idempotency-key'].length).toBeLessThanOrEqual(256)
+})
+
+test('confirm: only GET', async () => {
+  const { confirm } = createSubscribe(config, fakeResend().fetch)
+  expect((await confirm({ ...click('x'), method: 'POST' })).status_code).toBe(405)
 })
