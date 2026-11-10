@@ -156,6 +156,7 @@ my-project/
 ├── .workers/                # packages, one directory per container; like node_modules
 │   ├── .gitignore           # "*", written by Compose
 │   ├── .packages.json       # container -> { name, version, sha256 }
+│   ├── .lock                # held while Compose copies packages
 │   ├── onboarding/
 │   ├── sandbox-libkrun/
 │   └── state/
@@ -312,7 +313,7 @@ path, relative to the compose file). A host build writes the same keys without `
 - **One writer per case.** For a VM build, `iii sandbox build` writes `build.json` after
   `worker::build` returned, which happens only after the adapter renamed the new image into
   place. For a host build, Compose writes it after `scripts.build` exited 0.
-- **Atomic writes:** `build.json.tmp`, then rename. A `build.json` whose `build_id` does not
+- **Atomic writes:** a temporary file beside it, then rename; leftovers are swept. A `build.json` whose `build_id` does not
   match the image fails the run with `S508` (section 6.5); the fix is a rebuild.
 
 ### 5.5 A build that is out of date
