@@ -474,6 +474,7 @@ pub(crate) async fn run_vm(
         source: ctx.source.clone(),
         env: ctx.env.clone(),
         engine_url: target.engine_url.clone(),
+        build: None,
     };
     // A signal does not abandon the start: its reply names the instance to stop. One that does
     // not come before the stop deadline leaves the VM to the adapter's lease.

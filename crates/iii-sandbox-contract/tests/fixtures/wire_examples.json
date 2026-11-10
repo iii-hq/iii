@@ -1,20 +1,20 @@
 {
-  "ContractVersion": { "major": 1, "minor": 2 },
+  "ContractVersion": { "major": 1, "minor": 3 },
   "AdapterInfoRequest": {},
   "AdapterInfo": {
     "adapter": "sandbox-libkrun",
     "adapter_version": "1.0.0",
-    "contract": { "major": 1, "minor": 2 },
-    "features": ["worker.scoped_auth", "worker.lease", "worker.logs_from_end"]
+    "contract": { "major": 1, "minor": 3 },
+    "features": ["worker.scoped_auth", "worker.lease", "worker.logs_from_end", "worker.build"]
   },
   "RouterInfo": {
     "adapter": "sandbox-libkrun",
     "namespace": "sandbox-libkrun",
-    "contract": { "major": 1, "minor": 2 },
+    "contract": { "major": 1, "minor": 3 },
     "info": {
       "adapter": "sandbox-libkrun",
       "adapter_version": "1.0.0",
-      "contract": { "major": 1, "minor": 2 },
+      "contract": { "major": 1, "minor": 3 },
       "features": ["worker.scoped_auth"]
     }
   },
@@ -24,15 +24,35 @@
     "state_key": "9f2c1e"
   },
   "WorkerPrepareResponse": {},
+  "WorkerBuildRequest": {
+    "auth": "tok",
+    "state_key": "9f2c1e",
+    "worker_name": "my-bundle",
+    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/work/proj/.workers/my-bundle" },
+    "output_dir": "/work/proj/.build/my-bundle",
+    "env": { "A": "1" },
+    "logs": { "channel_id": "ch-2", "access_key": "key", "direction": "write" }
+  },
+  "WorkerBuildResponse": {
+    "build_id": "sha256:f684ef7fe150347066bd568ad8e769e3680be2a6fe68db0aea54e18251f57108",
+    "base_image": {
+      "reference": "docker.io/iiidev/node:latest",
+      "digest": "sha256:cae662172fd450bb0cd710a769079c05bfc5d8e35efa6576edc7d0377afdd4a2"
+    },
+    "built_at_ms": 1700000000000
+  },
+  "BaseImageRef": { "reference": "docker.io/iiidev/node:latest" },
   "WorkerStartRequest": {
     "auth": "tok",
     "state_key": "9f2c1e",
     "worker_name": "my-bundle",
     "source": { "kind": "local", "host_path": "/work/my-worker", "run_override": "node app.js" },
     "env": { "A": "1" },
-    "engine_url": "ws://127.0.0.1:49134"
+    "engine_url": "ws://127.0.0.1:49134",
+    "build": { "build_id": "sha256:f684ef7fe150347066bd568ad8e769e3680be2a6fe68db0aea54e18251f57108", "build_dir": "/work/proj/.build/my-bundle" }
   },
-  "WorkerSource": { "kind": "bundle", "package": "my-bundle", "host_path": "/cache/my-bundle" },
+  "WorkerBuildRef": { "build_id": "sha256:f684ef7fe150347066bd568ad8e769e3680be2a6fe68db0aea54e18251f57108", "build_dir": "/work/proj/.build/my-bundle" },
+  "WorkerSource": { "kind": "bundle", "package": "my-bundle", "host_path": "/work/proj/.workers/my-bundle" },
   "WorkerStartResponse": { "vm_id": "vm-1", "instance": 3 },
   "WorkerStatusRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3 },
   "WorkerStatus": {

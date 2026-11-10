@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const CONTRACT_MAJOR: u32 = 1;
-pub const CONTRACT_MINOR: u32 = 2;
+pub const CONTRACT_MINOR: u32 = 3;
 
 /// `worker::*` accepts a token scoped to one VM, [`crate::scoped_auth_token`], besides the
 /// project token. Since contract 1.2.
@@ -17,6 +17,11 @@ pub const FEATURE_SCOPED_AUTH: &str = "worker.scoped_auth";
 pub const FEATURE_LEASE: &str = "worker.lease";
 /// `worker::logs` honours [`crate::WorkerLogsRequest::from_end`]. Since contract 1.2.
 pub const FEATURE_LOGS_FROM_END: &str = "worker.logs_from_end";
+/// `worker::build`, and `worker::start` booting the image it built. Since contract 1.3.
+///
+/// An adapter advertises it only when it can boot a build (overlay mode); `sandbox-libkrun` in
+/// legacy mode (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) does not.
+pub const FEATURE_BUILD: &str = "worker.build";
 
 /// Contract version. A different major is incompatible (S302); a minor only adds fields.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
