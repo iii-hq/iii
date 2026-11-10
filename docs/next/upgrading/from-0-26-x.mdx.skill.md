@@ -219,6 +219,9 @@ Run `iii compose --up` once without `--frozen` where you can commit the result, 
 
 ## Update the sandbox adapter
 
+Compose still adds the generated adapter container (`# added by compose::add`) when a project needs
+one, as in 0.26. Only the start order on it moves into the file, in `start_after`.
+
 Every 0.26 project pins `sandbox-libkrun` to a 0.3.x release, which lacks `worker.build`. In a
 project with a VM container, wherever the rewrite runs and before it:
 
@@ -259,7 +262,17 @@ The data a 0.26 VM wrote is not deleted. The adapter keeps it beside the new dis
   `root.pre-build/`, a fresh `root/` is created, and the path is logged the same way.
 
 The 0.26 disk mixes installed dependencies with data. Kept as the upper, it would shadow the
-dependencies of the build. `iii sandbox destroy` removes all of it, the pre-build disk included.
+dependencies of the build.
+
+`upper.ext4.pre-build` is an ext4 image, kept beside the new disk. On Linux, inspect it read-only by
+mounting it:
+
+```bash
+mount -o loop,ro <path> <dir>
+```
+
+Nothing restores it automatically. `iii sandbox destroy` removes all of it, the pre-build disk
+included.
 
 From then on, the VM's data disk is independent of the build: it keeps what the worker writes across
 restarts and rebuilds. Only `iii sandbox destroy` and `compose::remove` reset it.

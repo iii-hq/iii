@@ -893,13 +893,13 @@ Worker packages can be released in multiple different "kinds". A kind compose ca
 | `path`   | A path to a worker stored locally on disk.                                                      |
 
 A VM worker runs in the `sandbox-libkrun` worker, a container of the project that the VM worker
-names in `start_after`. Its guest and its build VM receive the container's `environment` and
-`env_file` variables and the reserved `III_*` variables, not the host's environment: declare under
-`environment` what the worker needs, such as a provider key. The adapter is built for three targets
-only: `aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. On a musl
-Linux or Intel Mac host Compose fails with `UNSUPPORTED_PLATFORM`. On Linux the user running Compose
-needs read and write access to `/dev/kvm`, and `libcap-ng0` must be installed. Every other worker
-kind is unaffected.
+names in `start_after`. Compose adds that container when the project needs it. Its guest and its
+build VM receive the container's `environment` and `env_file` variables and the reserved `III_*`
+variables, not the host's environment: declare under `environment` what the worker needs, such as a
+provider key. The adapter is built for three targets only: `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`. On a musl Linux or Intel Mac host
+Compose fails with `UNSUPPORTED_PLATFORM`. On Linux the user running Compose needs read and write
+access to `/dev/kvm`, and `libcap-ng0` must be installed. Every other worker kind is unaffected.
 
 Bundles need a VM, and windows has none: a bundle worker there fails with `BUNDLE_NEEDS_A_VM` before
 anything is downloaded, and `iii sandbox build` and `iii sandbox run` fail with
@@ -1148,7 +1148,9 @@ containers:
 | `--command <cmd>` on a bundle                                                                                      | Refused by `iii sandbox run`                                                                |
 
 A project needs the adapter when a container's `scripts.run` starts with `iii sandbox run`, or when
-`engine.sandbox` names the project's own namespace.
+`engine.sandbox` names the project's own namespace. As in 0.26, Compose then adds the generated
+adapter container, marked `# added by compose::add`, when the file does not declare one. The start
+order on the adapter is in `start_after`, in the file.
 
 These rules apply after the rewrite of older files: a missing `scripts.build`, a missing adapter in
 `start_after`, or a bundle without `scripts.run` is rewritten, not refused. See
