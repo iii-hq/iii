@@ -1050,10 +1050,13 @@ impl Project {
     /// containers. Existing containers whose declarations changed are
     /// restarted in place; then the normal idempotent `up` path starts only
     /// declarations that are not already running.
+    /// The VMs in `keep` are left as they run even when their adapter restarts: their rebuild
+    /// for a new package failed, and they stay on their old build (spec 5.3).
     pub async fn reconcile_file(
         &self,
         file: ComposeFile,
         restart: &[String],
+        keep: &[String],
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult, bool) {
         let package_cache = self.package_cache();
@@ -1064,7 +1067,8 @@ impl Project {
             let mut current = self.file.write().await;
             *current = file;
         }
-        let vms = self.vms_hosted_by_any(&inner, restart).await;
+        let mut vms = self.vms_hosted_by_any(&inner, restart).await;
+        vms.retain(|vm| !keep.contains(vm));
         let Inner {
             children, state, ..
         } = &mut *inner;
@@ -1544,25 +1548,17 @@ impl Project {
     }
 
     /// Spec 5.3: rebuilds each of `keys` that runs here and whose package `file` changed, while it
-    /// keeps running on its old build, so the restart that follows only runs the new one. Returns
-    /// those whose build failed, which go on running as they are: their restart is not made.
+    /// keeps running on its old build, so the restart that follows only runs the new one. Those
+    /// whose build failed go on running as they are, and are not to be restarted. Stops at the
+    /// first sign of `cancel`, building nothing more.
     pub(crate) async fn rebuild_changed(
         &self,
         file: &ComposeFile,
         keys: &[String],
         operation_id: &str,
-    ) -> Vec<(String, ComposeError)> {
+        cancel: &crate::shutdown::ShutdownSignal,
+    ) -> lifecycle::Rebuilt {
         let operation = crate::operation::active(operation_id);
-        let cancel = match &operation {
-            Some(operation) => {
-                self.shutdown
-                    .signal()
-                    .or(crate::shutdown::ShutdownSignal::from_receiver(
-                        operation.cancellation(),
-                    ))
-            }
-            None => self.shutdown.signal(),
-        };
         let package_cache = self.package_cache();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
         let ctx = LifecycleCtx {
@@ -1580,14 +1576,20 @@ impl Project {
             empty_env_diagnostics: &empty_env_diagnostics,
             legacy_vms: &self.legacy_vms,
         };
-        let mut failed = Vec::new();
+        let mut rebuilt = lifecycle::Rebuilt::default();
         for key in keys {
+            if cancel.requested() {
+                rebuilt.cancelled = true;
+                break;
+            }
             let Some(container) = file.containers.get(key) else {
                 continue;
             };
             if !self.is_running(key).await {
                 continue;
             }
+            // A build of it already running ends first, and leaves what is still due.
+            crate::build_step::wait_for(&file.path, key).await;
             let Some(reason @ crate::build_step::Reason::PackageChanged { .. }) =
                 crate::build_step::due(&file.path, key, container).await
             else {
@@ -1602,28 +1604,40 @@ impl Project {
             if let Some(operation) = &operation {
                 operation.emit(Some(key), "building", detail).await;
             }
-            let error = match Box::pin(lifecycle::build_one(&ctx, key, &cancel)).await {
-                None | Some(Ok(crate::build_step::Outcome::Built { .. })) => continue,
+            let error = match Box::pin(lifecycle::build_one(&ctx, key, cancel)).await {
+                None | Some(Ok(crate::build_step::Outcome::Built { .. })) => {
+                    rebuilt.built.push(key.clone());
+                    continue;
+                }
                 Some(Ok(crate::build_step::Outcome::Cancelled)) => {
-                    ComposeError::OperationCancelled {
-                        operation_id: operation_id.to_string(),
-                    }
+                    rebuilt.cancelled = true;
+                    break;
                 }
                 Some(Ok(failure)) => failure
                     .into_error(key)
                     .expect("a build that neither built nor was cancelled failed"),
                 Some(Err(error)) => error,
             };
-            report::daemon_line(
-                &format!("{key}: {error}; it keeps running on its previous build"),
-                true,
-            );
             if let Some(operation) = &operation {
                 operation.emit(Some(key), "failed", error.to_string()).await;
             }
-            failed.push((key.clone(), error));
+            rebuilt.failed.push((key.clone(), error));
         }
-        failed
+        rebuilt
+    }
+
+    /// The containers of `file` that run here on the build of a package other than the one
+    /// locked now: what an add or update whose rebuild failed left undone (spec 5.3).
+    pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
+        let mut pending = Vec::new();
+        for (key, container) in &file.containers {
+            if self.is_running(key).await
+                && crate::build_step::package_changed(&file.path, key, container).await
+            {
+                pending.push(key.clone());
+            }
+        }
+        pending
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -2384,7 +2398,12 @@ mod adapter_restart_tests {
 
         let (restarted, up, interrupted) = fixture
             .project
-            .reconcile_file(fixture.file(), &["web".into(), "sb".into()], "add".into())
+            .reconcile_file(
+                fixture.file(),
+                &["web".into(), "sb".into()],
+                &[],
+                "add".into(),
+            )
             .await;
         fixture.supervise().await;
 
@@ -3115,8 +3134,12 @@ mod adapter_restart_tests {
         let marker = dir.path().join("building");
         let own = ["own".to_string()];
 
-        let ((failed, lines), during) = tokio::join!(
-            crate::report::capture_daemon_lines(project.rebuild_changed(&file, &own, "update")),
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let ((rebuilt, lines), during) = tokio::join!(
+            crate::report::capture_daemon_lines(
+                project.rebuild_changed(&file, &own, "update", &signal)
+            ),
             async {
                 while !marker.exists() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -3125,7 +3148,8 @@ mod adapter_restart_tests {
             }
         );
 
-        assert!(failed.is_empty(), "{failed:?}");
+        assert!(rebuilt.failed.is_empty(), "{rebuilt:?}");
+        assert_eq!(rebuilt.built, own);
         assert_eq!(
             during,
             Some(running),
@@ -3159,11 +3183,80 @@ mod adapter_restart_tests {
         .unwrap();
         let failing = ComposeFile::load(&path).unwrap();
         let failed = project
-            .rebuild_changed(&failing, &["own".into()], "update")
-            .await;
+            .rebuild_changed(&failing, &own, "update", &signal)
+            .await
+            .failed;
         assert_eq!(failed.len(), 1, "{failed:?}");
         assert_eq!(failed[0].1.code(), "BUILD_FAILED");
         assert_eq!(alive(dir.path(), "own"), Some(running));
+        project.shutdown().await;
+    }
+
+    /// A cancel stops a rebuild at once and builds nothing more: the container keeps running on
+    /// its old build, and the caller restarts nothing.
+    #[tokio::test]
+    async fn a_cancelled_rebuild_stops_and_builds_nothing_more() {
+        use crate::build_step::fake_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'test -e ../slow && touch ../building && sleep 30; true', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("cancel-rebuild-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let up = project.up(Some("own"), "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let running = alive(dir.path(), "own").unwrap();
+        let build = dir.path().join(".build/own");
+        let mut moved = fake_record::read(&build).unwrap().unwrap();
+        moved.source = crate::build_record::BuildSource::Path {
+            dir: "./old".into(),
+        };
+        fake_record::write(&build, &moved).unwrap();
+        std::fs::write(dir.path().join("slow"), "").unwrap();
+        let file = ComposeFile::load(&path).unwrap();
+        let own = ["own".to_string()];
+
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let marker = dir.path().join("building");
+        let began = std::time::Instant::now();
+        let (rebuilt, ()) = tokio::join!(
+            project.rebuild_changed(&file, &own, "update", &signal),
+            async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                controller.cancel();
+            }
+        );
+
+        assert!(rebuilt.cancelled, "{rebuilt:?}");
+        assert!(
+            rebuilt.built.is_empty() && rebuilt.failed.is_empty(),
+            "{rebuilt:?}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(alive(dir.path(), "own"), Some(running));
+        assert_eq!(fake_record::read(&build).unwrap().unwrap(), moved);
+
+        // Asked once cancelled, it builds nothing at all.
+        std::fs::remove_file(&marker).unwrap();
+        let rebuilt = project
+            .rebuild_changed(&file, &own, "update", &signal)
+            .await;
+        assert!(rebuilt.cancelled, "{rebuilt:?}");
+        assert!(!marker.exists());
         project.shutdown().await;
     }
 }

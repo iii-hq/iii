@@ -103,6 +103,22 @@ impl Drop for Registered {
     }
 }
 
+/// Waits for the build of container `key` running in this process to end, if one is, and says
+/// whether there was one: a second build of the same directory would write over it, or meet S509.
+pub(crate) async fn wait_for(compose_file: &Path, key: &str) -> bool {
+    let dir = build_dir(compose_file, key);
+    let Some((_, mut ends)) = running()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&dir)
+        .cloned()
+    else {
+        return false;
+    };
+    let _ = ends.wait_for(|ended| *ended).await;
+    true
+}
+
 /// Stops the build of container `key` running in this process, if one is, and waits for it to
 /// end: its process stops, so `iii sandbox build` closes its channel and the adapter aborts the
 /// build (spec 6.2). Says whether there was one. The build fails with `BUILD_STOPPED`.
@@ -174,6 +190,26 @@ fn describe_source(source: &BuildSource) -> String {
 /// differences, once per start, and lets it run on its current build. The check only informs: one
 /// that fails is logged and the container runs.
 pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -> Option<Reason> {
+    assess(compose_file, key, container, true).await
+}
+
+/// Whether running container `key`'s build was made from another package than the one locked
+/// now: a rebuild for a new package left undone, which a retried add or update finishes. Logs
+/// nothing.
+pub(crate) async fn package_changed(compose_file: &Path, key: &str, container: &Container) -> bool {
+    matches!(
+        assess(compose_file, key, container, false).await,
+        Some(Reason::PackageChanged { .. })
+    )
+}
+
+/// [`due`], saying what it finds only when `log` is set.
+async fn assess(
+    compose_file: &Path,
+    key: &str,
+    container: &Container,
+    log: bool,
+) -> Option<Reason> {
     container.scripts.build_command()?;
     let dir = build_dir(compose_file, key);
     if !dir.join("build.json").is_file() {
@@ -195,6 +231,7 @@ pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -
     let changes = match checked {
         Ok(Ok(Some(changes))) => changes,
         Ok(Ok(None)) => return Some(Reason::First),
+        Ok(Err(_)) | Err(_) if !log => return None,
         Ok(Err(error)) => {
             stale_check_failed(key, &error.to_string());
             return None;
@@ -234,7 +271,9 @@ pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -
             ),
             Change::Source { .. } => continue,
         };
-        crate::report::daemon_line(&line, true);
+        if log {
+            crate::report::daemon_line(&line, true);
+        }
     }
     None
 }

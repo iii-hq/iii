@@ -214,6 +214,19 @@ pub enum ComposeError {
     )]
     BuildMissing { container: String, path: PathBuf },
 
+    /// The rebuild an add or update ran for a container's new package failed (spec 5.3): the
+    /// file and the lock already name the new version, and the container runs its old build.
+    /// `code` and `message` are the build's own; `retry` says how to finish.
+    #[error(
+        "container '{container}': scripts.build failed for its new package: {code}: {message}. {retry}"
+    )]
+    PackageRebuildFailed {
+        container: String,
+        code: String,
+        message: String,
+        retry: String,
+    },
+
     /// A first build or a package rebuild failed: `code` and `message` are the build's own
     /// (spec 4.1).
     #[error("container '{container}': scripts.build failed: {code}: {message}")]
@@ -738,7 +751,7 @@ impl ComposeError {
             Self::SandboxUnsupportedPlatform { .. } => "SANDBOX_UNSUPPORTED_PLATFORM",
             Self::SandboxBuildUnsupported { .. } => "SANDBOX_BUILD_UNSUPPORTED",
             Self::BuildMissing { .. } => "BUILD_MISSING",
-            Self::BuildFailed { .. } => "BUILD_FAILED",
+            Self::BuildFailed { .. } | Self::PackageRebuildFailed { .. } => "BUILD_FAILED",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",

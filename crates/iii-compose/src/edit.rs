@@ -849,10 +849,22 @@ fn is_container_head(line: &str, indent: &str) -> bool {
 
 /// `line` without its trailing YAML comment, whose `#` must follow whitespace:
 /// `key:#text` is a plain scalar.
+/// A `#` inside single or double quotes is text, not a comment.
 fn without_comment(line: &str) -> &str {
-    line.char_indices()
-        .find(|(at, c)| *c == '#' && line[..*at].ends_with([' ', '\t']))
-        .map_or(line, |(at, _)| &line[..at])
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for (at, c) in line.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if double => escaped = true,
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single && !double && line[..at].ends_with([' ', '\t']) => {
+                return &line[..at];
+            }
+            _ => {}
+        }
+    }
+    line
 }
 
 fn leading_whitespace(line: &str) -> &str {
@@ -2060,5 +2072,33 @@ containers:
             parsed["containers"]["opt"]["scripts"]["build"].as_str(),
             Some("iii sandbox build")
         );
+    }
+
+    /// A `#` inside quotes is text: the entry parses, and no comment is invented from it.
+    #[test]
+    fn a_hash_inside_quotes_is_not_a_comment() {
+        assert_eq!(
+            without_comment(r#"run: "echo #1"  # real"#),
+            r#"run: "echo #1"  "#
+        );
+        assert_eq!(without_comment("run: 'it''s #1'"), "run: 'it''s #1'");
+        let text = "containers:\n  api: {worker: path://./api, scripts: {run: \"echo #1\"}}\n";
+        let rewrite = explicit_vm_mode(text, "api", "sb").unwrap().unwrap();
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        let scripts = &parsed["containers"]["api"]["scripts"];
+        assert_eq!(
+            scripts["run"].as_str(),
+            Some("iii sandbox run --command 'echo #1'")
+        );
+        assert!(
+            rewrite.text.starts_with("containers:\n  api:\n"),
+            "{}",
+            rewrite.text
+        );
+
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: \"iii sandbox run --command 'a #1'\"}\n";
+        let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
+        assert!(rewrite.text.contains("    scripts:\n"), "{}", rewrite.text);
+        assert!(!rewrite.text.contains("#1\"}"), "{}", rewrite.text);
     }
 }

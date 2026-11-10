@@ -93,7 +93,8 @@ pub struct OpErrorCause {
 impl From<&ComposeError> for OpError {
     fn from(error: &ComposeError) -> Self {
         let cause = match error {
-            ComposeError::BuildFailed { code, message, .. } => Some(OpErrorCause {
+            ComposeError::BuildFailed { code, message, .. }
+            | ComposeError::PackageRebuildFailed { code, message, .. } => Some(OpErrorCause {
                 code: code.clone(),
                 message: message.clone(),
             }),
@@ -134,6 +135,17 @@ pub enum BuildStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildRun {
     pub results: Vec<BuildResult>,
+    pub cancelled: bool,
+}
+
+/// What [`Project::rebuild_changed`](crate::project::Project::rebuild_changed) did.
+#[derive(Debug, Default)]
+pub(crate) struct Rebuilt {
+    /// Rebuilt for their new package: their restart runs it.
+    pub built: Vec<String>,
+    /// Whose rebuild failed: they keep running on their old build.
+    pub failed: Vec<(String, ComposeError)>,
+    /// The operation was cancelled, and nothing more was built.
     pub cancelled: bool,
 }
 
@@ -1371,6 +1383,9 @@ async fn start_one_until_shutdown(
 
     // Its first build, or a rebuild for a new package (spec 5.2, 5.3), with its own timeout:
     // `startup_timeout` starts with the run. `pre_run` still runs after it.
+    // A build of it already running (a rebuild for a new package, say) ends first, and decides
+    // what is left to build.
+    wait_or_interrupt!(crate::build_step::wait_for(&ctx.file.path, key));
     if let Some(reason) = crate::build_step::due(&ctx.file.path, key, container).await {
         let detail = reason.describe();
         report::daemon_line(&format!("{key}: {detail}"), false);
@@ -1692,25 +1707,36 @@ pub(crate) async fn materialize_packages(
 // parallel; integration switches them to the real one.
 #[cfg(not(test))]
 use crate::registry::materialize_project;
-// The stand-in does only what this crate's tests read: the directory of a container no longer
-// locked goes.
+// The stand-in does only what this crate's tests read, as KAN-281's does it: a container that
+// `.workers/.packages.json` records and the lock no longer has loses its directory and its entry.
+// Nothing that file does not record is Compose's, so nothing else is touched.
 #[cfg(test)]
 async fn materialize_project(
     compose_dir: &std::path::Path,
     _package_cache: &std::path::Path,
     lock: &crate::lockfile::PreparedLock,
 ) -> Result<()> {
+    let record = compose_dir.join(".workers/.packages.json");
+    let Ok(text) = std::fs::read_to_string(&record) else {
+        return Ok(());
+    };
+    let mut packages: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
     let locked: std::collections::BTreeSet<&str> = lock.packages().map(|(key, _)| key).collect();
-    for entry in std::fs::read_dir(compose_dir.join(".workers"))
-        .into_iter()
-        .flatten()
-        .flatten()
+    if let Some(containers) = packages
+        .get_mut("containers")
+        .and_then(serde_json::Value::as_object_mut)
     {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path().is_dir() && !locked.contains(name.as_str()) {
-            let _ = std::fs::remove_dir_all(entry.path());
+        let retired: Vec<String> = containers
+            .keys()
+            .filter(|key| !locked.contains(key.as_str()))
+            .cloned()
+            .collect();
+        for key in retired {
+            containers.remove(&key);
+            let _ = std::fs::remove_dir_all(compose_dir.join(".workers").join(&key));
         }
     }
+    let _ = std::fs::write(&record, packages.to_string());
     Ok(())
 }
 
