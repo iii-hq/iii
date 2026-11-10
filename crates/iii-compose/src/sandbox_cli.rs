@@ -192,9 +192,9 @@ pub struct SandboxCli {
 pub enum SandboxCommand {
     /// Build a container's image through its sandbox adapter.
     ///
-    /// As a container's scripts.build, builds that container and records the image in its
-    /// build.json. Anywhere else, asks the project's Compose daemon to build CONTAINER, or every
-    /// container with a scripts.build, and follows the build; Ctrl-C cancels it. A running
+    /// As a container's `scripts.build`, builds that container and records the image in its
+    /// `build.json`. Anywhere else, asks the project's Compose daemon to build CONTAINER, or every
+    /// container with a `scripts.build`, and follows the build; Ctrl-C cancels it. A running
     /// container keeps its image until it restarts. Exits 0 once built, 1 when the build failed,
     /// 125 when `iii sandbox` itself failed and 130 when cancelled; on failure the last line is
     /// `iii sandbox: build failed: <code>: <message>`.
@@ -218,8 +218,8 @@ pub struct RunArgs {
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct BuildArgs {
-    /// The container to build. Outside Compose, every container with a scripts.build when
-    /// omitted; as a container's scripts.build, only that container, also the default.
+    /// The container to build. Outside Compose, every container with a `scripts.build` when
+    /// omitted; as a container's `scripts.build`, only that container, also the default.
     #[arg(value_name = "CONTAINER")]
     pub container: Option<String>,
 
@@ -232,8 +232,8 @@ pub struct BuildArgs {
     #[arg(short = 'n', long = "namespace", value_name = "NS")]
     pub namespace: Option<String>,
 
-    /// Existing engine WebSocket address. The compose file and III_URL are used when omitted.
-    /// Outside Compose only.
+    /// Existing engine WebSocket address. The compose file and `III_URL` are used when
+    /// omitted. Outside Compose only.
     #[arg(long, value_name = "URL")]
     pub engine: Option<String>,
 }
