@@ -1422,6 +1422,79 @@ impl Project {
         result
     }
 
+    /// Starts container `key` alone, ahead of the `up` it is part of: see
+    /// [`lifecycle::start_ahead`]. `Some(true)` when it started it.
+    pub(crate) async fn start_ahead(
+        &self,
+        key: &str,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> Option<bool> {
+        let shutdown = shutdown.or(self.shutdown.signal());
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let mut inner = shutdown.run(self.inner.lock()).await?;
+        inner.restarts.operator_took_control(Some(key));
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
+        let file = self.file.read().await;
+
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+        };
+
+        let started =
+            lifecycle::start_ahead(&ctx, children, &mut state.containers, key, shutdown).await;
+
+        let snapshot = state.clone();
+        drop(file);
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
+        started
+    }
+
+    /// Has the running adapter prepare each of the bundle containers `keys`
+    /// before they start: [`crate::sandbox::prepare_ahead`].
+    pub(crate) async fn prepare_vms_ahead(&self, keys: &[String]) {
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        // A copy, so no edit waits on image pulls.
+        let file = self.file.read().await.clone();
+
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+        };
+
+        futures::future::join_all(
+            keys.iter()
+                .map(|key| crate::sandbox::prepare_ahead(&ctx, key)),
+        )
+        .await;
+    }
+
     /// Current state of every declared container, for `compose::status`.
     pub async fn status(&self) -> Vec<ContainerStatus> {
         let file = self.file.read().await;

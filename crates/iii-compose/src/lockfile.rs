@@ -139,10 +139,29 @@ impl PreparedLock {
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
     pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
+        self.install_where(cache_root, |_| true).await
+    }
+
+    /// [`Self::install`] for `keys` only, the ones a start needs before the rest.
+    pub(crate) async fn install_only(
+        &mut self,
+        cache_root: &Path,
+        keys: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.install_where(cache_root, |key| keys.contains(key))
+            .await
+    }
+
+    async fn install_where(
+        &mut self,
+        cache_root: &Path,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Result<()> {
         let requests = self
             .lock
             .containers
             .iter()
+            .filter(|(key, _)| wanted(key))
             .map(|(key, entry)| (key.clone(), entry.resolved.clone()))
             .collect::<Vec<_>>();
         let cache_root = cache_root.to_path_buf();

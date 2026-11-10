@@ -118,6 +118,60 @@ pub(crate) fn needed_by(needs: &[Need]) -> Vec<&str> {
     }
 }
 
+/// The adapter and the bundle containers it boots, when the adapter can start
+/// ahead of the rest of the project: a package that waits for nothing. A start
+/// then has it pull those bundles' images while the other packages download,
+/// instead of after them. `file` must be lock-attached, as for [`needs`].
+pub(crate) fn ahead(
+    file: &ComposeFile,
+    project_namespace: &str,
+) -> Result<Option<(String, Vec<String>)>> {
+    let bundles: Vec<String> = needs(file, project_namespace)
+        .into_iter()
+        .filter_map(|need| match need {
+            Need::VmBundle(key) => Some(key),
+            Need::VmLocal(_) | Need::Explicit => None,
+        })
+        .collect();
+    if bundles.is_empty() {
+        return Ok(None);
+    }
+    let Some(adapter) = adapter_key(file, adapter_name(file))? else {
+        return Ok(None);
+    };
+    let container = &file.containers[&adapter];
+    let alone = matches!(container.worker, WorkerSource::Package { .. })
+        && container.start_after.is_empty();
+    Ok(alone.then_some((adapter, bundles)))
+}
+
+/// `worker::prepare` for bundle container `key` before it starts, so its image
+/// is pulled and its base built while the rest of the project downloads. Best
+/// effort: its start prepares again, which waits on a pull still in flight, and
+/// reports whatever fails.
+pub(crate) async fn prepare_ahead(ctx: &LifecycleCtx<'_>, key: &str) {
+    let Some(resolved) = ctx
+        .file
+        .containers
+        .get(key)
+        .and_then(|container| container.resolved_package.as_ref())
+    else {
+        return;
+    };
+    let Ok(installed) = crate::registry::install_resolved(key, resolved, ctx.package_cache).await
+    else {
+        return;
+    };
+    let crate::registry::Payload::Bundle(install_dir) = installed.payload else {
+        return;
+    };
+    let start = StartSpec::Vm(VmSpec::Bundle {
+        package: installed.alias_of.unwrap_or(installed.name),
+        install_dir,
+    });
+    let _ = prepare_vm(ctx, key, &start, BTreeMap::new()).await;
+}
+
 /// `--frozen` never edits the file, so a need with no declared adapter fails.
 /// `file` must be lock-attached, as for [`needs`].
 pub(crate) fn require_declared_adapter(file: &ComposeFile, project_namespace: &str) -> Result<()> {
@@ -1630,6 +1684,23 @@ pub(crate) mod tests {
                 Need::Explicit
             ]
         );
+    }
+
+    /// Only the bundles go ahead (a local VM has nothing to download), and only
+    /// with an adapter that waits for nothing.
+    #[test]
+    fn an_adapter_that_waits_for_nothing_goes_ahead_with_the_bundles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = vm_project(dir.path());
+        assert_eq!(
+            ahead(&file, "default").unwrap(),
+            Some(("sb".to_string(), vec!["app".to_string()]))
+        );
+        file.containers["sb"].start_after.push("bin".to_string());
+        assert_eq!(ahead(&file, "default").unwrap(), None);
+        file.containers["sb"].start_after.clear();
+        file.containers["app"].resolved_package = Some(package("name: app, type: binary"));
+        assert_eq!(ahead(&file, "default").unwrap(), None);
     }
 
     #[test]
