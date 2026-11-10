@@ -103,50 +103,112 @@ impl Drop for Registered {
     }
 }
 
-/// The build slots of this process, by build directory.
-fn slots() -> &'static Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>> {
-    static SLOTS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
-    SLOTS.get_or_init(Mutex::default)
+/// What this process knows of one `.build/<container>`.
+#[derive(Default)]
+struct Entry {
+    /// Who decides on and runs its build now: see [`Slot`].
+    slot: Arc<tokio::sync::Mutex<()>>,
+    /// Removes of the container under way ([`Stopping`]): a taker of the slot builds nothing.
+    stopping: usize,
+    /// Rebuilt by an add or update, and not yet run: its container still runs its previous
+    /// build (spec 5.3). Cleared when the container next starts.
+    unrestarted: bool,
+}
+
+/// The [`Entry`] of every build directory this process met.
+fn entries() -> &'static Mutex<BTreeMap<PathBuf, Entry>> {
+    static ENTRIES: OnceLock<Mutex<BTreeMap<PathBuf, Entry>>> = OnceLock::new();
+    ENTRIES.get_or_init(Mutex::default)
+}
+
+fn with_entry<T>(dir: &Path, f: impl FnOnce(&mut Entry) -> T) -> T {
+    f(entries()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(dir.to_path_buf())
+        .or_default())
 }
 
 /// The right to decide whether container `key` builds, and to run that build. A start, a rebuild
 /// and `compose::build` each hold it from [`due`] to the end of the build, so one `.build/<c>`
 /// never has two builds at once: the second would write over the first, or meet S509.
 pub(crate) struct Slot {
+    dir: PathBuf,
     _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Slot {
+    /// Whether the container is being removed: its taker then builds nothing, and gives up with
+    /// [`Outcome::stopped`].
+    pub(crate) fn stopping(&self) -> bool {
+        with_entry(&self.dir, |entry| entry.stopping > 0)
+    }
+
+    /// The container starts on the build this slot leaves: a rebuild it had not run is now its
+    /// own.
+    pub(crate) fn starting(&self) {
+        with_entry(&self.dir, |entry| entry.unrestarted = false);
+    }
 }
 
 /// Takes the build slot of container `key`, waiting while a start, rebuild or build holds it.
 /// Callers race the wait with their cancel: dropping it gives nothing up.
 pub(crate) async fn slot(compose_file: &Path, key: &str) -> Slot {
-    let lock = Arc::clone(
-        slots()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(build_dir(compose_file, key))
-            .or_default(),
-    );
+    let dir = build_dir(compose_file, key);
+    let lock = with_entry(&dir, |entry| Arc::clone(&entry.slot));
     Slot {
+        dir,
         _held: lock.lock_owned().await,
     }
 }
 
-/// Stops the build of container `key` running in this process, if one is, and waits for it to
-/// end: its process stops, so `iii sandbox build` closes its channel and the adapter aborts the
-/// build (spec 6.2). Says whether there was one. The build fails with `BUILD_STOPPED`.
-pub(crate) async fn stop(compose_file: &Path, key: &str) -> bool {
+/// Records that an add or update rebuilt container `key` while it runs its previous build: a
+/// retried add or update restarts it ([`rebuilt_unrestarted`]) until it starts again.
+pub(crate) fn mark_rebuilt(compose_file: &Path, key: &str) {
+    with_entry(&build_dir(compose_file, key), |entry| {
+        entry.unrestarted = true
+    });
+}
+
+/// Whether an add or update rebuilt container `key`, and it has not started since. A build made
+/// by `compose::build` or `iii sandbox build` is never this: its restart is the user's.
+pub(crate) fn rebuilt_unrestarted(compose_file: &Path, key: &str) -> bool {
+    with_entry(&build_dir(compose_file, key), |entry| entry.unrestarted)
+}
+
+/// A remove of one container under way, from [`stop`]: while it lives, whoever takes the
+/// container's build slot builds nothing. Dropped when the remove ends.
+#[must_use = "the container counts as being removed only while this lives"]
+pub(crate) struct Stopping {
+    dir: PathBuf,
+}
+
+impl Drop for Stopping {
+    fn drop(&mut self) {
+        with_entry(&self.dir, |entry| {
+            entry.stopping = entry.stopping.saturating_sub(1);
+        });
+    }
+}
+
+/// Marks container `key` as being removed, then stops the build of it running in this process, if
+/// one is, and waits for it to end: its process stops, so `iii sandbox build` closes its channel
+/// and the adapter aborts the build (spec 6.2). The build fails with `BUILD_STOPPED`, and so does
+/// any start, rebuild or build that takes the slot while the mark lives: one waiting for it, or
+/// one that had it but had not started its build yet.
+pub(crate) async fn stop(compose_file: &Path, key: &str) -> Stopping {
     let dir = build_dir(compose_file, key);
-    let Some((stop, mut ends)) = running()
+    with_entry(&dir, |entry| entry.stopping += 1);
+    let running = running()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&dir)
-        .cloned()
-    else {
-        return false;
-    };
-    stop.send_replace(true);
-    let _ = tokio::time::timeout(STOP_WAIT, ends.wait_for(|ended| *ended)).await;
-    true
+        .cloned();
+    if let Some((stop, mut ends)) = running {
+        stop.send_replace(true);
+        let _ = tokio::time::timeout(STOP_WAIT, ends.wait_for(|ended| *ended)).await;
+    }
+    Stopping { dir }
 }
 
 /// The compose file's directory, as `III_COMPOSE_DIR` names it.
@@ -310,6 +372,14 @@ pub(crate) enum Outcome {
 
 impl Outcome {
     /// The start failure of container `key`: `BUILD_FAILED` with the build's own code.
+    /// A build stopped, or given up, because its container is being removed.
+    pub(crate) fn stopped() -> Self {
+        Self::Failed {
+            code: "BUILD_STOPPED".to_string(),
+            message: "stopped: the container is being removed".to_string(),
+        }
+    }
+
     pub(crate) fn into_error(self, key: &str) -> Option<ComposeError> {
         match self {
             Self::Failed { code, message } => Some(ComposeError::BuildFailed {
@@ -425,10 +495,7 @@ pub(crate) async fn run(
 
     match end {
         End::Cancelled => Outcome::Cancelled,
-        End::Stopped => Outcome::Failed {
-            code: "BUILD_STOPPED".to_string(),
-            message: "stopped: the container is being removed".to_string(),
-        },
+        End::Stopped => Outcome::stopped(),
         End::TimedOut => Outcome::Failed {
             code: "TIMED_OUT".to_string(),
             message: lines.join("\n"),
@@ -956,7 +1023,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(300)).await;
             stop(&project.file.path, "api").await
         });
-        assert!(stopped);
+        drop(stopped);
         assert!(
             matches!(outcome, Outcome::Failed { ref code, .. } if code == "BUILD_STOPPED"),
             "{outcome:?}"
@@ -966,7 +1033,13 @@ mod tests {
             "{:?}",
             began.elapsed()
         );
-        assert!(!stop(&project.file.path, "api").await);
+        assert!(
+            !running()
+                .lock()
+                .unwrap()
+                .contains_key(&build_dir(&project.file.path, "api")),
+            "a stopped build stayed registered"
+        );
     }
 
     /// Spec 5.3 and 5.5: a new source rebuilds; changed dependency files or base image only
@@ -1121,5 +1194,52 @@ mod tests {
             .expect("the slot was not handed on")
             .unwrap();
         drop(other);
+    }
+
+    /// A remove marks the slot: whoever takes it while the remove lasts, having waited for it or
+    /// not, gives up. The mark ends with the last remove.
+    #[tokio::test]
+    async fn a_remove_under_way_turns_away_whoever_takes_the_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("worker-compose.yaml");
+        std::fs::write(&file, "containers: {}\n").unwrap();
+        let held = slot(&file, "api").await;
+        let waiting = tokio::spawn({
+            let file = file.clone();
+            async move { slot(&file, "api").await.stopping() }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let first = stop(&file, "api").await;
+        let second = stop(&file, "api").await;
+        assert!(held.stopping(), "the holder does not see the remove");
+        drop(held);
+        assert!(
+            waiting.await.unwrap(),
+            "a taker that waited missed the remove"
+        );
+
+        drop(first);
+        assert!(
+            slot(&file, "api").await.stopping(),
+            "the mark ended with the first remove"
+        );
+        assert!(!slot(&file, "web").await.stopping());
+        drop(second);
+        assert!(!slot(&file, "api").await.stopping());
+    }
+
+    /// What an add or update rebuilt is pending until the container starts again; a build of
+    /// another kind never is.
+    #[tokio::test]
+    async fn a_rebuild_is_pending_until_its_container_starts() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("worker-compose.yaml");
+        std::fs::write(&file, "containers: {}\n").unwrap();
+        assert!(!rebuilt_unrestarted(&file, "api"));
+        mark_rebuilt(&file, "api");
+        assert!(rebuilt_unrestarted(&file, "api"));
+        assert!(!rebuilt_unrestarted(&file, "web"));
+        slot(&file, "api").await.starting();
+        assert!(!rebuilt_unrestarted(&file, "api"));
     }
 }

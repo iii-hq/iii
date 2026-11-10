@@ -1508,9 +1508,21 @@ impl Project {
                 continue;
             }
             // Held to the end of the build: no start or rebuild of it builds beside this one.
-            let Some(_slot) = cancel.run(crate::build_step::slot(&file.path, &key)).await else {
+            let Some(slot) = cancel.run(crate::build_step::slot(&file.path, &key)).await else {
                 break;
             };
+            if slot.stopping() {
+                // Its remove is under way: it builds nothing.
+                let error = crate::build_step::Outcome::stopped()
+                    .into_error(&key)
+                    .expect("a stopped build failed");
+                emit("failed", error.to_string()).await;
+                results.push(lifecycle::BuildResult::failed(
+                    &key,
+                    lifecycle::OpError::from(&error),
+                ));
+                continue;
+            }
             emit("building", "running scripts.build".to_string()).await;
             let result = match lifecycle::build_one(&ctx, &key, cancel).await {
                 None => lifecycle::BuildResult::skipped(&key),
@@ -1590,10 +1602,20 @@ impl Project {
             }
             // Held to the end of its build: one already running ends first, and leaves what is
             // still due. The wait gives way to a cancel.
-            let Some(_slot) = cancel.run(crate::build_step::slot(&file.path, key)).await else {
+            let Some(slot) = cancel.run(crate::build_step::slot(&file.path, key)).await else {
                 rebuilt.cancelled = true;
                 break;
             };
+            if slot.stopping() {
+                // Its remove is under way: it gives up before deciding anything.
+                rebuilt.failed.push((
+                    key.clone(),
+                    crate::build_step::Outcome::stopped()
+                        .into_error(key)
+                        .expect("a stopped build failed"),
+                ));
+                continue;
+            }
             let Some(reason @ crate::build_step::Reason::PackageChanged { .. }) =
                 crate::build_step::due(&file.path, key, container).await
             else {
@@ -1610,6 +1632,8 @@ impl Project {
             }
             let error = match Box::pin(lifecycle::build_one(&ctx, key, cancel)).await {
                 None | Some(Ok(crate::build_step::Outcome::Built { .. })) => {
+                    // Until it starts again, a retried add or update restarts it.
+                    crate::build_step::mark_rebuilt(&file.path, key);
                     rebuilt.built.push(key.clone());
                     continue;
                 }
@@ -1632,44 +1656,21 @@ impl Project {
 
     /// The containers of `file` that run here on another build than their current one: one made
     /// from a package other than the one locked now (a rebuild an add or update left undone), or
-    /// one made since the container started, which no restart has picked up yet (rebuilt before a
-    /// cancel, or by `iii sandbox build`). A retried add or update finishes them (spec 5.3).
+    /// one an add or update rebuilt and did not restart, cancelled or failed
+    /// ([`crate::build_step::rebuilt_unrestarted`]). A retried add or update finishes them (spec
+    /// 5.3). A build made by `compose::build` or `iii sandbox build` is not one: its restart is the
+    /// user's (spec 3.3).
     pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
         let mut pending = Vec::new();
         for (key, container) in &file.containers {
             if self.is_running(key).await
-                && (crate::build_step::package_changed(&file.path, key, container).await
-                    || self.built_since_start(&file.path, key).await)
+                && (crate::build_step::rebuilt_unrestarted(&file.path, key)
+                    || crate::build_step::package_changed(&file.path, key, container).await)
             {
                 pending.push(key.clone());
             }
         }
         pending
-    }
-
-    /// Whether the `build.json` of container `key` was written after it started
-    /// (`ChildRecord::started_at`): a build its process does not run. A record an older daemon
-    /// wrote has whole seconds only, and counts its start at the end of that second.
-    async fn built_since_start(&self, compose_file: &Path, key: &str) -> bool {
-        let started = {
-            let inner = self.inner.lock().await;
-            let Some(record) = inner.state.containers.get(key) else {
-                return false;
-            };
-            record
-                .started_at_ms
-                .unwrap_or_else(|| record.started_at.saturating_mul(1000).saturating_add(999))
-        };
-        let at = crate::build_step::build_dir(compose_file, key).join("build.json");
-        let Ok(modified) = tokio::fs::metadata(&at)
-            .await
-            .and_then(|metadata| metadata.modified())
-        else {
-            return false;
-        };
-        modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .is_ok_and(|built| built.as_millis() > u128::from(started))
     }
 
     /// The VMs that go down with the adapters among `restart`: a VM ends with its adapter.
@@ -2929,7 +2930,6 @@ mod adapter_restart_tests {
                 }),
                 status: ChildStatus::Ready,
                 started_at: 0,
-                started_at_ms: None,
                 last_error: None,
             },
         );
@@ -3223,6 +3223,22 @@ mod adapter_restart_tests {
         assert_eq!(failed.len(), 1, "{failed:?}");
         assert_eq!(failed[0].1.code(), "BUILD_FAILED");
         assert_eq!(alive(dir.path(), "own"), Some(running));
+
+        // A remove under way: the rebuild gives up before it decides anything.
+        let stopping = crate::build_step::stop(&path, "own").await;
+        let failed = project
+            .rebuild_changed(&failing, &own, "update", &signal)
+            .await
+            .failed;
+        assert!(
+            matches!(
+                &failed[..],
+                [(key, crate::error::ComposeError::BuildFailed { code, .. })]
+                    if key == "own" && code == "BUILD_STOPPED"
+            ),
+            "{failed:?}"
+        );
+        drop(stopping);
         project.shutdown().await;
     }
 

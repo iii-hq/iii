@@ -1844,9 +1844,11 @@ impl Daemon {
 
         let path = path.as_path();
         // A build of a removed container would hold the mutation lock until it ends, and keep
-        // its VM from being destroyed (S509): it stops first.
+        // its VM from being destroyed (S509): it stops first. Until the remove ends, a start or
+        // rebuild of it that takes its build slot gives up.
+        let mut _stopping = Vec::with_capacity(workers.len());
         for worker in &workers {
-            crate::build_step::stop(path, worker).await;
+            _stopping.push(crate::build_step::stop(path, worker).await);
         }
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
@@ -4800,7 +4802,8 @@ containers:
 
     /// Spec 5.3 through `compose::add` and `compose::update`: a cancel during the rebuilds
     /// restarts nothing and answers `OPERATION_CANCELLED`, naming the container it already
-    /// rebuilt; the retry restarts both, that one included, though its build is current.
+    /// rebuilt; the retry restarts both, that one included: its package is current, but the add
+    /// or update that rebuilt it did not restart it.
     #[tokio::test]
     async fn a_cancelled_rebuild_restarts_nothing_and_a_retry_finishes_it() {
         for operation in ["add", "update"] {
@@ -4862,6 +4865,56 @@ containers:
                 })
                 .await;
         }
+    }
+
+    /// Spec 3.3 and 5.3: the restart after `compose::build` is the user's. An update that changes
+    /// nothing afterwards restarts nothing, and answers that all is up to date.
+    #[tokio::test]
+    async fn an_explicit_build_leaves_the_next_unchanged_update_restarting_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let cache = tempfile::tempdir().unwrap();
+        Box::pin(
+            crate::state::TEST_PACKAGE_CACHE.scope(cache.path().to_path_buf(), async {
+                let (server, path, daemon, project) =
+                    running_package_project(&root, &["web"]).await;
+                let before = pid_of(&root, "web");
+                let record = root.join(".build/web/build.json");
+                let first = std::fs::metadata(&record).unwrap().modified().unwrap();
+                let controller = crate::shutdown::ShutdownController::default();
+                let run = Box::pin(project.build(Some("web"), "build", &controller.signal()))
+                    .await
+                    .unwrap();
+                assert!(
+                    !run.cancelled && run.results[0].status == crate::lifecycle::BuildStatus::Built,
+                    "{:?}",
+                    run.results
+                );
+                assert!(std::fs::metadata(&record).unwrap().modified().unwrap() > first);
+
+                let (updated, lines) =
+                    crate::report::capture_daemon_lines(crate::registry::TEST_REGISTRY.scope(
+                        server.uri(),
+                        Box::pin(daemon.update(
+                            Some(&path),
+                            &["web@0.1.0".to_string()],
+                            "update".into(),
+                        )),
+                    ))
+                    .await;
+
+                let updated = serde_json::to_value(updated.unwrap()).unwrap();
+                assert_eq!(updated["status"], "ok", "{updated}");
+                assert_eq!(updated["changed"], false, "{updated}");
+                assert_eq!(pid_of(&root, "web"), before, "the update restarted web");
+                assert!(
+                    !lines.iter().any(|line| line.contains("current build")),
+                    "{lines:?}"
+                );
+                daemon.shutdown().await;
+            }),
+        )
+        .await;
     }
 
     /// Spec 5.3 through `compose::add` and `compose::update`: the rebuild for the new package runs

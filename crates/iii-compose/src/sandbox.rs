@@ -2285,7 +2285,6 @@ pub(crate) mod tests {
             vm: None,
             status: ChildStatus::Failed,
             started_at: 1,
-            started_at_ms: None,
             last_error: Some("container 'vm' was not ready after 60s".into()),
         };
         for mut records in [

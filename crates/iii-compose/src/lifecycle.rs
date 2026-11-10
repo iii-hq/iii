@@ -610,7 +610,6 @@ fn record_start_failure(
             vm: None,
             status: ChildStatus::Failed,
             started_at: crate::state::now_unix(),
-            started_at_ms: Some(crate::state::now_unix_ms()),
             last_error: None,
         });
     record.status = ChildStatus::Failed;
@@ -911,7 +910,8 @@ async fn remove_one_scoped(
     // at all. A failure only leaves the state behind, so the removal succeeds.
     // A build of it still running would keep its VM from being destroyed (S509), and write
     // into the build directory removed below.
-    crate::build_step::stop(&ctx.file.path, key).await;
+    // Held to the end of the remove: a start or rebuild of it that takes the slot gives up.
+    let _stopping = crate::build_step::stop(&ctx.file.path, key).await;
     let vm = records
         .remove(key)
         .and_then(|record| record.vm)
@@ -1387,6 +1387,14 @@ async fn start_one_until_shutdown(
     // Held to the end of the build: a build of it already running (a rebuild for a new package,
     // say) ends first and decides what is left to build, and none starts beside this one.
     let slot = wait_or_interrupt!(crate::build_step::slot(&ctx.file.path, key));
+    if slot.stopping() {
+        // Its remove is under way: it neither builds nor starts.
+        return Err(crate::build_step::Outcome::stopped()
+            .into_error(key)
+            .expect("a stopped build failed")
+            .into());
+    }
+    slot.starting();
     if let Some(reason) = crate::build_step::due(&ctx.file.path, key, container).await {
         let detail = reason.describe();
         report::daemon_line(&format!("{key}: {detail}"), false);
