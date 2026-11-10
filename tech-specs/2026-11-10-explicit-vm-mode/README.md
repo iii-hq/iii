@@ -575,7 +575,9 @@ Installing or updating a package copies the extracted package from the global ca
 (offline) does the same from the lock. `WorkerSource::Bundle.host_path` and `III_PACKAGE_DIR`
 point at that directory. A bundle that runs on the host (its `scripts.run` is a host command)
 runs `scripts.build` and `scripts.run` in `.workers/<container>/` and gets `III_PACKAGE_DIR`
-and `III_PACKAGE_NAME` too; binary packages keep today's working directory. The compose file's directory is already a host root of the adapter.
+and `III_PACKAGE_NAME` too; binary packages keep today's working directory. When Compose copies a container's package directory again (it was missing, or
+the record was unreadable), it removes that container's host-build `build.json`, so the next
+start runs the first build again (section 5.2). The compose file's directory is already a host root of the adapter.
 
 ### 7.6 What stays and what goes
 
@@ -665,8 +667,10 @@ under an upper that already holds files.
 - A bundle's code is in the image; its `.workers/<container>/` is the build's input only.
 - A `path://` worker's code keeps syncing live into the guest. `.build/`, `.workers/` and the
   dependency directories (`node_modules`, `.venv`, `target`, and the rest of the adapter's
-  ignore list) are excluded from the copy and the sync, including for `path://.` (lists in
-  `local_worker.rs` and `source_watcher.rs`). Adding a dependency: edit `package.json`, run
+  ignore list) are excluded from the copy and the sync, including for `path://.`. One list drives
+  the run's copy, the live sync and the names the boot cleanup keeps: the adapter's ignore
+  list plus `.iii`. The build's input copy uses the same list except `vendor`, which goes into
+  the build (Go vendors source there; an install in the build rewrites it otherwise). Adding a dependency: edit `package.json`, run
   `iii sandbox build <container>`, restart the container.
 
 ### 9.4 Env
