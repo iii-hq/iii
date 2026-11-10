@@ -57,7 +57,8 @@ class ObserverHandle:
         self._reason: ObserveReason | None = None
         self._listeners: list[StateListener] = []
         self._schedule = schedule
-        self._undelivered: deque[tuple[ObserverState, ObserveReason | None]] = deque()
+        # Each change with the listeners subscribed when it happened.
+        self._undelivered: deque[tuple[ObserverState, ObserveReason | None, tuple[StateListener, ...]]] = deque()
         self._delivering = False
         self._changed = threading.Condition()
         #: Sent on some connection: the engine may hold it, so disposing it needs an ``unobserve``.
@@ -155,15 +156,18 @@ class ObserverHandle:
             raise error
 
     def on_state_change(self, listener: StateListener) -> Callable[[], None]:
-        """Calls ``listener(state, reason)`` on every state change, in order,
-        on the SDK's callback thread. Returns the unsubscribe function."""
-        self._listeners.append(listener)
+        """Calls ``listener(state, reason)`` on every state change after it
+        subscribes, in order, on the SDK's callback thread. Returns the
+        unsubscribe function; a change still queued then is not delivered to it."""
+        with self._changed:
+            self._listeners.append(listener)
 
         def off() -> None:
-            try:
-                self._listeners.remove(listener)
-            except ValueError:
-                pass
+            with self._changed:
+                try:
+                    self._listeners.remove(listener)
+                except ValueError:
+                    pass
 
         return off
 
@@ -194,7 +198,12 @@ class ObserverHandle:
                 return
             # Delivered later, in order: a listener never runs on the read path
             # (or inside dispose()), so it may call the client freely.
-            self._undelivered.append((state, reason))
+            # The listeners now: one that subscribes after this change, before
+            # it is delivered, must not hear it.
+            listeners = tuple(self._listeners)
+            if not listeners:
+                return
+            self._undelivered.append((state, reason, listeners))
             if self._delivering:
                 return
             self._delivering = True
@@ -206,8 +215,11 @@ class ObserverHandle:
                 if not self._undelivered:
                     self._delivering = False
                     return
-                state, reason = self._undelivered.popleft()
-            for listener in list(self._listeners):
+                state, reason, listeners = self._undelivered.popleft()
+            for listener in listeners:
+                with self._changed:
+                    if listener not in self._listeners:
+                        continue
                 try:
                     listener(state, reason)
                 except Exception:

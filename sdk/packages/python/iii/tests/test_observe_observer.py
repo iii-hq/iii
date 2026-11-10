@@ -385,6 +385,27 @@ def test_a_state_listener_that_raises_does_not_stop_the_others(engine: FakeEngin
     wait_until(lambda: seen == ["active"], what="the second listener")
 
 
+def test_a_listener_hears_only_the_changes_made_after_it_subscribed() -> None:
+    from iii.observer_handle import ObserverHandle
+
+    queued: list[Any] = []  # the callback thread, run by hand
+    handle = ObserverHandle("x", {}, lambda handle: None, lambda: False, queued.append)
+    early: list[str] = []
+    handle.on_state_change(lambda state, reason: early.append(state))
+    handle._set_state("active")
+    late: list[str] = []
+    handle.on_state_change(lambda state, reason: late.append(state))  # before "active" is delivered
+    gone: list[str] = []
+    off = handle.on_state_change(lambda state, reason: gone.append(state))
+    handle._set_state("suspended")
+    off()  # before "suspended" is delivered
+    for deliver in queued:
+        deliver()
+    assert early == ["active", "suspended"]
+    assert late == ["suspended"]
+    assert gone == []
+
+
 def test_ready_from_the_sdk_loop_thread_is_refused(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     handle = client.observe({"function_id": "f::a"}, "t::a")
