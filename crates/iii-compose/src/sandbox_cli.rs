@@ -4,18 +4,20 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! `iii sandbox`: one Compose container's VM, run through its sandbox adapter.
+//! `iii sandbox`: one Compose container's VM, booted through its sandbox adapter.
 //!
-//! Compose starts `iii sandbox run` as the `scripts.run` of a container whose worker sets
-//! `runtime.base_image`, and hands it what it needs in the environment ([`Context`]). The command boots
-//! the VM through the adapter's `worker::*` functions, prints the guest's output as its own, stops
-//! the VM when it is asked to stop, and exits with the VM's code. Compose supervises it like any
-//! other process. Only a `path://` container can opt in so far: a package's `scripts.run` is
-//! refused, so nothing sets [`PACKAGE_DIR_ENV`] yet.
+//! Compose starts `iii sandbox run` as the `scripts.run` of a VM container (a registry bundle, or
+//! a `path://` worker whose manifest sets `runtime.base_image`), and hands it what it needs in the
+//! environment ([`Context`]). The command boots the image of the container's last build, which
+//! `build.json` in `III_BUILD_DIR` names, through the adapter's `worker::*` functions; nothing is
+//! installed at boot. It prints the guest's output as its own, stops the VM when it is asked to
+//! stop, and exits with the VM's code. Compose supervises it like any other process.
 
 use std::{
     collections::BTreeMap,
+    fmt,
     io::Write,
+    path::Path,
     process::ExitStatus,
     sync::{Arc, Mutex},
     time::Duration,
@@ -23,16 +25,17 @@ use std::{
 
 use iii_sandbox_contract::{
     self as contract, ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR,
-    FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
-    SandboxErrorCode, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STOP,
+    FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
+    SandboxErrorCode, WORKER_DESTROY, WORKER_LOGS, WORKER_START, WORKER_STOP, WorkerBuildRef,
     WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
-    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
-    WorkerStartResponse, WorkerStatus, WorkerStopRequest,
+    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStopRequest,
 };
 use iii_sdk::{IIIClient, InitOptions, WorkerIdentityMode, iii::WorkerMetadata, register_worker};
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
 
 use crate::{
+    build_record::{self, BuildRecord},
+    error::ComposeError,
     process::{DEFAULT_STOP_GRACE, Outcome},
     sandbox,
     state::VmRecord,
@@ -66,6 +69,32 @@ pub const STOP_TIMEOUT_ENV: &str = "III_STOP_TIMEOUT_MS";
 /// Exit code of a failure of this command itself, apart from the codes the guest exits with;
 /// `docker run` uses the same.
 pub const RUNNER_FAILED: i32 = 125;
+/// Exit code of a build that failed: the adapter refused or failed it, or it ran out of time.
+pub const BUILD_FAILED_EXIT: i32 = 1;
+/// Exit code of a build cancelled by SIGINT or SIGTERM, or by `compose::cancel` of its operation.
+pub const CANCELLED_EXIT: i32 = 130;
+/// How the last line of a failed `iii sandbox build` begins. The S-code or error code follows,
+/// then `: ` and the message, all on that one line: Compose reads it for `BUILD_FAILED`.
+pub const BUILD_FAILED_LINE: &str = "iii sandbox: build failed: ";
+
+/// The adapter does not advertise `worker.build`, or another feature this command needs.
+pub const SANDBOX_BUILD_UNSUPPORTED: &str = "SANDBOX_BUILD_UNSUPPORTED";
+/// `iii sandbox run` or `build` on Windows, where no adapter boots a VM.
+pub const SANDBOX_UNSUPPORTED_PLATFORM: &str = "SANDBOX_UNSUPPORTED_PLATFORM";
+/// `iii sandbox run` without a `build.json` that records an image in `III_BUILD_DIR`.
+pub const BUILD_MISSING: &str = "BUILD_MISSING";
+/// `iii sandbox build` ran for longer than `III_BUILD_TIMEOUT_MS`.
+pub const TIMED_OUT: &str = "TIMED_OUT";
+/// `iii sandbox build` was stopped by a signal, or its `compose::build` operation was cancelled.
+pub const BUILD_CANCELLED: &str = "BUILD_CANCELLED";
+/// The engine, the adapter or the daemon was not reached, or did not answer as it should.
+const ENGINE_CALL_FAILED: &str = "ENGINE_CALL_FAILED";
+/// A variable Compose hands this command is missing or malformed.
+const SANDBOX_ENV_INVALID: &str = "SANDBOX_ENV_INVALID";
+/// The adapter implements another major version of the sandbox contract.
+const SANDBOX_CONTRACT_UNSUPPORTED: &str = "SANDBOX_CONTRACT_UNSUPPORTED";
+/// Any other failure of `iii sandbox` itself.
+const SANDBOX_FAILED: &str = "SANDBOX_FAILED";
 
 const URL_ENV: &str = "III_URL";
 const WORKER_NAME_ENV: &str = "III_WORKER_NAME";
@@ -74,7 +103,7 @@ const PROJECT_TOKEN_ENV: &str = "III_SANDBOX_WORKER_TOKEN";
 
 /// Never forwarded into the guest, even when listed: this command's own inputs, the host's
 /// engine URL (the adapter gives the guest its own) and the project token.
-const NEVER_FORWARDED: [&str; 11] = [
+const NEVER_FORWARDED: [&str; 14] = [
     TOKEN_ENV,
     STATE_KEY_ENV,
     ADAPTER_ENV,
@@ -82,6 +111,9 @@ const NEVER_FORWARDED: [&str; 11] = [
     WORKER_DIR_ENV,
     PACKAGE_DIR_ENV,
     PACKAGE_NAME_ENV,
+    BUILD_DIR_ENV,
+    BUILD_COMPOSE_FILE_ENV,
+    BUILD_TIMEOUT_ENV,
     WORKER_ENV_KEYS_ENV,
     STOP_TIMEOUT_ENV,
     URL_ENV,
@@ -89,16 +121,20 @@ const NEVER_FORWARDED: [&str; 11] = [
 ];
 
 /// What this command needs from the adapter beyond contract 1.1: its own VM's token, a VM that
-/// stops once this command is gone, and a reattach that does not replay the log.
-const REQUIRED_FEATURES: [&str; 3] = [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END];
+/// stops once this command is gone and a reattach that does not replay the log (1.2), and the
+/// image `worker::build` writes, which `worker::start` boots (1.3).
+const REQUIRED_FEATURES: [&str; 4] = [
+    FEATURE_SCOPED_AUTH,
+    FEATURE_LEASE,
+    FEATURE_LOGS_FROM_END,
+    FEATURE_BUILD,
+];
 
 /// The connection's own name: never the container's, which belongs to the guest. A CLI command's
 /// marked name, because the engine keeps one live worker per plain name and one per container runs.
 const CLIENT_NAME: &str = "iii-cli:sandbox";
 /// How long the adapter may take to register `adapter::info` after it connects.
 const INFO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
-/// `worker::prepare` pulls the image: room for a large one.
-const PREPARE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// `worker::start` boots the VM; Compose's startup timeout bounds the guest's registration.
 const START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Every other call's budget.
@@ -118,11 +154,12 @@ pub struct SandboxCli {
 
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum SandboxCommand {
-    /// Boot this container's VM, or reattach to it, and stay with it until it exits. Stopping
-    /// this command stops the VM. Exits with the VM's code, 128+N when the VM ended on signal
-    /// N, or 125 when `iii sandbox` itself failed.
+    /// Boot this container's last build in its VM, or reattach to the VM, and stay with it until
+    /// it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM
+    /// ended on signal N, or 125 when `iii sandbox` itself failed (`BUILD_MISSING` without a
+    /// build).
     Run(RunArgs),
-    /// Remove this container's VM state: its disk, installed dependencies included.
+    /// Remove this container's VM state: the disk its worker writes its data to.
     Destroy,
 }
 
@@ -227,8 +264,9 @@ impl Context {
     }
 }
 
-const STARTED_BY_COMPOSE: &str = "`iii sandbox` runs as the `scripts.run` of a Compose container \
-                                  whose worker sets `runtime.base_image`";
+const STARTED_BY_COMPOSE: &str = "`iii sandbox` runs as the `scripts.build` and `scripts.run` of a \
+                                  Compose container in a VM: a registry bundle, or a `path://` \
+                                  worker whose manifest sets `runtime.base_image`";
 
 fn present<'a>(vars: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
     vars.get(name)
@@ -253,16 +291,81 @@ fn worker_env(vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Why `iii sandbox` failed: a stable code, what happened, and the exit code the command ends
+/// with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure {
+    pub(crate) code: String,
+    pub(crate) message: String,
+    /// [`RUNNER_FAILED`], [`BUILD_FAILED_EXIT`] or [`CANCELLED_EXIT`].
+    pub(crate) exit: i32,
+}
+
+impl Failure {
+    /// A failure of `iii sandbox` itself, not of what it runs: exit 125.
+    fn runner(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+            exit: RUNNER_FAILED,
+        }
+    }
+
+    /// Compose's own error, from `build.json` or the project's discovery: exit 125.
+    fn compose(error: &ComposeError) -> Self {
+        Self::runner(error.code(), error.to_string())
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+fn env_failure(message: String) -> Failure {
+    Failure::runner(SANDBOX_ENV_INVALID, message)
+}
+
+/// Refuses `run` and `build` where no adapter boots a VM: on Windows, where a bundle already
+/// fails at install with `BUNDLE_NEEDS_A_VM`.
+fn vm_platform(windows: bool) -> Result<(), Failure> {
+    if windows {
+        return Err(Failure::runner(
+            SANDBOX_UNSUPPORTED_PLATFORM,
+            "no sandbox adapter boots a VM on Windows; run this worker on the host by setting \
+             its scripts.build and scripts.run to host commands, or run the project on Linux \
+             or macOS",
+        ));
+    }
+    Ok(())
+}
+
+/// `build.json`, through [`build_record`] or a test's fake.
+pub(crate) trait Records: Send + Sync {
+    /// [`build_record::read`].
+    fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>>;
+}
+
+/// The project's own `build.json` files.
+pub(crate) struct BuildRecords;
+
+impl Records for BuildRecords {
+    fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>> {
+        build_record::read(build_dir)
+    }
+}
+
 /// Entry point behind `iii sandbox`. Returns the process exit code.
 pub async fn run(cli: SandboxCli) -> i32 {
     let vars = process_vars();
     let result = match cli.command {
-        SandboxCommand::Run(args) => run_command(&vars, args.command).await,
+        SandboxCommand::Run(args) => run_command(&vars, args.command, &BuildRecords).await,
         SandboxCommand::Destroy => destroy_command(&vars).await,
     };
-    result.unwrap_or_else(|message| {
-        eprintln!("iii sandbox: {message}");
-        RUNNER_FAILED
+    result.unwrap_or_else(|failure| {
+        eprintln!("iii sandbox: {failure}");
+        failure.exit
     })
 }
 
@@ -276,20 +379,73 @@ fn process_vars() -> BTreeMap<String, String> {
 async fn run_command(
     vars: &BTreeMap<String, String>,
     command: Option<String>,
-) -> Result<i32, String> {
-    let ctx = Context::from_vars(vars, command)?;
+    records: &dyn Records,
+) -> Result<i32, Failure> {
+    vm_platform(cfg!(windows))?;
+    let (ctx, build) = boot_plan(vars, command, records)?;
     // Before anything can boot: from here on neither signal ends this command by its default
     // action, whatever phase it comes in.
-    let shutdown = Shutdown::signals()
-        .map_err(|error| format!("cannot handle SIGTERM and SIGINT: {error}"))?;
+    let shutdown = Shutdown::signals().map_err(|error| {
+        Failure::runner(
+            SANDBOX_FAILED,
+            format!("cannot handle SIGTERM and SIGINT: {error}"),
+        )
+    })?;
     let client = connect(&ctx.target.engine_url);
-    let result = run_vm(&ctx, &client, &shutdown, Printer::stdio()).await;
+    let result = run_vm(&ctx, &build, &client, &shutdown, Printer::stdio()).await;
     client.shutdown_async().await;
     result.map(exit_code)
 }
 
-async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, String> {
-    let target = Target::from_vars(vars)?;
+/// What `iii sandbox run` boots: the container Compose hands over, and the image of its last
+/// build, as `build.json` in `III_BUILD_DIR` records it.
+fn boot_plan(
+    vars: &BTreeMap<String, String>,
+    command: Option<String>,
+    records: &dyn Records,
+) -> Result<(Context, WorkerBuildRef), Failure> {
+    let ctx = Context::from_vars(vars, command).map_err(env_failure)?;
+    let build_dir = required(vars, BUILD_DIR_ENV).map_err(env_failure)?;
+    let build_id = built_image(Path::new(&build_dir), &ctx.worker_name, records)?;
+    Ok((
+        ctx,
+        WorkerBuildRef {
+            build_id,
+            build_dir,
+        },
+    ))
+}
+
+/// The `build_id` of the image the container's last build wrote, as its `build.json` records it.
+fn built_image(
+    build_dir: &Path,
+    container: &str,
+    records: &dyn Records,
+) -> Result<String, Failure> {
+    let missing = |what: String| {
+        Failure::runner(
+            BUILD_MISSING,
+            format!("{what}; build it with `iii sandbox build {container}`"),
+        )
+    };
+    match records.read(build_dir) {
+        Err(error) => Err(Failure::compose(&error)),
+        Ok(None) => Err(missing(format!(
+            "{container} has no build: there is no build.json in {}",
+            build_dir.display()
+        ))),
+        Ok(Some(BuildRecord { image: None, .. })) => Err(missing(format!(
+            "{} records a host build of {container}, with no image to boot",
+            build_dir.join("build.json").display()
+        ))),
+        Ok(Some(BuildRecord {
+            image: Some(image), ..
+        })) => Ok(image.build_id),
+    }
+}
+
+async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, Failure> {
+    let target = Target::from_vars(vars).map_err(env_failure)?;
     let client = connect(&target.engine_url);
     let request = WorkerDestroyRequest {
         auth: target.token.clone(),
@@ -314,7 +470,7 @@ async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, String>
             println!("no VM state for {}", target.state_key);
             Ok(0)
         }
-        Err(error) => Err(unreachable_or("worker::destroy", &error, &target)),
+        Err(error) => Err(call_failure("worker::destroy", &error, &target)),
     }
 }
 
@@ -439,14 +595,15 @@ fn signalled(number: i32) -> ExitStatus {
     sandbox::vm_exit(None, Some(number))
 }
 
-/// Boots `ctx`'s VM, or reattaches to its live boot, and stays with it until it exits or
-/// `shutdown` resolves, which stops it. Resolves to the VM's end as a process status.
+/// Boots `build` in `ctx`'s VM, or reattaches to its live boot, and stays with it until it exits
+/// or `shutdown` resolves, which stops it. Resolves to the VM's end as a process status.
 pub(crate) async fn run_vm(
     ctx: &Context,
+    build: &WorkerBuildRef,
     client: &IIIClient,
     shutdown: &Shutdown,
     printer: Printer,
-) -> Result<ExitStatus, String> {
+) -> Result<ExitStatus, Failure> {
     let target = &ctx.target;
     let info = tokio::select! {
         biased;
@@ -455,25 +612,7 @@ pub(crate) async fn run_vm(
     };
     check_adapter(&info, &target.adapter)?;
 
-    let prepare = WorkerPrepareRequest {
-        auth: target.token.clone(),
-        source: ctx.source.clone(),
-        state_key: Some(target.state_key.clone()),
-    };
-    let prepared = tokio::select! {
-        biased;
-        (number, _) = shutdown.requested() => return Ok(signalled(number)),
-        prepared = sandbox::call::<WorkerPrepareResponse>(
-            client,
-            &target.adapter,
-            &target.adapter_namespace,
-            WORKER_PREPARE,
-            &prepare,
-            PREPARE_TIMEOUT,
-        ) => prepared,
-    };
-    prepared.map_err(|error| unreachable_or("worker::prepare", &error, target))?;
-
+    // The build is the guest's whole root: no `worker::prepare`, nothing installed at boot.
     let start = WorkerStartRequest {
         auth: target.token.clone(),
         state_key: target.state_key.clone(),
@@ -481,7 +620,7 @@ pub(crate) async fn run_vm(
         source: ctx.source.clone(),
         env: ctx.env.clone(),
         engine_url: target.engine_url.clone(),
-        build: None,
+        build: Some(build.clone()),
     };
     // A signal does not abandon the start: its reply names the instance to stop. One that does
     // not come before the stop deadline leaves the VM to the adapter's lease.
@@ -516,7 +655,16 @@ pub(crate) async fn run_vm(
             sandbox::live_instance(&error),
         ) {
             (Some(SandboxErrorCode::S502), Some(live)) => (live, true),
-            _ => return Err(unreachable_or("worker::start", &error, target)),
+            _ => {
+                let mut failure = call_failure("worker::start", &error, target);
+                if failure.code == SandboxErrorCode::S508.as_str() {
+                    failure.message.push_str(&format!(
+                        "; rebuild it with `iii sandbox build {}`",
+                        ctx.worker_name
+                    ));
+                }
+                return Err(failure);
+            }
         },
     };
     let vm = VmRecord {
@@ -537,7 +685,7 @@ pub(crate) async fn run_vm(
 
 /// `adapter::info`, asked again while the adapter has not registered it yet: the adapter starts
 /// before this container (`start_after`), but registers its functions a moment after it connects.
-async fn adapter_info(target: &Target, client: &IIIClient) -> Result<AdapterInfo, String> {
+async fn adapter_info(target: &Target, client: &IIIClient) -> Result<AdapterInfo, Failure> {
     let deadline = Instant::now() + INFO_WAIT;
     loop {
         let reply = sandbox::call::<AdapterInfo>(
@@ -555,48 +703,91 @@ async fn adapter_info(target: &Target, client: &IIIClient) -> Result<AdapterInfo
             {
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            reply => return reply.map_err(|error| unreachable_or("adapter::info", &error, target)),
+            reply => return reply.map_err(|error| call_failure("adapter::info", &error, target)),
         }
     }
 }
 
 /// Refuses an adapter this command cannot drive: another contract major, or one without the
-/// contract 1.2 features a container's own VM depends on.
-fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), String> {
+/// contract 1.2 and 1.3 features a container's own VM depends on.
+fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), Failure> {
     let version = &info.adapter_version;
     if info.contract.major != CONTRACT_MAJOR {
-        return Err(format!(
-            "{adapter} {version} implements sandbox contract {}.{}, but this iii needs \
-             {CONTRACT_MAJOR}.x",
-            info.contract.major, info.contract.minor
+        return Err(Failure::runner(
+            SANDBOX_CONTRACT_UNSUPPORTED,
+            format!(
+                "{adapter} {version} implements sandbox contract {}.{}, but this iii needs \
+                 {CONTRACT_MAJOR}.x",
+                info.contract.major, info.contract.minor
+            ),
         ));
     }
     let missing: Vec<&str> = REQUIRED_FEATURES
         .into_iter()
         .filter(|feature| !info.supports(feature))
         .collect();
-    if !missing.is_empty() {
-        return Err(format!(
-            "{adapter} {version} does not support {}, which this iii needs from sandbox \
-             contract 1.2. A package adapter moves to its newest release with: iii call \
+    if missing.is_empty() {
+        return Ok(());
+    }
+    // spec 6.1: an adapter offers a build only when it can boot one.
+    let legacy = if missing.contains(&FEATURE_BUILD) {
+        " An adapter offers worker.build only when it can boot a build: sandbox-libkrun does not \
+         in legacy mode (III_ROOTFS_MODE=legacy, or a build without an embedded iii-init)."
+    } else {
+        ""
+    };
+    Err(Failure::runner(
+        SANDBOX_BUILD_UNSUPPORTED,
+        format!(
+            "{adapter} {version} does not support {}, which this iii needs from sandbox contract \
+             1.3.{legacy} A package adapter moves to its newest release with: iii call \
              compose::update worker=<its container key>@latest; if its version does not change, \
              no release has them yet",
             missing.join(", ")
-        ));
-    }
-    Ok(())
+        ),
+    ))
 }
 
-/// A failed call, naming where the engine was looked for when it was not reached at all.
-fn unreachable_or(function: &str, error: &iii_sdk::Error, target: &Target) -> String {
-    let message = format!("{function}: {}", sandbox::spawn_failed_message(error));
-    match error {
-        iii_sdk::Error::Timeout | iii_sdk::Error::NotConnected => format!(
-            "{message}; is the engine at {} ({URL_ENV}) running, with {} connected?",
-            target.engine_url, target.adapter
-        ),
-        _ => message,
+/// A failed call to the adapter: its S-code and own words when it refused, else
+/// `ENGINE_CALL_FAILED`, naming where the engine was looked for when it was not reached at all.
+fn call_failure(function: &str, error: &iii_sdk::Error, target: &Target) -> Failure {
+    if let Some((code, words)) = refusal(error) {
+        return Failure::runner(&code, format!("{function}: {words}"));
     }
+    let message = format!("{function}: {error}");
+    Failure::runner(
+        ENGINE_CALL_FAILED,
+        match error {
+            iii_sdk::Error::Timeout | iii_sdk::Error::NotConnected => format!(
+                "{message}; is the engine at {} ({URL_ENV}) running, with {} connected?",
+                target.engine_url, target.adapter
+            ),
+            _ => message,
+        },
+    )
+}
+
+/// An adapter's S-code refusal as its code and its own words, with the docs link it names;
+/// `None` for anything else on the bus. The SDK carries it as `handler error: {json}`.
+fn refusal(error: &iii_sdk::Error) -> Option<(String, String)> {
+    let iii_sdk::Error::Remote { message, .. } = error else {
+        return None;
+    };
+    let code = contract::code_of(message)?;
+    let payload = message
+        .find('{')
+        .and_then(|at| serde_json::from_str::<serde_json::Value>(&message[at..]).ok());
+    let words = payload
+        .as_ref()
+        .and_then(|payload| {
+            let words = payload["message"].as_str()?;
+            Some(match payload["docs_url"].as_str() {
+                Some(docs) => format!("{words} ({docs})"),
+                None => words.to_string(),
+            })
+        })
+        .unwrap_or_else(|| message.clone());
+    Some((code.as_str().to_string(), words))
 }
 
 enum Tick {
@@ -612,7 +803,7 @@ async fn supervise(
     vm: &VmRecord,
     shutdown: &Shutdown,
     logs: &mut Logs,
-) -> Result<ExitStatus, String> {
+) -> Result<ExitStatus, Failure> {
     let token = &ctx.target.token;
     let mut unanswered_since: Option<Instant> = None;
     loop {
@@ -638,13 +829,16 @@ async fn supervise(
             Tick::Polled(Outcome::Unknown) => {
                 let since = *unanswered_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= LOST_AFTER {
-                    return Err(format!(
-                        "{} has not answered about VM {} instance {} for {}s; giving it up, as \
-                         the adapter's lease does",
-                        vm.adapter,
-                        vm.vm_id,
-                        vm.instance,
-                        LOST_AFTER.as_secs()
+                    return Err(Failure::runner(
+                        ENGINE_CALL_FAILED,
+                        format!(
+                            "{} has not answered about VM {} instance {} for {}s; giving it up, \
+                             as the adapter's lease does",
+                            vm.adapter,
+                            vm.vm_id,
+                            vm.instance,
+                            LOST_AFTER.as_secs()
+                        ),
                     ));
                 }
             }
@@ -817,9 +1011,13 @@ fn print_records(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::tests::{answered, fake_engine, refused};
+    use crate::build_record::{
+        BuildAdapter, BuildBaseImage, BuildContract, BuildImage, BuildSource,
+    };
+    use crate::sandbox::tests::{answered, fake_engine, fake_engine_url, refused};
     use iii_sandbox_contract::{ContractVersion, State};
     use serde_json::{Value, json};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn compose_vars() -> BTreeMap<String, String> {
@@ -831,9 +1029,13 @@ mod tests {
             (STATE_KEY_ENV, "9f2c1e"),
             (WORKER_NAME_ENV, "api"),
             (WORKER_DIR_ENV, "/work/api"),
+            (BUILD_DIR_ENV, "/work/.build/api"),
+            (BUILD_COMPOSE_FILE_ENV, "/work/worker-compose.yaml"),
+            (BUILD_TIMEOUT_ENV, "60000"),
             (
                 WORKER_ENV_KEYS_ENV,
-                "III_WORKER_NAME, API_KEY,III_SANDBOX_TOKEN,III_URL,III_SANDBOX_WORKER_TOKEN,UNSET",
+                "III_WORKER_NAME, API_KEY,III_SANDBOX_TOKEN,III_URL,III_SANDBOX_WORKER_TOKEN,UNSET,\
+                 III_BUILD_DIR,III_BUILD_COMPOSE_FILE,III_BUILD_TIMEOUT_MS",
             ),
             ("API_KEY", "k"),
             (PROJECT_TOKEN_ENV, "project"),
@@ -853,6 +1055,65 @@ mod tests {
         let mut vars = compose_vars();
         vars.insert(STOP_TIMEOUT_ENV.into(), ms.into());
         Context::from_vars(&vars, None).unwrap()
+    }
+
+    /// The build `compose_vars` names: what `iii sandbox run` boots.
+    fn booted() -> WorkerBuildRef {
+        WorkerBuildRef {
+            build_id: "sha256:7d41".into(),
+            build_dir: "/work/.build/api".into(),
+        }
+    }
+
+    /// A `build.json`, with an image when `build_id` is given.
+    fn record(build_id: Option<&str>) -> BuildRecord {
+        BuildRecord {
+            schema: build_record::SCHEMA,
+            container: "api".into(),
+            source: BuildSource::Path {
+                dir: "./api".into(),
+            },
+            command: "iii sandbox build".into(),
+            dependency_files: BTreeMap::new(),
+            image: build_id.map(|build_id| BuildImage {
+                file: "image.erofs".into(),
+                build_id: build_id.into(),
+                base_image: BuildBaseImage {
+                    declared: None,
+                    reference: "docker.io/iiidev/node:latest".into(),
+                    digest: None,
+                },
+                adapter: BuildAdapter {
+                    name: "sandbox-libkrun".into(),
+                    version: "0.4.0".into(),
+                },
+                contract: BuildContract { major: 1, minor: 3 },
+            }),
+            built_at: "2026-11-10T14:03:22Z".into(),
+        }
+    }
+
+    /// `build.json` in memory: what `read` returns, and every directory it was read from.
+    #[derive(Default)]
+    struct FakeRecords {
+        stored: Option<BuildRecord>,
+        read_from: Mutex<Vec<PathBuf>>,
+    }
+
+    impl FakeRecords {
+        fn holding(record: BuildRecord) -> Self {
+            Self {
+                stored: Some(record),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Records for FakeRecords {
+        fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>> {
+            self.read_from.lock().unwrap().push(build_dir.to_path_buf());
+            Ok(self.stored.clone())
+        }
     }
 
     /// A shutdown that never comes.
@@ -1111,11 +1372,19 @@ mod tests {
     }
 
     #[test]
-    fn an_adapter_without_the_1_2_features_is_refused() {
+    fn an_adapter_without_the_features_is_refused() {
         let mut adapter = info(&[]);
-        let error = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
-        assert!(error.contains(FEATURE_SCOPED_AUTH), "{error}");
-        assert!(error.contains("sandbox contract 1.2"), "{error}");
+        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_BUILD_UNSUPPORTED, RUNNER_FAILED)
+        );
+        let error = failure.message;
+        assert!(
+            error.contains(FEATURE_SCOPED_AUTH) && error.contains(FEATURE_BUILD),
+            "{error}"
+        );
+        assert!(error.contains("sandbox contract 1.3"), "{error}");
         // The adapter's name is not its container key, and only a package can move.
         assert!(
             error.contains("A package adapter moves")
@@ -1127,6 +1396,116 @@ mod tests {
         assert!(error.contains("no release has them yet"), "{error}");
         adapter.features = REQUIRED_FEATURES.iter().map(|f| f.to_string()).collect();
         assert!(check_adapter(&adapter, "sandbox-libkrun").is_ok());
+    }
+
+    /// A contract 1.2 adapter, or sandbox-libkrun in legacy mode: everything but the build.
+    #[test]
+    fn an_adapter_without_worker_build_is_refused_and_told_why() {
+        let adapter = info(&[FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]);
+        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        assert_eq!(failure.code, SANDBOX_BUILD_UNSUPPORTED);
+        assert!(
+            failure.message.contains("does not support worker.build,")
+                && failure.message.contains("III_ROOTFS_MODE=legacy"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn an_adapter_of_another_contract_major_is_refused() {
+        let mut adapter = info(&REQUIRED_FEATURES);
+        adapter.contract.major = CONTRACT_MAJOR + 1;
+        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        assert_eq!(failure.code, SANDBOX_CONTRACT_UNSUPPORTED);
+        assert_eq!(failure.exit, RUNNER_FAILED);
+    }
+
+    #[test]
+    fn windows_refuses_run_and_build() {
+        let failure = vm_platform(true).unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_UNSUPPORTED_PLATFORM, RUNNER_FAILED)
+        );
+        assert!(vm_platform(false).is_ok());
+    }
+
+    #[test]
+    fn run_boots_the_build_its_build_dir_records() {
+        let records = FakeRecords::holding(record(Some("sha256:7d41")));
+        let (ctx, build) = boot_plan(&compose_vars(), None, &records).unwrap();
+        assert_eq!(ctx.worker_name, "api");
+        assert_eq!(build.build_id, "sha256:7d41");
+        assert_eq!(build.build_dir, "/work/.build/api");
+        assert_eq!(
+            *records.read_from.lock().unwrap(),
+            [PathBuf::from("/work/.build/api")]
+        );
+    }
+
+    #[test]
+    fn run_without_a_build_is_build_missing() {
+        let failure = boot_plan(&compose_vars(), None, &FakeRecords::default()).unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (BUILD_MISSING, RUNNER_FAILED)
+        );
+        assert!(
+            failure.message.contains("/work/.build/api")
+                && failure.message.contains("iii sandbox build api"),
+            "{failure}"
+        );
+        // A host build records no image to boot.
+        let host = FakeRecords::holding(record(None));
+        let failure = boot_plan(&compose_vars(), None, &host).unwrap_err();
+        assert_eq!(failure.code, BUILD_MISSING);
+        assert!(failure.message.contains("host build"), "{failure}");
+    }
+
+    #[test]
+    fn run_without_a_build_dir_is_refused() {
+        let mut vars = compose_vars();
+        vars.remove(BUILD_DIR_ENV);
+        let failure = boot_plan(&vars, None, &FakeRecords::default()).unwrap_err();
+        assert_eq!(failure.code, SANDBOX_ENV_INVALID);
+        assert!(failure.message.contains(BUILD_DIR_ENV), "{failure}");
+    }
+
+    /// The command itself: without a build it exits 125 before it reaches the engine.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_without_a_build_exits_125_before_calling_anything() {
+        let (url, mut called) = fake_engine_url(adapter(|_, _| None)).await;
+        let mut vars = compose_vars();
+        vars.insert(URL_ENV.into(), url);
+        let failure = run_command(&vars, None, &FakeRecords::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (BUILD_MISSING, RUNNER_FAILED)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(calls(&mut called).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn run_is_refused_on_windows() {
+        let records = FakeRecords::holding(record(Some("sha256:7d41")));
+        let failure = run_command(&compose_vars(), None, &records)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, SANDBOX_UNSUPPORTED_PLATFORM);
+    }
+
+    /// The real `build_record::read`: a build directory without `build.json` holds no build.
+    #[test]
+    #[ignore = "needs KAN-281: build_record::read"]
+    fn a_build_dir_without_build_json_is_build_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let failure = built_image(dir.path(), "api", &BuildRecords).unwrap_err();
+        assert_eq!(failure.code, BUILD_MISSING);
     }
 
     /// The real handlers, in a subprocess so the test runner never handles a signal: a SIGTERM
@@ -1208,7 +1587,7 @@ mod tests {
         }))
         .await;
         let (printer, printed) = captured();
-        let status = run_vm(&context(), &client, &never(), printer)
+        let status = run_vm(&context(), &booted(), &client, &never(), printer)
             .await
             .unwrap();
         assert_eq!(status.code(), Some(3));
@@ -1217,8 +1596,16 @@ mod tests {
         assert_eq!(*printed.lock().unwrap(), ["stderr: no /dev/kvm"]);
 
         let calls = calls(&mut called);
-        assert_eq!(payload(&calls, "worker::prepare")["state_key"], "9f2c1e");
+        assert!(
+            payloads(&calls, "worker::prepare").is_empty(),
+            "a build boots as it is: {calls:?}"
+        );
         let start = payload(&calls, "worker::start");
+        assert_eq!(
+            start["build"],
+            json!({"build_id": "sha256:7d41", "build_dir": "/work/.build/api"})
+        );
+        assert_eq!(start["state_key"], "9f2c1e");
         assert_eq!(start["auth"], "scoped");
         assert_eq!(start["worker_name"], "api");
         assert_eq!(
@@ -1247,7 +1634,7 @@ mod tests {
         }))
         .await;
         let (printer, printed) = captured();
-        let status = run_vm(&context(), &client, &never(), printer)
+        let status = run_vm(&context(), &booted(), &client, &never(), printer)
             .await
             .unwrap();
         assert_eq!(status.code(), Some(0));
@@ -1285,7 +1672,7 @@ mod tests {
         let (client, mut called) = fake_engine(adapter(|_, _| None)).await;
         let shutdown = signal_after(Duration::from_millis(300), 15);
         let (printer, _) = captured();
-        let status = run_vm(&context(), &client, &shutdown, printer)
+        let status = run_vm(&context(), &booted(), &client, &shutdown, printer)
             .await
             .unwrap();
         assert_eq!(exit_code(status), exit_code_on_signal(15));
@@ -1296,10 +1683,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_signal_during_prepare_boots_nothing() {
+    async fn a_signal_while_the_adapter_answers_boots_nothing() {
         let (sender, shutdown) = Shutdown::manual();
         let (client, mut called) = fake_engine(adapter(move |suffix, _| {
-            (suffix == "worker::prepare").then(|| {
+            (suffix == "adapter::info").then(|| {
                 sender.send_replace(Some((15, Instant::now())));
                 json!(true)
             })
@@ -1307,7 +1694,7 @@ mod tests {
         .await;
         let (printer, _) = captured();
         let begun = Instant::now();
-        let status = run_vm(&context(), &client, &shutdown, printer)
+        let status = run_vm(&context(), &booted(), &client, &shutdown, printer)
             .await
             .unwrap();
         assert_eq!(exit_code(status), exit_code_on_signal(15));
@@ -1327,7 +1714,7 @@ mod tests {
         }))
         .await;
         let (printer, _) = captured();
-        let status = run_vm(&context(), &client, &shutdown, printer)
+        let status = run_vm(&context(), &booted(), &client, &shutdown, printer)
             .await
             .unwrap();
         assert_eq!(exit_code(status), exit_code_on_signal(15));
@@ -1343,7 +1730,9 @@ mod tests {
         let shutdown = signal_after(Duration::from_millis(200), 15);
         let (printer, _) = captured();
         let ctx = context_stopping_within("2000");
-        let status = run_vm(&ctx, &client, &shutdown, printer).await.unwrap();
+        let status = run_vm(&ctx, &booted(), &client, &shutdown, printer)
+            .await
+            .unwrap();
         let (_, signalled_at) = shutdown.requested().await;
         let took = signalled_at.elapsed();
         // The deadline is at 1800 ms: 200 ms of slack for the return path on a loaded runner.
@@ -1364,10 +1753,10 @@ mod tests {
         .await;
         let (printer, _) = captured();
         let begun = Instant::now();
-        let error = run_vm(&context(), &client, &never(), printer)
+        let error = run_vm(&context(), &booted(), &client, &never(), printer)
             .await
             .unwrap_err();
-        assert!(error.contains("has not answered"), "{error}");
+        assert!(error.message.contains("has not answered"), "{error}");
         assert!(begun.elapsed() < LOST_AFTER + Duration::from_secs(2));
     }
 
@@ -1378,13 +1767,60 @@ mod tests {
         }))
         .await;
         let (printer, _) = captured();
-        let error = run_vm(&context(), &client, &never(), printer)
+        let error = run_vm(&context(), &booted(), &client, &never(), printer)
             .await
             .unwrap_err();
-        assert!(error.contains("does not support"), "{error}");
+        assert!(error.message.contains("does not support"), "{error}");
         assert!(
             calls(&mut called).iter().all(|(f, _)| f == "adapter::info"),
             "nothing but adapter::info may be called"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_on_an_adapter_without_worker_build_boots_nothing() {
+        let (client, mut called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "adapter::info").then(|| {
+                answered(info(&[
+                    FEATURE_SCOPED_AUTH,
+                    FEATURE_LEASE,
+                    FEATURE_LOGS_FROM_END,
+                ]))
+            })
+        }))
+        .await;
+        let (printer, _) = captured();
+        let failure = run_vm(&context(), &booted(), &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_BUILD_UNSUPPORTED, RUNNER_FAILED)
+        );
+        assert!(
+            calls(&mut called).iter().all(|(f, _)| f == "adapter::info"),
+            "nothing but adapter::info may be called"
+        );
+    }
+
+    /// The adapter refuses a `build_id` that is not the image's: its code, and the way out.
+    #[tokio::test]
+    async fn a_build_mismatch_is_reported_with_the_rebuild() {
+        let (client, _called) = fake_engine(adapter(|suffix, _| {
+            (suffix == "worker::start").then(|| refused(SandboxErrorCode::S508, 1))
+        }))
+        .await;
+        let (printer, _) = captured();
+        let failure = run_vm(&context(), &booted(), &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "S508");
+        assert!(
+            failure.message.starts_with("worker::start: refused")
+                && failure
+                    .message
+                    .ends_with("rebuild it with `iii sandbox build api`"),
+            "{failure}"
         );
     }
 }
