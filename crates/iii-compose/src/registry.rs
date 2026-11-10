@@ -524,25 +524,13 @@ pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<Project
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(ComposeError::Io { path, source }),
     };
-    let packages: ProjectPackages = serde_json::from_slice(&bytes).map_err(|error| {
-        crate::build_record::invalid_data(
-            &path,
-            format!(
-                "not a valid {PROJECT_PACKAGES_FILE} ({error}); `iii compose build` rewrites it"
-            ),
-        )
-    })?;
-    if packages.schema != PROJECT_PACKAGES_SCHEMA {
-        return Err(crate::build_record::invalid_data(
-            &path,
-            format!(
-                "{PROJECT_PACKAGES_FILE} has schema {}, and this iii reads schema \
-                 {PROJECT_PACKAGES_SCHEMA}; `iii compose build` rewrites it",
-                packages.schema
-            ),
-        ));
-    }
-    Ok(Some(packages))
+    crate::build_record::parse_versioned(
+        &path,
+        &bytes,
+        PROJECT_PACKAGES_SCHEMA,
+        "`iii compose build` rewrites it",
+    )
+    .map(Some)
 }
 
 /// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes

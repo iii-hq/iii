@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ComposeError, Result};
@@ -152,8 +152,8 @@ pub enum Change {
 
 /// Reads `<build_dir>/build.json`; `None` when the container has no build yet.
 ///
-/// A `build.json.tmp` left by an interrupted write is not a build. A `build.json` that does not
-/// parse, or has another [`SCHEMA`], is an error that asks for a rebuild, which replaces it.
+/// A temporary file left by an interrupted write is not a build. A `build.json` of another
+/// [`SCHEMA`], or that does not parse, is an error that asks for a rebuild, which replaces it.
 // Wired by KAN-280 (build checks) and KAN-282 (`iii sandbox run`).
 pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
     let path = build_dir.join(BUILD_FILE);
@@ -162,26 +162,11 @@ pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(ComposeError::Io { path, source }),
     };
-    let record: BuildRecord = serde_json::from_slice(&bytes).map_err(|error| {
-        invalid_data(
-            &path,
-            format!("not a valid build.json ({error}); rebuild the container to replace it"),
-        )
-    })?;
-    if record.schema != SCHEMA {
-        return Err(invalid_data(
-            &path,
-            format!(
-                "build.json has schema {}, and this iii reads schema {SCHEMA}; rebuild the \
-                 container to replace it",
-                record.schema
-            ),
-        ));
-    }
-    Ok(Some(record))
+    parse_versioned(&path, &bytes, SCHEMA, "rebuild the container to replace it").map(Some)
 }
 
-/// Writes `<build_dir>/build.json` atomically: `build.json.tmp`, then a rename.
+/// Writes `<build_dir>/build.json` atomically: `build.json.tmp-<id>`, unique to the writer,
+/// then a rename.
 ///
 /// Creates `build_dir`, and the `.gitignore` of its `.build/` when there is none yet (spec
 /// 3.2). Only a parent named `.build` gets one: a `build_dir` elsewhere leaves its parent alone.
@@ -354,24 +339,66 @@ pub(crate) fn ignore_all(dir: &Path) -> Result<()> {
     }
 }
 
-/// Writes `path` through `<path>.tmp` and a rename, so a reader sees the old file or the new
-/// one, never a part. A crash leaves at most the `.tmp`, which the next write replaces.
+/// Writes `path` through a temporary file beside it and a rename, so a reader sees the old file
+/// or the new one, never a part. The temporary file, `<name>.tmp-<id>`, is unique to the writer:
+/// two writers of one file never write into the same one, and the last rename wins whole. A
+/// failed write removes it; a crash leaves it, and nothing reads it.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));
     let temporary = PathBuf::from(temporary);
-    let written = std::fs::File::create(&temporary).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
-    written.map_err(|source| ComposeError::Io {
-        path: temporary.clone(),
-        source,
-    })?;
-    std::fs::rename(&temporary, path).map_err(|source| ComposeError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    let written = std::fs::File::create_new(&temporary)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .map_err(|source| ComposeError::Io {
+            path: temporary.clone(),
+            source,
+        })
+        .and_then(|()| {
+            std::fs::rename(&temporary, path).map_err(|source| ComposeError::Io {
+                path: path.to_path_buf(),
+                source,
+            })
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// Parses a JSON file Compose wrote with a `schema`: the schema first, so a file of another one
+/// says so rather than failing on a field that schema changed, then the whole file. `fix` ends
+/// each message.
+pub(crate) fn parse_versioned<T: DeserializeOwned>(
+    path: &Path,
+    bytes: &[u8],
+    schema: u32,
+    fix: &str,
+) -> Result<T> {
+    #[derive(Deserialize)]
+    struct Versioned {
+        schema: u32,
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let invalid = |error: serde_json::Error| {
+        invalid_data(path, format!("not a valid {name} ({error}); {fix}"))
+    };
+    let found: Versioned = serde_json::from_slice(bytes).map_err(invalid)?;
+    if found.schema != schema {
+        return Err(invalid_data(
+            path,
+            format!(
+                "{name} has schema {}, and this iii reads schema {schema}; {fix}",
+                found.schema
+            ),
+        ));
+    }
+    serde_json::from_slice(bytes).map_err(invalid)
 }
 
 /// A file Compose wrote that it cannot read back, reported as an I/O error on `path`.
@@ -604,7 +631,7 @@ mod tests {
         write(&build, &record).unwrap();
 
         assert_eq!(read(&build).unwrap(), Some(record.clone()));
-        assert!(!build.join("build.json.tmp").exists());
+        assert_eq!(names(&build), ["build.json"], "no temporary file is left");
         let text = std::fs::read_to_string(build.join("build.json")).unwrap();
         assert!(text.ends_with("}\n"), "{text}");
         assert_eq!(
@@ -622,18 +649,57 @@ mod tests {
         assert_eq!(read(&build).unwrap(), Some(host));
     }
 
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn a_partial_temporary_file_is_not_a_build_and_the_next_write_replaces_it() {
+    fn a_partial_temporary_file_is_not_a_build_and_does_not_stop_a_write() {
         let dir = tempfile::tempdir().unwrap();
         let build = build_dir(dir.path(), "link");
-        // What a write interrupted before its rename leaves behind.
+        // What interrupted writes leave behind: this version's name, and the older fixed one.
+        write_file(
+            &build.join("build.json.tmp-0123"),
+            "{\"schema\": 1, \"conta",
+        );
         write_file(&build.join("build.json.tmp"), "{\"schema\": 1, \"conta");
         assert_eq!(read(&build).unwrap(), None);
 
         let record = vm_record(path_source("./link"), None);
         write(&build, &record).unwrap();
         assert_eq!(read(&build).unwrap(), Some(record));
-        assert!(!build.join("build.json.tmp").exists());
+        assert_eq!(
+            names(&build),
+            ["build.json", "build.json.tmp", "build.json.tmp-0123"]
+        );
+    }
+
+    #[test]
+    fn concurrent_writers_never_mix_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("build.json");
+        let bodies: Vec<String> = (0..8)
+            .map(|writer| format!("{writer}").repeat(64 * 1024))
+            .collect();
+        std::thread::scope(|scope| {
+            for body in &bodies {
+                let path = &path;
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        replace_file(path, body.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(bodies.contains(&written), "one writer's file, whole");
+        assert_eq!(names(dir.path()), ["build.json"]);
     }
 
     #[test]
@@ -651,9 +717,10 @@ mod tests {
         );
         assert!(error.to_string().contains("rebuild"), "{error}");
 
+        // A newer schema is named as such, even when its fields are not this one's.
         write_file(
             &build.join("build.json"),
-            &full.replace("\"schema\":1", "\"schema\":2"),
+            "{\"schema\": 2, \"container\": \"link\", \"inputs\": {}}",
         );
         let error = read(&build).unwrap_err();
         assert!(error.to_string().contains("schema 2"), "{error}");
@@ -725,6 +792,12 @@ mod tests {
         );
         let error = source(&file, "onboarding").unwrap_err();
         assert!(error.to_string().contains(".packages.json"), "{error}");
+        write_file(
+            &dir.path().join(".workers/.packages.json"),
+            "{\"schema\": 2, \"packages\": []}",
+        );
+        let error = source(&file, "onboarding").unwrap_err();
+        assert!(error.to_string().contains("schema 2"), "{error}");
     }
 
     #[test]
