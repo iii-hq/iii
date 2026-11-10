@@ -614,8 +614,15 @@ pub enum ComposeError {
     AddPlanStale { path: PathBuf, replans: u32 },
 
     /// `build` runs outside the daemon's mutation lock, so a file edited while
-    /// it prepared is not overwritten from its stale snapshot.
-    #[error("{} changed while build was preparing it; nothing was written. Run the build again.", .path.display())]
+    /// it prepared is not overwritten from its stale snapshot. The check runs
+    /// before the file and the lock are written and again before the packages
+    /// are materialized, so the message claims nothing about what was written:
+    /// each write is atomic, and the next build starts from what is on disk.
+    #[error(
+        "{} changed while build was preparing it, so the build stopped instead of working from \
+         a stale plan. Run the build again.",
+        .path.display()
+    )]
     BuildPlanStale { path: PathBuf },
 
     /// A relative `file=` that missed. The path is resolved by the daemon, in
