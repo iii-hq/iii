@@ -78,7 +78,8 @@ directory to the local worker.
 `link` runs in a microVM, and its `scripts` say so. `iii sandbox build` builds the worker's image
 into `.build/link/` on its first start, and `iii sandbox run` boots that image. `sandbox-libkrun` is
 the adapter that does both, so `link` names it in `start_after`. After you change the worker's
-dependencies, rebuild it with `iii sandbox build link`, then restart it. See
+dependencies, rebuild it with `iii sandbox build link`, then restart it with
+`iii call compose::restart worker=link`. See
 [Compose / VM workers](../../using-iii/compose#vm-workers).
 
 `state` uses an in-memory store by default, so every restart starts clean. That's what we want for
@@ -99,11 +100,11 @@ language or runtime.
 ```yaml iii.worker.yaml
 name: link
 runtime:
-  # Base OCI image used as the worker rootfs when virtualized.
+  # Base OCI image used as the worker rootfs. Override to pin a version.
   base_image: docker.io/iiidev/node:latest
 scripts:
-  install: "npm install"
-  start: "npm run start"
+  install: 'npm install'
+  start: 'npm run start'
 ```
 
 <Info>
@@ -235,6 +236,8 @@ with the engine. `--up` is a `iii compose` flag that starts the engine along wit
 ```bash
 iii compose --up
 ```
+
+The first start builds `link`'s image first, so it takes longer than the next ones.
 
 <Note>
   `iii compose --up` stays in the foreground. Press Ctrl+C in that terminal to stop the engine and

@@ -45,7 +45,8 @@ The new keys are `scripts.build`, `scripts.build_timeout`, and `scripts.run` on 
 In any project, with or without a VM worker, a container key is now also the name of its
 directories, `.build/<key>/` and `.workers/<key>/`. A key that is empty or blank, holds `/` or `\`,
 starts with `.`, or holds a NUL, such as `.internal` or `a/b`, loaded in 0.26 and now fails with
-`INVALID_CONTAINER_KEY`. Rename such keys before you upgrade.
+`INVALID_CONTAINER_KEY`. Rename such keys before the first run of the new release, and the
+`start_after` entries that name them.
 
 - **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.4 release (`^0.4`), the releases with
   `worker.build` (sandbox contract 1.3). A project whose only use of the adapter is ephemeral
@@ -90,10 +91,10 @@ VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
 2. Commit `worker-compose.yaml` and `worker-compose.lock`, as in
    [Commit the compose file first](#commit-the-compose-file-first).
 3. Upgrade iii.
-4. Rename any container key that starts with `.` or holds `/` or `\`, as in
-   [Compatibility](#compatibility). For each container that must stay on the host, edit its
-   `scripts` as in [Keep a worker on the host](#keep-a-worker-on-the-host). The rules are in
-   [How Compose rewrites a container](#how-compose-rewrites-a-container).
+4. Rename any container key that starts with `.` or holds `/` or `\`, and the `start_after` entries
+   that name it, as in [Compatibility](#compatibility). For each container that must stay on the
+   host, edit its `scripts` as in [Keep a worker on the host](#keep-a-worker-on-the-host). The rules
+   are in [How Compose rewrites a container](#how-compose-rewrites-a-container).
 5. If you declared the `sandbox-libkrun` container yourself (it has no `# added by compose::add`
    comment), set its `version` to `"^0.4"`. Compose updates a generated adapter container itself.
    See [Update the sandbox adapter](#update-the-sandbox-adapter).
@@ -380,7 +381,8 @@ log line Compose writes for VM workers is in [Compose / Log lines](../using-iii/
 - [ ] Stop the running 0.26 project
 - [ ] Commit `worker-compose.yaml` and `worker-compose.lock` before the first run of the new release
 - [ ] Upgrade iii
-- [ ] Rename container keys that start with `.` or hold `/` or `\`
+- [ ] Rename container keys that start with `.` or hold `/` or `\`, and the `start_after` entries
+      that name them
 - [ ] Declare `scripts.build` (`""` when there is nothing to build) on each `path://` worker with
       `runtime.base_image` that must stay on the host, and a host `scripts.run` on each bundle that
       must stay on the host
