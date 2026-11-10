@@ -759,7 +759,8 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
         std::path::PathBuf::from(std::env::var("III_COMPOSE_STATE_DIR").unwrap()).join("packages");
     let tmp = project_dir();
     let project = tmp.path();
-    // A project from before: a package directory nothing locks any more, and a build.
+    // A project from before: a directory Compose did not record, which it leaves alone, and a
+    // build.
     std::fs::create_dir_all(project.join(".workers/retired")).unwrap();
     std::fs::create_dir_all(project.join(".build/api")).unwrap();
 
@@ -784,9 +785,11 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
         listing(&workers, ""),
         [
             ".gitignore",
+            ".lock",
             ".packages.json",
             "kan281-queue",
-            "kan281-state"
+            "kan281-state",
+            "retired"
         ]
     );
     assert_eq!(
@@ -866,7 +869,13 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     iii_compose::build::build_frozen(&file).await.unwrap();
     assert_eq!(
         listing(&workers, ""),
-        [".gitignore", ".packages.json", "kan281-state"]
+        [
+            ".gitignore",
+            ".lock",
+            ".packages.json",
+            "kan281-state",
+            "retired"
+        ]
     );
     assert_eq!(
         std::fs::read_to_string(workers.join("kan281-state/lib/data.txt")).unwrap(),

@@ -303,15 +303,31 @@ pub fn changes(
 }
 
 /// `<compose dir>/.build/<container>`, the container's build directory.
+///
+/// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
 // Wired by KAN-280 (`III_BUILD_DIR`, `compose::build`).
 pub fn build_dir(compose_dir: &Path, container: &str) -> PathBuf {
     compose_dir.join(BUILDS_DIR).join(container)
 }
 
 /// `<compose dir>/.workers/<container>`, the container's package directory.
+///
+/// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
 // Wired by KAN-281 (`materialize_project`) and KAN-280 (`III_PACKAGE_DIR`).
 pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf {
     compose_dir.join(WORKERS_DIR).join(container)
+}
+
+/// Whether a container key can name its own directory in `.build/` and `.workers/`: one plain
+/// path component, not hidden, so it can neither leave them nor collide with Compose's own
+/// files there. The compose file does not check its keys for this, so every caller that joins a
+/// key into one of these directories ([`build_dir`], [`package_dir`]) checks it first.
+pub(crate) fn is_directory_name(container: &str) -> bool {
+    let mut components = Path::new(container).components();
+    !container.starts_with('.')
+        && !container.contains(['/', '\\'])
+        && matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
 }
 
 /// The directory of `compose_file`, where `.build/` and `.workers/` sit.
@@ -1001,5 +1017,15 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn only_a_plain_container_key_names_a_directory() {
+        for key in ["state", "sandbox-libkrun", "a.b", "my_worker"] {
+            assert!(is_directory_name(key), "{key}");
+        }
+        for key in ["", ".", "..", ".hidden", "a/b", "a\\b", "/abs", "../up"] {
+            assert!(!is_directory_name(key), "{key}");
+        }
     }
 }

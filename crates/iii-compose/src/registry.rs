@@ -533,24 +533,49 @@ pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<Project
     .map(Some)
 }
 
+/// The lock file in `.workers/` that one materialization holds at a time.
+const WORKERS_LOCK_FILE: &str = ".lock";
+
 /// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes
 /// the directories of containers no longer locked, rewrites `.workers/.packages.json`.
 ///
-/// A directory whose `.packages.json` entry matches the lock is left as it is, with whatever a
-/// host build wrote into it. Any other is replaced whole by a copy of the cache entry, made
-/// beside it and renamed into place; the cache entry is verified first, and downloaded again
-/// when it is missing or damaged. The cache itself is only read. A project with no package and
-/// no `.workers/` gets none.
+/// - One run at a time per project: the daemon and `iii compose build` both materialize, so a
+///   run holds `.workers/.lock` from its first change to its last.
+/// - A directory whose `.packages.json` entry matches the lock is left as it is, with whatever
+///   a host build wrote into it. Any other is replaced whole by a copy of the cache entry, made
+///   beside it and renamed into place; the cache entry is verified first, and downloaded again
+///   when it is missing or damaged. The cache itself is only read.
+/// - Before a directory is created or replaced, a host build recorded for its container
+///   (`.build/<container>/build.json` without `image`) is deleted: that build ran in the old
+///   directory, and its output goes with it, so the container gets its first build again (spec
+///   5.2). This holds for a package update too, which then logs as a first build. A VM build
+///   keeps its record: its image holds its own copy of the package.
+/// - Only what Compose made is removed: the directories `.packages.json` recorded for containers
+///   no longer locked, and the temporary copies an interrupted run left. Anything else in
+///   `.workers/` stays.
+/// - A project with no package and no `.workers/` gets none.
 // Wired by KAN-280 (`lifecycle.rs`) and KAN-281 (`build.rs`).
 pub async fn materialize_project(
     compose_dir: &Path,
     cache_root: &Path,
     lock: &PreparedLock,
 ) -> Result<()> {
+    materialize_project_checked(compose_dir, cache_root, lock, || Ok(())).await
+}
+
+/// [`materialize_project`], calling `check` before anything changes, once `.workers/.lock` is
+/// held: `iii compose build` makes sure there that the compose file and the lock it worked from
+/// are still the ones on disk, so a stale build never undoes the daemon's newer copy.
+pub(crate) async fn materialize_project_checked(
+    compose_dir: &Path,
+    cache_root: &Path,
+    lock: &PreparedLock,
+    check: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     let workers = compose_dir.join(crate::build_record::WORKERS_DIR);
     let mut wanted = BTreeMap::new();
     for (container, resolved) in lock.packages() {
-        if !is_directory_name(container) {
+        if !crate::build_record::is_directory_name(container) {
             return Err(ComposeError::Io {
                 path: workers.join(container),
                 source: std::io::Error::new(
@@ -565,36 +590,55 @@ pub async fn materialize_project(
         );
     }
     if wanted.is_empty() && std::fs::symlink_metadata(&workers).is_err() {
-        return Ok(());
+        return check();
     }
     crate::build_record::ignore_all(&workers)?;
+    let _guard = lock_exclusive(&workers.join(WORKERS_LOCK_FILE)).await?;
+    check()?;
 
-    // An unreadable record only costs copies: every directory is then made again.
-    let mut record = read_project_packages(compose_dir)
+    // An unreadable record only costs copies: every directory is then made again, and none is
+    // pruned, since none is known to be Compose's.
+    let previous = read_project_packages(compose_dir)
         .ok()
         .flatten()
         .unwrap_or_default();
-    record
+    let retired: std::collections::BTreeSet<String> = previous
         .containers
-        .retain(|container, _| wanted.contains_key(container));
-    let keep = wanted.keys().cloned().collect();
+        .keys()
+        .filter(|container| !wanted.contains_key(*container))
+        .cloned()
+        .collect();
     let pruned = workers.clone();
     crate::shutdown::blocking(workers.clone(), move |cancel| {
-        prune_packages(&pruned, &keep, &cancel)
+        prune_packages(&pruned, &retired, &cancel)
     })
     .await?;
 
+    // A directory that is gone takes its entry with it, so a failure below leaves no entry
+    // naming a package that is not on disk.
+    let mut record = ProjectPackages {
+        containers: previous
+            .containers
+            .into_iter()
+            .filter(|(container, _)| {
+                wanted.contains_key(container)
+                    && std::fs::symlink_metadata(workers.join(container))
+                        .is_ok_and(|metadata| metadata.is_dir())
+            })
+            .collect(),
+        ..ProjectPackages::default()
+    };
     let mut failure = None;
     for (container, (resolved, package)) in &wanted {
-        let present = std::fs::symlink_metadata(workers.join(container))
-            .is_ok_and(|metadata| metadata.is_dir());
-        if !present {
-            record.containers.remove(container);
-        } else if record.containers.get(container) == Some(package) {
+        if record.containers.get(container) == Some(package) {
             continue;
         }
         // On failure the previous directory is still in place, and so is its entry.
-        if let Err(error) = copy_package(container, resolved, cache_root, &workers).await {
+        let copied = match forget_host_build(compose_dir, container) {
+            Ok(()) => copy_package(container, resolved, cache_root, &workers).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = copied {
             failure = Some(error);
             break;
         }
@@ -607,37 +651,57 @@ pub async fn materialize_project(
     }
 }
 
-/// Whether a container key can name its own directory in `.workers/`: one plain path component,
-/// not hidden, so it can neither leave `.workers/` nor collide with Compose's own files.
-fn is_directory_name(container: &str) -> bool {
-    let mut components = Path::new(container).components();
-    !container.starts_with('.')
-        && !container.contains(['/', '\\'])
-        && matches!(components.next(), Some(std::path::Component::Normal(_)))
-        && components.next().is_none()
+/// Deletes `.build/<container>/build.json` when it records a host build: see
+/// [`materialize_project`]. No record, a VM build's, or one that does not parse (which already
+/// asks for a rebuild) is left alone.
+fn forget_host_build(compose_dir: &Path, container: &str) -> Result<()> {
+    let build = crate::build_record::build_dir(compose_dir, container);
+    let Ok(Some(record)) = crate::build_record::read(&build) else {
+        return Ok(());
+    };
+    if record.image.is_some() {
+        return Ok(());
+    }
+    let path = build.join(crate::build_record::BUILD_FILE);
+    match std::fs::remove_file(&path) {
+        Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+            Err(ComposeError::Io { path, source })
+        }
+        _ => Ok(()),
+    }
 }
 
-/// Removes every directory in `workers` that is not a locked container's: those of containers
-/// removed from the lock, and the staging copies an interrupted run left. Files, among them
-/// `.gitignore` and `.packages.json`, are left alone.
+/// Removes from `workers` what Compose made and no longer needs: the directories of `retired`
+/// containers, and the temporary copies of [`replace_directory`] an interrupted run left.
 fn prune_packages(
     workers: &Path,
-    keep: &std::collections::BTreeSet<String>,
+    retired: &std::collections::BTreeSet<String>,
     cancel: &crate::shutdown::BlockingCancellation,
 ) -> Result<()> {
     for entry in std::fs::read_dir(workers).map_err(io_error(workers))? {
         cancel.check(workers)?;
         let entry = entry.map_err(io_error(workers))?;
-        let path = entry.path();
-        let locked = entry
-            .file_name()
-            .to_str()
-            .is_some_and(|name| keep.contains(name));
-        if !locked && entry.file_type().map_err(io_error(&path))?.is_dir() {
-            std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if retired.contains(name) || is_temporary_copy(name) {
+            let path = entry.path();
+            remove_path(&path).map_err(io_error(&path))?;
         }
     }
     Ok(())
+}
+
+/// `.<container>.staging-<id>` or `.<container>.replaced-<id>`, the names
+/// [`replace_directory`] gives its temporary directories.
+fn is_temporary_copy(name: &str) -> bool {
+    name.strip_prefix('.')
+        .and_then(|rest| rest.rsplit_once('.'))
+        .is_some_and(|(container, suffix)| {
+            crate::build_record::is_directory_name(container)
+                && (suffix.starts_with("staging-") || suffix.starts_with("replaced-"))
+        })
 }
 
 /// Replaces `<workers>/<container>` with a copy of the package's cache entry.
@@ -1024,7 +1088,13 @@ async fn install_bundle(
 async fn lock_artifact(install_dir: &Path) -> Result<fslock::LockFile> {
     let mut path = install_dir.as_os_str().to_os_string();
     path.push(".lock");
-    let path = PathBuf::from(path);
+    lock_exclusive(&PathBuf::from(path)).await
+}
+
+/// Takes the exclusive lock of the file at `path`, creating it and its parent, and waits while
+/// another holder has it: in another process, or through another handle in this one.
+async fn lock_exclusive(path: &Path) -> Result<fslock::LockFile> {
+    let path = path.to_path_buf();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ComposeError::Io {
             path: parent.to_path_buf(),
@@ -2770,13 +2840,24 @@ mod tests {
         archive.into_inner().unwrap().finish().unwrap()
     }
 
-    /// Writes `worker-compose.yaml` and its lock for `packages` (container, version, archive)
-    /// beside a `path://` container, puts each archive in `cache` as an install would, and
-    /// prepares the lock as `--frozen` does: from the cache, without a registry.
+    /// [`locked_from`] a registry that cannot be reached.
     async fn locked(
         project: &Path,
         cache: &Path,
         packages: &[(&str, &str, &[u8])],
+    ) -> PreparedLock {
+        locked_from(project, cache, packages, "http://127.0.0.1:9").await
+    }
+
+    /// Writes `worker-compose.yaml` and its lock for `packages` (container, version, archive)
+    /// beside a `path://` container, puts each archive in `cache` as an install would, and
+    /// prepares the lock as `--frozen` does: from the cache, without a registry. Each artifact's
+    /// URL is `<server>/<container>-<version>`.
+    async fn locked_from(
+        project: &Path,
+        cache: &Path,
+        packages: &[(&str, &str, &[u8])],
+        server: &str,
     ) -> PreparedLock {
         let target = host_target();
         let mut compose = String::from("containers:\n  api:\n    worker: path://./api\n");
@@ -2793,7 +2874,7 @@ mod tests {
                     target.to_string(),
                     RegistryArtifact {
                         sha256: digest.clone(),
-                        url: "http://127.0.0.1:9/never-downloaded".to_string(),
+                        url: format!("{server}/{container}-{version}"),
                     },
                 )]),
                 default_config: None,
@@ -2892,7 +2973,7 @@ mod tests {
         let workers = project.path().join(".workers");
         assert_eq!(
             names(&workers),
-            [".gitignore", ".packages.json", "queue", "state"]
+            [".gitignore", ".lock", ".packages.json", "queue", "state"]
         );
         assert_eq!(
             std::fs::read_to_string(workers.join(".gitignore")).unwrap(),
@@ -2985,7 +3066,7 @@ mod tests {
         );
         assert_eq!(
             names(&workers),
-            [".gitignore", ".packages.json", "queue", "state"],
+            [".gitignore", ".lock", ".packages.json", "queue", "state"],
             "no staging or replaced directory is left"
         );
     }
@@ -3005,8 +3086,10 @@ mod tests {
         materialize_project(project.path(), cache.path(), &lock)
             .await
             .unwrap();
-        // What an interrupted copy leaves, and a file that is not Compose's.
+        // What an interrupted copy leaves, and what is not Compose's.
         std::fs::create_dir(workers.join(".state.staging-interrupted")).unwrap();
+        std::fs::create_dir(workers.join(".queue.replaced-interrupted")).unwrap();
+        std::fs::create_dir(workers.join("mine")).unwrap();
         std::fs::write(workers.join("notes.txt"), "mine").unwrap();
 
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
@@ -3016,7 +3099,14 @@ mod tests {
 
         assert_eq!(
             names(&workers),
-            [".gitignore", ".packages.json", "notes.txt", "state"]
+            [
+                ".gitignore",
+                ".lock",
+                ".packages.json",
+                "mine",
+                "notes.txt",
+                "state"
+            ]
         );
         assert_eq!(
             recorded(project.path())["containers"],
@@ -3030,7 +3120,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             names(&workers),
-            [".gitignore", ".packages.json", "notes.txt"]
+            [".gitignore", ".lock", ".packages.json", "mine", "notes.txt"]
         );
         assert_eq!(
             recorded(project.path()),
@@ -3078,13 +3168,313 @@ mod tests {
         assert!(!project.path().join(".workers").exists());
     }
 
-    #[test]
-    fn only_a_plain_container_key_names_a_package_directory() {
-        for key in ["state", "sandbox-libkrun", "a.b", "my_worker"] {
-            assert!(is_directory_name(key), "{key}");
+    /// The cache entry `lock` installs for `container`.
+    fn cache_entry(cache: &Path, lock: &PreparedLock, container: &str) -> PathBuf {
+        let (_, resolved) = lock.packages().find(|(key, _)| *key == container).unwrap();
+        let target = runnable_target(&resolved.artifacts);
+        let digest = resolved.artifacts[target].sha256.clone();
+        cache_install_dir(
+            &registry_cache_root(cache, resolved),
+            resolved,
+            target,
+            &digest,
+        )
+    }
+
+    /// A `build.json` for `container`: a VM build when `vm`, else a host build.
+    fn build_record(container: &str, vm: bool) -> crate::build_record::BuildRecord {
+        use crate::build_record::*;
+        BuildRecord {
+            schema: SCHEMA,
+            container: container.to_string(),
+            source: BuildSource::Package {
+                name: container.to_string(),
+                version: "1.0.0".to_string(),
+                sha256: "sha256:00".to_string(),
+            },
+            command: "npm ci".to_string(),
+            dependency_files: BTreeMap::new(),
+            image: vm.then(|| BuildImage {
+                file: "image.erofs".to_string(),
+                build_id: "sha256:7d41".to_string(),
+                base_image: BuildBaseImage {
+                    declared: None,
+                    reference: "docker.io/iiidev/node:latest".to_string(),
+                    digest: None,
+                },
+                adapter: BuildAdapter {
+                    name: "sandbox-libkrun".to_string(),
+                    version: "0.4.0".to_string(),
+                },
+                contract: BuildContract { major: 1, minor: 3 },
+            }),
+            built_at: "2026-11-10T14:03:22Z".to_string(),
         }
-        for key in ["", ".", "..", ".hidden", "a/b", "a\\b", "/abs", "../up"] {
-            assert!(!is_directory_name(key), "{key}");
+    }
+
+    /// Every `.packages.json` entry names a directory holding that package: what one run at a
+    /// time guarantees, whichever run went last.
+    fn assert_consistent(project: &Path, bodies: &[(&str, &str)]) {
+        let workers = project.join(".workers");
+        let record = recorded(project);
+        let containers = record["containers"].as_object().unwrap();
+        let mut directories: Vec<String> = names(&workers)
+            .into_iter()
+            .filter(|name| workers.join(name).is_dir())
+            .collect();
+        directories.sort();
+        assert_eq!(
+            directories,
+            containers.keys().cloned().collect::<Vec<_>>(),
+            "no temporary copy is left, and no directory goes unrecorded"
+        );
+        for (container, entry) in containers {
+            let version = entry["version"].as_str().unwrap();
+            let body = bodies
+                .iter()
+                .find(|(key, _)| *key == format!("{container}@{version}"))
+                .unwrap()
+                .1;
+            assert_eq!(
+                std::fs::read_to_string(workers.join(container).join("lib/data.txt")).unwrap(),
+                body,
+                "{container}"
+            );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_materializations_of_one_project_take_turns() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (state, updated, queue) = (
+            package_archive("state 1"),
+            package_archive("state 2"),
+            package_archive("queue 2"),
+        );
+        let first = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        let second = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.1.0", &updated)],
+        )
+        .await;
+        let bodies = [
+            ("state@1.0.0", "state 1"),
+            ("state@1.1.0", "state 2"),
+            ("queue@2.0.0", "queue 2"),
+        ];
+
+        for _ in 0..3 {
+            let runs = futures::future::join_all(
+                [&first, &second, &first, &second, &first]
+                    .map(|lock| materialize_project(project.path(), cache.path(), lock)),
+            )
+            .await;
+            for run in runs {
+                run.unwrap();
+            }
+            assert_consistent(project.path(), &bodies);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_leaves_workers_as_it_was() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        let before = tree(&workers);
+
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.1.0", &updated)],
+        )
+        .await;
+        let error = materialize_project_checked(project.path(), cache.path(), &lock, || {
+            Err(ComposeError::BuildPlanStale {
+                path: project.path().join("worker-compose.yaml"),
+            })
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert_eq!(tree(&workers), before);
+    }
+
+    #[tokio::test]
+    async fn a_new_package_directory_drops_the_host_build_made_in_the_old_one() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        let build = |container: &str| crate::build_record::build_dir(project.path(), container);
+        // `state` runs on the host, `queue` in a VM.
+        crate::build_record::write(&build("state"), &build_record("state", false)).unwrap();
+        crate::build_record::write(&build("queue"), &build_record("queue", true)).unwrap();
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(
+            build("state").join("build.json").is_file(),
+            "nothing copied"
+        );
+
+        for container in ["state", "queue"] {
+            std::fs::remove_dir_all(workers.join(container)).unwrap();
+        }
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::build_record::read(&build("state")).unwrap(),
+            None,
+            "the host build ran in the directory that is gone"
+        );
+        assert_eq!(
+            crate::build_record::read(&build("queue")).unwrap(),
+            Some(build_record("queue", true)),
+            "the image holds its own copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_damaged_cache_entry_that_cannot_be_fetched_keeps_the_previous_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (queue, updated, state) = (
+            package_archive("queue 1"),
+            package_archive("queue 2"),
+            package_archive("state 1"),
+        );
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("queue", "1.0.0", &queue), ("state", "1.0.0", &state)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        // `state` loses its directory, and `queue` comes before it.
+        std::fs::remove_dir_all(workers.join("state")).unwrap();
+
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("queue", "1.1.0", &updated), ("state", "1.0.0", &state)],
+        )
+        .await;
+        std::fs::write(
+            cache_entry(cache.path(), &lock, "queue").join("lib/data.txt"),
+            "damaged",
+        )
+        .unwrap();
+        let error = materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "PACKAGE_DOWNLOAD_FAILED", "{error}");
+        assert_eq!(
+            std::fs::read_to_string(workers.join("queue/lib/data.txt")).unwrap(),
+            "queue 1"
+        );
+        assert_eq!(
+            recorded(project.path())["containers"],
+            serde_json::json!({ "queue": { "name": "queue", "version": "1.0.0", "sha256": sha256_of(&queue) } }),
+            "the entry of the kept directory stays; none names the missing one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_damaged_cache_entry_is_fetched_again_and_copied() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let server = MockServer::start().await;
+        let state = package_archive("state 1");
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/state-1.0.0"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(state.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let lock = locked_from(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state)],
+            &server.uri(),
+        )
+        .await;
+        let entry = cache_entry(cache.path(), &lock, "state");
+        std::fs::write(entry.join("lib/data.txt"), "damaged").unwrap();
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        for copy in [project.path().join(".workers/state"), entry] {
+            assert_eq!(
+                std::fs::read_to_string(copy.join("lib/data.txt")).unwrap(),
+                "state 1"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_container_key_that_leaves_workers_is_refused_before_anything_changes() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let state = package_archive("state 1");
+        locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        // The same package, under a key that names a directory beside the project's.
+        for name in ["worker-compose.yaml", "worker-compose.lock"] {
+            let path = project.path().join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(text.matches("\n  state:\n").count(), 1, "{text}");
+            std::fs::write(&path, text.replace("\n  state:\n", "\n  ../x:\n")).unwrap();
+        }
+        let mut file =
+            crate::ComposeFile::load(project.path().join("worker-compose.yaml")).unwrap();
+        let lock = crate::lockfile::prepare_frozen(&mut file, cache.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            lock.packages().map(|(key, _)| key).collect::<Vec<_>>(),
+            ["../x"]
+        );
+
+        let error = materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "IO_ERROR");
+        assert!(
+            error.to_string().contains("cannot name a directory"),
+            "{error}"
+        );
+        assert!(!project.path().join(".workers").exists());
+        assert!(!project.path().join("x").exists());
     }
 }

@@ -56,6 +56,8 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         path: file.to_path_buf(),
         source,
     })?;
+    // The lock as this build found it, before anything read it.
+    let found_lock = read_if_present(&crate::lockfile::lock_path(file))?;
     let mut file = ComposeFile::load(file)?;
     let cache = StateStore::package_cache()?;
     let packages = file
@@ -141,8 +143,30 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         report::lock_changed(prepared.path(), !prepared.existed());
     }
     // `.workers/` follows the lock just written, under `--frozen` too (spec 7.5).
+    // The daemon materializes too, and may have changed the file or the lock
+    // since this build read them: checked again under `.workers/.lock`, every
+    // time, so a stale build never undoes the daemon's newer `.workers/`.
+    let left_lock = if prepared.changed() {
+        read_if_present(prepared.path())?
+    } else {
+        found_lock
+    };
+    let unchanged = || {
+        let current = std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+            path: file.path.clone(),
+            source,
+        })?;
+        if current != edited || read_if_present(prepared.path())? != left_lock {
+            return Err(ComposeError::BuildPlanStale {
+                path: file.path.clone(),
+            });
+        }
+        Ok(())
+    };
     let compose_dir = crate::build_record::compose_dir(&file.path);
-    if let Err(error) = registry::materialize_project(compose_dir, &cache, &prepared).await {
+    if let Err(error) =
+        registry::materialize_project_checked(compose_dir, &cache, &prepared, unchanged).await
+    {
         report::plan_done();
         report::summary_failed("build", error.code(), began.elapsed());
         return Err(error);
@@ -170,6 +194,18 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         downloaded,
         cached,
     })
+}
+
+/// The bytes of the file at `path`; `None` when there is none.
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 #[cfg(test)]
