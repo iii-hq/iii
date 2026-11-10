@@ -965,11 +965,23 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     let env = request["env"].as_object().unwrap();
     assert_eq!(env["APP_VAR"], "hello");
     assert_eq!(env["III_NAMESPACE"], NAMESPACE);
+    // The reserved contract the guest reads still reaches it (spec 9.4).
+    assert_eq!(env["III_WORKER_NAME"], "app");
+    assert!(
+        env["III_COMPOSE_FILE"]
+            .as_str()
+            .unwrap()
+            .ends_with("worker-compose.yaml")
+    );
+    // What `iii sandbox build` and `iii sandbox run` read never does (spec 8.3).
     for host_only in [
         "III_SANDBOX_TOKEN",
         "III_SANDBOX_WORKER_TOKEN",
         "III_URL",
         "HOME",
+        "III_BUILD_DIR",
+        "III_BUILD_TIMEOUT_MS",
+        "III_BUILD_COMPOSE_FILE",
     ] {
         assert!(
             !env.contains_key(host_only),
