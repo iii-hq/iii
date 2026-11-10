@@ -47,8 +47,8 @@ In 0.26, Compose decided by itself that a worker ran in a microVM: a registry `b
 
 The new keys are `scripts.build`, `scripts.build_timeout`, and `scripts.run` on a bundle.
 
-- **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.4 release (`^0.4`), the first releases
-  with `worker.build` (sandbox contract 1.3). A project whose only use of the adapter is ephemeral
+- **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.4 release (`^0.4`), the releases with
+  `worker.build` (sandbox contract 1.3). A project whose only use of the adapter is ephemeral
   sandboxes keeps its 0.3.x adapter.
 - **Docker.** Not required. The default adapter builds inside its own VM.
 - **Windows.** Unchanged: a bundle fails at install with `BUNDLE_NEEDS_A_VM`. `iii sandbox build`
@@ -85,39 +85,18 @@ VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
 
 ## Upgrade a project
 
-1. Commit `worker-compose.yaml` and `worker-compose.lock`, as in
+1. Stop the running project: `Ctrl^C` on `iii compose --up`, or `iii call compose::stop`.
+2. Commit `worker-compose.yaml` and `worker-compose.lock`, as in
    [Commit the compose file first](#commit-the-compose-file-first).
-2. Upgrade iii.
-3. Start the engine and the Compose daemon without `--up`, each in its own terminal. Bare
-   `iii compose` starts only the daemon, so nothing is rewritten yet:
-
-   ```bash
-   iii
-   ```
-
-   ```bash
-   iii compose
-   ```
-
-   Ask `compose::validate` which containers the next `up` rewrites. It never edits the file:
-
-   ```bash
-   iii call compose::validate file=./worker-compose.yaml
-   ```
-
-   ```text
-   migration due: <c>, <c>; the next up rewrites them
-   ```
-
-   Then stop the daemon and the engine with `Ctrl^C`.
-
-4. For each of those containers that must stay on the host, edit its `scripts` as in
-   [Keep a worker on the host](#keep-a-worker-on-the-host). Compose leaves it alone after that.
+3. Upgrade iii.
+4. For each container that must stay on the host, edit its `scripts` as in
+   [Keep a worker on the host](#keep-a-worker-on-the-host). The rules are in
+   [How Compose rewrites a container](#how-compose-rewrites-a-container).
 5. If you declared the `sandbox-libkrun` container yourself (it has no `# added by compose::add`
    comment), set its `version` to `"^0.4"`. Compose updates a generated adapter container itself.
    See [Update the sandbox adapter](#update-the-sandbox-adapter).
-6. Optional: rewrite the file without booting a VM, and review the result before the first boot.
-   `iii compose build` updates a generated adapter in the lock, rewrites the containers, and fills
+6. Preview the rewrite. `iii compose build` needs no engine and no daemon, and boots no VM. It
+   updates the generated adapter container and the lock, rewrites the containers, and fills
    `.workers/` from the lock. It does not run `scripts.build`:
 
    ```bash
@@ -125,14 +104,16 @@ VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
    git diff worker-compose.yaml worker-compose.lock
    ```
 
+   Move a container that was rewritten by mistake back to the host, as in
+   [Move a container back to the host](#move-a-container-back-to-the-host).
+
 7. Start the project once without `--frozen`:
 
    ```bash
    iii compose --up
    ```
 
-   If step 6 did not already do it, Compose updates the sandbox adapter it generated, rewrites each
-   container that 0.26 ran in a VM, and logs one line per container:
+   Compose rewrites any container that is still due, and logs one line per container:
 
    ```text
    <container>: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)
@@ -148,6 +129,23 @@ VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
    git diff worker-compose.yaml worker-compose.lock
    git commit -am "Move VM workers to the explicit VM mode"
    ```
+
+<Note>
+  If you already run `iii` and `iii compose` separately, `compose::validate` lists the containers
+  the next `up` rewrites, without editing the file:
+
+  ```bash
+  iii call compose::validate file=./worker-compose.yaml
+  ```
+
+  ```text
+  migration due: <c>, <c>; the next up rewrites them
+  ```
+
+  Run both in the project directory: the daemon resolves `file=` in its own working directory. `iii`
+  creates or uses a `config.yaml` there. The engine must listen on the `engine.url` of the compose
+  file, because the daemon connects to that address.
+</Note>
 
 If the stop or the build fails, the container fails with that error and the file stays migrated. The
 next `up` retries the start: the stop, the first build, and the run.
@@ -211,8 +209,8 @@ Compose also reads a 0.26 `state.json` that holds a `vm` record once: it stops t
 
 ## Keep a worker on the host
 
-A container that the file places on the host is not rewritten. Edit it before the first run of the
-new release.
+A container that the file places on the host is not rewritten. Edit it before the first
+`iii compose build` or `iii compose --up` of the new release.
 
 A `path://` whose manifest sets `runtime.base_image` stays on the host when it declares its own
 `scripts.build`, `""` when there is nothing to build:
@@ -232,6 +230,8 @@ A bundle stays on the host when its `scripts.run` is a host command. It runs `sc
 
 Both are edits of `scripts`, and later runs leave them alone, with or without a lock.
 
+### Move a container back to the host
+
 To move a container back to the host after Compose rewrote it, set `scripts.build` to the host build
 command, or `""`, and `scripts.run` to the host command. For a `path://` worker that 0.26 started
 with a `scripts.run` command, that command is the one inside `--command '...'`.
@@ -242,8 +242,10 @@ with a `scripts.run` command, that command is the one inside `--command '...'`.
 naming the containers and asking for one `iii compose --up` without `--frozen`. Under `--frozen`, an
 adapter outside `^0.4` fails with `SANDBOX_ADAPTER_TOO_OLD` too.
 
-Run `iii compose --up` once without `--frozen` where you can commit the result, commit
-`worker-compose.yaml` and `worker-compose.lock`, and keep `--frozen` in CI.
+Run `iii compose build` or `iii compose --up` once without `--frozen` where you can commit the
+result. `iii compose build` makes the migration commit without starting the project, as in step 6 of
+[Upgrade a project](#upgrade-a-project). Commit `worker-compose.yaml` and `worker-compose.lock`, and
+keep `--frozen` in CI.
 
 ## Update the sandbox adapter
 
@@ -357,15 +359,15 @@ log line Compose writes for VM workers is in [Compose / Log lines](../using-iii/
 
 ## Checklist
 
+- [ ] Stop the running 0.26 project
 - [ ] Commit `worker-compose.yaml` and `worker-compose.lock` before the first run of the new release
 - [ ] Upgrade iii
-- [ ] Start `iii` and `iii compose` without `--up`, run `compose::validate` to see which containers
-      the next `up` rewrites, then stop both
 - [ ] Declare `scripts.build` (`""` when there is nothing to build) on each `path://` worker with
       `runtime.base_image` that must stay on the host, and a host `scripts.run` on each bundle that
       must stay on the host
 - [ ] Set the `version` of a `sandbox-libkrun` container you declared yourself to `"^0.4"`
-- [ ] Optional: run `iii compose build` and review the rewritten file before the first boot
+- [ ] Run `iii compose build`, review `git diff`, and move back to the host any container rewritten
+      by mistake
 - [ ] Run `iii compose --up` once without `--frozen`, then review and commit the rewritten file and
       lock
 - [ ] Keep `--frozen` in CI only after that commit: a file still due fails with `VM_SCRIPTS_MISSING`
