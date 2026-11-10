@@ -667,6 +667,13 @@ Do not pass a `configuration` trigger's config as `args`. `configuration::on-upd
 change to any entry. Without the `input.event_type` filter, the target also runs when an entry is
 registered or deleted.
 
+A `configuration` event no longer carries `old_value` or `new_value`, since the values may hold
+secrets. The event names the entry that changed, and the target reads the current value with
+`configuration::get`. A filter on `input.new_value` or `input.old_value` fails with
+`INVALID_FILTER_PATH`. The functions that read or write a value (`configuration::get`, `set`,
+`register`, `ensure`, and `migrate`) refuse observers with `NOT_OBSERVABLE`; `configuration::list`
+and `schema` stay observable.
+
 A `durable:subscriber` target had 30 minutes per message. A `queue::on-message` target has
 `observers.activation_timeout_ms` (30 seconds by default), and a slower one fails the delivery with
 `TIMEOUT`, which retries the message and then dead-letters it. Raise it in the
@@ -1775,6 +1782,8 @@ output; on 0.26 that payload has no `output`.
       documentation instead
 - [ ] Move each `configuration` trigger's `configuration_id` and `event_types` to filters on
       `input.id` and `input.event_type`
+- [ ] Read a changed configuration value with `configuration::get` in targets that read
+      `new_value` or `old_value` from the event
 - [ ] Move `console:script`, `console:style`, and `console:module` registrations to observers of
       `ade::ui::asset`
 - [ ] Turn each `condition_function_id` into `filters`, or move the check into the target
