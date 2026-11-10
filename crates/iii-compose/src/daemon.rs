@@ -5746,6 +5746,35 @@ containers:
         daemon.shutdown().await;
     }
 
+    /// Runs `operation` until the compose file at `path` or its lock differs from before it, or
+    /// until it ends; `false` when neither happens in 120s. `persist_mutation` writes both files
+    /// without yielding, so once either is seen changed, both are written.
+    async fn until_written(path: &Path, operation: impl std::future::Future) -> bool {
+        let lock = crate::lockfile::lock_path(path);
+        let read = || {
+            (
+                std::fs::read_to_string(path).ok(),
+                std::fs::read_to_string(&lock).ok(),
+            )
+        };
+        let before = read();
+        // On the heap: an operation's future is too big for the test thread's stack.
+        let operation = Box::pin(operation);
+        let landed = async {
+            while read() == before {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            tokio::select! {
+                _ = operation => {}
+                () = landed => {}
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     /// Through the lock the real `compose::add`s write: an adapter asked for by
     /// name, before or after a VM generated it, outlives the last VM, whose
     /// removal would otherwise destroy its live sandboxes. One only a VM asked
@@ -5754,9 +5783,10 @@ containers:
     async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
         let uri = server.uri();
-        // Each edit is on disk long before its start gives up on the engine that
-        // is not listening, so it gets 10s, and the rows run at once.
-        let bound = std::time::Duration::from_secs(10);
+        // Each operation is followed until its edit lands, then dropped: what it does next waits
+        // on an engine that is not listening (an add takes 10 to 20s to give up, a remove 80s).
+        // A fixed 10s timer cut a slow add before its edit under a loaded suite. The rows run at
+        // once.
         futures::future::join_all(
             [
                 (&["iii-sandbox", "./vm"][..], true),
@@ -5778,27 +5808,29 @@ containers:
                         EnginePolicy::External,
                     );
                     for worker in adds {
-                        let _ = tokio::time::timeout(
-                            bound,
+                        let landed = until_written(
+                            &path,
                             crate::registry::TEST_REGISTRY.scope(
                                 uri.clone(),
                                 daemon.add(Some(&path), &[worker.to_string()], "add".into()),
                             ),
                         )
                         .await;
+                        assert!(landed, "{adds:?}: the add of {worker} wrote nothing");
                     }
                     let text = std::fs::read_to_string(&path).unwrap();
                     assert!(text.contains("sandbox-libkrun:"), "{adds:?}: {text}");
                     assert!(text.contains("vm:"), "{adds:?}: {text}");
 
-                    let _ = tokio::time::timeout(
-                        bound,
+                    let landed = until_written(
+                        &path,
                         crate::registry::TEST_REGISTRY.scope(
                             uri.clone(),
                             daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
                         ),
                     )
                     .await;
+                    assert!(landed, "{adds:?}: the removal wrote nothing");
                     let text = std::fs::read_to_string(&path).unwrap();
                     assert!(!text.contains("vm:"), "{adds:?}: {text}");
                     assert_eq!(text.contains("sandbox-libkrun:"), kept, "{adds:?}: {text}");
