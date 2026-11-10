@@ -4782,7 +4782,8 @@ containers:
         let daemon = connected_daemon("rebuild-package", pid_engine(root).await).await;
         let project = crate::registry::TEST_REGISTRY
             .scope(server.uri(), async {
-                let project = daemon.project(&path).await.unwrap();
+                // As `compose::up` starts it: `.workers/` is filled before the first build.
+                let project = daemon.prepare_start_project(&path, false).await.unwrap();
                 let up = project.up(None, "first".into()).await;
                 assert_eq!(up.status, OpStatus::Ok, "{up:?}");
                 project
@@ -5471,7 +5472,8 @@ containers:
     }
 
     /// A `--frozen` build writes nothing, so a file saved while it downloads
-    /// is kept and the build still succeeds.
+    /// is kept; the build then fails with `BUILD_PLAN_STALE` before it fills
+    /// `.workers/` from what it read (KAN-281, review B1).
     #[tokio::test]
     async fn a_frozen_build_keeps_an_edit_made_while_it_downloaded() {
         use crate::state::TEST_PACKAGE_CACHE;
@@ -5504,10 +5506,11 @@ containers:
             .mount(&server)
             .await;
 
-        TEST_PACKAGE_CACHE
+        let error = TEST_PACKAGE_CACHE
             .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
             .await
-            .unwrap();
+            .unwrap_err();
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 

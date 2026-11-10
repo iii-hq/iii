@@ -3570,15 +3570,16 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
         let state = package_archive("state 1");
         locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
-        // The same package, under a key that names a directory beside the project's.
-        for name in ["worker-compose.yaml", "worker-compose.lock"] {
-            let path = project.path().join(name);
-            let text = std::fs::read_to_string(&path).unwrap();
-            assert_eq!(text.matches("\n  state:\n").count(), 1, "{text}");
-            std::fs::write(&path, text.replace("\n  state:\n", "\n  ../x:\n")).unwrap();
-        }
+        // The same package, under a key that names a directory beside the project's. Loading
+        // refuses that key (INVALID_CONTAINER_KEY), so it is renamed after the load.
+        let lock_path = project.path().join("worker-compose.lock");
+        let text = std::fs::read_to_string(&lock_path).unwrap();
+        assert_eq!(text.matches("\n  state:\n").count(), 1, "{text}");
+        std::fs::write(&lock_path, text.replace("\n  state:\n", "\n  ../x:\n")).unwrap();
         let mut file =
             crate::ComposeFile::load(project.path().join("worker-compose.yaml")).unwrap();
+        let state = file.containers.shift_remove("state").unwrap();
+        file.containers.insert("../x".to_string(), state);
         let lock = crate::lockfile::prepare_frozen(&mut file, cache.path())
             .await
             .unwrap();
