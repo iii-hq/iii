@@ -610,6 +610,7 @@ fn record_start_failure(
             vm: None,
             status: ChildStatus::Failed,
             started_at: crate::state::now_unix(),
+            started_at_ms: Some(crate::state::now_unix_ms()),
             last_error: None,
         });
     record.status = ChildStatus::Failed;
@@ -1383,9 +1384,9 @@ async fn start_one_until_shutdown(
 
     // Its first build, or a rebuild for a new package (spec 5.2, 5.3), with its own timeout:
     // `startup_timeout` starts with the run. `pre_run` still runs after it.
-    // A build of it already running (a rebuild for a new package, say) ends first, and decides
-    // what is left to build.
-    wait_or_interrupt!(crate::build_step::wait_for(&ctx.file.path, key));
+    // Held to the end of the build: a build of it already running (a rebuild for a new package,
+    // say) ends first and decides what is left to build, and none starts beside this one.
+    let slot = wait_or_interrupt!(crate::build_step::slot(&ctx.file.path, key));
     if let Some(reason) = crate::build_step::due(&ctx.file.path, key, container).await {
         let detail = reason.describe();
         report::daemon_line(&format!("{key}: {detail}"), false);
@@ -1412,6 +1413,7 @@ async fn start_one_until_shutdown(
             return Err(error.into());
         }
     }
+    drop(slot);
 
     if let Some(script) = &container.scripts.pre_run {
         report::starting(key, "running pre-run hook");

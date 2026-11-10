@@ -94,6 +94,10 @@ pub struct ChildRecord {
     pub status: ChildStatus,
     /// Seconds since the unix epoch, for `compose::status` output.
     pub started_at: u64,
+    /// The same start in milliseconds, which tells a build made since it apart (spec 5.3).
+    /// Absent from a record an older daemon wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -117,6 +121,7 @@ impl ChildRecord {
             vm: None,
             status,
             started_at: now_unix(),
+            started_at_ms: Some(now_unix_ms()),
             last_error: None,
         }
     }
@@ -414,6 +419,14 @@ pub(crate) fn now_unix() -> u64 {
         .unwrap_or_default()
 }
 
+/// [`now_unix`] in milliseconds.
+pub(crate) fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod reconcile_tests {
     use super::{ChildRecord, ChildStatus, Reconciliation, reconcile};
@@ -449,6 +462,7 @@ mod reconcile_tests {
             vm: None,
             status: ChildStatus::Failed,
             started_at: 1,
+            started_at_ms: None,
             last_error: Some("container 'mailer' was not ready after 2s".into()),
         };
         assert_eq!(reconcile(&never_ran), Reconciliation::Stopped);
@@ -501,6 +515,7 @@ mod reconcile_tests {
             }),
             status: ChildStatus::Ready,
             started_at: 1,
+            started_at_ms: None,
             last_error: None,
         };
         let text = serde_json::to_string(&record).unwrap();

@@ -1050,13 +1050,10 @@ impl Project {
     /// containers. Existing containers whose declarations changed are
     /// restarted in place; then the normal idempotent `up` path starts only
     /// declarations that are not already running.
-    /// The VMs in `keep` are left as they run even when their adapter restarts: their rebuild
-    /// for a new package failed, and they stay on their old build (spec 5.3).
     pub async fn reconcile_file(
         &self,
         file: ComposeFile,
         restart: &[String],
-        keep: &[String],
         operation_id: String,
     ) -> (Vec<OpResult>, OpResult, bool) {
         let package_cache = self.package_cache();
@@ -1067,8 +1064,7 @@ impl Project {
             let mut current = self.file.write().await;
             *current = file;
         }
-        let mut vms = self.vms_hosted_by_any(&inner, restart).await;
-        vms.retain(|vm| !keep.contains(vm));
+        let vms = self.vms_hosted_by_any(&inner, restart).await;
         let Inner {
             children, state, ..
         } = &mut *inner;
@@ -1511,6 +1507,10 @@ impl Project {
                 results.push(lifecycle::BuildResult::skipped(&key));
                 continue;
             }
+            // Held to the end of the build: no start or rebuild of it builds beside this one.
+            let Some(_slot) = cancel.run(crate::build_step::slot(&file.path, &key)).await else {
+                break;
+            };
             emit("building", "running scripts.build".to_string()).await;
             let result = match lifecycle::build_one(&ctx, &key, cancel).await {
                 None => lifecycle::BuildResult::skipped(&key),
@@ -1588,8 +1588,12 @@ impl Project {
             if !self.is_running(key).await {
                 continue;
             }
-            // A build of it already running ends first, and leaves what is still due.
-            crate::build_step::wait_for(&file.path, key).await;
+            // Held to the end of its build: one already running ends first, and leaves what is
+            // still due. The wait gives way to a cancel.
+            let Some(_slot) = cancel.run(crate::build_step::slot(&file.path, key)).await else {
+                rebuilt.cancelled = true;
+                break;
+            };
             let Some(reason @ crate::build_step::Reason::PackageChanged { .. }) =
                 crate::build_step::due(&file.path, key, container).await
             else {
@@ -1626,18 +1630,52 @@ impl Project {
         rebuilt
     }
 
-    /// The containers of `file` that run here on the build of a package other than the one
-    /// locked now: what an add or update whose rebuild failed left undone (spec 5.3).
+    /// The containers of `file` that run here on another build than their current one: one made
+    /// from a package other than the one locked now (a rebuild an add or update left undone), or
+    /// one made since the container started, which no restart has picked up yet (rebuilt before a
+    /// cancel, or by `iii sandbox build`). A retried add or update finishes them (spec 5.3).
     pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
         let mut pending = Vec::new();
         for (key, container) in &file.containers {
             if self.is_running(key).await
-                && crate::build_step::package_changed(&file.path, key, container).await
+                && (crate::build_step::package_changed(&file.path, key, container).await
+                    || self.built_since_start(&file.path, key).await)
             {
                 pending.push(key.clone());
             }
         }
         pending
+    }
+
+    /// Whether the `build.json` of container `key` was written after it started
+    /// (`ChildRecord::started_at`): a build its process does not run. A record an older daemon
+    /// wrote has whole seconds only, and counts its start at the end of that second.
+    async fn built_since_start(&self, compose_file: &Path, key: &str) -> bool {
+        let started = {
+            let inner = self.inner.lock().await;
+            let Some(record) = inner.state.containers.get(key) else {
+                return false;
+            };
+            record
+                .started_at_ms
+                .unwrap_or_else(|| record.started_at.saturating_mul(1000).saturating_add(999))
+        };
+        let at = crate::build_step::build_dir(compose_file, key).join("build.json");
+        let Ok(modified) = tokio::fs::metadata(&at)
+            .await
+            .and_then(|metadata| metadata.modified())
+        else {
+            return false;
+        };
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|built| built.as_millis() > u128::from(started))
+    }
+
+    /// The VMs that go down with the adapters among `restart`: a VM ends with its adapter.
+    pub(crate) async fn vms_restarting_with(&self, restart: &[String]) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        self.vms_hosted_by_any(&inner, restart).await
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -2398,12 +2436,7 @@ mod adapter_restart_tests {
 
         let (restarted, up, interrupted) = fixture
             .project
-            .reconcile_file(
-                fixture.file(),
-                &["web".into(), "sb".into()],
-                &[],
-                "add".into(),
-            )
+            .reconcile_file(fixture.file(), &["web".into(), "sb".into()], "add".into())
             .await;
         fixture.supervise().await;
 
@@ -2896,6 +2929,7 @@ mod adapter_restart_tests {
                 }),
                 status: ChildStatus::Ready,
                 started_at: 0,
+                started_at_ms: None,
                 last_error: None,
             },
         );
@@ -3190,6 +3224,23 @@ mod adapter_restart_tests {
         assert_eq!(failed[0].1.code(), "BUILD_FAILED");
         assert_eq!(alive(dir.path(), "own"), Some(running));
         project.shutdown().await;
+    }
+
+    /// The VMs that go down with a restarting adapter: what an add cannot keep on its old build.
+    #[tokio::test]
+    async fn the_vms_of_a_restarting_adapter_restart_with_it() {
+        let fixture = fixture("").await;
+        let mut vms = fixture.project.vms_restarting_with(&["sb".into()]).await;
+        vms.sort();
+        assert_eq!(vms, ["vm", "web"]);
+        assert!(
+            fixture
+                .project
+                .vms_restarting_with(&["api".into(), "vm".into()])
+                .await
+                .is_empty()
+        );
+        fixture.project.shutdown().await;
     }
 
     /// A cancel stops a rebuild at once and builds nothing more: the container keeps running on

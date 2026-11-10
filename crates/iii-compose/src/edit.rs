@@ -849,20 +849,42 @@ fn is_container_head(line: &str, indent: &str) -> bool {
 
 /// `line` without its trailing YAML comment, whose `#` must follow whitespace:
 /// `key:#text` is a plain scalar.
-/// A `#` inside single or double quotes is text, not a comment.
+/// A `#` inside a quoted scalar is text, not a comment. A quote opens one only where a scalar
+/// starts (at the start of the line, or after whitespace, `:`, `,`, `[` or `{`): the `'` of
+/// `echo it's ok` is text. `''` is a quote inside single quotes, and `\` escapes inside double ones.
 fn without_comment(line: &str) -> &str {
-    let (mut single, mut double, mut escaped) = (false, false, false);
-    for (at, c) in line.char_indices() {
-        match c {
-            _ if escaped => escaped = false,
-            '\\' if double => escaped = true,
-            '\'' if !double => single = !single,
-            '"' if !single => double = !double,
-            '#' if !single && !double && line[..at].ends_with([' ', '\t']) => {
-                return &line[..at];
+    let mut quote: Option<char> = None;
+    let mut previous: Option<char> = None;
+    let mut chars = line.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match quote {
+            Some('"') => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
             }
-            _ => {}
+            None => match c {
+                '\'' | '"' if previous.is_none_or(|previous| " \t:,[{".contains(previous)) => {
+                    quote = Some(c);
+                }
+                '#' if previous.is_some_and(|previous| previous == ' ' || previous == '\t') => {
+                    return &line[..at];
+                }
+                _ => {}
+            },
         }
+        previous = Some(c);
     }
     line
 }
@@ -2082,6 +2104,25 @@ containers:
             r#"run: "echo #1"  "#
         );
         assert_eq!(without_comment("run: 'it''s #1'"), "run: 'it''s #1'");
+        assert_eq!(
+            without_comment("run: {a: 'b #1', c: d}  # e"),
+            "run: {a: 'b #1', c: d}  "
+        );
+        // An apostrophe inside a plain scalar opens no quote.
+        let line = "  api: {worker: path://./api, scripts: {run: echo it's ok}}  # api";
+        assert_eq!(
+            without_comment(line),
+            "  api: {worker: path://./api, scripts: {run: echo it's ok}}  "
+        );
+        let rewrite = explicit_vm_mode(&format!("containers:\n{line}\n"), "api", "sb")
+            .unwrap()
+            .unwrap();
+        assert!(rewrite.text.contains("# api"), "{}", rewrite.text);
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        assert_eq!(
+            parsed["containers"]["api"]["scripts"]["run"].as_str(),
+            Some("iii sandbox run --command 'echo it'\\''s ok'")
+        );
         let text = "containers:\n  api: {worker: path://./api, scripts: {run: \"echo #1\"}}\n";
         let rewrite = explicit_vm_mode(text, "api", "sb").unwrap().unwrap();
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();

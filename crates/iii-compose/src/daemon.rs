@@ -1299,20 +1299,23 @@ impl Daemon {
             .filter(|key| prepared.package_changed(key))
             .cloned()
             .collect();
+        // A VM ends with its adapter: one whose adapter restarts here cannot stay on its old build.
+        let cascaded = project.vms_restarting_with(&restart).await;
         let rebuilt = Box::pin(self.rebuild_changed_packages(
             &project,
             &current,
             &changed,
             "add",
             &operation_id,
+            &cascaded,
         ))
         .await?;
-        let keep: Vec<String> = rebuilt.failed.iter().map(|(key, _)| key.clone()).collect();
-        restart.retain(|key| !keep.contains(key));
+        let unbuilt_keys: Vec<String> = rebuilt.failed.iter().map(|(key, _)| key.clone()).collect();
+        restart.retain(|key| !unbuilt_keys.contains(key));
         let unbuilt = Self::rebuild_failures(&rebuilt.failed, &operation_id);
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
-            .reconcile_file(current, &restart, &keep, operation_id)
+            .reconcile_file(current, &restart, operation_id)
             .await;
         if interrupted {
             return Err(ComposeError::OperationCancelled {
@@ -1757,6 +1760,7 @@ impl Daemon {
                 &changed,
                 "update",
                 &operation_id,
+                &[],
             ))
             .await?;
             if !rebuilt.failed.is_empty() {
@@ -1900,6 +1904,8 @@ impl Daemon {
             removal_order.push(key);
         }
 
+        // Read before anything is removed: a remove that removed answers no error of its own.
+        let package_cache = crate::state::StateStore::package_cache()?;
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
@@ -1911,7 +1917,6 @@ impl Daemon {
             .await;
         // Its `.workers/<container>/` goes with its lock entry once it is stopped and its VM
         // destroyed (spec 3.3).
-        let package_cache = crate::state::StateStore::package_cache()?;
         if let Err(error) =
             crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await
         {
@@ -2052,9 +2057,11 @@ impl Daemon {
 
     /// Spec 5.3 for an `operation` (`add` or `update`) that changed packages: rebuilds `keys` while
     /// they run on their old build. A cancel of the operation builds nothing more and restarts
-    /// nothing (`OPERATION_CANCELLED`). Each failure says that the file and the lock already name
-    /// the new version and how to finish, naming for an update the rebuilt containers its
-    /// failure leaves without their restart.
+    /// nothing (`OPERATION_CANCELLED`), naming what it already rebuilt. Each failure says that the
+    /// file and the lock already name the new version and how to finish, naming for an update the
+    /// rebuilt containers its failure leaves without their restart. A VM of `cascaded` goes down
+    /// with its adapter, which this operation restarts, so its failure says it could not stay on
+    /// its old build.
     async fn rebuild_changed_packages(
         &self,
         project: &Project,
@@ -2062,13 +2069,21 @@ impl Daemon {
         keys: &[String],
         operation: &str,
         operation_id: &str,
+        cascaded: &[String],
     ) -> Result<crate::lifecycle::Rebuilt> {
         let cancel = self.cancellation(operation_id);
         let mut rebuilt =
             Box::pin(project.rebuild_changed(file, keys, operation_id, &cancel)).await;
         if rebuilt.cancelled {
-            return Err(ComposeError::OperationCancelled {
+            if rebuilt.built.is_empty() {
+                return Err(ComposeError::OperationCancelled {
+                    operation_id: operation_id.to_string(),
+                });
+            }
+            return Err(ComposeError::RebuildCancelled {
                 operation_id: operation_id.to_string(),
+                operation: operation.to_string(),
+                rebuilt: rebuilt.built,
             });
         }
         let waiting = (operation == "update" && !rebuilt.failed.is_empty())
@@ -2079,11 +2094,22 @@ impl Daemon {
                 ComposeError::BuildFailed { code, message, .. } => (code.clone(), message.clone()),
                 other => (other.code().to_string(), other.to_string()),
             };
-            let mut retry = format!(
-                "The file and the lock already name its new version, and it keeps running on its \
-                 previous build: retry the {operation}, or run `iii sandbox build {key}` then \
-                 `iii call compose::restart worker={key}`, to finish it."
+            let finish = format!(
+                "retry the {operation}, or run `iii sandbox build {key}` then `iii call \
+                 compose::restart worker={key}`, to finish it."
             );
+            let mut retry = if cascaded.contains(key) {
+                format!(
+                    "The file and the lock already name its new version. It could not stay on its \
+                     previous build: its adapter restarts in this {operation}, and its VM ends \
+                     with it, so it starts again and builds then. Fix its build, then {finish}"
+                )
+            } else {
+                format!(
+                    "The file and the lock already name its new version, and it keeps running on \
+                     its previous build: {finish}"
+                )
+            };
             if let Some(waiting) = &waiting {
                 retry.push_str(&format!(
                     " Rebuilt, and not restarted because of it: {waiting}."
@@ -2110,10 +2136,11 @@ impl Daemon {
             .collect()
     }
 
-    /// An add or update retried after its rebuild failed: the file and the lock are unchanged,
-    /// but containers still run the build of their previous package. They are rebuilt, then
-    /// restarted: an update restarts the project, an add those containers. `None` when nothing
-    /// is left to finish. The caller holds the mutation lock.
+    /// An add or update retried after its rebuild failed or was cancelled: the file and the lock
+    /// are unchanged, but containers do not run their current build yet
+    /// ([`Project::pending_rebuilds`]). What still needs it is rebuilt, then restarted: an update
+    /// restarts the project once every rebuild succeeded, an add the containers whose rebuild did.
+    /// `None` when nothing is left to finish. The caller holds the mutation lock.
     #[allow(clippy::too_many_arguments)]
     async fn finish_pending_rebuilds(
         &self,
@@ -2135,29 +2162,38 @@ impl Daemon {
         }
         crate::report::daemon_line(
             &format!(
-                "{}: still on the build of their previous package; rebuilding to finish the \
-                 {operation}",
+                "{}: not yet running their current build; finishing the {operation}",
                 pending.join(", ")
             ),
             false,
         );
+        let cascaded = if operation == "update" {
+            Vec::new()
+        } else {
+            project.vms_restarting_with(&pending).await
+        };
         let rebuilt = Box::pin(self.rebuild_changed_packages(
             &project,
             &current,
             &pending,
             operation,
             operation_id,
+            &cascaded,
         ))
         .await?;
-        if !rebuilt.failed.is_empty() {
-            let results = Self::rebuild_failures(&rebuilt.failed, operation_id);
+        let unbuilt = Self::rebuild_failures(&rebuilt.failed, operation_id);
+        let restart: Vec<String> = pending
+            .into_iter()
+            .filter(|key| !rebuilt.failed.iter().any(|(failed, _)| failed == key))
+            .collect();
+        if (operation == "update" && !unbuilt.is_empty()) || restart.is_empty() {
             return Ok(Some(MutationOutcome::from_operations(
                 OpStatus::Failed,
                 false,
                 primary,
                 Some(requested),
                 version,
-                results.iter(),
+                unbuilt.iter(),
             )));
         }
         if operation == "update" {
@@ -2171,19 +2207,15 @@ impl Daemon {
                 [&down, &up].into_iter(),
             )));
         }
-        let (restarted, up, interrupted) = Box::pin(project.reconcile_file(
-            current,
-            &rebuilt.built,
-            &[],
-            operation_id.to_string(),
-        ))
-        .await;
+        let (restarted, up, interrupted) =
+            Box::pin(project.reconcile_file(current, &restart, operation_id.to_string())).await;
         if interrupted {
             return Err(ComposeError::OperationCancelled {
                 operation_id: operation_id.to_string(),
             });
         }
-        let status = if up.status == OpStatus::Failed
+        let status = if !unbuilt.is_empty()
+            || up.status == OpStatus::Failed
             || restarted
                 .iter()
                 .any(|result| result.status == OpStatus::Failed)
@@ -2198,7 +2230,10 @@ impl Daemon {
             primary,
             Some(requested),
             version,
-            restarted.iter().chain(std::iter::once(&up)),
+            unbuilt
+                .iter()
+                .chain(restarted.iter())
+                .chain(std::iter::once(&up)),
         )))
     }
 
@@ -4671,20 +4706,23 @@ containers:
         daemon
     }
 
-    /// A host bundle `web` locked at 0.1.0 and running on a stand-in engine, whose build fails
-    /// while `<root>/fail` exists, with the registry that serves any version of it.
+    /// Host bundles `keys`, each locked at 0.1.0 and running on a stand-in engine, with the
+    /// registry that serves any version of them. The build of `<key>` fails while
+    /// `<root>/fail-<key>` exists; while `<root>/slow` does, the first build passes and the next
+    /// one hangs, touching `<root>/building`.
     async fn running_package_project(
         root: &Path,
+        keys: &[&str],
     ) -> (wiremock::MockServer, PathBuf, Arc<Daemon>, Arc<Project>) {
         use sha2::{Digest, Sha256};
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
         // Each version its own archive: an unchanged digest is an unchanged package.
-        let bundle = |version: &str| {
+        let bundle = |name: &str, version: &str| {
             archive_of(
                 crate::registry::BUNDLE_MANIFEST,
                 0o644,
-                format!("name: web\n# {version}\n").as_bytes(),
+                format!("name: {name}\n# {version}\n").as_bytes(),
             )
         };
         let server = MockServer::start().await;
@@ -4693,44 +4731,50 @@ containers:
             .and(matchers::path("/resolve"))
             .respond_with(move |request: &wiremock::Request| {
                 let asked: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let name = asked["worker"].as_str().unwrap().to_string();
                 let version = asked["version"]
                     .as_str()
                     .filter(|version| semver::Version::parse(version).is_ok())
                     .unwrap_or("0.2.0")
                     .to_string();
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({ "graph": [{
-                    "name": asked["worker"], "version": version, "type": "bundle",
-                    "archive_url": format!("{uri}/bundle/{version}"),
-                    "sha256": hex::encode(Sha256::digest(bundle(&version))),
+                    "name": name, "version": version, "type": "bundle",
+                    "archive_url": format!("{uri}/bundle/{name}/{version}"),
+                    "sha256": hex::encode(Sha256::digest(bundle(&name, &version))),
                 }]}))
             })
             .mount(&server)
             .await;
-        for version in ["0.1.0", "0.2.0"] {
-            Mock::given(matchers::method("GET"))
-                .and(matchers::path(format!("/bundle/{version}")))
-                .respond_with(ResponseTemplate::new(200).set_body_bytes(bundle(version)))
-                .mount(&server)
-                .await;
+        let (mut containers, mut locked) = (String::new(), String::new());
+        for key in keys {
+            for version in ["0.1.0", "0.2.0"] {
+                Mock::given(matchers::method("GET"))
+                    .and(matchers::path(format!("/bundle/{key}/{version}")))
+                    .respond_with(ResponseTemplate::new(200).set_body_bytes(bundle(key, version)))
+                    .mount(&server)
+                    .await;
+            }
+            std::fs::create_dir(root.join(key)).unwrap();
+            containers.push_str(&format!(
+                "  {key}:\n    worker: package://api.workers.iii.dev/{key}\n    version: \"0.1.0\"\n    scripts:\n      build: 'test ! -e {root}/fail-{key} && if test -e {root}/slow; then if test -e {root}/first; then touch {root}/building; sleep 30; else touch {root}/first; fi; fi'\n      run: echo $$$$ > {root}/{key}/pid; exec sleep 60\n",
+                root = root.display()
+            ));
+            locked.push_str(&format!(
+                "  {key}:\n    worker: package://api.workers.iii.dev/{key}\n    requested: 0.1.0\n    resolved:\n      name: {key}\n      version: 0.1.0\n      type: bundle\n      artifacts:\n        {}:\n          url: {}/bundle/{key}/0.1.0\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                server.uri(),
+                hex::encode(Sha256::digest(bundle(key, "0.1.0")))
+            ));
         }
-        std::fs::create_dir(root.join("web")).unwrap();
         let path = root.join("worker-compose.yaml");
         std::fs::write(
             &path,
-            format!(
-                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  web:\n    worker: package://api.workers.iii.dev/web\n    version: \"0.1.0\"\n    scripts:\n      build: test ! -e {root}/fail\n      run: echo $$$$ > {root}/web/pid; exec sleep 60\n",
-                root = root.display()
-            ),
+            format!("startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n{containers}"),
         )
         .unwrap();
         std::fs::write(
             crate::lockfile::lock_path(&path),
-            format!(
-                "version: 1\ncontainers:\n  web:\n    worker: package://api.workers.iii.dev/web\n    requested: 0.1.0\n    resolved:\n      name: web\n      version: 0.1.0\n      type: bundle\n      artifacts:\n        {}:\n          url: {}/bundle/0.1.0\n          sha256: \"{}\"\n",
-                crate::registry::host_targets()[0],
-                server.uri(),
-                hex::encode(Sha256::digest(bundle("0.1.0")))
-            ),
+            format!("version: 1\ncontainers:\n{locked}"),
         )
         .unwrap();
         let daemon = connected_daemon("rebuild-package", pid_engine(root).await).await;
@@ -4745,13 +4789,79 @@ containers:
         (server, path, daemon, project)
     }
 
-    /// The pid `web` runs as, once it runs.
-    fn web_pid(root: &Path) -> u32 {
-        std::fs::read_to_string(root.join("web/pid"))
+    /// The pid container `key` runs as, once it runs.
+    fn pid_of(root: &Path, key: &str) -> u32 {
+        std::fs::read_to_string(root.join(key).join("pid"))
             .unwrap()
             .trim()
             .parse()
             .unwrap()
+    }
+
+    /// Spec 5.3 through `compose::add` and `compose::update`: a cancel during the rebuilds
+    /// restarts nothing and answers `OPERATION_CANCELLED`, naming the container it already
+    /// rebuilt; the retry restarts both, that one included, though its build is current.
+    #[tokio::test]
+    async fn a_cancelled_rebuild_restarts_nothing_and_a_retry_finishes_it() {
+        for operation in ["add", "update"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let cache = tempfile::tempdir().unwrap();
+            crate::state::TEST_PACKAGE_CACHE
+                .scope(cache.path().to_path_buf(), async {
+                    let (server, path, daemon, _project) =
+                        running_package_project(&root, &["web", "job"]).await;
+                    let call = |operation_id: String| {
+                        let (daemon, path) = (Arc::clone(&daemon), path.clone());
+                        let workers = vec!["web@0.2.0".to_string(), "job@0.2.0".to_string()];
+                        crate::registry::TEST_REGISTRY.scope(server.uri(), async move {
+                            match operation {
+                                "add" => daemon.add(Some(&path), &workers, operation_id).await,
+                                _ => daemon.update(Some(&path), &workers, operation_id).await,
+                            }
+                        })
+                    };
+                    let pids = || [pid_of(&root, "web"), pid_of(&root, "job")];
+                    let before = pids();
+                    std::fs::write(root.join("slow"), "").unwrap();
+                    let cancelled = daemon.operations.create(1).await;
+                    let building = root.join("building");
+
+                    let (outcome, ()) = tokio::join!(call(cancelled.id().to_string()), async {
+                        while !building.exists() {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                        cancelled.cancel();
+                    });
+
+                    let Err(error) = outcome else {
+                        panic!("{operation} was not cancelled");
+                    };
+                    assert_eq!(error.code(), "OPERATION_CANCELLED", "{operation}: {error}");
+                    let message = error.to_string();
+                    assert!(
+                        ["web", "job"].iter().any(|key| message.contains(&format!(
+                            "rebuilt and not yet restarted: {key}. Retry the {operation}"
+                        ))),
+                        "{operation}: {message}"
+                    );
+                    assert_eq!(pids(), before, "{operation} restarted a container");
+                    assert!(before.iter().all(|pid| crate::process::is_running(*pid)));
+
+                    std::fs::remove_file(root.join("slow")).unwrap();
+                    let finished =
+                        serde_json::to_value(call("retry".into()).await.unwrap()).unwrap();
+
+                    assert_eq!(finished["status"], "ok", "{operation}: {finished}");
+                    let after = pids();
+                    assert!(
+                        after[0] != before[0] && after[1] != before[1],
+                        "{operation}: {before:?} -> {after:?}"
+                    );
+                    daemon.shutdown().await;
+                })
+                .await;
+        }
     }
 
     /// Spec 5.3 through `compose::add` and `compose::update`: the rebuild for the new package runs
@@ -4765,7 +4875,8 @@ containers:
             let cache = tempfile::tempdir().unwrap();
             crate::state::TEST_PACKAGE_CACHE
                 .scope(cache.path().to_path_buf(), async {
-                    let (server, path, daemon, _project) = running_package_project(&root).await;
+                    let (server, path, daemon, _project) =
+                        running_package_project(&root, &["web"]).await;
                     let call = || {
                         let (daemon, path) = (Arc::clone(&daemon), path.clone());
                         let worker = vec!["web@0.2.0".to_string()];
@@ -4777,8 +4888,8 @@ containers:
                             serde_json::to_value(outcome.unwrap()).unwrap()
                         })
                     };
-                    let before = web_pid(&root);
-                    std::fs::write(root.join("fail"), "").unwrap();
+                    let before = pid_of(&root, "web");
+                    std::fs::write(root.join("fail-web"), "").unwrap();
 
                     let failed = call().await;
 
@@ -4793,7 +4904,7 @@ containers:
                             && message.contains(&format!("retry the {operation}")),
                         "{operation}: {message}"
                     );
-                    assert_eq!(web_pid(&root), before, "{operation} stopped web");
+                    assert_eq!(pid_of(&root, "web"), before, "{operation} stopped web");
                     assert!(crate::process::is_running(before));
                     assert!(
                         std::fs::read_to_string(&path)
@@ -4801,12 +4912,16 @@ containers:
                             .contains("version: \"0.2.0\"")
                     );
 
-                    std::fs::remove_file(root.join("fail")).unwrap();
+                    std::fs::remove_file(root.join("fail-web")).unwrap();
                     let finished = call().await;
 
                     assert_eq!(finished["status"], "ok", "{operation}: {finished}");
                     assert_eq!(finished["changed"], true, "{operation}: {finished}");
-                    assert_ne!(web_pid(&root), before, "{operation} did not restart web");
+                    assert_ne!(
+                        pid_of(&root, "web"),
+                        before,
+                        "{operation} did not restart web"
+                    );
                     daemon.shutdown().await;
                 })
                 .await;

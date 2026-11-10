@@ -103,20 +103,32 @@ impl Drop for Registered {
     }
 }
 
-/// Waits for the build of container `key` running in this process to end, if one is, and says
-/// whether there was one: a second build of the same directory would write over it, or meet S509.
-pub(crate) async fn wait_for(compose_file: &Path, key: &str) -> bool {
-    let dir = build_dir(compose_file, key);
-    let Some((_, mut ends)) = running()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&dir)
-        .cloned()
-    else {
-        return false;
-    };
-    let _ = ends.wait_for(|ended| *ended).await;
-    true
+/// The build slots of this process, by build directory.
+fn slots() -> &'static Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>> {
+    static SLOTS: OnceLock<Mutex<BTreeMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    SLOTS.get_or_init(Mutex::default)
+}
+
+/// The right to decide whether container `key` builds, and to run that build. A start, a rebuild
+/// and `compose::build` each hold it from [`due`] to the end of the build, so one `.build/<c>`
+/// never has two builds at once: the second would write over the first, or meet S509.
+pub(crate) struct Slot {
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Takes the build slot of container `key`, waiting while a start, rebuild or build holds it.
+/// Callers race the wait with their cancel: dropping it gives nothing up.
+pub(crate) async fn slot(compose_file: &Path, key: &str) -> Slot {
+    let lock = Arc::clone(
+        slots()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(build_dir(compose_file, key))
+            .or_default(),
+    );
+    Slot {
+        _held: lock.lock_owned().await,
+    }
 }
 
 /// Stops the build of container `key` running in this process, if one is, and waits for it to
@@ -1070,5 +1082,44 @@ mod tests {
                 "api: base image changed since the last build (docker.io/iiidev/python -> the adapter's default); run `iii sandbox build api`",
             ]
         );
+    }
+
+    /// One build at a time per `.build/<container>`: a second taker waits for the first, the
+    /// wait gives way to a cancel, and another container's slot is free meanwhile.
+    #[tokio::test]
+    async fn one_build_slot_per_directory_and_its_wait_gives_way_to_a_cancel() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("worker-compose.yaml");
+        std::fs::write(&file, "containers: {}\n").unwrap();
+        let held = slot(&file, "api").await;
+        let other = tokio::time::timeout(Duration::from_secs(1), slot(&file, "web"))
+            .await
+            .expect("another directory's slot waited");
+
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let cancelled = tokio::spawn({
+            let file = file.clone();
+            async move { signal.run(slot(&file, "api")).await.is_none() }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!cancelled.is_finished(), "a second build took a held slot");
+        controller.cancel();
+        assert!(cancelled.await.unwrap(), "the wait ignored the cancel");
+
+        let next = tokio::spawn({
+            let file = file.clone();
+            async move {
+                let _ = slot(&file, "api").await;
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!next.is_finished());
+        drop(held);
+        tokio::time::timeout(Duration::from_secs(1), next)
+            .await
+            .expect("the slot was not handed on")
+            .unwrap();
+        drop(other);
     }
 }

@@ -998,11 +998,15 @@ fn spawn_mutation<F>(
                     )
                     .await;
             }
-            Err(ComposeError::OperationCancelled { .. }) => {
+            Err(
+                error @ (ComposeError::OperationCancelled { .. }
+                | ComposeError::RebuildCancelled { .. }),
+            ) => {
+                // Says which containers a cancelled add or update rebuilt and left unrestarted.
                 operation
                     .finish(
                         crate::operation::OperationStatus::Cancelled,
-                        "operation cancelled",
+                        error.to_string(),
                     )
                     .await;
             }

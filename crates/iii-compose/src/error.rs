@@ -626,6 +626,19 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    /// An add or update cancelled after it rebuilt containers that still run their previous
+    /// build: a retry restarts them (spec 5.3).
+    #[error(
+        "operation cancelled; rebuilt and not yet restarted: {}. Retry the {operation} to restart \
+         them.",
+        rebuilt.join(", ")
+    )]
+    RebuildCancelled {
+        operation_id: String,
+        operation: String,
+        rebuilt: Vec<String>,
+    },
+
     /// `compose::add` plans (graph expansion, artifact acquisition) against a
     /// snapshot of the file, unlocked, and only edits the file it planned
     /// against. A file that keeps changing underneath is not edited from a
@@ -804,7 +817,9 @@ impl ComposeError {
             Self::ContainerNameTaken { .. } => "CONTAINER_NAME_TAKEN",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
-            Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::OperationCancelled { .. } | Self::RebuildCancelled { .. } => {
+                "OPERATION_CANCELLED"
+            }
             Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
             Self::BuildPlanStale { .. } => "BUILD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",
