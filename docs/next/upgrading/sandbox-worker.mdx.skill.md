@@ -155,12 +155,13 @@ Leaving an `iii-sandbox` entry in the list-shaped `config.yaml` fails startup wi
 
 ## Frozen installs
 
-`iii compose --up --frozen` and `iii compose build --frozen` never edit the compose file. A project
-that needs the adapter (it sets `engine.sandbox` for its own namespace, or a container's
-`scripts.run` starts with `iii sandbox run`) but does not declare it fails with
-`SANDBOX_ADAPTER_NOT_DECLARED`. A file with a container that Compose would rewrite into the explicit
-VM mode fails with `VM_SCRIPTS_MISSING`. Run `iii compose --up` once without `--frozen`, so Compose
-writes the adapter container and the rewritten `scripts` into the file, and the lock. Commit both.
+`iii compose --up --frozen` and `iii compose build --frozen` never edit the compose file. A file
+with a container that Compose would rewrite into the explicit VM mode fails first, with
+`VM_SCRIPTS_MISSING`, even when the adapter is missing. A project that needs the adapter (it sets
+`engine.sandbox` for its own namespace, or a container's `scripts.run` starts with
+`iii sandbox run`) but does not declare it then fails with `SANDBOX_ADAPTER_NOT_DECLARED`. Run
+`iii compose --up` once without `--frozen`, so Compose writes the adapter container and the
+rewritten `scripts` into the file, and the lock. Commit both.
 
 ## VM workers from `path://`
 
@@ -171,11 +172,12 @@ declares when the adapter starts. A declared worker outside the compose director
 `path://../shared`, is admitted.
 
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
-directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
-and the adapter's S501, which names the roots and links its entry. The error names the command that
-restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which restarts each VM
-worker it was running and ends every sandbox. The worker that failed was not running, so start it
-afterwards with `iii call compose::up`. Or move the worker under the compose directory.
+directory that you add while it runs, for example with `compose::add`, fails its first build with
+`BUILD_FAILED`. The error carries the adapter's [S501](../creating-workers/sandboxes#S501), which
+names the host roots. Restart the adapter with `iii call compose::restart worker=sandbox-libkrun`,
+which restarts each VM worker it was running and ends every sandbox. The worker that failed was not
+running, so start it afterwards with `iii call compose::up`. Or move the worker under the compose
+directory.
 
 ## Supported hosts
 

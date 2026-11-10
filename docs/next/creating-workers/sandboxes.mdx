@@ -829,9 +829,11 @@ A Compose container runs in a VM when its compose file says so:
 - Compose starts both as processes, like any other command. It keeps no VM boot path of its own.
 
 [Compose / VM workers](../using-iii/compose#vm-workers) covers the compose file side: which
-containers may use these commands, the first build, rebuilds, and the project tree. Both commands
-fail with `SANDBOX_UNSUPPORTED_PLATFORM` on Windows, and with `SANDBOX_BUILD_UNSUPPORTED` when the
-adapter does not advertise `worker.build`.
+containers may use these commands, the first build, rebuilds, and the project tree. On Windows,
+`iii sandbox run`, and `iii sandbox build` inside Compose, fail with `SANDBOX_UNSUPPORTED_PLATFORM`;
+`iii sandbox build` outside Compose only asks a daemon, so it runs there. Both commands fail with
+`SANDBOX_BUILD_UNSUPPORTED` when the adapter does not advertise `worker.build`, and with
+`SANDBOX_CONTRACT_UNSUPPORTED` when it implements another major version of the contract.
 
 ### Build an image with `iii sandbox build`
 
@@ -841,24 +843,27 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
 
 Inside Compose, as a container's `scripts.build`, it builds its own container. It checks that the
 adapter advertises `worker.build`, calls `worker::build` with the build output streamed to stdout,
-then writes `build.json` (see [`build.json`](../using-iii/compose#buildjson)).
+then writes `build.json` (see [`build.json`](../using-iii/compose#buildjson)). There, `--file`,
+`--namespace`, and `--engine` fail with `SANDBOX_INVALID_ARGUMENTS`: they find a daemon from outside
+Compose.
 
-Outside Compose, it calls `compose::build worker=<container>` on the project's daemon, prints the
-operation's progress and the container's build output, and waits for the result. It finds the
-daemon as `iii compose logs` does, from `--file`, `--namespace`, `--engine`, and `III_URL`. With no
-engine or no loaded project, it fails as `iii compose logs` does, with `ENGINE_CALL_FAILED` or
+Outside Compose, it calls `compose::build worker=<container>` on the project's daemon, or
+`compose::build` for every container with a non-empty `scripts.build` when no container is named. It
+prints the operation's progress and the build output, and waits for the result. It finds the daemon
+as `iii compose logs` does, from `--file`, `--namespace`, `--engine`, and `III_URL`. With no engine
+or no loaded project, it fails as `iii compose logs` does, with `ENGINE_CALL_FAILED` or
 `UNKNOWN_PROJECT`.
 
 ```bash
 iii sandbox build link
 ```
 
-| Exit code | Meaning                                                                                                          |
-| --------- | ---------------------------------------------------------------------------------------------------------------- |
-| `0`       | Built.                                                                                                           |
-| `1`       | The build failed.                                                                                                |
-| `125`     | `iii sandbox` itself failed: unreachable engine, adapter without the feature, bad environment.                   |
-| `130`     | Cancelled. Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting. |
+| Exit code | Meaning                                                                                                                                         |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Built.                                                                                                                                          |
+| `1`       | The build failed: the adapter's S-code, such as [S507](#S507), [S509](#S509), or [S501](#S501) for a source outside its host roots, or `TIMED_OUT`. |
+| `125`     | `iii sandbox` itself failed. The codes are in the table below.                                                                                  |
+| `130`     | Cancelled (`OPERATION_CANCELLED`). Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting.         |
 
 On failure, the last line has this form, which Compose parses for `BUILD_FAILED`:
 
@@ -873,6 +878,20 @@ image it booted until it restarts. One build per VM runs at a time: a second one
 `iii sandbox build` cancels the build and keeps the previous image. `iii sandbox build` enforces
 `III_BUILD_TIMEOUT_MS` and fails with `TIMED_OUT` when it runs out.
 
+These codes are failures of `iii sandbox` itself, which exits with `125`:
+
+| Code                           | When                                                                                   |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| `SANDBOX_ENV_INVALID`          | Inside Compose, a variable Compose hands the command is missing or malformed.          |
+| `SANDBOX_INVALID_ARGUMENTS`    | Arguments that do not fit where the command runs, such as `--file` inside Compose.     |
+| `SANDBOX_BUILD_UNSUPPORTED`    | The adapter does not advertise `worker.build`.                                         |
+| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter implements another major version of the sandbox contract.                  |
+| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows.                  |
+| `ENGINE_CALL_FAILED`           | The engine, the adapter, or the daemon was not reached, or did not answer as expected. |
+| `UNKNOWN_PROJECT`              | Outside Compose, the daemon holds no such project.                                     |
+| `BUILD_MISSING`                | `iii sandbox run` without a `build.json` that records an image.                        |
+| `SANDBOX_FAILED`               | Any other failure of `iii sandbox` itself.                                             |
+
 ### Boot the image with `iii sandbox run`
 
 `iii sandbox run` reads `build.json` from `III_BUILD_DIR`, calls `worker::start` with the build, and
@@ -880,11 +899,13 @@ skips `worker::prepare`, so nothing is installed at boot. Without `build.json`, 
 `BUILD_MISSING` and exits with `125`.
 
 It prints the guest's output as its own, turns `SIGTERM` and `SIGINT` into `worker::stop`,
-reattaches to a running instance, and exits with the VM's code.
+reattaches to a running instance, and exits with the VM's code: `128+N` when the VM ended on signal
+N, or `125` when `iii sandbox` itself failed. A `build.json` that does not match the image fails the
+start with [S508](#S508), and the message asks for `iii sandbox build <container>`.
 
-`--command <cmd>` runs `<cmd>` inside the VM in place of the manifest's `scripts.start`.
-`iii sandbox run` refuses it on a bundle. Compose writes this form when it rewrites a 0.26 `path://`
-worker whose `scripts.run` ran inside the VM:
+`--command <cmd>` runs `<cmd>` inside the VM in place of the manifest's `scripts.start`. It is only
+for a `path://` worker: `iii sandbox run` refuses it on a bundle. Compose writes this form when it
+rewrites a 0.26 `path://` worker whose `scripts.run` ran inside the VM:
 
 ```text
 iii sandbox run --command '<that command>'
@@ -892,10 +913,13 @@ iii sandbox run --command '<that command>'
 
 ### Remove a VM's data with `iii sandbox destroy`
 
-`iii sandbox destroy` removes the VM's data disk. It also removes the `upper.ext4.pre-build` file
-and the `root.pre-build/` directory kept from a 0.26 VM (see
-[Upgrading from 0.26.x](../upgrading/from-0-26-x#keep-the-data-of-migrated-vms)). `compose::remove`
-has the adapter destroy the data disk too.
+`iii sandbox destroy` removes the VM's data disk, with the `upper.ext4.pre-build` file and the
+`root.pre-build/` directory kept from a 0.26 VM (see
+[Upgrading from 0.26.x](../upgrading/from-0-26-x#keep-the-data-of-migrated-vms)). It takes no
+arguments: like `iii sandbox run`, it acts on the VM that the
+[environment variables](#environment-variables) below name, which Compose sets for a VM container's
+scripts. From outside Compose, `compose::remove` of the container has the adapter destroy the same
+disk. The adapter refuses to destroy a VM whose build is still running, with [S509](#S509).
 
 ### Environment variables
 
@@ -912,13 +936,15 @@ Compose hands `iii sandbox build` and `iii sandbox run` these variables:
 | `III_STOP_TIMEOUT_MS`   | How long Compose waits after its `SIGTERM` before it kills the command.                |
 | `III_BUILD_DIR`         | `<project>/.build/<container>`.                                                        |
 | `III_BUILD_TIMEOUT_MS`  | `scripts.build_timeout`, for `iii sandbox build`.                                      |
+| `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
 | `III_PACKAGE_DIR`       | `<project>/.workers/<container>`, for a bundle.                                        |
 | `III_PACKAGE_NAME`      | The bundle's manifest name, for a bundle.                                              |
 
-`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_PACKAGE_DIR`, and `III_PACKAGE_NAME` never reach the
-guest and are not listed in `III_WORKER_ENV_KEYS`. The guest, and the VM that builds its image, get
-the container's `environment` and `env_file` variables and the reserved `III_*` variables, never the
-host's environment.
+`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`, and
+`III_PACKAGE_NAME` never reach the guest and are not listed in `III_WORKER_ENV_KEYS`. The guest
+still sees the compose file's path through `III_COMPOSE_FILE`. The guest, and the VM that builds its
+image, get the container's `environment` and `env_file` variables and the reserved `III_*`
+variables, never the host's environment.
 
 ### Adapter contract 1.3
 
@@ -955,7 +981,8 @@ known; and `built_at_ms`.
   then renamed: `image.erofs` first, `image.id` last.
 - **The running VM is not touched.** The build uses its own build VM and swaps `image.erofs` by
   rename, so the running VM keeps the file it booted.
-- **One build per `state_key` at a time.** A second one gets [S509](#S509).
+- **One build per `state_key` at a time.** A second one gets [S509](#S509), and so does a
+  `worker::destroy` of that VM: cancel the build first.
 - **Timeout and cancel.** The adapter writes to the channel at least every 5 seconds, a one-byte
   binary frame; readers take records from text frames only. When the channel closes or a write
   fails, the adapter stops the build VM, deletes the temporary image, keeps the previous
@@ -971,7 +998,9 @@ boots the image without running `scripts.setup` or `scripts.install`. It compare
 the image on start.
 
 `WorkerSource::Bundle.host_path` is the container's directory in `.workers/`, not the global package
-cache. The adapter copies it into the image at build time, and a run does not mount it.
+cache. The adapter copies it into the image at build time, and a run does not mount it. What a
+`path://` copy leaves out, and what a boot removes from `/workspace`, are in
+[Compose / What the guest sees](../using-iii/compose#what-the-guest-sees).
 
 The data disk stays as the overlay upper when the image under it changes. overlayfs accepts a
 changed lower under an existing upper only without `index`, `metacopy`, `redirect_dir`, and `xino`,
@@ -979,13 +1008,11 @@ so iii-init mounts the root with those off.
 
 ## Error codes
 
-A failed `sandbox::*` call returns one error shape: a stable `code` (S-code), a `type`, a `message`,
-a `retryable` flag, and a `docs_url` that links to the matching entry below.
 A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
-`code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
-not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
-router returns S301-S303, and every adapter returns the rest. The `docs_url` in the error payload
-links to the matching entry below.
+`code` (S-code), a `type`, a `message`, a `retryable` flag, and a `docs_url` that links to the
+matching entry below. The codes belong to the engine's sandbox contract, not to any one worker: they
+are part of the public `sandbox::*` API that every caller sees. The router returns S301-S303, and
+every adapter returns the rest.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed
   sandbox_id)
