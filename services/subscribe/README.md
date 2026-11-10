@@ -30,13 +30,14 @@ Set in `worker-compose.yaml`, except the key:
 
 ## Develop
 
-Bun, not pnpm: this directory is deployed on its own (iii Cloud installs at the environment's root
-directory), so it keeps its own `bun.lock` outside the pnpm workspace.
+Bun, not pnpm: the worker is deployed on its own, so it keeps its own `package.json` and
+`bun.lock` in `workers/subscribe/`, outside the pnpm workspace. Its start command installs from
+that lockfile before running, both on iii Cloud and in a local compose VM (which sees only the
+worker's directory).
 
 ```bash
-bun install
-bun test
-RESEND_API_KEY=re_... iii compose --up   # engine + http worker + this worker
+cd workers/subscribe && bun install && bun test
+RESEND_API_KEY=re_... iii compose --up   # from services/subscribe: engine + http worker + this worker
 ```
 
 ## Deploy

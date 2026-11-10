@@ -6,6 +6,7 @@ scripts:
   # Install from bun.lock before starting. Without node_modules, Bun falls back to
   # auto-install, which fetches the latest versions and leaves peer dependencies
   # unresolved: iii-sdk's OpenTelemetry packages then fail on '@opentelemetry/api'.
-  # The iii Cloud image had no node_modules on the first deploy, so the worker
-  # installs its own; when node_modules is already current this is a no-op.
-  start: cd ../.. && bun install --frozen-lockfile --production && cd workers/subscribe && exec bun run index.ts
+  # The manifest and lockfile live in this directory, so this works wherever the
+  # worker runs: iii Cloud's image, or the /workspace of a local compose VM, which
+  # holds this directory alone. When node_modules is current this is a no-op.
+  start: bun install --frozen-lockfile --production && exec bun run index.ts
