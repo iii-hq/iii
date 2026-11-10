@@ -12,12 +12,32 @@ function required(name: string): string {
   return value
 }
 
+/**
+ * `RESEND_SEGMENTS`: `source=segment-id` pairs, comma separated
+ * (`website=bf68…,ade=…`). A source with an empty ID is accepted but joins no
+ * segment.
+ */
+function parseSegments(raw: string): Record<string, string> {
+  const segments: Record<string, string> = {}
+  for (const pair of raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const [source, id = ''] = pair.split('=').map((p) => p.trim())
+    if (!source) throw new Error(`RESEND_SEGMENTS: "${pair}" has no source`)
+    segments[source] = id
+  }
+  if (!Object.hasOwn(segments, 'website')) segments.website = ''
+  return segments
+}
+
 const subscribe = createSubscribe({
   apiKey: required('RESEND_API_KEY'),
   templateId: required('RESEND_TEMPLATE_ID'),
   from: required('RESEND_FROM'),
   subject: required('RESEND_SUBJECT'),
-  segmentId: process.env.RESEND_SEGMENT_ID || undefined,
+  segments: parseSegments(process.env.RESEND_SEGMENTS ?? ''),
+  defaultSource: 'website',
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean),
   maxWelcomesPerMinute: process.env.MAX_WELCOMES_PER_MINUTE ? Number(process.env.MAX_WELCOMES_PER_MINUTE) : undefined,
 })

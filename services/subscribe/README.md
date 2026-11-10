@@ -14,6 +14,14 @@ script, so at most `MAX_WELCOMES_PER_MINUTE` (default 20, per replica) welcome e
 minute. The answer is `{"ok": true}`, a 400 for an invalid email, a 403 for another origin, a 429
 past the cap, or a 502 when Resend fails (logged).
 
+## Sources and segments
+
+A body may name its `source` (`{"email": "...", "source": "ade"}`); without one it is `website`.
+`RESEND_SEGMENTS` maps each source to the Resend segment its contacts join
+(`website=bf68b570-…,ade=<segment id>`). A source it doesn't list gets a 400 `invalid_source`, so a
+caller can never pick a segment by ID. A new contact joins its source's segment when it is created;
+a known one is added to the segment of the source it signs up from again, with no second welcome.
+
 ## Configuration
 
 Set in `worker-compose.yaml`, except the key:
@@ -21,7 +29,7 @@ Set in `worker-compose.yaml`, except the key:
 | Variable             | Where                                  |
 | -------------------- | -------------------------------------- |
 | `RESEND_API_KEY`     | iii Cloud secret (full-access key)     |
-| `RESEND_SEGMENT_ID`  | Optional iii Cloud variable            |
+| `RESEND_SEGMENTS`    | `worker-compose.yaml`                  |
 | `RESEND_TEMPLATE_ID` | `worker-compose.yaml`                  |
 | `RESEND_FROM`        | `worker-compose.yaml`                  |
 | `RESEND_SUBJECT`     | `worker-compose.yaml`                  |

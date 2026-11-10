@@ -14,7 +14,10 @@ containers:
       RESEND_TEMPLATE_ID: 2960e2b7-5ece-41e1-901b-a8614d7f5226
       RESEND_FROM: Hello from iii <hello@email.iii.dev>
       RESEND_SUBJECT: Welcome to the iii community
-      RESEND_SEGMENT_ID: ${RESEND_SEGMENT_ID:-}
+      # source=segment: where a signup came from (the body's `source`, default
+      # website) to the Resend segment its contact joins. Add ade=<segment id>
+      # here when ade signs people up through this API.
+      RESEND_SEGMENTS: website=bf68b570-89d0-483a-9b94-6c655445f1d0
       ALLOWED_ORIGINS: https://iii.dev,https://www.iii.dev,https://iii-preview.iii.dev
   # Added by `iii compose build` (0.26) to run the path:// worker in a VM
   # locally. iii Cloud builds that worker as a container and leaves this out.

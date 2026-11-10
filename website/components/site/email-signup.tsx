@@ -10,9 +10,9 @@ import { subscribe } from '@/lib/subscribe'
 import { cn } from '@/lib/utils'
 
 /**
- * Updates signup, the same flow as the previous iii.dev forms (lib/subscribe.ts): POST `{ email }` to the Mailmodo
- * form, treat 409 "already subscribed" as success, and never block the user on a network failure. `location` names
- * the form in the `email_submit` analytics event.
+ * Updates signup (lib/subscribe.ts): POST `{ email, source: 'website' }` to /api/subscribe, which adds the contact in
+ * Resend and sends the welcome email, and never block the user on a network failure. `location` names the form in the `email_submit`
+ * analytics event.
  */
 export function EmailSignup({ className, location = 'hero' }: { className?: string; location?: string }) {
   const id = useId()

@@ -22,7 +22,13 @@ export type Config = {
   templateId: string
   from: string
   subject: string
-  segmentId?: string
+  /**
+   * Where a signup came from (the body's `source`) to the Resend segment its contact joins. A
+   * caller names a source, never a segment ID; a source not listed here is refused.
+   */
+  segments: Record<string, string>
+  /** The source of a body that names none. */
+  defaultSource: string
   allowedOrigins: string[]
   /** Most welcome emails sent per minute (per replica); new addresses past it get a 429. */
   maxWelcomesPerMinute?: number
@@ -52,11 +58,10 @@ function header(req: Request, name: string): string | undefined {
 }
 
 /**
- * The normalized email of a request body, or null when the body is too large,
- * not JSON, or holds no valid address. The http worker hands over a parsed
- * JSON body; a raw string is parsed here.
+ * The request body as JSON, or null when it is too large or not JSON. The http
+ * worker hands over a parsed JSON body; a raw string is parsed here.
  */
-function parseEmail(body: unknown): string | null {
+function parseBody(body: unknown): { email?: unknown; source?: unknown } | null {
   let parsed = body
   if (typeof body === 'string') {
     if (Buffer.byteLength(body) > MAX_BODY_BYTES) return null
@@ -68,7 +73,11 @@ function parseEmail(body: unknown): string | null {
   } else if (Buffer.byteLength(JSON.stringify(body ?? null)) > MAX_BODY_BYTES) {
     return null
   }
-  const raw = (parsed as { email?: unknown } | null)?.email
+  return parsed !== null && typeof parsed === 'object' ? parsed : null
+}
+
+/** The normalized address, or null when it is not a valid one. */
+function normalizeEmail(raw: unknown): string | null {
   const email = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
   return email.length <= 254 && EMAIL_RE.test(email) ? email : null
 }
@@ -131,8 +140,14 @@ export function createSubscribe(
       return reply(403, { error: 'forbidden' })
     }
 
-    const email = parseEmail(req.body)
+    const body = parseBody(req.body)
+    const email = normalizeEmail(body?.email)
     if (!email) return reply(400, { error: 'invalid_email' })
+    const source = body?.source ?? config.defaultSource
+    if (typeof source !== 'string' || !Object.hasOwn(config.segments, source)) {
+      return reply(400, { error: 'invalid_source' })
+    }
+    const segment = config.segments[source]
 
     try {
       const path = `/contacts/${encodeURIComponent(email)}`
@@ -143,6 +158,14 @@ export function createSubscribe(
         // don't send the welcome twice.
         const contact = (await existing.json()) as { unsubscribed?: boolean }
         if (contact.unsubscribed) await ensure(await resend('PATCH', path, { unsubscribed: false }), 'update contact')
+        // Someone already on the list who signs up from another source joins
+        // that source's segment too. The signup itself already succeeded, so a
+        // failure here is logged, not answered.
+        if (segment) {
+          const joined = await resend('POST', `${path}/segments/${encodeURIComponent(segment)}`)
+          if (!joined.ok)
+            console.error(`add to segment (${source}) failed: ${joined.status} ${await joined.text().catch(() => '')}`)
+        }
         return reply(200, { ok: true })
       }
       if (existing.status !== 404) await ensure(existing, 'get contact')
@@ -158,7 +181,7 @@ export function createSubscribe(
       await ensure(send, 'send welcome')
 
       const contact: Record<string, unknown> = { email, unsubscribed: false }
-      if (config.segmentId) contact.segments = [{ id: config.segmentId }]
+      if (segment) contact.segments = [{ id: segment }]
       await ensure(await resend('POST', '/contacts', contact), 'create contact')
       return reply(200, { ok: true })
     } catch (err) {

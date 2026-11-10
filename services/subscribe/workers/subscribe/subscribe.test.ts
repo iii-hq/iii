@@ -11,6 +11,8 @@ const config: Config = {
   templateId: 'tmpl-123',
   from: 'Hello from iii <hello@email.iii.dev>',
   subject: 'Welcome to the iii community',
+  segments: { website: 'seg-website', ade: 'seg-ade', untracked: '' },
+  defaultSource: 'website',
   allowedOrigins: ['https://iii.dev', 'https://www.iii.dev'],
 }
 
@@ -22,7 +24,10 @@ type Call = {
 }
 
 // contacts: email -> { unsubscribed } for addresses Resend already knows.
-function fakeResend(contacts: Record<string, { unsubscribed: boolean }> = {}, opts = { failSend: false }) {
+function fakeResend(
+  contacts: Record<string, { unsubscribed: boolean }> = {},
+  opts: { failSend: boolean; failSegment?: boolean } = { failSend: false },
+) {
   const calls: Call[] = []
   const fetch = (async (url: string, init: RequestInit) => {
     const path = url.replace('https://api.resend.com', '')
@@ -30,6 +35,7 @@ function fakeResend(contacts: Record<string, { unsubscribed: boolean }> = {}, op
     calls.push({ method: init.method as string, path, body, headers: init.headers as Record<string, string> })
     const reply = (status: number, data = {}) => new Response(JSON.stringify(data), { status })
 
+    if (/^\/contacts\/[^/]+\/segments\//.test(path)) return opts.failSegment ? reply(500) : reply(200, { id: 'seg' })
     if (init.method === 'GET' && path.startsWith('/contacts/')) {
       const contact = contacts[decodeURIComponent(path.slice('/contacts/'.length))]
       return contact ? reply(200, { object: 'contact', ...contact }) : reply(404, { name: 'not_found' })
@@ -55,7 +61,11 @@ test('new address: sends the welcome template, then creates the contact', async 
     'POST /emails',
     'POST /contacts',
   ])
-  expect(resend.calls[2].body).toEqual({ email: 'ada@example.com', unsubscribed: false })
+  expect(resend.calls[2].body).toEqual({
+    email: 'ada@example.com',
+    unsubscribed: false,
+    segments: [{ id: 'seg-website' }],
+  })
 
   const send = resend.calls[1]
   expect(send.body).toEqual({
@@ -69,18 +79,44 @@ test('new address: sends the welcome template, then creates the contact', async 
   expect(send.headers.authorization).toBe('Bearer re_test')
 })
 
-test('segment id, when configured, is attached to the new contact', async () => {
-  const resend = fakeResend()
-  await createSubscribe({ ...config, segmentId: 'seg-1' }, resend.fetch)(post({ email: 'ada@example.com' }))
-  expect(resend.calls[2].body?.segments).toEqual([{ id: 'seg-1' }])
+test('a new contact joins the segment of its source, website by default', async () => {
+  const website = fakeResend()
+  await createSubscribe(config, website.fetch)(post({ email: 'ada@example.com' }))
+  expect(website.calls[2].body?.segments).toEqual([{ id: 'seg-website' }])
+
+  const ade = fakeResend()
+  await createSubscribe(config, ade.fetch)(post({ email: 'ada@example.com', source: 'ade' }))
+  expect(ade.calls[2].body?.segments).toEqual([{ id: 'seg-ade' }])
+
+  const untracked = fakeResend()
+  await createSubscribe(config, untracked.fetch)(post({ email: 'ada@example.com', source: 'untracked' }))
+  expect(untracked.calls[2].body?.segments).toBeUndefined()
 })
 
-test('known address: no second welcome', async () => {
+test('a source that is not configured is refused before Resend', async () => {
+  const resend = fakeResend()
+  const subscribe = createSubscribe(config, resend.fetch)
+  for (const source of ['nope', 'seg-website', 42, '__proto__', 'toString']) {
+    expect((await subscribe(post({ email: 'ada@example.com', source }))).status_code).toBe(400)
+  }
+  expect(resend.calls.length).toBe(0)
+})
+
+test('known address: no second welcome, and it joins the segment of this source', async () => {
   const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } })
-  const res = await createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' }))
+  const res = await createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com', source: 'ade' }))
 
   expect(res.status_code).toBe(200)
-  expect(resend.calls.map((c) => c.method)).toEqual(['GET'])
+  expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+    'GET /contacts/ada%40example.com',
+    'POST /contacts/ada%40example.com/segments/seg-ade',
+  ])
+})
+
+test('a failed segment add for a known address is logged, the signup still answers 200', async () => {
+  const resend = fakeResend({ 'ada@example.com': { unsubscribed: false } }, { failSend: false, failSegment: true })
+  const res = await quietly(() => createSubscribe(config, resend.fetch)(post({ email: 'ada@example.com' })))
+  expect(res.status_code).toBe(200)
 })
 
 test('unsubscribed address that signs up again is re-subscribed, still no welcome', async () => {
@@ -91,6 +127,7 @@ test('unsubscribed address that signs up again is re-subscribed, still no welcom
   expect(resend.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
     'GET /contacts/ada%40example.com',
     'PATCH /contacts/ada%40example.com',
+    'POST /contacts/ada%40example.com/segments/seg-website',
   ])
   expect(resend.calls[1].body).toEqual({ unsubscribed: false })
 })

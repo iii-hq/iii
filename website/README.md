@@ -137,8 +137,10 @@ Add a shadcn component with `pnpm dlx shadcn@latest add <component>` from this d
 ## Environment
 
 See [`.env.example`](./.env.example). Production builds load GTM, PostHog and Common Room (after cookie consent) and
-post email signups to Mailmodo by default. Set `NEXT_PUBLIC_ENABLE_ANALYTICS=false` and
-`NEXT_PUBLIC_MAILMODO_FORM_URL=` on preview or demo projects to keep their traffic and test signups out. Live GitHub
+post email signups to `/api/subscribe` by default: CloudFront proxies it to the signup API on iii Cloud
+(`services/subscribe`), which adds the contact in Resend and sends the welcome email. Set
+`NEXT_PUBLIC_ENABLE_ANALYTICS=false` and `NEXT_PUBLIC_SUBSCRIBE_URL=` on preview or demo projects to keep their
+traffic and test signups out. Live GitHub
 and Discord counts need no keys; they are read at build time from public endpoints.
 
 ## Deploy
