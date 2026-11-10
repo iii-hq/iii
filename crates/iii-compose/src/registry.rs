@@ -540,19 +540,21 @@ const WORKERS_LOCK_FILE: &str = ".lock";
 /// the directories of containers no longer locked, rewrites `.workers/.packages.json`.
 ///
 /// - One run at a time per project: the daemon and `iii compose build` both materialize, so a
-///   run holds `.workers/.lock` from its first change to its last.
+///   run holds `.workers/.lock` from its first change to its last, its disk jobs included.
 /// - A directory whose `.packages.json` entry matches the lock is left as it is, with whatever
 ///   a host build wrote into it. Any other is replaced whole by a copy of the cache entry, made
 ///   beside it and renamed into place; the cache entry is verified first, and downloaded again
 ///   when it is missing or damaged. The cache itself is only read.
-/// - Before a directory is created or replaced, a host build recorded for its container
-///   (`.build/<container>/build.json` without `image`) is deleted: that build ran in the old
-///   directory, and its output goes with it, so the container gets its first build again (spec
-///   5.2). This holds for a package update too, which then logs as a first build. A VM build
-///   keeps its record: its image holds its own copy of the package.
+/// - A directory made again for the artifact it held (it was gone, or `.packages.json` could
+///   not be read) loses what a host build wrote into it, so that build's record
+///   (`.build/<container>/build.json` without `image`, made from this same package) is deleted
+///   first, and the container gets its first build again (spec 5.2). A package update keeps
+///   the record: its source no longer matches, `build_record::changes` reports it, and the
+///   container rebuilds as spec 5.3 says. A VM build keeps its record: its image holds its own
+///   copy of the package.
 /// - Only what Compose made is removed: the directories `.packages.json` recorded for containers
-///   no longer locked, and the temporary copies an interrupted run left. Anything else in
-///   `.workers/` stays.
+///   no longer locked, and the temporary copies and files an interrupted run left. Anything
+///   else in `.workers/` stays.
 /// - A project with no package and no `.workers/` gets none.
 // Wired by KAN-280 (`lifecycle.rs`) and KAN-281 (`build.rs`).
 pub async fn materialize_project(
@@ -592,9 +594,12 @@ pub(crate) async fn materialize_project_checked(
     if wanted.is_empty() && std::fs::symlink_metadata(&workers).is_err() {
         return check();
     }
-    crate::build_record::ignore_all(&workers)?;
-    let _guard = lock_exclusive(&workers.join(WORKERS_LOCK_FILE)).await?;
+    std::fs::create_dir_all(&workers).map_err(io_error(&workers))?;
+    // Shared with every disk job below: a job outlives a dropped future until it next checks
+    // its cancellation, and must not meet another run in `.workers/` meanwhile.
+    let guard = std::sync::Arc::new(lock_exclusive(&workers.join(WORKERS_LOCK_FILE)).await?);
     check()?;
+    crate::build_record::ignore_all(&workers)?;
 
     // An unreadable record only costs copies: every directory is then made again, and none is
     // pruned, since none is known to be Compose's.
@@ -605,11 +610,14 @@ pub(crate) async fn materialize_project_checked(
     let retired: std::collections::BTreeSet<String> = previous
         .containers
         .keys()
-        .filter(|container| !wanted.contains_key(*container))
+        .filter(|container| {
+            !wanted.contains_key(*container) && crate::build_record::is_directory_name(container)
+        })
         .cloned()
         .collect();
-    let pruned = workers.clone();
+    let (pruned, held) = (workers.clone(), std::sync::Arc::clone(&guard));
     crate::shutdown::blocking(workers.clone(), move |cancel| {
+        let _held = held;
         prune_packages(&pruned, &retired, &cancel)
     })
     .await?;
@@ -634,8 +642,8 @@ pub(crate) async fn materialize_project_checked(
             continue;
         }
         // On failure the previous directory is still in place, and so is its entry.
-        let copied = match forget_host_build(compose_dir, container) {
-            Ok(()) => copy_package(container, resolved, cache_root, &workers).await,
+        let copied = match forget_host_build(compose_dir, container, package) {
+            Ok(()) => copy_package(container, resolved, cache_root, &workers, &guard).await,
             Err(error) => Err(error),
         };
         if let Err(error) = copied {
@@ -651,15 +659,21 @@ pub(crate) async fn materialize_project_checked(
     }
 }
 
-/// Deletes `.build/<container>/build.json` when it records a host build: see
-/// [`materialize_project`]. No record, a VM build's, or one that does not parse (which already
-/// asks for a rebuild) is left alone.
-fn forget_host_build(compose_dir: &Path, container: &str) -> Result<()> {
+/// Deletes `.build/<container>/build.json` when it records a host build made from `package`,
+/// the artifact about to be copied again: see [`materialize_project`]. No record, a VM build's,
+/// one made from another package, or one that does not parse (which already asks for a
+/// rebuild) is left alone.
+fn forget_host_build(compose_dir: &Path, container: &str, package: &ProjectPackage) -> Result<()> {
     let build = crate::build_record::build_dir(compose_dir, container);
     let Ok(Some(record)) = crate::build_record::read(&build) else {
         return Ok(());
     };
-    if record.image.is_some() {
+    let same_package = crate::build_record::BuildSource::Package {
+        name: package.name.clone(),
+        version: package.version.clone(),
+        sha256: package.sha256.clone(),
+    };
+    if record.image.is_some() || record.source != same_package {
         return Ok(());
     }
     let path = build.join(crate::build_record::BUILD_FILE);
@@ -672,7 +686,8 @@ fn forget_host_build(compose_dir: &Path, container: &str) -> Result<()> {
 }
 
 /// Removes from `workers` what Compose made and no longer needs: the directories of `retired`
-/// containers, and the temporary copies of [`replace_directory`] an interrupted run left.
+/// containers, and what an interrupted run left: the temporary copies of
+/// [`replace_directory`], and the temporary files of `.packages.json` and `.gitignore`.
 fn prune_packages(
     workers: &Path,
     retired: &std::collections::BTreeSet<String>,
@@ -685,7 +700,7 @@ fn prune_packages(
         let Some(name) = name.to_str() else {
             continue;
         };
-        if retired.contains(name) || is_temporary_copy(name) {
+        if retired.contains(name) || is_temporary_copy(name) || is_temporary_file(name) {
             let path = entry.path();
             remove_path(&path).map_err(io_error(&path))?;
         }
@@ -704,12 +719,23 @@ fn is_temporary_copy(name: &str) -> bool {
         })
 }
 
-/// Replaces `<workers>/<container>` with a copy of the package's cache entry.
+/// `.packages.json.tmp-<id>` or `.gitignore.tmp-<id>`, the temporary files
+/// `build_record::replace_file` writes Compose's own files of `.workers/` through.
+fn is_temporary_file(name: &str) -> bool {
+    [PROJECT_PACKAGES_FILE, ".gitignore"].iter().any(|file| {
+        name.strip_prefix(file)
+            .is_some_and(|rest| rest.starts_with(".tmp-"))
+    })
+}
+
+/// Replaces `<workers>/<container>` with a copy of the package's cache entry; the copy holds
+/// `guard`, the project's `.workers/.lock`, until it has finished.
 async fn copy_package(
     container: &str,
     resolved: &ResolvedPackage,
     cache_root: &Path,
     workers: &Path,
+    guard: &std::sync::Arc<fslock::LockFile>,
 ) -> Result<()> {
     // Verifies the entry, and downloads it again when it is missing or damaged.
     install_resolved(container, resolved, cache_root).await?;
@@ -724,9 +750,10 @@ async fn copy_package(
     );
     // Held while copying: an install repairing this entry waits for the copy to finish.
     let lock = lock_artifact(&source).await?;
+    let held = std::sync::Arc::clone(guard);
     let destination = workers.join(container);
     crate::shutdown::blocking(destination.clone(), move |cancel| {
-        let _lock = lock;
+        let (_lock, _held) = (lock, held);
         replace_directory(&source, &destination, &cancel)
     })
     .await
@@ -3091,6 +3118,12 @@ mod tests {
         std::fs::create_dir(workers.join(".queue.replaced-interrupted")).unwrap();
         std::fs::create_dir(workers.join("mine")).unwrap();
         std::fs::write(workers.join("notes.txt"), "mine").unwrap();
+        std::fs::write(workers.join(".packages.json.tmp-interrupted"), "{").unwrap();
+        std::fs::write(workers.join(".gitignore.tmp-interrupted"), "").unwrap();
+        // A record edited by hand that names Compose's own lock file: not a package directory.
+        let mut edited = recorded(project.path());
+        edited["containers"][".lock"] = edited["containers"]["queue"].clone();
+        std::fs::write(workers.join(".packages.json"), edited.to_string()).unwrap();
 
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
         materialize_project(project.path(), cache.path(), &lock)
@@ -3181,17 +3214,26 @@ mod tests {
         )
     }
 
-    /// A `build.json` for `container`: a VM build when `vm`, else a host build.
-    fn build_record(container: &str, vm: bool) -> crate::build_record::BuildRecord {
+    /// The source `.packages.json` records for `container`, as a build made from it records it.
+    fn recorded_source(project: &Path, container: &str) -> crate::build_record::BuildSource {
+        let entry = &recorded(project)["containers"][container];
+        crate::build_record::BuildSource::Package {
+            name: entry["name"].as_str().unwrap().to_string(),
+            version: entry["version"].as_str().unwrap().to_string(),
+            sha256: entry["sha256"].as_str().unwrap().to_string(),
+        }
+    }
+
+    /// A `build.json` made from `source`: a VM build when `vm`, else a host build.
+    fn build_record(
+        made_from: crate::build_record::BuildSource,
+        vm: bool,
+    ) -> crate::build_record::BuildRecord {
         use crate::build_record::*;
         BuildRecord {
             schema: SCHEMA,
-            container: container.to_string(),
-            source: BuildSource::Package {
-                name: container.to_string(),
-                version: "1.0.0".to_string(),
-                sha256: "sha256:00".to_string(),
-            },
+            container: "any".to_string(),
+            source: made_from,
             command: "npm ci".to_string(),
             dependency_files: BTreeMap::new(),
             image: vm.then(|| BuildImage {
@@ -3210,6 +3252,98 @@ mod tests {
             }),
             built_at: "2026-11-10T14:03:22Z".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_package_copied_again_drops_the_host_build_made_from_it() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        let build = |container: &str| crate::build_record::build_dir(project.path(), container);
+        // `state` runs on the host, `queue` in a VM.
+        let host = build_record(recorded_source(project.path(), "state"), false);
+        let vm = build_record(recorded_source(project.path(), "queue"), true);
+        crate::build_record::write(&build("state"), &host).unwrap();
+        crate::build_record::write(&build("queue"), &vm).unwrap();
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(
+            build("state").join("build.json").is_file(),
+            "nothing copied"
+        );
+
+        for container in ["state", "queue"] {
+            std::fs::remove_dir_all(workers.join(container)).unwrap();
+        }
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::build_record::read(&build("state")).unwrap(),
+            None,
+            "the host build ran in the directory that is gone"
+        );
+        assert_eq!(
+            crate::build_record::read(&build("queue")).unwrap(),
+            Some(vm),
+            "the image holds its own copy"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_package_update_keeps_the_host_build_for_the_rebuild_to_report() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        let build = crate::build_record::build_dir(project.path(), "state");
+        let host = build_record(recorded_source(project.path(), "state"), false);
+        crate::build_record::write(&build, &host).unwrap();
+
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.1.0", &updated)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            crate::build_record::read(&build).unwrap(),
+            Some(host.clone())
+        );
+        let changes = crate::build_record::changes(
+            &host,
+            &project.path().join("worker-compose.yaml"),
+            "state",
+            &project.path().join(".workers/state"),
+        )
+        .unwrap();
+        assert_eq!(
+            changes,
+            [crate::build_record::Change::Source {
+                old: host.source.clone(),
+                new: recorded_source(project.path(), "state"),
+            }],
+            "spec 5.3: a package update, which rebuilds"
+        );
     }
 
     /// Every `.packages.json` entry names a directory holding that package: what one run at a
@@ -3311,52 +3445,6 @@ mod tests {
 
         assert_eq!(error.code(), "BUILD_PLAN_STALE");
         assert_eq!(tree(&workers), before);
-    }
-
-    #[tokio::test]
-    async fn a_new_package_directory_drops_the_host_build_made_in_the_old_one() {
-        let project = tempfile::tempdir().unwrap();
-        let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
-        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
-        let lock = locked(
-            project.path(),
-            cache.path(),
-            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
-        )
-        .await;
-        materialize_project(project.path(), cache.path(), &lock)
-            .await
-            .unwrap();
-        let build = |container: &str| crate::build_record::build_dir(project.path(), container);
-        // `state` runs on the host, `queue` in a VM.
-        crate::build_record::write(&build("state"), &build_record("state", false)).unwrap();
-        crate::build_record::write(&build("queue"), &build_record("queue", true)).unwrap();
-
-        materialize_project(project.path(), cache.path(), &lock)
-            .await
-            .unwrap();
-        assert!(
-            build("state").join("build.json").is_file(),
-            "nothing copied"
-        );
-
-        for container in ["state", "queue"] {
-            std::fs::remove_dir_all(workers.join(container)).unwrap();
-        }
-        materialize_project(project.path(), cache.path(), &lock)
-            .await
-            .unwrap();
-        assert_eq!(
-            crate::build_record::read(&build("state")).unwrap(),
-            None,
-            "the host build ran in the directory that is gone"
-        );
-        assert_eq!(
-            crate::build_record::read(&build("queue")).unwrap(),
-            Some(build_record("queue", true)),
-            "the image holds its own copy"
-        );
     }
 
     #[tokio::test]

@@ -166,7 +166,7 @@ pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
 }
 
 /// Writes `<build_dir>/build.json` atomically: `build.json.tmp-<id>`, unique to the writer,
-/// then a rename.
+/// then a rename. The `build.json.tmp*` an interrupted write left are removed first.
 ///
 /// Creates `build_dir`, and the `.gitignore` of its `.build/` when there is none yet (spec
 /// 3.2). Only a parent named `.build` gets one: a `build_dir` elsewhere leaves its parent alone.
@@ -182,6 +182,7 @@ pub fn write(build_dir: &Path, record: &BuildRecord) -> Result<()> {
         path: build_dir.to_path_buf(),
         source,
     })?;
+    remove_temporary_files(build_dir)?;
     let path = build_dir.join(BUILD_FILE);
     let mut json = serde_json::to_vec_pretty(record).map_err(|error| ComposeError::Io {
         path: path.clone(),
@@ -189,6 +190,34 @@ pub fn write(build_dir: &Path, record: &BuildRecord) -> Result<()> {
     })?;
     json.push(b'\n');
     replace_file(&path, &json)
+}
+
+/// Removes the `build.json.tmp*` files an interrupted write left in `build_dir`. A build
+/// directory has one writer at a time (spec 5.4), so none of them is being written.
+fn remove_temporary_files(build_dir: &Path) -> Result<()> {
+    let io = |path: &Path| {
+        let path = path.to_path_buf();
+        move |source| ComposeError::Io { path, source }
+    };
+    for entry in std::fs::read_dir(build_dir).map_err(io(build_dir))? {
+        let entry = entry.map_err(io(build_dir))?;
+        let temporary = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("build.json.tmp"));
+        if temporary && !entry.file_type().map_err(io(&entry.path()))?.is_dir() {
+            match std::fs::remove_file(entry.path()) {
+                Err(source) if source.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(ComposeError::Io {
+                        path: entry.path(),
+                        source,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The container's current source: `.workers/.packages.json` beside `compose_file`, or the file.
@@ -676,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_temporary_file_is_not_a_build_and_does_not_stop_a_write() {
+    fn a_partial_temporary_file_is_not_a_build_and_the_next_write_removes_it() {
         let dir = tempfile::tempdir().unwrap();
         let build = build_dir(dir.path(), "link");
         // What interrupted writes leave behind: this version's name, and the older fixed one.
@@ -692,7 +721,8 @@ mod tests {
         assert_eq!(read(&build).unwrap(), Some(record));
         assert_eq!(
             names(&build),
-            ["build.json", "build.json.tmp", "build.json.tmp-0123"]
+            ["build.json"],
+            "one writer at a time (spec 5.4)"
         );
     }
 
