@@ -650,16 +650,16 @@ async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
         .up_frozen(Some(&file), None, "frozen".into())
         .await
         .unwrap_err();
-    assert_eq!(err.code(), "SANDBOX_ADAPTER_NOT_DECLARED");
+    assert_eq!(err.code(), "VM_SCRIPTS_MISSING");
     assert_eq!(
         err.to_string(),
-        "vm needs the sandbox adapter 'sandbox-libkrun', and --frozen does not edit the file. Run up once without --frozen, or: iii call compose::add worker=iii-sandbox"
+        "vm: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and scripts.run: iii sandbox ...). --frozen does not edit the file: run `iii compose --up` once without --frozen to rewrite them"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
 
     let err = iii_compose::build::build_frozen(&file).await.unwrap_err();
-    assert_eq!(err.code(), "SANDBOX_ADAPTER_NOT_DECLARED");
+    assert_eq!(err.code(), "VM_SCRIPTS_MISSING");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
 }
