@@ -854,12 +854,12 @@ or no loaded project, it fails as `iii compose logs` does, with `ENGINE_CALL_FAI
 iii sandbox build link
 ```
 
-| Exit code | Meaning                                                                                                                                         |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`       | Built.                                                                                                                                          |
+| Exit code | Meaning                                                                                                                                             |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Built.                                                                                                                                              |
 | `1`       | The build failed: the adapter's S-code, such as [S507](#S507), [S509](#S509), or [S501](#S501) for a source outside its host roots, or `TIMED_OUT`. |
-| `125`     | `iii sandbox` itself failed. The codes are in the table below.                                                                                  |
-| `130`     | Cancelled (`OPERATION_CANCELLED`). Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting.         |
+| `125`     | `iii sandbox` itself failed. The codes are in the table below.                                                                                      |
+| `130`     | Cancelled (`OPERATION_CANCELLED`). Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting.             |
 
 On failure, the last line has this form, which Compose parses for `BUILD_FAILED`:
 
@@ -876,17 +876,17 @@ image it booted until it restarts. One build per VM runs at a time: a second one
 
 These codes are failures of `iii sandbox` itself, which exits with `125`:
 
-| Code                           | When                                                                                   |
-| ------------------------------ | -------------------------------------------------------------------------------------- |
-| `SANDBOX_ENV_INVALID`          | Inside Compose, a variable Compose hands the command is missing or malformed.          |
-| `SANDBOX_INVALID_ARGUMENTS`    | Arguments that do not fit where the command runs, such as `--file` inside Compose.     |
-| `SANDBOX_BUILD_UNSUPPORTED`    | The adapter does not advertise `worker.build`.                                         |
-| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter implements another major version of the sandbox contract.                  |
-| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows.                  |
-| `ENGINE_CALL_FAILED`           | The engine, the adapter, or the daemon was not reached, or did not answer as expected. |
-| `UNKNOWN_PROJECT`              | Outside Compose, the daemon holds no such project.                                     |
-| `BUILD_MISSING`                | `iii sandbox run` without a `build.json` that records an image.                        |
-| `SANDBOX_FAILED`               | Any other failure of `iii sandbox` itself.                                             |
+| Code                           | When                                                                                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SANDBOX_ENV_INVALID`          | `iii sandbox run` or `destroy` without the variables Compose hands a VM container (from a plain shell, for example), or `iii sandbox build` inside Compose with an incomplete set. |
+| `SANDBOX_INVALID_ARGUMENTS`    | Arguments that do not fit where the command runs, such as `--file` inside Compose.                                                                                                 |
+| `SANDBOX_BUILD_UNSUPPORTED`    | The adapter does not advertise `worker.build`.                                                                                                                                     |
+| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter implements another major version of the sandbox contract.                                                                                                              |
+| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows.                                                                                                              |
+| `ENGINE_CALL_FAILED`           | The engine, the adapter, or the daemon was not reached, or did not answer as expected.                                                                                             |
+| `UNKNOWN_PROJECT`              | Outside Compose, the daemon holds no such project.                                                                                                                                 |
+| `BUILD_MISSING`                | `iii sandbox run` without a `build.json` that records an image.                                                                                                                    |
+| `SANDBOX_FAILED`               | Any other failure of `iii sandbox` itself.                                                                                                                                         |
 
 ### Boot the image with `iii sandbox run`
 
@@ -914,27 +914,28 @@ iii sandbox run --command '<that command>'
 [Upgrading from 0.26.x](../upgrading/from-0-26-x#keep-the-data-of-migrated-vms)). It takes no
 arguments: like `iii sandbox run`, it acts on the VM that the
 [environment variables](#environment-variables) below name, which Compose sets for a VM container's
-scripts. From outside Compose, `compose::remove` of the container has the adapter destroy the same
-disk. The adapter refuses to destroy a VM whose build is still running, with [S509](#S509).
+scripts. Run from a plain shell, without those variables, it fails with `SANDBOX_ENV_INVALID`. From
+outside Compose, `compose::remove` of the container has the adapter destroy the same disk. The
+adapter refuses to destroy a VM whose build is still running, with [S509](#S509).
 
 ### Environment variables
 
 Compose hands `iii sandbox build` and `iii sandbox run` these variables:
 
-| Variable                | Value                                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------------- |
-| `III_SANDBOX_TOKEN`     | The scoped `worker::*` token of the container's own VM.                                |
-| `III_SANDBOX_STATE_KEY` | The VM's state key: the same key boots the same persistent state.                      |
-| `III_SANDBOX_ADAPTER`   | The adapter's name, for example `sandbox-libkrun`.                                     |
-| `III_SANDBOX_NAMESPACE` | The namespace the adapter's functions are registered in.                               |
-| `III_WORKER_DIR`        | A `path://` worker's directory, synced into the VM.                                    |
-| `III_WORKER_ENV_KEYS`   | Comma-separated names of the variables that belong to the worker and reach the guest. |
-| `III_STOP_TIMEOUT_MS`   | How long Compose waits after its `SIGTERM` before it kills the command.                |
-| `III_BUILD_DIR`         | `<project>/.build/<container>`.                                                        |
-| `III_BUILD_TIMEOUT_MS`  | `scripts.build_timeout`, for `iii sandbox build`.                                      |
+| Variable                 | Value                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------- |
+| `III_SANDBOX_TOKEN`      | The scoped `worker::*` token of the container's own VM.                               |
+| `III_SANDBOX_STATE_KEY`  | The VM's state key: the same key boots the same persistent state.                     |
+| `III_SANDBOX_ADAPTER`    | The adapter's name, for example `sandbox-libkrun`.                                    |
+| `III_SANDBOX_NAMESPACE`  | The namespace the adapter's functions are registered in.                              |
+| `III_WORKER_DIR`         | A `path://` worker's directory, synced into the VM.                                   |
+| `III_WORKER_ENV_KEYS`    | Comma-separated names of the variables that belong to the worker and reach the guest. |
+| `III_STOP_TIMEOUT_MS`    | How long Compose waits after its `SIGTERM` before it kills the command.               |
+| `III_BUILD_DIR`          | `<project>/.build/<container>`.                                                       |
+| `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
-| `III_PACKAGE_DIR`       | `<project>/.workers/<container>`, for a bundle.                                        |
-| `III_PACKAGE_NAME`      | The bundle's manifest name, for a bundle.                                              |
+| `III_PACKAGE_DIR`        | `<project>/.workers/<container>`, for a bundle.                                       |
+| `III_PACKAGE_NAME`       | The bundle's manifest name, for a bundle.                                             |
 
 `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`, and
 `III_PACKAGE_NAME` never reach the guest and are not listed in `III_WORKER_ENV_KEYS`. The guest
@@ -956,14 +957,14 @@ case.
 `worker::build` builds the image of one container's VM. The caller calls it directly as
 `<adapter>::worker::build`; it is not a `sandbox::*` operation of the router.
 
-| Request field | Description                                                                                                                           |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `auth`        | The project token or the VM's scoped token.                                                                                           |
-| `state_key`   | The VM the build is for. A scoped token is checked against it.                                                                        |
-| `worker_name` | Container key, for logs and errors.                                                                                                   |
-| `source`      | The worker source, as for `worker::start`.                                                                                            |
-| `output_dir`  | Absolute host directory of the build, `<project>/.build/<container>`. Must be under the adapter's host roots.                         |
-| `env`         | Environment of the setup and install steps: the guest's variables, nothing from the host.                                            |
+| Request field | Description                                                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth`        | The project token or the VM's scoped token.                                                                                                    |
+| `state_key`   | The VM the build is for. A scoped token is checked against it.                                                                                 |
+| `worker_name` | Container key, for logs and errors.                                                                                                            |
+| `source`      | The worker source, as for `worker::start`.                                                                                                     |
+| `output_dir`  | Absolute host directory of the build, `<project>/.build/<container>`. Must be under the adapter's host roots.                                  |
+| `env`         | Environment of the setup and install steps: the guest's variables, nothing from the host.                                                      |
 | `logs`        | Writer end of a channel for the build's output, one `LogRecord` JSON per text frame. Required: the build lasts as long as the caller reads it. |
 
 The response carries `build_id`, the digest of the image written (`sha256:<hex>`), passed back on
