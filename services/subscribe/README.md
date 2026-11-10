@@ -1,7 +1,7 @@
 # subscribe
 
-The iii.dev email signup API, deployed on iii Cloud. One function, `subscribe::create`, on
-`POST /api/subscribe`:
+The iii.dev email signup API, deployed on iii Cloud. One function, `subscribe::create`, bound to
+`POST /api/subscribe` by observing the http worker's `http::on-request` (iii 0.26):
 
 1. Looks the address up in Resend Contacts.
 2. New address: sends the welcome template, then creates the contact. The contact is the record

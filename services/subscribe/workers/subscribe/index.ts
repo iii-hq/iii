@@ -27,11 +27,13 @@ const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 iii.registerFunction('subscribe::create', (req: Request) => subscribe(req), {
   description: 'Add an email to Resend Contacts and send the iii welcome email once',
 })
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'subscribe::create',
-  config: { api_path: '/api/subscribe', http_method: 'POST' },
-})
+// iii 0.26: an HTTP route is an observer of the http worker's http::on-request
+// (registerTrigger is gone, and a 0.26 engine drops it without an error).
+const route = iii.observe(
+  { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe' } },
+  'subscribe::create',
+)
+await route.ready()
 
 process.on('SIGTERM', async () => {
   await iii.shutdown()
