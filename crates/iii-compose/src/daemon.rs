@@ -5472,8 +5472,7 @@ containers:
     }
 
     /// A `--frozen` build writes nothing, so a file saved while it downloads
-    /// is kept; the build then fails with `BUILD_PLAN_STALE` before it fills
-    /// `.workers/` from what it read (KAN-281, review B1).
+    /// is kept and the build still succeeds.
     #[tokio::test]
     async fn a_frozen_build_keeps_an_edit_made_while_it_downloaded() {
         use crate::state::TEST_PACKAGE_CACHE;
@@ -5506,12 +5505,59 @@ containers:
             .mount(&server)
             .await;
 
+        TEST_PACKAGE_CACHE
+            .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// A `--frozen` build fills `.workers/` from the lock it read: a lock that changed while it
+    /// downloaded is kept, and the build fails with `BUILD_PLAN_STALE` before it fills anything.
+    #[tokio::test]
+    async fn a_frozen_build_refuses_a_lock_changed_while_it_downloaded() {
+        use crate::state::TEST_PACKAGE_CACHE;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (dir, path) = vm_project(
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+        );
+        let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        TEST_PACKAGE_CACHE
+            .scope(
+                warm.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        let lock = crate::lockfile::lock_path(&path);
+        let saved = format!("{}# saved\n", std::fs::read_to_string(&lock).unwrap());
+        let (target, edit) = (lock.clone(), saved.clone());
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, &edit).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(archive.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let workers = dir.path().join(".workers");
+        let before = std::fs::read_to_string(workers.join(".packages.json")).ok();
+
         let error = TEST_PACKAGE_CACHE
             .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
             .await
             .unwrap_err();
+
         assert_eq!(error.code(), "BUILD_PLAN_STALE");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), saved);
+        assert_eq!(
+            std::fs::read_to_string(workers.join(".packages.json")).ok(),
+            before
+        );
     }
 
     /// The generated adapter is appended after the VMs, with no edge in the

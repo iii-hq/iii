@@ -150,18 +150,23 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     // time, so a stale build never undoes the daemon's newer `.workers/`.
     // The lock must still be the one this build stands on: the one it found
     // when it wrote none, or, when it wrote one, a lock resolving every
-    // container to the package it wrote.
+    // container to the package it wrote. A build that wrote nothing compares
+    // the lock alone, since `.workers/` follows the lock: an edit of the file
+    // made meanwhile is kept and fails nothing. One that wrote also compares
+    // the file with what it wrote.
+    let wrote = edited != text || prepared.changed();
     let unchanged = || {
-        let current = std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
-            path: file.path.clone(),
-            source,
-        })?;
+        let file_holds = !wrote
+            || std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+                path: file.path.clone(),
+                source,
+            })? == edited;
         let lock_holds = if prepared.changed() {
             locks_the_same_packages(prepared.path(), &prepared)?
         } else {
             read_if_present(prepared.path())? == found_lock
         };
-        if current != edited || !lock_holds {
+        if !file_holds || !lock_holds {
             return Err(ComposeError::BuildPlanStale {
                 path: file.path.clone(),
             });
