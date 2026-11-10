@@ -1528,29 +1528,40 @@ pub(crate) async fn remote_build(
 ) -> Result<(), Failure> {
     let operation_id = format!("compose:sandbox-build:{}", uuid::Uuid::new_v4());
     // Until `compose::build` goes out, a signal ends the command at once: nothing was asked yet.
-    let preamble = async {
-        // Where each container's log ends now, so only what the build adds is printed. It is
-        // also `iii compose logs`' own call: a missing daemon or project fails as it does there.
-        let cursors: BTreeMap<String, LogCursor> =
+    let not_sent = |number: i32| {
+        Failure::cancelled(format!(
+            "stopped by {} before compose::build was sent; nothing was built",
+            signal_name(number)
+        ))
+    };
+    // Where each container's log ends now, so only what the build adds is printed. It is also
+    // `iii compose logs`' own call: a missing daemon or project fails as it does there.
+    let baseline = async {
+        Ok::<BTreeMap<String, LogCursor>, Failure>(
             compose_logs(client, project, worker, &BTreeMap::new(), 0, 0)
                 .await?
                 .containers
                 .into_iter()
                 .filter_map(|batch| Some((batch.container, batch.cursor?)))
-                .collect();
-        let progress = observe_progress(client, project, &operation_id).await;
-        Ok::<_, Failure>((cursors, progress))
+                .collect(),
+        )
     };
-    let (cursors, (events, observer)) = tokio::select! {
+    let cursors = tokio::select! {
+        biased;
+        (number, _) = shutdown.requested() => return Err(not_sent(number)),
+        cursors = baseline => cursors?,
+    };
+    // The observer is the engine's as soon as it is asked for: from here every way out
+    // disposes of it.
+    let (events, observer) = observe_progress(client, project, &operation_id);
+    tokio::select! {
         biased;
         (number, _) = shutdown.requested() => {
-            return Err(Failure::cancelled(format!(
-                "stopped by {} before compose::build was sent; nothing was built",
-                signal_name(number)
-            )));
+            dispose(&observer).await;
+            return Err(not_sent(number));
         }
-        started = preamble => started?,
-    };
+        _ = tokio::time::timeout(OBSERVE_WAIT, observer.ready()) => {}
+    }
     let mut request = serde_json::Map::new();
     request.insert("operation_id".into(), operation_id.clone().into());
     if let Some(worker) = worker {
@@ -1558,9 +1569,20 @@ pub(crate) async fn remote_build(
     }
     // Not raced with a signal: the call is bounded, and once it went out only `compose::cancel`
     // stops what it started, which `follow_operation` sends first thing.
-    if let Err(failure) =
+    if let Err(mut failure) =
         daemon_call(client, project, "compose::build", request, CALL_TIMEOUT).await
     {
+        // Compose refused it with its own code, or the answer was lost: then the daemon may
+        // have accepted it, and the operation is ours to stop. A cancel of an id it does not
+        // know changes nothing.
+        if failure.code == ENGINE_CALL_FAILED {
+            let mut payload = serde_json::Map::new();
+            payload.insert("operation_id".into(), operation_id.clone().into());
+            let _ = daemon_call(client, project, "compose::cancel", payload, CALL_TIMEOUT).await;
+            failure.message.push_str(&format!(
+                "; sent compose::cancel for {operation_id} in case the daemon accepted it"
+            ));
+        }
         dispose(&observer).await;
         return Err(failure);
     }
@@ -1723,9 +1745,10 @@ async fn operation_snapshot(
 }
 
 /// The operation's progress events, observed (spec 7.4) into a function of this client's own,
-/// and the observer, for its disposal. An observer the engine does not make active in time
-/// costs only its events: the snapshots still follow the operation.
-async fn observe_progress(
+/// and the observer, for its disposal; the caller waits for it to become active. An observer the
+/// engine does not make active in time costs only its events: the snapshots still follow the
+/// operation.
+fn observe_progress(
     client: &IIIClient,
     project: &ProjectTarget,
     operation_id: &str,
@@ -1752,7 +1775,6 @@ async fn observe_progress(
             .capture([Capture::Input]),
         target.as_str(),
     );
-    let _ = tokio::time::timeout(OBSERVE_WAIT, observer.ready()).await;
     (events, observer)
 }
 
@@ -2188,6 +2210,14 @@ mod tests {
         KeepAlive,
     }
 
+    /// What the fake engine does with an `observe`.
+    enum Observe {
+        /// Makes the observer active.
+        Answer,
+        /// Leaves it pending, after calling the hook.
+        Pending(Box<dyn Fn() + Send + Sync>),
+    }
+
     /// [`build_engine_with`] without progress events.
     async fn build_engine(
         answer: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
@@ -2197,7 +2227,7 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
         Arc<tokio::sync::Notify>,
     ) {
-        build_engine_with(answer, frames, Vec::new()).await
+        build_engine_with(answer, frames, Vec::new(), Observe::Answer).await
     }
 
     /// A fake engine that speaks observe. `answer` answers each call as `fake_engine`'s does,
@@ -2208,11 +2238,13 @@ mod tests {
     /// closed its end first. `worker::build` is answered only once that reader connected, or
     /// with an error 3 s later: a command that reads after the call fails. Once
     /// `compose::build` is answered, the observer's target is called with each of `progress` as
-    /// its `input`, carrying the build's `operation_id`.
+    /// its `input`, carrying the build's `operation_id`. `observe` says what becomes of an
+    /// `observe`.
     async fn build_engine_with(
         answer: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
         frames: Vec<Frame>,
         progress: Vec<Value>,
+        observe: Observe,
     ) -> (
         IIIClient,
         tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
@@ -2229,17 +2261,19 @@ mod tests {
         let answer = Arc::new(answer);
         let frames = Arc::new(frames);
         let progress = Arc::new(progress);
+        let observe = Arc::new(observe);
         let gone = Arc::new(tokio::sync::Notify::new());
         let reader = Arc::new(watch::Sender::new(false));
         let (calls, called) = tokio::sync::mpsc::unbounded_channel();
         let reader_gone = gone.clone();
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
-                let (calls, answer, frames, progress, gone, reader) = (
+                let (calls, answer, frames, progress, observe, gone, reader) = (
                     calls.clone(),
                     answer.clone(),
                     frames.clone(),
                     progress.clone(),
+                    observe.clone(),
                     reader_gone.clone(),
                     reader.clone(),
                 );
@@ -2311,6 +2345,10 @@ mod tests {
                                     .as_str()
                                     .map(str::to_string);
                                 let _ = calls.send(("observe".to_string(), message.clone()));
+                                if let Observe::Pending(hook) = observe.as_ref() {
+                                    hook();
+                                    continue;
+                                }
                                 json!({"type": "observeresult", "id": message["id"], "state": "active"})
                             }
                             "unobserve" => {
@@ -3592,8 +3630,13 @@ mod tests {
             event(2, "building", "pulling docker.io/iiidev/node"),
             event(3, "built", "sha256:7d41"),
         ];
-        let (client, mut called, _) =
-            build_engine_with(daemon(5, built_api(), cancelled()), Vec::new(), progress).await;
+        let (client, mut called, _) = build_engine_with(
+            daemon(5, built_api(), cancelled()),
+            Vec::new(),
+            progress,
+            Observe::Answer,
+        )
+        .await;
         let (printer, printed) = captured();
         remote_build(&client, &project(), Some("api"), &never(), printer)
             .await
@@ -3620,6 +3663,75 @@ mod tests {
             payload(&calls, "compose::build")["operation_id"]
         );
         assert_eq!(payload(&calls, "unobserve")["id"], observe["id"]);
+    }
+
+    /// K9: a signal while the observer is not active yet removes it from the engine.
+    #[tokio::test]
+    async fn a_signal_while_the_observer_settles_removes_it() {
+        let (sender, shutdown) = Shutdown::manual();
+        let hook = move || {
+            sender.send_replace(Some((2, Instant::now())));
+        };
+        let (client, mut called, _) = build_engine_with(
+            daemon(0, built_api(), cancelled()),
+            Vec::new(),
+            Vec::new(),
+            Observe::Pending(Box::new(hook)),
+        )
+        .await;
+        let (printer, _) = captured();
+        let failure = remote_build(&client, &project(), Some("api"), &shutdown, printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (OPERATION_CANCELLED, CANCELLED_EXIT)
+        );
+        let calls = calls(&mut called);
+        let observe = payload(&calls, "observe");
+        assert_eq!(payload(&calls, "unobserve")["id"], observe["id"]);
+        assert!(payloads(&calls, "compose::build").is_empty(), "{calls:?}");
+    }
+
+    /// K10: a `compose::build` whose answer was lost may have been accepted: it is cancelled.
+    /// One Compose refused with its own code was not, and nothing is cancelled.
+    #[tokio::test]
+    async fn a_compose_build_without_an_answer_is_cancelled_and_a_refused_one_is_not() {
+        let lost = json!({"error": {"code": "timeout", "message": "invocation timed out"}});
+        let refused = json!({"error": {"code": "UNKNOWN_PROJECT", "message": "no project"}});
+        for (answer, cancels) in [(lost, true), (refused, false)] {
+            let (client, mut called) = fake_engine(move |function, payload| match function {
+                "compose::logs" => api_logs(json!([]), 10),
+                "compose::build" => answer.clone(),
+                "compose::cancel" => {
+                    answered(json!({"operation_id": payload["operation_id"], "cancelled": false}))
+                }
+                _ => json!(true),
+            })
+            .await;
+            let (printer, _) = captured();
+            let failure = remote_build(&client, &project(), Some("api"), &never(), printer)
+                .await
+                .unwrap_err();
+            assert_eq!(failure.exit, RUNNER_FAILED, "{failure}");
+            let calls = calls(&mut called);
+            let cancel = payloads(&calls, "compose::cancel");
+            if cancels {
+                assert_eq!(failure.code, ENGINE_CALL_FAILED);
+                assert_eq!(
+                    cancel.first().map(|request| &request["operation_id"]),
+                    Some(&payload(&calls, "compose::build")["operation_id"]),
+                    "{calls:?}"
+                );
+                assert!(
+                    failure.message.contains("sent compose::cancel"),
+                    "{failure}"
+                );
+            } else {
+                assert_eq!(failure.code, "UNKNOWN_PROJECT");
+                assert!(cancel.is_empty(), "{calls:?}");
+            }
+        }
     }
 
     /// A signal while the command still prepares (the daemon is slow) ends it at once, and the
