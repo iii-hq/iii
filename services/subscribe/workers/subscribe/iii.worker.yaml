@@ -1,0 +1,6 @@
+name: subscribe
+description: iii.dev email signup, POST /api/subscribe (Resend contact + welcome email).
+runtime:
+  base_image: oven/bun:1.3
+scripts:
+  start: bun run index.ts

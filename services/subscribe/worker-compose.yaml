@@ -1,0 +1,18 @@
+# iii.dev email signup API on iii Cloud. RESEND_API_KEY is a secret of the
+# iii Cloud environment (Config & secrets), never a value in this file.
+startup_timeout: 60s
+stop_timeout: 10s
+containers:
+  http:
+    worker: package://http
+    version: "0.22.1"
+  subscribe:
+    worker: path://./workers/subscribe
+    start_after: [http]
+    environment:
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_TEMPLATE_ID: 2960e2b7-5ece-41e1-901b-a8614d7f5226
+      RESEND_FROM: Hello from iii <hello@email.iii.dev>
+      RESEND_SUBJECT: Welcome to the iii community
+      RESEND_SEGMENT_ID: ${RESEND_SEGMENT_ID:-}
+      ALLOWED_ORIGINS: https://iii.dev,https://www.iii.dev,https://iii-preview.iii.dev
