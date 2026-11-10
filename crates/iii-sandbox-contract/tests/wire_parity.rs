@@ -84,7 +84,7 @@ fn every_code_has_a_fixture_row() {
     }
 }
 
-/// The categories section 6.5 of the explicit-VM-mode spec gives the build codes.
+/// The build codes keep the categories section 6.5 of the explicit VM mode spec gives them.
 #[test]
 fn build_codes_have_their_categories() {
     for (code, error_type) in [
@@ -207,6 +207,22 @@ fn requests_ignore_unknown_fields() {
     from_value::<ListRequest>(json!({"show_all": true})).expect("ListRequest");
     from_value::<CatalogListRequest>(json!({"x": 1})).expect("CatalogListRequest");
     from_value::<StopRequest>(json!({"sandbox_id": "s", "extra": 1})).expect("StopRequest");
+}
+
+/// A field a later minor adds to a `worker::*` request is ignored, as a 1.2 adapter ignores
+/// `build`.
+#[test]
+fn worker_requests_ignore_unknown_fields() {
+    let with_extra = |name: &str| {
+        let mut example = wire_examples().remove(name).unwrap();
+        example
+            .as_object_mut()
+            .unwrap()
+            .insert("added_in_a_later_minor".into(), json!({"x": 1}));
+        example
+    };
+    from_value::<WorkerStartRequest>(with_extra("WorkerStartRequest")).expect("WorkerStartRequest");
+    from_value::<WorkerBuildRequest>(with_extra("WorkerBuildRequest")).expect("WorkerBuildRequest");
 }
 
 #[test]

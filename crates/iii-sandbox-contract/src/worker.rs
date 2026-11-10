@@ -58,9 +58,10 @@ pub enum WorkerSource {
     Bundle {
         /// Manifest name, not the container key.
         package: String,
-        /// The container's directory in the project's `.workers/`, `<project>/.workers/<container>`.
-        /// `worker::build` copies it into the image; a run does not mount it. Before contract
-        /// 1.3, the bundle in Compose's package cache.
+        /// The container's directory in the project's `.workers/`,
+        /// `<project>/.workers/<container>`. `worker::build` copies it into the image; a
+        /// `worker::start` with `build` does not mount it. Before contract 1.3 it was the bundle
+        /// in Compose's package cache.
         host_path: String,
     },
     /// Local sources always sync into the VM.
@@ -115,9 +116,9 @@ pub struct WorkerBuildRequest {
     /// Env of the setup/install steps: `guest_env`, nothing from the host.
     pub env: BTreeMap<String, String>,
     /// Writer end of a channel for the build's output, one `LogRecord` JSON per text frame.
-    /// Required: the build lives as long as the caller reads it. The adapter writes to it at
-    /// least every 5 s, a one-byte binary frame keeping it alive; readers take records from
-    /// text frames only.
+    /// Required: the build lives as long as the caller reads it. When it has had no output to
+    /// write for 5 s, the adapter writes a one-byte binary frame to keep the channel alive;
+    /// readers take records from text frames only.
     pub logs: StreamChannelRef,
 }
 
