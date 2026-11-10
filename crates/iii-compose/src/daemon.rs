@@ -1278,6 +1278,23 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
+        // Spec 5.3: what changed package is rebuilt while it still runs; one whose build fails
+        // keeps running on its old build, and is not restarted.
+        let changed: Vec<String> = restart
+            .iter()
+            .filter(|key| prepared.package_changed(key))
+            .cloned()
+            .collect();
+        let unbuilt = project
+            .rebuild_changed(&current, &changed, &operation_id)
+            .await;
+        restart.retain(|key| !unbuilt.iter().any(|(failed, _)| failed == key));
+        let unbuilt: Vec<OpResult> = unbuilt
+            .iter()
+            .map(|(key, error)| {
+                crate::lifecycle::failed_op(format!("{operation_id}-build-{key}"), Some(key), error)
+            })
+            .collect();
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
             .reconcile_file(current, &restart, operation_id)
@@ -1288,6 +1305,7 @@ impl Daemon {
             });
         }
         let status = if up.status == OpStatus::Failed
+            || !unbuilt.is_empty()
             || restarted
                 .iter()
                 .any(|result| result.status == OpStatus::Failed)
@@ -1297,7 +1315,10 @@ impl Daemon {
             OpStatus::Ok
         };
         let version = prepared.resolved_version(&container).map(str::to_string);
-        let operations = restarted.iter().chain(std::iter::once(&up));
+        let operations = unbuilt
+            .iter()
+            .chain(restarted.iter())
+            .chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
             status,
             true,
@@ -1684,6 +1705,43 @@ impl Daemon {
             ));
         }
 
+        // Spec 5.3: what changed package is rebuilt while it still runs. A build that fails leaves
+        // the project running as it is, on its old builds: the restart below would stop it.
+        if let Some(project) = self.loaded_project(path).await {
+            let changed: Vec<String> = changed_versions.keys().cloned().collect();
+            let unbuilt = project
+                .rebuild_changed(&current, &changed, &operation_id)
+                .await;
+            if !unbuilt.is_empty() {
+                for (worker, error) in &unbuilt {
+                    crate::report::update_failed(path, &operation_id, worker, &error.to_string());
+                    if let Some(operation) = crate::operation::active(&operation_id) {
+                        operation
+                            .emit(Some(worker), "failed", error.to_string())
+                            .await;
+                    }
+                }
+                let results: Vec<OpResult> = unbuilt
+                    .iter()
+                    .map(|(worker, error)| {
+                        crate::lifecycle::failed_op(
+                            format!("{operation_id}-build-{worker}"),
+                            Some(worker),
+                            error,
+                        )
+                    })
+                    .collect();
+                return Ok(MutationOutcome::from_operations(
+                    OpStatus::Failed,
+                    true,
+                    primary,
+                    Some(&requested),
+                    version,
+                    results.iter(),
+                ));
+            }
+        }
+
         // The whole project, not just this container, and deliberately so. A
         // cached project is the file as it was read, so the new version is only
         // picked up once the project is dropped and re-read — and dropping it
@@ -1808,6 +1866,9 @@ impl Daemon {
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
         self.prepare(&operation_id, std::future::ready(())).await?;
+        // Its `.workers/<container>/` goes with its lock entry (spec 3.3).
+        let package_cache = crate::state::StateStore::package_cache()?;
+        crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
@@ -1987,7 +2048,7 @@ impl Daemon {
         file: Option<&Path>,
         worker: Option<&str>,
         operation_id: String,
-    ) -> Result<Vec<crate::lifecycle::BuildResult>> {
+    ) -> Result<crate::lifecycle::BuildRun> {
         let path = self.resolve_file(file).await?;
         let path = path.as_path();
         self.validate_engine_policy_file(path)?;
@@ -4344,6 +4405,292 @@ containers:
         (dir, path)
     }
 
+    /// A gzip tarball holding one file, `name`, with `mode`.
+    fn archive_of(name: &str, mode: u32, body: &[u8]) -> Vec<u8> {
+        let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        archive.append_data(&mut header, name, body).unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// A stand-in engine: `sandbox-libkrun` is registered while the last pid in
+    /// `<root>/adapter.pids` lives, and any other worker while `<root>/<worker>/pid` does.
+    async fn pid_engine(root: &Path) -> String {
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+        let root = root.to_path_buf();
+        let alive = |pid: Option<String>| {
+            pid.and_then(|pid| pid.lines().last().and_then(|pid| pid.trim().parse().ok()))
+                .is_some_and(crate::process::is_running)
+        };
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let mut workers = Vec::new();
+                if alive(std::fs::read_to_string(root.join("adapter.pids")).ok()) {
+                    workers.push("sandbox-libkrun".to_string());
+                }
+                for entry in std::fs::read_dir(&root).unwrap().flatten() {
+                    if alive(std::fs::read_to_string(entry.path().join("pid")).ok()) {
+                        workers.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+                let workers: Vec<_> = workers
+                    .iter()
+                    .map(|worker| serde_json::json!({ "name": worker, "namespace": "default" }))
+                    .collect();
+                answered(serde_json::json!({ "workers": workers }))
+            }
+            "engine::functions::list" => answered(serde_json::json!({ "functions": [] })),
+            "configuration::get" => {
+                serde_json::json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(serde_json::json!({ "action": "missing" })),
+            _ => not_found(),
+        })
+        .await;
+        url
+    }
+
+    /// A daemon on `engine`, once connected.
+    async fn connected_daemon(name: &str, engine: String) -> Arc<Daemon> {
+        let daemon = Daemon::start(
+            engine,
+            format!("{name}-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        while !daemon.engine().is_connected() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        daemon
+    }
+
+    /// Spec 3.3: `compose::remove` takes the container's `.build/` and `.workers/` along.
+    #[tokio::test]
+    async fn remove_takes_the_build_and_package_directories_of_the_container() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  api: {worker: path://./api, scripts: {run: x}}\n  web:\n    worker: package://api.workers.iii.dev/web\n    version: 1.0.0\n    scripts: {run: node .}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n  web:\n    worker: package://api.workers.iii.dev/web\n    requested: 1.0.0\n    resolved:\n      name: web\n      version: 1.0.0\n      type: bundle\n      artifacts:\n        {}:\n          url: https://example.test/web\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                "0".repeat(64)
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".workers/web")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".build/web")).unwrap();
+        std::fs::write(dir.path().join(".build/web/build.json"), "{}").unwrap();
+        let daemon = daemon("remove-directories");
+
+        // The rest of the project then waits on an engine nobody runs.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            daemon.remove(Some(&path), &["web".to_string()], "remove".into()),
+        )
+        .await;
+
+        assert!(!dir.path().join(".workers/web").exists());
+        assert!(!dir.path().join(".build/web").exists());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("web"));
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.1: `compose::add` of a registry bundle writes `start_after` and both `scripts`,
+    /// beside the generated adapter, and answers for the bundle it added.
+    #[tokio::test]
+    async fn add_writes_the_explicit_vm_mode_of_a_bundle() {
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let adapter = adapter_archive();
+        let bundle = archive_of(
+            crate::registry::BUNDLE_MANIFEST,
+            0o644,
+            b"name: onboarding\nscripts: {start: node .}\n",
+        );
+        let server = MockServer::start().await;
+        let (adapter_sha, bundle_sha, uri) = (
+            hex::encode(Sha256::digest(&adapter)),
+            hex::encode(Sha256::digest(&bundle)),
+            server.uri(),
+        );
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |request: &wiremock::Request| {
+                let asked: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let name = asked["worker"].as_str().unwrap();
+                let node = if name == "sandbox-libkrun" {
+                    serde_json::json!({
+                        "name": name, "version": "0.4.0", "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": adapter_sha, "url": format!("{uri}/adapter"),
+                        }},
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": name, "version": "0.2.0", "type": "bundle",
+                        "archive_url": format!("{uri}/bundle"), "sha256": bundle_sha,
+                    })
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "graph": [node] }))
+            })
+            .mount(&server)
+            .await;
+        for (route, body) in [("/adapter", adapter.clone()), ("/bundle", bundle.clone())] {
+            Mock::given(matchers::method("GET"))
+                .and(matchers::path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+                .mount(&server)
+                .await;
+        }
+        // Every container required: the stand-in adapter exits before it registers, so the
+        // reconciliation stops there, and the bundle's build never runs.
+        let (dir, path) = vm_project(
+            "required_default: true\ncontainers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = connected_daemon("add-bundle", pid_engine(dir.path()).await).await;
+        let cache = tempfile::tempdir().unwrap();
+
+        let outcome = crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(
+                    server.uri(),
+                    daemon.add(Some(&path), &["onboarding".to_string()], "add".into()),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(
+                "  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\"\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n"
+            ),
+            "{text}"
+        );
+        let outcome = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(outcome["changed"], true, "{outcome}");
+        assert_eq!(outcome["worker"], "onboarding", "{outcome}");
+        assert_eq!(outcome["version"], "0.2.0", "{outcome}");
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.2: an `up` that moves a running generated adapter into ADAPTER_RANGE restarts it
+    /// on the new release, and the container that runs its VM through it follows.
+    #[tokio::test]
+    async fn up_restarts_a_running_adapter_it_moved_into_range() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let archive = archive_of(
+            &format!("sandbox-libkrun{}", std::env::consts::EXE_SUFFIX),
+            0o755,
+            format!(
+                "#!/bin/sh\necho $$ >> {}/adapter.pids\nexec sleep 60\n",
+                root.display()
+            )
+            .as_bytes(),
+        );
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        crate::sandbox::tests::manifest(
+            &root,
+            "app",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(
+            bin.join("iii"),
+            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("iii"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let path = root.join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{PATH: '{}:/usr/bin:/bin'}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.3.1\"\n",
+                bin.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    requested: 0.3.1\n    resolved:\n      name: sandbox-libkrun\n      version: 0.3.1\n      type: binary\n      artifacts:\n        {}:\n          url: {}/artifact\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                server.uri(),
+                hex::encode(Sha256::digest(&archive))
+            ),
+        )
+        .unwrap();
+        let daemon = connected_daemon("adapter-update", pid_engine(&root).await).await;
+        let cache = tempfile::tempdir().unwrap();
+        let pids = || {
+            std::fs::read_to_string(root.join("adapter.pids"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let started = || {
+            std::fs::read_to_string(root.join("started"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), async {
+                    // Running on 0.3.1, as a 0.26 daemon left it.
+                    let project = daemon.project(&path).await.unwrap();
+                    let up = project.up(None, "first".into()).await;
+                    assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+                    assert_eq!((pids(), started()), (1, 1));
+
+                    let up = daemon.up(Some(&path), None, "again".into()).await.unwrap();
+                    assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+                }),
+            )
+            .await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("    version: \"0.4.0\"\n"), "{text}");
+        assert_eq!(pids(), 2, "the adapter was not restarted");
+        assert_eq!(started(), 2, "app did not follow its adapter");
+        daemon.shutdown().await;
+    }
+
     fn daemon(name: &str) -> Arc<Daemon> {
         Daemon::start(
             "ws://127.0.0.1:1/ws".to_string(),
@@ -4440,14 +4787,15 @@ containers:
             .build(Some(&path), Some("api"), "one".into())
             .await
             .unwrap();
-        assert_eq!(statuses(built), [("api".to_string(), Built)]);
+        assert!(!built.cancelled);
+        assert_eq!(statuses(built.results), [("api".to_string(), Built)]);
         assert!(dir.path().join("api/out").exists());
         assert!(dir.path().join(".build/api/build.json").exists());
         let skipped = daemon
             .build(Some(&path), Some("skip"), "skip".into())
             .await
             .unwrap();
-        assert_eq!(statuses(skipped), [("skip".to_string(), Skipped)]);
+        assert_eq!(statuses(skipped.results), [("skip".to_string(), Skipped)]);
         assert_eq!(
             daemon.build_targets(Some(&path), None).await.unwrap(),
             ["api", "skip", "slow"]
@@ -4468,8 +4816,8 @@ containers:
         wait_started().await;
         let began = std::time::Instant::now();
         daemon.down(Some(&path), None, "down".into()).await.unwrap();
-        let error = task.await.unwrap().unwrap_err();
-        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        let run = task.await.unwrap().unwrap();
+        assert!(run.cancelled, "{run:?}");
         assert!(began.elapsed() < std::time::Duration::from_secs(15));
 
         // `compose::cancel` of its operation.
@@ -4483,8 +4831,12 @@ containers:
         wait_started().await;
         let began = std::time::Instant::now();
         operation.cancel();
-        let error = task.await.unwrap().unwrap_err();
-        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        let run = task.await.unwrap().unwrap();
+        assert!(run.cancelled, "{run:?}");
+        assert_eq!(
+            run.results[0].error.as_ref().unwrap().code,
+            "OPERATION_CANCELLED"
+        );
         assert!(began.elapsed() < std::time::Duration::from_secs(15));
         daemon.shutdown().await;
     }

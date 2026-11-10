@@ -128,6 +128,15 @@ pub enum BuildStatus {
     Skipped,
 }
 
+/// What one `compose::build` did: a result per container it reached, and whether a
+/// `compose::cancel` or a `down` stopped it, which makes the operation `cancelled` whatever its
+/// results say (a build its stop killed shows as `failed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildRun {
+    pub results: Vec<BuildResult>,
+    pub cancelled: bool,
+}
+
 /// One container's entry in the `results` of a finished `compose::build`.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
 pub struct BuildResult {
@@ -1236,8 +1245,8 @@ async fn start_one_until_shutdown(
     // Nothing 0.26 ran in a VM starts anywhere until the file says where (spec 7.3): every
     // operation that starts containers rewrites it first, so this is a file read without one.
     if crate::sandbox::migration_due(ctx.file, container) {
-        return Err(ComposeError::VmScriptsMissing {
-            containers: key.to_string(),
+        return Err(ComposeError::VmScriptsNotWritten {
+            container: key.to_string(),
         }
         .into());
     }
@@ -1323,8 +1332,8 @@ async fn start_one_until_shutdown(
                 // command runs it on the host from `.workers/<container>/` (spec 7.5).
                 crate::registry::Payload::Bundle(_) => {
                     let Some(run) = container.scripts.run.clone() else {
-                        return Err(ComposeError::VmScriptsMissing {
-                            containers: key.to_string(),
+                        return Err(ComposeError::VmScriptsNotWritten {
+                            container: key.to_string(),
                         }
                         .into());
                     };
@@ -1365,6 +1374,11 @@ async fn start_one_until_shutdown(
     if let Some(reason) = crate::build_step::due(&ctx.file.path, key, container).await {
         let detail = reason.describe();
         report::daemon_line(&format!("{key}: {detail}"), false);
+        // Before the build's own output in the container's logs (spec 5.2).
+        ctx.logs
+            .sink(key)
+            .write_line(crate::logs::LogStream::Stdout, &format!("{key}: {detail}"))
+            .await;
         report::starting(key, "building");
         if let Some(operation) = operation_id.and_then(crate::operation::active) {
             operation.emit(Some(key), "building", detail).await;
@@ -1678,12 +1692,25 @@ pub(crate) async fn materialize_packages(
 // parallel; integration switches them to the real one.
 #[cfg(not(test))]
 use crate::registry::materialize_project;
+// The stand-in does only what this crate's tests read: the directory of a container no longer
+// locked goes.
 #[cfg(test)]
 async fn materialize_project(
-    _compose_dir: &std::path::Path,
+    compose_dir: &std::path::Path,
     _package_cache: &std::path::Path,
-    _lock: &crate::lockfile::PreparedLock,
+    lock: &crate::lockfile::PreparedLock,
 ) -> Result<()> {
+    let locked: std::collections::BTreeSet<&str> = lock.packages().map(|(key, _)| key).collect();
+    for entry in std::fs::read_dir(compose_dir.join(".workers"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.path().is_dir() && !locked.contains(name.as_str()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
     Ok(())
 }
 
@@ -1841,7 +1868,11 @@ fn version_labels<'a>(
         .collect()
 }
 
-fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -> OpResult {
+pub(crate) fn failed_op(
+    operation_id: String,
+    target: Option<&str>,
+    error: &ComposeError,
+) -> OpResult {
     OpResult {
         operation_id,
         status: OpStatus::Failed,

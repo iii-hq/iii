@@ -1424,7 +1424,7 @@ impl Project {
         worker: Option<&str>,
         operation_id: &str,
         cancel: &crate::shutdown::ShutdownSignal,
-    ) -> Result<Vec<lifecycle::BuildResult>> {
+    ) -> Result<lifecycle::BuildRun> {
         let file = self.file.read().await.clone();
         let targets: Vec<String> = match worker {
             Some(key) if !file.containers.contains_key(key) => {
@@ -1492,9 +1492,7 @@ impl Project {
         let mut results = Vec::with_capacity(targets.len());
         for key in targets {
             if cancel.requested() {
-                return Err(ComposeError::OperationCancelled {
-                    operation_id: operation_id.to_string(),
-                });
+                break;
             }
             let emit = |phase: &'static str, detail: String| {
                 let (operation, key) = (operation.clone(), key.clone());
@@ -1515,11 +1513,12 @@ impl Project {
                 Some(Err(error)) => {
                     lifecycle::BuildResult::failed(&key, lifecycle::OpError::from(&error))
                 }
-                Some(Ok(crate::build_step::Outcome::Cancelled)) => {
-                    return Err(ComposeError::OperationCancelled {
+                Some(Ok(crate::build_step::Outcome::Cancelled)) => lifecycle::BuildResult::failed(
+                    &key,
+                    lifecycle::OpError::from(&ComposeError::OperationCancelled {
                         operation_id: operation_id.to_string(),
-                    });
-                }
+                    }),
+                ),
                 Some(Ok(crate::build_step::Outcome::Built { build_id })) => {
                     lifecycle::BuildResult::built(&key, build_id)
                 }
@@ -1536,7 +1535,95 @@ impl Project {
             }
             results.push(result);
         }
-        Ok(results)
+        // Asked after the builds: one whose process the stop killed may have ended as `failed`
+        // before the cancellation was seen.
+        Ok(lifecycle::BuildRun {
+            results,
+            cancelled: cancel.requested(),
+        })
+    }
+
+    /// Spec 5.3: rebuilds each of `keys` that runs here and whose package `file` changed, while it
+    /// keeps running on its old build, so the restart that follows only runs the new one. Returns
+    /// those whose build failed, which go on running as they are: their restart is not made.
+    pub(crate) async fn rebuild_changed(
+        &self,
+        file: &ComposeFile,
+        keys: &[String],
+        operation_id: &str,
+    ) -> Vec<(String, ComposeError)> {
+        let operation = crate::operation::active(operation_id);
+        let cancel = match &operation {
+            Some(operation) => {
+                self.shutdown
+                    .signal()
+                    .or(crate::shutdown::ShutdownSignal::from_receiver(
+                        operation.cancellation(),
+                    ))
+            }
+            None => self.shutdown.signal(),
+        };
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
+        };
+        let mut failed = Vec::new();
+        for key in keys {
+            let Some(container) = file.containers.get(key) else {
+                continue;
+            };
+            if !self.is_running(key).await {
+                continue;
+            }
+            let Some(reason @ crate::build_step::Reason::PackageChanged { .. }) =
+                crate::build_step::due(&file.path, key, container).await
+            else {
+                continue;
+            };
+            let detail = reason.describe();
+            report::daemon_line(&format!("{key}: {detail}"), false);
+            self.logs
+                .sink(key)
+                .write_line(crate::logs::LogStream::Stdout, &format!("{key}: {detail}"))
+                .await;
+            if let Some(operation) = &operation {
+                operation.emit(Some(key), "building", detail).await;
+            }
+            let error = match Box::pin(lifecycle::build_one(&ctx, key, &cancel)).await {
+                None | Some(Ok(crate::build_step::Outcome::Built { .. })) => continue,
+                Some(Ok(crate::build_step::Outcome::Cancelled)) => {
+                    ComposeError::OperationCancelled {
+                        operation_id: operation_id.to_string(),
+                    }
+                }
+                Some(Ok(failure)) => failure
+                    .into_error(key)
+                    .expect("a build that neither built nor was cancelled failed"),
+                Some(Err(error)) => error,
+            };
+            report::daemon_line(
+                &format!("{key}: {error}; it keeps running on its previous build"),
+                true,
+            );
+            if let Some(operation) = &operation {
+                operation.emit(Some(key), "failed", error.to_string()).await;
+            }
+            failed.push((key.clone(), error));
+        }
+        failed
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -2903,7 +2990,8 @@ mod adapter_restart_tests {
             .project
             .build(None, "build", &controller.signal())
             .await
-            .unwrap();
+            .unwrap()
+            .results;
 
         let built: Vec<_> = results
             .iter()
@@ -2984,10 +3072,98 @@ mod adapter_restart_tests {
 
         assert_eq!(removed[0].status, OpStatus::Ok, "{removed:?}");
         assert_eq!(*destroys.lock().unwrap(), [false, false]);
-        let results = building.await.unwrap().unwrap();
+        let results = building.await.unwrap().unwrap().results;
         assert_eq!(results[0].status, lifecycle::BuildStatus::Failed);
         assert_eq!(results[0].error.as_ref().unwrap().code, "BUILD_STOPPED");
         assert!(!dir.path().join(".build/own").exists());
+        project.shutdown().await;
+    }
+
+    /// Spec 5.3: a container whose package changed is rebuilt while its old build runs, then
+    /// its restart runs the new build and builds nothing; a rebuild that fails leaves it running
+    /// and is `BUILD_FAILED`.
+    #[tokio::test]
+    async fn a_changed_package_is_rebuilt_while_the_old_build_runs() {
+        use crate::build_step::fake_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'touch ../building; sleep 1; rm ../building', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("rebuild-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let up = project.up(Some("own"), "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let running = alive(dir.path(), "own").unwrap();
+        let build = dir.path().join(".build/own");
+        let built = fake_record::read(&build).unwrap().unwrap();
+        let moved = |record: &crate::build_record::BuildRecord| {
+            let mut moved = record.clone();
+            moved.source = crate::build_record::BuildSource::Path {
+                dir: "./old".into(),
+            };
+            fake_record::write(&build, &moved).unwrap();
+        };
+        moved(&built);
+        let file = ComposeFile::load(&path).unwrap();
+        let marker = dir.path().join("building");
+        let own = ["own".to_string()];
+
+        let ((failed, lines), during) = tokio::join!(
+            crate::report::capture_daemon_lines(project.rebuild_changed(&file, &own, "update")),
+            async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                alive(dir.path(), "own")
+            }
+        );
+
+        assert!(failed.is_empty(), "{failed:?}");
+        assert_eq!(
+            during,
+            Some(running),
+            "the old build stopped during the rebuild"
+        );
+        assert_eq!(lines, ["own: package changed (./old -> ./own); rebuilding"]);
+        assert_eq!(
+            fake_record::read(&build).unwrap().unwrap().source,
+            built.source
+        );
+        let (restart, lines) =
+            crate::report::capture_daemon_lines(project.restart_one("own", "restart".into())).await;
+        assert_eq!(restart.status, OpStatus::Ok, "{restart:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("rebuilding") || line.contains("no build yet")),
+            "{lines:?}"
+        );
+
+        // A failed rebuild: still running on the build it had.
+        let running = alive(dir.path(), "own").unwrap();
+        moved(&fake_record::read(&build).unwrap().unwrap());
+        std::fs::write(
+            &path,
+            std::fs::read_to_string(&path).unwrap().replace(
+                "touch ../building; sleep 1; rm ../building",
+                "echo nope; exit 4",
+            ),
+        )
+        .unwrap();
+        let failing = ComposeFile::load(&path).unwrap();
+        let failed = project
+            .rebuild_changed(&failing, &["own".into()], "update")
+            .await;
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].1.code(), "BUILD_FAILED");
+        assert_eq!(alive(dir.path(), "own"), Some(running));
         project.shutdown().await;
     }
 }

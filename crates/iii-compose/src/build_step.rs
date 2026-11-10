@@ -199,8 +199,15 @@ pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -
             stale_check_failed(key, &error.to_string());
             return None;
         }
+        // A panic is a bug, not a build that cannot be read: said apart, so it is not taken for
+        // one.
         Err(error) => {
-            stale_check_failed(key, &error.to_string());
+            crate::report::daemon_line(
+                &format!(
+                    "{key}: the check whether its build is up to date panicked (a bug): {error}"
+                ),
+                true,
+            );
             return None;
         }
     };
@@ -316,7 +323,7 @@ pub(crate) async fn run(
             };
         }
     };
-    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(TAIL_LINES)));
+    let tail = Arc::new(Mutex::new(Tail::default()));
     let mut readers = Vec::new();
     if let Some(stdout) = output.stdout {
         readers.push(tokio::spawn(capture(
@@ -358,12 +365,12 @@ pub(crate) async fn run(
     for reader in readers {
         let _ = tokio::time::timeout(DRAIN, reader).await;
     }
-    let lines: Vec<String> = tail
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .cloned()
-        .collect();
+    let tail = std::mem::take(
+        &mut *tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let lines: Vec<String> = tail.lines.into_iter().collect();
 
     match end {
         End::Cancelled => Outcome::Cancelled,
@@ -390,9 +397,12 @@ pub(crate) async fn run(
                 },
             }
         }
-        End::Exited(status) => match lines
-            .last()
-            .and_then(|line| cli_failure(line))
+        // The command names its failure on its last line (spec 8.1), whichever stream it went to:
+        // stderr's is asked first, as the other stream's reader may still have queued output.
+        End::Exited(status) => match [tail.last_stderr, tail.last_stdout]
+            .iter()
+            .flatten()
+            .find_map(|line| cli_failure(line))
             .filter(|_| vm)
         {
             Some((code, message)) => Outcome::Failed { code, message },
@@ -447,12 +457,21 @@ fn cli_failure(line: &str) -> Option<(String, String)> {
     (!code.is_empty()).then(|| (code.to_string(), message.to_string()))
 }
 
-/// Writes each line of `reader` into `logs` with [`PREFIX`], keeping the last [`TAIL_LINES`].
+/// What a build's output leaves for its failure: its last [`TAIL_LINES`], and the last line of each
+/// stream.
+#[derive(Default)]
+struct Tail {
+    lines: VecDeque<String>,
+    last_stdout: Option<String>,
+    last_stderr: Option<String>,
+}
+
+/// Writes each line of `reader` into `logs` with [`PREFIX`], keeping it in `tail`.
 async fn capture(
     reader: impl AsyncRead + Unpin,
     stream: LogStream,
     logs: LogSink,
-    tail: Arc<Mutex<VecDeque<String>>>,
+    tail: Arc<Mutex<Tail>>,
 ) {
     let mut reader = BufReader::new(reader);
     let mut buffer = Vec::new();
@@ -469,10 +488,14 @@ async fn capture(
         let mut tail = tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if tail.len() == TAIL_LINES {
-            tail.pop_front();
+        if tail.lines.len() == TAIL_LINES {
+            tail.lines.pop_front();
         }
-        tail.push_back(line);
+        tail.lines.push_back(line.clone());
+        match stream {
+            LogStream::Stdout => tail.last_stdout = Some(line),
+            LogStream::Stderr => tail.last_stderr = Some(line),
+        }
     }
 }
 
@@ -946,5 +969,67 @@ mod tests {
         });
         fake_record::write(&dir, &imaged).unwrap();
         assert_eq!(project.due().await, None);
+    }
+
+    /// The failure line on stderr names the failure even when stdout's output comes after it.
+    #[tokio::test]
+    async fn the_failure_line_on_stderr_wins_over_later_stdout() {
+        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let bin = project.dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(
+            bin.join("iii"),
+            "#!/bin/sh\necho 'iii sandbox: build failed: S507: setup exited with 1' >&2\nseq 1 200\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("iii"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+
+        assert_eq!(
+            project.build(Some(&bin), None).await,
+            Outcome::Failed {
+                code: "S507".into(),
+                message: "setup exited with 1".into()
+            }
+        );
+    }
+
+    /// Spec 5.5 and 10: each kind of change is one line, worded as the spec says, and the
+    /// container runs on its build.
+    #[tokio::test]
+    async fn an_out_of_date_build_warns_once_per_kind_and_runs() {
+        let project = project("scripts: {build: 'true', run: x}");
+        project.build(None, None).await;
+        let mut record = project.record().unwrap();
+        record.image = Some(BuildImage {
+            file: "image.erofs".into(),
+            build_id: "sha256:1".into(),
+            base_image: BuildBaseImage {
+                declared: Some("docker.io/iiidev/python".into()),
+                reference: "docker.io/iiidev/python:latest".into(),
+                digest: None,
+            },
+            adapter: BuildAdapter {
+                name: "sandbox-libkrun".into(),
+                version: "0.4.0".into(),
+            },
+            contract: BuildContract { major: 1, minor: 3 },
+        });
+        fake_record::write(&build_dir(&project.file.path, "api"), &record).unwrap();
+        std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
+
+        let (due, lines) = crate::report::capture_daemon_lines(project.due()).await;
+
+        assert_eq!(due, None);
+        assert_eq!(
+            lines,
+            [
+                "api: dependencies changed since the last build (package.json); run `iii sandbox build api`",
+                "api: base image changed since the last build (docker.io/iiidev/python -> the adapter's default); run `iii sandbox build api`",
+            ]
+        );
     }
 }

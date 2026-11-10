@@ -158,6 +158,15 @@ pub enum ComposeError {
     )]
     VmScriptsMissing { containers: String },
 
+    /// A container 0.26 ran in a VM reached a start the file does not place anywhere yet: it was
+    /// read without the rewrite every `up` makes (spec 7.3).
+    #[error(
+        "container '{container}': 0.26 ran it in a VM, and the file does not say so yet \
+         (scripts.build and scripts.run: iii sandbox ...). Run `iii compose --up`, or iii call \
+         compose::up, which rewrites it"
+    )]
+    VmScriptsNotWritten { container: String },
+
     /// The adapter lacks `worker.build` (spec 7.2) and Compose may not update it.
     #[error(
         "container '{container}' runs the sandbox adapter at {version}, outside {range}, which the \
@@ -719,7 +728,9 @@ impl ComposeError {
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
             Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
             Self::InvalidContainerKey { .. } => "INVALID_CONTAINER_KEY",
-            Self::VmScriptsMissing { .. } => "VM_SCRIPTS_MISSING",
+            Self::VmScriptsMissing { .. } | Self::VmScriptsNotWritten { .. } => {
+                "VM_SCRIPTS_MISSING"
+            }
             Self::SandboxAdapterTooOld { .. } => "SANDBOX_ADAPTER_TOO_OLD",
             Self::SandboxRunNotAVmWorker { .. } => "SANDBOX_RUN_NOT_A_VM_WORKER",
             Self::SandboxBuildWithoutRun { .. } => "SANDBOX_BUILD_WITHOUT_RUN",

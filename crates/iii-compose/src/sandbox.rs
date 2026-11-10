@@ -533,7 +533,7 @@ pub(crate) async fn rewrite_due(
     for key in &due {
         if let Some(rewrite) = edit::explicit_vm_mode(&text, key, &adapter_key)? {
             text = rewrite.text;
-            rewritten.push((key.clone(), rewrite.run, rewrite.wrapped));
+            rewritten.push((key.clone(), rewrite.wrapped));
         }
     }
     if update.is_none() && rewritten.is_empty() {
@@ -570,21 +570,20 @@ pub(crate) async fn rewrite_due(
     {
         crate::report::daemon_line(
             &format!(
-                "{}: sandbox adapter {from} -> {to}, the first release in {ADAPTER_RANGE} that \
+                "{}: sandbox adapter {from} -> {to}, the newest release in {ADAPTER_RANGE}, which \
                  builds VM images",
                 request.key
             ),
             false,
         );
     }
-    for (key, run, wrapped) in &rewritten {
+    for (key, wrapped) in &rewritten {
         if quiet.contains(key) {
             continue;
         }
         crate::report::daemon_line(
             &format!(
-                "{key}: migrated to the explicit VM mode (scripts.build: {SANDBOX_BUILD}, \
-                 scripts.run: {run})"
+                "{key}: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)"
             ),
             false,
         );
@@ -599,7 +598,7 @@ pub(crate) async fn rewrite_due(
         }
     }
     Ok(Some(Migration {
-        containers: rewritten.into_iter().map(|(key, ..)| key).collect(),
+        containers: rewritten.into_iter().map(|(key, _)| key).collect(),
         adapter: update.map(|(_, request)| AdapterChange::Upsert(request)),
     }))
 }
@@ -836,19 +835,20 @@ pub(crate) fn layer_package_env(
     Ok(())
 }
 
-/// Variables that are inputs of `iii sandbox run` and `iii sandbox build` themselves, which never
-/// reach the guest (spec 8.3, 9.4).
+/// The reserved variables that are inputs of `iii sandbox run` and `iii sandbox build` themselves,
+/// which never reach the guest (spec 8.3, 9.4). A container's own variables all do.
 fn host_only(name: &str) -> bool {
-    name == "III_URL"
-        || name.starts_with("III_SANDBOX_")
-        || [
-            sandbox_cli::BUILD_DIR_ENV,
-            sandbox_cli::BUILD_TIMEOUT_ENV,
-            sandbox_cli::BUILD_COMPOSE_FILE_ENV,
-            sandbox_cli::PACKAGE_DIR_ENV,
-            sandbox_cli::PACKAGE_NAME_ENV,
-        ]
-        .contains(&name)
+    crate::spawn::RESERVED_ENV.contains(&name)
+        && (name == "III_URL"
+            || name.starts_with("III_SANDBOX_")
+            || [
+                sandbox_cli::BUILD_DIR_ENV,
+                sandbox_cli::BUILD_TIMEOUT_ENV,
+                sandbox_cli::BUILD_COMPOSE_FILE_ENV,
+                sandbox_cli::PACKAGE_DIR_ENV,
+                sandbox_cli::PACKAGE_NAME_ENV,
+            ]
+            .contains(&name))
 }
 
 /// Lays what `iii sandbox run` and `iii sandbox build` read over `user_env` when container `key`
@@ -2954,5 +2954,75 @@ pub(crate) mod tests {
 
     fn json_destroyed() -> serde_json::Value {
         serde_json::json!({ "destroyed": true })
+    }
+
+    /// Spec 8.3 and 9.4: the guest gets the container's own variables, its user's own
+    /// `III_SANDBOX_*` included, and the reserved contract, never the inputs of the commands.
+    #[test]
+    fn the_guest_gets_its_variables_and_the_contract_but_no_command_input() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", VM_MANIFEST);
+        let mut file = parse(
+            dir.path(),
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.4.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    environment: {API_KEY: k, III_SANDBOX_MINE: mine}\n    scripts: {build: iii sandbox build, build_timeout: 90s, run: iii sandbox run}\n  app: {worker: package://app, version: 1.0.0, start_after: [sb], scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
+        );
+        file.containers["app"].resolved_package = Some(package("name: app, type: bundle"));
+        let compose_file = crate::spawn::canonical_compose_file(&file.path);
+        let compose_dir = compose_file.parent().unwrap();
+        let forwarded = |env: &BTreeMap<String, String>| -> BTreeSet<String> {
+            env[sandbox_cli::WORKER_ENV_KEYS_ENV]
+                .split(',')
+                .map(str::to_string)
+                .collect()
+        };
+        let host_inputs = [
+            "III_BUILD_DIR",
+            "III_BUILD_TIMEOUT_MS",
+            "III_BUILD_COMPOSE_FILE",
+            "III_PACKAGE_DIR",
+            "III_PACKAGE_NAME",
+            "III_URL",
+            "III_SANDBOX_WORKER_TOKEN",
+            "III_SANDBOX_HOST_ROOTS",
+        ];
+
+        let mut env = file.containers["api"].resolve_user_env("api").unwrap();
+        layer_own_vm_env(&file, "api", "p", Path::new("/state"), "orders", &mut env).unwrap();
+        let keys = forwarded(&env);
+        for kept in [
+            "API_KEY",
+            "III_SANDBOX_MINE",
+            "III_COMPOSE_FILE",
+            "III_COMPOSE_DIR",
+            "III_WORKER_NAME",
+            "III_NAMESPACE",
+        ] {
+            assert!(keys.contains(kept), "{kept}: {keys:?}");
+        }
+        for input in host_inputs {
+            assert!(!keys.contains(input), "{input}: {keys:?}");
+        }
+        assert_eq!(
+            Path::new(&env[sandbox_cli::BUILD_DIR_ENV]),
+            compose_dir.join(".build/api")
+        );
+        assert_eq!(env[sandbox_cli::BUILD_TIMEOUT_ENV], "90000");
+        assert_eq!(
+            Path::new(&env[sandbox_cli::BUILD_COMPOSE_FILE_ENV]),
+            compose_file
+        );
+
+        // A bundle gets its package directory and name, kept from the guest too.
+        let mut env = BTreeMap::new();
+        layer_own_vm_env(&file, "app", "p", Path::new("/state"), "orders", &mut env).unwrap();
+        assert_eq!(
+            Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV]),
+            compose_dir.join(".workers/app")
+        );
+        assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "app");
+        let keys = forwarded(&env);
+        for input in host_inputs {
+            assert!(!keys.contains(input), "{input}: {keys:?}");
+        }
     }
 }

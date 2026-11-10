@@ -380,8 +380,6 @@ pub(crate) fn is_generated_container(text: &str, key: &str) -> Result<bool> {
 pub(crate) struct VmRewrite {
     /// The whole file, rewritten.
     pub text: String,
-    /// The container's `scripts.run` now.
-    pub run: String,
     /// Whether a command of the container's own became `iii sandbox run --command`.
     pub wrapped: bool,
 }
@@ -516,17 +514,19 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                         }
                     }
                 }
-                // Inline, empty or null: written again as a block.
+                // Inline, empty or null: written again as a block, its comment kept on the
+                // `scripts:` line.
                 None => {
                     let mut merged = scripts.cloned().unwrap_or_default();
                     for (name, value) in wanted {
                         merged.insert(name, value);
                     }
-                    edits.push((
-                        entry.start + head,
-                        end - head,
-                        render("scripts", &Value::Mapping(merged), &inner)?,
-                    ));
+                    let mut block = render("scripts", &Value::Mapping(merged), &inner)?;
+                    let head_value = entry_lines[head][inner.len()..]
+                        .split_once(':')
+                        .map_or("", |(_, value)| value);
+                    block[0].push_str(&trailing_comment(head_value, value));
+                    edits.push((entry.start + head, end - head, block));
                 }
             }
         }
@@ -603,7 +603,6 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
     }
     Ok(Some(VmRewrite {
         text: join(&out, text),
-        run,
         wrapped,
     }))
 }
@@ -634,11 +633,13 @@ fn inline_entry_as_block(
         .strip_prefix(indent)
         .and_then(|body| body.split_once(':'))
         .unwrap_or_default();
-    let fields: Mapping = serde_yaml::from_str(without_comment(value))
-        .map_err(|err| invalid(key, &err.to_string()))?;
+    let data = without_comment(value);
+    let fields: Mapping =
+        serde_yaml::from_str(data).map_err(|err| invalid(key, &err.to_string()))?;
     let inner = format!("{indent}{indent}");
     let mut out: Vec<String> = lines[..at].iter().map(|line| (*line).to_string()).collect();
-    out.push(format!("{indent}{name}:"));
+    // The entry's comment stays on its line.
+    out.push(format!("{indent}{name}:{}", trailing_comment(value, data)));
     for (field, value) in &fields {
         if let Some(field) = field.as_str() {
             out.extend(
@@ -650,6 +651,17 @@ fn inline_entry_as_block(
     }
     out.extend(lines[at + 1..].iter().map(|line| (*line).to_string()));
     Ok(Some(out))
+}
+
+/// The comment `line` carries after `data`, its part without the comment, as ` # ...`; empty when
+/// there is none.
+fn trailing_comment(line: &str, data: &str) -> String {
+    let comment = line[data.len()..].trim();
+    if comment.is_empty() {
+        String::new()
+    } else {
+        format!(" {comment}")
+    }
 }
 
 /// A YAML scalar as the text it holds; another value as its YAML.
@@ -1962,7 +1974,6 @@ containers:
             rewrite.text,
             "# my project\ncontainers:\n  # the adapter\n  sb:\n    worker: path://./sb\n  # what onboards\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\" # pinned\n    start_after: [sb]\n    environment:\n      KEY: ${KEY}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n\n  api: {worker: path://./api}\n"
         );
-        assert_eq!(rewrite.run, "iii sandbox run");
         assert!(!rewrite.wrapped);
         assert_eq!(
             explicit_vm_mode(&rewrite.text, "onboarding", "sb").unwrap(),
@@ -1977,10 +1988,7 @@ containers:
         let text = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n    scripts:\n      # dev server\n      run: python src/dev.py --name 'x'\n      post_run: echo bye\n  state: {worker: path://./state}\n";
         let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
         assert!(rewrite.wrapped);
-        assert_eq!(
-            rewrite.run,
-            "iii sandbox run --command 'python src/dev.py --name '\\''x'\\'''"
-        );
+        let run = "iii sandbox run --command 'python src/dev.py --name '\\''x'\\'''";
         let expected_start = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n      - sb\n    scripts:\n      # dev server\n      build: iii sandbox build\n";
         assert!(rewrite.text.starts_with(expected_start), "{}", rewrite.text);
         assert!(
@@ -1992,7 +2000,7 @@ containers:
         );
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
         let scripts = &parsed["containers"]["link"]["scripts"];
-        assert_eq!(scripts["run"].as_str(), Some(rewrite.run.as_str()));
+        assert_eq!(scripts["run"].as_str(), Some(run));
         assert_eq!(scripts["post_run"].as_str(), Some("echo bye"));
         assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
     }
@@ -2028,5 +2036,29 @@ containers:
             "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'x'\n"
         );
         assert!(!rewrite.wrapped);
+    }
+
+    /// Spec 7.3 keeps the comments: an inline entry's, and an inline `scripts`', stay on their
+    /// lines once written as blocks.
+    #[test]
+    fn the_comment_of_an_inline_entry_or_scripts_stays() {
+        let text = "containers:\n  link: {worker: path://./link}  # the link\n";
+        let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
+        assert_eq!(
+            rewrite.text,
+            "containers:\n  link: # the link\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+        );
+
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run} # opt-in\n";
+        let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
+        assert_eq!(
+            rewrite.text,
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: # opt-in\n      run: iii sandbox run\n      build: iii sandbox build\n"
+        );
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        assert_eq!(
+            parsed["containers"]["opt"]["scripts"]["build"].as_str(),
+            Some("iii sandbox build")
+        );
     }
 }

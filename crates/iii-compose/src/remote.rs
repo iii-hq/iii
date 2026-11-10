@@ -700,7 +700,7 @@ async fn dispatch(
                     began.elapsed(),
                 );
                 match result {
-                    Ok(results) => {
+                    Ok(crate::lifecycle::BuildRun { results, cancelled }) => {
                         // The terminal event names each failure, with its own code.
                         let failed: Vec<String> = results
                             .iter()
@@ -710,7 +710,14 @@ async fn dispatch(
                                 })
                             })
                             .collect();
-                        let (status, detail) = if failed.is_empty() {
+                        // Stopped by compose::cancel or down, it is cancelled, whatever a build
+                        // its stop killed reported.
+                        let (status, detail) = if cancelled {
+                            (
+                                crate::operation::OperationStatus::Cancelled,
+                                "operation cancelled".to_string(),
+                            )
+                        } else if failed.is_empty() {
                             (
                                 crate::operation::OperationStatus::Succeeded,
                                 "every requested build finished".to_string(),
@@ -1405,6 +1412,62 @@ fn operation_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build stopped by `compose::cancel` ends `cancelled`, the build it killed in `results` as
+    /// `failed`: the CLI exits 130 only then.
+    #[tokio::test]
+    async fn a_cancelled_compose_build_ends_cancelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("slow")).unwrap();
+        let file = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  slow: {worker: path://./slow, scripts: {build: 'touch started; sleep 30', run: x}}\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("build-cancel-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let request = |operation: Operation, function: &str| {
+            dispatch(
+                Arc::clone(&daemon),
+                operation,
+                function.to_string(),
+                ComposeRequest {
+                    file: Some(file.to_string_lossy().into_owned()),
+                    operation_id: Some("build-slow".to_string()),
+                    ..Default::default()
+                },
+            )
+        };
+        request(Operation::Build, "build").await.unwrap();
+        while !tmp.path().join("slow/started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let cancelled = request(Operation::Cancel, "cancel").await.unwrap();
+        assert_eq!(cancelled["cancelled"], true, "{cancelled}");
+        let operation = daemon.operations.get("build-slow").await.unwrap();
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status != crate::operation::OperationStatus::Running {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(snapshot["status"], "cancelled", "{snapshot}");
+        assert_eq!(snapshot["results"][0]["worker"], "slow", "{snapshot}");
+        assert_eq!(snapshot["results"][0]["status"], "failed", "{snapshot}");
+        daemon.shutdown().await;
+    }
 
     /// Spec 7.4: accepted at once with `requested`, then a snapshot whose top-level `results`
     /// holds one entry per container, and a terminal `detail` naming each failure.
