@@ -12,12 +12,17 @@
 //! `build.json` in `III_BUILD_DIR` names, through the adapter's `worker::*` functions; nothing is
 //! installed at boot. It prints the guest's output as its own, stops the VM when it is asked to
 //! stop, and exits with the VM's code. Compose supervises it like any other process.
+//!
+//! `iii sandbox build`, the container's `scripts.build`, makes that image: it asks the adapter's
+//! `worker::build` for it, prints the build's output as it comes, and records the image in
+//! `build.json` once the adapter answered. The build lives as long as this command reads its
+//! output, so a timeout or a signal stops it by closing the channel.
 
 use std::{
     collections::BTreeMap,
     fmt,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitStatus,
     sync::{Arc, Mutex},
     time::Duration,
@@ -26,15 +31,18 @@ use std::{
 use iii_sandbox_contract::{
     self as contract, ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR,
     FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
-    SandboxErrorCode, WORKER_DESTROY, WORKER_LOGS, WORKER_START, WORKER_STOP, WorkerBuildRef,
-    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
-    WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus, WorkerStopRequest,
+    SandboxErrorCode, WORKER_BUILD, WORKER_DESTROY, WORKER_LOGS, WORKER_START, WORKER_STOP,
+    WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
+    WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerSource, WorkerStartRequest,
+    WorkerStartResponse, WorkerStatus, WorkerStopRequest,
 };
 use iii_sdk::{IIIClient, InitOptions, WorkerIdentityMode, iii::WorkerMetadata, register_worker};
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
 
 use crate::{
-    build_record::{self, BuildRecord},
+    build_record::{
+        self, BuildAdapter, BuildBaseImage, BuildContract, BuildImage, BuildRecord, BuildSource,
+    },
     error::ComposeError,
     process::{DEFAULT_STOP_GRACE, Outcome},
     sandbox,
@@ -93,6 +101,8 @@ const ENGINE_CALL_FAILED: &str = "ENGINE_CALL_FAILED";
 const SANDBOX_ENV_INVALID: &str = "SANDBOX_ENV_INVALID";
 /// The adapter implements another major version of the sandbox contract.
 const SANDBOX_CONTRACT_UNSUPPORTED: &str = "SANDBOX_CONTRACT_UNSUPPORTED";
+/// Arguments this command cannot follow where it runs.
+const SANDBOX_INVALID_ARGUMENTS: &str = "SANDBOX_INVALID_ARGUMENTS";
 /// Any other failure of `iii sandbox` itself.
 const SANDBOX_FAILED: &str = "SANDBOX_FAILED";
 
@@ -141,6 +151,14 @@ const START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// `worker::status` cadence.
 const POLL_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
+/// `scripts.build_timeout`'s default, for an environment without `III_BUILD_TIMEOUT_MS`.
+const DEFAULT_BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+/// How long a build's output may take to end once `worker::build` answered.
+const DRAIN_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 });
+/// The `scripts.build` of a VM container, as `build.json` records it.
+const BUILD_COMMAND: &str = "iii sandbox build";
+/// The image's file in the build directory.
+const IMAGE_FILE: &str = "image.erofs";
 /// How long `worker::status` may go unanswered before this command gives the VM up: the
 /// adapter's reattach grace, after which its lease has stopped a VM no client follows.
 const LOST_AFTER: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
@@ -154,6 +172,11 @@ pub struct SandboxCli {
 
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum SandboxCommand {
+    /// Build this container's image through its sandbox adapter and record it in the
+    /// container's build.json. A running container keeps its image until it restarts. Exits 0
+    /// once built, 1 when the build failed, 125 when `iii sandbox` itself failed and 130 when
+    /// cancelled; on failure the last line is `iii sandbox: build failed: <code>: <message>`.
+    Build(BuildArgs),
     /// Boot this container's last build in its VM, or reattach to the VM, and stay with it until
     /// it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM
     /// ended on signal N, or 125 when `iii sandbox` itself failed (`BUILD_MISSING` without a
@@ -169,6 +192,14 @@ pub struct RunArgs {
     /// `path://` worker: a registry bundle runs its own.
     #[arg(long, value_name = "COMMAND")]
     pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct BuildArgs {
+    /// The container to build. Inside Compose, only the container whose `scripts.build` this
+    /// is, which is also the default.
+    #[arg(value_name = "CONTAINER")]
+    pub container: Option<String>,
 }
 
 /// The VM `iii sandbox` acts on, and the adapter that runs it.
@@ -264,6 +295,44 @@ impl Context {
     }
 }
 
+/// Everything `iii sandbox build` needs inside Compose, as Compose hands it over.
+#[derive(Debug, Clone)]
+pub(crate) struct BuildContext {
+    container: Context,
+    /// `III_BUILD_DIR`: where the adapter writes the image, and this command `build.json`.
+    build_dir: String,
+    /// `III_BUILD_COMPOSE_FILE`: the compose file that declares the container's source.
+    compose_file: PathBuf,
+    /// `III_BUILD_TIMEOUT_MS`: `scripts.build_timeout`.
+    timeout: Duration,
+}
+
+impl BuildContext {
+    pub(crate) fn from_vars(vars: &BTreeMap<String, String>) -> Result<Self, String> {
+        let timeout = match present(vars, BUILD_TIMEOUT_ENV) {
+            Some(ms) => Duration::from_millis(ms.parse().map_err(|_| {
+                format!("{BUILD_TIMEOUT_ENV} must be a number of milliseconds, not {ms:?}")
+            })?),
+            None => DEFAULT_BUILD_TIMEOUT,
+        };
+        Ok(Self {
+            container: Context::from_vars(vars, None)?,
+            build_dir: required(vars, BUILD_DIR_ENV)?,
+            compose_file: PathBuf::from(required(vars, BUILD_COMPOSE_FILE_ENV)?),
+            timeout,
+        })
+    }
+
+    /// The worker's directory, where its manifest and dependency files are.
+    fn worker_dir(&self) -> &Path {
+        match &self.container.source {
+            WorkerSource::Local { host_path, .. } | WorkerSource::Bundle { host_path, .. } => {
+                Path::new(host_path)
+            }
+        }
+    }
+}
+
 const STARTED_BY_COMPOSE: &str = "`iii sandbox` runs as the `scripts.build` and `scripts.run` of a \
                                   Compose container in a VM: a registry bundle, or a `path://` \
                                   worker whose manifest sets `runtime.base_image`";
@@ -315,12 +384,73 @@ impl Failure {
     fn compose(error: &ComposeError) -> Self {
         Self::runner(error.code(), error.to_string())
     }
+
+    /// A build that failed: exit 1.
+    fn build(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            exit: BUILD_FAILED_EXIT,
+            ..Self::runner(code, message)
+        }
+    }
+
+    /// A build stopped by signal `number`: exit 130.
+    fn cancelled_by(number: i32) -> Self {
+        let signal = match number {
+            2 => "SIGINT".to_string(),
+            15 => "SIGTERM".to_string(),
+            other => format!("signal {other}"),
+        };
+        Self {
+            exit: CANCELLED_EXIT,
+            ..Self::runner(
+                BUILD_CANCELLED,
+                format!(
+                    "stopped by {signal}; the adapter abandons the build and keeps the previous image"
+                ),
+            )
+        }
+    }
+
+    /// A build past `III_BUILD_TIMEOUT_MS`: exit 1.
+    fn timed_out(timeout: Duration) -> Self {
+        let millis = timeout.as_millis();
+        let limit = if millis % 1000 == 0 {
+            format!("{}s", millis / 1000)
+        } else {
+            format!("{millis}ms")
+        };
+        Self::build(
+            TIMED_OUT,
+            format!(
+                "the build did not finish within {limit} ({BUILD_TIMEOUT_ENV}, scripts.build_timeout); \
+                 the adapter abandons it and keeps the previous image"
+            ),
+        )
+    }
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.code, self.message)
     }
+}
+
+/// The last line of a failed `iii sandbox build`, on one line whatever the message holds.
+pub fn build_failure_line(code: &str, message: &str) -> String {
+    let message = message
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("{BUILD_FAILED_LINE}{code}: {message}")
+}
+
+/// The code and message of a [`build_failure_line`]; `None` for any other line.
+pub fn parse_build_failure(line: &str) -> Option<(&str, &str)> {
+    line.trim_end()
+        .strip_prefix(BUILD_FAILED_LINE)?
+        .split_once(": ")
 }
 
 fn env_failure(message: String) -> Failure {
@@ -341,10 +471,19 @@ fn vm_platform(windows: bool) -> Result<(), Failure> {
     Ok(())
 }
 
-/// `build.json`, through [`build_record`] or a test's fake.
+/// `build.json` and the inputs it records, through [`build_record`] or a test's fake.
 pub(crate) trait Records: Send + Sync {
     /// [`build_record::read`].
     fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>>;
+    /// [`build_record::write`].
+    fn write(&self, build_dir: &Path, record: &BuildRecord) -> crate::error::Result<()>;
+    /// [`build_record::source`].
+    fn source(&self, compose_file: &Path, container: &str) -> crate::error::Result<BuildSource>;
+    /// [`build_record::declared_base_image`].
+    fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>>;
+    /// [`build_record::dependency_files`].
+    fn dependency_files(&self, worker_dir: &Path)
+    -> crate::error::Result<BTreeMap<String, String>>;
 }
 
 /// The project's own `build.json` files.
@@ -354,15 +493,45 @@ impl Records for BuildRecords {
     fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>> {
         build_record::read(build_dir)
     }
+
+    fn write(&self, build_dir: &Path, record: &BuildRecord) -> crate::error::Result<()> {
+        build_record::write(build_dir, record)
+    }
+
+    fn source(&self, compose_file: &Path, container: &str) -> crate::error::Result<BuildSource> {
+        build_record::source(compose_file, container)
+    }
+
+    fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>> {
+        build_record::declared_base_image(worker_dir)
+    }
+
+    fn dependency_files(
+        &self,
+        worker_dir: &Path,
+    ) -> crate::error::Result<BTreeMap<String, String>> {
+        build_record::dependency_files(worker_dir)
+    }
 }
 
 /// Entry point behind `iii sandbox`. Returns the process exit code.
 pub async fn run(cli: SandboxCli) -> i32 {
     let vars = process_vars();
-    let result = match cli.command {
-        SandboxCommand::Run(args) => run_command(&vars, args.command, &BuildRecords).await,
-        SandboxCommand::Destroy => destroy_command(&vars).await,
-    };
+    match cli.command {
+        SandboxCommand::Build(args) => match build_command(&vars, args, &BuildRecords).await {
+            Ok(()) => 0,
+            Err(failure) => {
+                // The last line, after all the build's output: Compose reads it for BUILD_FAILED.
+                eprintln!("{}", build_failure_line(&failure.code, &failure.message));
+                failure.exit
+            }
+        },
+        SandboxCommand::Run(args) => report(run_command(&vars, args.command, &BuildRecords).await),
+        SandboxCommand::Destroy => report(destroy_command(&vars).await),
+    }
+}
+
+fn report(result: Result<i32, Failure>) -> i32 {
     result.unwrap_or_else(|failure| {
         eprintln!("iii sandbox: {failure}");
         failure.exit
@@ -383,18 +552,60 @@ async fn run_command(
 ) -> Result<i32, Failure> {
     vm_platform(cfg!(windows))?;
     let (ctx, build) = boot_plan(vars, command, records)?;
-    // Before anything can boot: from here on neither signal ends this command by its default
-    // action, whatever phase it comes in.
-    let shutdown = Shutdown::signals().map_err(|error| {
-        Failure::runner(
-            SANDBOX_FAILED,
-            format!("cannot handle SIGTERM and SIGINT: {error}"),
-        )
-    })?;
+    // Before anything can boot.
+    let shutdown = signal_handlers()?;
     let client = connect(&ctx.target.engine_url);
     let result = run_vm(&ctx, &build, &client, &shutdown, Printer::stdio()).await;
     client.shutdown_async().await;
     result.map(exit_code)
+}
+
+/// Installs the SIGTERM and SIGINT handlers: from here on neither signal ends this command by its
+/// default action, whatever phase it comes in.
+fn signal_handlers() -> Result<Shutdown, Failure> {
+    Shutdown::signals().map_err(|error| {
+        Failure::runner(
+            SANDBOX_FAILED,
+            format!("cannot handle SIGTERM and SIGINT: {error}"),
+        )
+    })
+}
+
+async fn build_command(
+    vars: &BTreeMap<String, String>,
+    args: BuildArgs,
+    records: &dyn Records,
+) -> Result<(), Failure> {
+    vm_platform(cfg!(windows))?;
+    let bctx = BuildContext::from_vars(vars).map_err(env_failure)?;
+    own_container(&bctx, args.container.as_deref())?;
+    let shutdown = signal_handlers()?;
+    let client = connect(&bctx.container.target.engine_url);
+    let result = build_vm(&bctx, records, &client, &shutdown, Printer::stdio()).await;
+    client.shutdown_async().await;
+    let record = result?;
+    if let Some(image) = &record.image {
+        eprintln!(
+            "iii sandbox: built {} ({})",
+            record.container, image.build_id
+        );
+    }
+    Ok(())
+}
+
+/// Inside Compose the build is the container's own: CONTAINER may only name it.
+fn own_container(bctx: &BuildContext, container: Option<&str>) -> Result<(), Failure> {
+    let own = &bctx.container.worker_name;
+    match container {
+        Some(other) if other != own => Err(Failure::runner(
+            SANDBOX_INVALID_ARGUMENTS,
+            format!(
+                "as a container's scripts.build, `iii sandbox build` builds that container, \
+                 {own}, not {other}"
+            ),
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// What `iii sandbox run` boots: the container Compose hands over, and the image of its last
@@ -970,7 +1181,10 @@ impl Logs {
                 self.from_end = false;
                 self.cursor = started.cursor;
             }
-            self.capture = Some(print_records(channel.reader, self.printer.clone()));
+            self.capture = Some(print_records(
+                Arc::new(channel.reader),
+                self.printer.clone(),
+            ));
         }
     }
 
@@ -983,10 +1197,10 @@ impl Logs {
     }
 }
 
-/// Prints every `LogRecord` frame on `reader` until the channel closes, then resolves to the
-/// cursor of the last one.
+/// Prints every `LogRecord` text frame on `reader` until the channel closes, then resolves to the
+/// cursor of the last one. Binary frames are keepalives, never records.
 fn print_records(
-    reader: iii_sdk::channel::ChannelReader,
+    reader: Arc<iii_sdk::channel::ChannelReader>,
     printer: Printer,
 ) -> JoinHandle<Option<u64>> {
     tokio::spawn(async move {
@@ -1008,12 +1222,186 @@ fn print_records(
     })
 }
 
+/// What a build is made from, read before it starts: `build.json` records it with the image.
+struct BuildInputs {
+    source: BuildSource,
+    declared_base_image: Option<String>,
+    dependency_files: BTreeMap<String, String>,
+}
+
+/// Builds `bctx`'s container through the adapter's `worker::build`, printing the build's output
+/// on stdout as it comes, and records the image in `build.json` once the adapter answered, never
+/// before. A signal (130) or the build timeout (`TIMED_OUT`) closes the output channel, which
+/// stops the build.
+pub(crate) async fn build_vm(
+    bctx: &BuildContext,
+    records: &dyn Records,
+    client: &IIIClient,
+    shutdown: &Shutdown,
+    printer: Printer,
+) -> Result<BuildRecord, Failure> {
+    let begun = Instant::now();
+    let deadline = begun
+        .checked_add(bctx.timeout)
+        .unwrap_or_else(|| begun + Duration::from_secs(365 * 24 * 60 * 60));
+    let ctx = &bctx.container;
+    let target = &ctx.target;
+    let info = tokio::select! {
+        biased;
+        (number, _) = shutdown.requested() => return Err(Failure::cancelled_by(number)),
+        () = tokio::time::sleep_until(deadline) => return Err(Failure::timed_out(bctx.timeout)),
+        info = adapter_info(target, client) => info?,
+    };
+    check_adapter(&info, &target.adapter)?;
+    let inputs = build_inputs(bctx, records)?;
+
+    let channel =
+        tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
+            .await
+            .unwrap_or(Err(iii_sdk::Error::Timeout))
+            .map_err(|error| call_failure("engine::channels::create", &error, target))?;
+    let request = WorkerBuildRequest {
+        auth: target.token.clone(),
+        state_key: target.state_key.clone(),
+        worker_name: ctx.worker_name.clone(),
+        source: ctx.source.clone(),
+        output_dir: bctx.build_dir.clone(),
+        env: ctx.env.clone(),
+        logs: contract::StreamChannelRef {
+            channel_id: channel.writer_ref.channel_id,
+            access_key: channel.writer_ref.access_key,
+            direction: contract::ChannelDirection::Write,
+        },
+    };
+    // Read from before the call: the build lives as long as its output is read.
+    let reader = Arc::new(channel.reader);
+    let output = print_records(reader.clone(), to_stdout(printer));
+    let budget = deadline.saturating_duration_since(Instant::now()) + CALL_TIMEOUT;
+    let reply = tokio::select! {
+        // An answer that is there wins: its image is already in place.
+        biased;
+        reply = sandbox::call::<WorkerBuildResponse>(
+            client,
+            &target.adapter,
+            &target.adapter_namespace,
+            WORKER_BUILD,
+            &request,
+            budget,
+        ) => reply,
+        (number, _) = shutdown.requested() => {
+            let _ = reader.close().await;
+            return Err(Failure::cancelled_by(number));
+        }
+        () = tokio::time::sleep_until(deadline) => {
+            let _ = reader.close().await;
+            return Err(Failure::timed_out(bctx.timeout));
+        }
+    };
+    // The build's last lines, until the adapter closes the channel.
+    tokio::select! {
+        biased;
+        _ = shutdown.requested() => {}
+        _ = tokio::time::timeout(DRAIN_WAIT, output) => {}
+    }
+    let _ = reader.close().await;
+
+    let built = reply.map_err(|error| build_call_failure(&error, target))?;
+    let record = build_record_of(bctx, &info, inputs, built);
+    records
+        .write(Path::new(&bctx.build_dir), &record)
+        .map_err(|error| Failure::compose(&error))?;
+    Ok(record)
+}
+
+/// The build's inputs, read before it starts so a project that cannot record one builds nothing.
+fn build_inputs(bctx: &BuildContext, records: &dyn Records) -> Result<BuildInputs, Failure> {
+    let worker_dir = bctx.worker_dir();
+    let failed = |error: ComposeError| Failure::compose(&error);
+    Ok(BuildInputs {
+        source: records
+            .source(&bctx.compose_file, &bctx.container.worker_name)
+            .map_err(failed)?,
+        declared_base_image: records.declared_base_image(worker_dir).map_err(failed)?,
+        dependency_files: records.dependency_files(worker_dir).map_err(failed)?,
+    })
+}
+
+/// `build.json` for the image `built` names (spec 5.4).
+fn build_record_of(
+    bctx: &BuildContext,
+    info: &AdapterInfo,
+    inputs: BuildInputs,
+    built: WorkerBuildResponse,
+) -> BuildRecord {
+    BuildRecord {
+        schema: build_record::SCHEMA,
+        container: bctx.container.worker_name.clone(),
+        source: inputs.source,
+        command: BUILD_COMMAND.to_string(),
+        dependency_files: inputs.dependency_files,
+        image: Some(BuildImage {
+            file: IMAGE_FILE.to_string(),
+            build_id: built.build_id,
+            base_image: BuildBaseImage {
+                declared: inputs.declared_base_image,
+                reference: built.base_image.reference,
+                digest: built.base_image.digest,
+            },
+            adapter: BuildAdapter {
+                name: info.adapter.clone(),
+                version: info.adapter_version.clone(),
+            },
+            contract: BuildContract {
+                major: info.contract.major,
+                minor: info.contract.minor,
+            },
+        }),
+        built_at: rfc3339(built.built_at_ms),
+    }
+}
+
+/// Milliseconds since the epoch as RFC 3339 UTC to the second; now, when out of range.
+fn rfc3339(ms: u64) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// A `worker::build` that did not answer with an image. The adapter's answer is the build's
+/// failure (exit 1), with its S-code, or else its error code; not reaching the adapter is this
+/// command's own (125).
+fn build_call_failure(error: &iii_sdk::Error, target: &Target) -> Failure {
+    let failure = call_failure("worker::build", error, target);
+    match error {
+        iii_sdk::Error::Remote { code, .. } if code != "function_not_found" => Failure {
+            code: if failure.code == ENGINE_CALL_FAILED {
+                code.clone()
+            } else {
+                failure.code
+            },
+            exit: BUILD_FAILED_EXIT,
+            ..failure
+        },
+        _ => failure,
+    }
+}
+
+/// `printer`, with every record on stdout: a build's output is this command's stdout.
+fn to_stdout(printer: Printer) -> Printer {
+    Printer(Arc::new(move |record: &LogRecord| {
+        let record = LogRecord {
+            stream: LogStream::Stdout,
+            ..record.clone()
+        };
+        (printer.0)(&record)
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build_record::{
-        BuildAdapter, BuildBaseImage, BuildContract, BuildImage, BuildSource,
-    };
     use crate::sandbox::tests::{answered, fake_engine, fake_engine_url, refused};
     use iii_sandbox_contract::{ContractVersion, State};
     use serde_json::{Value, json};
@@ -1093,11 +1481,15 @@ mod tests {
         }
     }
 
-    /// `build.json` in memory: what `read` returns, and every directory it was read from.
+    /// `build.json` in memory: what `read` returns and every directory it was read from, the
+    /// inputs a build records, and every write.
     #[derive(Default)]
     struct FakeRecords {
         stored: Option<BuildRecord>,
         read_from: Mutex<Vec<PathBuf>>,
+        written: Mutex<Vec<(PathBuf, BuildRecord)>>,
+        /// What happened, in order: each input read and each write; a test adds its own steps.
+        events: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeRecords {
@@ -1109,11 +1501,204 @@ mod tests {
         }
     }
 
+    impl FakeRecords {
+        fn happened(&self, event: String) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
     impl Records for FakeRecords {
         fn read(&self, build_dir: &Path) -> crate::error::Result<Option<BuildRecord>> {
             self.read_from.lock().unwrap().push(build_dir.to_path_buf());
             Ok(self.stored.clone())
         }
+
+        fn write(&self, build_dir: &Path, record: &BuildRecord) -> crate::error::Result<()> {
+            self.happened("write".into());
+            self.written
+                .lock()
+                .unwrap()
+                .push((build_dir.to_path_buf(), record.clone()));
+            Ok(())
+        }
+
+        fn source(
+            &self,
+            compose_file: &Path,
+            container: &str,
+        ) -> crate::error::Result<BuildSource> {
+            self.happened(format!("source {} {container}", compose_file.display()));
+            Ok(BuildSource::Package {
+                name: "onboarding".into(),
+                version: "0.2.0".into(),
+                sha256: "sha256:8c34".into(),
+            })
+        }
+
+        fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>> {
+            self.happened(format!("declared_base_image {}", worker_dir.display()));
+            Ok(Some("docker.io/iiidev/python".into()))
+        }
+
+        fn dependency_files(
+            &self,
+            worker_dir: &Path,
+        ) -> crate::error::Result<BTreeMap<String, String>> {
+            self.happened(format!("dependency_files {}", worker_dir.display()));
+            Ok([("package.json".to_string(), "sha256:2f1c".to_string())].into())
+        }
+    }
+
+    fn build_context() -> BuildContext {
+        BuildContext::from_vars(&compose_vars()).unwrap()
+    }
+
+    fn build_context_within(ms: &str) -> BuildContext {
+        let mut vars = compose_vars();
+        vars.insert(BUILD_TIMEOUT_ENV.into(), ms.into());
+        BuildContext::from_vars(&vars).unwrap()
+    }
+
+    fn log_line(stream: &str, line: &str, cursor: u64) -> String {
+        json!({"stream": stream, "line": line, "ts_ms": 1, "cursor": cursor}).to_string()
+    }
+
+    /// `worker::build`'s answer: image `sha256:7d41`, built at 2023-11-14T22:13:20Z.
+    fn built() -> Value {
+        answered(json!({
+            "build_id": "sha256:7d41",
+            "base_image": {"reference": "docker.io/iiidev/python:latest", "digest": "sha256:b1e2"},
+            "built_at_ms": 1_700_000_000_000_u64,
+        }))
+    }
+
+    /// An S-code refusal carrying `message`, as the SDK delivers an adapter handler's error.
+    fn refused_with(code: SandboxErrorCode, message: &str) -> Value {
+        let payload = contract::error_payload(code, message, None, None);
+        json!({"error": {"code": "invocation_failed", "message": format!("handler error: {payload}")}})
+    }
+
+    /// What a fake build channel sends its reader, in order, before it closes.
+    enum Frame {
+        Text(String),
+        Binary(Vec<u8>),
+        /// A one-byte keepalive every 50 ms, until the reader goes.
+        KeepAlive,
+    }
+
+    /// A fake engine for `worker::build`. `answer` answers each call as `fake_engine`'s does,
+    /// by function id (`true` leaves it unanswered), and every call goes to the receiver. A
+    /// reader of the build channel gets `frames`, then a close; `gone` is notified when it
+    /// closed its end first.
+    async fn build_engine(
+        answer: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
+        frames: Vec<Frame>,
+    ) -> (
+        IIIClient,
+        tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        use futures::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{
+            Message,
+            handshake::server::{Request, Response},
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let answer = Arc::new(answer);
+        let frames = Arc::new(frames);
+        let gone = Arc::new(tokio::sync::Notify::new());
+        let (calls, called) = tokio::sync::mpsc::unbounded_channel();
+        let reader_gone = gone.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (calls, answer, frames, gone) = (
+                    calls.clone(),
+                    answer.clone(),
+                    frames.clone(),
+                    reader_gone.clone(),
+                );
+                tokio::spawn(async move {
+                    let mut path = String::new();
+                    // tungstenite fixes the callback's error type.
+                    #[allow(clippy::result_large_err)]
+                    let accept = |request: &Request, response: Response| {
+                        path = request.uri().path().to_string();
+                        Ok(response)
+                    };
+                    let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, accept).await
+                    else {
+                        return;
+                    };
+                    if path.starts_with("/ws/channels/") {
+                        for frame in frames.iter() {
+                            let message = match frame {
+                                Frame::Text(text) => Message::Text(text.clone().into()),
+                                Frame::Binary(bytes) => Message::Binary(bytes.clone().into()),
+                                Frame::KeepAlive => loop {
+                                    tokio::select! {
+                                        read = socket.next() => match read {
+                                            Some(Ok(Message::Close(_)) | Err(_)) | None => {
+                                                gone.notify_one();
+                                                return;
+                                            }
+                                            Some(Ok(_)) => {}
+                                        },
+                                        () = tokio::time::sleep(Duration::from_millis(50)) => {
+                                            let keepalive = Message::Binary(vec![0].into());
+                                            if socket.send(keepalive).await.is_err() {
+                                                gone.notify_one();
+                                                return;
+                                            }
+                                        }
+                                    }
+                                },
+                            };
+                            if socket.send(message).await.is_err() {
+                                return;
+                            }
+                        }
+                        let _ = socket.close(None).await;
+                        return;
+                    }
+                    while let Some(Ok(frame)) = socket.next().await {
+                        let Ok(message) = serde_json::from_slice::<Value>(&frame.into_data())
+                        else {
+                            continue;
+                        };
+                        let function = message["function_id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
+                        if message["type"] != "invokefunction"
+                            || (function.starts_with("engine::workers::")
+                                && function != "engine::workers::list")
+                        {
+                            continue;
+                        }
+                        let end = |direction| json!({"channel_id": "c", "access_key": "k", "direction": direction});
+                        let mut reply = match function.as_str() {
+                            "engine::channels::create" => {
+                                json!({"result": {"writer": end("write"), "reader": end("read")}})
+                            }
+                            _ => answer(&function, &message["data"]),
+                        };
+                        let _ = calls.send((function.clone(), message["data"].clone()));
+                        if reply == json!(true) {
+                            continue;
+                        }
+                        reply["type"] = json!("invocationresult");
+                        reply["invocation_id"] = message["invocation_id"].clone();
+                        reply["function_id"] = json!(function);
+                        let _ = socket.send(Message::Text(reply.to_string().into())).await;
+                    }
+                });
+            }
+        });
+        let client =
+            iii_sdk::register_worker(&format!("ws://{address}"), iii_sdk::InitOptions::default());
+        (client, called, gone)
     }
 
     /// A shutdown that never comes.
@@ -1497,6 +2082,475 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(failure.code, SANDBOX_UNSUPPORTED_PLATFORM);
+    }
+
+    #[test]
+    fn the_build_reads_its_directory_compose_file_and_timeout_from_compose() {
+        let bctx = build_context();
+        assert_eq!(bctx.build_dir, "/work/.build/api");
+        assert_eq!(
+            bctx.compose_file,
+            PathBuf::from("/work/worker-compose.yaml")
+        );
+        assert_eq!(bctx.timeout, Duration::from_secs(60));
+        assert_eq!(bctx.worker_dir(), Path::new("/work/api"));
+
+        let mut vars = compose_vars();
+        vars.remove(BUILD_TIMEOUT_ENV);
+        let default = BuildContext::from_vars(&vars).unwrap().timeout;
+        assert_eq!(default, Duration::from_secs(20 * 60));
+        vars.insert(BUILD_TIMEOUT_ENV.into(), "20m".into());
+        let error = BuildContext::from_vars(&vars).unwrap_err();
+        assert!(error.contains(BUILD_TIMEOUT_ENV), "{error}");
+        for name in [BUILD_DIR_ENV, BUILD_COMPOSE_FILE_ENV] {
+            let mut vars = compose_vars();
+            vars.remove(name);
+            let error = BuildContext::from_vars(&vars).unwrap_err();
+            assert!(error.contains(name), "{error}");
+        }
+
+        // A bundle builds from its package directory.
+        let mut bundle = compose_vars();
+        bundle.remove(WORKER_DIR_ENV);
+        bundle.insert(PACKAGE_DIR_ENV.into(), "/work/.workers/api".into());
+        bundle.insert(PACKAGE_NAME_ENV.into(), "onboarding".into());
+        let bctx = BuildContext::from_vars(&bundle).unwrap();
+        assert_eq!(bctx.worker_dir(), Path::new("/work/.workers/api"));
+    }
+
+    #[test]
+    fn inside_compose_the_build_is_the_containers_own() {
+        let bctx = build_context();
+        assert!(own_container(&bctx, None).is_ok());
+        assert!(own_container(&bctx, Some("api")).is_ok());
+        let failure = own_container(&bctx, Some("web")).unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_INVALID_ARGUMENTS, RUNNER_FAILED)
+        );
+    }
+
+    #[test]
+    fn the_last_line_of_a_failed_build_is_one_line_compose_can_read() {
+        let line = build_failure_line(TIMED_OUT, "did not finish\n\n  in time  \n");
+        assert_eq!(
+            line,
+            "iii sandbox: build failed: TIMED_OUT: did not finish; in time"
+        );
+        assert_eq!(
+            parse_build_failure(&line),
+            Some((TIMED_OUT, "did not finish; in time"))
+        );
+        assert_eq!(
+            parse_build_failure("iii sandbox: built api (sha256:7d41)"),
+            None
+        );
+    }
+
+    #[test]
+    fn what_the_adapter_answers_is_the_builds_failure_and_the_rest_is_this_commands() {
+        let target = &context().target;
+        let remote = |code: &str, message: String| iii_sdk::Error::Remote {
+            code: code.into(),
+            message,
+            stacktrace: None,
+        };
+        let payload =
+            contract::error_payload(SandboxErrorCode::S509, "a build is running", None, None);
+        let s509 = remote("invocation_failed", format!("handler error: {payload}"));
+        let failure = build_call_failure(&s509, target);
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            ("S509", BUILD_FAILED_EXIT)
+        );
+        assert!(
+            failure
+                .message
+                .starts_with("worker::build: a build is running"),
+            "{failure}"
+        );
+
+        let crashed = remote("invocation_failed", "the build VM crashed".into());
+        let failure = build_call_failure(&crashed, target);
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            ("invocation_failed", BUILD_FAILED_EXIT)
+        );
+
+        for unreached in [
+            iii_sdk::Error::Timeout,
+            iii_sdk::Error::NotConnected,
+            remote("function_not_found", "gone".into()),
+        ] {
+            let failure = build_call_failure(&unreached, target);
+            assert_eq!(
+                (failure.code.as_str(), failure.exit),
+                (ENGINE_CALL_FAILED, RUNNER_FAILED),
+                "{unreached}"
+            );
+        }
+        let failure = build_call_failure(&iii_sdk::Error::Timeout, target);
+        assert!(
+            failure
+                .message
+                .contains("is the engine at ws://127.0.0.1:49134"),
+            "{failure}"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_prints_text_frames_only_and_records_the_image_after_the_answer() {
+        let records = FakeRecords::default();
+        let events = records.events.clone();
+        let frames = vec![
+            Frame::Binary(vec![0]),
+            Frame::Text(log_line("stdout", "npm ci", 1)),
+            // A record in a binary frame is no record: records come in text frames only.
+            Frame::Binary(log_line("stdout", "not a record", 2).into_bytes()),
+            Frame::Text("not json".into()),
+            Frame::Binary(vec![0]),
+            Frame::Text(log_line("stderr", "added 3 packages", 3)),
+        ];
+        let (client, mut called, _) = build_engine(
+            adapter(move |suffix, _| {
+                (suffix == "worker::build").then(|| {
+                    events.lock().unwrap().push("answered".into());
+                    built()
+                })
+            }),
+            frames,
+        )
+        .await;
+        let (printer, printed) = captured();
+        let record = build_vm(&build_context(), &records, &client, &never(), printer)
+            .await
+            .unwrap();
+
+        // Both of the guest's streams are this command's stdout.
+        assert_eq!(
+            *printed.lock().unwrap(),
+            ["stdout: npm ci", "stdout: added 3 packages"]
+        );
+
+        let calls = calls(&mut called);
+        let request = payload(&calls, "worker::build");
+        assert_eq!(request["output_dir"], "/work/.build/api");
+        assert_eq!(request["state_key"], "9f2c1e");
+        assert_eq!(request["auth"], "scoped");
+        assert_eq!(request["worker_name"], "api");
+        assert_eq!(
+            request["source"],
+            json!({"kind": "local", "host_path": "/work/api", "run_override": null})
+        );
+        assert_eq!(
+            request["env"],
+            json!({"API_KEY": "k", "III_WORKER_NAME": "api"})
+        );
+        assert_eq!(request["logs"]["direction"], "write");
+        for not_called in ["worker::prepare", "worker::start"] {
+            assert!(payloads(&calls, not_called).is_empty(), "{calls:?}");
+        }
+
+        let expected = BuildRecord {
+            schema: build_record::SCHEMA,
+            container: "api".into(),
+            source: BuildSource::Package {
+                name: "onboarding".into(),
+                version: "0.2.0".into(),
+                sha256: "sha256:8c34".into(),
+            },
+            command: "iii sandbox build".into(),
+            dependency_files: [("package.json".to_string(), "sha256:2f1c".to_string())].into(),
+            image: Some(BuildImage {
+                file: "image.erofs".into(),
+                build_id: "sha256:7d41".into(),
+                base_image: BuildBaseImage {
+                    declared: Some("docker.io/iiidev/python".into()),
+                    reference: "docker.io/iiidev/python:latest".into(),
+                    digest: Some("sha256:b1e2".into()),
+                },
+                adapter: BuildAdapter {
+                    name: "sandbox-libkrun".into(),
+                    version: "0.3.0".into(),
+                },
+                contract: BuildContract {
+                    major: CONTRACT_MAJOR,
+                    minor: contract::CONTRACT_MINOR,
+                },
+            }),
+            built_at: "2023-11-14T22:13:20Z".into(),
+        };
+        assert_eq!(record, expected);
+        assert_eq!(
+            *records.written.lock().unwrap(),
+            [(PathBuf::from("/work/.build/api"), expected)]
+        );
+        // The inputs are read before the build; the record is written after its answer.
+        assert_eq!(
+            *records.events.lock().unwrap(),
+            [
+                "source /work/worker-compose.yaml api",
+                "declared_base_image /work/api",
+                "dependency_files /work/api",
+                "answered",
+                "write",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_build_exits_1_with_the_adapters_code_and_records_nothing() {
+        let records = FakeRecords::default();
+        let frames = vec![Frame::Text(log_line(
+            "stderr",
+            "npm ERR! missing script",
+            1,
+        ))];
+        let (client, _called, _) = build_engine(
+            adapter(|suffix, _| {
+                (suffix == "worker::build").then(|| {
+                    refused_with(
+                        SandboxErrorCode::S507,
+                        "scripts.install exited 1:\nnpm ERR! missing script",
+                    )
+                })
+            }),
+            frames,
+        )
+        .await;
+        let (printer, printed) = captured();
+        let failure = build_vm(&build_context(), &records, &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            ("S507", BUILD_FAILED_EXIT)
+        );
+        assert_eq!(
+            *printed.lock().unwrap(),
+            ["stdout: npm ERR! missing script"]
+        );
+        assert!(records.written.lock().unwrap().is_empty());
+
+        let line = build_failure_line(&failure.code, &failure.message);
+        let (code, message) = parse_build_failure(&line).unwrap();
+        assert_eq!(code, "S507");
+        assert!(
+            message
+                .starts_with("worker::build: scripts.install exited 1:; npm ERR! missing script"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_past_its_timeout_closes_the_channel_and_fails_with_timed_out() {
+        let records = FakeRecords::default();
+        let (client, _called, gone) = build_engine(
+            adapter(|suffix, _| (suffix == "worker::build").then_some(json!(true))),
+            vec![Frame::KeepAlive],
+        )
+        .await;
+        let (printer, printed) = captured();
+        let begun = Instant::now();
+        let failure = build_vm(
+            &build_context_within("700"),
+            &records,
+            &client,
+            &never(),
+            printer,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (TIMED_OUT, BUILD_FAILED_EXIT)
+        );
+        assert!(failure.message.contains("700ms"), "{failure}");
+        assert!(begun.elapsed() < Duration::from_secs(3));
+        // Closing the channel is what stops the adapter's build.
+        tokio::time::timeout(Duration::from_secs(5), gone.notified())
+            .await
+            .expect("the build channel was left open");
+        assert!(
+            printed.lock().unwrap().is_empty(),
+            "a keepalive is no output"
+        );
+        assert!(records.written.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_signal_closes_the_build_channel_and_exits_130() {
+        let records = FakeRecords::default();
+        let (client, _called, gone) = build_engine(
+            adapter(|suffix, _| (suffix == "worker::build").then_some(json!(true))),
+            vec![Frame::KeepAlive],
+        )
+        .await;
+        let (printer, _) = captured();
+        let shutdown = signal_after(Duration::from_millis(500), 2);
+        let failure = build_vm(&build_context(), &records, &client, &shutdown, printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (BUILD_CANCELLED, CANCELLED_EXIT)
+        );
+        assert!(failure.message.contains("SIGINT"), "{failure}");
+        tokio::time::timeout(Duration::from_secs(5), gone.notified())
+            .await
+            .expect("the build channel was left open");
+        assert!(records.written.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn build_on_an_adapter_without_worker_build_builds_nothing() {
+        let records = FakeRecords::default();
+        let (client, mut called, _) = build_engine(
+            adapter(|suffix, _| {
+                (suffix == "adapter::info").then(|| {
+                    answered(info(&[
+                        FEATURE_SCOPED_AUTH,
+                        FEATURE_LEASE,
+                        FEATURE_LOGS_FROM_END,
+                    ]))
+                })
+            }),
+            Vec::new(),
+        )
+        .await;
+        let (printer, _) = captured();
+        let failure = build_vm(&build_context(), &records, &client, &never(), printer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (failure.code.as_str(), failure.exit),
+            (SANDBOX_BUILD_UNSUPPORTED, RUNNER_FAILED)
+        );
+        let calls = calls(&mut called);
+        assert!(
+            calls
+                .iter()
+                .all(|(function, _)| function == "adapter::info"),
+            "nothing but adapter::info may be called: {calls:?}"
+        );
+        assert!(records.events.lock().unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn build_is_refused_on_windows() {
+        let args = BuildArgs { container: None };
+        let failure = build_command(&compose_vars(), args, &FakeRecords::default())
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, SANDBOX_UNSUPPORTED_PLATFORM);
+    }
+
+    /// What Compose hands `iii sandbox build` (spec 8.3) is what it reads, and none of it reaches
+    /// the guest.
+    #[test]
+    #[ignore = "needs KAN-280: scripts.build and the III_BUILD_* variables in layer_own_vm_env"]
+    fn compose_hands_the_build_everything_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "api",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = crate::config::ComposeFile::parse(
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    scripts: {build: iii sandbox build, build_timeout: 90s, run: iii sandbox run}\n",
+            dir.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+        let state_dir = Path::new("/state");
+        let mut user_env = file.containers["api"].resolve_user_env("api").unwrap();
+        sandbox::layer_own_vm_env(&file, "api", "project", state_dir, "orders", &mut user_env)
+            .unwrap();
+        let start = crate::manifest::StartSpec::Shell("iii sandbox build".into());
+        let plan = crate::spawn::spawn_plan(&crate::spawn::SpawnCtx {
+            engine_url: "ws://engine.test:1",
+            namespace: "orders",
+            compose_namespace: "compose",
+            compose_file: &file.path,
+            container_key: "api",
+            start: &start,
+            config_name: Some("api-config"),
+            working_dir: dir.path(),
+            user_env: &user_env,
+        });
+
+        let bctx = BuildContext::from_vars(&plan.env).unwrap();
+        let build_dir = Path::new(&bctx.build_dir);
+        assert!(
+            build_dir.is_absolute() && build_dir.ends_with(".build/api"),
+            "{}",
+            bctx.build_dir
+        );
+        assert_eq!(
+            bctx.compose_file,
+            PathBuf::from(&plan.env["III_COMPOSE_FILE"])
+        );
+        assert_eq!(bctx.timeout, Duration::from_secs(90));
+        let keys = &plan.env[WORKER_ENV_KEYS_ENV];
+        for name in [BUILD_DIR_ENV, BUILD_COMPOSE_FILE_ENV, BUILD_TIMEOUT_ENV] {
+            assert!(!keys.split(',').any(|key| key == name), "{name} in {keys}");
+            assert!(
+                !bctx.container.env.contains_key(name),
+                "{name} reaches the guest"
+            );
+        }
+    }
+
+    /// The real `build_record`: a `path://` container's build records its declared directory and
+    /// base image where `iii sandbox run` reads them.
+    #[tokio::test]
+    #[ignore = "needs KAN-281: build_record::{source, declared_base_image, dependency_files, write, read}"]
+    async fn a_build_is_recorded_where_run_reads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "api",
+            "runtime: {base_image: docker.io/iiidev/python}\nscripts: {start: run}\n",
+        );
+        std::fs::write(dir.path().join("api/requirements.txt"), "flask\n").unwrap();
+        let compose_file = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &compose_file,
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  api: {worker: path://./api, start_after: [sb]}\n",
+        )
+        .unwrap();
+        let build_dir = dir.path().join(".build/api");
+        std::fs::create_dir_all(&build_dir).unwrap();
+        let mut vars = compose_vars();
+        let path = |path: &Path| path.to_str().unwrap().to_string();
+        vars.insert(WORKER_DIR_ENV.into(), path(&dir.path().join("api")));
+        vars.insert(BUILD_DIR_ENV.into(), path(&build_dir));
+        vars.insert(BUILD_COMPOSE_FILE_ENV.into(), path(&compose_file));
+        let bctx = BuildContext::from_vars(&vars).unwrap();
+        let (client, _called, _) = build_engine(
+            adapter(|suffix, _| (suffix == "worker::build").then(built)),
+            Vec::new(),
+        )
+        .await;
+        let (printer, _) = captured();
+        let record = build_vm(&bctx, &BuildRecords, &client, &never(), printer)
+            .await
+            .unwrap();
+        assert_eq!(
+            record.source,
+            BuildSource::Path {
+                dir: "./api".into()
+            }
+        );
+        let image = record.image.as_ref().unwrap();
+        assert_eq!(
+            image.base_image.declared.as_deref(),
+            Some("docker.io/iiidev/python")
+        );
+        assert!(record.dependency_files.contains_key("requirements.txt"));
+        assert_eq!(build_record::read(&build_dir).unwrap(), Some(record));
+        let (_, boot) = boot_plan(&vars, None, &BuildRecords).unwrap();
+        assert_eq!(boot.build_id, "sha256:7d41");
     }
 
     /// The real `build_record::read`: a build directory without `build.json` holds no build.
