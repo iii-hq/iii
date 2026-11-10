@@ -26,6 +26,10 @@ The `click-streamer` worker owns the live click feed. Uncomment the Ch. 5 block 
 ```yaml worker-compose.yaml
 click-streamer:
   worker: path://./click-streamer
+  start_after: [sandbox-libkrun]
+  scripts:
+    build: iii sandbox build
+    run: iii sandbox run
 ```
 
 ## Host the click feed in `click-streamer`

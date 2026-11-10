@@ -16,7 +16,10 @@ Uncomment the Ch. 6 block in `worker-compose.yaml`:
 ```yaml worker-compose.yaml
 bulk-importer:
   worker: path://./bulk-importer
-  start_after: [link]
+  start_after: [link, sandbox-libkrun]
+  scripts:
+    build: iii sandbox build
+    run: iii sandbox run
 ```
 
 ## Import a CSV over a channel

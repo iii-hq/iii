@@ -40,9 +40,9 @@ wait_for_port() {
   return 1
 }
 
-# Path workers install their dependencies on first start, so the engine and
-# http ports open long before every worker has registered. Wait for compose to
-# report every container running.
+# VM workers build their image, dependencies included, on their first start
+# (iii sandbox build), so the engine and http ports open long before every
+# worker has registered. Wait for compose to report every container running.
 wait_for_containers() {
   local log=$1 tries=${2:-600}
   for ((i = 0; i < tries; i++)); do
