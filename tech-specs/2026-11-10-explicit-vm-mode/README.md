@@ -649,7 +649,8 @@ guest still sees the path through `III_COMPOSE_FILE`; the split is not meant to 
 ### 9.1 Data the worker writes
 
 The VM's data disk is persistent and independent of the build. It keeps whatever the worker
-writes (its home, databases, caches) across restarts and rebuilds; only `iii sandbox destroy`
+writes (its home, databases, caches, and files it writes in `/workspace`, section 9.3) across
+restarts and rebuilds; only `iii sandbox destroy`
 and `compose::remove` reset it. It stays adapter-owned under
 `~/.iii/sandbox/workers/<vm_id>/`.
 
@@ -672,8 +673,13 @@ under an upper that already holds files.
   the run's copy, the live sync and the names the boot cleanup keeps: the adapter's ignore
   list plus `.iii`. The build's input copy uses the same list except `vendor`, which goes into
   the build (Go vendors source there; an install in the build rewrites it otherwise). Names that
-  often hold source in nested directories (`build`, `out`, `obj`, `dist`, `coverage`, `deps`,
-  `target`) match only at the worker's root; every other name matches at any depth. Adding a dependency: edit `package.json`, run
+  often hold source in nested directories (`build`, `out`, `obj`, `coverage`, `deps`) match
+  only a directory at the worker's root; every other name, `target` and `dist` included,
+  matches at any depth.
+- The boot never deletes what the build installed or what the worker wrote in `/workspace`.
+  Each copy records what it extracted in a manifest on the data disk, outside `/workspace`;
+  the next boot removes only manifest entries the host no longer has. A disk without a
+  manifest (written by an older adapter) skips that cleanup once. Adding a dependency: edit `package.json`, run
   `iii sandbox build <container>`, restart the container.
 
 ### 9.4 Env
