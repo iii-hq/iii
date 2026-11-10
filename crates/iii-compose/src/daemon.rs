@@ -747,23 +747,22 @@ impl Daemon {
             prepared
         } else {
             let mut prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
             let path = compose.path.clone();
-            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
-                crate::sandbox::apply_adapter_change(
-                    &path,
-                    &mut edited,
-                    &mut compose,
-                    &namespace,
-                    &mut prepared,
-                    &mut BTreeSet::new(),
-                    &mut BTreeMap::new(),
-                    false,
-                    false,
-                )
-                .await?
-            {
-                prepared.install(&package_cache).await?;
+            let adapter = crate::sandbox::apply_adapter_change(
+                &path,
+                &mut edited,
+                &mut compose,
+                &namespace,
+                &mut prepared,
+                &mut BTreeSet::new(),
+                &mut BTreeMap::new(),
+                false,
+                false,
+            )
+            .await?;
+            prepared.install(&package_cache).await?;
+            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = adapter {
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -1147,9 +1146,8 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_with_versions(
+                crate::lockfile::prepare_metadata_with_versions(
                     &mut current,
-                    &package_cache,
                     &force,
                     &selected_versions,
                 ),
@@ -1172,10 +1170,8 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some() {
-            self.prepare(&operation_id, prepared.install(&package_cache))
-                .await??;
-        }
+        self.prepare(&operation_id, prepared.install(&package_cache))
+            .await??;
         let yaml_changed = !added.is_empty() || !replaced.is_empty() || adapter.is_some();
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);

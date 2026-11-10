@@ -79,9 +79,9 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             crate::sandbox::require_declared_adapter(&file, &namespace)?;
             return Ok::<_, ComposeError>(prepared);
         }
-        let mut prepared = crate::lockfile::prepare(&mut file, &cache, &BTreeSet::new()).await?;
+        let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()).await?;
         let path = file.path.clone();
-        if crate::sandbox::apply_adapter_change(
+        crate::sandbox::apply_adapter_change(
             &path,
             &mut edited,
             &mut file,
@@ -92,11 +92,8 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             false,
             false,
         )
-        .await?
-        .is_some()
-        {
-            prepared.install(&cache).await?;
-        }
+        .await?;
+        prepared.install(&cache).await?;
         Ok(prepared)
     }
     .await;
