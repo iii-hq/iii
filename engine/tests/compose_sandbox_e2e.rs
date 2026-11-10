@@ -28,11 +28,14 @@ use nix::{
 };
 use serde_json::{Value, json};
 
-/// Pinned so a new registry release cannot turn iii's CI red (D5).
-const SANDBOX_LIBKRUN: &str = "0.3.1";
+/// Pinned so a new registry release cannot turn iii's CI red (D5): the first release with
+/// `worker.build`, which the explicit VM mode needs (spec 6.6).
+const SANDBOX_LIBKRUN: &str = "0.4.0";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
+/// What makes a container run in a VM: its adapter, and both `scripts` (spec 3.1).
+const EXPLICIT: &str = "    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n";
 /// The `stop_timeout` of every project below.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long past `stop_timeout` `compose::down` may take.
@@ -479,7 +482,7 @@ fn sandbox_exec_through_the_router(project: &Project) {
 #[serial_test::serial(sandbox_vm)]
 fn a_registry_bundle_runs_through_sandbox_libkrun() {
     let mut project = Project::new(&format!(
-        "  onboarding:\n    worker: package://onboarding\n    version: {ONBOARDING}\n    restart: always\n"
+        "  onboarding:\n    worker: package://onboarding\n    version: {ONBOARDING}\n    restart: always\n{EXPLICIT}"
     ));
     let declared = std::fs::read(&project.file).unwrap();
 
@@ -523,9 +526,9 @@ fn a_registry_bundle_runs_through_sandbox_libkrun() {
 #[ignore = "boots microVMs; run by compose-sandbox-e2e-linux"]
 #[serial_test::serial(sandbox_vm)]
 fn a_local_base_image_worker_runs_and_syncs_its_source() {
-    let mut project = Project::new(
-        "  sandbox-vm-worker:\n    worker: path://./sandbox-vm-worker\n    restart: always\n",
-    );
+    let mut project = Project::new(&format!(
+        "  sandbox-vm-worker:\n    worker: path://./sandbox-vm-worker\n    restart: always\n{EXPLICIT}"
+    ));
     let worker_dir = project.dir.path().join("sandbox-vm-worker");
     copy_fixture(&worker_dir);
     let reply = worker_dir.join("reply.txt");
@@ -583,6 +586,39 @@ const FAKE_ADAPTER: &str = "FAKE_ADAPTER";
 const FAKE_GUEST: &str = "FAKE_GUEST";
 /// In the fake adapter's working directory: one JSON object per call it answered.
 const FAKE_ADAPTER_CALLS: &str = "calls.jsonl";
+/// The image id the fake adapter's builds report.
+const FAKE_BUILD_ID: &str = "sha256:fake";
+
+/// The build `iii sandbox build` would have left for `guests`, so their run finds one and no
+/// first build runs (spec 5.2): `build.json` and the image beside it.
+fn seed_builds(root: &std::path::Path, guests: &[&str]) {
+    for guest in guests {
+        let dir = root.join(".build").join(guest);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("image.erofs"), "fake image").unwrap();
+        std::fs::write(dir.join("image.id"), FAKE_BUILD_ID).unwrap();
+        let record = json!({
+            "schema": 1,
+            "container": guest,
+            "source": { "kind": "path", "dir": format!("./{guest}") },
+            "command": "iii sandbox build",
+            "dependency_files": {},
+            "image": {
+                "file": "image.erofs",
+                "build_id": FAKE_BUILD_ID,
+                "base_image": {
+                    "declared": "python",
+                    "reference": "docker.io/iiidev/python:latest",
+                    "digest": null
+                },
+                "adapter": { "name": "sandbox-libkrun", "version": "0.4.0" },
+                "contract": { "major": 1, "minor": 3 }
+            },
+            "built_at": "2026-11-10T00:00:00Z"
+        });
+        std::fs::write(dir.join("build.json"), record.to_string()).unwrap();
+    }
+}
 
 fn this_test_binary_runs(fixture: &str) -> [String; 5] {
     [
@@ -605,8 +641,8 @@ fn fake_adapter() {
     };
 
     use iii_sandbox_contract::{
-        AdapterInfo, ContractVersion, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
-        SandboxErrorCode, scoped_auth_matches,
+        AdapterInfo, ContractVersion, FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END,
+        FEATURE_SCOPED_AUTH, SandboxErrorCode, scoped_auth_matches,
     };
     use iii_sdk::RegisterFunction;
 
@@ -633,8 +669,20 @@ fn fake_adapter() {
 
     type Answer =
         fn(&Value, &Mutex<Option<(String, Child)>>, &Mutex<u64>) -> Result<Value, iii_sdk::Error>;
-    let handlers: [(&str, Answer); 5] = [
+    let handlers: [(&str, Answer); 6] = [
         ("worker::prepare", |_, _, _| Ok(json!({}))),
+        // The image is a file named as the real one, its id written last (spec 6.2).
+        ("worker::build", |request, _, _| {
+            let output = std::path::Path::new(request["output_dir"].as_str().unwrap());
+            std::fs::create_dir_all(output).unwrap();
+            std::fs::write(output.join("image.erofs"), "fake image").unwrap();
+            std::fs::write(output.join("image.id"), FAKE_BUILD_ID).unwrap();
+            Ok(json!({
+                "build_id": FAKE_BUILD_ID,
+                "base_image": { "reference": "docker.io/iiidev/python:latest" },
+                "built_at_ms": 0,
+            }))
+        }),
         ("worker::start", |request, guest, instance| {
             let state_key = request["state_key"].as_str().unwrap();
             if matches!(&*guest.lock().unwrap(), Some((booted, _)) if booted == state_key) {
@@ -719,11 +767,16 @@ fn fake_adapter() {
             |_: Value, _: Option<Value>| -> Result<Value, iii_sdk::Error> {
                 Ok(serde_json::to_value(AdapterInfo {
                     adapter: "sandbox-libkrun".into(),
-                    adapter_version: "0.3.0".into(),
+                    adapter_version: "0.4.0".into(),
                     contract: ContractVersion::CURRENT,
-                    features: [FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]
-                        .map(str::to_string)
-                        .to_vec(),
+                    features: [
+                        FEATURE_SCOPED_AUTH,
+                        FEATURE_LEASE,
+                        FEATURE_LOGS_FROM_END,
+                        FEATURE_BUILD,
+                    ]
+                    .map(str::to_string)
+                    .to_vec(),
                 })?)
             },
         ),
@@ -795,10 +848,11 @@ fn fake_adapter_calls(root: &std::path::Path, function: &str) -> Vec<Value> {
 fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
     for policy in ["always", "on-failure"] {
         let mut project = Project::declaring(&format!(
-            "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{run: iii sandbox run}}\n",
+            "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
         ));
         let root = project.dir.path().to_path_buf();
         write_fake_adapter_and_guests(&root, &["app"]);
+        seed_builds(&root, &["app"]);
         project.start();
         project.wait_ready("sandbox-libkrun", SHORT);
         project.wait_ready("app", SHORT);
@@ -829,10 +883,11 @@ fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
 #[serial_test::serial(sandbox_vm)]
 fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
     ));
     let root = project.dir.path().to_path_buf();
     write_fake_adapter_and_guests(&root, &["app"]);
+    seed_builds(&root, &["app"]);
     project.start();
     project.wait_ready("sandbox-libkrun", SHORT);
     project.wait_ready("app", SHORT);
@@ -867,9 +922,10 @@ fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
 #[serial_test::serial(sandbox_vm)]
 fn two_path_workers_each_run_their_own_vm() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n  app2:\n    worker: path://./app2\n    start_after: [sandbox-libkrun]\n    scripts: {{run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n  app2:\n    worker: path://./app2\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
     ));
     write_fake_adapter_and_guests(project.dir.path(), &["app", "app2"]);
+    seed_builds(project.dir.path(), &["app", "app2"]);
 
     project.start();
     project.wait_ready("sandbox-libkrun", SHORT);
@@ -883,10 +939,11 @@ fn two_path_workers_each_run_their_own_vm() {
 #[serial_test::serial(sandbox_vm)]
 fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
     ));
     let root = project.dir.path().to_path_buf();
     write_fake_adapter_and_guests(&root, &["app"]);
+    seed_builds(&root, &["app"]);
     let calls = |function: &str| fake_adapter_calls(&root, function);
 
     project.start();
@@ -899,13 +956,12 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     let request = &started[0]["request"];
     assert_eq!(request["worker_name"], "app");
     assert_eq!(request["source"]["kind"], "local");
-    // Compose pulls the image with its own token before the command starts, so
-    // the pull stays out of the startup timeout. The command's call finds it there.
-    let prepared = calls("worker::prepare");
-    assert_eq!(prepared.len(), 2, "{prepared:?}");
-    assert_eq!(prepared[0]["token"], "project");
-    assert_eq!(prepared[1]["token"], "scoped");
-    assert_eq!(prepared[1]["request"]["state_key"], request["state_key"]);
+    // Compose boots no VM of its own, and prepares none (spec 7.6): whatever reaches the
+    // adapter about this VM comes from `iii sandbox run`, with the VM's own token.
+    for prepared in calls("worker::prepare") {
+        assert_eq!(prepared["token"], "scoped", "{prepared}");
+    }
+    assert_eq!(calls("worker::build"), Vec::<Value>::new());
     let env = request["env"].as_object().unwrap();
     assert_eq!(env["APP_VAR"], "hello");
     assert_eq!(env["III_NAMESPACE"], NAMESPACE);
@@ -946,5 +1002,45 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     assert_eq!(destroyed[0]["token"], "project");
     assert_eq!(destroyed[0]["request"]["state_key"], request["state_key"]);
 
+    project.shutdown();
+}
+
+/// A 0.26 file: its first `up` writes the explicit VM mode, builds through `worker::build` with
+/// the VM's own token before the run, which boots that build, and destroys nothing (spec 7.3).
+#[test]
+#[ignore = "needs KAN-281 (build_record) and KAN-282 (iii sandbox build and run)"]
+#[serial_test::serial(sandbox_vm)]
+fn a_026_project_is_migrated_and_built_on_its_first_up() {
+    let mut project = Project::declaring(&format!(
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n",
+    ));
+    let root = project.dir.path().to_path_buf();
+    write_fake_adapter_and_guests(&root, &["app"]);
+    let calls = |function: &str| fake_adapter_calls(&root, function);
+
+    project.start();
+    project.wait_ready("sandbox-libkrun", SHORT);
+    project.wait_ready("app", SHORT);
+
+    let file = std::fs::read_to_string(&project.file).unwrap();
+    assert!(
+        file.contains(
+            "  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+        ),
+        "{file}"
+    );
+    let built = calls("worker::build");
+    assert_eq!(built.len(), 1, "{built:?}");
+    assert_eq!(built[0]["token"], "scoped");
+    assert!(root.join(".build/app/build.json").exists());
+    let started = calls("worker::start");
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(started[0]["request"]["build"]["build_id"], FAKE_BUILD_ID);
+    assert_eq!(calls("worker::destroy"), Vec::<Value>::new());
+
+    // A restart runs it again, and builds nothing.
+    let restarted = project.compose_call("compose::restart", json!({ "worker": "app" }), LONG);
+    assert_eq!(restarted["status"], "ok", "{restarted}");
+    assert_eq!(calls("worker::build").len(), 1);
     project.shutdown();
 }
