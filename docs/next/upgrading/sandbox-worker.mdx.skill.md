@@ -55,11 +55,14 @@ no engine and attaches to whichever one holds its address. Add that container an
 (`image_allowlist`, `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
-A file that already declares the adapter at `version: '^0.2'` stays on 0.2 across `compose::up`,
-`compose::restart`, and `compose::update worker=sandbox-libkrun`. To move it, stop Compose, change
+In a project without a VM worker, a file that already declares the adapter at `version: '^0.2'`
+stays on 0.2 across `compose::up`, `compose::restart`, and `compose::update worker=sandbox-libkrun`.
+In a project with a VM worker, these calls fail with `SANDBOX_ADAPTER_TOO_OLD` instead. See
+[Upgrading from 0.26.x](./from-0-26-x#update-the-sandbox-adapter). To move it, stop Compose, change
 the range to `'^0.4'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
-which rewrites the range to `^0.4` and [updates every other package
-worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token.
+which rewrites the range to `^0.4` and
+[updates every other package worker](../using-iii/compose#updating-workers). On 0.2, observers can
+read the project's token.
 
 Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
 project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and
@@ -157,7 +160,7 @@ that needs the adapter (it sets `engine.sandbox` for its own namespace, or a con
 `scripts.run` starts with `iii sandbox run`) but does not declare it fails with
 `SANDBOX_ADAPTER_NOT_DECLARED`. A file with a container that Compose would rewrite into the explicit
 VM mode fails with `VM_SCRIPTS_MISSING`. Run `iii compose --up` once without `--frozen`, so Compose
-writes the container, the rewritten file, and the lock, then commit both.
+writes the adapter container and the rewritten `scripts` into the file, and the lock. Commit both.
 
 ## VM workers from `path://`
 
@@ -220,8 +223,8 @@ on [Sandboxes](../creating-workers/sandboxes).
 
 0.25 kept each VM worker's state in `<state dir>/vm/<key>/`, where `<state dir>` is
 `<compose-dir>/.iii/compose/<namespace>/`, or the directory under `$III_COMPOSE_STATE_DIR` when you
-set it. Nothing reads these directories now, so delete them. The first boot of each VM in 0.26
-starts from fresh state and reinstalls its dependencies.
+set it. Nothing reads these directories now, so delete them. Each VM starts from fresh state, and
+its first build installs its dependencies.
 
 `iii-worker` also left the paths below. `sandbox-libkrun` reads none of them, so delete them too:
 

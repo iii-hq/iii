@@ -325,6 +325,8 @@ is split into the binary and its arguments.
   </Tab>
 </Tabs>
 
+Most functions take flat `key=value` arguments; only nested payloads need `--json`.
+
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
 cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. For large output, write
 it to a file in the sandbox and fetch it with `sandbox::fs::read`.
@@ -890,8 +892,8 @@ iii sandbox run --command '<that command>'
 
 ### Remove a VM's data with `iii sandbox destroy`
 
-`iii sandbox destroy` removes the VM's data disk, as in 0.26. It also removes the
-`upper.ext4.pre-build` file and the `root.pre-build/` directory kept from a 0.26 VM (see
+`iii sandbox destroy` removes the VM's data disk. It also removes the `upper.ext4.pre-build` file
+and the `root.pre-build/` directory kept from a 0.26 VM (see
 [Upgrading from 0.26.x](../upgrading/from-0-26-x#keep-the-data-of-migrated-vms)). `compose::remove`
 has the adapter destroy the data disk too.
 
@@ -968,9 +970,8 @@ boots the image without running `scripts.setup` or `scripts.install`. It compare
 `build_dir/image.id` and refuses a mismatch or a missing file with [S508](#S508). It does not hash
 the image on start.
 
-`WorkerSource::Bundle.host_path` is now the container's directory in `.workers/`, no longer the
-global package cache. The adapter copies it into the image at build time, and a run no longer
-mounts it.
+`WorkerSource::Bundle.host_path` is the container's directory in `.workers/`, not the global package
+cache. The adapter copies it into the image at build time, and a run does not mount it.
 
 The data disk stays as the overlay upper when the image under it changes. overlayfs accepts a
 changed lower under an existing upper only without `index`, `metacopy`, `redirect_dir`, and `xino`,

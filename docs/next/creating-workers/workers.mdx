@@ -768,7 +768,7 @@ scripts:
 `description` is an optional one-line, human/LLM-readable summary of what the worker does.
 
 `scripts.start` launches the worker. Here, `watchfiles` reloads it whenever you edit a source file.
-`runtime.base_image` is the base image that `iii sandbox build` builds a VM worker's image on. The
+For a VM worker, `runtime.base_image` is the base image that `iii sandbox build` starts from. The
 manifest is metadata about starting the worker.
 
 See [Worker manifest](./worker-manifest) for the field reference.

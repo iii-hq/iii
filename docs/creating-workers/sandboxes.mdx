@@ -328,6 +328,8 @@ is split into the binary and its arguments.
   </Tab>
 </Tabs>
 
+Most functions take flat `key=value` arguments; only nested payloads need `--json`.
+
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
 cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. For large output, write
 it to a file in the sandbox and fetch it with `sandbox::fs::read`.
