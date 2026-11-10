@@ -609,7 +609,7 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
   engine or no loaded project: the errors `iii compose logs` gives today (`ENGINE_CALL_FAILED`,
   `UNKNOWN_PROJECT`).
 - **Exit codes:** 0 built; 1 the build failed; 125 `iii sandbox` itself failed (unreachable
-  engine, adapter without the feature, bad env); 130 cancelled. Outside Compose, Ctrl-C sends
+  engine, adapter without the feature, bad env); 130 cancelled (`OPERATION_CANCELLED`). Outside Compose, Ctrl-C sends
   `compose::cancel` for its operation and waits for it before exiting.
 - **Last line on failure**, parseable by Compose for `BUILD_FAILED`:
   `iii sandbox: build failed: <S-code or error code>: <message>`.
@@ -670,7 +670,9 @@ under an upper that already holds files.
   ignore list) are excluded from the copy and the sync, including for `path://.`. One list drives
   the run's copy, the live sync and the names the boot cleanup keeps: the adapter's ignore
   list plus `.iii`. The build's input copy uses the same list except `vendor`, which goes into
-  the build (Go vendors source there; an install in the build rewrites it otherwise). Adding a dependency: edit `package.json`, run
+  the build (Go vendors source there; an install in the build rewrites it otherwise). Names that
+  often hold source in nested directories (`build`, `out`, `obj`, `dist`, `coverage`, `deps`,
+  `target`) match only at the worker's root; every other name matches at any depth. Adding a dependency: edit `package.json`, run
   `iii sandbox build <container>`, restart the container.
 
 ### 9.4 Env
@@ -691,7 +693,11 @@ Compose and CLI codes:
 | `SANDBOX_RUN_NOT_A_VM_WORKER` | `iii sandbox run` on a container that is not a bundle or a `path://` with `runtime.base_image` |
 | `SANDBOX_BUILD_WITHOUT_RUN` | `iii sandbox build` without `iii sandbox run` |
 | `SANDBOX_RUN_WITHOUT_BUILD` | `iii sandbox run` with another `scripts.build` command |
-| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run` or `build` on Windows |
+| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows |
+| `SANDBOX_ENV_INVALID` | `iii sandbox` inside Compose with an incomplete or invalid set of the variables of section 8.3 |
+| `SANDBOX_INVALID_ARGUMENTS` | `iii sandbox` arguments that do not fit the mode (for example `--file` inside Compose) |
+| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter speaks another contract major |
+| `SANDBOX_FAILED` | Any other failure of `iii sandbox` itself (exit 125) |
 | `BUILD_MISSING` | `iii sandbox run` without `build.json` |
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE` | Kept, for `binary` packages only |
