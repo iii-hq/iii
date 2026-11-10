@@ -305,7 +305,8 @@ pub(crate) async fn adapter_change(
 
 /// What [`migrate`] changed.
 // Used by KAN-280 (lifecycle) and KAN-281 (`iii compose build`).
-#[expect(dead_code, reason = "KAN-280 and KAN-281 wire this")]
+// KAN-280 or KAN-281 uses it first; KAN-280 removes this with the body of `migrate`.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Migration {
     /// The containers rewritten to the explicit VM mode.
