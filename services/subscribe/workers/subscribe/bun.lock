@@ -5,7 +5,7 @@
     "": {
       "name": "iii-subscribe",
       "dependencies": {
-        "iii-sdk": "0.24.6",
+        "iii-sdk": "0.26.0",
       },
       "devDependencies": {
         "@types/bun": "1.3.1",
@@ -13,7 +13,7 @@
     },
   },
   "packages": {
-    "@iii-dev/helpers": ["@iii-dev/helpers@0.24.6", "", { "dependencies": { "@opentelemetry/api": "^1.9.0", "@opentelemetry/api-logs": "^0.222.0", "@opentelemetry/core": "^2.11.0", "@opentelemetry/instrumentation": "^0.222.0", "@opentelemetry/otlp-transformer": "^0.222.0", "@opentelemetry/resources": "^2.11.0", "@opentelemetry/sdk-logs": "^0.222.0", "@opentelemetry/sdk-metrics": "^2.11.0", "@opentelemetry/sdk-trace-base": "^2.11.0", "@opentelemetry/sdk-trace-node": "^2.11.0", "@opentelemetry/semantic-conventions": "^1.28.0", "ws": "^8.21.0" } }, "sha512-0Um8HM4wwpZIXr9EDJH1ZiSE/a9HnFyt/9IbhVAHOeZ7lwh0x1SaoY2vTvC6RLu7oSrhdHJxrxQ1Ei7/02gUHg=="],
+    "@iii-dev/helpers": ["@iii-dev/helpers@0.26.0", "", { "dependencies": { "@opentelemetry/api": "^1.9.0", "@opentelemetry/api-logs": "^0.222.0", "@opentelemetry/core": "^2.11.0", "@opentelemetry/instrumentation": "^0.222.0", "@opentelemetry/otlp-transformer": "^0.222.0", "@opentelemetry/resources": "^2.11.0", "@opentelemetry/sdk-logs": "^0.222.0", "@opentelemetry/sdk-metrics": "^2.11.0", "@opentelemetry/sdk-trace-base": "^2.11.0", "@opentelemetry/sdk-trace-node": "^2.11.0", "@opentelemetry/semantic-conventions": "^1.28.0", "ws": "^8.21.0" } }, "sha512-G3WE9g4fbHaiojohlQDwtAup1d6ff+b5OQCwH+G0dXQmtYui7pYee6kMvewSI1VPZMDrwq3dk/2ad1wIHsdxyw=="],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.10.0", "", {}, "sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ=="],
 
@@ -57,7 +57,7 @@
 
     "es-module-lexer": ["es-module-lexer@3.0.4", "", {}, "sha512-BldNY5mwkVu+cQ5Ymn3e6hB9Sx8XHx4ZevWbiUyZbfKxJxYO27Hf0wfzkxIaD5CAJMaGl3YspKELj0ff/7nCMA=="],
 
-    "iii-sdk": ["iii-sdk@0.24.6", "", { "dependencies": { "@iii-dev/helpers": "0.24.6", "@opentelemetry/api": "^1.9.0", "ws": "^8.21.0" } }, "sha512-Ori0HR/7kOX3jUymiM6P9PPGoGD1gIa6doFLIolR253L9yKv7qsQAQ5zOoKZJKKBblqMwB2DiO6wUTROGcPp6Q=="],
+    "iii-sdk": ["iii-sdk@0.26.0", "", { "dependencies": { "@iii-dev/helpers": "0.26.0", "@opentelemetry/api": "^1.9.0", "ws": "^8.21.0" } }, "sha512-9WVPjIXXg2sxZ9YDxMNMOgdbViRgokWOcxqEZLy5aX0PPxZ887ITwKWXi7qee2E+DhaofkhPOJxwZbkrWLlGww=="],
 
     "import-in-the-middle": ["import-in-the-middle@3.5.3", "", { "dependencies": { "cjs-module-lexer": "^2.2.0", "es-module-lexer": "^3.0.3", "module-details-from-path": "^1.0.4" } }, "sha512-usm/IiY63VtOyx/dm7uEoZV+EsanCDmwRUroQZIkFLGu1NVXZ8mZqIOhaN4QIJ7EsbMTuQbJXwCySCx+ozMA8g=="],
 

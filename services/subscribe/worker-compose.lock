@@ -2,36 +2,36 @@ version: 1
 containers:
   http:
     worker: package://http
-    requested: 0.22.1
+    requested: 0.23.2
     resolved:
       name: http
-      version: 0.22.1
+      version: 0.23.2
       type: binary
       artifacts:
         aarch64-apple-darwin:
-          sha256: 8dfa4e065ffe56988a657b5f79eeb6f9cab54c860f7521d46702d8da51d62dcf
-          url: https://api.workers.iii.dev/download/http/0.22.1/aarch64-apple-darwin
+          sha256: fa85312793c807dac838833e1758fd8182b3e9d8149296f0c377c7950d80530d
+          url: https://api.workers.iii.dev/download/http/0.23.2/aarch64-apple-darwin
         aarch64-pc-windows-msvc:
-          sha256: 650c7cb6b32aeb948bf3b6c4ec5afa5501d2e0fbc956ee13a497d6f156604d3f
-          url: https://api.workers.iii.dev/download/http/0.22.1/aarch64-pc-windows-msvc
+          sha256: fb1eac4e3d448b2de3e57e4aad6794223e2547ac13c6dc3563a9ea4435c55c99
+          url: https://api.workers.iii.dev/download/http/0.23.2/aarch64-pc-windows-msvc
         aarch64-unknown-linux-gnu:
-          sha256: a4230b1eda41da9d56b71686048c64e9660f583ca0fcfdc5d02eb1920620a58c
-          url: https://api.workers.iii.dev/download/http/0.22.1/aarch64-unknown-linux-gnu
+          sha256: d23e6fb80cfb89548325deae7dfb46d409dee87dee7fb1b74c36776509097ab7
+          url: https://api.workers.iii.dev/download/http/0.23.2/aarch64-unknown-linux-gnu
         armv7-unknown-linux-gnueabihf:
-          sha256: ee8130948562bbbf246454cdb612406f9c4ee55feba7a3ff1f62a5bb44f8ec4f
-          url: https://api.workers.iii.dev/download/http/0.22.1/armv7-unknown-linux-gnueabihf
+          sha256: 1803ebdcfec9910efb5067b689f0fc8a3d322d1327750f1a5c9cde1a8af036e4
+          url: https://api.workers.iii.dev/download/http/0.23.2/armv7-unknown-linux-gnueabihf
         x86_64-apple-darwin:
-          sha256: 1ffe2a9f4163bea52d0ceb6e76a90195d6deca66fa8544712a2b00a537c8cd29
-          url: https://api.workers.iii.dev/download/http/0.22.1/x86_64-apple-darwin
+          sha256: dd2a1c4ee0676bd9f7c5cfbd45f08d1fe9175ceb3c62529293ef0f82efba3cd6
+          url: https://api.workers.iii.dev/download/http/0.23.2/x86_64-apple-darwin
         x86_64-pc-windows-msvc:
-          sha256: a4e91c8a086db30c1af1bbcbc42a03a9a02a2ec08379f8bbbe09303c2479b560
-          url: https://api.workers.iii.dev/download/http/0.22.1/x86_64-pc-windows-msvc
+          sha256: 0a07c164ba0f6cc7040fb02ec150190c4acdb91921d6ceed161fb3ffbdfd2412
+          url: https://api.workers.iii.dev/download/http/0.23.2/x86_64-pc-windows-msvc
         x86_64-unknown-linux-gnu:
-          sha256: 6c9501b3b8f5fe62c64cf717a70d587c7425c2ee9bff61eb846f5d4bb56b42d6
-          url: https://api.workers.iii.dev/download/http/0.22.1/x86_64-unknown-linux-gnu
+          sha256: d187e6dc27bb777eb904fb557ec979013fa9c0784513d5319e5e0eb5482e3f32
+          url: https://api.workers.iii.dev/download/http/0.23.2/x86_64-unknown-linux-gnu
         x86_64-unknown-linux-musl:
-          sha256: f08d79305e53c01f0b8e74555cf88640ac7012bedd598516bc22aaa8646c5552
-          url: https://api.workers.iii.dev/download/http/0.22.1/x86_64-unknown-linux-musl
+          sha256: 59095be1b4ed7f364e2a73992329684ec434585393a2fb8830a6e4d088ab6d6f
+          url: https://api.workers.iii.dev/download/http/0.23.2/x86_64-unknown-linux-musl
       default_config:
         concurrency_request_limit: 1024
         cors:
@@ -44,6 +44,32 @@ containers:
           allowed_origins:
           - '*'
         default_timeout: 30000
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 3111
         webhook_listener: null
+  sandbox-libkrun:
+    worker: package://api.workers.iii.dev/sandbox-libkrun
+    requested: 0.2.3
+    resolved:
+      name: sandbox-libkrun
+      version: 0.2.3
+      type: binary
+      artifacts:
+        aarch64-apple-darwin:
+          sha256: 4b81a62b3fe1adcd010e0239e19037a0e60b9d228f424cf4444eeed5dedad494
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/aarch64-apple-darwin
+        aarch64-unknown-linux-gnu:
+          sha256: 2cd1d4b2d034b69357a8bf31c85c5d0c27ca22c9d29fc20ab8ac0927448f255d
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/aarch64-unknown-linux-gnu
+        x86_64-unknown-linux-gnu:
+          sha256: 4bb076c188da303a1b9a49e70d0d91e2bb91cc7f4d6dc4d4aa761eb54a2c7521
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/x86_64-unknown-linux-gnu
+      default_config:
+        auto_install: true
+        default_cpus: 1
+        default_idle_timeout_secs: 300
+        default_memory_mb: 512
+        image_allowlist:
+        - python
+        - node
+        max_concurrent_sandboxes: 32
