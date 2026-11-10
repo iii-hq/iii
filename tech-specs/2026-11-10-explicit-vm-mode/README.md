@@ -679,7 +679,9 @@ under an upper that already holds files.
 - The boot never deletes what the build installed or what the worker wrote in `/workspace`.
   Each copy records what it extracted in a manifest on the data disk, outside `/workspace`;
   the next boot removes only manifest entries the host no longer has. A disk without a
-  manifest (written by an older adapter) skips that cleanup once. Adding a dependency: edit `package.json`, run
+  manifest (written by an older adapter) skips that cleanup once. The cleanup never removes
+  through a symlink, never touches names the following copy leaves out, and skips names with a
+  newline or a backslash. Adding a dependency: edit `package.json`, run
   `iii sandbox build <container>`, restart the container.
 
 ### 9.4 Env
