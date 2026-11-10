@@ -18,6 +18,7 @@
 
 pub mod build;
 pub mod build_record;
+mod build_step;
 pub mod cli;
 pub mod config;
 pub mod configuration;
@@ -56,7 +57,7 @@ pub mod telemetry;
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
 pub use error::{ComposeError, Result};
-pub use manifest::{StartSpec, ValidationReport, VmSpec};
+pub use manifest::{StartSpec, ValidationReport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineMode {

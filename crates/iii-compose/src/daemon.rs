@@ -612,6 +612,27 @@ pub struct Daemon {
     shutdown: crate::shutdown::ShutdownController,
     /// Joined before project state is cleared; supervision must not write later.
     supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The `compose::build` operations of each project, which `down` cancels and waits for.
+    builds: Mutex<BTreeMap<PathBuf, Arc<BuildGate>>>,
+}
+
+/// The `compose::build` operations running on one project.
+struct BuildGate {
+    operations: std::sync::Mutex<BTreeSet<String>>,
+    /// Held shared by each build while it runs; `down` takes it whole to wait them out.
+    running: tokio::sync::RwLock<()>,
+    /// `true` while a `down` stops them, whether or not an operation was registered for them.
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for BuildGate {
+    fn default() -> Self {
+        Self {
+            operations: std::sync::Mutex::default(),
+            running: tokio::sync::RwLock::default(),
+            cancel: tokio::sync::watch::channel(false).0,
+        }
+    }
 }
 
 impl Daemon {
@@ -670,6 +691,7 @@ impl Daemon {
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown,
             supervisor: Mutex::new(None),
+            builds: Mutex::new(BTreeMap::new()),
         });
 
         *daemon.supervisor.try_lock().expect("new supervisor slot") =
@@ -741,6 +763,9 @@ impl Daemon {
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
         let mut edited = text.clone();
+        // Declarations the held project takes whole: what the explicit VM mode rewrote.
+        let mut rewritten = Vec::new();
+        let mut updated_adapter = None;
         let prepared = if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
             crate::sandbox::require_declared_adapter(&compose, &namespace)?;
@@ -749,6 +774,18 @@ impl Daemon {
             let mut prepared =
                 crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
             let path = compose.path.clone();
+            let mut install = false;
+            if let Some(migration) =
+                crate::sandbox::migrate(&path, &mut edited, &mut compose, &namespace, &mut prepared)
+                    .await?
+            {
+                rewritten.extend(migration.containers);
+                if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter {
+                    install = true;
+                    rewritten.push(adapter.key.clone());
+                    updated_adapter = Some(adapter.key);
+                }
+            }
             if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
                 crate::sandbox::apply_adapter_change(
                     &path,
@@ -763,7 +800,7 @@ impl Daemon {
                 )
                 .await?
             {
-                prepared.install(&package_cache).await?;
+                install = true;
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -774,15 +811,27 @@ impl Daemon {
                     false,
                 );
             }
+            if install {
+                prepared.install(&package_cache).await?;
+            }
             prepared
         };
+        crate::sandbox::validate_scripts(&compose)?;
+        crate::lifecycle::materialize_packages(file, &package_cache, &prepared).await?;
         let project = self.project(file).await?;
         if edited != text {
             persist_mutation(file, &text, &edited, &prepared)?;
         }
         project
-            .commit_prepared_packages(&compose, &prepared)
+            .commit_prepared_packages(&compose, &prepared, &rewritten)
             .await?;
+        // A running adapter the update replaced still lacks `worker.build`: it restarts on the new
+        // release, and the VM containers it runs follow it (spec 7.2).
+        if let Some(adapter) = updated_adapter
+            && project.is_running(&adapter).await
+        {
+            Box::pin(project.restart_one(&adapter, format!("{adapter}-update"))).await;
+        }
         Ok(project)
     }
 
@@ -1156,6 +1205,22 @@ impl Daemon {
             )
             .await??;
         let namespace = self.project_namespace(&current);
+        // What it adds runs in a VM the way a migrated container does (spec 7.1), and what is
+        // still due is migrated with it.
+        let added_keys: BTreeSet<String> = added.iter().cloned().collect();
+        let migration = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::rewrite_due(
+                    path,
+                    &mut edited,
+                    &mut current,
+                    &namespace,
+                    &mut prepared,
+                    &added_keys,
+                ),
+            )
+            .await??;
         let adapter = self
             .prepare(
                 &operation_id,
@@ -1172,11 +1237,16 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some() {
+        if adapter.is_some()
+            || migration
+                .as_ref()
+                .is_some_and(|migration| migration.adapter.is_some())
+        {
             self.prepare(&operation_id, prepared.install(&package_cache))
                 .await??;
         }
-        let yaml_changed = !added.is_empty() || !replaced.is_empty() || adapter.is_some();
+        let yaml_changed =
+            !added.is_empty() || !replaced.is_empty() || adapter.is_some() || migration.is_some();
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -1204,7 +1274,7 @@ impl Daemon {
         }
 
         self.prepare(&operation_id, std::future::ready(())).await?;
-        crate::sandbox::wire_adapter(&mut current)?;
+        crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
@@ -1501,6 +1571,12 @@ impl Daemon {
                 ),
             )
             .await??;
+        let migration = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::migrate(path, &mut edited, &mut current, &namespace, &mut prepared),
+            )
+            .await??;
         let adapter = self
             .prepare(
                 &operation_id,
@@ -1517,7 +1593,7 @@ impl Daemon {
                 ),
             )
             .await??;
-        let yaml_changed = yaml_changed || adapter.is_some();
+        let yaml_changed = yaml_changed || adapter.is_some() || migration.is_some();
         let topology_changed = runtime_topology_changed(&compose, &current);
         for (root, nodes) in resolved_graphs {
             // Updating a generated adapter asks for a version, not for the adapter: a graph root
@@ -1590,6 +1666,7 @@ impl Daemon {
         }
 
         self.prepare(&operation_id, std::future::ready(())).await?;
+        crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
@@ -1666,6 +1743,11 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
 
         let path = path.as_path();
+        // A build of a removed container would hold the mutation lock until it ends, and keep
+        // its VM from being destroyed (S509): it stops first.
+        for worker in &workers {
+            crate::build_step::stop(path, worker).await;
+        }
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1680,7 +1762,7 @@ impl Daemon {
         // The generated adapter goes once this edit leaves no VM needing it.
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
-        let mut removal_order = removal_order(&mut before, &requested)?;
+        let mut removal_order = removal_order(&before, &requested)?;
         let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
@@ -1726,7 +1808,6 @@ impl Daemon {
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
         self.prepare(&operation_id, std::future::ready(())).await?;
-        crate::sandbox::wire_adapter(&mut current)?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
@@ -1862,7 +1943,89 @@ impl Daemon {
         guard
     }
 
-    /// Takes a project down.
+    /// The build gate of the project `file` names.
+    async fn build_gate(&self, file: &Path) -> Arc<BuildGate> {
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        Arc::clone(self.builds.lock().await.entry(key).or_default())
+    }
+
+    /// The containers `compose::build` would build: `worker`, or each that declares a
+    /// `scripts.build` or that the explicit VM mode will give one (spec 7.4). Read-only, for the
+    /// `requested` of its accepted answer.
+    pub async fn build_targets(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let path = self.resolve_file(file).await?;
+        let mut compose = ComposeFile::load(&path)?;
+        let _ = crate::lockfile::attach(&mut compose);
+        if let Some(worker) = worker {
+            return match compose.containers.contains_key(worker) {
+                true => Ok(vec![worker.to_string()]),
+                false => Err(ComposeError::UnknownContainer {
+                    container: worker.to_string(),
+                }),
+            };
+        }
+        Ok(compose
+            .containers
+            .iter()
+            .filter(|(_, container)| {
+                container.scripts.build.is_some()
+                    || crate::sandbox::migration_due(&compose, container)
+            })
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
+    /// `compose::build` (spec 7.4): under the project's mutation lock, rewrites what the explicit
+    /// VM mode needs (spec 7.3), loads the project and runs the builds, restarting nothing.
+    /// `compose::cancel` of `operation_id`, or a `down`, stops them.
+    pub async fn build(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+        operation_id: String,
+    ) -> Result<Vec<crate::lifecycle::BuildResult>> {
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
+        self.validate_engine_policy_file(path)?;
+        let gate = self.build_gate(path).await;
+        gate.operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(operation_id.clone());
+        let cancel =
+            self.cancellation(&operation_id)
+                .or(crate::shutdown::ShutdownSignal::from_receiver(
+                    gate.cancel.subscribe(),
+                ));
+        let cancelled = || ComposeError::OperationCancelled {
+            operation_id: operation_id.clone(),
+        };
+        let result = async {
+            let _running = gate.running.read().await;
+            let _mutation = cancel
+                .run(self.lock_mutation(path))
+                .await
+                .ok_or_else(cancelled)?;
+            let project = cancel
+                .run(self.prepare_start_project(path, false))
+                .await
+                .ok_or_else(cancelled)??;
+            crate::report::in_project_scope(path, project.build(worker, &operation_id, &cancel))
+                .await
+        }
+        .await;
+        gate.operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&operation_id);
+        result
+    }
+
+    /// Takes a project down. A `compose::build` running on it is cancelled first (spec 7.4).
     pub async fn down(
         &self,
         file: Option<&Path>,
@@ -1872,6 +2035,20 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
         let path = path.as_path();
         self.validate_engine_policy_file(path)?;
+        let gate = self.build_gate(path).await;
+        let building: Vec<String> = gate
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        gate.cancel.send_replace(true);
+        for build in &building {
+            self.operations.cancel(build).await;
+        }
+        drop(gate.running.write().await);
+        gate.cancel.send_replace(false);
         crate::report::mutation_begin(path);
         let project = self.project(path).await?;
         Ok(project.down(container, operation_id).await)
@@ -1928,8 +2105,10 @@ impl Daemon {
                 cwd: std::env::current_dir().unwrap_or_default(),
             });
         }
-        let compose = ComposeFile::load(file)?;
+        let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
+        // Read-only: a lock that cannot be read leaves the packages' kinds unknown, nothing more.
+        let _ = crate::lockfile::attach(&mut compose);
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)
     }
@@ -2275,11 +2454,10 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     })
 }
 
-/// The `requested` workers of `file`, dependents first. `file` is wired to its
-/// adapter, so a VM goes before the adapter it boots through: removing the VM
+/// The `requested` workers of `file`, dependents first. A VM container starts after its adapter
+/// (`start_after`, spec 7.1), so it goes before the adapter it boots through: removing the VM
 /// still finds the adapter running, never restarting one this removal took.
-fn removal_order(file: &mut crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
-    crate::sandbox::wire_adapter(file)?;
+fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
     Ok(file
         .start_order()?
         .into_iter()
@@ -4166,6 +4344,151 @@ containers:
         (dir, path)
     }
 
+    fn daemon(name: &str) -> Arc<Daemon> {
+        Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("{name}-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        )
+    }
+
+    /// Spec 7.3: `compose::validate`, `compose::status` and `compose::down` never edit the file,
+    /// and `validate` names the migration that is due.
+    #[tokio::test]
+    async fn read_only_paths_and_down_leave_a_026_file_as_it_is() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n";
+        let (_dir, path) = vm_project(text);
+        let daemon = daemon("read-only");
+
+        let report = daemon.validate(Some(&path)).await.unwrap();
+        daemon.status(Some(&path)).await.unwrap();
+        daemon.down(Some(&path), None, "down".into()).await.unwrap();
+
+        assert_eq!(
+            report.warnings,
+            ["migration due: vm; the next up rewrites them"]
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(!crate::lockfile::lock_path(&path).exists());
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.1: `compose::add` of a `path://` worker whose manifest sets `runtime.base_image`
+    /// writes `start_after` and both `scripts`, beside the generated adapter.
+    #[tokio::test]
+    async fn add_writes_the_explicit_vm_mode_of_a_base_image_worker() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let (dir, path) = vm_project(
+            "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = daemon("add-explicit");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.add(Some(&path), &["./vm".to_string()], "add".into()),
+            ),
+        )
+        .await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(
+                "  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("  # added by compose::add\n  sandbox-libkrun:\n"),
+            "{text}"
+        );
+        assert!(
+            text.starts_with(
+                "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n"
+            ),
+            "{text}"
+        );
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.4: `compose::build` builds a named container or every one that declares a build,
+    /// skips `""`, restarts nothing, and stops at `compose::cancel` or `down`.
+    #[tokio::test]
+    async fn compose_build_runs_the_builds_and_stops_at_cancel_or_down() {
+        let dir = tempfile::tempdir().unwrap();
+        for worker in ["api", "skip", "none", "slow"] {
+            std::fs::create_dir(dir.path().join(worker)).unwrap();
+        }
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  api: {worker: path://./api, scripts: {build: 'echo built > out', run: x}}\n  skip: {worker: path://./skip, scripts: {build: '', run: x}}\n  none: {worker: path://./none, scripts: {run: x}}\n  slow: {worker: path://./slow, scripts: {build: 'touch started; sleep 30', run: x}}\n",
+        )
+        .unwrap();
+        let daemon = daemon("compose-build");
+        let statuses = |results: Vec<crate::lifecycle::BuildResult>| {
+            results
+                .into_iter()
+                .map(|result| (result.worker, result.status))
+                .collect::<Vec<_>>()
+        };
+        use crate::lifecycle::BuildStatus::{Built, Skipped};
+
+        let built = daemon
+            .build(Some(&path), Some("api"), "one".into())
+            .await
+            .unwrap();
+        assert_eq!(statuses(built), [("api".to_string(), Built)]);
+        assert!(dir.path().join("api/out").exists());
+        assert!(dir.path().join(".build/api/build.json").exists());
+        let skipped = daemon
+            .build(Some(&path), Some("skip"), "skip".into())
+            .await
+            .unwrap();
+        assert_eq!(statuses(skipped), [("skip".to_string(), Skipped)]);
+        assert_eq!(
+            daemon.build_targets(Some(&path), None).await.unwrap(),
+            ["api", "skip", "slow"]
+        );
+
+        // The whole project, in the background: `down` stops it.
+        let background = |operation: &'static str, worker: Option<&'static str>| {
+            let (daemon, path) = (Arc::clone(&daemon), path.clone());
+            tokio::spawn(async move { daemon.build(Some(&path), worker, operation.into()).await })
+        };
+        let started = dir.path().join("slow/started");
+        let wait_started = || async {
+            while !started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        let task = background("all", None);
+        wait_started().await;
+        let began = std::time::Instant::now();
+        daemon.down(Some(&path), None, "down".into()).await.unwrap();
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        assert!(began.elapsed() < std::time::Duration::from_secs(15));
+
+        // `compose::cancel` of its operation.
+        std::fs::remove_file(&started).unwrap();
+        let operation = daemon
+            .operations
+            .create_with_id("cancelled".into(), 1)
+            .await
+            .unwrap();
+        let task = background("cancelled", Some("slow"));
+        wait_started().await;
+        let began = std::time::Instant::now();
+        operation.cancel();
+        let error = task.await.unwrap().unwrap_err();
+        assert_eq!(error.code(), "OPERATION_CANCELLED");
+        assert!(began.elapsed() < std::time::Duration::from_secs(15));
+        daemon.shutdown().await;
+    }
+
     /// A `sandbox-libkrun` release whose binary exits at once.
     fn adapter_archive() -> Vec<u8> {
         let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -4211,7 +4534,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4221,7 +4544,7 @@ containers:
         .unwrap();
         assert_eq!(
             lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
@@ -4251,7 +4574,7 @@ containers:
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "graph": [{
                         "name": "sandbox-libkrun",
-                        "version": "0.3.0",
+                        "version": "0.4.0",
                         "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": digest,
@@ -4281,7 +4604,10 @@ containers:
 
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
-        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        // Written in the explicit VM mode, as the build's own migration (KAN-281) leaves it.
+        let (_dir, path) = vm_project(
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+        );
         // Two private caches: the frozen build starts cold, so it downloads.
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         TEST_PACKAGE_CACHE
@@ -4315,7 +4641,7 @@ containers:
     /// restarts the adapter this same removal stopped.
     #[test]
     fn a_vm_is_removed_before_the_adapter_it_boots_through() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4323,18 +4649,22 @@ containers:
         .unwrap() else {
             panic!("the adapter is new");
         };
+        let text = text.replace(
+            "    worker: path://./vm\n",
+            "    worker: path://./vm\n    start_after: [sandbox-libkrun]\n",
+        );
         let (_dir, path) = vm_project(&text);
-        let mut compose = ComposeFile::parse(&text, &path).unwrap();
+        let compose = ComposeFile::parse(&text, &path).unwrap();
         let requested = BTreeSet::from(["vm", "sandbox-libkrun"]);
         assert_eq!(
-            removal_order(&mut compose, &requested).unwrap(),
+            removal_order(&compose, &requested).unwrap(),
             ["vm", "sandbox-libkrun"]
         );
     }
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4358,7 +4688,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.3'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.4'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -4374,7 +4704,7 @@ containers:
             .collect();
         assert_eq!(
             versions,
-            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.3"))])
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.4"))])
         );
     }
 
@@ -4410,7 +4740,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4485,7 +4815,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4736,6 +5066,7 @@ mod mutation_outcome_tests {
                 error: Some(OpError {
                     code: "STARTUP_TIMEOUT".into(),
                     message: "container 'mailer' was not ready after 2s".into(),
+                    cause: None,
                 }),
             }],
             primary_error: None,
@@ -4762,6 +5093,7 @@ mod mutation_outcome_tests {
         let primary_error = OpError {
             code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
             message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+            cause: None,
         };
         let result = OpResult {
             operation_id: "diagnostic-only".into(),
@@ -4820,6 +5152,7 @@ mod mutation_outcome_tests {
         let primary_error = OpError {
             code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
             message: "container 'api' exited with 9 before it registered".into(),
+            cause: None,
         };
 
         let result = OpResult {
@@ -4834,6 +5167,7 @@ mod mutation_outcome_tests {
                     error: Some(OpError {
                         code: "STARTUP_TIMEOUT".into(),
                         message: "container 'mailer' was not ready after 2s".into(),
+                        cause: None,
                     }),
                 },
                 ContainerResult {

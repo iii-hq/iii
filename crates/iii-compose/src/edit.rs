@@ -375,6 +375,331 @@ pub(crate) fn is_generated_container(text: &str, key: &str) -> Result<bool> {
     Ok(head > containers.start && lines[head - 1].trim() == MARKER)
 }
 
+/// What [`explicit_vm_mode`] wrote for one container.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VmRewrite {
+    /// The whole file, rewritten.
+    pub text: String,
+    /// The container's `scripts.run` now.
+    pub run: String,
+    /// Whether a command of the container's own became `iii sandbox run --command`.
+    pub wrapped: bool,
+}
+
+/// The `scripts.run` that runs `command` inside the container's VM, where 0.26 ran it
+/// (spec 7.1): `iii sandbox run --command '<command>'`, each `'` written `'\''`.
+pub(crate) fn sandbox_run_command(command: &str) -> String {
+    format!(
+        "{} --command '{}'",
+        crate::sandbox::SANDBOX_RUN,
+        command.replace('\'', "'\\''")
+    )
+}
+
+/// Writes the explicit VM mode of container `key` (spec 7.1): `adapter` in `start_after`,
+/// `scripts.build: iii sandbox build` when it has no `scripts.build`, and `scripts.run: iii
+/// sandbox run` when it has none, or `iii sandbox run --command` around a command of its own.
+/// Values are read as written, before interpolation, so no variable is expanded into the file.
+/// Every other key, the comments and the rest of the file stay as they are, except a comment on
+/// an inline `scripts: {...}` line, which is rewritten as a block. `None` when nothing is missing.
+pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<Option<VmRewrite>> {
+    let fields = entry_fields(text, key)?;
+    let scripts = fields.get("scripts").and_then(Value::as_mapping);
+    let declared = |name: &str| {
+        scripts
+            .and_then(|scripts| scripts.get(name))
+            .filter(|value| !value.is_null())
+    };
+    let declared_run = declared("run").map(scalar_text);
+    let (run, wrapped) = match &declared_run {
+        None => (crate::sandbox::SANDBOX_RUN.to_string(), false),
+        Some(run) if crate::sandbox::is_sandbox_run(run) => (run.clone(), false),
+        Some(run) => (sandbox_run_command(run), true),
+    };
+    let set_run = declared_run
+        .as_deref()
+        .is_none_or(|run| !crate::sandbox::is_sandbox_run(run));
+    let set_build = declared("build").is_none();
+    let add_adapter = !fields
+        .get("start_after")
+        .and_then(Value::as_sequence)
+        .is_some_and(|dependencies| {
+            dependencies
+                .iter()
+                .any(|dependency| dependency.as_str() == Some(adapter))
+        });
+    if !set_run && !set_build && !add_adapter {
+        return Ok(None);
+    }
+
+    let normalized = normalize_inline_empty_containers(text);
+    let text = normalized.as_deref().unwrap_or(text);
+    let lines: Vec<&str> = text.lines().collect();
+    let containers = find_containers(&lines)?;
+    let indent = entry_indent(&lines, &containers);
+    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
+        // An inline `key: {...}` entry is written as a block first.
+        let block = inline_entry_as_block(&lines, &containers, &indent, key)?
+            .ok_or_else(|| invalid(key, "no such container to rewrite"))?;
+        return explicit_vm_mode(&join(&block, text), key, adapter);
+    };
+    let entry_lines = &lines[entry.clone()];
+    let inner = entry_lines
+        .iter()
+        .find_map(|line| {
+            let trimmed = line.trim_start();
+            let width = line.len() - trimmed.len();
+            (width > indent.len() && !trimmed.is_empty() && !trimmed.starts_with('#'))
+                .then(|| line[..width].to_string())
+        })
+        .unwrap_or_else(|| format!("{indent}{indent}"));
+    // (line index in the file, lines removed, lines put there)
+    let mut edits: Vec<(usize, usize, Vec<String>)> = Vec::new();
+    let render = |name: &str, value: &Value, at: &str| -> Result<Vec<String>> {
+        Ok(render_field(name, value, at)?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    };
+
+    let mut wanted = Mapping::new();
+    if set_build {
+        wanted.insert(
+            Value::from("build"),
+            Value::from(crate::sandbox::SANDBOX_BUILD),
+        );
+    }
+    if set_run {
+        wanted.insert(Value::from("run"), Value::from(run.clone()));
+    }
+    match field_span(entry_lines, &inner, "scripts") {
+        None if !wanted.is_empty() => {
+            edits.push((
+                entry.end,
+                0,
+                render("scripts", &Value::Mapping(wanted), &inner)?,
+            ));
+        }
+        None => {}
+        Some((head, end)) => {
+            let value = without_comment(
+                entry_lines[head][inner.len()..]
+                    .split_once(':')
+                    .map_or("", |(_, value)| value),
+            );
+            let children = &entry_lines[head + 1..end];
+            let child = children
+                .iter()
+                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+                .map(|line| leading_whitespace(line).to_string());
+            match child.filter(|_| value.trim().is_empty()) {
+                // A block mapping: its other keys and comments stay line for line.
+                Some(child) => {
+                    let run_line = field_span(children, &child, "run");
+                    let build_line = field_span(children, &child, "build");
+                    let last = entry.start + head + 1 + children.len();
+                    let at = |index: usize| entry.start + head + 1 + index;
+                    if set_run {
+                        let line = render("run", &Value::from(run.clone()), &child)?;
+                        match run_line {
+                            Some((from, to)) => edits.push((at(from), to - from, line)),
+                            None => edits.push((last, 0, line)),
+                        }
+                    }
+                    if set_build {
+                        let line =
+                            render("build", &Value::from(crate::sandbox::SANDBOX_BUILD), &child)?;
+                        match (build_line, run_line) {
+                            (Some((from, to)), _) => edits.push((at(from), to - from, line)),
+                            (None, Some((from, _))) => edits.push((at(from), 0, line)),
+                            (None, None) => edits.push((last, 0, line)),
+                        }
+                    }
+                }
+                // Inline, empty or null: written again as a block.
+                None => {
+                    let mut merged = scripts.cloned().unwrap_or_default();
+                    for (name, value) in wanted {
+                        merged.insert(name, value);
+                    }
+                    edits.push((
+                        entry.start + head,
+                        end - head,
+                        render("scripts", &Value::Mapping(merged), &inner)?,
+                    ));
+                }
+            }
+        }
+    }
+
+    if add_adapter {
+        let item = serde_yaml::to_string(adapter)
+            .map_err(|err| invalid(key, &err.to_string()))?
+            .trim_end()
+            .to_string();
+        match field_span(entry_lines, &inner, "start_after") {
+            None => {
+                let after = field_span(entry_lines, &inner, "version")
+                    .or_else(|| field_span(entry_lines, &inner, "worker"))
+                    .map_or(entry_lines.len(), |(_, end)| end);
+                edits.push((
+                    entry.start + after,
+                    0,
+                    vec![format!("{inner}start_after: [{item}]")],
+                ));
+            }
+            Some((head, end)) => {
+                let line = entry_lines[head];
+                let body = without_comment(line);
+                let flow = body
+                    .find('[')
+                    .zip(body.rfind(']'))
+                    .filter(|(open, close)| open < close);
+                if let Some((open, close)) = flow {
+                    let separator = if body[open + 1..close].trim().is_empty() {
+                        ""
+                    } else {
+                        ", "
+                    };
+                    let mut rewritten = line.to_string();
+                    rewritten.insert_str(close, &format!("{separator}{item}"));
+                    edits.push((entry.start + head, 1, vec![rewritten]));
+                } else if let Some(last_item) = entry_lines[head + 1..end]
+                    .iter()
+                    .rev()
+                    .find(|line| line.trim_start().starts_with("- "))
+                {
+                    edits.push((
+                        entry.start + end,
+                        0,
+                        vec![format!("{}- {item}", leading_whitespace(last_item))],
+                    ));
+                } else {
+                    let mut dependencies = fields
+                        .get("start_after")
+                        .and_then(Value::as_sequence)
+                        .cloned()
+                        .unwrap_or_default();
+                    dependencies.push(Value::from(adapter));
+                    let flow = dependencies
+                        .iter()
+                        .map(scalar_text)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    edits.push((
+                        entry.start + head,
+                        end - head,
+                        vec![format!("{inner}start_after: [{flow}]")],
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_string()).collect();
+    edits.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
+    for (at, removed, replacement) in edits {
+        out.splice(at..at + removed, replacement);
+    }
+    Ok(Some(VmRewrite {
+        text: join(&out, text),
+        run,
+        wrapped,
+    }))
+}
+
+/// `lines` with the one-line entry `key: {...}` of the `containers:` mapping written as a block,
+/// its fields in the order they were written. `None` when there is no such entry.
+fn inline_entry_as_block(
+    lines: &[&str],
+    containers: &Block,
+    indent: &str,
+    key: &str,
+) -> Result<Option<Vec<String>>> {
+    let Some(at) = (containers.start..containers.end).find(|index| {
+        lines[*index]
+            .strip_prefix(indent)
+            .filter(|body| !body.starts_with(char::is_whitespace))
+            .and_then(|body| body.split_once(':'))
+            .filter(|(_, value)| {
+                let value = without_comment(value).trim();
+                value.starts_with('{') && value.ends_with('}')
+            })
+            .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
+            .is_some_and(|name| name == key)
+    }) else {
+        return Ok(None);
+    };
+    let (name, value) = lines[at]
+        .strip_prefix(indent)
+        .and_then(|body| body.split_once(':'))
+        .unwrap_or_default();
+    let fields: Mapping = serde_yaml::from_str(without_comment(value))
+        .map_err(|err| invalid(key, &err.to_string()))?;
+    let inner = format!("{indent}{indent}");
+    let mut out: Vec<String> = lines[..at].iter().map(|line| (*line).to_string()).collect();
+    out.push(format!("{indent}{name}:"));
+    for (field, value) in &fields {
+        if let Some(field) = field.as_str() {
+            out.extend(
+                render_field(field, value, &inner)?
+                    .lines()
+                    .map(str::to_string),
+            );
+        }
+    }
+    out.extend(lines[at + 1..].iter().map(|line| (*line).to_string()));
+    Ok(Some(out))
+}
+
+/// A YAML scalar as the text it holds; another value as its YAML.
+fn scalar_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim_end()
+            .to_string(),
+    }
+}
+
+/// The line range `[head, end)` in `lines` of the field `name` written at indentation `at`: its
+/// key line and what belongs to it (deeper lines, and sequence items or comments at its own
+/// indentation), without the blank lines and comments that trail it.
+fn field_span(lines: &[&str], at: &str, name: &str) -> Option<(usize, usize)> {
+    let head = lines.iter().position(|line| {
+        line.strip_prefix(at)
+            .filter(|body| !body.starts_with(char::is_whitespace))
+            .and_then(|body| body.split_once(':'))
+            .and_then(|(key, _)| serde_yaml::from_str::<String>(key).ok())
+            .is_some_and(|key| key == name)
+    })?;
+    let mut end = head + 1;
+    while end < lines.len() {
+        let body = lines[end].trim_start();
+        let width = lines[end].len() - body.len();
+        if body.is_empty()
+            || width > at.len()
+            || (width == at.len() && (body.starts_with("- ") || body.starts_with('#')))
+        {
+            end += 1;
+        } else {
+            break;
+        }
+    }
+    while end > head + 1 {
+        let body = lines[end - 1].trim_start();
+        if body.is_empty()
+            || (lines[end - 1].len() - body.len() <= at.len() && body.starts_with('#'))
+        {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    Some((head, end))
+}
+
 /// Byte offset of every line boundary, including the end of the document.
 fn line_offsets(lines: &[&str]) -> Vec<usize> {
     let mut offsets = Vec::with_capacity(lines.len() + 1);
@@ -1625,5 +1950,83 @@ containers:
             upsert_container(text, &new).unwrap(),
             Outcome::Replaced { .. }
         ));
+    }
+
+    /// Spec 7.1: the adapter in `start_after` (after `version`), then `scripts.build` and
+    /// `scripts.run`; every other line and comment of the file as it was.
+    #[test]
+    fn the_explicit_vm_mode_is_written_into_its_container_alone() {
+        let text = "# my project\ncontainers:\n  # the adapter\n  sb:\n    worker: path://./sb\n  # what onboards\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\" # pinned\n    environment:\n      KEY: ${KEY}\n\n  api: {worker: path://./api}\n";
+        let rewrite = explicit_vm_mode(text, "onboarding", "sb").unwrap().unwrap();
+        assert_eq!(
+            rewrite.text,
+            "# my project\ncontainers:\n  # the adapter\n  sb:\n    worker: path://./sb\n  # what onboards\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\" # pinned\n    start_after: [sb]\n    environment:\n      KEY: ${KEY}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n\n  api: {worker: path://./api}\n"
+        );
+        assert_eq!(rewrite.run, "iii sandbox run");
+        assert!(!rewrite.wrapped);
+        assert_eq!(
+            explicit_vm_mode(&rewrite.text, "onboarding", "sb").unwrap(),
+            None
+        );
+    }
+
+    /// A command 0.26 ran inside the VM keeps running there, quoted for `sh`; the rest of a
+    /// block `scripts` and `start_after`, comments included, stays line for line.
+    #[test]
+    fn a_command_of_its_own_moves_into_iii_sandbox_run_command() {
+        let text = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n    scripts:\n      # dev server\n      run: python src/dev.py --name 'x'\n      post_run: echo bye\n  state: {worker: path://./state}\n";
+        let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
+        assert!(rewrite.wrapped);
+        assert_eq!(
+            rewrite.run,
+            "iii sandbox run --command 'python src/dev.py --name '\\''x'\\'''"
+        );
+        let expected_start = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n      - sb\n    scripts:\n      # dev server\n      build: iii sandbox build\n";
+        assert!(rewrite.text.starts_with(expected_start), "{}", rewrite.text);
+        assert!(
+            rewrite
+                .text
+                .ends_with("      post_run: echo bye\n  state: {worker: path://./state}\n"),
+            "{}",
+            rewrite.text
+        );
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        let scripts = &parsed["containers"]["link"]["scripts"];
+        assert_eq!(scripts["run"].as_str(), Some(rewrite.run.as_str()));
+        assert_eq!(scripts["post_run"].as_str(), Some("echo bye"));
+        assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
+    }
+
+    /// What `sh -c` reads back is the command as it was written.
+    #[test]
+    fn the_wrapped_command_is_single_quoted_for_sh() {
+        for command in ["python main.py", "echo 'hi' && echo \"$HOME\"", "a'b''c"] {
+            let wrapped = sandbox_run_command(command);
+            let quoted = wrapped.strip_prefix("iii sandbox run --command ").unwrap();
+            let output = std::process::Command::new("sh")
+                .args(["-c", &format!("printf %s {quoted}")])
+                .output()
+                .unwrap();
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), command);
+        }
+    }
+
+    /// The 0.26 opt-in only gains `scripts.build`; an inline `scripts` becomes a block, and a
+    /// `build:` without a value counts as absent.
+    #[test]
+    fn only_the_missing_pieces_are_added() {
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run}\n";
+        let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
+        assert_eq!(
+            rewrite.text,
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii sandbox run\n      build: iii sandbox build\n"
+        );
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: []\n    scripts:\n      build:\n      run: iii sandbox run --command 'x'\n";
+        let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
+        assert_eq!(
+            rewrite.text,
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'x'\n"
+        );
+        assert!(!rewrite.wrapped);
     }
 }

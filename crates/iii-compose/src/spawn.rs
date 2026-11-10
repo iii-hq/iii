@@ -53,7 +53,10 @@ use crate::manifest::StartSpec;
 ///   host directories a VM may mount. A value from the machine or from
 ///   `environment` would put the token in another container, or in a VM guest
 ///   whose environment starts from the host's, or widen the roots.
-pub const RESERVED_ENV: [&str; 9] = [
+/// - `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR` and
+///   `III_PACKAGE_NAME` are what `iii sandbox build` and `iii sandbox run` read (spec 8.3), and
+///   what a bundle on the host is handed (spec 7.5): Compose sets them, never the file.
+pub const RESERVED_ENV: [&str; 14] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -63,7 +66,19 @@ pub const RESERVED_ENV: [&str; 9] = [
     "III_WORKER_NAME",
     "III_SANDBOX_WORKER_TOKEN",
     "III_SANDBOX_HOST_ROOTS",
+    crate::sandbox_cli::BUILD_DIR_ENV,
+    crate::sandbox_cli::BUILD_TIMEOUT_ENV,
+    crate::sandbox_cli::BUILD_COMPOSE_FILE_ENV,
+    crate::sandbox_cli::PACKAGE_DIR_ENV,
+    crate::sandbox_cli::PACKAGE_NAME_ENV,
 ];
+
+/// The compose file as `III_COMPOSE_FILE` names it: canonical, else absolute, else as given.
+pub(crate) fn canonical_compose_file(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// Whether a key claims a daemon-owned variable under the host OS's rules.
 pub(crate) fn is_reserved_env(name: &str) -> bool {
@@ -231,11 +246,7 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
         "III_COMPOSE_NAMESPACE".to_string(),
         ctx.compose_namespace.to_string(),
     );
-    let compose_file = ctx
-        .compose_file
-        .canonicalize()
-        .or_else(|_| std::path::absolute(ctx.compose_file))
-        .unwrap_or_else(|_| ctx.compose_file.to_path_buf());
+    let compose_file = canonical_compose_file(ctx.compose_file);
     env.insert(
         "III_COMPOSE_FILE".to_string(),
         compose_file.to_string_lossy().to_string(),
@@ -273,10 +284,6 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     let (program, args) = match ctx.start {
         StartSpec::Shell(command) => shell_invocation(command),
         StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
-        // The host execs nothing for a VM container: the start command runs
-        // inside the guest. Only the environment and the working directory
-        // computed above carry over.
-        StartSpec::Vm(_) => (String::new(), Vec::new()),
     };
 
     SpawnPlan {
@@ -307,9 +314,7 @@ impl SpawnPlan {
     /// Turns the plan into a runnable command. Process-group placement and exit
     /// watching are the supervisor's job and are not applied here.
     ///
-    /// `None` when the container runs in a VM. There is no host program then,
-    /// and `env` is not this command's environment either: it belongs to the
-    /// guest, and goes to the sandbox adapter in the `worker::start` request.
+    /// `None` for a plan with no program.
     pub fn command(&self) -> Option<tokio::process::Command> {
         if self.program.is_empty() {
             return None;
@@ -353,7 +358,6 @@ pub fn resolve_working_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::VmSpec;
 
     fn ctx<'a>(
         start: &'a StartSpec,
@@ -643,10 +647,10 @@ mod tests {
         let no_env = BTreeMap::new();
         for start in [
             StartSpec::Shell("cargo run".to_string()),
-            StartSpec::Vm(VmSpec::Bundle {
-                package: "bundle".to_string(),
-                install_dir: PathBuf::from("/srv/app/bundle"),
-            }),
+            StartSpec::Exec {
+                program: PathBuf::from("/srv/app/bundle"),
+                args: Vec::new(),
+            },
         ] {
             let plan = spawn_plan_with_env(&ctx(&start, None, &no_env), host.clone());
             assert!(!plan.env.contains_key("III_SANDBOX_WORKER_TOKEN"));
