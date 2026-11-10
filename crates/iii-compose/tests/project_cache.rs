@@ -890,3 +890,30 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
         }
     );
 }
+
+/// A compose file reached through a symlink has its lock beside its target, where `prepare`
+/// reads it: a frozen build that changes nothing passes its late check, every time.
+#[cfg(unix)]
+#[tokio::test]
+async fn frozen_build_through_a_symlinked_compose_file_passes_its_check() {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    let stacks = tmp.path().join("stacks");
+    std::fs::create_dir_all(stacks.join("workers/api")).unwrap();
+    let server = wiremock::MockServer::start().await;
+    let link = package_archive("link 1");
+    let target = lock_project(&stacks, &server, &[("symlinked-link", "1.0.0", &link)]).await;
+    let file = tmp.path().join("prod.yaml");
+    std::os::unix::fs::symlink(&target, &file).unwrap();
+    assert!(!tmp.path().join("prod.lock").exists());
+
+    for _ in 0..2 {
+        iii_compose::build::build_frozen(&file).await.unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(stacks.join(".workers/symlinked-link/lib/data.txt")).unwrap(),
+        "link 1"
+    );
+    assert!(!tmp.path().join(".workers").exists());
+}

@@ -56,9 +56,11 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         path: file.to_path_buf(),
         source,
     })?;
-    // The lock as this build found it, before anything read it.
-    let found_lock = read_if_present(&crate::lockfile::lock_path(file))?;
     let mut file = ComposeFile::load(file)?;
+    // The lock as this build found it, before anything read it. Beside the
+    // canonical file, as `prepare` reads it: a symlinked compose file has its
+    // lock beside its target.
+    let found_lock = read_if_present(&crate::lockfile::lock_path(&file.path))?;
     let cache = StateStore::package_cache()?;
     let packages = file
         .containers
@@ -146,17 +148,20 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     // The daemon materializes too, and may have changed the file or the lock
     // since this build read them: checked again under `.workers/.lock`, every
     // time, so a stale build never undoes the daemon's newer `.workers/`.
-    let left_lock = if prepared.changed() {
-        read_if_present(prepared.path())?
-    } else {
-        found_lock
-    };
+    // The lock must still be the one this build stands on: the one it found
+    // when it wrote none, or, when it wrote one, a lock resolving every
+    // container to the package it wrote.
     let unchanged = || {
         let current = std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
             path: file.path.clone(),
             source,
         })?;
-        if current != edited || read_if_present(prepared.path())? != left_lock {
+        let lock_holds = if prepared.changed() {
+            locks_the_same_packages(prepared.path(), &prepared)?
+        } else {
+            read_if_present(prepared.path())? == found_lock
+        };
+        if current != edited || !lock_holds {
             return Err(ComposeError::BuildPlanStale {
                 path: file.path.clone(),
             });
@@ -194,6 +199,41 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         downloaded,
         cached,
     })
+}
+
+/// Whether the lock at `path` resolves the same containers to the same packages as
+/// `prepared`: what this build wrote, in the part `.workers/` is made from. Compared
+/// parsed, so the check does not depend on re-reading the bytes it wrote; a lock that is
+/// missing or does not parse holds nothing.
+fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock) -> Result<bool> {
+    let Some(bytes) = read_if_present(path)? else {
+        return Ok(false);
+    };
+    let Ok(document) = serde_yaml::from_slice::<serde_yaml::Value>(&bytes) else {
+        return Ok(false);
+    };
+    let Some(containers) = document
+        .get("containers")
+        .and_then(serde_yaml::Value::as_mapping)
+    else {
+        return Ok(false);
+    };
+    let mut on_disk = BTreeMap::new();
+    for (key, entry) in containers {
+        let (Some(key), Some(resolved)) = (key.as_str(), entry.get("resolved")) else {
+            return Ok(false);
+        };
+        let Ok(resolved) = serde_yaml::from_value::<registry::ResolvedPackage>(resolved.clone())
+        else {
+            return Ok(false);
+        };
+        on_disk.insert(key, resolved);
+    }
+    let wrote: BTreeMap<_, _> = prepared
+        .packages()
+        .map(|(key, resolved)| (key, resolved.clone()))
+        .collect();
+    Ok(on_disk == wrote)
 }
 
 /// The bytes of the file at `path`; `None` when there is none.
@@ -545,5 +585,62 @@ mod tests {
                 .join(".workers/sandbox-libkrun/sandbox-libkrun")
                 .is_file()
         );
+    }
+
+    #[tokio::test]
+    async fn the_late_check_compares_the_lock_parsed_with_what_the_build_wrote() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let server = wiremock::MockServer::start().await;
+        let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let resolved = serde_json::json!({
+            "name": "state",
+            "version": "1.0.0",
+            "type": "binary",
+            "artifacts": { (crate::registry::host_targets()[0]): {
+                "sha256": hex::encode(sha2::Sha256::digest(&state)),
+                "url": format!("{}/state", server.uri()),
+            }}
+        });
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/state"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(state))
+            .mount(&server)
+            .await;
+        let lock = |resolved: &serde_json::Value| {
+            serde_json::json!({ "version": 1, "containers": { "state": {
+                "worker": "package://state", "requested": "1.0.0", "resolved": resolved
+            }}})
+        };
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        let lock_path = project.path().join("worker-compose.lock");
+        std::fs::write(
+            &file,
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        std::fs::write(&lock_path, serde_yaml::to_string(&lock(&resolved)).unwrap()).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let mut compose = ComposeFile::load(&file).unwrap();
+        let prepared = crate::lockfile::prepare_frozen(&mut compose, cache.path())
+            .await
+            .unwrap();
+
+        assert!(locks_the_same_packages(&lock_path, &prepared).unwrap());
+        // The same lock in other bytes (JSON is YAML): compared parsed, it still holds.
+        std::fs::write(&lock_path, lock(&resolved).to_string()).unwrap();
+        assert!(locks_the_same_packages(&lock_path, &prepared).unwrap());
+
+        // Another package for the container, as a concurrent writer would leave it.
+        let mut other = resolved.clone();
+        other["version"] = "1.1.0".into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&lock(&other)).unwrap()).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        std::fs::write(&lock_path, "containers: [").unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        std::fs::remove_file(&lock_path).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
     }
 }
