@@ -299,7 +299,7 @@ host.
 ```
 
 A `path://` container records `"source": { "kind": "path", "dir": "./link" }` (the declared
-path, relative to the compose file).
+path, relative to the compose file). A host build writes the same keys without `image`.
 
 - Every hash is written `sha256:<hex>`; times are RFC 3339 UTC.
 - `dependency_files` holds the hash of each of these files that exists at the root of the
@@ -478,6 +478,9 @@ migrating:
 
 - a generated adapter container (`# added by compose::add`) outside `ADAPTER_RANGE` is updated
   to the newest release in range, with the lock;
+- a project with no adapter container gets the generated one, at the newest release in range,
+  as `compose::add` adds it today, so the `start_after` that section 7.1 writes names a declared
+  container;
 - an adapter container the operator declared outside the range fails with
   `SANDBOX_ADAPTER_TOO_OLD`, naming the container, its range and the command
   `iii call compose::update worker=<adapter>@latest` (or editing `version`);
@@ -539,7 +542,9 @@ migrated; the next `up` retries from step 2.
 
 `--frozen` never edits the file. A file with a container to rewrite fails under `--frozen` with
 `VM_SCRIPTS_MISSING`, naming the containers and asking for one `iii compose --up` without
-`--frozen`.
+`--frozen`. This check comes before the adapter checks of section 7.2: a file with a container
+to rewrite and no adapter fails with `VM_SCRIPTS_MISSING`, and the `up` it asks for adds the
+adapter too.
 
 ### 7.4 `compose::build`
 
@@ -621,14 +626,20 @@ Compose hands `iii sandbox build` and `iii sandbox run` the variables of section
 
 - `III_BUILD_DIR` = `<project>/.build/<container>`;
 - `III_BUILD_TIMEOUT_MS` = `scripts.build_timeout`, for `iii sandbox build`;
+- `III_BUILD_COMPOSE_FILE` = the same canonical path as `III_COMPOSE_FILE`, for
+  `iii sandbox build` (`build_record::source` reads the declared `path://` there);
 - `III_PACKAGE_DIR` = `<project>/.workers/<container>` and `III_PACKAGE_NAME`, set for a
   bundle for the first time.
 
-Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV` and `BUILD_TIMEOUT_ENV` (new),
-`PACKAGE_DIR_ENV` and `PACKAGE_NAME_ENV` (existing). `III_BUILD_DIR` and
-`III_BUILD_TIMEOUT_MS` join `NEVER_FORWARDED`, where the package pair already is. All four
-join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps these four out of
-`III_WORKER_ENV_KEYS`; the reserved names it includes today stay.
+Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV`, `BUILD_TIMEOUT_ENV` and
+`BUILD_COMPOSE_FILE_ENV` (new), `PACKAGE_DIR_ENV` and `PACKAGE_NAME_ENV` (existing).
+`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS` and `III_BUILD_COMPOSE_FILE` join `NEVER_FORWARDED`,
+where the package pair already is. All five join `spawn::RESERVED_ENV`, and the filter in
+`layer_own_vm_env` keeps these five out of `III_WORKER_ENV_KEYS`; the reserved names it includes
+today stay. The compose file gets its own name to keep two contracts apart: `III_COMPOSE_FILE`
+belongs to every child and reaches the guest as one of those reserved names, while
+`III_BUILD_COMPOSE_FILE` is an input of `iii sandbox build`, like the other build variables. The
+guest still sees the path through `III_COMPOSE_FILE`; the split is not meant to hide it.
 
 ## 9. The guest
 
@@ -661,7 +672,8 @@ under an upper that already holds files.
 ### 9.4 Env
 
 Unchanged from #2505: the guest gets `guest_env` (the container's `environment`/`env_file` and
-the reserved `III_*`), never the host's environment. The build VM gets the same set.
+the reserved `III_*` except the five of section 8.3), never the host's environment. The build VM
+gets the same set.
 
 ## 10. Errors and logs
 
@@ -721,6 +733,7 @@ constants of section 8.3. Each ticket then fills in its own.
 
 ```rust
 // crates/iii-compose/src/build_record.rs (KAN-281)
+pub const SCHEMA: u32 = 1; // the `schema` of build.json
 pub struct BuildRecord { /* the fields of section 5.4 */ }
 pub enum BuildSource {
     Package { name: String, version: String, sha256: String },
@@ -733,11 +746,11 @@ pub enum Change {
 }
 pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>>;
 pub fn write(build_dir: &Path, record: &BuildRecord) -> Result<()>; // tmp + rename
-pub fn source(compose_dir: &Path, container: &str) -> Result<BuildSource>; // .packages.json or the compose file
+pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource>; // .packages.json beside it, or the file
 pub fn declared_base_image(worker_dir: &Path) -> Result<Option<String>>; // runtime.base_image
 pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>>;
 /// Every difference of section 5.5; empty when the build is up to date.
-pub fn changes(record: &BuildRecord, compose_dir: &Path, container: &str, worker_dir: &Path) -> Result<Vec<Change>>;
+pub fn changes(record: &BuildRecord, compose_file: &Path, container: &str, worker_dir: &Path) -> Result<Vec<Change>>;
 pub fn build_dir(compose_dir: &Path, container: &str) -> PathBuf; // <compose dir>/.build/<container>
 pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf; // <compose dir>/.workers/<container>
 
@@ -747,8 +760,18 @@ pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf; // <compose 
 pub async fn materialize_project(compose_dir: &Path, cache_root: &Path, lock: &PreparedLock) -> Result<()>;
 
 // crates/iii-compose/src/sandbox.rs (KAN-280)
-/// Sections 7.2 and 7.3: updates a too-old generated adapter, then rewrites the containers
-/// 0.26 ran in a VM; `None` when nothing changed.
+/// Sections 7.2 and 7.3, run before `apply_adapter_change`: updates a generated adapter outside
+/// `ADAPTER_RANGE` to the newest release in range (7.2), then rewrites the containers 0.26 ran
+/// in a VM (7.3). Also adds the adapter container when a container it rewrites needs one and
+/// none is declared, as `adapter_change` would; `apply_adapter_change` keeps re-resolving
+/// (`refresh`) and removing (`allow_remove`) it. Edits `edited`, `file` and `prepared` in place
+/// and logs each rewrite; writes nothing and acquires nothing: when `adapter` is `Some`, the
+/// caller runs `PreparedLock::install`, then writes the file and the lock, as after
+/// `apply_adapter_change`. `None` when nothing changed. Not called under `--frozen`: there
+/// `require_declared_adapter` (KAN-280) checks for a due migration first and refuses it with
+/// `VM_SCRIPTS_MISSING`, whose `up` without `--frozen` also adds a missing adapter; only then
+/// does it refuse a missing adapter (`SANDBOX_ADAPTER_NOT_DECLARED`) or an out-of-range one
+/// (`SANDBOX_ADAPTER_TOO_OLD`).
 pub(crate) struct Migration { pub containers: Vec<String>, pub adapter: Option<AdapterChange> }
 pub(crate) async fn migrate(path: &Path, edited: &mut String, file: &mut ComposeFile, project_namespace: &str, prepared: &mut PreparedLock) -> Result<Option<Migration>>;
 
@@ -769,7 +792,16 @@ pub fn resolve_project_target(file: Option<&Path>, namespace: Option<String>, en
 
 - `materialize_project` runs after every package install: from `lifecycle.rs` (KAN-280) and
   `build.rs` (KAN-281).
-- `iii compose build` (KAN-281) calls `sandbox::migrate` before installing.
+- `iii compose build` (KAN-281) calls `sandbox::migrate` before `apply_adapter_change` and
+  before installing, and installs when either returns an adapter change. `migrate` adds the
+  adapter a rewritten container needs when none is declared, so the file it leaves parses (no
+  `start_after` names a missing container), and `apply_adapter_change` then re-resolves or
+  removes the adapter `migrate` added; it still adds the one an `engine.sandbox` need asks for.
+  Under `--frozen` it calls `require_declared_adapter` instead, as today.
+- `source` and `changes` take the compose file, not its directory: the `dir` of a `path://` is
+  declared in that file, which can have any name (`--file`, `file=`). Directories come from
+  `compose_file.parent()`. Inside Compose, `iii sandbox build` finds the file in
+  `III_BUILD_COMPOSE_FILE` (section 8.3).
 - `compose::build`: section 7.4 (KAN-280); the CLI calls it outside Compose (KAN-282).
 - The first-build and out-of-date checks (KAN-280) call `build_record::changes`.
 
