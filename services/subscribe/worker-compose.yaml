@@ -20,4 +20,4 @@ containers:
   # locally. iii Cloud builds that worker as a container and leaves this out.
   sandbox-libkrun:
     worker: package://api.workers.iii.dev/sandbox-libkrun
-    version: "0.2.3"
+    version: "0.3.1"

@@ -49,21 +49,21 @@ containers:
         webhook_listener: null
   sandbox-libkrun:
     worker: package://api.workers.iii.dev/sandbox-libkrun
-    requested: 0.2.3
+    requested: 0.3.1
     resolved:
       name: sandbox-libkrun
-      version: 0.2.3
+      version: 0.3.1
       type: binary
       artifacts:
         aarch64-apple-darwin:
-          sha256: 4b81a62b3fe1adcd010e0239e19037a0e60b9d228f424cf4444eeed5dedad494
-          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/aarch64-apple-darwin
+          sha256: cadcf26358cfc429a2110cbc03a9c4a912fcbb285a4d1958610560ff971ca31e
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.3.1/aarch64-apple-darwin
         aarch64-unknown-linux-gnu:
-          sha256: 2cd1d4b2d034b69357a8bf31c85c5d0c27ca22c9d29fc20ab8ac0927448f255d
-          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/aarch64-unknown-linux-gnu
+          sha256: b2701e07185feba7df6b4e9afa2d690c50ad05f1bb5388d5eb1fcf6cea234f5b
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.3.1/aarch64-unknown-linux-gnu
         x86_64-unknown-linux-gnu:
-          sha256: 4bb076c188da303a1b9a49e70d0d91e2bb91cc7f4d6dc4d4aa761eb54a2c7521
-          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.2.3/x86_64-unknown-linux-gnu
+          sha256: f22725607d7ea84d3b01e5fc9527000b385a4e1f9d9dc4298e05bed5e6534b0f
+          url: https://api.workers.iii.dev/download/sandbox-libkrun/0.3.1/x86_64-unknown-linux-gnu
       default_config:
         auto_install: true
         default_cpus: 1
