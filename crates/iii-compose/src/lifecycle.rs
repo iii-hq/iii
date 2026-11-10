@@ -1710,44 +1710,7 @@ pub(crate) async fn materialize_packages(
     if lock.packages().next().is_none() && !compose_dir.join(".workers").exists() {
         return Ok(());
     }
-    materialize_project(compose_dir, package_cache, lock).await
-}
-
-// The cfg(test) stand-in keeps this crate's unit tests off the KAN-281 body, which lands in
-// parallel; integration switches them to the real one.
-#[cfg(not(test))]
-use crate::registry::materialize_project;
-// The stand-in does only what this crate's tests read, as KAN-281's does it: a container that
-// `.workers/.packages.json` records and the lock no longer has loses its directory and its entry.
-// Nothing that file does not record is Compose's, so nothing else is touched.
-#[cfg(test)]
-async fn materialize_project(
-    compose_dir: &std::path::Path,
-    _package_cache: &std::path::Path,
-    lock: &crate::lockfile::PreparedLock,
-) -> Result<()> {
-    let record = compose_dir.join(".workers/.packages.json");
-    let Ok(text) = std::fs::read_to_string(&record) else {
-        return Ok(());
-    };
-    let mut packages: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-    let locked: std::collections::BTreeSet<&str> = lock.packages().map(|(key, _)| key).collect();
-    if let Some(containers) = packages
-        .get_mut("containers")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        let retired: Vec<String> = containers
-            .keys()
-            .filter(|key| !locked.contains(key.as_str()))
-            .cloned()
-            .collect();
-        for key in retired {
-            containers.remove(&key);
-            let _ = std::fs::remove_dir_all(compose_dir.join(".workers").join(&key));
-        }
-    }
-    let _ = std::fs::write(&record, packages.to_string());
-    Ok(())
+    crate::registry::materialize_project(compose_dir, package_cache, lock).await
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.

@@ -21,9 +21,6 @@ use tokio::{
     sync::watch,
 };
 
-// The cfg(test) stand-in keeps this crate's unit tests off the KAN-281 bodies, which land in
-// parallel; integration switches the tests to the real module.
-#[cfg(not(test))]
 use crate::build_record as record;
 use crate::{
     build_record::{BuildRecord, BuildSource, Change, SCHEMA},
@@ -35,8 +32,6 @@ use crate::{
     shutdown::ShutdownSignal,
     spawn::{SpawnCtx, spawn_plan},
 };
-#[cfg(test)]
-use fake_record as record;
 
 /// How many of the build's last output lines a failure carries (spec 4.1).
 const TAIL_LINES: usize = 20;
@@ -662,148 +657,6 @@ async fn record_host_build(
     })?
 }
 
-/// A stand-in for `build_record` (KAN-281) in this crate's unit tests: the same contract over
-/// plain files, so the tests here do not depend on its bodies.
-#[cfg(test)]
-pub(crate) mod fake_record {
-    use std::{collections::BTreeMap, path::Path};
-
-    use sha2::{Digest, Sha256};
-
-    use crate::{
-        build_record::{BuildRecord, BuildSource, Change},
-        config::WorkerSource,
-        error::{ComposeError, Result},
-    };
-
-    const DEPENDENCY_FILES: [&str; 13] = [
-        "package.json",
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "bun.lockb",
-        "requirements.txt",
-        "pyproject.toml",
-        "uv.lock",
-        "poetry.lock",
-        "Cargo.toml",
-        "Cargo.lock",
-        "go.mod",
-        "go.sum",
-    ];
-
-    fn io(path: &Path) -> impl FnOnce(std::io::Error) -> ComposeError {
-        let path = path.to_path_buf();
-        move |source| ComposeError::Io { path, source }
-    }
-
-    pub(crate) fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
-        let path = build_dir.join("build.json");
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Ok(Some(serde_json::from_str(&text).map_err(|error| {
-                ComposeError::Io {
-                    path: path.clone(),
-                    source: std::io::Error::other(error),
-                }
-            })?)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(io(&path)(error)),
-        }
-    }
-
-    pub(crate) fn write(build_dir: &Path, record: &BuildRecord) -> Result<()> {
-        let path = build_dir.join("build.json");
-        std::fs::create_dir_all(build_dir).map_err(io(build_dir))?;
-        std::fs::write(&path, serde_json::to_string_pretty(record).unwrap()).map_err(io(&path))
-    }
-
-    pub(crate) fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
-        let mut file = crate::ComposeFile::load(compose_file)?;
-        crate::lockfile::attach(&mut file)?;
-        let declared = &file.containers[container];
-        Ok(match &declared.worker {
-            WorkerSource::Path { declared, .. } => BuildSource::Path {
-                dir: declared.trim_start_matches("path://").to_string(),
-            },
-            WorkerSource::Package { reference } => {
-                let (name, version) = declared.resolved_package.as_ref().map_or_else(
-                    || {
-                        (
-                            reference.clone(),
-                            declared.version.clone().unwrap_or_default(),
-                        )
-                    },
-                    |package| (package.name.clone(), package.version.clone()),
-                );
-                let sha256 = hex::encode(Sha256::digest(format!("{name}@{version}")));
-                BuildSource::Package {
-                    name,
-                    version,
-                    sha256: format!("sha256:{sha256}"),
-                }
-            }
-        })
-    }
-
-    pub(crate) fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
-        let mut files = BTreeMap::new();
-        for name in DEPENDENCY_FILES {
-            let path = worker_dir.join(name);
-            if let Ok(bytes) = std::fs::read(&path) {
-                files.insert(
-                    name.to_string(),
-                    format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
-                );
-            }
-        }
-        Ok(files)
-    }
-
-    pub(crate) fn changes(
-        record: &BuildRecord,
-        compose_file: &Path,
-        container: &str,
-        worker_dir: &Path,
-    ) -> Result<Vec<Change>> {
-        let mut changes = Vec::new();
-        let source = source(compose_file, container)?;
-        if source != record.source {
-            changes.push(Change::Source {
-                old: record.source.clone(),
-                new: source,
-            });
-        }
-        let now = dependency_files(worker_dir)?;
-        let mut names: Vec<String> = now
-            .iter()
-            .filter(|(name, hash)| record.dependency_files.get(*name) != Some(hash))
-            .map(|(name, _)| name.clone())
-            .chain(
-                record
-                    .dependency_files
-                    .keys()
-                    .filter(|name| !now.contains_key(*name))
-                    .cloned(),
-            )
-            .collect();
-        names.sort();
-        if !names.is_empty() {
-            changes.push(Change::Dependencies(names));
-        }
-        if let Some(image) = &record.image {
-            let declared = crate::manifest::read_manifest(worker_dir)?
-                .and_then(|manifest| manifest.base_image);
-            if declared != image.base_image.declared {
-                changes.push(Change::BaseImage {
-                    old: image.base_image.declared.clone(),
-                    new: declared,
-                });
-            }
-        }
-        Ok(changes)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, time::Instant};
@@ -872,7 +725,7 @@ mod tests {
         }
 
         fn record(&self) -> Option<BuildRecord> {
-            fake_record::read(&build_dir(&self.file.path, "api")).unwrap()
+            record::read(&build_dir(&self.file.path, "api")).unwrap()
         }
 
         async fn logs(&self) -> Vec<LogEntry> {
@@ -1055,7 +908,7 @@ mod tests {
         moved.source = BuildSource::Path {
             dir: "./old".into(),
         };
-        fake_record::write(&dir, &moved).unwrap();
+        record::write(&dir, &moved).unwrap();
         assert_eq!(
             project.due().await,
             Some(Reason::PackageChanged {
@@ -1072,7 +925,7 @@ mod tests {
             "package changed (a@1.0.0 -> a@1.1.0); rebuilding"
         );
 
-        fake_record::write(&dir, &built).unwrap();
+        record::write(&dir, &built).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
         assert_eq!(project.due().await, None);
 
@@ -1091,7 +944,7 @@ mod tests {
             },
             contract: BuildContract { major: 1, minor: 3 },
         });
-        fake_record::write(&dir, &imaged).unwrap();
+        record::write(&dir, &imaged).unwrap();
         assert_eq!(project.due().await, None);
     }
 
@@ -1142,7 +995,7 @@ mod tests {
             },
             contract: BuildContract { major: 1, minor: 3 },
         });
-        fake_record::write(&build_dir(&project.file.path, "api"), &record).unwrap();
+        record::write(&build_dir(&project.file.path, "api"), &record).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
 
         let (due, lines) = crate::report::capture_daemon_lines(project.due()).await;

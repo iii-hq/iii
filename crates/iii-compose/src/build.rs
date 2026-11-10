@@ -501,9 +501,7 @@ mod tests {
             .collect()
     }
 
-    // Reaches `sandbox::migrate`, whose body is KAN-280's.
     #[tokio::test]
-    #[ignore = "needs KAN-280"]
     async fn build_locks_and_copies_each_package_into_the_project() {
         let server = wiremock::MockServer::start().await;
         let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
@@ -535,10 +533,9 @@ mod tests {
     }
 
     // Spec 11.2: `migrate` adds the adapter a rewritten bundle needs; the build installs it
-    // and copies it beside the bundle. Reaches `sandbox::migrate`, whose body is KAN-280's.
+    // and copies it beside the bundle.
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "needs KAN-280"]
     async fn build_migrates_a_vm_bundle_and_copies_it_with_the_adapter() {
         let adapter = archive(&[("sandbox-libkrun", 0o755, b"#!/bin/sh\nexit 0\n")]);
         let server = crate::sandbox::tests::adapter_registry(&adapter).await;

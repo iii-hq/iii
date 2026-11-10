@@ -3137,7 +3137,7 @@ mod adapter_restart_tests {
     /// and is `BUILD_FAILED`.
     #[tokio::test]
     async fn a_changed_package_is_rebuilt_while_the_old_build_runs() {
-        use crate::build_step::fake_record;
+        use crate::build_record;
 
         let dir = tempfile::tempdir().unwrap();
         let path = write_small_project(
@@ -3155,13 +3155,13 @@ mod adapter_restart_tests {
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         let running = alive(dir.path(), "own").unwrap();
         let build = dir.path().join(".build/own");
-        let built = fake_record::read(&build).unwrap().unwrap();
+        let built = build_record::read(&build).unwrap().unwrap();
         let moved = |record: &crate::build_record::BuildRecord| {
             let mut moved = record.clone();
             moved.source = crate::build_record::BuildSource::Path {
                 dir: "./old".into(),
             };
-            fake_record::write(&build, &moved).unwrap();
+            build_record::write(&build, &moved).unwrap();
         };
         moved(&built);
         let file = ComposeFile::load(&path).unwrap();
@@ -3191,7 +3191,7 @@ mod adapter_restart_tests {
         );
         assert_eq!(lines, ["own: package changed (./old -> ./own); rebuilding"]);
         assert_eq!(
-            fake_record::read(&build).unwrap().unwrap().source,
+            build_record::read(&build).unwrap().unwrap().source,
             built.source
         );
         let (restart, lines) =
@@ -3206,7 +3206,7 @@ mod adapter_restart_tests {
 
         // A failed rebuild: still running on the build it had.
         let running = alive(dir.path(), "own").unwrap();
-        moved(&fake_record::read(&build).unwrap().unwrap());
+        moved(&build_record::read(&build).unwrap().unwrap());
         std::fs::write(
             &path,
             std::fs::read_to_string(&path).unwrap().replace(
@@ -3263,7 +3263,7 @@ mod adapter_restart_tests {
     /// its old build, and the caller restarts nothing.
     #[tokio::test]
     async fn a_cancelled_rebuild_stops_and_builds_nothing_more() {
-        use crate::build_step::fake_record;
+        use crate::build_record;
 
         let dir = tempfile::tempdir().unwrap();
         let path = write_small_project(
@@ -3281,11 +3281,11 @@ mod adapter_restart_tests {
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         let running = alive(dir.path(), "own").unwrap();
         let build = dir.path().join(".build/own");
-        let mut moved = fake_record::read(&build).unwrap().unwrap();
+        let mut moved = build_record::read(&build).unwrap().unwrap();
         moved.source = crate::build_record::BuildSource::Path {
             dir: "./old".into(),
         };
-        fake_record::write(&build, &moved).unwrap();
+        build_record::write(&build, &moved).unwrap();
         std::fs::write(dir.path().join("slow"), "").unwrap();
         let file = ComposeFile::load(&path).unwrap();
         let own = ["own".to_string()];
@@ -3315,7 +3315,7 @@ mod adapter_restart_tests {
             began.elapsed()
         );
         assert_eq!(alive(dir.path(), "own"), Some(running));
-        assert_eq!(fake_record::read(&build).unwrap().unwrap(), moved);
+        assert_eq!(build_record::read(&build).unwrap().unwrap(), moved);
 
         // Asked once cancelled, it builds nothing at all.
         std::fs::remove_file(&marker).unwrap();

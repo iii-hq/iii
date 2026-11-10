@@ -1020,7 +1020,6 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
 /// A 0.26 file: its first `up` writes the explicit VM mode, builds through `worker::build` with
 /// the VM's own token before the run, which boots that build, and destroys nothing (spec 7.3).
 #[test]
-#[ignore = "needs KAN-281 (build_record) and KAN-282 (iii sandbox build and run)"]
 #[serial_test::serial(sandbox_vm)]
 fn a_026_project_is_migrated_and_built_on_its_first_up() {
     let mut project = Project::declaring(&format!(
