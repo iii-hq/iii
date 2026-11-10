@@ -20,6 +20,7 @@
 //!    projects.
 
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
     time::Duration,
@@ -465,6 +466,69 @@ pub async fn install_resolved(
         default_config: resolved.default_config.clone(),
         status,
     })
+}
+
+/// `.workers/.packages.json`: which artifact each package directory holds (spec 3.2, 11.2).
+pub(crate) const PROJECT_PACKAGES_FILE: &str = ".packages.json";
+/// The `schema` of the `.packages.json` this version writes and reads.
+const PROJECT_PACKAGES_SCHEMA: u32 = 1;
+
+/// `.workers/.packages.json`: `{ "schema": 1, "containers": { <container>: { name, version,
+/// sha256 } } }`. It sits outside the package directories, so no guest can write it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProjectPackages {
+    pub schema: u32,
+    pub containers: BTreeMap<String, ProjectPackage>,
+}
+
+impl Default for ProjectPackages {
+    fn default() -> Self {
+        Self {
+            schema: PROJECT_PACKAGES_SCHEMA,
+            containers: BTreeMap::new(),
+        }
+    }
+}
+
+/// The artifact one `.workers/<container>/` holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProjectPackage {
+    /// The package; for an alias, the package it stands for, as the cache names it.
+    pub name: String,
+    pub version: String,
+    /// `sha256:<hex>` of the archive this host installs.
+    pub sha256: String,
+}
+
+/// Reads `.workers/.packages.json` of the project in `compose_dir`; `None` when there is none.
+pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<ProjectPackages>> {
+    let path = compose_dir
+        .join(crate::build_record::WORKERS_DIR)
+        .join(PROJECT_PACKAGES_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(ComposeError::Io { path, source }),
+    };
+    let packages: ProjectPackages = serde_json::from_slice(&bytes).map_err(|error| {
+        crate::build_record::invalid_data(
+            &path,
+            format!(
+                "not a valid {PROJECT_PACKAGES_FILE} ({error}); `iii compose build` rewrites it"
+            ),
+        )
+    })?;
+    if packages.schema != PROJECT_PACKAGES_SCHEMA {
+        return Err(crate::build_record::invalid_data(
+            &path,
+            format!(
+                "{PROJECT_PACKAGES_FILE} has schema {}, and this iii reads schema \
+                 {PROJECT_PACKAGES_SCHEMA}; `iii compose build` rewrites it",
+                packages.schema
+            ),
+        ));
+    }
+    Ok(Some(packages))
 }
 
 /// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes
