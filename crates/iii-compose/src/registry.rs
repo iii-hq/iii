@@ -500,6 +500,20 @@ pub(crate) struct ProjectPackage {
     pub sha256: String,
 }
 
+impl ProjectPackage {
+    /// The artifact `resolved` installs on this host.
+    fn locked(container: &str, resolved: &ResolvedPackage) -> Result<Self> {
+        let target = runnable_target(&resolved.artifacts);
+        let artifact = artifact_for_target(container, resolved, target)?;
+        let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
+        Ok(Self {
+            name: package_name(resolved).to_string(),
+            version: resolved.version.clone(),
+            sha256: format!("sha256:{digest}"),
+        })
+    }
+}
+
 /// Reads `.workers/.packages.json` of the project in `compose_dir`; `None` when there is none.
 pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<ProjectPackages>> {
     let path = compose_dir
@@ -533,14 +547,245 @@ pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<Project
 
 /// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes
 /// the directories of containers no longer locked, rewrites `.workers/.packages.json`.
+///
+/// A directory whose `.packages.json` entry matches the lock is left as it is, with whatever a
+/// host build wrote into it. Any other is replaced whole by a copy of the cache entry, made
+/// beside it and renamed into place; the cache entry is verified first, and downloaded again
+/// when it is missing or damaged. The cache itself is only read. A project with no package and
+/// no `.workers/` gets none.
 // Wired by KAN-280 (`lifecycle.rs`) and KAN-281 (`build.rs`).
-#[expect(unused_variables, reason = "KAN-281 fills this stub")]
 pub async fn materialize_project(
     compose_dir: &Path,
     cache_root: &Path,
     lock: &PreparedLock,
 ) -> Result<()> {
-    todo!("KAN-281: copy the locked packages into .workers/ and rewrite .packages.json")
+    let workers = compose_dir.join(crate::build_record::WORKERS_DIR);
+    let mut wanted = BTreeMap::new();
+    for (container, resolved) in lock.packages() {
+        if !is_directory_name(container) {
+            return Err(ComposeError::Io {
+                path: workers.join(container),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("container key '{container}' cannot name a directory in .workers/"),
+                ),
+            });
+        }
+        wanted.insert(
+            container.to_string(),
+            (resolved, ProjectPackage::locked(container, resolved)?),
+        );
+    }
+    if wanted.is_empty() && std::fs::symlink_metadata(&workers).is_err() {
+        return Ok(());
+    }
+    crate::build_record::ignore_all(&workers)?;
+
+    // An unreadable record only costs copies: every directory is then made again.
+    let mut record = read_project_packages(compose_dir)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    record
+        .containers
+        .retain(|container, _| wanted.contains_key(container));
+    let keep = wanted.keys().cloned().collect();
+    let pruned = workers.clone();
+    crate::shutdown::blocking(workers.clone(), move |cancel| {
+        prune_packages(&pruned, &keep, &cancel)
+    })
+    .await?;
+
+    let mut failure = None;
+    for (container, (resolved, package)) in &wanted {
+        let present = std::fs::symlink_metadata(workers.join(container))
+            .is_ok_and(|metadata| metadata.is_dir());
+        if !present {
+            record.containers.remove(container);
+        } else if record.containers.get(container) == Some(package) {
+            continue;
+        }
+        // On failure the previous directory is still in place, and so is its entry.
+        if let Err(error) = copy_package(container, resolved, cache_root, &workers).await {
+            failure = Some(error);
+            break;
+        }
+        record.containers.insert(container.clone(), package.clone());
+    }
+    let written = write_project_packages(&workers, &record);
+    match failure {
+        Some(error) => Err(error),
+        None => written,
+    }
+}
+
+/// Whether a container key can name its own directory in `.workers/`: one plain path component,
+/// not hidden, so it can neither leave `.workers/` nor collide with Compose's own files.
+fn is_directory_name(container: &str) -> bool {
+    let mut components = Path::new(container).components();
+    !container.starts_with('.')
+        && !container.contains(['/', '\\'])
+        && matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+/// Removes every directory in `workers` that is not a locked container's: those of containers
+/// removed from the lock, and the staging copies an interrupted run left. Files, among them
+/// `.gitignore` and `.packages.json`, are left alone.
+fn prune_packages(
+    workers: &Path,
+    keep: &std::collections::BTreeSet<String>,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    for entry in std::fs::read_dir(workers).map_err(io_error(workers))? {
+        cancel.check(workers)?;
+        let entry = entry.map_err(io_error(workers))?;
+        let path = entry.path();
+        let locked = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| keep.contains(name));
+        if !locked && entry.file_type().map_err(io_error(&path))?.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(io_error(&path))?;
+        }
+    }
+    Ok(())
+}
+
+/// Replaces `<workers>/<container>` with a copy of the package's cache entry.
+async fn copy_package(
+    container: &str,
+    resolved: &ResolvedPackage,
+    cache_root: &Path,
+    workers: &Path,
+) -> Result<()> {
+    // Verifies the entry, and downloads it again when it is missing or damaged.
+    install_resolved(container, resolved, cache_root).await?;
+    let target = runnable_target(&resolved.artifacts);
+    let artifact = artifact_for_target(container, resolved, target)?;
+    let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
+    let source = cache_install_dir(
+        &registry_cache_root(cache_root, resolved),
+        resolved,
+        target,
+        &digest,
+    );
+    // Held while copying: an install repairing this entry waits for the copy to finish.
+    let lock = lock_artifact(&source).await?;
+    let destination = workers.join(container);
+    crate::shutdown::blocking(destination.clone(), move |cancel| {
+        let _lock = lock;
+        replace_directory(&source, &destination, &cancel)
+    })
+    .await
+}
+
+/// Copies `source` beside `destination`, then swaps the copy into place: the old directory is
+/// renamed aside first and removed last, so `destination` is only ever missing between two
+/// renames. A leftover of either temporary directory is pruned by the next run.
+fn replace_directory(
+    source: &Path,
+    destination: &Path,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    let parent = destination.parent().unwrap_or(Path::new("."));
+    let name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let unique = uuid::Uuid::new_v4();
+    let staging = parent.join(format!(".{name}.staging-{unique}"));
+
+    struct Staging(PathBuf);
+    impl Drop for Staging {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _staging = Staging(staging.clone());
+    copy_tree(source, &staging, true, cancel)?;
+    cancel.check(destination)?;
+
+    match std::fs::symlink_metadata(destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::rename(&staging, destination).map_err(io_error(destination))
+        }
+        Err(error) => Err(io_error(destination)(error)),
+        Ok(_) => {
+            let aside = parent.join(format!(".{name}.replaced-{unique}"));
+            std::fs::rename(destination, &aside).map_err(io_error(destination))?;
+            if let Err(error) = std::fs::rename(&staging, destination) {
+                let _ = std::fs::rename(&aside, destination);
+                return Err(io_error(destination)(error));
+            }
+            let _ = remove_path(&aside);
+            Ok(())
+        }
+    }
+}
+
+/// Copies the tree at `from` to a new directory `to`, without the cache's integrity marker at
+/// the root. Files keep their permissions and symlinks stay symlinks (on Windows, where creating
+/// one needs a privilege, the file it points to is copied instead); directories get the default
+/// mode, so the copy can always be replaced.
+fn copy_tree(
+    from: &Path,
+    to: &Path,
+    root: bool,
+    cancel: &crate::shutdown::BlockingCancellation,
+) -> Result<()> {
+    cancel.check(from)?;
+    std::fs::create_dir(to).map_err(io_error(to))?;
+    for entry in std::fs::read_dir(from).map_err(io_error(from))? {
+        let entry = entry.map_err(io_error(from))?;
+        if root && entry.file_name() == INTEGRITY_FILE {
+            continue;
+        }
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        cancel.check(&source)?;
+        let kind = entry.file_type().map_err(io_error(&source))?;
+        if kind.is_dir() {
+            copy_tree(&source, &target, false, cancel)?;
+        } else if kind.is_symlink() {
+            #[cfg(unix)]
+            std::fs::read_link(&source)
+                .and_then(|link| std::os::unix::fs::symlink(link, &target))
+                .map_err(io_error(&source))?;
+            #[cfg(not(unix))]
+            std::fs::copy(&source, &target).map_err(io_error(&source))?;
+        } else if kind.is_file() {
+            std::fs::copy(&source, &target).map_err(io_error(&source))?;
+        }
+        // Anything else, a socket or a FIFO, is not part of a package.
+    }
+    Ok(())
+}
+
+/// Removes `path`, a directory tree or a single file or symlink.
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// Turns an I/O error on `path` into [`ComposeError::Io`], for `map_err`.
+fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> ComposeError {
+    let path = path.to_path_buf();
+    move |source| ComposeError::Io { path, source }
+}
+
+/// Writes `.workers/.packages.json` atomically.
+fn write_project_packages(workers: &Path, record: &ProjectPackages) -> Result<()> {
+    let path = workers.join(PROJECT_PACKAGES_FILE);
+    let mut json = serde_json::to_vec_pretty(record).map_err(|error| ComposeError::Io {
+        path: path.clone(),
+        source: std::io::Error::other(error),
+    })?;
+    json.push(b'\n');
+    crate::build_record::replace_file(&path, &json)
 }
 
 /// The version the registry hands back for `*`, so `compose::add` can pin what
@@ -2510,5 +2755,348 @@ mod tests {
         let err = check_names("api", "https://workers.iii.dev", &response).unwrap_err();
         assert_eq!(err.code(), "REGISTRY_NAME_REFUSED");
         assert!(err.to_string().contains("../escape"));
+    }
+
+    /// A package archive: an executable `worker`, `lib/data.txt` holding `body`, and on Unix a
+    /// symlink `current -> lib`.
+    fn package_archive(body: &str) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, mode) in [("worker", 0o755), ("lib/data.txt", 0o644)] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(mode);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, body.as_bytes())
+                .unwrap();
+        }
+        #[cfg(unix)]
+        {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            archive.append_link(&mut header, "current", "lib").unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Writes `worker-compose.yaml` and its lock for `packages` (container, version, archive)
+    /// beside a `path://` container, puts each archive in `cache` as an install would, and
+    /// prepares the lock as `--frozen` does: from the cache, without a registry.
+    async fn locked(
+        project: &Path,
+        cache: &Path,
+        packages: &[(&str, &str, &[u8])],
+    ) -> PreparedLock {
+        let target = host_target();
+        let mut compose = String::from("containers:\n  api:\n    worker: path://./api\n");
+        let mut containers = serde_json::Map::new();
+        for (container, version, archive) in packages {
+            let digest = hex::encode(Sha256::digest(archive));
+            let resolved = ResolvedPackage {
+                name: container.to_string(),
+                alias_of: None,
+                registry: DEFAULT_REGISTRY.to_string(),
+                version: version.to_string(),
+                kind: "binary".to_string(),
+                artifacts: BTreeMap::from([(
+                    target.to_string(),
+                    RegistryArtifact {
+                        sha256: digest.clone(),
+                        url: "http://127.0.0.1:9/never-downloaded".to_string(),
+                    },
+                )]),
+                default_config: None,
+            };
+            let install = cache_install_dir(cache, &resolved, target, &digest);
+            if !install.exists() {
+                let cancel = crate::shutdown::BlockingCancellation::default();
+                extract_and_publish(archive.to_vec(), &install, &digest, &cancel).unwrap();
+            }
+            let worker = format!("package://api.workers.iii.dev/{container}");
+            compose += &format!("  {container}:\n    worker: {worker}\n    version: '{version}'\n");
+            containers.insert(
+                container.to_string(),
+                serde_json::json!({ "worker": worker, "requested": version, "resolved": resolved }),
+            );
+        }
+        let lock = serde_json::json!({ "version": 1, "containers": containers });
+        std::fs::write(project.join("worker-compose.yaml"), compose).unwrap();
+        std::fs::write(
+            project.join("worker-compose.lock"),
+            serde_yaml::to_string(&lock).unwrap(),
+        )
+        .unwrap();
+        let mut file = crate::ComposeFile::load(project.join("worker-compose.yaml")).unwrap();
+        crate::lockfile::prepare_frozen(&mut file, cache)
+            .await
+            .unwrap()
+    }
+
+    /// The names in `dir`, sorted.
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Every path under `dir` with its size, sorted: what a layout comparison needs.
+    fn tree(dir: &Path) -> Vec<(String, u64)> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, u64)>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = std::fs::symlink_metadata(&path).unwrap();
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((
+                    name,
+                    if metadata.is_file() {
+                        metadata.len()
+                    } else {
+                        0
+                    },
+                ));
+                if metadata.is_dir() {
+                    walk(root, &path, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    fn recorded(project: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(project.join(".workers/.packages.json")).unwrap())
+            .unwrap()
+    }
+
+    fn sha256_of(archive: &[u8]) -> String {
+        format!("sha256:{}", hex::encode(Sha256::digest(archive)))
+    }
+
+    #[tokio::test]
+    async fn materialize_copies_the_locked_packages_and_records_them() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        let cache_before = tree(cache.path());
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        let workers = project.path().join(".workers");
+        assert_eq!(
+            names(&workers),
+            [".gitignore", ".packages.json", "queue", "state"]
+        );
+        assert_eq!(
+            std::fs::read_to_string(workers.join(".gitignore")).unwrap(),
+            "*\n"
+        );
+        assert_eq!(
+            recorded(project.path()),
+            serde_json::json!({
+                "schema": 1,
+                "containers": {
+                    "queue": { "name": "queue", "version": "2.0.0", "sha256": sha256_of(&queue) },
+                    "state": { "name": "state", "version": "1.0.0", "sha256": sha256_of(&state) }
+                }
+            })
+        );
+        // The extracted package, without the cache's integrity marker.
+        let state_dir = workers.join("state");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(names(&state_dir), ["current", "lib", "worker"]);
+            assert_eq!(
+                std::fs::read_link(state_dir.join("current")).unwrap(),
+                Path::new("lib")
+            );
+            let mode = std::fs::metadata(state_dir.join("worker"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        assert_eq!(
+            std::fs::read_to_string(state_dir.join("lib/data.txt")).unwrap(),
+            "state 1"
+        );
+        assert_eq!(
+            tree(cache.path()),
+            cache_before,
+            "the global cache is read, never changed"
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_keeps_what_a_build_wrote_until_the_package_changes() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
+        let packages = [
+            ("state", "1.0.0", &state[..]),
+            ("queue", "2.0.0", &queue[..]),
+        ];
+        let lock = locked(project.path(), cache.path(), &packages).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        for container in ["state", "queue"] {
+            std::fs::create_dir(workers.join(container).join("node_modules")).unwrap();
+        }
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(workers.join("state/node_modules").is_dir());
+        assert!(workers.join("queue/node_modules").is_dir());
+
+        let updated = package_archive("state 2");
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.1.0", &updated), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        assert!(
+            !workers.join("state/node_modules").exists(),
+            "replaced whole"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workers.join("state/lib/data.txt")).unwrap(),
+            "state 2"
+        );
+        assert!(workers.join("queue/node_modules").is_dir(), "unchanged");
+        assert_eq!(
+            recorded(project.path())["containers"]["state"],
+            serde_json::json!({ "name": "state", "version": "1.1.0", "sha256": sha256_of(&updated) })
+        );
+        assert_eq!(
+            names(&workers),
+            [".gitignore", ".packages.json", "queue", "state"],
+            "no staging or replaced directory is left"
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_removes_what_the_lock_no_longer_holds() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.0.0", &state), ("queue", "2.0.0", &queue)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        // What an interrupted copy leaves, and a file that is not Compose's.
+        std::fs::create_dir(workers.join(".state.staging-interrupted")).unwrap();
+        std::fs::write(workers.join("notes.txt"), "mine").unwrap();
+
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            names(&workers),
+            [".gitignore", ".packages.json", "notes.txt", "state"]
+        );
+        assert_eq!(
+            recorded(project.path())["containers"],
+            serde_json::json!({ "state": { "name": "state", "version": "1.0.0", "sha256": sha256_of(&state) } })
+        );
+
+        // The last package removed: `.workers/` stays, empty of packages.
+        let lock = locked(project.path(), cache.path(), &[]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert_eq!(
+            names(&workers),
+            [".gitignore", ".packages.json", "notes.txt"]
+        );
+        assert_eq!(
+            recorded(project.path()),
+            serde_json::json!({ "schema": 1, "containers": {} })
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_copies_again_a_missing_directory_or_an_unreadable_record() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let state = package_archive("state 1");
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        std::fs::remove_dir_all(workers.join("state")).unwrap();
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(workers.join("state/worker").is_file());
+
+        std::fs::write(workers.join("state/stale"), "").unwrap();
+        std::fs::write(workers.join(".packages.json"), "{\"schema\":").unwrap();
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(!workers.join("state/stale").exists());
+        assert_eq!(
+            recorded(project.path())["containers"]["state"]["version"],
+            "1.0.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_project_without_packages_gets_no_workers_directory() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let lock = locked(project.path(), cache.path(), &[]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        assert!(!project.path().join(".workers").exists());
+    }
+
+    #[test]
+    fn only_a_plain_container_key_names_a_package_directory() {
+        for key in ["state", "sandbox-libkrun", "a.b", "my_worker"] {
+            assert!(is_directory_name(key), "{key}");
+        }
+        for key in ["", ".", "..", ".hidden", "a/b", "a\\b", "/abs", "../up"] {
+            assert!(!is_directory_name(key), "{key}");
+        }
     }
 }
