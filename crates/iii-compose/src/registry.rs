@@ -418,11 +418,7 @@ pub async fn install_resolved(
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
     let target = runnable_target(&resolved.artifacts);
-    let cache_root = if resolved.registry == DEFAULT_REGISTRY {
-        cache_root.to_path_buf()
-    } else {
-        cache_root.join(hex::encode(Sha256::digest(resolved.registry.as_bytes())))
-    };
+    let cache_root = registry_cache_root(cache_root, resolved);
 
     let (payload, status) = match resolved.kind.as_str() {
         "binary" => {
@@ -602,6 +598,43 @@ pub async fn resolve_graph(container: &str, reference: &str, version_range: &str
     })
 }
 
+/// The part of the cache that holds `resolved`'s registry: `cache_root` itself for
+/// [`DEFAULT_REGISTRY`], else a directory named after the hash of the registry's URL.
+fn registry_cache_root(cache_root: &Path, resolved: &ResolvedPackage) -> PathBuf {
+    if resolved.registry == DEFAULT_REGISTRY {
+        cache_root.to_path_buf()
+    } else {
+        cache_root.join(hex::encode(Sha256::digest(resolved.registry.as_bytes())))
+    }
+}
+
+/// The directory one artifact is extracted to under its registry's `cache_root`, keyed by
+/// package, version, target and digest: `<name>-<version>-<target>-<digest>`. A bundle has one
+/// archive for every platform, so `bundle` stands in for the target. An alias shares the entry of
+/// the package it stands for.
+fn cache_install_dir(
+    cache_root: &Path,
+    resolved: &ResolvedPackage,
+    target: &str,
+    digest: &str,
+) -> PathBuf {
+    let platform = if resolved.kind == "bundle" {
+        "bundle"
+    } else {
+        target
+    };
+    cache_root.join(format!(
+        "{}-{}-{platform}-{digest}",
+        package_name(resolved),
+        resolved.version
+    ))
+}
+
+/// The package `resolved` installs: for an alias, the package it stands for.
+fn package_name(resolved: &ResolvedPackage) -> &str {
+    resolved.alias_of.as_deref().unwrap_or(&resolved.name)
+}
+
 /// Installs a native executable for this host's target.
 async fn install_binary(
     container: &str,
@@ -612,12 +645,7 @@ async fn install_binary(
     let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
-    let install_dir = cache_root.join(format!(
-        "{}-{}-{}-{digest}",
-        resolved.alias_of.as_deref().unwrap_or(&resolved.name),
-        resolved.version,
-        target
-    ));
+    let install_dir = cache_install_dir(cache_root, resolved, target, &digest);
     let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     if cached && let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
@@ -673,11 +701,7 @@ async fn install_bundle(
     let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
-    let install_dir = cache_root.join(format!(
-        "{}-{}-bundle-{digest}",
-        resolved.alias_of.as_deref().unwrap_or(&resolved.name),
-        resolved.version
-    ));
+    let install_dir = cache_install_dir(cache_root, resolved, target, &digest);
     let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
