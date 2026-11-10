@@ -132,6 +132,20 @@ containers:
 
 `0.4.0` stands for the first `sandbox-libkrun` release with `worker.build` (section 6.6).
 
+A `path://` whose manifest sets `runtime.base_image` runs on the host only when it declares
+`scripts.build`, `""` when there is nothing to build:
+
+```yaml
+  link:
+    worker: path://./link   # its iii.worker.yaml sets runtime.base_image
+    scripts:
+      build: ""
+      run: node index.js
+```
+
+Without `scripts.build`, Compose rewrites it into the VM, as 0.26 ran it (section 7.3). A
+`build:` key without a value counts as absent.
+
 ### 3.2 The project tree
 
 ```text
@@ -245,16 +259,16 @@ host.
 ### 5.2 First build
 
 - **When:** when the container starts, after its `start_after` containers are ready, if
-  `scripts.build` is set and `.build/<container>/build.json` is missing. This covers
+  `scripts.build` is set and non-empty and `.build/<container>/build.json` is missing. This covers
   `compose::add`, `up`, and a migrated container.
 - **Timeout:** `scripts.build_timeout` (section 4.1), then the container's `startup_timeout`
   starts for the run.
 - **Logs:** `<container>: no build yet; running scripts.build`, then the build output.
 - **Operations:** `compose::add` and `compose::up` report the build as a progress step of the
   container (`building`), and their operation finishes after the run started or failed.
-- **Failure:** the container fails with `BUILD_FAILED` (section 10), carrying the S-code and
-  message of the last line `iii sandbox build` printed (section 8.1). Nothing is rolled back,
-  as for any failed start.
+- **Failure:** the container fails with `BUILD_FAILED` (section 10), carrying `{ code, message }`
+  as section 4.1 defines for VM and host builds. Nothing is rolled back, as for any failed
+  start.
 
 ### 5.3 Rebuilds
 
@@ -304,7 +318,7 @@ path, relative to the compose file).
 ### 5.5 A build that is out of date
 
 Before `scripts.run` (on `up`, a restart, or a crash replacement), Compose compares the
-container's current inputs with `build.json`: `source`, `dependency_files`, and
+container's current inputs with `build.json`; a container without `build.json` is not checked: `source`, `dependency_files`, and
 `image.base_image.declared`. A difference in `dependency_files` or `base_image.declared` only
 logs, once per start, one line per kind of change:
 
@@ -516,6 +530,10 @@ For each rewritten container:
    `root.pre-build/`, a fresh `root/` is created, and the path is logged the same way.
    `iii sandbox destroy` removes all of it.
 
+Compose validates the result before writing. A rewrite that would break a rule of section 4.2
+(a bundle whose `scripts.build` is not `iii sandbox build`, or `iii sandbox run` on a container
+that cannot run in a VM) is refused with that rule's code, and the file is left untouched.
+
 If the stop or the build fails, the container fails with that error and the file stays
 migrated; the next `up` retries from step 2.
 
@@ -532,13 +550,14 @@ iii call compose::build [file=<path>] [worker=<container>]
 ```
 
 - Request: `file` (as every project function), `worker` (a container key; omitted, every
-  container with `scripts.build`), `operation_id` (optional, as for other mutations).
+  container with a non-empty `scripts.build`), `operation_id` (optional, as for other
+  mutations). A container whose `scripts.build` is `""` is reported as `skipped`.
 - It is asynchronous: it answers `{ operation_id, status: "accepted", requested }`, holds the project's
   mutation lock while it runs, and reports progress per container (`building`, `built`,
   `failed`) through `compose::on-operation-progress`.
 - It starts the adapter first when the project is down, as `compose::remove` does.
 - The finished operation carries
-  `results: [{ worker, status: "built" | "failed", build_id?, error?: { code, message } }]`.
+  `results: [{ worker, status: "built" | "failed" | "skipped", build_id?, error?: { code, message } }]`.
 - It never restarts a container.
 - `compose::cancel` of that operation and `compose::down` stop it: Compose stops the
   `iii sandbox build` processes, which closes their channels and aborts the builds (section
@@ -549,7 +568,9 @@ iii call compose::build [file=<path>] [worker=<container>]
 Installing or updating a package copies the extracted package from the global cache into
 `<project>/.workers/<container>/` and updates `.workers/.packages.json`. `iii compose build`
 (offline) does the same from the lock. `WorkerSource::Bundle.host_path` and `III_PACKAGE_DIR`
-point at that directory. The compose file's directory is already a host root of the adapter.
+point at that directory. A bundle that runs on the host (its `scripts.run` is a host command)
+runs `scripts.build` and `scripts.run` in `.workers/<container>/` and gets `III_PACKAGE_DIR`
+and `III_PACKAGE_NAME` too; binary packages keep today's working directory. The compose file's directory is already a host root of the adapter.
 
 ### 7.6 What stays and what goes
 
@@ -668,6 +689,7 @@ Logs:
 - ``<c>: dependencies changed since the last build (<files>); run `iii sandbox build <c>` ``
 - ``<c>: base image changed since the last build (<old> -> <new>); run `iii sandbox build <c>` ``
 - `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)`
+- warning, when the rewrite wraps a command: ``<c>: scripts.run now runs inside the VM (iii sandbox run --command); to keep it on the host, set scripts.build ("" when there is nothing to build)``
 - `compose::validate` warning: `migration due: <c>, <c>; the next up rewrites them`
 - adapter: `<c>: kept the pre-build data disk at <path>`
 
@@ -727,8 +749,8 @@ pub async fn materialize_project(compose_dir: &Path, cache_root: &Path, lock: &P
 // crates/iii-compose/src/sandbox.rs (KAN-280)
 /// Sections 7.2 and 7.3: updates a too-old generated adapter, then rewrites the containers
 /// 0.26 ran in a VM; `None` when nothing changed.
-pub struct Migration { pub containers: Vec<String>, pub adapter: Option<AdapterChange> }
-pub async fn migrate(path: &Path, edited: &mut String, file: &mut ComposeFile, prepared: &mut PreparedLock) -> Result<Option<Migration>>;
+pub(crate) struct Migration { pub containers: Vec<String>, pub adapter: Option<AdapterChange> }
+pub(crate) async fn migrate(path: &Path, edited: &mut String, file: &mut ComposeFile, project_namespace: &str, prepared: &mut PreparedLock) -> Result<Option<Migration>>;
 
 // crates/iii-compose/src/lockfile.rs (KAN-280)
 impl PreparedLock { pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)>; }
@@ -807,7 +829,7 @@ KAN-284 closes the phase with: `compose_sandbox_e2e` on real VMs; the Linkly tut
 | 13 | Contract 1.3, additive, with `sandbox-libkrun` 0.4 as the minimum | 6.6 |
 | 14 | `scripts` on packages: allowed for bundles, still refused for binaries | 4.2 |
 | 15 | Prebuilt images are out of scope | 1 |
-| 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a project without VM containers still loads in 0.26 | 7.3 |
+| 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a file that uses none of the new keys (`scripts.build`, `scripts.run` on a bundle) still loads in 0.26 | 7.3 |
 | 17 | A build lives as long as its caller reads its output; stopping the caller cancels it | 6.2, 7.4 |
 | 18 | A migrated VM project no longer loads in 0.26 (`scripts.build` is unknown there); going back means restoring the 0.26 file from git, as the upgrade guide says | 7.3, 11.1 |
 
