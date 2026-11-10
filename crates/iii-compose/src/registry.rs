@@ -598,8 +598,10 @@ pub(crate) async fn materialize_project_checked(
     // Shared with every disk job below: a job outlives a dropped future until it next checks
     // its cancellation, and must not meet another run in `.workers/` meanwhile.
     let guard = std::sync::Arc::new(lock_exclusive(&workers.join(WORKERS_LOCK_FILE)).await?);
-    check()?;
+    // Before the check: `.workers/.lock` exists now, and must stay ignored even when the check
+    // fails.
     crate::build_record::ignore_all(&workers)?;
+    check()?;
 
     // An unreadable record only costs copies: every directory is then made again, and none is
     // pruned, since none is known to be Compose's.
@@ -3251,6 +3253,38 @@ mod tests {
                 contract: BuildContract { major: 1, minor: 3 },
             }),
             built_at: "2026-11-10T14:03:22Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_in_a_new_project_leaves_workers_ignored() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let state = package_archive("state 1");
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        assert!(!workers.exists());
+
+        let error = materialize_project_checked(project.path(), cache.path(), &lock, || {
+            Err(ComposeError::BuildPlanStale {
+                path: project.path().join("worker-compose.yaml"),
+            })
+        })
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        if workers.exists() {
+            assert_eq!(
+                std::fs::read_to_string(workers.join(".gitignore")).unwrap(),
+                "*\n",
+                "the lock file it leaves stays out of git"
+            );
+            assert_eq!(
+                names(&workers),
+                [".gitignore", ".lock"],
+                "nothing else made"
+            );
         }
     }
 
