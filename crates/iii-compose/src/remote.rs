@@ -1497,7 +1497,6 @@ mod tests {
 
     /// Spec 7.4: accepted at once with `requested`, then a snapshot whose top-level `results`
     /// holds one entry per container, and a terminal `detail` naming each failure.
-    #[cfg(unix)]
     #[tokio::test]
     async fn compose_build_is_an_observable_operation_with_results() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1507,7 +1506,7 @@ mod tests {
         let file = tmp.path().join("worker-compose.yaml");
         std::fs::write(
             &file,
-            "containers:\n  api: {worker: path://./api, scripts: {build: 'echo ok', run: x}}\n  bad: {worker: path://./bad, scripts: {build: 'echo broken; exit 2', run: x}}\n  none: {worker: path://./none, scripts: {build: '', run: x}}\n",
+            "containers:\n  api: {worker: path://./api, scripts: {build: 'echo ok', run: x}}\n  bad: {worker: path://./bad, scripts: {build: 'echo broken&& exit 2', run: x}}\n  none: {worker: path://./none, scripts: {build: '', run: x}}\n",
         )
         .unwrap();
         let daemon = Daemon::start(

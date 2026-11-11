@@ -1017,10 +1017,10 @@ mod tests {
 
     /// Spec 5.3 and 5.5: a new source rebuilds; changed dependency files or base image only
     /// warn, and the container runs on its build.
-    #[cfg(unix)]
     #[tokio::test]
     async fn only_a_new_source_rebuilds() {
-        let project = project("scripts: {build: 'true', run: x}");
+        // `exit 0` runs the same in `sh -c` and `cmd /C`.
+        let project = project("scripts: {build: 'exit 0', run: x}");
         project.build(None, None).await;
         let dir = build_dir(&project.file.path, "api");
         let built = project.record().unwrap();
