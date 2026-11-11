@@ -830,7 +830,18 @@ impl Daemon {
         if let Some(adapter) = updated_adapter
             && project.is_running(&adapter).await
         {
-            Box::pin(project.restart_one(&adapter, format!("{adapter}-update"))).await;
+            let restarted =
+                Box::pin(project.restart_one(&adapter, format!("{adapter}-update"))).await;
+            if restarted.status == OpStatus::Failed {
+                let detail = restarted
+                    .primary_error
+                    .as_ref()
+                    .map_or_else(String::new, |error| format!(": {}", error.message));
+                crate::report::daemon_line(
+                    &format!("{adapter}: did not restart on its new release{detail}"),
+                    true,
+                );
+            }
         }
         Ok(project)
     }
