@@ -409,14 +409,48 @@ pub struct BaseImageRef {
 
 - **Always builds.** No input-based skip, so a rebuild picks up a moved `:latest` base.
 - **Output files:** `image.erofs` and `image.id` (the `build_id`) are written as temporary
-  files. The adapter then deletes the old `image.id`, renames `image.erofs` into place, and
-  renames the new `image.id` last. A crash between these steps leaves an image without
-  `image.id`, which `worker::start` refuses with `S508` (section 6.3) until a rebuild; it never
-  leaves a new image under the old `build_id`.
+  files in `output_dir` and flushed to disk, then published in order: the adapter removes the
+  previous `image.id`, renames the new `image.erofs` into place and renames the new `image.id`
+  last, flushing `output_dir` after the removal and between the two renames. Until the last
+  rename `output_dir` holds no `image.id`, so a crash, a failed flush or a failed rename there
+  leaves an image without an id, which `worker::start` refuses with `S508` until the next
+  build; it never leaves the new image beside the previous build's id. A filesystem that
+  cannot flush a directory gets a warning, not a failed build. A start that read `image.id`
+  before the removal may still boot the newer image under the older id, a race the adapter
+  accepts. The publication assumes one writer per `output_dir` at a time. One build per
+  `state_key` runs at a time (`S509`), but nothing serializes two VMs whose builds share a
+  directory: a container's build directory sits beside the compose file in every namespace,
+  so building one container in two namespaces at once is unsupported.
 - **The running VM is not touched.** A build may run while the VM of the same `state_key`
   runs; it uses its own build VM and swaps `image.erofs` by rename, so the running VM keeps
   the file it booted.
 - **One build per `state_key` at a time:** a second one gets `S509`.
+- **Another VM's build directory:** a VM's build directory is the last `output_dir`, or
+  `worker::start` `build.build_dir` (section 6.3), that a scoped token of its `state_key`
+  presented. The adapter records it per VM, outside every guest, in
+  `~/.iii/sandbox/workers/<vm_id>/build-dir`, with an HMAC of the project token over the state
+  key and the canonical directory, flushed to disk; the record survives an adapter restart,
+  the VM's own `worker::destroy` deletes it, and a record another project token wrote counts
+  for nothing. With a scoped token, a directory another VM of the same project token has
+  recorded gets `S505`, before any file is created or written there and before `image.id` is
+  read; the message names that VM's record and the way out (destroy that VM, or delete the
+  record). The guarantee covers those directories only: the token Compose hands one container
+  can neither replace nor boot an image in a directory another VM of the same project token
+  has recorded. Two paths are one directory when they are equal or, both existing, share
+  device and inode, so a second spelling (a bind mount, another case on a case-insensitive
+  volume) does not get around it; the check never reads a directory's name. Presenting
+  another directory moves the VM there and releases the previous one, so Compose may move
+  build directories. Claims hold an flock on `~/.iii/sandbox/workers`: where the filesystem
+  can lock a directory, two adapter processes never give one directory to two VMs; elsewhere
+  (NFS) the adapter logs a warning and serializes claims within one adapter process only. A
+  scoped token takes any directory no VM of the same project token has recorded at that
+  moment: the directory of a destroyed VM that stayed on disk, the new path after a move until
+  its container builds or starts, every build directory of another namespace (a container's
+  build directory sits beside the compose file in every namespace, and each namespace has its
+  own project token), and, on a filesystem that cannot flush a directory, a directory whose
+  record a power failure lost. Compose builds or starts each container as it comes up, which
+  records its directory. The project token is not checked and records nothing. Contract 1.3
+  does not change: no new field, fixture or S-code.
 - **Timeout and cancel:** the build lives as long as its caller reads `logs`. The adapter
   writes to the channel at least every 5 s (a one-byte binary frame, as `reader_gone` does today; readers take records from text frames
   only). When
@@ -447,6 +481,9 @@ pub struct WorkerBuildRef {
 With `build`, the caller does not call `worker::prepare`. The adapter compares `build_id`
 with `build_dir/image.id` and refuses a mismatch or a missing file with `S508`; it does not
 hash the image on start.
+
+With a scoped token, a `build_dir` another VM of the same project token has recorded gets
+`S505` (section 6.2), checked before `image.id` is read.
 
 ### 6.4 `WorkerSource::Bundle.host_path`
 
@@ -630,6 +667,19 @@ which compares with the lock this build wrote, then passes.
 
 A 0.26 `state.json` with a `vm` record is read once, its VM stopped, the record dropped.
 
+### 7.7 A VM's `state_key` and its build directory
+
+The adapter binds a build directory to the VM, that is the `state_key`, whose scoped token
+recorded it (section 6.2), and a record counts only under the project token that wrote it. A
+new state directory brings a new `state.json` and a new project token, so the old VMs'
+records stop counting and no build gets `S505`. A VM's `state_key` can change while its token
+survives: the same `state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`,
+or state moved or copied together with its token. The old VM's record then still holds the
+container's build directory, and the new VM's build and start get `S505` there; the message
+names the way out: destroy the old VM, or delete its record,
+`~/.iii/sandbox/workers/<vm_id>/build-dir`. Moving a container's build directory needs
+nothing: its next build or start records the new one and releases the old.
+
 ## 8. CLI
 
 ### 8.1 `iii sandbox build`
@@ -754,7 +804,10 @@ Compose and CLI codes:
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE` | Kept, for `binary` packages only |
 
-S-codes: `S507`, `S508`, `S509` (section 6.5).
+S-codes: `S507`, `S508`, `S509` (section 6.5). `S505` is reused, unchanged in the fixtures:
+besides a token that does not match, it answers a scoped token whose `output_dir` or
+`build_dir` another VM of the same project token has recorded (section 6.2); the message
+names that VM's record and how to free it.
 
 Logs:
 

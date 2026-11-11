@@ -975,12 +975,19 @@ known; and `built_at_ms`.
 - **Always builds.** There is no input-based skip.
 - **Result.** The image is a complete root filesystem for that container: the base image, the
   worker's code for a bundle, and what `scripts.setup` and `scripts.install` installed.
-- **Output files.** `image.erofs` and `image.id` (the `build_id`) are written as temporary files,
-  then renamed: `image.erofs` first, `image.id` last.
+- **Output files.** `image.erofs` and `image.id` (the `build_id`) are written as temporary files
+  and flushed, then the previous `image.id` is removed, `image.erofs` renamed into place and
+  `image.id` renamed last. A crash in between leaves no `image.id`, so a start answers
+  [S508](#S508) until the next build.
 - **The running VM is not touched.** The build uses its own build VM and swaps `image.erofs` by
   rename, so the running VM keeps the file it booted.
 - **One build per `state_key` at a time.** A second one gets [S509](#S509), and so does a
   `worker::destroy` of that VM: cancel the build first.
+- **Another VM's build directory.** With a VM's scoped token, an `output_dir` that another VM
+  of the same Compose namespace (the same project token) recorded as its build directory gets
+  [S505](#S505) before any file is written there, and so does that directory as `build_dir` in
+  `worker::start`. The message names the other VM's record and how to free it: destroy that
+  VM, or delete the record.
 - **Timeout and cancel.** The adapter writes to the channel at least every 5 seconds, a one-byte
   binary frame; readers take records from text frames only. When the channel closes or a write
   fails, the adapter stops the build VM, deletes the temporary image, keeps the previous
