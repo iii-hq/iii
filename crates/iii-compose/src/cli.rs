@@ -270,7 +270,7 @@ impl ComposeCli {
     }
 }
 
-fn validated_namespace(namespace: Option<&str>) -> Result<Option<String>> {
+pub(crate) fn validated_namespace(namespace: Option<&str>) -> Result<Option<String>> {
     let Some(namespace) = namespace else {
         return Ok(None);
     };

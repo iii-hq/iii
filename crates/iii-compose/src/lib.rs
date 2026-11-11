@@ -18,6 +18,7 @@
 
 pub mod build;
 pub mod build_record;
+mod build_step;
 pub mod cli;
 pub mod config;
 pub mod configuration;
@@ -56,7 +57,7 @@ pub mod telemetry;
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
 pub use error::{ComposeError, Result};
-pub use manifest::{StartSpec, ValidationReport, VmSpec};
+pub use manifest::{StartSpec, ValidationReport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineMode {
@@ -133,14 +134,32 @@ pub struct ProjectTarget {
 /// `--file`, `--namespace` and `--engine`: checks the namespace (`INVALID_NAMESPACE`), ignores a
 /// blank engine, reads `III_URL`, and reads the local file (`--file` or `worker-compose.yaml`)
 /// only for the namespace and the engine.
-// Wired by KAN-280 (`iii compose logs`) and KAN-282 (`iii sandbox build`).
-#[expect(unused_variables, reason = "KAN-280 fills this stub")]
 pub fn resolve_project_target(
     file: Option<&std::path::Path>,
     namespace: Option<String>,
     engine: Option<String>,
 ) -> Result<ProjectTarget> {
-    todo!("KAN-280: move the discovery of `iii compose logs` here")
+    let explicit_namespace = cli::validated_namespace(namespace.as_deref())?;
+    let explicit_engine = engine.filter(|url| !url.trim().is_empty());
+    let local_config_path = file.unwrap_or_else(|| std::path::Path::new(cli::DEFAULT_COMPOSE_FILE));
+    let local_file = load_invocation_file(local_config_path, false)?;
+    let daemon_namespace = resolve_daemon_namespace(explicit_namespace, local_file.as_ref());
+    let environment_engine_url = std::env::var("III_URL")
+        .ok()
+        .filter(|url| !url.trim().is_empty());
+    let engine_url = match resolve_engine_mode(
+        local_file.as_ref(),
+        false,
+        explicit_engine.as_deref(),
+        environment_engine_url.as_deref(),
+    ) {
+        EngineMode::Managed { url } | EngineMode::External { url } => url,
+    };
+    Ok(ProjectTarget {
+        engine_url,
+        daemon_namespace,
+        file: file.map(std::path::Path::to_path_buf),
+    })
 }
 
 /// Validates a compose project offline: schema, dependency graph, worker
@@ -251,22 +270,15 @@ async fn follow_worker_logs(
 ) -> Result<()> {
     use iii_sdk::{InitOptions, protocol::CallRequest, register_worker};
 
-    let local_config_path = file
-        .as_deref()
-        .unwrap_or_else(|| std::path::Path::new(cli::DEFAULT_COMPOSE_FILE));
-    let local_file = load_invocation_file(local_config_path, false)?;
-    let daemon_namespace = resolve_daemon_namespace(explicit_daemon_namespace, local_file.as_ref());
-    let environment_engine_url = std::env::var("III_URL")
-        .ok()
-        .filter(|url| !url.trim().is_empty());
-    let engine_url = match resolve_engine_mode(
-        local_file.as_ref(),
-        false,
-        explicit_engine_url.as_deref(),
-        environment_engine_url.as_deref(),
-    ) {
-        EngineMode::Managed { url } | EngineMode::External { url } => url,
-    };
+    let ProjectTarget {
+        engine_url,
+        daemon_namespace,
+        file,
+    } = resolve_project_target(
+        file.as_deref(),
+        explicit_daemon_namespace,
+        explicit_engine_url,
+    )?;
 
     let client = register_worker(
         &engine_url,

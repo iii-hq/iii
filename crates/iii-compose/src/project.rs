@@ -64,6 +64,9 @@ pub struct Project {
     /// `DaemonState::sandbox_token`, copied out so a lifecycle call needs no
     /// state lock to read it.
     sandbox_token: String,
+    /// The VMs a 0.26 daemon left running, by container, each stopped when its container next
+    /// starts (spec 7.3, step 2).
+    legacy_vms: std::sync::Mutex<BTreeMap<String, crate::state::VmRecord>>,
     inner: Mutex<Inner>,
     shutdown: crate::shutdown::ShutdownController,
 }
@@ -196,12 +199,11 @@ impl Project {
     pub(crate) async fn open_with_shutdown(
         daemon_namespace: &str,
         project_namespace: String,
-        mut file: ComposeFile,
+        file: ComposeFile,
         engine: Arc<EngineClient>,
         engine_url: String,
         shutdown: crate::shutdown::ShutdownController,
     ) -> Result<Arc<Self>> {
-        crate::sandbox::wire_adapter(&mut file)?;
         let store = StateStore::for_project(daemon_namespace, &file.path)?;
         let file_path = file.path.clone();
 
@@ -237,6 +239,7 @@ impl Project {
             logs,
             store,
             sandbox_token,
+            legacy_vms: std::sync::Mutex::new(BTreeMap::new()),
             inner: Mutex::new(Inner {
                 children: BTreeMap::new(),
                 state,
@@ -254,7 +257,7 @@ impl Project {
         &self.file_path
     }
 
-    /// The file as held in memory, wiring included.
+    /// The file as held in memory.
     #[cfg(test)]
     pub(crate) async fn held_file(&self) -> ComposeFile {
         self.file.read().await.clone()
@@ -264,15 +267,23 @@ impl Project {
     /// Existing declarations and running child supervision stay unchanged.
     /// Cancellation while waiting for the metadata lock leaves disk untouched;
     /// after it is acquired, persistence and attachment have no cancellation point.
+    /// The declarations of `rewritten`, the containers the explicit VM mode was just written for
+    /// (spec 7.3) and the adapter it added or updated, are taken whole from `resolved`.
     pub(crate) async fn commit_prepared_packages(
         &self,
         resolved: &ComposeFile,
         prepared: &crate::lockfile::PreparedLock,
+        rewritten: &[String],
     ) -> Result<()> {
         let mut current = self.file.write().await;
-        // Built aside and swapped in, so a wiring cycle leaves both the lock and
+        // Built aside and swapped in, so a dependency cycle leaves both the lock and
         // the held file as they were.
         let mut next = current.clone();
+        for key in rewritten {
+            if let Some(container) = resolved.containers.get(key) {
+                next.containers.insert(key.clone(), container.clone());
+            }
+        }
         // `up` may just have written the adapter into an already loaded project.
         if let Some(key) =
             crate::sandbox::adapter_key(resolved, crate::sandbox::adapter_name(resolved))?
@@ -289,7 +300,7 @@ impl Project {
                 container.resolved_package = source.resolved_package.clone();
             }
         }
-        crate::sandbox::wire_adapter(&mut next)?;
+        crate::dag::validate_dependencies(&next)?;
         prepared.write_if_changed()?;
         *current = next;
         Ok(())
@@ -830,28 +841,31 @@ impl Project {
                 None => reconcile(&record),
             };
             match (verdict, record.pid, &record.birth, vm) {
-                // No log stream, like an adopted process.
+                // Compose boots no VM any more: one a 0.26 daemon left running is stopped when
+                // its container next starts (spec 7.3, step 2), until then it is not supervised.
                 (Reconciliation::Adopt, .., Some(vm)) => {
                     daemon_line(
                         &self.project_namespace,
                         &format!(
-                            "{key} survived (VM {} instance {}), adopted",
+                            "{key}: VM {} instance {}, started by Compose 0.26, still runs; it is \
+                             stopped when {key} next starts",
                             vm.vm_id, vm.instance
                         ),
-                        Tone::Plain,
+                        Tone::Warn,
                     );
-                    let vm = crate::sandbox::RemoteVm::spawn(
-                        self.engine.client().clone(),
-                        vm,
-                        self.sandbox_token.clone(),
-                        None,
-                    );
-                    inner.children.insert(key.clone(), Child::Vm(vm));
+                    self.legacy_vms
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.clone(), vm);
+                    if let Some(entry) = inner.state.containers.get_mut(&key) {
+                        entry.status = ChildStatus::Stopped;
+                    }
                 }
                 // The adapter's lifeline took it with the compose that is gone.
                 (Reconciliation::Stopped, .., Some(_)) => {
                     if let Some(entry) = inner.state.containers.get_mut(&key) {
                         entry.status = ChildStatus::Stopped;
+                        entry.vm = None;
                     }
                 }
                 (Reconciliation::Adopt, Some(pid), Some(birth), None) => {
@@ -915,6 +929,7 @@ impl Project {
                     if let Some(entry) = inner.state.containers.get_mut(&key) {
                         entry.status = ChildStatus::Failed;
                         entry.last_error = Some("exited while the daemon was away".to_string());
+                        entry.vm = None;
                     }
                 }
             }
@@ -1011,6 +1026,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
 
         let result = lifecycle::up_until_shutdown(
@@ -1066,6 +1082,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
 
         let operation = crate::operation::active(&operation_id);
@@ -1162,6 +1179,7 @@ impl Project {
                 state_dir: self.store.dir(),
                 sandbox_token: &self.sandbox_token,
                 empty_env_diagnostics: &empty_env_diagnostics,
+                legacy_vms: &self.legacy_vms,
             };
             // Removing an adapter that a VM still needs generates it again: as in
             // `reconcile_file`, its VMs stop first and the `up` below boots them on it.
@@ -1203,6 +1221,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
         let up = lifecycle::up(
             &ctx,
@@ -1300,6 +1319,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
         lifecycle::fail_vms_of_lost_adapter(
             &ctx,
@@ -1334,11 +1354,7 @@ impl Project {
         file.start_order()
             .unwrap_or_default()
             .into_iter()
-            .filter(|vm| match inner.children.get(vm) {
-                Some(Child::Vm(hosted)) => hosted.record.adapter == adapter,
-                Some(Child::Process(_)) => crate::sandbox::runs_own_vm(&file, vm),
-                None => false,
-            })
+            .filter(|vm| inner.children.contains_key(vm) && crate::sandbox::runs_own_vm(&file, vm))
             .collect()
     }
 
@@ -1368,6 +1384,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
 
         let result = if let Some((attempt, total_attempts)) = supervised_attempt {
@@ -1386,6 +1403,280 @@ impl Project {
         };
         report::empty_env_warnings(&empty_env_diagnostics.snapshot());
         result
+    }
+
+    /// Whether container `key` runs here now.
+    pub(crate) async fn is_running(&self, key: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .children
+            .get(key)
+            .is_some_and(|child| !matches!(child.poll(), crate::process::Outcome::Exited(_)))
+    }
+
+    /// `compose::build` (spec 7.4): runs the `scripts.build` of `worker`, or of every container
+    /// that declares one, in start order, and restarts nothing. The adapter starts first when a
+    /// VM build needs it and the project is down. `cancel` stops the build that runs and skips the
+    /// rest. A container whose `scripts.build` is `""` or absent is `skipped`.
+    pub(crate) async fn build(
+        &self,
+        worker: Option<&str>,
+        operation_id: &str,
+        cancel: &crate::shutdown::ShutdownSignal,
+    ) -> Result<lifecycle::BuildRun> {
+        let file = self.file.read().await.clone();
+        let targets: Vec<String> = match worker {
+            Some(key) if !file.containers.contains_key(key) => {
+                return Err(ComposeError::UnknownContainer {
+                    container: key.to_string(),
+                });
+            }
+            Some(key) => vec![key.to_string()],
+            None => file
+                .start_order()?
+                .into_iter()
+                .filter(|key| file.containers[key].scripts.build.is_some())
+                .collect(),
+        };
+        let operation = crate::operation::active(operation_id);
+        let vm_build = targets.iter().any(|key| {
+            file.containers[key]
+                .scripts
+                .build_command()
+                .is_some_and(crate::sandbox::is_sandbox_build)
+        });
+        let adapter = crate::sandbox::adapter_name(&file);
+        if vm_build
+            && let Ok(Some(adapter_key)) = crate::sandbox::adapter_key(&file, adapter)
+            && !self.is_running(&adapter_key).await
+        {
+            if let Some(operation) = &operation {
+                operation
+                    .emit(
+                        Some(&adapter_key),
+                        "starting",
+                        "starting the sandbox adapter",
+                    )
+                    .await;
+            }
+            let started = self
+                .up(Some(&adapter_key), format!("{operation_id}-adapter"))
+                .await;
+            if started.status == OpStatus::Failed {
+                daemon_line(
+                    &self.project_namespace,
+                    &format!("{adapter_key} did not start, so the VM builds will fail"),
+                    Tone::Warn,
+                );
+            }
+        }
+
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file: &file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
+        };
+        let mut results = Vec::with_capacity(targets.len());
+        for key in targets {
+            if cancel.requested() {
+                break;
+            }
+            let emit = |phase: &'static str, detail: String| {
+                let (operation, key) = (operation.clone(), key.clone());
+                async move {
+                    if let Some(operation) = operation {
+                        operation.emit(Some(&key), phase, detail).await;
+                    }
+                }
+            };
+            if file.containers[&key].scripts.build_command().is_none() {
+                emit("skipped", "nothing to build".to_string()).await;
+                results.push(lifecycle::BuildResult::skipped(&key));
+                continue;
+            }
+            // Held to the end of the build: no start or rebuild of it builds beside this one.
+            let Some(slot) = cancel.run(crate::build_step::slot(&file.path, &key)).await else {
+                break;
+            };
+            if slot.stopping() {
+                // Its remove is under way: it builds nothing.
+                let error = crate::build_step::Outcome::stopped()
+                    .into_error(&key)
+                    .expect("a stopped build failed");
+                emit("failed", error.to_string()).await;
+                results.push(lifecycle::BuildResult::failed(
+                    &key,
+                    lifecycle::OpError::from(&error),
+                ));
+                continue;
+            }
+            emit("building", "running scripts.build".to_string()).await;
+            let result = match lifecycle::build_one(&ctx, &key, cancel).await {
+                None => lifecycle::BuildResult::skipped(&key),
+                Some(Err(error)) => {
+                    lifecycle::BuildResult::failed(&key, lifecycle::OpError::from(&error))
+                }
+                Some(Ok(crate::build_step::Outcome::Cancelled)) => lifecycle::BuildResult::failed(
+                    &key,
+                    lifecycle::OpError::from(&ComposeError::OperationCancelled {
+                        operation_id: operation_id.to_string(),
+                    }),
+                ),
+                Some(Ok(crate::build_step::Outcome::Built { build_id })) => {
+                    lifecycle::BuildResult::built(&key, build_id)
+                }
+                Some(Ok(crate::build_step::Outcome::Failed { code, message })) => {
+                    lifecycle::BuildResult::failed(
+                        &key,
+                        lifecycle::OpError::from_parts(code, message),
+                    )
+                }
+            };
+            match &result.error {
+                None => emit("built", "scripts.build finished".to_string()).await,
+                Some(error) => emit("failed", format!("{}: {}", error.code, error.message)).await,
+            }
+            results.push(result);
+        }
+        // Asked after the builds: one whose process the stop killed may have ended as `failed`
+        // before the cancellation was seen.
+        Ok(lifecycle::BuildRun {
+            results,
+            cancelled: cancel.requested(),
+        })
+    }
+
+    /// Spec 5.3: rebuilds each of `keys` that runs here and whose package `file` changed, while it
+    /// keeps running on its old build, so the restart that follows only runs the new one. Those
+    /// whose build failed go on running as they are, and are not to be restarted. Stops at the
+    /// first sign of `cancel`, building nothing more.
+    pub(crate) async fn rebuild_changed(
+        &self,
+        file: &ComposeFile,
+        keys: &[String],
+        operation_id: &str,
+        cancel: &crate::shutdown::ShutdownSignal,
+    ) -> lifecycle::Rebuilt {
+        let operation = crate::operation::active(operation_id);
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
+        };
+        let mut rebuilt = lifecycle::Rebuilt::default();
+        for key in keys {
+            if cancel.requested() {
+                rebuilt.cancelled = true;
+                break;
+            }
+            let Some(container) = file.containers.get(key) else {
+                continue;
+            };
+            if !self.is_running(key).await {
+                continue;
+            }
+            // Held to the end of its build: one already running ends first, and leaves what is
+            // still due. The wait gives way to a cancel.
+            let Some(slot) = cancel.run(crate::build_step::slot(&file.path, key)).await else {
+                rebuilt.cancelled = true;
+                break;
+            };
+            if slot.stopping() {
+                // Its remove is under way: it gives up before deciding anything.
+                rebuilt.failed.push((
+                    key.clone(),
+                    crate::build_step::Outcome::stopped()
+                        .into_error(key)
+                        .expect("a stopped build failed"),
+                ));
+                continue;
+            }
+            let Some(reason @ crate::build_step::Reason::PackageChanged { .. }) =
+                crate::build_step::due(&file.path, key, container).await
+            else {
+                continue;
+            };
+            let detail = reason.describe();
+            report::daemon_line(&format!("{key}: {detail}"), false);
+            self.logs
+                .sink(key)
+                .write_line(crate::logs::LogStream::Stdout, &format!("{key}: {detail}"))
+                .await;
+            if let Some(operation) = &operation {
+                operation.emit(Some(key), "building", detail).await;
+            }
+            let error = match Box::pin(lifecycle::build_one(&ctx, key, cancel)).await {
+                None | Some(Ok(crate::build_step::Outcome::Built { .. })) => {
+                    // Until it starts again, a retried add or update restarts it.
+                    crate::build_step::mark_rebuilt(&file.path, key);
+                    rebuilt.built.push(key.clone());
+                    continue;
+                }
+                Some(Ok(crate::build_step::Outcome::Cancelled)) => {
+                    rebuilt.cancelled = true;
+                    break;
+                }
+                Some(Ok(failure)) => failure
+                    .into_error(key)
+                    .expect("a build that neither built nor was cancelled failed"),
+                Some(Err(error)) => error,
+            };
+            if let Some(operation) = &operation {
+                operation.emit(Some(key), "failed", error.to_string()).await;
+            }
+            rebuilt.failed.push((key.clone(), error));
+        }
+        rebuilt
+    }
+
+    /// The containers of `file` that run here on another build than their current one: one made
+    /// from a package other than the one locked now (a rebuild an add or update left undone), or
+    /// one an add or update rebuilt and did not restart, cancelled or failed
+    /// ([`crate::build_step::rebuilt_unrestarted`]). A retried add or update finishes them (spec
+    /// 5.3). A build made by `compose::build` or `iii sandbox build` is not one: its restart is the
+    /// user's (spec 3.3).
+    pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
+        let mut pending = Vec::new();
+        for (key, container) in &file.containers {
+            if self.is_running(key).await
+                && (crate::build_step::rebuilt_unrestarted(&file.path, key)
+                    || crate::build_step::package_changed(&file.path, key, container).await)
+            {
+                pending.push(key.clone());
+            }
+        }
+        pending
+    }
+
+    /// The VMs that go down with the adapters among `restart`: a VM ends with its adapter.
+    pub(crate) async fn vms_restarting_with(&self, restart: &[String]) -> Vec<String> {
+        let inner = self.inner.lock().await;
+        self.vms_hosted_by_any(&inner, restart).await
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -1411,6 +1702,7 @@ impl Project {
             state_dir: self.store.dir(),
             sandbox_token: &self.sandbox_token,
             empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
         };
 
         let result =
@@ -1753,9 +2045,7 @@ mod restart_backoff_tests {
 
 #[cfg(all(test, unix))]
 mod adapter_restart_tests {
-    use iii_sandbox_contract::{
-        AdapterInfo, CONTRACT_MAJOR, ContractVersion, SandboxErrorCode, State,
-    };
+    use iii_sandbox_contract::{SandboxErrorCode, State};
     use serde_json::json;
 
     use super::*;
@@ -1768,20 +2058,26 @@ mod adapter_restart_tests {
     /// that pid lives. A `fail` file beside it makes its next start fail.
     const RUN: &str = "test -e fail && exit 1\necho $$ > pid\nexec sleep 60\n";
 
-    #[derive(Default)]
-    struct Adapter {
-        boots: u64,
-        /// VM id to (instance, pid of the adapter that booted it).
-        live: BTreeMap<String, (u64, u32)>,
-        started: Vec<String>,
-        refuse_starts: bool,
-        /// This VM exits as it boots, never registering.
-        exits_on_boot: Option<&'static str>,
+    /// What `iii` is to `vm` and `web`: `sandbox build` writes the `build.json` the real one
+    /// would, and `sandbox run` notes its start in `../started`, then runs [`RUN`] in the worker's
+    /// directory, standing for the VM. `../refuse` fails it as the command fails itself, and an
+    /// `exit_on_boot` file makes it exit before it registers.
+    pub(super) fn fake_iii() -> String {
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$2\" = build ]; then\n\
+             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
+             exit 0\n\
+             fi\n\
+             test -e ../refuse && exit 125\n\
+             test -e exit_on_boot && exit 1\n\
+             echo \"$III_WORKER_NAME\" >> ../started\n\
+             {RUN}"
+        )
     }
 
     struct Fixture {
         dir: tempfile::TempDir,
-        adapter: Arc<std::sync::Mutex<Adapter>>,
         project: Arc<Project>,
     }
 
@@ -1794,8 +2090,9 @@ mod adapter_restart_tests {
             .filter(|pid| crate::process::is_running(*pid))
     }
 
-    /// `sb` adapts VMs `vm` and `web`, the latter declared first but started
-    /// after the former, beside the plain worker `api`. All of them are up.
+    /// `sb` is the adapter of `vm` and `web`, which run their VMs through `iii sandbox run`, the
+    /// latter declared first but started after the former, beside the plain worker `api`. All of
+    /// them are up.
     async fn fixture(policy: &str) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         for (worker, text) in [
@@ -1813,90 +2110,51 @@ mod adapter_restart_tests {
             manifest(dir.path(), worker, text);
             std::fs::write(dir.path().join(worker).join("run.sh"), RUN).unwrap();
         }
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("iii"), fake_iii()).unwrap();
+        std::fs::set_permissions(
+            bin.join("iii"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let vm = format!(
+            "environment: {{PATH: '{}:/usr/bin:/bin'}}, scripts: {{build: iii sandbox build, run: \
+             iii sandbox run}}{policy}",
+            bin.display()
+        );
         let path = dir.path().join("worker-compose.yaml");
         std::fs::write(
             &path,
             format!(
                 "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  \
-                 web: {{worker: path://./web, start_after: [vm]{policy}}}\n  \
-                 vm: {{worker: path://./vm{policy}}}\n  \
+                 web: {{worker: path://./web, start_after: [vm, sb], {vm}}}\n  \
+                 vm: {{worker: path://./vm, start_after: [sb], {vm}}}\n  \
                  sb: {{worker: path://./sb}}\n  \
                  api: {{worker: path://./api}}\n"
             ),
         )
         .unwrap();
 
-        let adapter = Arc::new(std::sync::Mutex::new(Adapter::default()));
-        let (state, root) = (adapter.clone(), dir.path().to_path_buf());
-        let (url, _called) = fake_engine_url(move |function, payload| {
-            let mut adapter = state.lock().unwrap();
-            let host = alive(&root, "sb");
-            // The lifeline: a VM does not outlive the adapter that booted it.
-            adapter
-                .live
-                .retain(|_, (_, booted_by)| host == Some(*booted_by));
-            let vm_id = payload["vm_id"].as_str().unwrap_or_default();
-            let booted = adapter
-                .live
-                .get(vm_id)
-                .is_some_and(|(instance, _)| payload["instance"].as_u64() == Some(*instance));
-            match function {
-                "engine::workers::list" => {
-                    let workers = ["sb", "api"]
-                        .into_iter()
-                        .filter(|worker| alive(&root, worker).is_some())
-                        .chain(adapter.live.keys().map(String::as_str))
-                        .map(|worker| json!({ "name": worker, "namespace": "shop" }))
-                        .collect::<Vec<_>>();
-                    answered(json!({ "workers": workers }))
-                }
-                "engine::functions::list" => answered(json!({ "functions": [] })),
-                "configuration::get" => {
-                    json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
-                }
-                "configuration::migration-capabilities" => {
-                    answered(json!({ "source_priority_archive_revision": 1 }))
-                }
-                "configuration::migrate" => answered(json!({ "action": "missing" })),
-                _ if host.is_none() => not_found(),
-                "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
-                    adapter: "sandbox-libkrun".into(),
-                    adapter_version: "1.0.0".into(),
-                    contract: ContractVersion {
-                        major: CONTRACT_MAJOR,
-                        minor: 0,
-                    },
-                    features: Vec::new(),
-                }),
-                "sandbox-libkrun::worker::prepare" => answered(json!({})),
-                "sandbox-libkrun::worker::start" if adapter.refuse_starts => {
-                    refused(SandboxErrorCode::S501, 0)
-                }
-                "sandbox-libkrun::worker::start" => {
-                    let name = payload["worker_name"].as_str().unwrap().to_string();
-                    adapter.boots += 1;
-                    let instance = adapter.boots;
-                    if adapter.exits_on_boot != Some(name.as_str()) {
-                        adapter.live.insert(name.clone(), (instance, host.unwrap()));
-                    }
-                    adapter.started.push(name.clone());
-                    answered(json!({ "vm_id": name, "instance": instance }))
-                }
-                "sandbox-libkrun::worker::status" if adapter.exits_on_boot == Some(vm_id) => {
-                    answered(status(State::Stopped, Some(1), None))
-                }
-                "sandbox-libkrun::worker::status" if booted => {
-                    answered(status(State::Running, None, None))
-                }
-                "sandbox-libkrun::worker::stop" if booted => {
-                    adapter.live.remove(vm_id);
-                    answered(status(State::Stopped, None, Some(15)))
-                }
-                "sandbox-libkrun::worker::status" | "sandbox-libkrun::worker::stop" => {
-                    refused(SandboxErrorCode::S504, 0)
-                }
-                _ => not_found(),
+        let root = dir.path().to_path_buf();
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let workers = ["sb", "api", "vm", "web"]
+                    .into_iter()
+                    .filter(|worker| alive(&root, worker).is_some())
+                    .map(|worker| json!({ "name": worker, "namespace": "shop" }))
+                    .collect::<Vec<_>>();
+                answered(json!({ "workers": workers }))
             }
+            "engine::functions::list" => answered(json!({ "functions": [] })),
+            "configuration::get" => {
+                json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(json!({ "action": "missing" })),
+            _ => not_found(),
         })
         .await;
 
@@ -1915,17 +2173,13 @@ mod adapter_restart_tests {
         .unwrap();
         let up = project.up(None, "up".into()).await;
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
-        adapter.lock().unwrap().started.clear();
-        Fixture {
-            dir,
-            adapter,
-            project,
-        }
+        let _ = std::fs::remove_file(dir.path().join("started"));
+        Fixture { dir, project }
     }
 
     impl Fixture {
-        /// Past the 1s poll of a VM a restart left behind, then a supervision
-        /// tick, which is what would count that VM as crashed.
+        /// A supervision tick past a restart, which is what would count a VM container as
+        /// crashed.
         async fn supervise(&self) {
             tokio::time::sleep(Duration::from_millis(1300)).await;
             self.project.reap_unexpected_exits().await;
@@ -1961,8 +2215,13 @@ mod adapter_restart_tests {
             inner.restarts.attempts.keys().cloned().collect()
         }
 
+        /// The VM containers whose `iii sandbox run` started since the fixture was up.
         fn started(&self) -> Vec<String> {
-            self.adapter.lock().unwrap().started.clone()
+            std::fs::read_to_string(self.dir.path().join("started"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
         }
 
         fn alive(&self, worker: &str) -> Option<u32> {
@@ -1971,9 +2230,7 @@ mod adapter_restart_tests {
 
         /// The file again, as an edit hands it over.
         fn file(&self) -> ComposeFile {
-            let mut file = ComposeFile::load(self.dir.path().join("worker-compose.yaml")).unwrap();
-            crate::sandbox::wire_adapter(&mut file).unwrap();
-            file
+            ComposeFile::load(self.dir.path().join("worker-compose.yaml")).unwrap()
         }
     }
 
@@ -2040,10 +2297,7 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn any_other_restart_touches_only_the_container_it_names() {
         let fixture = fixture("").await;
-        let (adapter, web) = (
-            fixture.alive("sb"),
-            fixture.adapter.lock().unwrap().live["web"],
-        );
+        let (adapter, web) = (fixture.alive("sb"), fixture.alive("web"));
 
         let api = fixture.alive("api");
         let result = fixture.project.restart_one("api", "restart".into()).await;
@@ -2059,7 +2313,7 @@ mod adapter_restart_tests {
 
         assert_eq!(fixture.alive("api"), api);
         assert_eq!(fixture.alive("sb"), adapter);
-        assert_eq!(fixture.adapter.lock().unwrap().live["web"], web);
+        assert_eq!(fixture.alive("web"), web);
         fixture.project.shutdown().await;
     }
 
@@ -2142,14 +2396,14 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_required_vm_that_does_not_come_back_fails_the_restart_that_took_it() {
         let fixture = fixture(", required: true").await;
-        fixture.adapter.lock().unwrap().refuse_starts = true;
+        std::fs::write(fixture.dir.path().join("refuse"), "").unwrap();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
 
         assert_eq!(result.status, OpStatus::Failed, "{result:?}");
         let reply = reply(&result, "sb");
         assert_eq!(reply["affected_workers"], json!(["vm", "web"]));
-        assert_eq!(reply["error"]["code"], "SPAWN_FAILED");
+        assert_eq!(reply["error"]["code"], "CHILD_EXITED_BEFORE_REGISTRATION");
         assert!(fixture.alive("sb").is_some());
         assert_eq!(fixture.state_of("vm").await, ChildStatus::Failed);
         fixture.project.shutdown().await;
@@ -2160,7 +2414,7 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_vm_that_exits_before_registering_is_named_by_the_error() {
         let fixture = fixture(", required: true").await;
-        fixture.adapter.lock().unwrap().exits_on_boot = Some("web");
+        std::fs::write(fixture.dir.path().join("web").join("exit_on_boot"), "").unwrap();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
 
@@ -2224,8 +2478,6 @@ mod adapter_restart_tests {
     /// What the stand-in adapter and engine hold for `own`'s VM.
     #[derive(Default)]
     struct OwnVm {
-        /// Whether `own` was up at each `worker::prepare`.
-        prepares: Vec<bool>,
         /// What `worker::status` says of instance 1; `None` is no such VM (S504).
         state: Option<State>,
         /// A worker named `own` is connected, with or without a command running.
@@ -2256,7 +2508,7 @@ mod adapter_restart_tests {
         );
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        std::fs::write(bin.join("iii"), format!("#!/bin/sh\n{RUN}")).unwrap();
+        std::fs::write(bin.join("iii"), fake_iii()).unwrap();
         std::fs::set_permissions(
             bin.join("iii"),
             std::os::unix::fs::PermissionsExt::from_mode(0o755),
@@ -2270,7 +2522,7 @@ mod adapter_restart_tests {
                  sb: {{worker: path://./sb}}\n  \
                  own:\n    worker: path://./own\n    start_after: [sb]\n    {policy}\n    \
                  environment: {{PATH: '{}:/usr/bin:/bin'}}\n    \
-                 scripts: {{run: iii sandbox run}}\n",
+                 scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
                 bin.display()
             ),
         )
@@ -2291,23 +2543,6 @@ mod adapter_restart_tests {
                 answered(json!({ "workers": workers }))
             }
             "engine::functions::list" => answered(json!({ "functions": [] })),
-            "sandbox-libkrun::adapter::info" => answered(AdapterInfo {
-                adapter: "sandbox-libkrun".into(),
-                adapter_version: "1.0.0".into(),
-                contract: ContractVersion {
-                    major: CONTRACT_MAJOR,
-                    minor: 2,
-                },
-                features: Vec::new(),
-            }),
-            "sandbox-libkrun::worker::prepare" => {
-                assert_eq!(payload["source"]["run_override"], "iii sandbox run");
-                held.lock()
-                    .unwrap()
-                    .prepares
-                    .push(alive(&root, "own").is_some());
-                answered(json!({}))
-            }
             "sandbox-libkrun::worker::status" => {
                 match (&held.lock().unwrap().state, payload["instance"].as_u64()) {
                     (None, _) => refused(SandboxErrorCode::S504, 0),
@@ -2523,17 +2758,29 @@ mod adapter_restart_tests {
         }
     }
 
-    /// An image pull can outlast `startup_timeout`, which starts with the
-    /// process, so it is over before the process starts.
+    /// A build can outlast `startup_timeout`, which starts with the process, so its first build
+    /// is over before the process starts (spec 5.2), and a restart only runs it (spec 3.3).
     #[tokio::test]
-    async fn a_container_that_runs_its_own_vm_is_prepared_before_its_process_starts() {
-        let (dir, project, vm) = own_vm_project("").await;
+    async fn a_container_that_runs_its_own_vm_is_built_before_its_process_starts() {
+        let (dir, project, _) = own_vm_project("").await;
+        let build = dir.path().join(".build/own/build.json");
 
         let up = project.up(None, "up".into()).await;
 
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         assert!(alive(dir.path(), "own").is_some());
-        assert_eq!(vm.lock().unwrap().prepares, [false]);
+        let built = std::fs::metadata(&build).unwrap().modified().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".build/.gitignore")).unwrap(),
+            "*\n"
+        );
+
+        let restart = project.restart_one("own", "restart".into()).await;
+        assert_eq!(restart.status, OpStatus::Ok, "{restart:?}");
+        assert_eq!(
+            std::fs::metadata(&build).unwrap().modified().unwrap(),
+            built
+        );
         project.shutdown().await;
     }
 
@@ -2560,7 +2807,7 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_vm_that_is_not_required_and_does_not_come_back_is_named_in_the_reply() {
         let fixture = fixture("").await;
-        fixture.adapter.lock().unwrap().refuse_starts = true;
+        std::fs::write(fixture.dir.path().join("refuse"), "").unwrap();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
 
@@ -2570,5 +2817,513 @@ mod adapter_restart_tests {
         assert_eq!(reply["not_required_failures"], json!(["vm", "web"]));
         assert_eq!(fixture.state_of("vm").await, ChildStatus::Failed);
         fixture.project.shutdown().await;
+    }
+
+    /// `sb` beside `own`, declared with `fields`, `iii` being `script`.
+    fn write_small_project(dir: &Path, fields: &str, script: &str) -> PathBuf {
+        manifest(
+            dir,
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: sh run.sh}\n",
+        );
+        std::fs::write(dir.join("sb/run.sh"), RUN).unwrap();
+        manifest(
+            dir,
+            "own",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("iii"), script).unwrap();
+        std::fs::set_permissions(
+            bin.join("iii"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let path = dir.join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  sb: {{worker: path://./sb}}\n  \
+                 own:\n    worker: path://./own\n    environment: {{PATH: '{}:/usr/bin:/bin'}}\n    {fields}\n",
+                bin.display()
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    /// The project at `path`, opened by daemon `daemon` on a stand-in engine that asks
+    /// `answer` first: what `sb` and `own` hold of the worker list while their pids live, and the
+    /// configuration calls, are answered when it does not.
+    async fn open_small_project(
+        path: &Path,
+        daemon: &str,
+        answer: impl Fn(&str, &serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+    ) -> Arc<Project> {
+        let root = path.parent().unwrap().to_path_buf();
+        let (url, _called) = fake_engine_url(move |function, payload| {
+            if let Some(answer) = answer(function, payload) {
+                return answer;
+            }
+            match function {
+                "engine::workers::list" => {
+                    let workers = ["sb", "own"]
+                        .into_iter()
+                        .filter(|worker| alive(&root, worker).is_some())
+                        .map(|worker| json!({ "name": worker, "namespace": "shop" }))
+                        .collect::<Vec<_>>();
+                    answered(json!({ "workers": workers }))
+                }
+                "engine::functions::list" => answered(json!({ "functions": [] })),
+                "configuration::get" => {
+                    json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+                }
+                "configuration::migration-capabilities" => {
+                    answered(json!({ "source_priority_archive_revision": 1 }))
+                }
+                "configuration::migrate" => answered(json!({ "action": "missing" })),
+                _ => not_found(),
+            }
+        })
+        .await;
+        let engine = Arc::new(EngineClient::connect(&url, "t", "shop"));
+        while !engine.is_connected() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Project::open(
+            daemon,
+            "shop".into(),
+            ComposeFile::load(path).unwrap(),
+            engine,
+            url,
+        )
+        .await
+        .unwrap()
+    }
+
+    const EXPLICIT: &str =
+        "start_after: [sb]\n    scripts: {build: iii sandbox build, run: iii sandbox run}";
+
+    /// Spec 7.3, step 2: the VM a 0.26 daemon left running holds the worker's name. Once the
+    /// adapter is up it is stopped, before the first build, its record is dropped, and its data
+    /// stays: nothing calls `worker::destroy`.
+    #[tokio::test]
+    async fn a_vm_a_026_daemon_left_running_is_stopped_before_the_first_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(dir.path(), EXPLICIT, &fake_iii());
+        let daemon = format!("legacy-vm-{}", uuid::Uuid::new_v4());
+        let file = ComposeFile::load(&path).unwrap();
+        let store = StateStore::for_project(&daemon, &file.path).unwrap();
+        let mut state = DaemonState::new(&file.path, "shop");
+        state.owner = Some(crate::state::Owner::current());
+        state.containers.insert(
+            "own".into(),
+            crate::state::ChildRecord {
+                pid: None,
+                birth: None,
+                vm: Some(crate::state::VmRecord {
+                    adapter: "sandbox-libkrun".into(),
+                    namespace: "shop".into(),
+                    vm_id: "v026".into(),
+                    instance: 4,
+                }),
+                status: ChildStatus::Ready,
+                started_at: 0,
+                last_error: None,
+            },
+        );
+        store.save(&state).unwrap();
+
+        let legacy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<(String, bool)>::new()));
+        let (running, called, build) = (
+            legacy.clone(),
+            calls.clone(),
+            dir.path().join(".build/own/build.json"),
+        );
+        let project = open_small_project(&path, &daemon, move |function, payload| {
+            let live = running.load(std::sync::atomic::Ordering::SeqCst);
+            match function {
+                // The 0.26 guest holds the name while its VM runs.
+                "engine::workers::list" if live => Some(answered(
+                    json!({ "workers": [{ "name": "own", "namespace": "shop" }] }),
+                )),
+                "sandbox-libkrun::worker::status"
+                    if live && payload["vm_id"] == "v026" && payload["instance"] == 4 =>
+                {
+                    Some(answered(status(State::Running, None, None)))
+                }
+                "sandbox-libkrun::worker::stop" | "sandbox-libkrun::worker::destroy" => {
+                    called
+                        .lock()
+                        .unwrap()
+                        .push((function.to_string(), build.exists()));
+                    running.store(false, std::sync::atomic::Ordering::SeqCst);
+                    Some(answered(status(State::Stopped, None, Some(15))))
+                }
+                "sandbox-libkrun::worker::status" => Some(refused(SandboxErrorCode::S504, 0)),
+                _ => None,
+            }
+        })
+        .await;
+
+        let up = project.up(None, "up".into()).await;
+
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [("sandbox-libkrun::worker::stop".to_string(), false)]
+        );
+        assert!(dir.path().join(".build/own/build.json").exists());
+        assert!(alive(dir.path(), "own").is_some());
+        assert_eq!(store.load().unwrap().unwrap().containers["own"].vm, None);
+        project.shutdown().await;
+    }
+
+    /// Spec 5.2: a failed first build fails the start with `BUILD_FAILED`, carrying the build's
+    /// own code; `build: ""` starts at once, with no build.
+    #[tokio::test]
+    async fn a_failed_first_build_fails_the_start_with_build_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'echo no; exit 3', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("build-failed-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+
+        let up = project.up(Some("own"), "up".into()).await;
+
+        let own = &up.containers[0];
+        assert_eq!(own.state, ChildStatus::Failed, "{up:?}");
+        let error = own.error.clone().unwrap();
+        assert_eq!(error.code, "BUILD_FAILED");
+        let cause = error.cause.unwrap();
+        assert_eq!(
+            (cause.code.as_str(), cause.message.as_str()),
+            ("EXIT_3", "no")
+        );
+        project.shutdown().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: '', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("no-build-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let up = project.up(Some("own"), "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        assert!(!dir.path().join(".build").exists());
+        project.shutdown().await;
+    }
+
+    /// Spec 7.4: `compose::build` starts the adapter of a project that is down, builds, and
+    /// starts nothing else.
+    #[tokio::test]
+    async fn compose_build_starts_the_adapter_and_runs_nothing() {
+        let fixture = fixture("").await;
+        fixture.project.down(None, "down".into()).await;
+        assert!(fixture.alive("sb").is_none());
+        std::fs::remove_dir_all(fixture.dir.path().join(".build")).unwrap();
+        let controller = crate::shutdown::ShutdownController::default();
+
+        let results = fixture
+            .project
+            .build(None, "build", &controller.signal())
+            .await
+            .unwrap()
+            .results;
+
+        let built: Vec<_> = results
+            .iter()
+            .map(|result| (result.worker.as_str(), result.status))
+            .collect();
+        assert_eq!(
+            built,
+            [
+                ("vm", lifecycle::BuildStatus::Built),
+                ("web", lifecycle::BuildStatus::Built)
+            ]
+        );
+        assert!(fixture.alive("sb").is_some());
+        assert_eq!(fixture.alive("vm"), None);
+        assert_eq!(fixture.started(), Vec::<String>::new());
+        assert!(fixture.dir.path().join(".build/vm/build.json").exists());
+        fixture.project.shutdown().await;
+    }
+
+    /// The adapter refuses to destroy the state of a build that runs (S509): `remove` stops the
+    /// build first, then destroys, asking again while the adapter aborts it.
+    #[tokio::test]
+    async fn remove_stops_a_running_build_before_it_destroys_the_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = fake_iii().replacen(
+            "if [ \"$2\" = build ]; then\n",
+            "if [ \"$2\" = build ]; then\ntest -e ../slow && echo $$ > ../build.pid && exec sleep 30\n",
+            1,
+        );
+        let path = write_small_project(dir.path(), EXPLICIT, &script);
+        let pid_file = dir.path().join("build.pid");
+        let destroys = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+        let (called, pid) = (destroys.clone(), pid_file.clone());
+        let project = open_small_project(
+            &path,
+            &format!("remove-build-{}", uuid::Uuid::new_v4()),
+            move |function, _| match function {
+                "sandbox-libkrun::worker::destroy" => {
+                    let building = std::fs::read_to_string(&pid)
+                        .ok()
+                        .and_then(|pid| pid.trim().parse().ok())
+                        .is_some_and(crate::process::is_running);
+                    let mut called = called.lock().unwrap();
+                    called.push(building);
+                    Some(if building || called.len() == 1 {
+                        refused(SandboxErrorCode::S509, 0)
+                    } else {
+                        answered(json!({ "destroyed": true }))
+                    })
+                }
+                "sandbox-libkrun::worker::status" | "sandbox-libkrun::worker::stop" => {
+                    Some(refused(SandboxErrorCode::S504, 0))
+                }
+                _ => None,
+            },
+        )
+        .await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        std::fs::write(dir.path().join("slow"), "").unwrap();
+        let controller = crate::shutdown::ShutdownController::default();
+        let building = tokio::spawn({
+            let (project, signal) = (project.clone(), controller.signal());
+            async move { project.build(Some("own"), "build", &signal).await }
+        });
+        while !pid_file.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let next = ComposeFile::parse(
+            "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  sb: {worker: path://./sb}\n",
+            &path,
+        )
+        .unwrap();
+        let (removed, _) = project
+            .reconcile_removals(next, &["own".into()], "remove".into())
+            .await;
+
+        assert_eq!(removed[0].status, OpStatus::Ok, "{removed:?}");
+        assert_eq!(*destroys.lock().unwrap(), [false, false]);
+        let results = building.await.unwrap().unwrap().results;
+        assert_eq!(results[0].status, lifecycle::BuildStatus::Failed);
+        assert_eq!(results[0].error.as_ref().unwrap().code, "BUILD_STOPPED");
+        assert!(!dir.path().join(".build/own").exists());
+        project.shutdown().await;
+    }
+
+    /// Spec 5.3: a container whose package changed is rebuilt while its old build runs, then
+    /// its restart runs the new build and builds nothing; a rebuild that fails leaves it running
+    /// and is `BUILD_FAILED`.
+    #[tokio::test]
+    async fn a_changed_package_is_rebuilt_while_the_old_build_runs() {
+        use crate::build_step::fake_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'touch ../building; sleep 1; rm ../building', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("rebuild-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let up = project.up(Some("own"), "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let running = alive(dir.path(), "own").unwrap();
+        let build = dir.path().join(".build/own");
+        let built = fake_record::read(&build).unwrap().unwrap();
+        let moved = |record: &crate::build_record::BuildRecord| {
+            let mut moved = record.clone();
+            moved.source = crate::build_record::BuildSource::Path {
+                dir: "./old".into(),
+            };
+            fake_record::write(&build, &moved).unwrap();
+        };
+        moved(&built);
+        let file = ComposeFile::load(&path).unwrap();
+        let marker = dir.path().join("building");
+        let own = ["own".to_string()];
+
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let ((rebuilt, lines), during) = tokio::join!(
+            crate::report::capture_daemon_lines(
+                project.rebuild_changed(&file, &own, "update", &signal)
+            ),
+            async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                alive(dir.path(), "own")
+            }
+        );
+
+        assert!(rebuilt.failed.is_empty(), "{rebuilt:?}");
+        assert_eq!(rebuilt.built, own);
+        assert_eq!(
+            during,
+            Some(running),
+            "the old build stopped during the rebuild"
+        );
+        assert_eq!(lines, ["own: package changed (./old -> ./own); rebuilding"]);
+        assert_eq!(
+            fake_record::read(&build).unwrap().unwrap().source,
+            built.source
+        );
+        let (restart, lines) =
+            crate::report::capture_daemon_lines(project.restart_one("own", "restart".into())).await;
+        assert_eq!(restart.status, OpStatus::Ok, "{restart:?}");
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("rebuilding") || line.contains("no build yet")),
+            "{lines:?}"
+        );
+
+        // A failed rebuild: still running on the build it had.
+        let running = alive(dir.path(), "own").unwrap();
+        moved(&fake_record::read(&build).unwrap().unwrap());
+        std::fs::write(
+            &path,
+            std::fs::read_to_string(&path).unwrap().replace(
+                "touch ../building; sleep 1; rm ../building",
+                "echo nope; exit 4",
+            ),
+        )
+        .unwrap();
+        let failing = ComposeFile::load(&path).unwrap();
+        let failed = project
+            .rebuild_changed(&failing, &own, "update", &signal)
+            .await
+            .failed;
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].1.code(), "BUILD_FAILED");
+        assert_eq!(alive(dir.path(), "own"), Some(running));
+
+        // A remove under way: the rebuild gives up before it decides anything.
+        let stopping = crate::build_step::stop(&path, "own").await;
+        let failed = project
+            .rebuild_changed(&failing, &own, "update", &signal)
+            .await
+            .failed;
+        assert!(
+            matches!(
+                &failed[..],
+                [(key, crate::error::ComposeError::BuildFailed { code, .. })]
+                    if key == "own" && code == "BUILD_STOPPED"
+            ),
+            "{failed:?}"
+        );
+        drop(stopping);
+        project.shutdown().await;
+    }
+
+    /// The VMs that go down with a restarting adapter: what an add cannot keep on its old build.
+    #[tokio::test]
+    async fn the_vms_of_a_restarting_adapter_restart_with_it() {
+        let fixture = fixture("").await;
+        let mut vms = fixture.project.vms_restarting_with(&["sb".into()]).await;
+        vms.sort();
+        assert_eq!(vms, ["vm", "web"]);
+        assert!(
+            fixture
+                .project
+                .vms_restarting_with(&["api".into(), "vm".into()])
+                .await
+                .is_empty()
+        );
+        fixture.project.shutdown().await;
+    }
+
+    /// A cancel stops a rebuild at once and builds nothing more: the container keeps running on
+    /// its old build, and the caller restarts nothing.
+    #[tokio::test]
+    async fn a_cancelled_rebuild_stops_and_builds_nothing_more() {
+        use crate::build_step::fake_record;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'test -e ../slow && touch ../building && sleep 30; true', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("cancel-rebuild-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let up = project.up(Some("own"), "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let running = alive(dir.path(), "own").unwrap();
+        let build = dir.path().join(".build/own");
+        let mut moved = fake_record::read(&build).unwrap().unwrap();
+        moved.source = crate::build_record::BuildSource::Path {
+            dir: "./old".into(),
+        };
+        fake_record::write(&build, &moved).unwrap();
+        std::fs::write(dir.path().join("slow"), "").unwrap();
+        let file = ComposeFile::load(&path).unwrap();
+        let own = ["own".to_string()];
+
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let marker = dir.path().join("building");
+        let began = std::time::Instant::now();
+        let (rebuilt, ()) = tokio::join!(
+            project.rebuild_changed(&file, &own, "update", &signal),
+            async {
+                while !marker.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                controller.cancel();
+            }
+        );
+
+        assert!(rebuilt.cancelled, "{rebuilt:?}");
+        assert!(
+            rebuilt.built.is_empty() && rebuilt.failed.is_empty(),
+            "{rebuilt:?}"
+        );
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            began.elapsed()
+        );
+        assert_eq!(alive(dir.path(), "own"), Some(running));
+        assert_eq!(fake_record::read(&build).unwrap().unwrap(), moved);
+
+        // Asked once cancelled, it builds nothing at all.
+        std::fs::remove_file(&marker).unwrap();
+        let rebuilt = project
+            .rebuild_changed(&file, &own, "update", &signal)
+            .await;
+        assert!(rebuilt.cancelled, "{rebuilt:?}");
+        assert!(!marker.exists());
+        project.shutdown().await;
     }
 }

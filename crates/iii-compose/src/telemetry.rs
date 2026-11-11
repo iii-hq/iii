@@ -357,6 +357,7 @@ mod tests {
             error: code.map(|code| OpError {
                 code: code.to_string(),
                 message: "a message that must never be reported".to_string(),
+                cause: None,
             }),
         }
     }

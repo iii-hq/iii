@@ -124,6 +124,26 @@ impl PreparedLock {
             })
     }
 
+    /// Attaches this candidate's packages to `compose`, read again after an edit that changed no
+    /// package (the explicit VM mode of spec 7.1), as [`attach`] does from the lock on disk.
+    pub(crate) fn attach_to(&self, compose: &mut ComposeFile) {
+        for (key, container) in &mut compose.containers {
+            let WorkerSource::Package { reference } = &container.worker else {
+                continue;
+            };
+            let requested = container.version.as_deref().unwrap_or("*");
+            let worker = format!("package://{reference}");
+            if let Some(entry) = self
+                .lock
+                .containers
+                .get(key)
+                .filter(|entry| entry.worker == worker && entry.requested == requested)
+            {
+                container.resolved_package = Some(entry.resolved.clone());
+            }
+        }
+    }
+
     /// Every locked container with the package it resolved to, in key order.
     // Wired by KAN-281: `registry::materialize_project`.
     pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)> {

@@ -28,28 +28,6 @@ pub enum StartSpec {
     /// A resolved package binary. Package resolution is not implemented yet, so
     /// nothing produces this variant today.
     Exec { program: PathBuf, args: Vec<String> },
-    /// A worker started in a VM. The source decides which validation and
-    /// workspace rules the sandbox adapter applies before it boots the VM.
-    Vm(VmSpec),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VmSpec {
-    /// An installed registry bundle. Its manifest command is publisher-owned
-    /// and is always read and run inside the guest.
-    Bundle {
-        /// The bundle manifest's name, which for an alias is the package it
-        /// stands for, not the container key.
-        package: String,
-        install_dir: PathBuf,
-    },
-    /// A local project whose manifest selected an OCI rootfs. The compose
-    /// command may replace the manifest's `scripts.start`, but still runs in
-    /// the guest.
-    Local {
-        worker_dir: PathBuf,
-        run_override: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone)]
@@ -236,8 +214,9 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
         manifest.as_ref(),
         crate::engine_compat::running_engine_version().as_ref(),
     )?;
-    let run_override = container.scripts.run.clone();
-    let Some(start) = run_override.clone().or_else(|| {
+    // A VM is the file's to ask for (`scripts.run: iii sandbox run`): Compose runs what it says, on
+    // the host, and decides nothing from `runtime.base_image` (spec 7.6).
+    let Some(start) = container.scripts.run.clone().or_else(|| {
         manifest
             .as_ref()
             .and_then(|manifest| manifest.start.clone())
@@ -247,17 +226,6 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
             manifest: dir.join(MANIFEST_FILE),
         });
     };
-
-    if manifest
-        .as_ref()
-        .and_then(|manifest| manifest.base_image.as_ref())
-        .is_some()
-    {
-        return Ok(StartSpec::Vm(VmSpec::Local {
-            worker_dir: dir.clone(),
-            run_override,
-        }));
-    }
 
     Ok(StartSpec::Shell(start))
 }
@@ -291,6 +259,8 @@ pub struct ValidationReport {
     /// `package://` containers, skipped because registry resolution is not
     /// implemented yet.
     pub deferred_packages: Vec<String>,
+    /// What does not fail validation but is worth saying, such as a due migration (spec 7.3).
+    pub warnings: Vec<String>,
 }
 
 /// Validates everything that can be checked without an engine: schema, graph,
@@ -334,7 +304,7 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
 
         resolved.push(ContainerPlan {
             key: key.clone(),
-            start: crate::sandbox::resolve_start(file, key, container)?,
+            start: resolve_start(key, container)?,
             working_dir: crate::spawn::resolve_working_dir(
                 container.working_dir.as_deref(),
                 Some(worker_dir),
@@ -347,11 +317,23 @@ pub fn validate_offline(file: &ComposeFile, namespace: &str) -> Result<Validatio
         });
     }
 
+    crate::sandbox::validate_scripts(file)?;
+    let due = crate::sandbox::due_migrations(file);
+    let warnings = if due.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "migration due: {}; the next up rewrites them",
+            due.join(", ")
+        )]
+    };
+
     Ok(ValidationReport {
         namespace: namespace.to_string(),
         start_order,
         resolved,
         deferred_packages,
+        warnings,
     })
 }
 

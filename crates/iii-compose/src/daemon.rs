@@ -612,6 +612,27 @@ pub struct Daemon {
     shutdown: crate::shutdown::ShutdownController,
     /// Joined before project state is cleared; supervision must not write later.
     supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The `compose::build` operations of each project, which `down` cancels and waits for.
+    builds: Mutex<BTreeMap<PathBuf, Arc<BuildGate>>>,
+}
+
+/// The `compose::build` operations running on one project.
+struct BuildGate {
+    operations: std::sync::Mutex<BTreeSet<String>>,
+    /// Held shared by each build while it runs; `down` takes it whole to wait them out.
+    running: tokio::sync::RwLock<()>,
+    /// `true` while a `down` stops them, whether or not an operation was registered for them.
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for BuildGate {
+    fn default() -> Self {
+        Self {
+            operations: std::sync::Mutex::default(),
+            running: tokio::sync::RwLock::default(),
+            cancel: tokio::sync::watch::channel(false).0,
+        }
+    }
 }
 
 impl Daemon {
@@ -670,6 +691,7 @@ impl Daemon {
             stop_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown,
             supervisor: Mutex::new(None),
+            builds: Mutex::new(BTreeMap::new()),
         });
 
         *daemon.supervisor.try_lock().expect("new supervisor slot") =
@@ -741,6 +763,9 @@ impl Daemon {
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
         let mut edited = text.clone();
+        // Declarations the held project takes whole: what the explicit VM mode rewrote.
+        let mut rewritten = Vec::new();
+        let mut updated_adapter = None;
         let prepared = if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
             crate::sandbox::require_declared_adapter(&compose, &namespace)?;
@@ -749,6 +774,18 @@ impl Daemon {
             let mut prepared =
                 crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
             let path = compose.path.clone();
+            let mut install = false;
+            if let Some(migration) =
+                crate::sandbox::migrate(&path, &mut edited, &mut compose, &namespace, &mut prepared)
+                    .await?
+            {
+                rewritten.extend(migration.containers);
+                if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter {
+                    install = true;
+                    rewritten.push(adapter.key.clone());
+                    updated_adapter = Some(adapter.key);
+                }
+            }
             if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
                 crate::sandbox::apply_adapter_change(
                     &path,
@@ -763,7 +800,7 @@ impl Daemon {
                 )
                 .await?
             {
-                prepared.install(&package_cache).await?;
+                install = true;
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -774,15 +811,27 @@ impl Daemon {
                     false,
                 );
             }
+            if install {
+                prepared.install(&package_cache).await?;
+            }
             prepared
         };
+        crate::sandbox::validate_scripts(&compose)?;
+        crate::lifecycle::materialize_packages(file, &package_cache, &prepared).await?;
         let project = self.project(file).await?;
         if edited != text {
             persist_mutation(file, &text, &edited, &prepared)?;
         }
         project
-            .commit_prepared_packages(&compose, &prepared)
+            .commit_prepared_packages(&compose, &prepared, &rewritten)
             .await?;
+        // A running adapter the update replaced still lacks `worker.build`: it restarts on the new
+        // release, and the VM containers it runs follow it (spec 7.2).
+        if let Some(adapter) = updated_adapter
+            && project.is_running(&adapter).await
+        {
+            Box::pin(project.restart_one(&adapter, format!("{adapter}-update"))).await;
+        }
         Ok(project)
     }
 
@@ -1156,6 +1205,22 @@ impl Daemon {
             )
             .await??;
         let namespace = self.project_namespace(&current);
+        // What it adds runs in a VM the way a migrated container does (spec 7.1), and what is
+        // still due is migrated with it.
+        let added_keys: BTreeSet<String> = added.iter().cloned().collect();
+        let migration = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::rewrite_due(
+                    path,
+                    &mut edited,
+                    &mut current,
+                    &namespace,
+                    &mut prepared,
+                    &added_keys,
+                ),
+            )
+            .await??;
         let adapter = self
             .prepare(
                 &operation_id,
@@ -1172,11 +1237,16 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some() {
+        if adapter.is_some()
+            || migration
+                .as_ref()
+                .is_some_and(|migration| migration.adapter.is_some())
+        {
             self.prepare(&operation_id, prepared.install(&package_cache))
                 .await??;
         }
-        let yaml_changed = !added.is_empty() || !replaced.is_empty() || adapter.is_some();
+        let yaml_changed =
+            !added.is_empty() || !replaced.is_empty() || adapter.is_some() || migration.is_some();
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);
         }
@@ -1193,21 +1263,56 @@ impl Daemon {
         }
 
         if !yaml_changed && !prepared.changed() {
+            let version = prepared.resolved_version(&container).map(str::to_string);
+            // A retry finishes what a failed rebuild left (spec 5.3).
+            if let Some(outcome) = Box::pin(self.finish_pending_rebuilds(
+                path,
+                "add",
+                &operation_id,
+                Some(&container),
+                &requested,
+                version.clone(),
+            ))
+            .await?
+            {
+                return Ok(outcome);
+            }
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 Some(&container),
                 Some(&requested),
-                prepared.resolved_version(&container).map(str::to_string),
+                version,
                 std::iter::empty::<&OpResult>(),
             ));
         }
 
         self.prepare(&operation_id, std::future::ready(())).await?;
-        crate::sandbox::wire_adapter(&mut current)?;
+        crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let project = self.project(path).await?;
+        // Spec 5.3: what changed package is rebuilt while it still runs; one whose build fails
+        // keeps running on its old build, and is not restarted.
+        let changed: Vec<String> = restart
+            .iter()
+            .filter(|key| prepared.package_changed(key))
+            .cloned()
+            .collect();
+        // A VM ends with its adapter: one whose adapter restarts here cannot stay on its old build.
+        let cascaded = project.vms_restarting_with(&restart).await;
+        let rebuilt = Box::pin(self.rebuild_changed_packages(
+            &project,
+            &current,
+            &changed,
+            "add",
+            &operation_id,
+            &cascaded,
+        ))
+        .await?;
+        let unbuilt_keys: Vec<String> = rebuilt.failed.iter().map(|(key, _)| key.clone()).collect();
+        restart.retain(|key| !unbuilt_keys.contains(key));
+        let unbuilt = Self::rebuild_failures(&rebuilt.failed, &operation_id);
         let root_operation_id = operation_id.clone();
         let (restarted, up, interrupted) = project
             .reconcile_file(current, &restart, operation_id)
@@ -1218,6 +1323,7 @@ impl Daemon {
             });
         }
         let status = if up.status == OpStatus::Failed
+            || !unbuilt.is_empty()
             || restarted
                 .iter()
                 .any(|result| result.status == OpStatus::Failed)
@@ -1227,7 +1333,10 @@ impl Daemon {
             OpStatus::Ok
         };
         let version = prepared.resolved_version(&container).map(str::to_string);
-        let operations = restarted.iter().chain(std::iter::once(&up));
+        let operations = unbuilt
+            .iter()
+            .chain(restarted.iter())
+            .chain(std::iter::once(&up));
         Ok(MutationOutcome::from_operations(
             status,
             true,
@@ -1392,18 +1501,32 @@ impl Daemon {
         let (roots, all_explicit_exact_unchanged) = update_roots(&compose, &asked)?;
 
         if all_explicit_exact_unchanged && !roots.is_empty() {
+            let version = primary.and_then(|primary| {
+                compose
+                    .containers
+                    .get(primary)
+                    .and_then(|container| container.version.clone())
+            });
+            // A retry finishes what a failed rebuild left (spec 5.3).
+            if let Some(outcome) = Box::pin(self.finish_pending_rebuilds(
+                path,
+                "update",
+                &operation_id,
+                primary,
+                &requested,
+                version.clone(),
+            ))
+            .await?
+            {
+                return Ok(outcome);
+            }
             report_unchanged(path, &operation_id, &requested_names, UP_TO_DATE).await;
             return Ok(MutationOutcome::from_operations(
                 OpStatus::Ok,
                 false,
                 primary,
                 Some(&requested),
-                primary.and_then(|primary| {
-                    compose
-                        .containers
-                        .get(primary)
-                        .and_then(|container| container.version.clone())
-                }),
+                version,
                 std::iter::empty::<&OpResult>(),
             ));
         }
@@ -1501,6 +1624,12 @@ impl Daemon {
                 ),
             )
             .await??;
+        let migration = self
+            .prepare(
+                &operation_id,
+                crate::sandbox::migrate(path, &mut edited, &mut current, &namespace, &mut prepared),
+            )
+            .await??;
         let adapter = self
             .prepare(
                 &operation_id,
@@ -1517,7 +1646,7 @@ impl Daemon {
                 ),
             )
             .await??;
-        let yaml_changed = yaml_changed || adapter.is_some();
+        let yaml_changed = yaml_changed || adapter.is_some() || migration.is_some();
         let topology_changed = runtime_topology_changed(&compose, &current);
         for (root, nodes) in resolved_graphs {
             // Updating a generated adapter asks for a version, not for the adapter: a graph root
@@ -1570,6 +1699,19 @@ impl Daemon {
             .map(str::to_string);
 
         if !yaml_changed && !prepared.changed() {
+            // A retry finishes what a failed rebuild left (spec 5.3).
+            if let Some(outcome) = Box::pin(self.finish_pending_rebuilds(
+                path,
+                "update",
+                &operation_id,
+                primary,
+                &requested,
+                version.clone(),
+            ))
+            .await?
+            {
+                return Ok(outcome);
+            }
             if requested_names.is_empty() {
                 crate::report::daemon_line("Everything already up to date.", false);
                 if let Some(operation) = crate::operation::active(&operation_id) {
@@ -1590,6 +1732,7 @@ impl Daemon {
         }
 
         self.prepare(&operation_id, std::future::ready(())).await?;
+        crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         if !package_changed && !topology_changed {
@@ -1605,6 +1748,40 @@ impl Daemon {
                 version,
                 std::iter::empty::<&OpResult>(),
             ));
+        }
+
+        // Spec 5.3: what changed package is rebuilt while it still runs. A build that fails leaves
+        // the project running as it is, on its old builds: the restart below would stop it.
+        if let Some(project) = self.loaded_project(path).await {
+            let changed: Vec<String> = changed_versions.keys().cloned().collect();
+            let rebuilt = Box::pin(self.rebuild_changed_packages(
+                &project,
+                &current,
+                &changed,
+                "update",
+                &operation_id,
+                &[],
+            ))
+            .await?;
+            if !rebuilt.failed.is_empty() {
+                for (worker, error) in &rebuilt.failed {
+                    crate::report::update_failed(path, &operation_id, worker, &error.to_string());
+                    if let Some(operation) = crate::operation::active(&operation_id) {
+                        operation
+                            .emit(Some(worker), "failed", error.to_string())
+                            .await;
+                    }
+                }
+                let results = Self::rebuild_failures(&rebuilt.failed, &operation_id);
+                return Ok(MutationOutcome::from_operations(
+                    OpStatus::Failed,
+                    true,
+                    primary,
+                    Some(&requested),
+                    version,
+                    results.iter(),
+                ));
+            }
         }
 
         // The whole project, not just this container, and deliberately so. A
@@ -1666,6 +1843,13 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
 
         let path = path.as_path();
+        // A build of a removed container would hold the mutation lock until it ends, and keep
+        // its VM from being destroyed (S509): it stops first. Until the remove ends, a start or
+        // rebuild of it that takes its build slot gives up.
+        let mut _stopping = Vec::with_capacity(workers.len());
+        for worker in &workers {
+            _stopping.push(crate::build_step::stop(path, worker).await);
+        }
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1680,7 +1864,7 @@ impl Daemon {
         // The generated adapter goes once this edit leaves no VM needing it.
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
-        let mut removal_order = removal_order(&mut before, &requested)?;
+        let mut removal_order = removal_order(&before, &requested)?;
         let mut edited = text.clone();
         for worker in &workers {
             let Some(next) = crate::edit::remove_container(&edited, worker)? else {
@@ -1722,16 +1906,27 @@ impl Daemon {
             removal_order.push(key);
         }
 
+        // Read before anything is removed: a remove that removed answers no error of its own.
+        let package_cache = crate::state::StateStore::package_cache()?;
         // Claim or load the old project before replacing the file: cleanup of
         // the removed container needs its old scripts and environment.
         let project = self.project(path).await?;
         self.prepare(&operation_id, std::future::ready(())).await?;
-        crate::sandbox::wire_adapter(&mut current)?;
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
             .reconcile_removals(current, &removal_order, operation_id)
             .await;
+        // Its `.workers/<container>/` goes with its lock entry once it is stopped and its VM
+        // destroyed (spec 3.3).
+        if let Err(error) =
+            crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await
+        {
+            crate::report::daemon_line(
+                &format!("could not bring .workers/ in line with the lock: {error}"),
+                true,
+            );
+        }
         let status = if up.status == OpStatus::Failed
             || stopped
                 .iter()
@@ -1862,7 +2057,271 @@ impl Daemon {
         guard
     }
 
-    /// Takes a project down.
+    /// Spec 5.3 for an `operation` (`add` or `update`) that changed packages: rebuilds `keys` while
+    /// they run on their old build. A cancel of the operation builds nothing more and restarts
+    /// nothing (`OPERATION_CANCELLED`), naming what it already rebuilt. Each failure says that the
+    /// file and the lock already name the new version and how to finish, naming for an update the
+    /// rebuilt containers its failure leaves without their restart. A VM of `cascaded` goes down
+    /// with its adapter, which this operation restarts, so its failure says it could not stay on
+    /// its old build.
+    async fn rebuild_changed_packages(
+        &self,
+        project: &Project,
+        file: &ComposeFile,
+        keys: &[String],
+        operation: &str,
+        operation_id: &str,
+        cascaded: &[String],
+    ) -> Result<crate::lifecycle::Rebuilt> {
+        let cancel = self.cancellation(operation_id);
+        let mut rebuilt =
+            Box::pin(project.rebuild_changed(file, keys, operation_id, &cancel)).await;
+        if rebuilt.cancelled {
+            if rebuilt.built.is_empty() {
+                return Err(ComposeError::OperationCancelled {
+                    operation_id: operation_id.to_string(),
+                });
+            }
+            return Err(ComposeError::RebuildCancelled {
+                operation_id: operation_id.to_string(),
+                operation: operation.to_string(),
+                rebuilt: rebuilt.built,
+            });
+        }
+        let waiting = (operation == "update" && !rebuilt.failed.is_empty())
+            .then(|| rebuilt.built.join(", "))
+            .filter(|built| !built.is_empty());
+        for (key, error) in &mut rebuilt.failed {
+            let (code, message) = match &*error {
+                ComposeError::BuildFailed { code, message, .. } => (code.clone(), message.clone()),
+                other => (other.code().to_string(), other.to_string()),
+            };
+            let finish = format!(
+                "retry the {operation}, or run `iii sandbox build {key}` then `iii call \
+                 compose::restart worker={key}`, to finish it."
+            );
+            let mut retry = if cascaded.contains(key) {
+                format!(
+                    "The file and the lock already name its new version. It could not stay on its \
+                     previous build: its adapter restarts in this {operation}, and its VM ends \
+                     with it, so it starts again and builds then. Fix its build, then {finish}"
+                )
+            } else {
+                format!(
+                    "The file and the lock already name its new version, and it keeps running on \
+                     its previous build: {finish}"
+                )
+            };
+            if let Some(waiting) = &waiting {
+                retry.push_str(&format!(
+                    " Rebuilt, and not restarted because of it: {waiting}."
+                ));
+            }
+            *error = ComposeError::PackageRebuildFailed {
+                container: key.clone(),
+                code,
+                message,
+                retry,
+            };
+            crate::report::daemon_line(&error.to_string(), true);
+        }
+        Ok(rebuilt)
+    }
+
+    /// The outcome of an add or update whose rebuilds failed: one `BUILD_FAILED` per container.
+    fn rebuild_failures(failed: &[(String, ComposeError)], operation_id: &str) -> Vec<OpResult> {
+        failed
+            .iter()
+            .map(|(key, error)| {
+                crate::lifecycle::failed_op(format!("{operation_id}-build-{key}"), Some(key), error)
+            })
+            .collect()
+    }
+
+    /// An add or update retried after its rebuild failed or was cancelled: the file and the lock
+    /// are unchanged, but containers do not run their current build yet
+    /// ([`Project::pending_rebuilds`]). What still needs it is rebuilt, then restarted: an update
+    /// restarts the project once every rebuild succeeded, an add the containers whose rebuild did.
+    /// `None` when nothing is left to finish. The caller holds the mutation lock.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_pending_rebuilds(
+        &self,
+        path: &Path,
+        operation: &str,
+        operation_id: &str,
+        primary: Option<&str>,
+        requested: &[String],
+        version: Option<String>,
+    ) -> Result<Option<MutationOutcome>> {
+        let Some(project) = self.loaded_project(path).await else {
+            return Ok(None);
+        };
+        let mut current = ComposeFile::load(path)?;
+        crate::lockfile::attach(&mut current)?;
+        let pending = project.pending_rebuilds(&current).await;
+        if pending.is_empty() {
+            return Ok(None);
+        }
+        crate::report::daemon_line(
+            &format!(
+                "{}: not yet running their current build; finishing the {operation}",
+                pending.join(", ")
+            ),
+            false,
+        );
+        let cascaded = if operation == "update" {
+            Vec::new()
+        } else {
+            project.vms_restarting_with(&pending).await
+        };
+        let rebuilt = Box::pin(self.rebuild_changed_packages(
+            &project,
+            &current,
+            &pending,
+            operation,
+            operation_id,
+            &cascaded,
+        ))
+        .await?;
+        let unbuilt = Self::rebuild_failures(&rebuilt.failed, operation_id);
+        let restart: Vec<String> = pending
+            .into_iter()
+            .filter(|key| !rebuilt.failed.iter().any(|(failed, _)| failed == key))
+            .collect();
+        if (operation == "update" && !unbuilt.is_empty()) || restart.is_empty() {
+            return Ok(Some(MutationOutcome::from_operations(
+                OpStatus::Failed,
+                false,
+                primary,
+                Some(requested),
+                version,
+                unbuilt.iter(),
+            )));
+        }
+        if operation == "update" {
+            let (down, up) = Box::pin(self.restart_project(path, None, operation_id)).await?;
+            return Ok(Some(MutationOutcome::from_operations(
+                up.status,
+                true,
+                primary,
+                Some(requested),
+                version,
+                [&down, &up].into_iter(),
+            )));
+        }
+        let (restarted, up, interrupted) =
+            Box::pin(project.reconcile_file(current, &restart, operation_id.to_string())).await;
+        if interrupted {
+            return Err(ComposeError::OperationCancelled {
+                operation_id: operation_id.to_string(),
+            });
+        }
+        let status = if !unbuilt.is_empty()
+            || up.status == OpStatus::Failed
+            || restarted
+                .iter()
+                .any(|result| result.status == OpStatus::Failed)
+        {
+            OpStatus::Failed
+        } else {
+            OpStatus::Ok
+        };
+        Ok(Some(MutationOutcome::from_operations(
+            status,
+            true,
+            primary,
+            Some(requested),
+            version,
+            unbuilt
+                .iter()
+                .chain(restarted.iter())
+                .chain(std::iter::once(&up)),
+        )))
+    }
+
+    /// The build gate of the project `file` names.
+    async fn build_gate(&self, file: &Path) -> Arc<BuildGate> {
+        let key = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        Arc::clone(self.builds.lock().await.entry(key).or_default())
+    }
+
+    /// The containers `compose::build` would build: `worker`, or each that declares a
+    /// `scripts.build` or that the explicit VM mode will give one (spec 7.4). Read-only, for the
+    /// `requested` of its accepted answer.
+    pub async fn build_targets(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+    ) -> Result<Vec<String>> {
+        let path = self.resolve_file(file).await?;
+        let mut compose = ComposeFile::load(&path)?;
+        let _ = crate::lockfile::attach(&mut compose);
+        if let Some(worker) = worker {
+            return match compose.containers.contains_key(worker) {
+                true => Ok(vec![worker.to_string()]),
+                false => Err(ComposeError::UnknownContainer {
+                    container: worker.to_string(),
+                }),
+            };
+        }
+        Ok(compose
+            .containers
+            .iter()
+            .filter(|(_, container)| {
+                container.scripts.build.is_some()
+                    || crate::sandbox::migration_due(&compose, container)
+            })
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
+    /// `compose::build` (spec 7.4): under the project's mutation lock, rewrites what the explicit
+    /// VM mode needs (spec 7.3), loads the project and runs the builds, restarting nothing.
+    /// `compose::cancel` of `operation_id`, or a `down`, stops them.
+    pub async fn build(
+        &self,
+        file: Option<&Path>,
+        worker: Option<&str>,
+        operation_id: String,
+    ) -> Result<crate::lifecycle::BuildRun> {
+        let path = self.resolve_file(file).await?;
+        let path = path.as_path();
+        self.validate_engine_policy_file(path)?;
+        let gate = self.build_gate(path).await;
+        gate.operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(operation_id.clone());
+        let cancel =
+            self.cancellation(&operation_id)
+                .or(crate::shutdown::ShutdownSignal::from_receiver(
+                    gate.cancel.subscribe(),
+                ));
+        let cancelled = || ComposeError::OperationCancelled {
+            operation_id: operation_id.clone(),
+        };
+        let result = async {
+            let _running = gate.running.read().await;
+            let _mutation = cancel
+                .run(self.lock_mutation(path))
+                .await
+                .ok_or_else(cancelled)?;
+            let project = cancel
+                .run(self.prepare_start_project(path, false))
+                .await
+                .ok_or_else(cancelled)??;
+            crate::report::in_project_scope(path, project.build(worker, &operation_id, &cancel))
+                .await
+        }
+        .await;
+        gate.operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&operation_id);
+        result
+    }
+
+    /// Takes a project down. A `compose::build` running on it is cancelled first (spec 7.4).
     pub async fn down(
         &self,
         file: Option<&Path>,
@@ -1872,6 +2331,20 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
         let path = path.as_path();
         self.validate_engine_policy_file(path)?;
+        let gate = self.build_gate(path).await;
+        let building: Vec<String> = gate
+            .operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect();
+        gate.cancel.send_replace(true);
+        for build in &building {
+            self.operations.cancel(build).await;
+        }
+        drop(gate.running.write().await);
+        gate.cancel.send_replace(false);
         crate::report::mutation_begin(path);
         let project = self.project(path).await?;
         Ok(project.down(container, operation_id).await)
@@ -1928,8 +2401,10 @@ impl Daemon {
                 cwd: std::env::current_dir().unwrap_or_default(),
             });
         }
-        let compose = ComposeFile::load(file)?;
+        let mut compose = ComposeFile::load(file)?;
         self.engine_policy.validate_project(&compose)?;
+        // Read-only: a lock that cannot be read leaves the packages' kinds unknown, nothing more.
+        let _ = crate::lockfile::attach(&mut compose);
         let namespace = self.project_namespace(&compose);
         crate::manifest::validate_offline(&compose, &namespace)
     }
@@ -2275,11 +2750,10 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     })
 }
 
-/// The `requested` workers of `file`, dependents first. `file` is wired to its
-/// adapter, so a VM goes before the adapter it boots through: removing the VM
+/// The `requested` workers of `file`, dependents first. A VM container starts after its adapter
+/// (`start_after`, spec 7.1), so it goes before the adapter it boots through: removing the VM
 /// still finds the adapter running, never restarting one this removal took.
-fn removal_order(file: &mut crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
-    crate::sandbox::wire_adapter(file)?;
+fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
     Ok(file
         .start_order()?
         .into_iter()
@@ -4166,6 +4640,730 @@ containers:
         (dir, path)
     }
 
+    /// A gzip tarball holding one file, `name`, with `mode`.
+    fn archive_of(name: &str, mode: u32, body: &[u8]) -> Vec<u8> {
+        let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::default(),
+        ));
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        archive.append_data(&mut header, name, body).unwrap();
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// A stand-in engine: `sandbox-libkrun` is registered while the last pid in
+    /// `<root>/adapter.pids` lives, and any other worker while `<root>/<worker>/pid` does.
+    async fn pid_engine(root: &Path) -> String {
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+        let root = root.to_path_buf();
+        let alive = |pid: Option<String>| {
+            pid.and_then(|pid| pid.lines().last().and_then(|pid| pid.trim().parse().ok()))
+                .is_some_and(crate::process::is_running)
+        };
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let mut workers = Vec::new();
+                if alive(std::fs::read_to_string(root.join("adapter.pids")).ok()) {
+                    workers.push("sandbox-libkrun".to_string());
+                }
+                for entry in std::fs::read_dir(&root).unwrap().flatten() {
+                    if alive(std::fs::read_to_string(entry.path().join("pid")).ok()) {
+                        workers.push(entry.file_name().to_string_lossy().into_owned());
+                    }
+                }
+                let workers: Vec<_> = workers
+                    .iter()
+                    .map(|worker| serde_json::json!({ "name": worker, "namespace": "default" }))
+                    .collect();
+                answered(serde_json::json!({ "workers": workers }))
+            }
+            "engine::functions::list" => answered(serde_json::json!({ "functions": [] })),
+            "configuration::get" => {
+                serde_json::json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(serde_json::json!({ "action": "missing" })),
+            _ => not_found(),
+        })
+        .await;
+        url
+    }
+
+    /// A daemon on `engine`, once connected.
+    async fn connected_daemon(name: &str, engine: String) -> Arc<Daemon> {
+        let daemon = Daemon::start(
+            engine,
+            format!("{name}-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        while !daemon.engine().is_connected() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        daemon
+    }
+
+    /// Host bundles `keys`, each locked at 0.1.0 and running on a stand-in engine, with the
+    /// registry that serves any version of them. The build of `<key>` fails while
+    /// `<root>/fail-<key>` exists; while `<root>/slow` does, the first build passes and the next
+    /// one hangs, touching `<root>/building`.
+    async fn running_package_project(
+        root: &Path,
+        keys: &[&str],
+    ) -> (wiremock::MockServer, PathBuf, Arc<Daemon>, Arc<Project>) {
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        // Each version its own archive: an unchanged digest is an unchanged package.
+        let bundle = |name: &str, version: &str| {
+            archive_of(
+                crate::registry::BUNDLE_MANIFEST,
+                0o644,
+                format!("name: {name}\n# {version}\n").as_bytes(),
+            )
+        };
+        let server = MockServer::start().await;
+        let uri = server.uri();
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |request: &wiremock::Request| {
+                let asked: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let name = asked["worker"].as_str().unwrap().to_string();
+                let version = asked["version"]
+                    .as_str()
+                    .filter(|version| semver::Version::parse(version).is_ok())
+                    .unwrap_or("0.2.0")
+                    .to_string();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "graph": [{
+                    "name": name, "version": version, "type": "bundle",
+                    "archive_url": format!("{uri}/bundle/{name}/{version}"),
+                    "sha256": hex::encode(Sha256::digest(bundle(&name, &version))),
+                }]}))
+            })
+            .mount(&server)
+            .await;
+        let (mut containers, mut locked) = (String::new(), String::new());
+        for key in keys {
+            for version in ["0.1.0", "0.2.0"] {
+                Mock::given(matchers::method("GET"))
+                    .and(matchers::path(format!("/bundle/{key}/{version}")))
+                    .respond_with(ResponseTemplate::new(200).set_body_bytes(bundle(key, version)))
+                    .mount(&server)
+                    .await;
+            }
+            std::fs::create_dir(root.join(key)).unwrap();
+            containers.push_str(&format!(
+                "  {key}:\n    worker: package://api.workers.iii.dev/{key}\n    version: \"0.1.0\"\n    scripts:\n      build: 'test ! -e {root}/fail-{key} && if test -e {root}/slow; then if test -e {root}/first; then touch {root}/building; sleep 30; else touch {root}/first; fi; fi'\n      run: echo $$$$ > {root}/{key}/pid; exec sleep 60\n",
+                root = root.display()
+            ));
+            locked.push_str(&format!(
+                "  {key}:\n    worker: package://api.workers.iii.dev/{key}\n    requested: 0.1.0\n    resolved:\n      name: {key}\n      version: 0.1.0\n      type: bundle\n      artifacts:\n        {}:\n          url: {}/bundle/{key}/0.1.0\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                server.uri(),
+                hex::encode(Sha256::digest(bundle(key, "0.1.0")))
+            ));
+        }
+        let path = root.join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            format!("startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n{containers}"),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!("version: 1\ncontainers:\n{locked}"),
+        )
+        .unwrap();
+        let daemon = connected_daemon("rebuild-package", pid_engine(root).await).await;
+        let project = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), async {
+                let project = daemon.project(&path).await.unwrap();
+                let up = project.up(None, "first".into()).await;
+                assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+                project
+            })
+            .await;
+        (server, path, daemon, project)
+    }
+
+    /// The pid container `key` runs as, once it runs.
+    fn pid_of(root: &Path, key: &str) -> u32 {
+        std::fs::read_to_string(root.join(key).join("pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// Spec 5.3 through `compose::add` and `compose::update`: a cancel during the rebuilds
+    /// restarts nothing and answers `OPERATION_CANCELLED`, naming the container it already
+    /// rebuilt; the retry restarts both, that one included: its package is current, but the add
+    /// or update that rebuilt it did not restart it.
+    #[tokio::test]
+    async fn a_cancelled_rebuild_restarts_nothing_and_a_retry_finishes_it() {
+        for operation in ["add", "update"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let cache = tempfile::tempdir().unwrap();
+            crate::state::TEST_PACKAGE_CACHE
+                .scope(cache.path().to_path_buf(), async {
+                    let (server, path, daemon, _project) =
+                        running_package_project(&root, &["web", "job"]).await;
+                    let call = |operation_id: String| {
+                        let (daemon, path) = (Arc::clone(&daemon), path.clone());
+                        let workers = vec!["web@0.2.0".to_string(), "job@0.2.0".to_string()];
+                        crate::registry::TEST_REGISTRY.scope(server.uri(), async move {
+                            match operation {
+                                "add" => daemon.add(Some(&path), &workers, operation_id).await,
+                                _ => daemon.update(Some(&path), &workers, operation_id).await,
+                            }
+                        })
+                    };
+                    let pids = || [pid_of(&root, "web"), pid_of(&root, "job")];
+                    let before = pids();
+                    std::fs::write(root.join("slow"), "").unwrap();
+                    let cancelled = daemon.operations.create(1).await;
+                    let building = root.join("building");
+
+                    let (outcome, ()) = tokio::join!(call(cancelled.id().to_string()), async {
+                        while !building.exists() {
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                        cancelled.cancel();
+                    });
+
+                    let Err(error) = outcome else {
+                        panic!("{operation} was not cancelled");
+                    };
+                    assert_eq!(error.code(), "OPERATION_CANCELLED", "{operation}: {error}");
+                    let message = error.to_string();
+                    assert!(
+                        ["web", "job"].iter().any(|key| message.contains(&format!(
+                            "rebuilt and not yet restarted: {key}. Retry the {operation}"
+                        ))),
+                        "{operation}: {message}"
+                    );
+                    assert_eq!(pids(), before, "{operation} restarted a container");
+                    assert!(before.iter().all(|pid| crate::process::is_running(*pid)));
+
+                    std::fs::remove_file(root.join("slow")).unwrap();
+                    let finished =
+                        serde_json::to_value(call("retry".into()).await.unwrap()).unwrap();
+
+                    assert_eq!(finished["status"], "ok", "{operation}: {finished}");
+                    let after = pids();
+                    assert!(
+                        after[0] != before[0] && after[1] != before[1],
+                        "{operation}: {before:?} -> {after:?}"
+                    );
+                    daemon.shutdown().await;
+                })
+                .await;
+        }
+    }
+
+    /// Spec 3.3 and 5.3: the restart after `compose::build` is the user's. An update that changes
+    /// nothing afterwards restarts nothing, and answers that all is up to date.
+    #[tokio::test]
+    async fn an_explicit_build_leaves_the_next_unchanged_update_restarting_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let cache = tempfile::tempdir().unwrap();
+        Box::pin(
+            crate::state::TEST_PACKAGE_CACHE.scope(cache.path().to_path_buf(), async {
+                let (server, path, daemon, project) =
+                    running_package_project(&root, &["web"]).await;
+                let before = pid_of(&root, "web");
+                let record = root.join(".build/web/build.json");
+                let first = std::fs::metadata(&record).unwrap().modified().unwrap();
+                let controller = crate::shutdown::ShutdownController::default();
+                let run = Box::pin(project.build(Some("web"), "build", &controller.signal()))
+                    .await
+                    .unwrap();
+                assert!(
+                    !run.cancelled && run.results[0].status == crate::lifecycle::BuildStatus::Built,
+                    "{:?}",
+                    run.results
+                );
+                assert!(std::fs::metadata(&record).unwrap().modified().unwrap() > first);
+
+                let (updated, lines) =
+                    crate::report::capture_daemon_lines(crate::registry::TEST_REGISTRY.scope(
+                        server.uri(),
+                        Box::pin(daemon.update(
+                            Some(&path),
+                            &["web@0.1.0".to_string()],
+                            "update".into(),
+                        )),
+                    ))
+                    .await;
+
+                let updated = serde_json::to_value(updated.unwrap()).unwrap();
+                assert_eq!(updated["status"], "ok", "{updated}");
+                assert_eq!(updated["changed"], false, "{updated}");
+                assert_eq!(pid_of(&root, "web"), before, "the update restarted web");
+                assert!(
+                    !lines.iter().any(|line| line.contains("current build")),
+                    "{lines:?}"
+                );
+                daemon.shutdown().await;
+            }),
+        )
+        .await;
+    }
+
+    /// Spec 5.3 through `compose::add` and `compose::update`: the rebuild for the new package runs
+    /// while the old build does; one that fails leaves it running, answers `BUILD_FAILED` saying
+    /// how to finish, and a retry of the same call finishes it.
+    #[tokio::test]
+    async fn add_and_update_rebuild_before_restarting_and_a_retry_finishes() {
+        for operation in ["add", "update"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let cache = tempfile::tempdir().unwrap();
+            crate::state::TEST_PACKAGE_CACHE
+                .scope(cache.path().to_path_buf(), async {
+                    let (server, path, daemon, _project) =
+                        running_package_project(&root, &["web"]).await;
+                    let call = || {
+                        let (daemon, path) = (Arc::clone(&daemon), path.clone());
+                        let worker = vec!["web@0.2.0".to_string()];
+                        crate::registry::TEST_REGISTRY.scope(server.uri(), async move {
+                            let outcome = match operation {
+                                "add" => daemon.add(Some(&path), &worker, "add".into()).await,
+                                _ => daemon.update(Some(&path), &worker, "update".into()).await,
+                            };
+                            serde_json::to_value(outcome.unwrap()).unwrap()
+                        })
+                    };
+                    let before = pid_of(&root, "web");
+                    std::fs::write(root.join("fail-web"), "").unwrap();
+
+                    let failed = call().await;
+
+                    assert_eq!(failed["status"], "failed", "{operation}: {failed}");
+                    assert_eq!(
+                        failed["error"]["code"], "BUILD_FAILED",
+                        "{operation}: {failed}"
+                    );
+                    let message = failed["error"]["message"].as_str().unwrap();
+                    assert!(
+                        message.contains("already name its new version")
+                            && message.contains(&format!("retry the {operation}")),
+                        "{operation}: {message}"
+                    );
+                    assert_eq!(pid_of(&root, "web"), before, "{operation} stopped web");
+                    assert!(crate::process::is_running(before));
+                    assert!(
+                        std::fs::read_to_string(&path)
+                            .unwrap()
+                            .contains("version: \"0.2.0\"")
+                    );
+
+                    std::fs::remove_file(root.join("fail-web")).unwrap();
+                    let finished = call().await;
+
+                    assert_eq!(finished["status"], "ok", "{operation}: {finished}");
+                    assert_eq!(finished["changed"], true, "{operation}: {finished}");
+                    assert_ne!(
+                        pid_of(&root, "web"),
+                        before,
+                        "{operation} did not restart web"
+                    );
+                    daemon.shutdown().await;
+                })
+                .await;
+        }
+    }
+
+    /// Spec 3.3: `compose::remove` takes the container's `.build/` and `.workers/` along.
+    #[tokio::test]
+    async fn remove_takes_the_build_and_package_directories_of_the_container() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  api: {worker: path://./api, scripts: {run: echo $$$$ > pid; exec sleep 60}}\n  web:\n    worker: package://api.workers.iii.dev/web\n    version: 1.0.0\n    scripts: {run: node .}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n  web:\n    worker: package://api.workers.iii.dev/web\n    requested: 1.0.0\n    resolved:\n      name: web\n      version: 1.0.0\n      type: bundle\n      artifacts:\n        {}:\n          url: https://example.test/web\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                "0".repeat(64)
+            ),
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".workers/web")).unwrap();
+        // As KAN-281 records what it copied: only a recorded container is Compose's to prune.
+        std::fs::write(
+            dir.path().join(".workers/.packages.json"),
+            r#"{"schema":1,"containers":{"web":{"name":"web","version":"1.0.0","sha256":"sha256:00"}}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".workers/mine")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".build/web")).unwrap();
+        std::fs::write(dir.path().join(".build/web/build.json"), "{}").unwrap();
+        let daemon = connected_daemon("remove-directories", pid_engine(dir.path()).await).await;
+
+        // `.workers/` follows the lock once the rest of the project is up again.
+        let removed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            daemon.remove(Some(&path), &["web".to_string()], "remove".into()),
+        )
+        .await
+        .expect("the remove did not finish")
+        .unwrap();
+        let removed = serde_json::to_value(removed).unwrap();
+        assert_eq!(removed["status"], "ok", "{removed}");
+
+        assert!(!dir.path().join(".workers/web").exists());
+        assert!(!dir.path().join(".build/web").exists());
+        assert!(
+            dir.path().join(".workers/mine").exists(),
+            "an unrecorded directory went"
+        );
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("web"));
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.1: `compose::add` of a registry bundle writes `start_after` and both `scripts`,
+    /// beside the generated adapter, and answers for the bundle it added.
+    #[tokio::test]
+    async fn add_writes_the_explicit_vm_mode_of_a_bundle() {
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let adapter = adapter_archive();
+        let bundle = archive_of(
+            crate::registry::BUNDLE_MANIFEST,
+            0o644,
+            b"name: onboarding\nscripts: {start: node .}\n",
+        );
+        let server = MockServer::start().await;
+        let (adapter_sha, bundle_sha, uri) = (
+            hex::encode(Sha256::digest(&adapter)),
+            hex::encode(Sha256::digest(&bundle)),
+            server.uri(),
+        );
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(move |request: &wiremock::Request| {
+                let asked: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let name = asked["worker"].as_str().unwrap();
+                let node = if name == "sandbox-libkrun" {
+                    serde_json::json!({
+                        "name": name, "version": "0.4.0", "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": adapter_sha, "url": format!("{uri}/adapter"),
+                        }},
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": name, "version": "0.2.0", "type": "bundle",
+                        "archive_url": format!("{uri}/bundle"), "sha256": bundle_sha,
+                    })
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "graph": [node] }))
+            })
+            .mount(&server)
+            .await;
+        for (route, body) in [("/adapter", adapter.clone()), ("/bundle", bundle.clone())] {
+            Mock::given(matchers::method("GET"))
+                .and(matchers::path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+                .mount(&server)
+                .await;
+        }
+        // Every container required: the stand-in adapter exits before it registers, so the
+        // reconciliation stops there, and the bundle's build never runs.
+        let (dir, path) = vm_project(
+            "required_default: true\ncontainers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = connected_daemon("add-bundle", pid_engine(dir.path()).await).await;
+        let cache = tempfile::tempdir().unwrap();
+
+        let outcome = crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(
+                    server.uri(),
+                    daemon.add(Some(&path), &["onboarding".to_string()], "add".into()),
+                ),
+            )
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(
+                "  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\"\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n"
+            ),
+            "{text}"
+        );
+        let outcome = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(outcome["changed"], true, "{outcome}");
+        assert_eq!(outcome["worker"], "onboarding", "{outcome}");
+        assert_eq!(outcome["version"], "0.2.0", "{outcome}");
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.2: an `up` that moves a running generated adapter into ADAPTER_RANGE restarts it
+    /// on the new release, and the container that runs its VM through it follows.
+    #[tokio::test]
+    async fn up_restarts_a_running_adapter_it_moved_into_range() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let archive = archive_of(
+            &format!("sandbox-libkrun{}", std::env::consts::EXE_SUFFIX),
+            0o755,
+            format!(
+                "#!/bin/sh\necho $$ >> {}/adapter.pids\nexec sleep 60\n",
+                root.display()
+            )
+            .as_bytes(),
+        );
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        crate::sandbox::tests::manifest(
+            &root,
+            "app",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(
+            bin.join("iii"),
+            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("iii"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        let path = root.join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{PATH: '{}:/usr/bin:/bin'}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.3.1\"\n",
+                bin.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    requested: 0.3.1\n    resolved:\n      name: sandbox-libkrun\n      version: 0.3.1\n      type: binary\n      artifacts:\n        {}:\n          url: {}/artifact\n          sha256: \"{}\"\n",
+                crate::registry::host_targets()[0],
+                server.uri(),
+                hex::encode(Sha256::digest(&archive))
+            ),
+        )
+        .unwrap();
+        let daemon = connected_daemon("adapter-update", pid_engine(&root).await).await;
+        let cache = tempfile::tempdir().unwrap();
+        let pids = || {
+            std::fs::read_to_string(root.join("adapter.pids"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let started = || {
+            std::fs::read_to_string(root.join("started"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), async {
+                    // Running on 0.3.1, as a 0.26 daemon left it.
+                    let project = daemon.project(&path).await.unwrap();
+                    let up = project.up(None, "first".into()).await;
+                    assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+                    assert_eq!((pids(), started()), (1, 1));
+
+                    let up = daemon.up(Some(&path), None, "again".into()).await.unwrap();
+                    assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+                }),
+            )
+            .await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("    version: \"0.4.0\"\n"), "{text}");
+        assert_eq!(pids(), 2, "the adapter was not restarted");
+        assert_eq!(started(), 2, "app did not follow its adapter");
+        daemon.shutdown().await;
+    }
+
+    fn daemon(name: &str) -> Arc<Daemon> {
+        Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("{name}-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        )
+    }
+
+    /// Spec 7.3: `compose::validate`, `compose::status` and `compose::down` never edit the file,
+    /// and `validate` names the migration that is due.
+    #[tokio::test]
+    async fn read_only_paths_and_down_leave_a_026_file_as_it_is() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n";
+        let (_dir, path) = vm_project(text);
+        let daemon = daemon("read-only");
+
+        let report = daemon.validate(Some(&path)).await.unwrap();
+        daemon.status(Some(&path)).await.unwrap();
+        daemon.down(Some(&path), None, "down".into()).await.unwrap();
+
+        assert_eq!(
+            report.warnings,
+            ["migration due: vm; the next up rewrites them"]
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(!crate::lockfile::lock_path(&path).exists());
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.1: `compose::add` of a `path://` worker whose manifest sets `runtime.base_image`
+    /// writes `start_after` and both `scripts`, beside the generated adapter.
+    #[tokio::test]
+    async fn add_writes_the_explicit_vm_mode_of_a_base_image_worker() {
+        let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
+        let (dir, path) = vm_project(
+            "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n",
+        );
+        std::fs::create_dir(dir.path().join("api")).unwrap();
+        let daemon = daemon("add-explicit");
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                daemon.add(Some(&path), &["./vm".to_string()], "add".into()),
+            ),
+        )
+        .await;
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains(
+                "  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("  # added by compose::add\n  sandbox-libkrun:\n"),
+            "{text}"
+        );
+        assert!(
+            text.starts_with(
+                "containers:\n  api:\n    worker: path://./api\n    scripts: { run: exit 0 }\n"
+            ),
+            "{text}"
+        );
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.4: `compose::build` builds a named container or every one that declares a build,
+    /// skips `""`, restarts nothing, and stops at `compose::cancel` or `down`.
+    #[tokio::test]
+    async fn compose_build_runs_the_builds_and_stops_at_cancel_or_down() {
+        let dir = tempfile::tempdir().unwrap();
+        for worker in ["api", "skip", "none", "slow"] {
+            std::fs::create_dir(dir.path().join(worker)).unwrap();
+        }
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  api: {worker: path://./api, scripts: {build: 'echo built > out', run: x}}\n  skip: {worker: path://./skip, scripts: {build: '', run: x}}\n  none: {worker: path://./none, scripts: {run: x}}\n  slow: {worker: path://./slow, scripts: {build: 'touch started; sleep 30', run: x}}\n",
+        )
+        .unwrap();
+        let daemon = daemon("compose-build");
+        let statuses = |results: Vec<crate::lifecycle::BuildResult>| {
+            results
+                .into_iter()
+                .map(|result| (result.worker, result.status))
+                .collect::<Vec<_>>()
+        };
+        use crate::lifecycle::BuildStatus::{Built, Skipped};
+
+        let built = daemon
+            .build(Some(&path), Some("api"), "one".into())
+            .await
+            .unwrap();
+        assert!(!built.cancelled);
+        assert_eq!(statuses(built.results), [("api".to_string(), Built)]);
+        assert!(dir.path().join("api/out").exists());
+        assert!(dir.path().join(".build/api/build.json").exists());
+        let skipped = daemon
+            .build(Some(&path), Some("skip"), "skip".into())
+            .await
+            .unwrap();
+        assert_eq!(statuses(skipped.results), [("skip".to_string(), Skipped)]);
+        assert_eq!(
+            daemon.build_targets(Some(&path), None).await.unwrap(),
+            ["api", "skip", "slow"]
+        );
+
+        // The whole project, in the background: `down` stops it.
+        let background = |operation: &'static str, worker: Option<&'static str>| {
+            let (daemon, path) = (Arc::clone(&daemon), path.clone());
+            tokio::spawn(async move { daemon.build(Some(&path), worker, operation.into()).await })
+        };
+        let started = dir.path().join("slow/started");
+        let wait_started = || async {
+            while !started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        let task = background("all", None);
+        wait_started().await;
+        let began = std::time::Instant::now();
+        daemon.down(Some(&path), None, "down".into()).await.unwrap();
+        let run = task.await.unwrap().unwrap();
+        assert!(run.cancelled, "{run:?}");
+        assert!(began.elapsed() < std::time::Duration::from_secs(15));
+
+        // `compose::cancel` of its operation.
+        std::fs::remove_file(&started).unwrap();
+        let operation = daemon
+            .operations
+            .create_with_id("cancelled".into(), 1)
+            .await
+            .unwrap();
+        let task = background("cancelled", Some("slow"));
+        wait_started().await;
+        let began = std::time::Instant::now();
+        operation.cancel();
+        let run = task.await.unwrap().unwrap();
+        assert!(run.cancelled, "{run:?}");
+        assert_eq!(
+            run.results[0].error.as_ref().unwrap().code,
+            "OPERATION_CANCELLED"
+        );
+        assert!(began.elapsed() < std::time::Duration::from_secs(15));
+        daemon.shutdown().await;
+    }
+
     /// A `sandbox-libkrun` release whose binary exits at once.
     fn adapter_archive() -> Vec<u8> {
         let mut archive = tar::Builder::new(flate2::write::GzEncoder::new(
@@ -4211,7 +5409,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4221,7 +5419,7 @@ containers:
         .unwrap();
         assert_eq!(
             lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
@@ -4251,7 +5449,7 @@ containers:
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "graph": [{
                         "name": "sandbox-libkrun",
-                        "version": "0.3.0",
+                        "version": "0.4.0",
                         "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": digest,
@@ -4281,7 +5479,10 @@ containers:
 
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
-        let (_dir, path) = vm_project("containers:\n  vm:\n    worker: path://./vm\n");
+        // Written in the explicit VM mode, as the build's own migration (KAN-281) leaves it.
+        let (_dir, path) = vm_project(
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+        );
         // Two private caches: the frozen build starts cold, so it downloads.
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         TEST_PACKAGE_CACHE
@@ -4315,7 +5516,7 @@ containers:
     /// restarts the adapter this same removal stopped.
     #[test]
     fn a_vm_is_removed_before_the_adapter_it_boots_through() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4323,18 +5524,22 @@ containers:
         .unwrap() else {
             panic!("the adapter is new");
         };
+        let text = text.replace(
+            "    worker: path://./vm\n",
+            "    worker: path://./vm\n    start_after: [sandbox-libkrun]\n",
+        );
         let (_dir, path) = vm_project(&text);
-        let mut compose = ComposeFile::parse(&text, &path).unwrap();
+        let compose = ComposeFile::parse(&text, &path).unwrap();
         let requested = BTreeSet::from(["vm", "sandbox-libkrun"]);
         assert_eq!(
-            removal_order(&mut compose, &requested).unwrap(),
+            removal_order(&compose, &requested).unwrap(),
             ["vm", "sandbox-libkrun"]
         );
     }
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.3.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -4358,7 +5563,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.3'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.4'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -4374,7 +5579,7 @@ containers:
             .collect();
         assert_eq!(
             versions,
-            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.3"))])
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.4"))])
         );
     }
 
@@ -4410,7 +5615,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4485,7 +5690,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.3.0"),
+            Some("0.4.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -4736,6 +5941,7 @@ mod mutation_outcome_tests {
                 error: Some(OpError {
                     code: "STARTUP_TIMEOUT".into(),
                     message: "container 'mailer' was not ready after 2s".into(),
+                    cause: None,
                 }),
             }],
             primary_error: None,
@@ -4762,6 +5968,7 @@ mod mutation_outcome_tests {
         let primary_error = OpError {
             code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
             message: "container 'tailscale' exited with 1 before it registered. It last said:\nretry secret output".into(),
+            cause: None,
         };
         let result = OpResult {
             operation_id: "diagnostic-only".into(),
@@ -4820,6 +6027,7 @@ mod mutation_outcome_tests {
         let primary_error = OpError {
             code: "CHILD_EXITED_BEFORE_REGISTRATION".into(),
             message: "container 'api' exited with 9 before it registered".into(),
+            cause: None,
         };
 
         let result = OpResult {
@@ -4834,6 +6042,7 @@ mod mutation_outcome_tests {
                     error: Some(OpError {
                         code: "STARTUP_TIMEOUT".into(),
                         message: "container 'mailer' was not ready after 2s".into(),
+                        cause: None,
                     }),
                 },
                 ContainerResult {
