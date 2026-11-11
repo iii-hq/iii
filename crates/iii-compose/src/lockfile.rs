@@ -145,7 +145,6 @@ impl PreparedLock {
     }
 
     /// Every locked container with the package it resolved to, in key order.
-    // Wired by KAN-281: `registry::materialize_project`.
     pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)> {
         self.lock
             .containers

@@ -5003,7 +5003,8 @@ containers:
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".workers/web")).unwrap();
-        // As KAN-281 records what it copied: only a recorded container is Compose's to prune.
+        // As `materialize_project` records what it copied: only a recorded container is
+        // Compose's to prune.
         std::fs::write(
             dir.path().join(".workers/.packages.json"),
             r#"{"schema":1,"containers":{"web":{"name":"web","version":"1.0.0","sha256":"sha256:00"}}}"#,
@@ -5480,7 +5481,7 @@ containers:
 
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
-        // Written in the explicit VM mode, as the build's own migration (KAN-281) leaves it.
+        // Written in the explicit VM mode, as the build's own migration leaves it.
         let (_dir, path) = vm_project(
             "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
         );

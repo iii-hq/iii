@@ -556,7 +556,6 @@ const WORKERS_LOCK_FILE: &str = ".lock";
 ///   no longer locked, and the temporary copies and files an interrupted run left. Anything
 ///   else in `.workers/` stays.
 /// - A project with no package and no `.workers/` gets none.
-// Wired by KAN-280 (`lifecycle.rs`) and KAN-281 (`build.rs`).
 pub async fn materialize_project(
     compose_dir: &Path,
     cache_root: &Path,

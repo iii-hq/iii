@@ -118,7 +118,7 @@ pub fn resolve_engine_mode(
 }
 
 /// Where a project's daemon is reached: its engine, its namespace and the compose file.
-// Wired by KAN-280 (`iii compose logs`) and KAN-282 (`iii sandbox build`).
+// Used by `iii compose logs` and by `iii sandbox` (sandbox_cli.rs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectTarget {
     /// The engine URL, resolved as [`resolve_engine_mode`] does.

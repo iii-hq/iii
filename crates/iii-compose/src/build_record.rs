@@ -52,7 +52,6 @@ pub(crate) const DEPENDENCY_FILES: [&str; 13] = [
 ];
 
 /// A container's last successful build, as `build.json` holds it.
-// Written by KAN-280 (host builds) and KAN-282 (`iii sandbox build`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildRecord {
     /// Version of the file's format: [`SCHEMA`].
@@ -118,7 +117,6 @@ pub struct BuildContract {
 }
 
 /// What a build was made from: a locked package or a `path://` directory.
-// Built by `source` (KAN-281); read by KAN-280 and KAN-282.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BuildSource {
@@ -136,7 +134,6 @@ pub enum BuildSource {
 }
 
 /// One difference between a build's record and the container's current inputs (spec 5.5).
-// Read by KAN-280: the first-build and out-of-date checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     /// The package or directory changed: a package update, which rebuilds.
@@ -154,7 +151,6 @@ pub enum Change {
 ///
 /// A temporary file left by an interrupted write is not a build. A `build.json` of another
 /// [`SCHEMA`], or that does not parse, is an error that asks for a rebuild, which replaces it.
-// Wired by KAN-280 (build checks) and KAN-282 (`iii sandbox run`).
 pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
     let path = build_dir.join(BUILD_FILE);
     let bytes = match std::fs::read(&path) {
@@ -170,7 +166,6 @@ pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
 ///
 /// Creates `build_dir`, and the `.gitignore` of its `.build/` when there is none yet (spec
 /// 3.2). Only a parent named `.build` gets one: a `build_dir` elsewhere leaves its parent alone.
-// Wired by KAN-280 (host builds) and KAN-282 (`iii sandbox build`).
 pub fn write(build_dir: &Path, record: &BuildRecord) -> Result<()> {
     if let Some(builds) = build_dir
         .parent()
@@ -226,7 +221,6 @@ fn remove_temporary_files(build_dir: &Path) -> Result<()> {
 /// declared (`${VAR}` expanded, as Compose reads it). A `package://` gives the package that
 /// `.workers/<container>/` holds, as `.workers/.packages.json` records it, and is
 /// `PACKAGE_NOT_INSTALLED` until `materialize_project` copied it there.
-// Wired by KAN-280 (host builds) and KAN-282 (`iii sandbox build`).
 pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
     let worker = declared_worker(compose_file, container)?;
     if let Some(dir) = worker.strip_prefix("path://").filter(|dir| !dir.is_empty()) {
@@ -259,7 +253,7 @@ pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
 ///
 /// A directory without `iii.worker.yaml` sets none; a manifest that does not parse is
 /// `INVALID_MANIFEST`, as everywhere else Compose reads one.
-// Wired by KAN-282: `iii sandbox build`.
+// Called by `iii sandbox build` (sandbox_cli.rs).
 pub fn declared_base_image(worker_dir: &Path) -> Result<Option<String>> {
     Ok(crate::manifest::read_manifest(worker_dir)?.and_then(|manifest| manifest.base_image))
 }
@@ -267,7 +261,6 @@ pub fn declared_base_image(worker_dir: &Path) -> Result<Option<String>> {
 /// `sha256:<hex>` of each dependency file of spec 5.4 present at the root of `worker_dir`.
 ///
 /// Only regular files count, a symlink to one included; a missing file is left out.
-// Wired by KAN-280 (host builds) and KAN-282 (`iii sandbox build`).
 pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
     let mut hashes = BTreeMap::new();
     for name in DEPENDENCY_FILES {
@@ -288,7 +281,6 @@ pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
 /// In order: the source, the dependency files (every name added, removed or changed, sorted),
 /// and, for a VM build, the declared base image. A host build records no image, so its base
 /// image is not compared.
-// Wired by KAN-280: the first-build and out-of-date checks.
 pub fn changes(
     record: &BuildRecord,
     compose_file: &Path,
@@ -334,7 +326,6 @@ pub fn changes(
 /// `<compose dir>/.build/<container>`, the container's build directory.
 ///
 /// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
-// Wired by KAN-280 (`III_BUILD_DIR`, `compose::build`).
 pub fn build_dir(compose_dir: &Path, container: &str) -> PathBuf {
     compose_dir.join(BUILDS_DIR).join(container)
 }
@@ -342,7 +333,6 @@ pub fn build_dir(compose_dir: &Path, container: &str) -> PathBuf {
 /// `<compose dir>/.workers/<container>`, the container's package directory.
 ///
 /// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
-// Wired by KAN-281 (`materialize_project`) and KAN-280 (`III_PACKAGE_DIR`).
 pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf {
     compose_dir.join(WORKERS_DIR).join(container)
 }
