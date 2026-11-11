@@ -18,7 +18,7 @@ In 0.26, Compose decided by itself that a worker ran in a microVM: a registry `b
 ```
 
 - **The file shows where each worker runs.** `iii sandbox build` asks the sandbox adapter to build
-  an image of the worker, locally, and leaves it in `<project>/.build/<container>/`.
+  an image of the worker, locally, and leaves it in `<project>/.iii/build/<container>/`.
   `iii sandbox run` boots that image. Moving a worker between a VM, the host, and Docker is an edit
   of `scripts`.
 - **Build and run are separate.** A run never installs dependencies, and a restart repeats the run
@@ -43,9 +43,9 @@ In 0.26, Compose decided by itself that a worker ran in a microVM: a registry `b
 The new keys are `scripts.build`, `scripts.build_timeout`, and `scripts.run` on a bundle.
 
 In any project, with or without a VM worker, a container key is now also the name of its
-directories, `.build/<key>/` and `.workers/<key>/`. A key that is empty or blank, holds `/` or `\`,
-starts with `.`, or holds a NUL, such as `.internal` or `a/b`, loaded in 0.26 and now fails with
-`INVALID_CONTAINER_KEY`. Rename such keys before the first run of the new release, and the
+directories, `.iii/build/<key>/` and `.iii/workers/<key>/`. A key that is empty or blank, holds `/`
+or `\`, starts with `.`, or holds a NUL, such as `.internal` or `a/b`, loaded in 0.26 and now fails
+with `INVALID_CONTAINER_KEY`. Rename such keys before the first run of the new release, and the
 `start_after` entries that name them.
 
 - **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.4 release (`^0.4`), the releases with
@@ -71,8 +71,8 @@ git commit -m "Compose project before the explicit VM mode"
 | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | A `bundle`, or a `path://` with `runtime.base_image`, runs in a VM. The file does not say so. | A container runs in a VM when `scripts.build` is `iii sandbox build` and `scripts.run` is `iii sandbox run`. |
 | Compose boots the VM itself, with `worker::prepare` and then `worker::start`.                 | Compose starts `iii sandbox run` as a process. It boots the image the build left.                            |
-| `scripts.install` runs in the guest on first boot and persists on the VM's disk.              | `iii sandbox build` installs the dependencies into an image, `.build/<container>/image.erofs`.               |
-| A bundle's `/workspace` is its directory in the global package cache, mounted read-write.     | A bundle's code is in the image. `.workers/<container>/` is the build's input only.                          |
+| `scripts.install` runs in the guest on first boot and persists on the VM's disk.              | `iii sandbox build` installs the dependencies into an image, `.iii/build/<container>/image.erofs`.           |
+| A bundle's `/workspace` is its directory in the global package cache, mounted read-write.     | A bundle's code is in the image. `.iii/workers/<container>/` is the build's input only.                      |
 | `scripts.run` on a package fails with `RUN_NOT_ALLOWED_FOR_PACKAGE`.                          | Allowed on a bundle. Still refused for a `binary` package.                                                   |
 | `scripts` takes `pre_run`, `pre_run_timeout`, `run`, and `post_run`.                          | `scripts` also takes `build` and `build_timeout`.                                                            |
 | Any container key.                                                                            | A plain directory name: not empty or blank, no `/` or `\`, no leading `.`, no NUL (`INVALID_CONTAINER_KEY`). |
@@ -81,9 +81,10 @@ git commit -m "Compose project before the explicit VM mode"
 | `iii sandbox` is hidden from `iii --help`.                                                    | `iii sandbox` is listed again, with `build`, `run`, and `destroy`.                                           |
 | A rebuild has no command.                                                                     | `iii sandbox build <container>` and `compose::build` rebuild.                                                |
 
-The project gains two directories, `.workers/` (a copy of each package) and `.build/` (one directory
-per container that has a build). See [The project tree](../using-iii/compose#the-project-tree). Each
-VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
+The project gains two directories, `.iii/workers/` (a copy of each package) and `.iii/build/` (one
+directory per container that has a build). See
+[The project tree](../using-iii/compose#the-project-tree). Each VM's data disk stays under
+`~/.iii/sandbox/workers/<vm_id>/`.
 
 ## Upgrade a project
 
@@ -100,7 +101,7 @@ VM's data disk stays under `~/.iii/sandbox/workers/<vm_id>/`.
    See [Update the sandbox adapter](#update-the-sandbox-adapter).
 6. Preview the rewrite. `iii compose build` needs no engine and no daemon, and boots no VM. It
    updates or adds the generated adapter container and the lock, rewrites the containers, and fills
-   `.workers/` from the lock. It does not run `scripts.build`:
+   `.iii/workers/` from the lock. It does not run `scripts.build`:
 
    ```bash
    iii compose build
@@ -229,7 +230,7 @@ A `path://` whose manifest sets `runtime.base_image` stays on the host when it d
 A `build:` key without a value counts as absent, and Compose rewrites that container into the VM.
 
 A bundle stays on the host when its `scripts.run` is a host command. It runs `scripts.build` and
-`scripts.run` in `.workers/<container>/`, and gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME`.
+`scripts.run` in `.iii/workers/<container>/`, and gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME`.
 
 Both are edits of `scripts`, and later runs leave them alone, with or without a lock.
 
@@ -327,13 +328,13 @@ restarts and rebuilds. Only `iii sandbox destroy` and `compose::remove` reset it
 - **Package updates.** `compose::update` that changes a package rebuilds the container before
   restarting it. A failed rebuild keeps the old build running, and retrying the update finishes it.
   See [Compose / Rebuilds](../using-iii/compose#rebuilds).
-- **Project directories.** Compose writes a `.gitignore` containing `*` in `.workers/` and in
-  `.build/`, so your own `.gitignore` needs no edit.
+- **Project directories.** Compose writes a `.gitignore` containing `*` in `.iii/workers/` and in
+  `.iii/build/`, so your own `.gitignore` needs no edit.
 - **Removing a container.** `compose::remove` stops a build of the container that is still running,
-  deletes `.build/<container>/` and `.workers/<container>/`, and has the adapter destroy the VM's
-  data disk.
+  deletes `.iii/build/<container>/` and `.iii/workers/<container>/`, and has the adapter destroy the
+  VM's data disk.
 - **`iii compose build`.** It also updates or adds the generated adapter, runs the rewrite, and
-  copies the packages into `.workers/`. It does not run `scripts.build`.
+  copies the packages into `.iii/workers/`. It does not run `scripts.build`.
 
 ## Roll back
 
@@ -369,7 +370,7 @@ See [Keep the data of migrated VMs](#keep-the-data-of-migrated-vms).
 | `BUILD_MISSING`                | `iii sandbox run` without `build.json`.                                                                                                                                            |
 | `BUILD_FAILED`                 | A first build or a package rebuild failed. Carries `{ code, message }`.                                                                                                            |
 | `OPERATION_CANCELLED`          | A cancelled `compose::build`, add, or update, or a cancelled `iii sandbox build` (exit 130).                                                                                       |
-| `INVALID_CONTAINER_KEY`        | A container key that cannot name `.build/<key>/` and `.workers/<key>/`.                                                                                                            |
+| `INVALID_CONTAINER_KEY`        | A container key that cannot name `.iii/build/<key>/` and `.iii/workers/<key>/`.                                                                                                    |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE`  | Kept, for `binary` packages only.                                                                                                                                                  |
 
 The sandbox adapter adds [S507](../creating-workers/sandboxes#S507),
