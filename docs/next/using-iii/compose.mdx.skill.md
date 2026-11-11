@@ -516,8 +516,8 @@ the next time the worker is restarted.
 
 ### Building workers
 
-`compose::build` runs `scripts.build` for one container, or for every container that has a
-non-empty one. It is a mutation, like `compose::restart`.
+`compose::build` runs `scripts.build` for one container, or for every container that declares
+one. It is a mutation, like `compose::restart`.
 
 ```text
 iii call compose::build [file=<path>] [worker=<container>]
@@ -526,13 +526,13 @@ iii call compose::build [file=<path>] [worker=<container>]
 | Field          | Description                                                                 |
 | -------------- | --------------------------------------------------------------------------- |
 | `file`         | The project to build.                                                       |
-| `worker`       | A container key. Omitted, every container with a non-empty `scripts.build`. |
+| `worker`       | A container key. Omitted, every container that declares `scripts.build`.    |
 | `operation_id` | Optional, as for other mutations.                                           |
 
 - It is asynchronous. It answers `{ operation_id, status: "accepted", requested }`, holds the
   project's mutation lock while it runs, and reports progress per container (`building`, `built`,
   `failed`) through `compose::on-operation-progress`.
-- A container whose `scripts.build` is `""` is reported as `skipped`.
+- A container whose `scripts.build` is `""` is reported as `skipped`, named or not.
 - It starts the adapter first when the project is down, as `compose::remove` does.
 - It never restarts a container. A running container keeps its current build until it restarts.
 - `compose::cancel` of the operation and `compose::down` stop it, and `compose::remove` stops the

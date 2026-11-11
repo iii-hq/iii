@@ -50,11 +50,16 @@ wait_for_port() {
 # tutorial that is acceptable.
 wait_for_containers() {
   local log=$1 tries=${2:-600}
+  local status
   for ((i = 0; i < tries; i++)); do
+    # The latest status decides: a container can fail after an earlier line
+    # reported every one running.
     # LC_ALL=C: BSD grep (macOS) fails a backreference on UTF-8 input in a UTF-8 locale.
-    LC_ALL=C grep -qE 'Containers Running \(([0-9]+)/\1\)' "$log" && return 0
-    LC_ALL=C grep -qE 'Containers (Cancelled|Failed)' "$log" && return 1
-    LC_ALL=C grep -qE '✗ Containers Running \([0-9]+/[0-9]+\)' "$log" && return 1
+    status="$(LC_ALL=C grep -oE '(✗ )?Containers (Running \([0-9]+/[0-9]+\)|Cancelled|Failed)' "$log" | tail -n 1)"
+    case "$status" in
+      "✗ "* | *Cancelled | *Failed) return 1 ;;
+    esac
+    LC_ALL=C grep -qE '^Containers Running \(([0-9]+)/\1\)$' <<<"$status" && return 0
     sleep 1
   done
   return 1
