@@ -483,7 +483,10 @@ fn build_target(request: &ComposeRequest) -> Option<&str> {
 /// its first failure, or ok.
 fn build_report(result: &crate::error::Result<crate::lifecycle::BuildRun>) -> Result<Value, Error> {
     match result {
-        Ok(run) if run.cancelled => Ok(json!({ "status": "cancelled" })),
+        Ok(run) if run.cancelled => Ok(json!({
+            "status": "cancelled",
+            "error": { "code": "OPERATION_CANCELLED" },
+        })),
         Ok(run) => Ok(
             match run.results.iter().find_map(|result| result.error.as_ref()) {
                 Some(error) => json!({ "status": "failed", "error": { "code": error.code } }),
@@ -1932,7 +1935,7 @@ mod tests {
         );
         assert_eq!(
             build_report(&run(vec![failed.clone()], true)).unwrap(),
-            json!({ "status": "cancelled" })
+            json!({ "status": "cancelled", "error": { "code": "OPERATION_CANCELLED" } })
         );
         assert_eq!(
             build_report(&run(vec![BuildResult::skipped("web"), failed], false)).unwrap(),
