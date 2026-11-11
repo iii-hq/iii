@@ -5014,6 +5014,10 @@ containers:
         std::fs::create_dir_all(dir.path().join(".iii/workers/mine")).unwrap();
         std::fs::create_dir_all(dir.path().join(".iii/build/web")).unwrap();
         std::fs::write(dir.path().join(".iii/build/web/build.json"), "{}").unwrap();
+        // The rest of the project's `.iii/`, which the remove leaves alone.
+        std::fs::write(dir.path().join(".iii/project.ini"), "[project]\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".iii/compose/other")).unwrap();
+        std::fs::write(dir.path().join(".iii/compose/other/state.json"), "{}").unwrap();
         let daemon = connected_daemon("remove-directories", pid_engine(dir.path()).await).await;
 
         // `.iii/workers/` follows the lock once the rest of the project is up again.
@@ -5033,6 +5037,8 @@ containers:
             dir.path().join(".iii/workers/mine").exists(),
             "an unrecorded directory went"
         );
+        assert!(dir.path().join(".iii/project.ini").is_file());
+        assert!(dir.path().join(".iii/compose/other/state.json").is_file());
         assert!(!std::fs::read_to_string(&path).unwrap().contains("web"));
         daemon.shutdown().await;
     }

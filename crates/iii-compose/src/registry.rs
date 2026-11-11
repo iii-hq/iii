@@ -3121,10 +3121,18 @@ mod tests {
         std::fs::write(workers.join("notes.txt"), "mine").unwrap();
         std::fs::write(workers.join(".packages.json.tmp-interrupted"), "{").unwrap();
         std::fs::write(workers.join(".gitignore.tmp-interrupted"), "").unwrap();
-        // A record edited by hand that names Compose's own lock file: not a package directory.
+        // A record edited by hand that names Compose's own lock file, or the `.iii/` that holds
+        // `.iii/workers/`: not package directories.
         let mut edited = recorded(project.path());
-        edited["containers"][".lock"] = edited["containers"]["queue"].clone();
+        for name in [".lock", "..", "../compose"] {
+            edited["containers"][name] = edited["containers"]["queue"].clone();
+        }
         std::fs::write(workers.join(".packages.json"), edited.to_string()).unwrap();
+        // The rest of the project's `.iii/` is not Compose's to prune.
+        let iii = project.path().join(".iii");
+        std::fs::write(iii.join("project.ini"), "[project]\n").unwrap();
+        std::fs::create_dir_all(iii.join("compose/default")).unwrap();
+        std::fs::write(iii.join("compose/default/state.json"), "{}").unwrap();
 
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
         materialize_project(project.path(), cache.path(), &lock)
@@ -3160,6 +3168,8 @@ mod tests {
             recorded(project.path()),
             serde_json::json!({ "schema": 1, "containers": {} })
         );
+        assert_eq!(names(&iii), ["compose", "project.ini", "workers"]);
+        assert!(iii.join("compose/default/state.json").is_file());
     }
 
     #[tokio::test]
