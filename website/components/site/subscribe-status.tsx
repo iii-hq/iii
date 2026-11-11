@@ -14,12 +14,16 @@ export function SubscribeStatus({ title, children }: { title: string; children: 
   return (
     <>
       <SiteHeader />
-      <main className={cn(wideContainer, 'py-40')}>
-        <div className="max-w-xl">
+      {/* At least a full screen, so the footer starts below the fold; the message sits in its middle (the header is
+          fixed over it). */}
+      <main className={cn(wideContainer, 'flex min-h-svh items-center justify-center py-32')}>
+        <div className="flex w-full max-w-xl flex-col items-center text-center">
           <PixelHeading as="h1" className="text-[40px]">
             {title}
           </PixelHeading>
-          <div className="mt-6 space-y-6 text-pretty text-[15px] text-muted-foreground leading-relaxed">{children}</div>
+          <div className="mt-6 flex flex-col items-center space-y-6 text-balance text-[15px] text-muted-foreground leading-relaxed">
+            {children}
+          </div>
         </div>
       </main>
       <Footer container={wideContainer} />

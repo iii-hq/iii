@@ -36,7 +36,7 @@ export function ConfirmSubscription() {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col items-center space-y-3">
       <Button size="lg" className="px-4" onClick={confirm} disabled={!token || state === 'sending'}>
         {state === 'sending' ? 'Confirming…' : 'Confirm subscription'}
       </Button>
