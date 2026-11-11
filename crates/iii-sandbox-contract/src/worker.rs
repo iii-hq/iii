@@ -58,7 +58,10 @@ pub enum WorkerSource {
     Bundle {
         /// Manifest name, not the container key.
         package: String,
-        /// The bundle in Compose's package cache.
+        /// The container's directory in the project's `.workers/`,
+        /// `<project>/.workers/<container>`. `worker::build` copies it into the image; a
+        /// `worker::start` with `build` does not mount it. Before contract 1.3 it was the bundle
+        /// in Compose's package cache.
         host_path: String,
     },
     /// Local sources always sync into the VM.
@@ -83,6 +86,63 @@ pub struct WorkerPrepareRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerPrepareResponse {}
 
+/// Builds the image of one container's VM; long-running. Every call builds anew: there is no
+/// input-based skip, so a rebuild picks up a moved `:latest` base. The build pulls its base image
+/// itself; no `worker::prepare` comes first. Since contract 1.3
+/// ([`FEATURE_BUILD`](crate::FEATURE_BUILD)).
+///
+/// The adapter writes `image.erofs` and then `image.id` (the `build_id`) into `output_dir`, each
+/// as a temporary file renamed into place. It builds in a build VM of its own, so a VM running
+/// for the same `state_key` keeps the image it booted. One build per `state_key` runs at a time;
+/// a second one gets `S509`. A setup or install step that exits non-zero, or an image that
+/// cannot be written, fails with `S507`.
+///
+/// The build lives as long as its caller reads `logs`. When the channel closes or a write to it
+/// fails, the adapter stops the build VM, deletes the temporary image, keeps the previous
+/// `image.erofs` and `image.id`, and releases the `state_key`, so a retry does not get `S509`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildRequest {
+    /// The project token or the VM's scoped token.
+    pub auth: String,
+    /// The VM the build is for; a scoped token is checked against it.
+    pub state_key: String,
+    /// Container key, for logs and errors.
+    pub worker_name: String,
+    pub source: WorkerSource,
+    /// Absolute host directory of the build: `<project>/.build/<container>`. Must be under the
+    /// adapter's host roots. The adapter writes `image.erofs` there through a temporary file
+    /// and a rename.
+    pub output_dir: String,
+    /// Env of the setup/install steps: `guest_env`, nothing from the host.
+    pub env: BTreeMap<String, String>,
+    /// Writer end of a channel for the build's output, one `LogRecord` JSON per text frame.
+    /// Required: the build lives as long as the caller reads it. When it has had no output to
+    /// write for 5 s, the adapter writes a one-byte binary frame to keep the channel alive;
+    /// readers take records from text frames only.
+    pub logs: StreamChannelRef,
+}
+
+/// Reply of `worker::build`, once the image is in place. Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildResponse {
+    /// Digest of the image written, `sha256:<hex>`; passed back on `worker::start`.
+    pub build_id: String,
+    /// The base image the build started from.
+    pub base_image: BaseImageRef,
+    /// When the build finished, in milliseconds since the Unix epoch.
+    pub built_at_ms: u64,
+}
+
+/// The base image a build started from. Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BaseImageRef {
+    /// The image reference the adapter pulled, e.g. `docker.io/iiidev/node:latest`.
+    pub reference: String,
+    /// Resolved digest, `None` when the cached rootfs carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+}
+
 /// Boots the VM. The adapter reads resources from the worker's manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerStartRequest {
@@ -100,6 +160,23 @@ pub struct WorkerStartRequest {
     pub env: BTreeMap<String, String>,
     /// The engine's URL as seen from the host.
     pub engine_url: String,
+    /// Boot the image `worker::build` wrote, without running `scripts.setup`/`scripts.install`.
+    /// With it, the caller does not call `worker::prepare`. An older adapter ignores the field,
+    /// so a caller sends it only to one that announces [`FEATURE_BUILD`](crate::FEATURE_BUILD).
+    /// Since contract 1.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<WorkerBuildRef>,
+}
+
+/// The build `worker::start` boots. The adapter compares `build_id` with `build_dir/image.id`
+/// and refuses a mismatch or a missing file with `S508`; it does not hash the image on start.
+/// Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildRef {
+    /// [`WorkerBuildResponse::build_id`] of the build.
+    pub build_id: String,
+    /// The `output_dir` the build was written to.
+    pub build_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

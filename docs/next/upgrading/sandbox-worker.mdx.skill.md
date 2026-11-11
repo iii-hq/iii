@@ -16,6 +16,13 @@ response field, or S-code changed. The `sandbox::exec` and `sandbox::run` replie
 and where their state is kept. Work through the sections that apply to your setup. For the rest of
 0.26, see [Upgrading from 0.25.x to 0.26.x](./from-0-25-x).
 
+<Note>
+  After 0.26, a VM worker is explicit in `worker-compose.yaml`: `scripts.build` is
+  `iii sandbox build` and `scripts.run` is `iii sandbox run`, and the adapter range is `^0.4`. See
+  [Compose / VM workers](../using-iii/compose#vm-workers) and
+  [Upgrading from 0.26.x](./from-0-26-x).
+</Note>
+
 ## What moved
 
 | 0.25 | 0.26 |
@@ -35,7 +42,7 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.3'
+    version: '^0.4'
     config_override:
       image_allowlist:
       - python
@@ -48,11 +55,14 @@ no engine and attaches to whichever one holds its address. Add that container an
 (`image_allowlist`, `custom_images`, the `default_*` limits, and the rest): they are the same under
 `config_override`. You declared the container, so Compose never removes it.
 
-A file that already declares the adapter at `version: '^0.2'` stays on 0.2 across `compose::up`,
-`compose::restart`, and `compose::update worker=sandbox-libkrun`. To move it, stop Compose, change
-the range to `'^0.3'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
-which rewrites the range to `^0.3` and [updates every other package
-worker](../using-iii/compose#updating-workers). On 0.2, observers can read the project's token.
+In a project without a VM worker, a file that already declares the adapter at `version: '^0.2'`
+stays on 0.2 across `compose::up`, `compose::restart`, and `compose::update worker=sandbox-libkrun`.
+In a project with a VM worker, these calls fail with `SANDBOX_ADAPTER_TOO_OLD` instead. See
+[Upgrading from 0.26.x](./from-0-26-x#update-the-sandbox-adapter). To move it, stop Compose, change
+the range to `'^0.4'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
+which rewrites the range to `^0.4` and
+[updates every other package worker](../using-iii/compose#updating-workers). On 0.2, observers can
+read the project's token.
 
 Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
 project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and
@@ -130,7 +140,7 @@ one container. Write a `worker-compose.yaml` that declares the adapter:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.3'
+    version: '^0.4'
 ```
 
 It has no `engine:` section, so Compose attaches to your engine instead of starting one. Start it
@@ -145,24 +155,29 @@ Leaving an `iii-sandbox` entry in the list-shaped `config.yaml` fails startup wi
 
 ## Frozen installs
 
-`iii compose --up --frozen` and `iii compose build --frozen` never edit the compose file. A project
-that needs the adapter (it sets `engine.sandbox` for its own namespace or has a VM worker) but does
-not declare it fails with `SANDBOX_ADAPTER_NOT_DECLARED`. Run `iii compose --up` once without
-`--frozen`, so Compose writes the container and the lock, then commit both.
+`iii compose --up --frozen` and `iii compose build --frozen` never edit the compose file. A file
+with a container that Compose would rewrite into the explicit VM mode fails first, with
+`VM_SCRIPTS_MISSING`, even when the adapter is missing. A project that needs the adapter (it sets
+`engine.sandbox` for its own namespace, or a container's `scripts.run` starts with
+`iii sandbox run`) but does not declare it then fails with `SANDBOX_ADAPTER_NOT_DECLARED`. Run
+`iii compose --up` once without `--frozen`, so Compose writes the adapter container and the
+rewritten `scripts` into the file, and the lock. Commit both.
 
 ## VM workers from `path://`
 
 The adapter only mounts host directories under its host roots: the compose file's directory,
 Compose's package cache (`~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`), and the
-directory of each `path://` worker with `runtime.base_image` that the file declares when the adapter
-starts. A declared worker outside the compose directory, such as `path://../shared`, is admitted.
+directory of each `path://` VM worker (its `scripts.run` is `iii sandbox run`) that the file
+declares when the adapter starts. A declared worker outside the compose directory, such as
+`path://../shared`, is admitted.
 
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose
-directory that you add while it runs, for example with `compose::add`, fails with `SPAWN_FAILED`
-and the adapter's S501, which names the roots and links its entry. The error names the command that
-restarts the adapter, `iii call compose::restart worker=sandbox-libkrun`, which restarts each VM
-worker it was running and ends every sandbox. The worker that failed was not running, so start it
-afterwards with `iii call compose::up`. Or move the worker under the compose directory.
+directory that you add while it runs, for example with `compose::add`, fails its first build with
+`BUILD_FAILED`. The error carries the adapter's [S501](../creating-workers/sandboxes#S501), which
+names the host roots. Restart the adapter with `iii call compose::restart worker=sandbox-libkrun`,
+which restarts each VM worker it was running and ends every sandbox. The worker that failed was not
+running, so start it afterwards with `iii call compose::up`. Or move the worker under the compose
+directory.
 
 ## Supported hosts
 
@@ -210,8 +225,8 @@ on [Sandboxes](../creating-workers/sandboxes).
 
 0.25 kept each VM worker's state in `<state dir>/vm/<key>/`, where `<state dir>` is
 `<compose-dir>/.iii/compose/<namespace>/`, or the directory under `$III_COMPOSE_STATE_DIR` when you
-set it. Nothing reads these directories now, so delete them. The first boot of each VM in 0.26
-starts from fresh state and reinstalls its dependencies.
+set it. Nothing reads these directories now, so delete them. Each VM starts from fresh state, and
+its first build installs its dependencies.
 
 `iii-worker` also left the paths below. `sandbox-libkrun` reads none of them, so delete them too:
 

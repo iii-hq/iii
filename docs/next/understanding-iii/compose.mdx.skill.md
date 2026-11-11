@@ -106,10 +106,13 @@ keeps the property that reading one file tells you where everything in it lands.
 
 ## Why state belongs to the project
 
-A project's process records, resolved configuration, worker output and VM state are stored in
+A project's process records, resolved configuration and worker output are stored in
 `<project-dir>/.iii/compose/<namespace>/`. Its managed engine uses the same directory for its lock,
 generated configuration and log. The project directory comes from the canonical compose file path,
-so running `iii compose --up --file` from another directory keeps state beside that file.
+so running `iii compose --up --file` from another directory keeps state beside that file. Builds are
+in `.build/` and package copies in `.workers/`, both at the project root, and the sandbox adapter
+keeps each VM's data disk in `~/.iii/sandbox/workers/`. See
+[Compose / The project tree](../using-iii/compose#the-project-tree).
 
 The engine lock belongs to the project and namespace together. Two checkouts can each use `default`
 with engines on different ports. A second managed invocation for the same project and namespace is

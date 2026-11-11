@@ -36,6 +36,8 @@ pub const DEFAULT_RESTART_DELAY: Duration = Duration::from_millis(500);
 /// Default `pre_run` budget. A blocking migration or asset build routinely
 /// takes tens of seconds; anything past this is treated as hung.
 pub const DEFAULT_PRE_RUN_TIMEOUT: Duration = Duration::from_secs(60);
+/// `scripts.build_timeout` when the container sets none (spec 4.1).
+pub const DEFAULT_BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// Default readiness budget: how long `up` waits for a spawned container to
 /// show up in the engine before calling it failed.
@@ -90,6 +92,11 @@ pub enum WorkerSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scripts {
+    /// The build step (spec 4.1): `""` declares there is nothing to build, and a `build:` key
+    /// without a value reads as absent.
+    pub build: Option<String>,
+    /// `scripts.build`'s own budget, outside `startup_timeout`.
+    pub build_timeout: Duration,
     pub pre_run: Option<String>,
     pub pre_run_timeout: Duration,
     pub run: Option<String>,
@@ -99,11 +106,23 @@ pub struct Scripts {
 impl Default for Scripts {
     fn default() -> Self {
         Self {
+            build: None,
+            build_timeout: DEFAULT_BUILD_TIMEOUT,
             pre_run: None,
             pre_run_timeout: DEFAULT_PRE_RUN_TIMEOUT,
             run: None,
             post_run: None,
         }
+    }
+}
+
+impl Scripts {
+    /// The `scripts.build` command to run, `None` when there is nothing to build: no key, or
+    /// `""`.
+    pub fn build_command(&self) -> Option<&str> {
+        self.build
+            .as_deref()
+            .filter(|command| !command.trim().is_empty())
     }
 }
 
@@ -468,6 +487,7 @@ impl ComposeFile {
 
         let mut containers = IndexMap::with_capacity(raw_containers.len());
         for (key, raw_container) in &raw_containers {
+            check_container_key(key)?;
             containers.insert(
                 key.clone(),
                 validate_container(
@@ -637,6 +657,30 @@ fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
     Ok(document)
 }
 
+/// A container key names directories, `.build/<key>` and `.workers/<key>` beside the compose
+/// file (spec 3.2), so it must be one plain directory name: not empty, no path separator, no
+/// leading `.` (which also rules out `.` and `..`), and no NUL.
+fn check_container_key(key: &str) -> Result<()> {
+    let reason = if key.trim().is_empty() {
+        Some("it is empty")
+    } else if key.contains(['/', '\\']) {
+        Some("it holds a path separator")
+    } else if key.starts_with('.') {
+        Some("it starts with '.'")
+    } else if key.contains('\0') {
+        Some("it holds a NUL character")
+    } else {
+        None
+    };
+    match reason {
+        Some(reason) => Err(ComposeError::InvalidContainerKey {
+            container: key.to_string(),
+            reason,
+        }),
+        None => Ok(()),
+    }
+}
+
 fn validate_container(
     key: &str,
     raw: &RawContainer,
@@ -673,11 +717,8 @@ fn validate_container(
     let scripts = match &raw.scripts {
         None => Scripts::default(),
         Some(raw_scripts) => {
-            if raw_scripts.run.is_some() && is_package {
-                return Err(ComposeError::RunNotAllowedForPackage {
-                    container: key.to_string(),
-                });
-            }
+            // Which packages may set `run` and `build` depends on their kind, known once the
+            // lock is attached: `sandbox::validate_scripts` checks it.
             if raw_scripts.pre_run_timeout.is_some() && raw_scripts.pre_run.is_none() {
                 return Err(ComposeError::PreRunTimeoutWithoutPreRun {
                     container: key.to_string(),
@@ -692,7 +733,18 @@ fn validate_container(
                     })?
                 }
             };
+            let build_timeout = match &raw_scripts.build_timeout {
+                None => DEFAULT_BUILD_TIMEOUT,
+                Some(value) => {
+                    parse_duration(value).ok_or_else(|| ComposeError::InvalidDuration {
+                        container: key.to_string(),
+                        value: value.clone(),
+                    })?
+                }
+            };
             Scripts {
+                build: raw_scripts.build.clone(),
+                build_timeout,
                 pre_run: raw_scripts.pre_run.clone(),
                 pre_run_timeout,
                 run: raw_scripts.run.clone(),
@@ -1291,6 +1343,11 @@ where
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RawScripts {
+    /// Builds the worker before its first run, and on `compose::build`.
+    #[serde(default)]
+    build: Option<String>,
+    #[serde(default)]
+    build_timeout: Option<String>,
     #[serde(default)]
     pre_run: Option<String>,
     #[serde(default)]

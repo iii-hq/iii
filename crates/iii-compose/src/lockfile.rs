@@ -124,6 +124,34 @@ impl PreparedLock {
             })
     }
 
+    /// Attaches this candidate's packages to `compose`, read again after an edit that changed no
+    /// package (the explicit VM mode of spec 7.1), as [`attach`] does from the lock on disk.
+    pub(crate) fn attach_to(&self, compose: &mut ComposeFile) {
+        for (key, container) in &mut compose.containers {
+            let WorkerSource::Package { reference } = &container.worker else {
+                continue;
+            };
+            let requested = container.version.as_deref().unwrap_or("*");
+            let worker = format!("package://{reference}");
+            if let Some(entry) = self
+                .lock
+                .containers
+                .get(key)
+                .filter(|entry| entry.worker == worker && entry.requested == requested)
+            {
+                container.resolved_package = Some(entry.resolved.clone());
+            }
+        }
+    }
+
+    /// Every locked container with the package it resolved to, in key order.
+    pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)> {
+        self.lock
+            .containers
+            .iter()
+            .map(|(container, entry)| (container.as_str(), &entry.resolved))
+    }
+
     /// Records the complete package graph selected for one explicit root.
     pub fn replace_graph(&mut self, root: &str, nodes: BTreeSet<String>) {
         if self.lock.graphs.get(root) == Some(&nodes) {
@@ -139,29 +167,10 @@ impl PreparedLock {
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
     pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
-        self.install_where(cache_root, |_| true).await
-    }
-
-    /// [`Self::install`] for `keys` only, the ones a start needs before the rest.
-    pub(crate) async fn install_only(
-        &mut self,
-        cache_root: &Path,
-        keys: &BTreeSet<String>,
-    ) -> Result<()> {
-        self.install_where(cache_root, |key| keys.contains(key))
-            .await
-    }
-
-    async fn install_where(
-        &mut self,
-        cache_root: &Path,
-        wanted: impl Fn(&str) -> bool,
-    ) -> Result<()> {
         let requests = self
             .lock
             .containers
             .iter()
-            .filter(|(key, _)| wanted(key))
             .map(|(key, entry)| (key.clone(), entry.resolved.clone()))
             .collect::<Vec<_>>();
         let cache_root = cache_root.to_path_buf();

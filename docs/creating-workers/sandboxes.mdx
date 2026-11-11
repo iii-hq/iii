@@ -327,18 +327,8 @@ is split into the binary and its arguments.
 
   </Tab>
 </Tabs>
-For multi-step work, create a sandbox, operate on it with its id, then stop it. Most functions take
-flat `key=value` arguments; only nested payloads need `--json`.
 
-````bash
-# boot a sandbox and capture its id
-SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
-
-# run a command and print its stdout
-iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
-
-# list the active sandbox ids
-iii call sandbox::list | jq -r '.[].sandbox_id'
+Most functions take flat `key=value` arguments; only nested payloads need `--json`.
 
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
 cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. For large output, write
@@ -876,4 +866,3 @@ links to the matching entry below.
 - <a id="S506"></a>**S506** (transient): PrepareFailed: worker::prepare failed; retry
 
 <Note>The codes belong to the sandbox contract, not to one worker.</Note>
-````

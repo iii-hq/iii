@@ -44,6 +44,32 @@ tokio::task_local! {
     static PROJECT_SCOPE: String;
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    /// The daemon lines a test reads back, through [`capture_daemon_lines`].
+    static CAPTURED: std::sync::Mutex<Vec<String>>;
+}
+
+/// Runs `future`, and returns with its output every [`daemon_line`] it printed from its own task.
+#[cfg(test)]
+pub(crate) async fn capture_daemon_lines<T>(
+    future: impl std::future::Future<Output = T>,
+) -> (T, Vec<String>) {
+    CAPTURED
+        .scope(std::sync::Mutex::new(Vec::new()), async {
+            let output = future.await;
+            let lines = CAPTURED.with(|lines| {
+                std::mem::take(
+                    &mut *lines
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                )
+            });
+            (output, lines)
+        })
+        .await
+}
+
 pub(crate) async fn in_project_scope<T>(
     project: &Path,
     future: impl std::future::Future<Output = T>,
@@ -1573,6 +1599,13 @@ fn animated() -> bool {
 /// engine, which is where it is read from. Interleaving the two made the
 /// console useless for both.
 pub fn daemon_line(message: &str, warn: bool) {
+    #[cfg(test)]
+    let _ = CAPTURED.try_with(|lines| {
+        lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(message.to_string());
+    });
     use colored::Colorize;
     let prefix = "[compose]".dimmed();
     if warn {

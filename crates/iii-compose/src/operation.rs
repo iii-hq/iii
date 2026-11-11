@@ -42,6 +42,9 @@ pub struct ProgressEvent {
     pub total: Option<u64>,
     pub elapsed_ms: u64,
     pub terminal: bool,
+    /// What a finished operation reports per container, such as `compose::build`'s results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub results: Option<serde_json::Value>,
 }
 
 #[derive(Clone)]
@@ -115,6 +118,9 @@ pub struct OperationSnapshot {
     pub completed: usize,
     pub last_sequence: u64,
     pub last_event: Option<ProgressEvent>,
+    /// What the finished operation reports per container, such as `compose::build`'s results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<serde_json::Value>,
 }
 fn active_operations() -> &'static Mutex<BTreeMap<String, Weak<Operation>>> {
     static ACTIVE: OnceLock<Mutex<BTreeMap<String, Weak<Operation>>>> = OnceLock::new();
@@ -147,6 +153,7 @@ struct State {
     sequence: u64,
     last_event: Option<ProgressEvent>,
     warnings: BTreeSet<String>,
+    results: Option<serde_json::Value>,
 }
 
 pub struct Operation {
@@ -172,6 +179,7 @@ impl Operation {
                 sequence: 0,
                 last_event: None,
                 warnings: BTreeSet::new(),
+                results: None,
             }),
             cancel,
             emitter,
@@ -225,6 +233,7 @@ impl Operation {
                 total,
                 elapsed_ms: self.began.elapsed().as_millis() as u64,
                 terminal,
+                results: None,
             };
             state.last_event = Some(event.clone());
             event
@@ -250,9 +259,20 @@ impl Operation {
         self.state.write().await.completed += 1;
     }
     pub async fn finish(&self, status: OperationStatus, detail: impl Into<String>) {
+        self.finish_with_results(status, detail, None).await;
+    }
+
+    /// [`Self::finish`], carrying `results` in the terminal event and the snapshot.
+    pub async fn finish_with_results(
+        &self,
+        status: OperationStatus,
+        detail: impl Into<String>,
+        results: Option<serde_json::Value>,
+    ) {
         let event = {
             let mut state = self.state.write().await;
             state.status = status;
+            state.results.clone_from(&results);
             state.phase = "complete".into();
             state.sequence += 1;
             let event = ProgressEvent {
@@ -265,6 +285,7 @@ impl Operation {
                 total: Some(state.total as u64),
                 elapsed_ms: self.began.elapsed().as_millis() as u64,
                 terminal: true,
+                results,
             };
             state.last_event = Some(event.clone());
             event
@@ -282,6 +303,7 @@ impl Operation {
             completed: s.completed,
             last_sequence: s.sequence,
             last_event: s.last_event.clone(),
+            results: s.results.clone(),
         }
     }
 }
@@ -458,6 +480,7 @@ mod tests {
             total: None,
             elapsed_ms: 0,
             terminal: false,
+            results: None,
         };
         let terminal = ProgressEvent {
             terminal: true,

@@ -748,9 +748,12 @@ With `capture: ["input"]`, the target receives the event as the payload's `input
 ## Worker manifest
 
 `iii.worker.yaml` is the manifest at the worker's root that tells Compose how to start a local or
-bundled worker. A local Compose container can replace the start command with its own `scripts.run`,
-and add `scripts.pre_run` or `scripts.post_run` lifecycle hooks. The container cannot change the
-manifest's `name` or `runtime.base_image`; those stay as the manifest declares them.
+bundled worker. A Compose container can replace the start command with its own `scripts.run`, add a
+`scripts.build`, and add `scripts.pre_run` or `scripts.post_run` lifecycle hooks. The container
+cannot change the manifest's `name` or `runtime.base_image`; those stay as the manifest declares
+them. The container's `scripts` decide where the worker runs: a VM worker has
+`scripts.build: iii sandbox build` and `scripts.run: iii sandbox run`. See
+[Compose / VM workers](../using-iii/compose#vm-workers).
 
 ```yaml
 name: math-worker
@@ -765,8 +768,8 @@ scripts:
 `description` is an optional one-line, human/LLM-readable summary of what the worker does.
 
 `scripts.start` launches the worker. Here, `watchfiles` reloads it whenever you edit a source file.
-`runtime.base_image` selects the OCI image used for a bundled worker's root filesystem. The manifest
-is metadata about starting the worker.
+For a VM worker, `runtime.base_image` is the base image that `iii sandbox build` starts from. The
+manifest is metadata about starting the worker.
 
 See [Worker manifest](./worker-manifest) for the field reference.
 

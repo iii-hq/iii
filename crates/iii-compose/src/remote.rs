@@ -177,6 +177,24 @@ struct RestartOptions {
     worker: Option<String>,
 }
 
+/// Request fields used by `compose::build`.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct BuildOptions {
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
+    namespace: Option<String>,
+    /// Compose file on the daemon host. Defaults to the project this daemon
+    /// serves, else `worker-compose.yaml` in the daemon working directory.
+    file: Option<String>,
+    /// Container key to build. Omit to build every container with a non-empty
+    /// `scripts.build`.
+    worker: Option<String>,
+    /// Alias for `worker`.
+    container: Option<String>,
+    /// Caller-selected operation id for race-free progress subscription.
+    operation_id: Option<String>,
+}
+
 /// Request fields used by `compose::logs`.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
@@ -267,6 +285,8 @@ struct ValidateOutcome {
     namespace: String,
     start_order: Vec<String>,
     deferred_packages: Vec<String>,
+    /// What does not fail validation but is worth acting on, such as a due migration.
+    warnings: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -365,6 +385,7 @@ enum Operation {
     Remove,
     Restart,
     Update,
+    Build,
     Schema,
     Snapshot,
     Cancel,
@@ -425,7 +446,13 @@ impl Operation {
     fn is_mutation(self) -> bool {
         matches!(
             self,
-            Self::Up | Self::Down | Self::Add | Self::Remove | Self::Restart | Self::Update
+            Self::Up
+                | Self::Down
+                | Self::Add
+                | Self::Remove
+                | Self::Restart
+                | Self::Update
+                | Self::Build
         )
     }
 }
@@ -462,6 +489,7 @@ const REGISTERED_OPERATIONS: &[(&str, Operation)] = &[
     ("remove", Operation::Remove),
     ("restart", Operation::Restart),
     ("update", Operation::Update),
+    ("build", Operation::Build),
     ("schema", Operation::Schema),
     ("operation", Operation::Snapshot),
     ("cancel", Operation::Cancel),
@@ -639,6 +667,88 @@ async fn dispatch(
             spawn_mutation(operation, mutation, UPDATE_DETAILS);
             Ok(to_value(&accepted))
         }
+        Operation::Build => {
+            let worker = request
+                .worker
+                .clone()
+                .or_else(|| request.container.clone())
+                .filter(|worker| !worker.trim().is_empty());
+            let requested = daemon
+                .build_targets(file.as_deref(), worker.as_deref())
+                .await
+                .map_err(|err| compose_error(&err))?
+                .len();
+            let (operation, accepted) = admit_mutation(
+                &daemon,
+                request.operation_id,
+                requested,
+                match &worker {
+                    Some(worker) => format!("building {worker}"),
+                    None => format!("building {requested} workers"),
+                },
+            )
+            .await?;
+            let task_operation_id = accepted.operation_id.clone();
+            tokio::spawn(async move {
+                let began = std::time::Instant::now();
+                let result = daemon
+                    .build(file.as_deref(), worker.as_deref(), task_operation_id)
+                    .await;
+                report_op(
+                    "build",
+                    &result.as_ref().map(|_| json!({})).map_err(compose_error),
+                    began.elapsed(),
+                );
+                match result {
+                    Ok(crate::lifecycle::BuildRun { results, cancelled }) => {
+                        // The terminal event names each failure, with its own code.
+                        let failed: Vec<String> = results
+                            .iter()
+                            .filter_map(|result| {
+                                result.error.as_ref().map(|error| {
+                                    format!("{} ({}: {})", result.worker, error.code, error.message)
+                                })
+                            })
+                            .collect();
+                        // Stopped by compose::cancel or down, it is cancelled, whatever a build
+                        // its stop killed reported.
+                        let (status, detail) = if cancelled {
+                            (
+                                crate::operation::OperationStatus::Cancelled,
+                                "operation cancelled".to_string(),
+                            )
+                        } else if failed.is_empty() {
+                            (
+                                crate::operation::OperationStatus::Succeeded,
+                                "every requested build finished".to_string(),
+                            )
+                        } else {
+                            (
+                                crate::operation::OperationStatus::Failed,
+                                format!("builds failed: {}", failed.join("; ")),
+                            )
+                        };
+                        operation
+                            .finish_with_results(status, detail, Some(to_value(&results)))
+                            .await;
+                    }
+                    Err(ComposeError::OperationCancelled { .. }) => {
+                        operation
+                            .finish(
+                                crate::operation::OperationStatus::Cancelled,
+                                "operation cancelled",
+                            )
+                            .await;
+                    }
+                    Err(error) => {
+                        operation
+                            .finish(crate::operation::OperationStatus::Failed, error.to_string())
+                            .await;
+                    }
+                }
+            });
+            Ok(to_value(&accepted))
+        }
         Operation::Down => match daemon
             .down(file.as_deref(), named_container(&request), operation_id())
             .await
@@ -735,6 +845,7 @@ async fn dispatch(
                 "namespace": report.namespace,
                 "start_order": report.start_order,
                 "deferred_packages": report.deferred_packages,
+                "warnings": report.warnings,
             })),
             Err(err) => Err(compose_error(&err)),
         },
@@ -887,11 +998,15 @@ fn spawn_mutation<F>(
                     )
                     .await;
             }
-            Err(ComposeError::OperationCancelled { .. }) => {
+            Err(
+                error @ (ComposeError::OperationCancelled { .. }
+                | ComposeError::RebuildCancelled { .. }),
+            ) => {
+                // Says which containers a cancelled add or update rebuilt and left unrestarted.
                 operation
                     .finish(
                         crate::operation::OperationStatus::Cancelled,
-                        "operation cancelled",
+                        error.to_string(),
                     )
                     .await;
             }
@@ -1088,6 +1203,12 @@ fn op_description(function_id: &str) -> &'static str {
             "Restart the whole project, or restart one named container without \
              changing its dependency graph."
         }
+        "compose::build" => {
+            "Accept an observable operation that runs scripts.build for one container, or for \
+             every container that declares one, under the project's mutation lock. It never \
+             restarts a container; the finished operation carries one result per container. \
+             compose::cancel or compose::down stops it."
+        }
         "compose::update" => {
             "Accept an observable operation that refreshes declared package selectors or moves \
              workers to requested versions, including their dependency graphs. Omit worker and \
@@ -1126,6 +1247,7 @@ fn op_metadata(function_id: &str) -> (u64, bool) {
         "compose::remove" => (600_000, true),
         "compose::restart" => (600_000, false),
         "compose::update" => (600_000, false),
+        "compose::build" => (10_000, false),
         "compose::schema" | "worker-compose.yaml" => (10_000, true),
         "compose::operation" | "compose::cancel" => (10_000, true),
         _ => (30_000, false),
@@ -1197,6 +1319,11 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::update",
                 update_worker_options_schema(),
+                schema_for_value::<OperationAcceptedOutcome>(),
+            ),
+            (
+                "compose::build",
+                schema_for_value::<BuildOptions>(),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
@@ -1289,6 +1416,131 @@ fn operation_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build stopped by `compose::cancel` ends `cancelled`, the build it killed in `results` as
+    /// `failed`: the CLI exits 130 only then.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cancelled_compose_build_ends_cancelled() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("slow")).unwrap();
+        let file = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  slow: {worker: path://./slow, scripts: {build: 'touch started; sleep 30', run: x}}\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("build-cancel-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let request = |operation: Operation, function: &str| {
+            dispatch(
+                Arc::clone(&daemon),
+                operation,
+                function.to_string(),
+                ComposeRequest {
+                    file: Some(file.to_string_lossy().into_owned()),
+                    operation_id: Some("build-slow".to_string()),
+                    ..Default::default()
+                },
+            )
+        };
+        request(Operation::Build, "build").await.unwrap();
+        while !tmp.path().join("slow/started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let cancelled = request(Operation::Cancel, "cancel").await.unwrap();
+        assert_eq!(cancelled["cancelled"], true, "{cancelled}");
+        let operation = daemon.operations.get("build-slow").await.unwrap();
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status != crate::operation::OperationStatus::Running {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(snapshot["status"], "cancelled", "{snapshot}");
+        assert_eq!(snapshot["results"][0]["worker"], "slow", "{snapshot}");
+        assert_eq!(snapshot["results"][0]["status"], "failed", "{snapshot}");
+        daemon.shutdown().await;
+    }
+
+    /// Spec 7.4: accepted at once with `requested`, then a snapshot whose top-level `results`
+    /// holds one entry per container, and a terminal `detail` naming each failure.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn compose_build_is_an_observable_operation_with_results() {
+        let tmp = tempfile::tempdir().unwrap();
+        for worker in ["api", "bad", "none"] {
+            std::fs::create_dir(tmp.path().join(worker)).unwrap();
+        }
+        let file = tmp.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  api: {worker: path://./api, scripts: {build: 'echo ok', run: x}}\n  bad: {worker: path://./bad, scripts: {build: 'echo broken; exit 2', run: x}}\n  none: {worker: path://./none, scripts: {build: '', run: x}}\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("build-test-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let accepted = dispatch(
+            Arc::clone(&daemon),
+            Operation::Build,
+            "build".to_string(),
+            ComposeRequest {
+                file: Some(file.to_string_lossy().into_owned()),
+                operation_id: Some("build-all".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            accepted,
+            json!({ "operation_id": "build-all", "status": "accepted", "requested": 3 })
+        );
+        let operation = daemon.operations.get("build-all").await.unwrap();
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status != crate::operation::OperationStatus::Running {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(snapshot["status"], "failed", "{snapshot}");
+        assert_eq!(
+            snapshot["results"],
+            json!([
+                { "worker": "api", "status": "built" },
+                { "worker": "bad", "status": "failed", "error": { "code": "EXIT_2", "message": "broken" } },
+                { "worker": "none", "status": "skipped" },
+            ])
+        );
+        assert_eq!(
+            snapshot["last_event"]["detail"],
+            "builds failed: bad (EXIT_2: broken)"
+        );
+        assert_eq!(snapshot["last_event"]["terminal"], true);
+        daemon.shutdown().await;
+    }
 
     #[tokio::test]
     async fn update_without_worker_fields_returns_an_observable_operation() {

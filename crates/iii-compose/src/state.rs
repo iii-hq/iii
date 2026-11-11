@@ -87,7 +87,8 @@ pub struct ChildRecord {
     /// never signalled again.
     #[serde(default)]
     pub birth: Option<BirthIdentity>,
-    /// The VM a VM container runs, at the adapter that runs it.
+    /// The VM a 0.26 daemon booted for this container, at the adapter that runs it. Only read:
+    /// it is stopped when the container next starts, then dropped (spec 7.3, step 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vm: Option<VmRecord>,
     pub status: ChildStatus,
@@ -127,14 +128,6 @@ impl ChildRecord {
     pub fn from_child(child: &crate::lifecycle::Child, status: ChildStatus) -> Self {
         match child {
             crate::lifecycle::Child::Process(process) => Self::from_supervised(process, status),
-            crate::lifecycle::Child::Vm(vm) => Self {
-                pid: None,
-                birth: None,
-                vm: Some(vm.record.clone()),
-                status,
-                started_at: now_unix(),
-                last_error: None,
-            },
         }
     }
 }
