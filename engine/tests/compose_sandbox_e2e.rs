@@ -5,7 +5,8 @@
 //! stop with `compose::down` and are destroyed by `compose::remove`. The bundle
 //! run also sends one `sandbox::exec` through the engine's router. Each build
 //! lands in the project's `.iii/build/<container>/`, the bundle's package in
-//! `.iii/workers/<container>/`.
+//! `.iii/workers/<container>/`, and the `path://` guest never sees a `.iii/`
+//! its worker directory holds.
 //!
 //! Both tests pull the pinned registry packages and boot microVMs, so they need
 //! `/dev/kvm` (Linux) or Hypervisor.framework (Apple Silicon) and are ignored by
@@ -622,14 +623,59 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
         }
         panic!("sandbox-vm-worker::hello never returned {expected:?}; last answer {seen}");
     };
+    // Spec 3.2 and 9.3: `.iii/` never reaches a guest, and with it `.iii/build/` and
+    // `.iii/workers/`, here in the worker's own directory as under `path://.`. `round` adds a
+    // file to `.iii/build/leak/` and `.iii/workers/leak/`.
+    let leak = |round: &str| {
+        for dir in [".iii/build/leak", ".iii/workers/leak"] {
+            let dir = worker_dir.join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(round), round).unwrap();
+        }
+    };
+    let expect_no_iii = |project: &Project, when: &str| {
+        let mut seen = Value::Null;
+        let deadline = Instant::now() + SHORT;
+        while Instant::now() < deadline {
+            match project.call(
+                Some(NAMESPACE),
+                "sandbox-vm-worker::sees-iii",
+                json!({}),
+                SHORT,
+            ) {
+                Ok(answer) => {
+                    assert_eq!(
+                        answer,
+                        json!({ "iii": false }),
+                        "{when}: .iii reached the guest"
+                    );
+                    return;
+                }
+                Err(error) => seen = Value::String(error),
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        panic!("{when}: sandbox-vm-worker::sees-iii never answered; last error {seen}");
+    };
 
+    // The build's copy and the run's copy.
+    leak("start");
     project.start();
     project.wait_ready("sandbox-libkrun", FIRST_UP);
     project.wait_ready("sandbox-vm-worker", FIRST_UP);
     project.assert_project_dirs("sandbox-vm-worker", false);
     expect_reply(&project, &std::fs::read_to_string(&reply).unwrap());
+    expect_no_iii(&project, "after the first start");
+
+    // The live sync carries a change of reply.txt, and not what lands in `.iii/` just before.
+    leak("live");
+    let live = "hello from the live sync";
+    std::fs::write(&reply, live).unwrap();
+    expect_reply(&project, live);
+    expect_no_iii(&project, "after the live sync");
 
     // The restart syncs the host copy of the source into the VM again.
+    leak("restart");
     let rewritten = "hello from the second sync";
     std::fs::write(&reply, rewritten).unwrap();
     let restarted = project.compose_call(
@@ -639,6 +685,7 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
     );
     assert_eq!(restarted["status"], "ok", "{restarted}");
     expect_reply(&project, rewritten);
+    expect_no_iii(&project, "after the restart");
 
     let worker_vm = project.only_vm().pid;
     sigkill(worker_vm);
@@ -646,6 +693,7 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
 
     project.down();
     project.up_again("sandbox-vm-worker");
+    expect_no_iii(&project, "after down and up");
     project.remove_last_vm("sandbox-vm-worker");
     project.shutdown();
 }
