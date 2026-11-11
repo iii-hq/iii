@@ -127,21 +127,7 @@ impl PreparedLock {
     /// Attaches this candidate's packages to `compose`, read again after an edit that changed no
     /// package (the explicit VM mode of spec 7.1), as [`attach`] does from the lock on disk.
     pub(crate) fn attach_to(&self, compose: &mut ComposeFile) {
-        for (key, container) in &mut compose.containers {
-            let WorkerSource::Package { reference } = &container.worker else {
-                continue;
-            };
-            let requested = container.version.as_deref().unwrap_or("*");
-            let worker = format!("package://{reference}");
-            if let Some(entry) = self
-                .lock
-                .containers
-                .get(key)
-                .filter(|entry| entry.worker == worker && entry.requested == requested)
-            {
-                container.resolved_package = Some(entry.resolved.clone());
-            }
-        }
+        attach_entries(&self.lock, compose);
     }
 
     /// Every locked container with the package it resolved to, in key order.
@@ -197,6 +183,13 @@ pub fn attach(compose: &mut ComposeFile) -> Result<()> {
     let Some(lock) = load(&lock_path(&compose.path))? else {
         return Ok(());
     };
+    attach_entries(&lock, compose);
+    Ok(())
+}
+
+/// Attaches to each `package://` container of `compose` the package `lock` resolved for it,
+/// when the entry still matches the declared worker and version.
+fn attach_entries(lock: &ComposeLock, compose: &mut ComposeFile) {
     for (key, container) in &mut compose.containers {
         let WorkerSource::Package { reference } = &container.worker else {
             continue;
@@ -211,7 +204,6 @@ pub fn attach(compose: &mut ComposeFile) -> Result<()> {
             container.resolved_package = Some(entry.resolved.clone());
         }
     }
-    Ok(())
 }
 
 /// Resolves missing, changed, or explicitly forced declarations, verifies the
