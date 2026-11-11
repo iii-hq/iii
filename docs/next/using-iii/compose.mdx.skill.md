@@ -1221,8 +1221,12 @@ my-project/
   the trees an earlier run replaced, and the temporary copies an interrupted run left.
 - A directory is replaced through a copy made beside it. Its entry leaves `.packages.json` before
   the directory changes and comes back once the copy is in place, so an interrupted copy is made
-  again by the next run. The replaced tree stays aside, as `.<container>.replaced-<id>`, for a host
-  bundle that still runs from it, until the next run removes it.
+  again by the next run.
+- The replaced tree stays aside, as `.<container>.replaced-<id>`, until the next run removes it,
+  whether its process still runs or not. A host bundle that runs through the swap keeps what it
+  reads relative to its working directory. What it resolves through an absolute path
+  (`III_PACKAGE_DIR`, Node's `require`, Python's `sys.path`) comes from the new tree until the
+  container restarts.
 - When Compose copies a container's package directory again because it was missing or its record
   could not be read, it deletes that container's host-build `build.json`, so the next start runs
   the first build again. A package update keeps the record and rebuilds. A VM build keeps its
@@ -1348,9 +1352,10 @@ relative to the compose file. A host build writes the same keys without `image`.
   when it does not know it.
 - For a VM build, `iii sandbox build` writes `build.json` after the adapter renamed the new image
   into place. For a host build, Compose writes it after `scripts.build` exited 0.
-- `iii sandbox build` reads the container's `source` before the build and again before it writes
-  `build.json`. If an `iii compose build` in another process replaced the package meanwhile, it
-  writes nothing and fails with `BUILD_INPUT_CHANGED`. Build again to record the new package.
+- `iii sandbox build`, and Compose for a host build, read the container's `source` before the build
+  and again before they write `build.json`. If an `iii compose build` in another process replaced
+  the package meanwhile, the build records nothing and fails with `BUILD_INPUT_CHANGED`. Build
+  again to record the new package.
 - Writes are atomic: a temporary file beside `build.json`, then a rename. Leftover temporary files
   are swept. A `build.json` whose `build_id` does not match the image fails the run with
   [S508](../creating-workers/sandboxes#S508). The fix is a rebuild.
@@ -1431,7 +1436,7 @@ writes, the sandbox adapter update, and what happens to the data of 0.26 VMs.
 | `SANDBOX_FAILED`               | Any other failure of `iii sandbox` itself (exit 125).                                                                                                                              |
 | `BUILD_MISSING`                | `iii sandbox run` without `build.json`.                                                                                                                                            |
 | `BUILD_FAILED`                 | A first build or a package rebuild failed. Carries `{ code, message }`.                                                                                                            |
-| `BUILD_INPUT_CHANGED`          | `iii sandbox build` whose package was replaced while it built. Nothing is recorded. Build again (exit 1).                                                                          |
+| `BUILD_INPUT_CHANGED`          | A build whose source was replaced while it built. Nothing is recorded. Build again (exit 1 for `iii sandbox build`).                                                               |
 | `OPERATION_CANCELLED`          | A cancelled `compose::build`, add, or update, or a cancelled `iii sandbox build` (exit 130).                                                                                       |
 | `INVALID_CONTAINER_KEY`        | A container key that cannot name `.build/<key>/` and `.workers/<key>/`.                                                                                                            |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE`  | Kept, for `binary` packages only.                                                                                                                                                  |
@@ -1481,7 +1486,8 @@ adapter with `SANDBOX_ADAPTER_NOT_DECLARED`, then, in a project with a VM worker
 `build` runs outside the daemon's mutation lock. If the compose file or `worker-compose.lock`
 changed while it prepared, for example because the daemon committed an update, it writes nothing
 and fails with `BUILD_PLAN_STALE`. It checks again before it copies packages into `.workers/`. Run
-it again.
+it again. The check is not atomic with the write, so a lock the daemon commits in between is
+still overwritten.
 
 ```bash
 iii compose build --file worker-compose.yaml

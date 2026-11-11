@@ -846,7 +846,7 @@ adapter advertises `worker.build`, calls `worker::build` with the build output s
 then writes `build.json` (see [`build.json`](../using-iii/compose#buildjson)). There, `--file`,
 `--namespace`, and `--engine` fail with `SANDBOX_INVALID_ARGUMENTS`: they find a daemon from outside
 Compose. If the container's package was replaced while it built, by an `iii compose build` in
-another process, it writes nothing and fails with `BUILD_INPUT_CHANGED`. Build again.
+another process, it records nothing and fails with `BUILD_INPUT_CHANGED`. Build again.
 
 Outside Compose, it calls `compose::build worker=<container>` on the project's daemon, or
 `compose::build` for every container that declares `scripts.build` when no container is named; an

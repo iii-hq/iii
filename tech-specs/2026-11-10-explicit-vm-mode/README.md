@@ -321,12 +321,15 @@ path, relative to the compose file). A host build writes the same keys without `
   place. For a host build, Compose writes it after `scripts.build` exited 0.
 - **Atomic writes:** a temporary file beside it, then rename; leftovers are swept. A `build.json` whose `build_id` does not
   match the image fails the run with `S508` (section 6.5); the fix is a rebuild.
-- **Stable source.** `iii sandbox build` reads the container's `source`
-  (`build_record::source`) before `worker::build` and again before it writes `build.json`. An
-  `iii compose build` in another process may replace `.workers/<container>/` meanwhile: it holds
-  `.workers/.lock` only while it copies, not for the length of a build. When the two reads
-  differ, `iii sandbox build` writes nothing and fails with `BUILD_INPUT_CHANGED` (exit 1);
-  building again records the new package.
+- **Stable source.** Each writer reads the container's `source` (`build_record::source`) before
+  the build and again before it writes `build.json`: `iii sandbox build` around `worker::build`,
+  Compose around a host `scripts.build`. An `iii compose build` in another process may replace
+  `.workers/<container>/` meanwhile: it holds `.workers/.lock` only while it copies, not for the
+  length of a build. When the two reads differ, or the second finds no package (its directory is
+  being replaced, section 7.5), the build records nothing (`build.json` is not written) and fails
+  with `BUILD_INPUT_CHANGED`, exit 1 for `iii sandbox build`; building again records the new
+  package. The adapter has already put a VM build's image in place: the next start rebuilds, as
+  the old `build.json` names another source, or fails with `S508`.
 
 ### 5.5 A build that is out of date
 
@@ -599,13 +602,22 @@ start runs the first build again (section 5.2). The compose file's directory is 
 A directory is replaced through a copy made beside it and a rename. Its `.packages.json` entry is
 removed, and the file written, before the directory changes, and comes back once the copy is in
 place: a run stopped in between leaves no entry, so the next run copies it again instead of
-taking it for the package it replaced. The replaced tree stays aside, whole, for a host bundle
-that still runs from it, until the next run prunes it.
+taking it for the package it replaced. An entry whose directory is gone leaves the file before
+any copy starts.
+
+The replaced tree stays aside, whole, as `.<container>.replaced-<id>`, until the next
+materialization prunes it, whether its process still runs or not. This covers part of a host
+bundle that runs through the swap: what it reads relative to its working directory stays the
+old tree, which the rename moved. What it resolves through an absolute path (`III_PACKAGE_DIR`,
+Node's `require`, Python's `sys.path`) reads the new tree, so a lazy import can mix the two
+versions until the container restarts.
 
 `iii compose build` runs outside the daemon's mutation lock. When the compose file or
 `worker-compose.lock` changed while it prepared (the daemon committed an update, say), it
-writes nothing and fails with `BUILD_PLAN_STALE`; it checks again under `.workers/.lock` before
-it copies.
+writes nothing and fails with `BUILD_PLAN_STALE`, naming the one that changed; it checks again
+under `.workers/.lock` before it copies. The check and the write are not atomic across
+processes: a lock the daemon commits between the two is still overwritten, and the later check,
+which compares with the lock this build wrote, then passes.
 
 ### 7.6 What stays and what goes
 
@@ -630,7 +642,7 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
   `adapter::info` (requires `worker.build`), then `worker::build` with the build output
   streamed to stdout, then writes `build.json` (section 5.4) from `build_record::source` and
   `build_record::declared_base_image` (section 11.2). A `source` that changed during the build
-  fails it with `BUILD_INPUT_CHANGED` and writes nothing (section 5.4).
+  fails it with `BUILD_INPUT_CHANGED` and records nothing (section 5.4).
 - **Outside Compose:** calls `compose::build worker=<container>` on the project's daemon,
   found as `iii compose logs` finds it (`--file`, `--namespace`, `--engine`, `III_URL`, through
   `resolve_project_target`, section 11.2), prints
@@ -737,7 +749,8 @@ Compose and CLI codes:
 | `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter speaks another contract major |
 | `SANDBOX_FAILED` | Any other failure of `iii sandbox` itself (exit 125) |
 | `BUILD_MISSING` | `iii sandbox run` without `build.json` |
-| `BUILD_INPUT_CHANGED` | `iii sandbox build` whose package was replaced while it built (section 5.4); build again |
+| `BUILD_INPUT_CHANGED` | A build (`iii sandbox build` or a host `scripts.build`) whose source was replaced while it built (section 5.4); build again |
+| `BUILD_PLAN_STALE` | Existing code, new trigger: `iii compose build` also fails when `worker-compose.lock` changed while it prepared (section 7.5) |
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE` | Kept, for `binary` packages only |
 
