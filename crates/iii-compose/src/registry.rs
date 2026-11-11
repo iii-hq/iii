@@ -547,7 +547,8 @@ const WORKERS_LOCK_FILE: &str = ".lock";
 ///   when it is missing or damaged. The cache itself is only read. Its entry leaves
 ///   `.packages.json` before it is replaced, and comes back once the copy is in place: a
 ///   replacement that never finished is copied again by the next run, never taken for the
-///   package it replaced.
+///   package it replaced. The tree it replaced stays aside, for a host process that still runs
+///   from it, until the next run.
 /// - A directory made again for the artifact it held (it was gone, or `.packages.json` could
 ///   not be read) loses what a host build wrote into it, so that build's record
 ///   (`.build/<container>/build.json` without `image`, made from this same package) is deleted
@@ -556,8 +557,8 @@ const WORKERS_LOCK_FILE: &str = ".lock";
 ///   container rebuilds as spec 5.3 says. A VM build keeps its record: its image holds its own
 ///   copy of the package.
 /// - Only what Compose made is removed: the directories `.packages.json` recorded for containers
-///   no longer locked, and the temporary copies and files an interrupted run left. Anything
-///   else in `.workers/` stays.
+///   no longer locked, the trees an earlier run replaced, and the temporary copies and files an
+///   interrupted run left. Anything else in `.workers/` stays.
 /// - A project with no package and no `.workers/` gets none.
 pub async fn materialize_project(
     compose_dir: &Path,
@@ -775,8 +776,10 @@ async fn copy_package(
 }
 
 /// Copies `source` beside `destination`, then swaps the copy into place: the old directory is
-/// renamed aside first and removed last, so `destination` is only ever missing between two
-/// renames. A leftover of either temporary directory is pruned by the next run.
+/// renamed aside first, so `destination` is only ever missing between two renames. The old tree
+/// stays aside, whole: a host bundle that still runs from it keeps reading its files until it
+/// stops, and keeps them if what replaced it fails to start. The next run prunes it, with any
+/// leftover staging copy ([`prune_packages`]).
 fn replace_directory(
     source: &Path,
     destination: &Path,
@@ -812,7 +815,6 @@ fn replace_directory(
                 let _ = std::fs::rename(&aside, destination);
                 return Err(io_error(destination)(error));
             }
-            let _ = remove_path(&aside);
             Ok(())
         }
     }
@@ -3108,10 +3110,67 @@ mod tests {
             recorded(project.path())["containers"]["state"],
             serde_json::json!({ "name": "state", "version": "1.1.0", "sha256": sha256_of(&updated) })
         );
+        let names: Vec<String> = names(&workers)
+            .into_iter()
+            .filter(|name| !name.starts_with(".state.replaced-"))
+            .collect();
+        assert_eq!(
+            names,
+            [".gitignore", ".lock", ".packages.json", "queue", "state"],
+            "no staging directory is left"
+        );
+    }
+
+    /// The tree a package update replaced stays aside, whole, for a host process that still runs
+    /// from it; the next run prunes it.
+    #[tokio::test]
+    async fn a_replaced_tree_stays_aside_until_the_next_run() {
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let workers = project.path().join(".workers");
+        let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
+        let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+        std::fs::write(workers.join("state/run.pid"), "42").unwrap();
+
+        let lock = locked(
+            project.path(),
+            cache.path(),
+            &[("state", "1.1.0", &updated)],
+        )
+        .await;
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workers.join("state/lib/data.txt")).unwrap(),
+            "state 2"
+        );
+        let aside: Vec<String> = names(&workers)
+            .into_iter()
+            .filter(|name| name.starts_with(".state.replaced-"))
+            .collect();
+        let [aside] = &aside[..] else {
+            panic!("one replaced tree: {:?}", names(&workers));
+        };
+        assert_eq!(
+            std::fs::read_to_string(workers.join(aside).join("lib/data.txt")).unwrap(),
+            "state 1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workers.join(aside).join("run.pid")).unwrap(),
+            "42"
+        );
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
         assert_eq!(
             names(&workers),
-            [".gitignore", ".lock", ".packages.json", "queue", "state"],
-            "no staging or replaced directory is left"
+            [".gitignore", ".lock", ".packages.json", "state"]
         );
     }
 
@@ -3479,15 +3538,17 @@ mod tests {
         let workers = project.join(".workers");
         let record = recorded(project);
         let containers = record["containers"].as_object().unwrap();
+        // A tree a replacement set aside stays until the next run; a staging copy never does.
         let mut directories: Vec<String> = names(&workers)
             .into_iter()
             .filter(|name| workers.join(name).is_dir())
+            .filter(|name| !(is_temporary_copy(name) && name.contains(".replaced-")))
             .collect();
         directories.sort();
         assert_eq!(
             directories,
             containers.keys().cloned().collect::<Vec<_>>(),
-            "no temporary copy is left, and no directory goes unrecorded"
+            "no staging copy is left, and no directory goes unrecorded"
         );
         for (container, entry) in containers {
             let version = entry["version"].as_str().unwrap();
