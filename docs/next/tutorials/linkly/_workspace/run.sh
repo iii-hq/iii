@@ -45,6 +45,9 @@ wait_for_port() {
 # worker has registered. Wait for compose to report every container running.
 # Fail as soon as one did not start: a container that is not required fails
 # without failing the up, which compose reports as `✗ Containers Running (n/m)`.
+# Compose shows that header whenever a container is failed, so one that fails and
+# would recover through `restart:` also fails the chapter at once; for the
+# tutorial that is acceptable.
 wait_for_containers() {
   local log=$1 tries=${2:-600}
   for ((i = 0; i < tries; i++)); do
