@@ -58,7 +58,8 @@ iii call compose::add worker=./workers/math-worker
 ```
 
 The Compose daemon terminal reports the worker building its image, then becoming ready. The first
-start builds the image, dependencies included, so it takes longer than the next ones:
+start builds the image, dependencies included, so it takes longer than the next ones. This first add
+also starts the sandbox adapter, `sandbox-libkrun`, that Compose adds to build and boot the worker:
 
 ```text
 → math-worker starting
