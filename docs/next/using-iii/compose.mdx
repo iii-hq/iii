@@ -1371,7 +1371,9 @@ relative to the compose file. A host build writes the same keys without `image`.
   what a run neither copies nor syncs, including for `path://.`: the adapter's ignore list plus
   `.iii`, which also keeps Compose's `.iii/build/` and `.iii/workers/` out. The list holds
   dependency, cache, build-output, VCS, and editor directories, such as `node_modules`, `.venv`,
-  `vendor`, `target`, `dist`, and `.git`.
+  `vendor`, `target`, `dist`, and `.git`. `sandbox-libkrun` 0.4 also skips directories named
+  `.build` and `.workers`, at any depth, so a worker's own directory of either name stays on the
+  host.
   - `build`, `out`, `obj`, `coverage`, and `deps` match only a directory at the worker's root:
     projects also keep source under these names deeper down. Every other name, `target` and `dist`
     included, matches at any depth.
@@ -1545,6 +1547,10 @@ is then stored at `$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug
 directory name with a hash of the canonical compose file path, keeping projects with the same
 directory name separate. With this override, two compose files in the same directory have separate
 state directories and can use the same namespace on separate engines.
+
+The override does not move `.iii/workers/` and `.iii/build/`: Compose still writes them beside the
+compose file when the project locks a package or a container has a non-empty `scripts.build`. A
+read-only project directory therefore works only without packages and builds.
 
 The package cache stays shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
 Add `**/.iii/compose/` to the repository's `.gitignore` to exclude generated state, including state
