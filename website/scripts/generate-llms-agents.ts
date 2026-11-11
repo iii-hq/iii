@@ -15,7 +15,8 @@ const AGENTS_PATH = path.join(WEBSITE_ROOT, "dist", "AGENTS.md")
 const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, "scripts", "agents-appendix.md")
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */
-const LLMS_TAGLINE = "TODO: one-line summary of iii for crawlers."
+const LLMS_TAGLINE =
+  "iii is an engine that connects functions, agents, APIs, models, browsers, and machines into one live, composable system, built on one primitive: the Function."
 
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10)
@@ -197,15 +198,22 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
   const tail = `
 ## Core pages
 
-TODO: annotated links to the core pages.
+- [Docs](${SITE_ORIGIN}/docs): what iii is, and how to build and run an iii system
+- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii): workers, functions, observers, and the engine
+- [Quickstart](${SITE_ORIGIN}/docs/quickstart): two workers in two languages, composed through the engine
+- [Worker registry](${SITE_ORIGIN}/registry): workers you can add to a project with \`compose::add\`
+- [Manifesto](${SITE_ORIGIN}/manifesto): why iii exists
 
 ## Optional
 
-TODO: annotated links to optional pages.
+- [Benchmarks](${SITE_ORIGIN}/benchmarks): engine performance, measured on every change
+- [Roadmap](${SITE_ORIGIN}/roadmap): technical specifications and what comes next
+- [GitHub](https://github.com/iii-hq/iii): engine, SDKs, docs, and website source
+- [Worker source](https://github.com/iii-hq/workers): source of the registry workers
 
 ## Want to build on iii?
 
-TODO: where to go to install iii and build a first worker.
+Read [AGENTS.md](${SITE_ORIGIN}/AGENTS.md) for install steps, guardrails, and agent skills, then the [install guide](${SITE_ORIGIN}/docs/install).
 
 Last updated: ${isoDate()}
 `.trimStart()
@@ -236,7 +244,7 @@ export function buildAgentsMd(html: string, agentsAppendix: string, blogSection 
   const intro = [
     "# iii for AI Agents",
     "",
-    "TODO: what this file is and who it is for.",
+    "This file follows the [agents.md](https://agents.md/) format. It is for coding agents that install iii, build workers, and operate an iii project. It has the same overview as llms.txt, then the wire-level primitives, install steps, and guardrails.",
     "",
     "## Overview and comparisons (pre-written)",
     "",
