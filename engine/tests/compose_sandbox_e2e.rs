@@ -624,8 +624,9 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
         panic!("sandbox-vm-worker::hello never returned {expected:?}; last answer {seen}");
     };
     // Spec 3.2 and 9.3: `.iii/` never reaches a guest, and with it `.iii/build/` and
-    // `.iii/workers/`, here in the worker's own directory as under `path://.`. `round` adds a
-    // file to `.iii/build/leak/` and `.iii/workers/leak/`.
+    // `.iii/workers/`, here in the worker's own directory as under `path://.`: neither in
+    // `/workspace` nor in the image, whose build manifest would list it although a boot deletes
+    // `/workspace/.iii`. `round` adds a file to `.iii/build/leak/` and `.iii/workers/leak/`.
     let leak = |round: &str| {
         for dir in [".iii/build/leak", ".iii/workers/leak"] {
             let dir = worker_dir.join(dir);
@@ -646,8 +647,9 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
                 Ok(answer) => {
                     assert_eq!(
                         answer,
-                        json!({ "iii": false }),
-                        "{when}: .iii reached the guest"
+                        json!({ "iii": false, "built": false }),
+                        "{when}: .iii reached /workspace (iii) or the image (built), or the \
+                         guest has no build manifest that lists index.js (built: null)"
                     );
                     return;
                 }
