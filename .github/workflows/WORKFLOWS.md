@@ -337,7 +337,7 @@ Uses [hawkeye](https://github.com/korandoru/hawkeye) to verify license headers a
 | `rust-advisories` | `cargo deny check advisories bans` over the workspace `Cargo.lock`, configured in `deny.toml` (vulnerabilities fail; unmaintained notices fail only for direct dependencies; duplicate versions warn) |
 | `node-advisories` | `scripts/audit-sdk.mjs` runs `pnpm audit --json` and fails on any advisory reachable from `sdk/packages/node/*`; advisories reachable only from `website` or `docs` are reported without failing |
 
-Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm and GitHub Actions.
+Dependabot (`.github/dependabot.yml`) opens weekly grouped update PRs for Cargo, npm, GitHub Actions, the Go modules (`sdk/packages/go/*`, `docs/scripts/godoc-json`, `docs/next/scripts/godoc-json`), the uv-locked Python SDK packages (`sdk/packages/python/*`), the engine Dockerfiles (`engine/`) and the bun-locked subscribe worker (`services/subscribe/workers/subscribe`).
 
 ### `checklist-checker.yml` — License Agreement Check
 
