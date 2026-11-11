@@ -262,6 +262,12 @@ host.
 - **When:** when the container starts, after its `start_after` containers are ready, if
   `scripts.build` is set and non-empty and `.build/<container>/build.json` is missing. This covers
   `compose::add`, `up`, and a migrated container.
+- **Other kind:** a `build.json` of the other kind than `scripts.build` makes is rebuilt the same
+  way: a host build (no `image`) where `scripts.build` is now `iii sandbox build`, or an image
+  where it is now a host command. Only the kind is compared, never the command's text (section
+  5.5). Logs: `<container>: its build is a host build, and scripts.build now builds a VM image;
+  rebuilding`, or `<container>: its build is a VM image, and scripts.build now runs on the host;
+  rebuilding`.
 - **Timeout:** `scripts.build_timeout` (section 4.1), then the container's `startup_timeout`
   starts for the run.
 - **Logs:** `<container>: no build yet; running scripts.build`, then the build output.
@@ -315,6 +321,12 @@ path, relative to the compose file). A host build writes the same keys without `
   place. For a host build, Compose writes it after `scripts.build` exited 0.
 - **Atomic writes:** a temporary file beside it, then rename; leftovers are swept. A `build.json` whose `build_id` does not
   match the image fails the run with `S508` (section 6.5); the fix is a rebuild.
+- **Stable source.** `iii sandbox build` reads the container's `source`
+  (`build_record::source`) before `worker::build` and again before it writes `build.json`. An
+  `iii compose build` in another process may replace `.workers/<container>/` meanwhile: it holds
+  `.workers/.lock` only while it copies, not for the length of a build. When the two reads
+  differ, `iii sandbox build` writes nothing and fails with `BUILD_INPUT_CHANGED` (exit 1);
+  building again records the new package.
 
 ### 5.5 A build that is out of date
 
@@ -394,7 +406,10 @@ pub struct BaseImageRef {
 
 - **Always builds.** No input-based skip, so a rebuild picks up a moved `:latest` base.
 - **Output files:** `image.erofs` and `image.id` (the `build_id`) are written as temporary
-  files, then renamed: `image.erofs` first, `image.id` last.
+  files. The adapter then deletes the old `image.id`, renames `image.erofs` into place, and
+  renames the new `image.id` last. A crash between these steps leaves an image without
+  `image.id`, which `worker::start` refuses with `S508` (section 6.3) until a rebuild; it never
+  leaves a new image under the old `build_id`.
 - **The running VM is not touched.** A build may run while the VM of the same `state_key`
   runs; it uses its own build VM and swaps `image.erofs` by rename, so the running VM keeps
   the file it booted.
@@ -556,8 +571,9 @@ iii call compose::build [file=<path>] [worker=<container>]
 ```
 
 - Request: `file` (as every project function), `worker` (a container key; omitted, every
-  container with a non-empty `scripts.build`), `operation_id` (optional, as for other
-  mutations). A container whose `scripts.build` is `""` is reported as `skipped`.
+  container that declares `scripts.build`), `operation_id` (optional, as for other
+  mutations). A container whose `scripts.build` is `""` is reported as `skipped`, named or
+  not.
 - It is asynchronous: it answers `{ operation_id, status: "accepted", requested }`, holds the project's
   mutation lock while it runs, and reports progress per container (`building`, `built`,
   `failed`) through `compose::on-operation-progress`.
@@ -579,6 +595,17 @@ runs `scripts.build` and `scripts.run` in `.workers/<container>/` and gets `III_
 and `III_PACKAGE_NAME` too; binary packages keep today's working directory. When Compose copies a container's package directory again (it was missing, or
 the record was unreadable), it removes that container's host-build `build.json`, so the next
 start runs the first build again (section 5.2). The compose file's directory is already a host root of the adapter.
+
+A directory is replaced through a copy made beside it and a rename. Its `.packages.json` entry is
+removed, and the file written, before the directory changes, and comes back once the copy is in
+place: a run stopped in between leaves no entry, so the next run copies it again instead of
+taking it for the package it replaced. The replaced tree stays aside, whole, for a host bundle
+that still runs from it, until the next run prunes it.
+
+`iii compose build` runs outside the daemon's mutation lock. When the compose file or
+`worker-compose.lock` changed while it prepared (the daemon committed an update, say), it
+writes nothing and fails with `BUILD_PLAN_STALE`; it checks again under `.workers/.lock` before
+it copies.
 
 ### 7.6 What stays and what goes
 
@@ -602,14 +629,16 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
 - **Inside Compose** (the env of section 8.3 is set): builds its own container. It calls
   `adapter::info` (requires `worker.build`), then `worker::build` with the build output
   streamed to stdout, then writes `build.json` (section 5.4) from `build_record::source` and
-  `build_record::declared_base_image` (section 11.2).
+  `build_record::declared_base_image` (section 11.2). A `source` that changed during the build
+  fails it with `BUILD_INPUT_CHANGED` and writes nothing (section 5.4).
 - **Outside Compose:** calls `compose::build worker=<container>` on the project's daemon,
   found as `iii compose logs` finds it (`--file`, `--namespace`, `--engine`, `III_URL`, through
   `resolve_project_target`, section 11.2), prints
   the operation's progress and the container's build output, and waits for the result. No
   engine or no loaded project: the errors `iii compose logs` gives today (`ENGINE_CALL_FAILED`,
   `UNKNOWN_PROJECT`).
-- **Exit codes:** 0 built; 1 the build failed; 125 `iii sandbox` itself failed (unreachable
+- **Exit codes:** 0 built; 1 the build failed (its S-code, `TIMED_OUT` or
+  `BUILD_INPUT_CHANGED`); 125 `iii sandbox` itself failed (unreachable
   engine, adapter without the feature, bad env); 130 cancelled (`OPERATION_CANCELLED`). Outside Compose, Ctrl-C sends
   `compose::cancel` for its operation and waits for it before exiting.
 - **Last line on failure**, parseable by Compose for `BUILD_FAILED`:
@@ -708,6 +737,7 @@ Compose and CLI codes:
 | `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter speaks another contract major |
 | `SANDBOX_FAILED` | Any other failure of `iii sandbox` itself (exit 125) |
 | `BUILD_MISSING` | `iii sandbox run` without `build.json` |
+| `BUILD_INPUT_CHANGED` | `iii sandbox build` whose package was replaced while it built (section 5.4); build again |
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE` | Kept, for `binary` packages only |
 
@@ -717,6 +747,8 @@ Logs:
 
 - `<c>: no build yet; running scripts.build`
 - `<c>: package changed (<old> -> <new>); rebuilding`
+- `<c>: its build is a host build, and scripts.build now builds a VM image; rebuilding`, and the
+  reverse, `<c>: its build is a VM image, and scripts.build now runs on the host; rebuilding`
 - ``<c>: dependencies changed since the last build (<files>); run `iii sandbox build <c>` ``
 - ``<c>: base image changed since the last build (<old> -> <new>); run `iii sandbox build <c>` ``
 - `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)`
