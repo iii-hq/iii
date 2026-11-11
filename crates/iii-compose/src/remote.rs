@@ -1419,6 +1419,7 @@ mod tests {
 
     /// A build stopped by `compose::cancel` ends `cancelled`, the build it killed in `results` as
     /// `failed`: the CLI exits 130 only then.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_compose_build_ends_cancelled() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1475,6 +1476,7 @@ mod tests {
 
     /// Spec 7.4: accepted at once with `requested`, then a snapshot whose top-level `results`
     /// holds one entry per container, and a terminal `detail` naming each failure.
+    #[cfg(unix)]
     #[tokio::test]
     async fn compose_build_is_an_observable_operation_with_results() {
         let tmp = tempfile::tempdir().unwrap();

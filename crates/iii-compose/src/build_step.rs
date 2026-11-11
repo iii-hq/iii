@@ -737,6 +737,7 @@ mod tests {
 
     /// Spec 5.2 and 4.1: no `build.json` yet, so it builds; the output lands in the container's
     /// logs as `[build] `; a host build records `build.json` without an image.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_first_build_runs_into_the_logs_and_records_a_host_build() {
         let project = project("scripts: {build: 'echo built; echo warned >&2', run: x}");
@@ -786,6 +787,7 @@ mod tests {
 
     /// Spec 4.1: another command fails as `EXIT_<status>` with its last 20 lines, and the start
     /// as `BUILD_FAILED` carrying them.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_build_carries_its_code_and_its_last_lines() {
         let project = project(
@@ -844,6 +846,7 @@ mod tests {
     }
 
     /// `scripts.build_timeout`, `compose::cancel` and a removal each end a build at once.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_build_ends_at_its_timeout_its_cancel_or_its_stop() {
         let project = project("scripts: {build: 'sleep 30', build_timeout: 1s, run: x}");
@@ -899,6 +902,7 @@ mod tests {
 
     /// Spec 5.3 and 5.5: a new source rebuilds; changed dependency files or base image only
     /// warn, and the container runs on its build.
+    #[cfg(unix)]
     #[tokio::test]
     async fn only_a_new_source_rebuilds() {
         let project = project("scripts: {build: 'true', run: x}");
@@ -980,6 +984,7 @@ mod tests {
 
     /// Spec 5.5 and 10: each kind of change is one line, worded as the spec says, and the
     /// container runs on its build.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_out_of_date_build_warns_once_per_kind_and_runs() {
         let project = project("scripts: {build: 'true', run: x}");

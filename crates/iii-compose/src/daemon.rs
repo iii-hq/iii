@@ -4707,6 +4707,7 @@ containers:
     /// registry that serves any version of them. The build of `<key>` fails while
     /// `<root>/fail-<key>` exists; while `<root>/slow` does, the first build passes and the next
     /// one hangs, touching `<root>/building`.
+    #[cfg(unix)]
     async fn running_package_project(
         root: &Path,
         keys: &[&str],
@@ -4788,6 +4789,7 @@ containers:
     }
 
     /// The pid container `key` runs as, once it runs.
+    #[cfg(unix)]
     fn pid_of(root: &Path, key: &str) -> u32 {
         std::fs::read_to_string(root.join(key).join("pid"))
             .unwrap()
@@ -4800,6 +4802,7 @@ containers:
     /// restarts nothing and answers `OPERATION_CANCELLED`, naming the container it already
     /// rebuilt; the retry restarts both, that one included: its package is current, but the add
     /// or update that rebuilt it did not restart it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_rebuild_restarts_nothing_and_a_retry_finishes_it() {
         for operation in ["add", "update"] {
@@ -4865,6 +4868,7 @@ containers:
 
     /// Spec 3.3 and 5.3: the restart after `compose::build` is the user's. An update that changes
     /// nothing afterwards restarts nothing, and answers that all is up to date.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_explicit_build_leaves_the_next_unchanged_update_restarting_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -4916,6 +4920,7 @@ containers:
     /// Spec 5.3 through `compose::add` and `compose::update`: the rebuild for the new package runs
     /// while the old build does; one that fails leaves it running, answers `BUILD_FAILED` saying
     /// how to finish, and a retry of the same call finishes it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_and_update_rebuild_before_restarting_and_a_retry_finishes() {
         for operation in ["add", "update"] {
@@ -4978,6 +4983,7 @@ containers:
     }
 
     /// Spec 3.3: `compose::remove` takes the container's `.build/` and `.workers/` along.
+    #[cfg(unix)]
     #[tokio::test]
     async fn remove_takes_the_build_and_package_directories_of_the_container() {
         let dir = tempfile::tempdir().unwrap();
@@ -5284,6 +5290,7 @@ containers:
 
     /// Spec 7.4: `compose::build` builds a named container or every one that declares a build,
     /// skips `""`, restarts nothing, and stops at `compose::cancel` or `down`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn compose_build_runs_the_builds_and_stops_at_cancel_or_down() {
         let dir = tempfile::tempdir().unwrap();
