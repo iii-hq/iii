@@ -10,6 +10,9 @@
 //! opens of the same file therefore adopt the same PIDs, and the one that
 //! loses the race into the cache is still handed to its caller — which can
 //! then take down processes the other believes it supervises.
+//!
+//! The project also keeps its own copy of each locked package, in `.workers/`,
+//! beside the global package cache (spec 3.2 and 7.5): the tests at the end.
 
 use std::sync::Arc;
 
@@ -662,4 +665,255 @@ async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
     assert_eq!(err.code(), "VM_SCRIPTS_MISSING");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
+}
+
+/// A package archive: an executable `worker` and `lib/data.txt` holding `body`.
+fn package_archive(body: &str) -> Vec<u8> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    for (name, mode) in [("worker", 0o755), ("lib/data.txt", 0o644)] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, name, body.as_bytes())
+            .unwrap();
+    }
+    archive.into_inner().unwrap().finish().unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// Writes `worker-compose.yaml` beside a `path://` container, with the binary `packages`
+/// (container, version, archive) locked in `worker-compose.lock` as served by `server` at
+/// `/<container>-<version>`, which this mounts.
+async fn lock_project(
+    dir: &std::path::Path,
+    server: &wiremock::MockServer,
+    packages: &[(&str, &str, &[u8])],
+) -> std::path::PathBuf {
+    use wiremock::{Mock, ResponseTemplate, matchers};
+
+    let target = iii_compose::registry::host_target();
+    let mut compose = String::from("containers:\n  api:\n    worker: path://./workers/api\n");
+    let mut containers = serde_json::Map::new();
+    for (container, version, archive) in packages {
+        let path = format!("/{container}-{version}");
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path(path.as_str()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive.to_vec()))
+            .mount(server)
+            .await;
+        let worker = format!("package://api.workers.iii.dev/{container}");
+        compose += &format!("  {container}:\n    worker: {worker}\n    version: '{version}'\n");
+        containers.insert(
+            container.to_string(),
+            serde_json::json!({
+                "worker": worker,
+                "requested": version,
+                "resolved": {
+                    "name": container,
+                    "version": version,
+                    "type": "binary",
+                    "artifacts": {
+                        (target): { "sha256": sha256_hex(archive), "url": format!("{}{path}", server.uri()) }
+                    }
+                }
+            }),
+        );
+    }
+    let file = dir.join("worker-compose.yaml");
+    std::fs::write(&file, compose).unwrap();
+    std::fs::write(
+        dir.join("worker-compose.lock"),
+        serde_yaml::to_string(&serde_json::json!({ "version": 1, "containers": containers }))
+            .unwrap(),
+    )
+    .unwrap();
+    file
+}
+
+/// The names in `dir`, sorted; with `prefix`, only those that start with it.
+fn listing(dir: &std::path::Path, prefix: &str) -> Vec<String> {
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    names.sort();
+    names
+}
+
+/// Spec 3.2 and 7.5: `iii compose build --frozen` copies each locked package from the global
+/// cache into `.workers/<container>/`, records it in `.workers/.packages.json`, and follows the
+/// lock as it changes; the cache keeps its layout. A project that already had `.workers/` and
+/// `.build/` gets their `.gitignore`.
+#[tokio::test]
+async fn frozen_build_copies_the_locked_packages_into_the_project() {
+    isolate_state();
+    let cache =
+        std::path::PathBuf::from(std::env::var("III_COMPOSE_STATE_DIR").unwrap()).join("packages");
+    let tmp = project_dir();
+    let project = tmp.path();
+    // A project from before: a directory Compose did not record, which it leaves alone, and a
+    // build.
+    std::fs::create_dir_all(project.join(".workers/retired")).unwrap();
+    std::fs::create_dir_all(project.join(".build/api")).unwrap();
+
+    let server = wiremock::MockServer::start().await;
+    let state = package_archive("state 1");
+    let queue = package_archive("queue 1");
+    let file = lock_project(
+        project,
+        &server,
+        &[
+            ("kan281-state", "1.0.0", &state),
+            ("kan281-queue", "2.0.0", &queue),
+        ],
+    )
+    .await;
+
+    let report = iii_compose::build::build_frozen(&file).await.unwrap();
+    assert_eq!(report.packages, 2);
+
+    let workers = project.join(".workers");
+    assert_eq!(
+        listing(&workers, ""),
+        [
+            ".gitignore",
+            ".lock",
+            ".packages.json",
+            "kan281-queue",
+            "kan281-state",
+            "retired"
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(workers.join(".gitignore")).unwrap(),
+        "*\n"
+    );
+    assert_eq!(
+        listing(&workers.join("kan281-state"), ""),
+        ["lib", "worker"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(workers.join("kan281-state/lib/data.txt")).unwrap(),
+        "state 1"
+    );
+    let packages: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(workers.join(".packages.json")).unwrap()).unwrap();
+    assert_eq!(
+        packages,
+        serde_json::json!({
+            "schema": 1,
+            "containers": {
+                "kan281-queue": { "name": "kan281-queue", "version": "2.0.0", "sha256": format!("sha256:{}", sha256_hex(&queue)) },
+                "kan281-state": { "name": "kan281-state", "version": "1.0.0", "sha256": format!("sha256:{}", sha256_hex(&state)) }
+            }
+        })
+    );
+
+    // The global cache keeps the layout an install gives it: one extracted directory per
+    // artifact, its lock file, and the integrity marker inside; nothing of the project.
+    let target = iii_compose::registry::host_target();
+    let entry = |name: &str, version: &str, archive: &[u8]| {
+        format!("{name}-{version}-{target}-{}", sha256_hex(archive))
+    };
+    let (queue_entry, state_entry) = (
+        entry("kan281-queue", "2.0.0", &queue),
+        entry("kan281-state", "1.0.0", &state),
+    );
+    assert_eq!(
+        listing(&cache, "kan281-"),
+        [
+            queue_entry.clone(),
+            format!("{queue_entry}.lock"),
+            state_entry.clone(),
+            format!("{state_entry}.lock"),
+        ]
+    );
+    assert_eq!(
+        listing(&cache.join(&state_entry), ""),
+        [".iii-compose-integrity.json", "lib", "worker"]
+    );
+
+    // A build record in the `.build/` the project already had.
+    let build = iii_compose::build_record::build_dir(project, "api");
+    let record = iii_compose::build_record::BuildRecord {
+        schema: iii_compose::build_record::SCHEMA,
+        container: "api".to_string(),
+        source: iii_compose::build_record::source(&file, "api").unwrap(),
+        command: "npm ci".to_string(),
+        dependency_files: iii_compose::build_record::dependency_files(&project.join("workers/api"))
+            .unwrap(),
+        image: None,
+        built_at: "2026-11-10T14:03:22Z".to_string(),
+    };
+    iii_compose::build_record::write(&build, &record).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(project.join(".build/.gitignore")).unwrap(),
+        "*\n"
+    );
+    assert_eq!(
+        iii_compose::build_record::read(&build).unwrap(),
+        Some(record)
+    );
+
+    // An update and a removal in the lock.
+    let updated = package_archive("state 2");
+    let file = lock_project(project, &server, &[("kan281-state", "1.1.0", &updated)]).await;
+    iii_compose::build::build_frozen(&file).await.unwrap();
+    assert_eq!(
+        listing(&workers, ""),
+        [
+            ".gitignore",
+            ".lock",
+            ".packages.json",
+            "kan281-state",
+            "retired"
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(workers.join("kan281-state/lib/data.txt")).unwrap(),
+        "state 2"
+    );
+    assert_eq!(
+        iii_compose::build_record::source(&file, "kan281-state").unwrap(),
+        iii_compose::build_record::BuildSource::Package {
+            name: "kan281-state".to_string(),
+            version: "1.1.0".to_string(),
+            sha256: format!("sha256:{}", sha256_hex(&updated)),
+        }
+    );
+}
+
+/// A compose file reached through a symlink has its lock beside its target, where `prepare`
+/// reads it: a frozen build that changes nothing passes its late check, every time.
+#[cfg(unix)]
+#[tokio::test]
+async fn frozen_build_through_a_symlinked_compose_file_passes_its_check() {
+    isolate_state();
+    let tmp = tempfile::tempdir().unwrap();
+    let stacks = tmp.path().join("stacks");
+    std::fs::create_dir_all(stacks.join("workers/api")).unwrap();
+    let server = wiremock::MockServer::start().await;
+    let link = package_archive("link 1");
+    let target = lock_project(&stacks, &server, &[("symlinked-link", "1.0.0", &link)]).await;
+    let file = tmp.path().join("prod.yaml");
+    std::os::unix::fs::symlink(&target, &file).unwrap();
+    assert!(!tmp.path().join("prod.lock").exists());
+
+    for _ in 0..2 {
+        iii_compose::build::build_frozen(&file).await.unwrap();
+    }
+
+    assert_eq!(
+        std::fs::read_to_string(stacks.join(".workers/symlinked-link/lib/data.txt")).unwrap(),
+        "link 1"
+    );
+    assert!(!tmp.path().join(".workers").exists());
 }
