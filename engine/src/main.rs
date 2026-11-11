@@ -138,23 +138,6 @@ enum Commands {
     #[command(visible_aliases = ["trigger", "t"])]
     Call(CallArgs),
 
-    /// Removed: prints where the iii console moved (ADE) and exits non-zero.
-    // TODO(MOT-3619): remove the iii console stub in the next release.
-    // Hidden so help and the CLI reference stop advertising it; still parsed
-    // (with any arguments) so old muscle memory gets the notice, not a clap
-    // "unrecognized subcommand" error. Handled in `run` before telemetry and
-    // without downloading anything.
-    #[command(
-        hide = true,
-        trailing_var_arg = true,
-        allow_hyphen_values = true,
-        disable_help_flag = true
-    )]
-    Console {
-        #[arg(num_args = 0..)]
-        args: Vec<String>,
-    },
-
     /// Manage iii Cloud deployments
     #[command(
         trailing_var_arg = true,
@@ -244,7 +227,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
     match &cli.command {
         // Every form (`call`, `trigger`, `t`) is counted as `call`.
         Some(Commands::Call(_)) => "call".to_string(),
-        Some(Commands::Console { args }) => passthrough_command_path("console", args),
         Some(Commands::Cloud { args }) => passthrough_command_path("cloud", args),
         Some(Commands::Project(args)) => match args.action {
             cli::project::ProjectAction::Init(_) => "project init".to_string(),
@@ -502,14 +484,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // TODO(MOT-3619): remove the iii console stub in the next release.
-    // The legacy iii-console was removed: print the notice and exit non-zero
-    // before telemetry, update checks or any download.
-    if let Some(Commands::Console { .. }) = &cli_args.command {
-        eprintln!("{}", cli::CONSOLE_REMOVED_NOTICE);
-        std::process::exit(1);
-    }
-
     cli::telemetry::record_cli_usage(&cli_usage_command_path(&cli_args));
 
     if cli_args.version {
@@ -541,8 +515,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             Err(cli_call::CallCliError::RemoteAlreadyReported) => std::process::exit(1),
             Err(cli_call::CallCliError::Other(e)) => Err(e),
         },
-        // Handled before telemetry above.
-        Some(Commands::Console { .. }) => unreachable!("the iii console stub returns early"),
         Some(Commands::Cloud { args }) => {
             let exit_code =
                 cli::handle_dispatch("cloud", args, cli_args.no_update_check, &[]).await;
@@ -764,18 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn console_parses_with_passthrough_args() {
-        let cli = Cli::try_parse_from(["iii", "console", "--port", "3000"])
-            .expect("should parse console with args");
-        match cli.command {
-            Some(Commands::Console { args }) => {
-                assert_eq!(args, vec!["--port", "3000"]);
-            }
-            _ => panic!("expected Console subcommand"),
-        }
-    }
-
-    #[test]
     fn cli_usage_command_path_covers_cloud_commands() {
         let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--config", "prod.yaml"])
             .expect("should parse cloud deploy passthrough");
@@ -858,36 +818,14 @@ mod tests {
     }
 
     #[test]
-    fn console_stub_is_hidden_from_help() {
-        use clap::CommandFactory;
-        let cmd = Cli::command();
-        let console = cmd
-            .find_subcommand("console")
-            .expect("the iii console stub still parses");
+    fn console_is_no_longer_a_subcommand() {
+        // `iii console` only printed a notice pointing to the console in ADE.
+        // The stub is gone, so `iii console` should now fail to parse.
+        let result = Cli::try_parse_from(["iii", "console"]);
         assert!(
-            console.is_hide_set(),
-            "the removed console must not be advertised"
+            result.is_err(),
+            "\"console\" should no longer be a valid subcommand"
         );
-    }
-
-    #[test]
-    fn console_removed_notice_points_to_ade() {
-        let notice = cli::CONSOLE_REMOVED_NOTICE;
-        assert!(notice.contains("iii-console has been removed"));
-        assert!(notice.contains("compose::add worker=ade"));
-        assert!(notice.contains("https://iii.dev/docs/using-iii/console"));
-    }
-
-    #[test]
-    fn console_parses_with_no_args() {
-        let cli =
-            Cli::try_parse_from(["iii", "console"]).expect("should parse console with no args");
-        match cli.command {
-            Some(Commands::Console { args }) => {
-                assert!(args.is_empty());
-            }
-            _ => panic!("expected Console subcommand"),
-        }
     }
 
     #[test]
