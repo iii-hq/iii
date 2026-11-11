@@ -94,9 +94,9 @@ other workers through the engine, regardless of where each one runs or what lang
 in.
 
 <Tip>
-  A worker registers its functions once its image is built, a few seconds after the add. If you see
-  `"message": "Function math::add not found"`, wait until the daemon reports the worker ready and
-  try again.
+  A worker registers its functions after its image is built and it starts, which the first add waits
+  for. If you see `"message": "Function math::add not found"`, wait until the daemon reports the
+  worker ready and try again.
 </Tip>
 
 ## 4. Start the TypeScript worker
