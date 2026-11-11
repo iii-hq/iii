@@ -188,13 +188,16 @@ impl Project {
         let project = Self::declaring(&format!(
             "{containers}  sandbox-libkrun:\n    worker: path://./adapter\n    config_override: {{image_allowlist: [python, node]}}\n"
         ));
+        // Absolute: the adapter starts in the project's directory, not in this one.
+        let binary = std::fs::canonicalize(&binary)
+            .unwrap_or_else(|error| panic!("{LOCAL_ADAPTER}={}: {error}", binary.display()));
         let adapter = project.dir.path().join("adapter");
         std::fs::create_dir(&adapter).unwrap();
         std::fs::write(
             adapter.join("iii.worker.yaml"),
             format!(
                 "name: sandbox-libkrun\nscripts:\n  start: exec '{}'\n",
-                Path::new(&binary).display()
+                binary.display()
             ),
         )
         .unwrap();
