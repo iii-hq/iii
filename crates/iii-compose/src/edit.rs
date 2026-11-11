@@ -490,7 +490,7 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                 .iter()
                 .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
                 .map(|line| leading_whitespace(line).to_string());
-            match child.filter(|_| value.trim().is_empty()) {
+            match child.filter(|_| opens_block(value)) {
                 // A block mapping: its other keys and comments stay line for line.
                 Some(child) => {
                     let run_line = field_span(children, &child, "run");
@@ -662,6 +662,14 @@ fn trailing_comment(line: &str, data: &str) -> String {
     } else {
         format!(" {comment}")
     }
+}
+
+/// Whether the text after `key:` opens a block mapping: nothing, or only an anchor and a tag
+/// (`&shared`, `!!map`), which then stay on that line.
+fn opens_block(value: &str) -> bool {
+    value
+        .split_whitespace()
+        .all(|token| token.starts_with('&') || token.starts_with('!'))
 }
 
 /// A YAML scalar as the text it holds; another value as its YAML.
@@ -2037,6 +2045,26 @@ containers:
         assert_eq!(scripts["run"].as_str(), Some(run));
         assert_eq!(scripts["post_run"].as_str(), Some("echo bye"));
         assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
+    }
+
+    /// An anchor on a block `scripts` stays where it was, so an alias of it still resolves.
+    #[test]
+    fn an_anchored_block_of_scripts_keeps_its_anchor() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared # shared\n      run: python main.py\n  other:\n    worker: path://./other\n    scripts: *shared\n";
+        let rewrite = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap();
+        assert!(
+            rewrite.text.contains("    scripts: &shared # shared\n"),
+            "{}",
+            rewrite.text
+        );
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        let scripts = &parsed["containers"]["vm"]["scripts"];
+        assert_eq!(scripts["build"].as_str(), Some("iii sandbox build"));
+        assert_eq!(
+            scripts["run"].as_str(),
+            Some("iii sandbox run --command 'python main.py'")
+        );
+        assert_eq!(&parsed["containers"]["other"]["scripts"], scripts);
     }
 
     /// What `sh -c` reads back is the command as it was written.
