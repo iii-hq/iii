@@ -31,6 +31,7 @@ iii [OPTIONS] [COMMAND]
 | [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
+| [`sandbox`](#iii-sandbox) | Build and run one Compose container's VM through its sandbox adapter |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
 ### `iii call`
@@ -187,6 +188,56 @@ iii ps [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `--json` | Print JSON instead of a table |
+
+### `iii sandbox`
+
+Build and run one Compose container's VM through its sandbox adapter.
+
+A VM container's `scripts.build` is `iii sandbox build` and its `scripts.run` is `iii sandbox run`: the build leaves an image of the worker in the project, and the run boots it; stopping the run stops the VM. Run outside Compose, `iii sandbox build <container>` asks the project's Compose daemon for a rebuild.
+
+```text
+iii sandbox <COMMAND>
+```
+
+#### `iii sandbox build`
+
+Build a container's image through its sandbox adapter.
+
+As a container's `scripts.build`, builds that container and records the image in its `build.json`. Anywhere else, asks the project's Compose daemon to build CONTAINER, or every container with a `scripts.build`, and follows the build; Ctrl-C cancels it. A running container keeps its image until it restarts. Exits 0 once built, 1 when the build failed, 125 when `iii sandbox` itself failed and 130 when cancelled; on failure the last line is `iii sandbox: build failed: <code>: <message>`.
+
+```text
+iii sandbox build [OPTIONS] [CONTAINER]
+```
+
+| Argument | Description |
+| -------- | ----------- |
+| `[CONTAINER]` | The container to build. Outside Compose, every container with a `scripts.build` when omitted; as a container's `scripts.build`, only that container, also the default |
+
+| Option | Description |
+| ------ | ----------- |
+| `-f, --file <PATH>` | Compose file path on the daemon host. The daemon's default file is used when omitted. Outside Compose only |
+| `-n, --namespace <NS>` | Namespace of the Compose daemon that owns the project. Outside Compose only |
+| `--engine <URL>` | Existing engine WebSocket address. The compose file and `III_URL` are used when omitted. Outside Compose only |
+
+#### `iii sandbox destroy`
+
+Remove this container's VM state: the disk its worker writes its data to
+
+```text
+iii sandbox destroy
+```
+
+#### `iii sandbox run`
+
+Boot this container's last build in its VM, or reattach to the VM, and stay with it until it exits. Stopping this command stops the VM. Exits with the VM's code, 128+N when the VM ended on signal N, or 125 when `iii sandbox` itself failed (`BUILD_MISSING` without a build)
+
+```text
+iii sandbox run [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--command <COMMAND>` | Command to start in the guest instead of the manifest's `scripts.start`. Only for a `path://` worker: a registry bundle runs its own |
 
 ### `iii update`
 
