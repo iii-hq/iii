@@ -667,11 +667,17 @@ async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);
 }
 
-/// A package archive: an executable `worker` and `lib/data.txt` holding `body`.
+/// The executable of a binary package: `worker`, `worker.exe` on Windows, the only name Compose
+/// takes there.
+fn worker_file() -> String {
+    format!("worker{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// A package archive: an executable [`worker_file`] and `lib/data.txt` holding `body`.
 fn package_archive(body: &str) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut archive = tar::Builder::new(encoder);
-    for (name, mode) in [("worker", 0o755), ("lib/data.txt", 0o644)] {
+    for (name, mode) in [(worker_file().as_str(), 0o755), ("lib/data.txt", 0o644)] {
         let mut header = tar::Header::new_gnu();
         header.set_size(body.len() as u64);
         header.set_mode(mode);
@@ -798,7 +804,7 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     );
     assert_eq!(
         listing(&workers.join("kan281-state"), ""),
-        ["lib", "worker"]
+        ["lib".to_string(), worker_file()]
     );
     assert_eq!(
         std::fs::read_to_string(workers.join("kan281-state/lib/data.txt")).unwrap(),
@@ -838,7 +844,11 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     );
     assert_eq!(
         listing(&cache.join(&state_entry), ""),
-        [".iii-compose-integrity.json", "lib", "worker"]
+        [
+            ".iii-compose-integrity.json".to_string(),
+            "lib".to_string(),
+            worker_file()
+        ]
     );
 
     // A build record in the `.build/` the project already had.

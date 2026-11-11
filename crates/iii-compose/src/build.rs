@@ -428,6 +428,12 @@ mod tests {
         assert!(error.to_string().contains("container 'first'"));
     }
 
+    /// The executable of a binary package: `worker`, `worker.exe` on Windows, the only name
+    /// `installed_binary` takes there.
+    fn worker_file() -> String {
+        format!("worker{}", std::env::consts::EXE_SUFFIX)
+    }
+
     /// A tar.gz holding `files`: name, mode, body.
     fn archive(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -509,7 +515,7 @@ mod tests {
     #[tokio::test]
     async fn build_locks_and_copies_each_package_into_the_project() {
         let server = wiremock::MockServer::start().await;
-        let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
         serve(
             &server,
             "state",
@@ -533,7 +539,13 @@ mod tests {
 
         assert_eq!(report.packages, 1);
         assert!(project.path().join("worker-compose.lock").is_file());
-        assert!(project.path().join(".workers/state/worker").is_file());
+        assert!(
+            project
+                .path()
+                .join(".workers/state")
+                .join(worker_file())
+                .is_file()
+        );
         assert_eq!(recorded_containers(project.path()), ["state"]);
     }
 
@@ -595,7 +607,7 @@ mod tests {
         use wiremock::{Mock, ResponseTemplate, matchers};
 
         let server = wiremock::MockServer::start().await;
-        let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
         let resolved = serde_json::json!({
             "name": "state",
             "version": "1.0.0",
