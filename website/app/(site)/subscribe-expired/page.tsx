@@ -15,7 +15,7 @@ export default function SubscribeExpiredPage() {
       <p>
         This confirmation link has expired or is no longer valid. Enter your email again and we'll send you a new one.
       </p>
-      <EmailSignup location="subscribe-expired" className="max-w-md" />
+      <EmailSignup location="subscribe-expired" className="w-full max-w-md" />
     </SubscribeStatus>
   )
 }
