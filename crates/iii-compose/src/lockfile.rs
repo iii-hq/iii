@@ -124,6 +124,15 @@ impl PreparedLock {
             })
     }
 
+    /// Every locked container with the package it resolved to, in key order.
+    // Wired by KAN-281: `registry::materialize_project`.
+    pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)> {
+        self.lock
+            .containers
+            .iter()
+            .map(|(container, entry)| (container.as_str(), &entry.resolved))
+    }
+
     /// Records the complete package graph selected for one explicit root.
     pub fn replace_graph(&mut self, root: &str, nodes: BTreeSet<String>) {
         if self.lock.graphs.get(root) == Some(&nodes) {
