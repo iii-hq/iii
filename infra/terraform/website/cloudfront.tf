@@ -205,10 +205,13 @@ resource "aws_cloudfront_distribution" "site" {
     # No function_association: SPA fallback must not rewrite /api/search responses.
   }
 
-  # Email signup: POST /api/subscribe and the emailed GET /api/subscribe/confirm
-  # link. iii Cloud routes by Host, so the viewer's Host: iii.dev must not be
-  # forwarded (same reason as the search origin above). No caching, and the
-  # confirm link's query string reaches the origin.
+  # Email signup: POST /api/subscribe and POST /api/subscribe/confirm, both
+  # from iii.dev pages. CloudFront accepts only three method sets (GET+HEAD,
+  # +OPTIONS, or all seven), so allowing POST means listing all seven; the
+  # origin answers only those two POST routes (any other method or path is a
+  # 404 or 405 from the http worker). iii Cloud routes by Host, so the viewer's
+  # Host: iii.dev must not be forwarded (same reason as the search origin
+  # above). No caching.
   ordered_cache_behavior {
     path_pattern           = "/api/subscribe*"
     target_origin_id       = "subscribe-api"

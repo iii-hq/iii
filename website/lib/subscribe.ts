@@ -1,8 +1,9 @@
 import { track } from '@/lib/analytics'
 
 // Signup endpoint: CloudFront proxies /api/subscribe to the signup API on iii
-// Cloud (services/subscribe). It emails a confirmation link; the address joins
-// Resend's "iii dev Website Signups" segment only once that link is clicked.
+// Cloud (services/subscribe). It emails a confirmation link to /subscribe-confirm,
+// whose button posts to /api/subscribe/confirm; only then does the address join
+// Resend's "iii dev Website Signups" segment.
 // Production builds post to it unless NEXT_PUBLIC_SUBSCRIBE_URL overrides it; set
 // the variable to an empty string on preview/demo projects so test signups never
 // reach the list. `next dev` sends nothing unless it is set.
@@ -35,5 +36,27 @@ export async function subscribe(email: string, location: string) {
     if (res.ok) window.iiiNotifyCommonRoomEmail?.(email)
   } catch {
     // best-effort delivery: never block the visitor on a network error
+  }
+}
+
+export type ConfirmResult = 'confirmed' | 'invalid' | 'failed'
+
+/**
+ * Confirm a subscription with the token from the emailed link. `invalid` is a
+ * bad or expired link (a new one is needed); `failed` is anything else, worth
+ * trying again.
+ */
+export async function confirmSubscription(token: string): Promise<ConfirmResult> {
+  if (!SUBSCRIBE_URL) return 'failed'
+  try {
+    const res = await fetch(`${SUBSCRIBE_URL}/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    })
+    if (res.ok) return 'confirmed'
+    return res.status === 400 ? 'invalid' : 'failed'
+  } catch {
+    return 'failed'
   }
 }

@@ -40,9 +40,9 @@ const { subscribe, confirm } = createSubscribe({
   confirmation: {
     templateId: required('RESEND_CONFIRM_TEMPLATE_ID'),
     subject: required('RESEND_CONFIRM_SUBJECT'),
-    url: `${site}/api/subscribe/confirm`,
+    // The page whose Confirm button posts the token to /api/subscribe/confirm.
+    url: `${site}/subscribe-confirm`,
   },
-  redirects: { confirmed: `${site}/subscribed`, expired: `${site}/subscribe-expired` },
   segments: parseSegments(process.env.RESEND_SEGMENTS ?? ''),
   defaultSource: 'website',
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean),
@@ -55,7 +55,7 @@ iii.registerFunction('subscribe::create', (req: Request) => subscribe(req), {
   description: 'Email a confirmation link to a new iii.dev subscriber (double opt-in)',
 })
 iii.registerFunction('subscribe::confirm', (req: Request) => confirm(req), {
-  description: 'Confirm a subscription from its emailed link: add the contact and send the welcome',
+  description: 'Confirm a subscription with the token from its emailed link: add the contact and send the welcome',
 })
 
 // iii 0.26: an HTTP route is an observer of the http worker's http::on-request
@@ -66,7 +66,7 @@ const routes = [
     'subscribe::create',
   ),
   iii.observe(
-    { function_id: 'http::on-request', args: { method: 'GET', path: '/api/subscribe/confirm' } },
+    { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe/confirm' } },
     'subscribe::confirm',
   ),
 ]

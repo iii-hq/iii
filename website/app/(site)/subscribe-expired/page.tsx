@@ -13,7 +13,7 @@ export default function SubscribeExpiredPage() {
   return (
     <SubscribeStatus title="This link didn't work">
       <p>
-        The confirmation link has expired or couldn't be checked. Enter your email again and we'll send you a fresh one.
+        This confirmation link has expired or is no longer valid. Enter your email again and we'll send you a new one.
       </p>
       <EmailSignup location="subscribe-expired" className="max-w-md" />
     </SubscribeStatus>

@@ -7,7 +7,7 @@ import { SiteHeader } from '@/components/site/site-header'
 import { cn } from '@/lib/utils'
 
 /**
- * Where the confirmation link of the updates signup lands (services/subscribe redirects to /subscribed or
+ * The pages of the updates signup's confirmation (/subscribe-confirm, where the emailed link lands, then /subscribed or
  * /subscribe-expired): a heading, a short message, and whatever comes next.
  */
 export function SubscribeStatus({ title, children }: { title: string; children: ReactNode }) {
