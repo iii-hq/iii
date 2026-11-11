@@ -767,45 +767,56 @@ impl Daemon {
             crate::sandbox::require_declared_adapter(&compose, &namespace)?;
             (prepared, None)
         } else {
-            let mut prepared =
-                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
-            let path = compose.path.clone();
-            let change = crate::sandbox::apply_adapter_change(
-                &path,
-                &mut edited,
-                &mut compose,
-                &namespace,
-                &mut prepared,
-                &mut BTreeSet::new(),
-                &mut BTreeMap::new(),
-                false,
-                false,
-            )
-            .await?;
-            let ahead = if vms_ahead {
-                crate::sandbox::ahead(&compose, &namespace)?
-            } else {
-                None
-            };
-            match &ahead {
-                Some((adapter, bundles)) => {
-                    let first = bundles.iter().chain([adapter]).cloned().collect();
-                    prepared.install_only(&package_cache, &first).await?;
-                }
-                None => prepared.install(&package_cache).await?,
-            }
-            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = change {
-                let needs = crate::sandbox::needs(&compose, &namespace);
-                crate::report::daemon_line(
-                    &format!(
-                        "{}: sandbox adapter for: {}",
-                        adapter.key,
-                        crate::sandbox::needed_by(&needs).join(", ")
-                    ),
-                    false,
+            // A first lock-less start learns only from this pass that a VM
+            // needs the adapter: resolving the adapter beside it saves the
+            // round trip that would follow it.
+            let adapter_ahead = crate::sandbox::adapter_to_resolve_ahead(&compose);
+            crate::registry::remembering(async {
+                let none = BTreeSet::new();
+                let (prepared, ()) = tokio::join!(
+                    crate::lockfile::prepare_metadata(&mut compose, &none),
+                    crate::sandbox::resolve_adapter_ahead(adapter_ahead),
                 );
-            }
-            (prepared, ahead)
+                let mut prepared = prepared?;
+                let path = compose.path.clone();
+                let change = crate::sandbox::apply_adapter_change(
+                    &path,
+                    &mut edited,
+                    &mut compose,
+                    &namespace,
+                    &mut prepared,
+                    &mut BTreeSet::new(),
+                    &mut BTreeMap::new(),
+                    false,
+                    false,
+                )
+                .await?;
+                let ahead = if vms_ahead {
+                    crate::sandbox::ahead(&compose, &namespace)?
+                } else {
+                    None
+                };
+                match &ahead {
+                    Some((adapter, bundles)) => {
+                        let first = bundles.iter().chain([adapter]).cloned().collect();
+                        prepared.install_only(&package_cache, &first).await?;
+                    }
+                    None => prepared.install(&package_cache).await?,
+                }
+                if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = change {
+                    let needs = crate::sandbox::needs(&compose, &namespace);
+                    crate::report::daemon_line(
+                        &format!(
+                            "{}: sandbox adapter for: {}",
+                            adapter.key,
+                            crate::sandbox::needed_by(&needs).join(", ")
+                        ),
+                        false,
+                    );
+                }
+                Ok::<_, ComposeError>((prepared, ahead))
+            })
+            .await?
         };
         let project = self.project(file).await?;
         if edited != text {

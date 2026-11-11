@@ -309,6 +309,30 @@ pub(crate) async fn adapter_request(adapter: &str) -> Result<NewContainer> {
     Ok(request)
 }
 
+/// Resolves the adapter a project with no lock yet would add, alongside the
+/// first pass that finds out whether a VM needs it, so that inside
+/// [`crate::registry::remembering`] adding it costs no round trip after that
+/// pass. A project with a lock, or with its adapter declared, sends nothing;
+/// a failure is the later, real request's to report.
+pub(crate) async fn resolve_adapter_ahead(adapter: Option<String>) {
+    if let Some(adapter) = adapter {
+        let _ = adapter_request(&adapter).await;
+    }
+}
+
+/// The adapter [`resolve_adapter_ahead`] resolves for `file`, if any.
+pub(crate) fn adapter_to_resolve_ahead(file: &ComposeFile) -> Option<String> {
+    let adapter = adapter_name(file);
+    // The first pass goes to the registry only for a package with no lock.
+    let resolves = file
+        .containers
+        .values()
+        .any(|container| matches!(container.worker, WorkerSource::Package { .. }));
+    let undeclared = adapter_key(file, adapter).ok()?.is_none();
+    (resolves && undeclared && !crate::lockfile::lock_path(&file.path).exists())
+        .then(|| adapter.to_string())
+}
+
 /// What the sandbox step does to the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AdapterChange {
@@ -418,43 +442,47 @@ pub(crate) async fn apply_adapter_change(
     refresh: bool,
     allow_remove: bool,
 ) -> Result<Option<AdapterChange>> {
-    let Some(change) =
-        adapter_change(edited, current, project_namespace, refresh, allow_remove).await?
-    else {
-        return Ok(None);
-    };
-    let next = match &change {
-        AdapterChange::Upsert(request) => {
-            if let Source::Package {
-                version: Some(version),
-                ..
-            } = &request.source
-            {
-                force.insert(request.key.clone());
-                selected.insert(request.key.clone(), version.clone());
+    // The adapter's range and then its exact version: one request, not two.
+    crate::registry::remembering(async move {
+        let Some(change) =
+            adapter_change(edited, current, project_namespace, refresh, allow_remove).await?
+        else {
+            return Ok(None);
+        };
+        let next = match &change {
+            AdapterChange::Upsert(request) => {
+                if let Source::Package {
+                    version: Some(version),
+                    ..
+                } = &request.source
+                {
+                    force.insert(request.key.clone());
+                    selected.insert(request.key.clone(), version.clone());
+                }
+                match edit::upsert_container(edited, request)? {
+                    edit::Outcome::Added(text) | edit::Outcome::Replaced { text, .. } => Some(text),
+                    edit::Outcome::Unchanged => None,
+                }
             }
-            match edit::upsert_container(edited, request)? {
-                edit::Outcome::Added(text) | edit::Outcome::Replaced { text, .. } => Some(text),
-                edit::Outcome::Unchanged => None,
+            AdapterChange::Remove(key) => edit::remove_container(edited, key)?,
+        };
+        if let Some(next) = next {
+            *edited = next;
+        }
+        *current = ComposeFile::parse(edited, path)?;
+        let mut versions = selected.clone();
+        for key in current.containers.keys() {
+            if let Some(version) = prepared.resolved_version(key) {
+                versions
+                    .entry(key.clone())
+                    .or_insert_with(|| version.to_string());
             }
         }
-        AdapterChange::Remove(key) => edit::remove_container(edited, key)?,
-    };
-    if let Some(next) = next {
-        *edited = next;
-    }
-    *current = ComposeFile::parse(edited, path)?;
-    let mut versions = selected.clone();
-    for key in current.containers.keys() {
-        if let Some(version) = prepared.resolved_version(key) {
-            versions
-                .entry(key.clone())
-                .or_insert_with(|| version.to_string());
-        }
-    }
-    *prepared =
-        crate::lockfile::prepare_metadata_reusing(current, force, &versions, prepared).await?;
-    Ok(Some(change))
+        *prepared =
+            crate::lockfile::prepare_metadata_reusing(current, force, &versions, prepared).await?;
+        Ok(Some(change))
+    })
+    .await
 }
 
 /// What only the adapter container gets, over its own environment: the worker
@@ -2066,6 +2094,40 @@ pub(crate) mod tests {
             1,
             "{asked:?}"
         );
+        // Its range, then the exact version that range chose: one request.
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|worker| *worker == "sandbox-libkrun")
+                .count(),
+            1,
+            "{asked:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_project_without_a_lock_or_an_adapter_resolves_it_ahead() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = parse(
+            dir.path(),
+            "containers:\n  tour: {worker: package://tour, version: 1.0.0}\n",
+        );
+        assert_eq!(
+            adapter_to_resolve_ahead(&file).as_deref(),
+            Some("sandbox-libkrun")
+        );
+        let declared = parse(
+            dir.path(),
+            "containers:\n  sandbox-libkrun: {worker: package://sandbox-libkrun, version: 0.3.0}\n",
+        );
+        assert_eq!(adapter_to_resolve_ahead(&declared), None);
+        let local = parse(
+            dir.path(),
+            "containers:\n  w:\n    worker: path://.\n    scripts: { run: echo ready }\n",
+        );
+        assert_eq!(adapter_to_resolve_ahead(&local), None);
+        std::fs::write(crate::lockfile::lock_path(&file.path), "").unwrap();
+        assert_eq!(adapter_to_resolve_ahead(&file), None);
     }
 
     #[tokio::test]

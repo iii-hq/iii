@@ -74,7 +74,7 @@ struct ResolvedEdge {
     to: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ResolvedWorker {
     name: String,
     #[serde(default)]
@@ -563,6 +563,26 @@ pub struct Graph {
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static TEST_REGISTRY: String;
+}
+
+tokio::task_local! {
+    /// The workers [`resolve`] already received inside [`remembering`], by
+    /// `(registry, name, range)`.
+    static RESOLVED: std::sync::Mutex<std::collections::HashMap<(String, String, String), ResolvedWorker>>;
+}
+
+/// Runs `future` with [`resolve`] answering again from what it already
+/// received in it: the same worker and range, or the exact version an earlier
+/// answer chose, makes no second request. Inside another `remembering`, it
+/// shares that one.
+///
+/// Scoped to one preparation, so a daemon that runs for days still sees a
+/// release published after its last operation.
+pub(crate) async fn remembering<F: std::future::Future>(future: F) -> F::Output {
+    if RESOLVED.try_with(|_| ()).is_ok() {
+        return future.await;
+    }
+    RESOLVED.scope(Default::default(), future).await
 }
 
 /// Everything a worker needs, resolved in one request.
@@ -1073,8 +1093,22 @@ async fn resolve(
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ResolvedWorker> {
+    let key = |range: &str| (registry.to_string(), name.to_string(), range.to_string());
+    let remembered = RESOLVED
+        .try_with(|resolved| {
+            resolved
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(&key(version_range))
+                .cloned()
+        })
+        .ok()
+        .flatten();
+    if let Some(worker) = remembered {
+        return Ok(worker);
+    }
     let resolved = resolve_response(container, registry, name, version_range, candidates).await?;
-    resolved
+    let worker = resolved
         .graph
         .into_iter()
         .find(|worker| worker.name == name)
@@ -1083,7 +1117,15 @@ async fn resolve(
             name: name.to_string(),
             range: version_range.to_string(),
             message: "the registry resolved a graph that does not contain it".to_string(),
-        })
+        })?;
+    let _ = RESOLVED.try_with(|resolved| {
+        let mut resolved = resolved
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        resolved.insert(key(&worker.version), worker.clone());
+        resolved.insert(key(version_range), worker.clone());
+    });
+    Ok(worker)
 }
 
 /// Turns the registry's failure body into one sentence.
