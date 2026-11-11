@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794425759853,
+  "lastUpdate": 1794425765013,
   "repoUrl": "https://github.com/iii-hq/iii",
   "entries": {
     "iii Engine Benchmarks": [
@@ -70081,6 +70081,218 @@ window.BENCHMARK_DATA = {
           {
             "name": "ws_roundtrip_bench / cores busy",
             "value": 1.38,
+            "unit": "cores"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "committer": {
+            "email": "iii-ci[bot]@users.noreply.github.com",
+            "name": "iii-ci[bot]"
+          },
+          "distinct": true,
+          "id": "334d37b93e68ade9dd193e2efb8aa2f164adf261",
+          "message": "chore: bump versions for release -- iii(iii/v0.26.1-rc.1)\n\nCo-authored-by: iii harness (codex/gpt-6-astra) <noreply@iii.dev>",
+          "timestamp": "2026-11-11T18:46:18Z",
+          "tree_id": "a239344b2a141ca7ea79adbb4a0aba1a88daed73",
+          "url": "https://github.com/iii-hq/iii/commit/334d37b93e68ade9dd193e2efb8aa2f164adf261"
+        },
+        "date": 1794425763995,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "channel_relay_bench / peak memory",
+            "value": 188,
+            "unit": "MiB"
+          },
+          {
+            "name": "channel_relay_bench / cores busy",
+            "value": 1.63,
+            "unit": "cores"
+          },
+          {
+            "name": "concurrent_invocation_bench / peak memory",
+            "value": 113.1,
+            "unit": "MiB"
+          },
+          {
+            "name": "concurrent_invocation_bench / cores busy",
+            "value": 1.3,
+            "unit": "cores"
+          },
+          {
+            "name": "control_plane_churn_bench / peak memory",
+            "value": 113,
+            "unit": "MiB"
+          },
+          {
+            "name": "control_plane_churn_bench / cores busy",
+            "value": 1.25,
+            "unit": "cores"
+          },
+          {
+            "name": "core_runtime_bench / peak memory",
+            "value": 113.5,
+            "unit": "MiB"
+          },
+          {
+            "name": "core_runtime_bench / cores busy",
+            "value": 1.76,
+            "unit": "cores"
+          },
+          {
+            "name": "invoke_function_payload_sizes_bench / peak memory",
+            "value": 113.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "invoke_function_payload_sizes_bench / cores busy",
+            "value": 1.39,
+            "unit": "cores"
+          },
+          {
+            "name": "kv_store_bench / peak memory",
+            "value": 113.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "kv_store_bench / cores busy",
+            "value": 1.41,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_activation_ws_bench / peak memory",
+            "value": 113,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_activation_ws_bench / cores busy",
+            "value": 2.58,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_control_scaling_bench / peak memory",
+            "value": 79.9,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_control_scaling_bench / cores busy",
+            "value": 1.68,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_dispatch_bench / peak memory",
+            "value": 1464.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_dispatch_bench / cores busy",
+            "value": 3.06,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_fanout_bench / peak memory",
+            "value": 113.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_fanout_bench / cores busy",
+            "value": 2.41,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_metadata_alloc_bench / peak memory",
+            "value": 234.7,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_metadata_alloc_bench / cores busy",
+            "value": 2.69,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_route_lookup_bench / peak memory",
+            "value": 113.1,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_route_lookup_bench / cores busy",
+            "value": 1.74,
+            "unit": "cores"
+          },
+          {
+            "name": "observe_routed_bench / peak memory",
+            "value": 113,
+            "unit": "MiB"
+          },
+          {
+            "name": "observe_routed_bench / cores busy",
+            "value": 1.86,
+            "unit": "cores"
+          },
+          {
+            "name": "protocol_serde_bench / peak memory",
+            "value": 113.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "protocol_serde_bench / cores busy",
+            "value": 1.42,
+            "unit": "cores"
+          },
+          {
+            "name": "pubsub_fanout_bench / peak memory",
+            "value": 113.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "pubsub_fanout_bench / cores busy",
+            "value": 2.43,
+            "unit": "cores"
+          },
+          {
+            "name": "startup_bench / peak memory",
+            "value": 113.1,
+            "unit": "MiB"
+          },
+          {
+            "name": "startup_bench / cores busy",
+            "value": 0.1,
+            "unit": "cores"
+          },
+          {
+            "name": "worker_cleanup_bench / peak memory",
+            "value": 512.4,
+            "unit": "MiB"
+          },
+          {
+            "name": "worker_cleanup_bench / cores busy",
+            "value": 1.44,
+            "unit": "cores"
+          },
+          {
+            "name": "worker_invocation_tracking_bench / peak memory",
+            "value": 113.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "worker_invocation_tracking_bench / cores busy",
+            "value": 1.39,
+            "unit": "cores"
+          },
+          {
+            "name": "ws_roundtrip_bench / peak memory",
+            "value": 113.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "ws_roundtrip_bench / cores busy",
+            "value": 1.41,
             "unit": "cores"
           }
         ]
