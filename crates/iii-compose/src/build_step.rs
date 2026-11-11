@@ -695,7 +695,6 @@ async fn recorded_build_id(dir: PathBuf) -> Option<String> {
         .map(|image| image.build_id)
 }
 
-/// The `build.json` of a host build (spec 5.4): the same keys, without `image`.
 /// Container `key`'s source, as its `build.json` records it.
 async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
     let (file, key) = (
@@ -710,8 +709,9 @@ async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
         })?
 }
 
-/// Writes the `build.json` of a host build of container `key` made from `before`; `Some` with
-/// the message of `BUILD_INPUT_CHANGED`, and nothing written, when its source is no longer that.
+/// Writes the `build.json` of a host build of container `key` made from `before`: the keys of
+/// spec 5.4, without `image`. `Some` with the message of `BUILD_INPUT_CHANGED`, and nothing
+/// written, when its source is no longer that.
 async fn record_host_build(
     compose_file: &Path,
     key: &str,
