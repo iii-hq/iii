@@ -20,12 +20,18 @@ as a fast read cache in front of the database.
 
 State is a fast cache, but you also want a durable record you can run SQL over: every link, and a
 timestamped row each time someone follows one. Uncomment the Ch. 3 block in `worker-compose.yaml`,
-and uncomment the `start_after` line under `link`:
+and uncomment the `- database` line in the `start_after` list under `link`:
 
 ```yaml worker-compose.yaml
 link:
   worker: path://./link
-  start_after: [database]
+  start_after:
+    - sandbox-libkrun
+    # Ch. 3: the schema is created at startup, after database is up.
+    - database
+  scripts:
+    build: iii sandbox build
+    run: iii sandbox run
 
 database:
   worker: package://database

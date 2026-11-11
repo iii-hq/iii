@@ -35,6 +35,8 @@ iii call -n dev compose::add worker=./workers/my_worker
 
 ## Artifact types
 
-Compose currently runs registry workers published as native binaries or bundles. Engine-kind roots
+Compose currently runs registry workers published as native binaries or bundles. A bundle runs in a
+VM through `iii sandbox build` and `iii sandbox run`, or on the host when its container's
+`scripts.run` is a host command. See [Compose / VM workers](./compose#vm-workers). Engine-kind roots
 are rejected because the engine already supplies them; image workers require an OCI runtime and are
 not yet supported by Compose.

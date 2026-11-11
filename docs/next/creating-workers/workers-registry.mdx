@@ -41,7 +41,8 @@ Use a bundle when:
 
 <Note>
   A bundle archive is not a binary artifact and not an OCI image. The archive carries source plus a
-  manifest, and the engine runs that source inside the sandbox VM.
+  manifest. `iii sandbox build` builds that source into a VM image, and `iii sandbox run` boots it.
+  See [Compose / VM workers](../using-iii/compose#vm-workers).
 </Note>
 
 ### Registry response shape
@@ -92,7 +93,7 @@ scripts:
 
 - `name`: must equal the registry package name without an `@version` suffix. For example, use
   `my-worker` for both `worker=my-worker` and `worker=my-worker@1.2.0`.
-- `scripts.start`: a non-empty shell string. The engine `exec`s this inside the sandbox VM.
+- `scripts.start`: a non-empty shell string. It runs inside the VM that `iii sandbox run` boots.
 
 ```yaml
 name: my-worker
@@ -102,9 +103,9 @@ scripts:
 
 #### Optional fields
 
-- `scripts.install`: a shell string. The engine runs it inside the sandbox VM one time, before it
-  starts the worker. Python bundles use it for a pip bootstrap that cannot be vendored into the
-  archive.
+- `scripts.install`: a shell string. `iii sandbox build` runs it once, inside the build VM, and the
+  image keeps what it installed. A run never repeats it. Python bundles use it for a pip bootstrap
+  that cannot be vendored into the archive.
 - `runtime.base_image`: an OCI image reference. The engine accepts any reference with alphanumerics
   and the characters `._-/:@+`, for example `docker.io/iiidev/python:latest`. A malformed reference
   is rejected with `W180`.
