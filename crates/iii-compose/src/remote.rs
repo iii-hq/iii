@@ -468,6 +468,32 @@ fn stop_target(request: &ComposeRequest) -> Option<&str> {
         .find(|value| !value.is_empty())
 }
 
+/// The container a `compose::build` request names, if any: `worker`, else
+/// `container`. A blank one must not hide the other, or
+/// `{"worker": "", "container": "api"}` would build every container.
+fn build_target(request: &ComposeRequest) -> Option<&str> {
+    [request.worker.as_deref(), request.container.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
+/// What telemetry reports of a finished `compose::build`: cancelled, failed with the code of
+/// its first failure, or ok.
+fn build_report(result: &crate::error::Result<crate::lifecycle::BuildRun>) -> Result<Value, Error> {
+    match result {
+        Ok(run) if run.cancelled => Ok(json!({ "status": "cancelled" })),
+        Ok(run) => Ok(
+            match run.results.iter().find_map(|result| result.error.as_ref()) {
+                Some(error) => json!({ "status": "failed", "error": { "code": error.code } }),
+                None => json!({ "status": "ok" }),
+            },
+        ),
+        Err(error) => Err(compose_error(error)),
+    }
+}
+
 /// The container a lifecycle call names: `container`, else `worker`, the
 /// spelling an operator who thinks in workers reaches for. `compose::down` once
 /// read only `container`, so `worker=api` stopped the whole project.
@@ -668,11 +694,7 @@ async fn dispatch(
             Ok(to_value(&accepted))
         }
         Operation::Build => {
-            let worker = request
-                .worker
-                .clone()
-                .or_else(|| request.container.clone())
-                .filter(|worker| !worker.trim().is_empty());
+            let worker = build_target(&request).map(str::to_string);
             let requested = daemon
                 .build_targets(file.as_deref(), worker.as_deref())
                 .await
@@ -694,11 +716,7 @@ async fn dispatch(
                 let result = daemon
                     .build(file.as_deref(), worker.as_deref(), task_operation_id)
                     .await;
-                report_op(
-                    "build",
-                    &result.as_ref().map(|_| json!({})).map_err(compose_error),
-                    began.elapsed(),
-                );
+                report_op("build", &build_report(&result), began.elapsed());
                 match result {
                     Ok(crate::lifecycle::BuildRun { results, cancelled }) => {
                         // The terminal event names each failure, with its own code.
@@ -1878,6 +1896,56 @@ mod tests {
             ..ComposeRequest::default()
         };
         assert_eq!(stop_target(&container), Some("harness"));
+    }
+
+    #[test]
+    fn build_target_reads_worker_then_container_and_ignores_blanks() {
+        assert_eq!(build_target(&ComposeRequest::default()), None);
+        let hidden = ComposeRequest {
+            worker: Some(String::new()),
+            container: Some(" api ".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(
+            build_target(&hidden),
+            Some("api"),
+            "a blank worker must not hide the container"
+        );
+        let both = ComposeRequest {
+            worker: Some("web".to_string()),
+            container: Some("api".to_string()),
+            ..ComposeRequest::default()
+        };
+        assert_eq!(build_target(&both), Some("web"));
+    }
+
+    #[test]
+    fn a_build_reports_cancelled_failed_or_ok() {
+        use crate::lifecycle::{BuildResult, BuildRun, OpError};
+
+        let run = |results: Vec<BuildResult>, cancelled| Ok(BuildRun { results, cancelled });
+        let failed = BuildResult::failed(
+            "api",
+            OpError::from_parts("EXIT_1".to_string(), "no".to_string()),
+        );
+        assert_eq!(
+            build_report(&run(vec![failed.clone()], true)).unwrap(),
+            json!({ "status": "cancelled" })
+        );
+        assert_eq!(
+            build_report(&run(vec![BuildResult::skipped("web"), failed], false)).unwrap(),
+            json!({ "status": "failed", "error": { "code": "EXIT_1" } })
+        );
+        assert_eq!(
+            build_report(&run(vec![BuildResult::built("api", None)], false)).unwrap(),
+            json!({ "status": "ok" })
+        );
+        assert!(
+            build_report(&Err(ComposeError::UnknownContainer {
+                container: "x".to_string()
+            }))
+            .is_err()
+        );
     }
 
     fn schema_entry(id: &str) -> &'static SchemaTriple {
