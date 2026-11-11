@@ -5513,11 +5513,13 @@ containers:
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 
-    /// A `--frozen` build fills `.workers/` from the lock it read: a lock that changed while it
-    /// downloaded is kept, and the build fails with `BUILD_PLAN_STALE` before it fills anything.
+    /// A `--frozen` build fills `.workers/` from the lock it read: a lock that came to resolve
+    /// another artifact while it downloaded is kept, and the build fails with `BUILD_PLAN_STALE`
+    /// before it fills anything.
     #[tokio::test]
     async fn a_frozen_build_refuses_a_lock_changed_while_it_downloaded() {
         use crate::state::TEST_PACKAGE_CACHE;
+        use sha2::{Digest, Sha256};
         use wiremock::{Mock, ResponseTemplate, matchers};
 
         let archive = adapter_archive();
@@ -5533,8 +5535,12 @@ containers:
             )
             .await
             .unwrap();
+        // The daemon locks the adapter to another artifact meanwhile: same version, new digest.
         let lock = crate::lockfile::lock_path(&path);
-        let saved = format!("{}# saved\n", std::fs::read_to_string(&lock).unwrap());
+        let locked = std::fs::read_to_string(&lock).unwrap();
+        let digest = hex::encode(Sha256::digest(&archive));
+        assert!(locked.contains(&digest), "{locked}");
+        let saved = locked.replace(&digest, &hex::encode(Sha256::digest(b"another build")));
         let (target, edit) = (lock.clone(), saved.clone());
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/artifact"))
@@ -5547,6 +5553,7 @@ containers:
             .await;
         let workers = dir.path().join(".workers");
         let before = std::fs::read_to_string(workers.join(".packages.json")).ok();
+        assert!(before.is_some(), "the first build copied no package");
 
         let error = TEST_PACKAGE_CACHE
             .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
