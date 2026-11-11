@@ -150,18 +150,23 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     // time, so a stale build never undoes the daemon's newer `.workers/`.
     // The lock must still be the one this build stands on: the one it found
     // when it wrote none, or, when it wrote one, a lock resolving every
-    // container to the package it wrote.
+    // container to the package it wrote. A build that wrote nothing compares
+    // the lock alone, since `.workers/` follows the lock: an edit of the file
+    // made meanwhile is kept and fails nothing. One that wrote also compares
+    // the file with what it wrote.
+    let wrote = edited != text || prepared.changed();
     let unchanged = || {
-        let current = std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
-            path: file.path.clone(),
-            source,
-        })?;
+        let file_holds = !wrote
+            || std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+                path: file.path.clone(),
+                source,
+            })? == edited;
         let lock_holds = if prepared.changed() {
             locks_the_same_packages(prepared.path(), &prepared)?
         } else {
             read_if_present(prepared.path())? == found_lock
         };
-        if current != edited || !lock_holds {
+        if !file_holds || !lock_holds {
             return Err(ComposeError::BuildPlanStale {
                 path: file.path.clone(),
             });
@@ -501,9 +506,7 @@ mod tests {
             .collect()
     }
 
-    // Reaches `sandbox::migrate`, whose body is KAN-280's.
     #[tokio::test]
-    #[ignore = "needs KAN-280"]
     async fn build_locks_and_copies_each_package_into_the_project() {
         let server = wiremock::MockServer::start().await;
         let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
@@ -535,10 +538,9 @@ mod tests {
     }
 
     // Spec 11.2: `migrate` adds the adapter a rewritten bundle needs; the build installs it
-    // and copies it beside the bundle. Reaches `sandbox::migrate`, whose body is KAN-280's.
+    // and copies it beside the bundle.
     #[cfg(unix)]
     #[tokio::test]
-    #[ignore = "needs KAN-280"]
     async fn build_migrates_a_vm_bundle_and_copies_it_with_the_adapter() {
         let adapter = archive(&[("sandbox-libkrun", 0o755, b"#!/bin/sh\nexit 0\n")]);
         let server = crate::sandbox::tests::adapter_registry(&adapter).await;

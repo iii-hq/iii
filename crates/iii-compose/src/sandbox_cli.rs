@@ -72,7 +72,8 @@ pub const WORKER_DIR_ENV: &str = "III_WORKER_DIR";
 pub const PACKAGE_DIR_ENV: &str = "III_PACKAGE_DIR";
 /// A registry bundle's manifest name, which for an alias is the package it stands for.
 pub const PACKAGE_NAME_ENV: &str = "III_PACKAGE_NAME";
-// The three build variables are set by KAN-280 (spawn) and read by KAN-282 (`iii sandbox`).
+// The three build variables are set by Compose when it spawns a VM container (sandbox.rs) and
+// read by `iii sandbox`.
 /// The container's build directory, `<project>/.build/<container>`.
 pub const BUILD_DIR_ENV: &str = "III_BUILD_DIR";
 /// The compose file's canonical path, the same as `III_COMPOSE_FILE`, for `iii sandbox build`.
@@ -3186,7 +3187,6 @@ mod tests {
     /// What Compose hands `iii sandbox build` (spec 8.3) is what it reads, and none of it reaches
     /// the guest.
     #[test]
-    #[ignore = "needs KAN-280: scripts.build and the III_BUILD_* variables in layer_own_vm_env"]
     fn compose_hands_the_build_everything_it_reads() {
         let dir = tempfile::tempdir().unwrap();
         crate::sandbox::tests::manifest(
@@ -3241,7 +3241,6 @@ mod tests {
     /// The real `build_record`: a `path://` container's build records its declared directory and
     /// base image where `iii sandbox run` reads them.
     #[tokio::test]
-    #[ignore = "needs KAN-281: build_record::{source, declared_base_image, dependency_files, write, read}"]
     async fn a_build_is_recorded_where_run_reads_it() {
         let dir = tempfile::tempdir().unwrap();
         crate::sandbox::tests::manifest(
@@ -3838,7 +3837,6 @@ mod tests {
 
     /// Outside Compose the daemon is found as `iii compose logs` finds it.
     #[tokio::test]
-    #[ignore = "needs KAN-280: resolve_project_target"]
     async fn outside_compose_the_daemon_is_found_as_compose_logs_finds_it() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("worker-compose.yaml");
@@ -3883,7 +3881,6 @@ mod tests {
 
     /// The real `build_record::read`: a build directory without `build.json` holds no build.
     #[test]
-    #[ignore = "needs KAN-281: build_record::read"]
     fn a_build_dir_without_build_json_is_build_missing() {
         let dir = tempfile::tempdir().unwrap();
         let failure = built_image(dir.path(), "api", &BuildRecords).unwrap_err();

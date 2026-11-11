@@ -57,12 +57,16 @@ All commands in this tutorial use the `default` namespace.
 iii call compose::add worker=./workers/math-worker
 ```
 
-The Compose daemon terminal reports the worker becoming ready:
+This first add also starts the sandbox adapter, `sandbox-libkrun`, that Compose adds to build and
+boot the worker. The first start builds the image, dependencies included, so it takes longer than
+the next ones. The Compose daemon terminal reports the worker building its image, then becoming
+ready:
 
 ```text
 → math-worker starting
-✓ math-worker ready (2.1s)
-up: 1 of 1 changed in 2.1s
+[compose] math-worker: no build yet; running scripts.build
+→ math-worker building
+✓ math-worker ready (9.4s)
 ```
 
 <Warning title="Linux: `KVM not accessible`">
@@ -97,8 +101,9 @@ The Compose daemon reports:
 
 ```text
 → caller-worker starting
-✓ caller-worker ready (2.1s)
-up: 2 of 2 changed in 2.1s
+[compose] caller-worker: no build yet; running scripts.build
+→ caller-worker building
+✓ caller-worker ready (11.6s)
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.

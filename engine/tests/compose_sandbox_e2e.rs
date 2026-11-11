@@ -12,6 +12,10 @@
 //!
 //! `a_path_worker_runs_its_own_vm_through_iii_sandbox_run` boots no VM: a fake
 //! adapter runs its guest as a process, so it needs neither and always runs.
+//!
+//! An adapter release not yet in the registry runs from a local build instead:
+//! `III_E2E_SANDBOX_LIBKRUN=<path of its binary>` declares it as a `path://`
+//! adapter, which is the operator's, so it outlives the last VM.
 #![cfg(unix)]
 
 use std::{
@@ -34,6 +38,8 @@ const SANDBOX_LIBKRUN: &str = "0.4.0";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
+/// The path of a locally built `sandbox-libkrun` that replaces the pinned release.
+const LOCAL_ADAPTER: &str = "III_E2E_SANDBOX_LIBKRUN";
 /// What makes a container run in a VM: its adapter, and both `scripts` (spec 3.1).
 const EXPLICIT: &str = "    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n";
 /// The `stop_timeout` of every project below.
@@ -168,12 +174,31 @@ struct Project {
 impl Project {
     /// `containers` is the operator's share of the `containers:` mapping, each
     /// entry indented two spaces. The adapter follows exactly as Compose writes
-    /// it, pre-declared because `up` would resolve `^0.3` against the live
-    /// registry, which a required check cannot depend on (D5).
+    /// it, pre-declared because `up` would resolve `^0.4` against the live
+    /// registry, which a required check cannot depend on (D5). With
+    /// [`LOCAL_ADAPTER`] (`III_E2E_SANDBOX_LIBKRUN`) set, it is a `path://`
+    /// adapter running that binary instead.
     fn new(containers: &str) -> Self {
-        Self::declaring(&format!(
-            "{containers}  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n"
-        ))
+        let Some(binary) = std::env::var_os(LOCAL_ADAPTER) else {
+            return Self::declaring(&format!(
+                "{containers}  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n"
+            ));
+        };
+        // The allowlist the release ships as its default config.
+        let project = Self::declaring(&format!(
+            "{containers}  sandbox-libkrun:\n    worker: path://./adapter\n    config_override: {{image_allowlist: [python, node]}}\n"
+        ));
+        let adapter = project.dir.path().join("adapter");
+        std::fs::create_dir(&adapter).unwrap();
+        std::fs::write(
+            adapter.join("iii.worker.yaml"),
+            format!(
+                "name: sandbox-libkrun\nscripts:\n  start: exec '{}'\n",
+                Path::new(&binary).display()
+            ),
+        )
+        .unwrap();
+        project
     }
 
     /// `containers` is the whole `containers:` mapping.
@@ -383,7 +408,7 @@ impl Project {
         assert!(left.is_empty(), "rm left VM state behind: {left:?}");
         let file = std::fs::read_to_string(&self.file).unwrap();
         assert!(
-            !file.contains("sandbox-libkrun"),
+            std::env::var_os(LOCAL_ADAPTER).is_some() || !file.contains("sandbox-libkrun"),
             "the generated adapter outlived its last VM:\n{file}"
         );
     }
@@ -1020,7 +1045,6 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
 /// A 0.26 file: its first `up` writes the explicit VM mode, builds through `worker::build` with
 /// the VM's own token before the run, which boots that build, and destroys nothing (spec 7.3).
 #[test]
-#[ignore = "needs KAN-281 (build_record) and KAN-282 (iii sandbox build and run)"]
 #[serial_test::serial(sandbox_vm)]
 fn a_026_project_is_migrated_and_built_on_its_first_up() {
     let mut project = Project::declaring(&format!(

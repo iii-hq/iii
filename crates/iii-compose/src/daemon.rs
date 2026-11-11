@@ -4782,7 +4782,8 @@ containers:
         let daemon = connected_daemon("rebuild-package", pid_engine(root).await).await;
         let project = crate::registry::TEST_REGISTRY
             .scope(server.uri(), async {
-                let project = daemon.project(&path).await.unwrap();
+                // As `compose::up` starts it: `.workers/` is filled before the first build.
+                let project = daemon.prepare_start_project(&path, false).await.unwrap();
                 let up = project.up(None, "first".into()).await;
                 assert_eq!(up.status, OpStatus::Ok, "{up:?}");
                 project
@@ -5002,7 +5003,8 @@ containers:
         )
         .unwrap();
         std::fs::create_dir_all(dir.path().join(".workers/web")).unwrap();
-        // As KAN-281 records what it copied: only a recorded container is Compose's to prune.
+        // As `materialize_project` records what it copied: only a recorded container is
+        // Compose's to prune.
         std::fs::write(
             dir.path().join(".workers/.packages.json"),
             r#"{"schema":1,"containers":{"web":{"name":"web","version":"1.0.0","sha256":"sha256:00"}}}"#,
@@ -5479,7 +5481,7 @@ containers:
 
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
-        // Written in the explicit VM mode, as the build's own migration (KAN-281) leaves it.
+        // Written in the explicit VM mode, as the build's own migration leaves it.
         let (_dir, path) = vm_project(
             "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
         );
@@ -5509,6 +5511,61 @@ containers:
             .await
             .unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+    }
+
+    /// A `--frozen` build fills `.workers/` from the lock it read: a lock that came to resolve
+    /// another artifact while it downloaded is kept, and the build fails with `BUILD_PLAN_STALE`
+    /// before it fills anything.
+    #[tokio::test]
+    async fn a_frozen_build_refuses_a_lock_changed_while_it_downloaded() {
+        use crate::state::TEST_PACKAGE_CACHE;
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let archive = adapter_archive();
+        let server = crate::sandbox::tests::adapter_registry(&archive).await;
+        let (dir, path) = vm_project(
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+        );
+        let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        TEST_PACKAGE_CACHE
+            .scope(
+                warm.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        // The daemon locks the adapter to another artifact meanwhile: same version, new digest.
+        let lock = crate::lockfile::lock_path(&path);
+        let locked = std::fs::read_to_string(&lock).unwrap();
+        let digest = hex::encode(Sha256::digest(&archive));
+        assert!(locked.contains(&digest), "{locked}");
+        let saved = locked.replace(&digest, &hex::encode(Sha256::digest(b"another build")));
+        let (target, edit) = (lock.clone(), saved.clone());
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, &edit).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(archive.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let workers = dir.path().join(".workers");
+        let before = std::fs::read_to_string(workers.join(".packages.json")).ok();
+        assert!(before.is_some(), "the first build copied no package");
+
+        let error = TEST_PACKAGE_CACHE
+            .scope(cold.path().to_path_buf(), crate::build::build_frozen(&path))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert_eq!(std::fs::read_to_string(&lock).unwrap(), saved);
+        assert_eq!(
+            std::fs::read_to_string(workers.join(".packages.json")).ok(),
+            before
+        );
     }
 
     /// The generated adapter is appended after the VMs, with no edge in the
@@ -5697,6 +5754,35 @@ containers:
         daemon.shutdown().await;
     }
 
+    /// Runs `operation` until the compose file at `path` or its lock differs from before it, or
+    /// until it ends; `false` when neither happens in 120s. `persist_mutation` writes both files
+    /// without yielding, so once either is seen changed, both are written.
+    async fn until_written(path: &Path, operation: impl std::future::Future) -> bool {
+        let lock = crate::lockfile::lock_path(path);
+        let read = || {
+            (
+                std::fs::read_to_string(path).ok(),
+                std::fs::read_to_string(&lock).ok(),
+            )
+        };
+        let before = read();
+        // On the heap: an operation's future is too big for the test thread's stack.
+        let operation = Box::pin(operation);
+        let landed = async {
+            while read() == before {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(120), async {
+            tokio::select! {
+                _ = operation => {}
+                () = landed => {}
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     /// Through the lock the real `compose::add`s write: an adapter asked for by
     /// name, before or after a VM generated it, outlives the last VM, whose
     /// removal would otherwise destroy its live sandboxes. One only a VM asked
@@ -5705,9 +5791,10 @@ containers:
     async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
         let uri = server.uri();
-        // Each edit is on disk long before its start gives up on the engine that
-        // is not listening, so it gets 10s, and the rows run at once.
-        let bound = std::time::Duration::from_secs(10);
+        // Each operation is followed until its edit lands, then dropped: what it does next waits
+        // on an engine that is not listening (an add takes 10 to 20s to give up, a remove 80s).
+        // A fixed 10s timer cut a slow add before its edit under a loaded suite. The rows run at
+        // once.
         futures::future::join_all(
             [
                 (&["iii-sandbox", "./vm"][..], true),
@@ -5729,27 +5816,29 @@ containers:
                         EnginePolicy::External,
                     );
                     for worker in adds {
-                        let _ = tokio::time::timeout(
-                            bound,
+                        let landed = until_written(
+                            &path,
                             crate::registry::TEST_REGISTRY.scope(
                                 uri.clone(),
                                 daemon.add(Some(&path), &[worker.to_string()], "add".into()),
                             ),
                         )
                         .await;
+                        assert!(landed, "{adds:?}: the add of {worker} wrote nothing");
                     }
                     let text = std::fs::read_to_string(&path).unwrap();
                     assert!(text.contains("sandbox-libkrun:"), "{adds:?}: {text}");
                     assert!(text.contains("vm:"), "{adds:?}: {text}");
 
-                    let _ = tokio::time::timeout(
-                        bound,
+                    let landed = until_written(
+                        &path,
                         crate::registry::TEST_REGISTRY.scope(
                             uri.clone(),
                             daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
                         ),
                     )
                     .await;
+                    assert!(landed, "{adds:?}: the removal wrote nothing");
                     let text = std::fs::read_to_string(&path).unwrap();
                     assert!(!text.contains("vm:"), "{adds:?}: {text}");
                     assert_eq!(text.contains("sandbox-libkrun:"), kept, "{adds:?}: {text}");
