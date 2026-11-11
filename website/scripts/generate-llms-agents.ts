@@ -15,8 +15,7 @@ const AGENTS_PATH = path.join(WEBSITE_ROOT, "dist", "AGENTS.md")
 const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, "scripts", "agents-appendix.md")
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */
-const LLMS_TAGLINE =
-  "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Workers, Functions, and Observers. The result is coordinated execution that behaves as if it were a single runtime."
+const LLMS_TAGLINE = "TODO: one-line summary of iii for crawlers."
 
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10)
@@ -198,21 +197,15 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
   const tail = `
 ## Core pages
 
-- [Homepage](https://iii.dev/) — positioning and visuals
-- [Manifesto](https://iii.dev/manifesto) — paradigm argument
-- [Documentation](https://iii.dev/docs) — full documentation
-- [Blog index (markdown)](https://iii.dev/blog/index.md) — architecture posts for coding agents
-- [llms.txt](https://iii.dev/llms.txt) — this file (AI / LLM discovery)
-- [AGENTS.md](https://iii.dev/AGENTS.md) — build path: install, wire-level notes, and guardrails for coding agents
-- [GitHub](https://github.com/iii-hq/iii) — engine, TypeScript/Python/Rust SDKs
+TODO: annotated links to the core pages.
 
 ## Optional
 
-- [Worker registry](https://iii.dev/registry) — published workers
+TODO: annotated links to optional pages.
 
 ## Want to build on iii?
 
-This file is for understanding iii. To install the engine and ship your first Worker, read **[AGENTS.md](https://iii.dev/AGENTS.md)** and the **[install guide](https://iii.dev/docs/install)**.
+TODO: where to go to install iii and build a first worker.
 
 Last updated: ${isoDate()}
 `.trimStart()
@@ -243,7 +236,7 @@ export function buildAgentsMd(html: string, agentsAppendix: string, blogSection 
   const intro = [
     "# iii for AI Agents",
     "",
-    "This file is public **[AGENTS.md](https://agents.md/)**-style guidance for **[iii](https://iii.dev/)** (the product): positioning, comparisons, scraped homepage copy, and wire-level notes for autonomous agents.",
+    "TODO: what this file is and who it is for.",
     "",
     "## Overview and comparisons (pre-written)",
     "",

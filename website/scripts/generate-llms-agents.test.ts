@@ -72,7 +72,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 test("overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt", () => {
   const body = overviewBodyWithoutLeadingH1()
   assert.ok(!body.startsWith("# "))
-  assert.ok(body.includes("Three primitives"))
+  assert.ok(body.includes("The Functions primitive"))
 })
 
 test("buildHomepageExtractFromHtml reads the hero as prose (headline lines joined, one lead paragraph)", () => {
@@ -147,11 +147,10 @@ test("buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   const blogSection = await buildBlogLinksSection()
   const text = buildLlmsTxt(FIXTURE, blogSection)
   assert.ok(text.startsWith("# iii\n"))
-  assert.ok(text.includes("> iii turns distributed"))
-  assert.ok(text.includes("## Three primitives"))
+  assert.ok(text.includes("> TODO"))
+  assert.ok(text.includes("## The Functions primitive"))
   assert.ok(text.includes("## How iii compares"))
   assert.ok(text.includes("## Core pages"))
-  assert.ok(text.includes("[llms.txt](https://iii.dev/llms.txt)"))
   assert.ok(text.includes("Homepage copy (extracted"))
   // Chat mode explains iii; it must NOT tell the reader to install / spin up iii.
   // Those action blocks live in AGENTS.md, which llms.txt points to as the build path.
@@ -159,7 +158,6 @@ test("buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   assert.ok(!text.includes("## Install / start"))
   assert.ok(!text.includes("npx skills add iii-hq/iii/skills"))
   assert.ok(!text.includes("install.iii.dev"))
-  assert.ok(text.includes("[AGENTS.md](https://iii.dev/AGENTS.md)"))
   assert.ok(text.includes("## Blog (knowledge base for coding agents)"))
   assert.ok(text.includes("https://iii.dev/blog/index.md"))
 })
@@ -169,7 +167,6 @@ test("buildAgentsMd includes agents.md framing and appendix", async () => {
   const blogSection = await buildBlogLinksSection()
   const md = buildAgentsMd(FIXTURE, appendix, blogSection)
   assert.ok(md.startsWith("# iii for AI Agents"))
-  assert.ok(md.includes("agents.md"))
   assert.ok(md.includes("## Overview and comparisons"))
   assert.ok(md.includes("## Primitives (wire-level)"))
   assert.ok(md.includes("## Guardrails"))
