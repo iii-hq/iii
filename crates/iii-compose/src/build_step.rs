@@ -815,6 +815,8 @@ mod tests {
 
     /// `iii sandbox build` names its failure on its last line (spec 8.1), and Compose records
     /// nothing: the command writes its own `build.json`.
+    // Writes an executable shell script, which needs Unix permissions.
+    #[cfg(unix)]
     #[tokio::test]
     async fn iii_sandbox_build_names_its_own_failure() {
         let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
@@ -949,6 +951,8 @@ mod tests {
     }
 
     /// The failure line on stderr names the failure even when stdout's output comes after it.
+    // Writes an executable shell script, which needs Unix permissions.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_failure_line_on_stderr_wins_over_later_stdout() {
         let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
