@@ -3,7 +3,9 @@
 //! A registry bundle and a `path://` worker with `runtime.base_image` each boot
 //! in a microVM that belongs to the adapter, restart after their VM is killed,
 //! stop with `compose::down` and are destroyed by `compose::remove`. The bundle
-//! run also sends one `sandbox::exec` through the engine's router.
+//! run also sends one `sandbox::exec` through the engine's router. Each build
+//! lands in the project's `.iii/build/<container>/`, the bundle's package in
+//! `.iii/workers/<container>/`.
 //!
 //! Both tests pull the pinned registry packages and boot microVMs, so they need
 //! `/dev/kvm` (Linux) or Hypervisor.framework (Apple Silicon) and are ignored by
@@ -387,6 +389,45 @@ impl Project {
         self.wait_ready(key, SHORT);
     }
 
+    /// Spec 3.2: container `key`'s VM build sits in `.iii/build/<key>/`, made from its package
+    /// in `.iii/workers/<key>/` when it has one, each directory with its `.gitignore` of `*`.
+    /// Nothing of Compose's lands at the project's root.
+    fn assert_project_dirs(&self, key: &str, package: bool) {
+        let root = self.dir.path();
+        let build = root.join(".iii/build").join(key);
+        let record: Value = serde_json::from_slice(
+            &std::fs::read(build.join("build.json"))
+                .unwrap_or_else(|error| panic!("no {}/build.json: {error}", build.display())),
+        )
+        .unwrap();
+        let image = record["image"]["file"]
+            .as_str()
+            .unwrap_or_else(|| panic!("not a VM build: {record}"));
+        assert!(build.join(image).is_file(), "no image beside {record}");
+        let kind = if package { "package" } else { "path" };
+        assert_eq!(record["source"]["kind"], kind, "{record}");
+        if package {
+            let copy = root.join(".iii/workers").join(key);
+            let files = std::fs::read_dir(&copy).map(|entries| entries.count());
+            assert!(
+                files.is_ok_and(|files| files > 0),
+                "no package in {}",
+                copy.display()
+            );
+        }
+        // `.iii/workers/` is there whenever a package is, the generated adapter's included.
+        for dir in [".iii/build", ".iii/workers"].map(|dir| root.join(dir)) {
+            if dir.exists() {
+                let ignore = dir.join(".gitignore");
+                let text = std::fs::read_to_string(&ignore).unwrap_or_default();
+                assert_eq!(text, "*\n", "{}", ignore.display());
+            }
+        }
+        for old in [".workers", ".build"] {
+            assert!(!root.join(old).exists(), "Compose wrote {old} at the root");
+        }
+    }
+
     /// What `rm` destroys: one directory per VM the adapter has booted.
     fn vm_states(&self) -> Vec<std::ffi::OsString> {
         std::fs::read_dir(self.home.path().join(".iii/sandbox/workers"))
@@ -406,6 +447,8 @@ impl Project {
 
         let left = self.vm_states();
         assert!(left.is_empty(), "rm left VM state behind: {left:?}");
+        let build = self.dir.path().join(".iii/build").join(key);
+        assert!(!build.exists(), "rm left {} behind", build.display());
         let file = std::fs::read_to_string(&self.file).unwrap();
         assert!(
             std::env::var_os(LOCAL_ADAPTER).is_some() || !file.contains("sandbox-libkrun"),
@@ -514,6 +557,7 @@ fn a_registry_bundle_runs_through_sandbox_libkrun() {
     project.start();
     project.wait_ready("sandbox-libkrun", FIRST_UP);
     project.wait_ready("onboarding", FIRST_UP);
+    project.assert_project_dirs("onboarding", true);
     // Compose takes the generated adapter as its own and does not re-resolve it.
     assert_eq!(
         std::fs::read(&project.file).unwrap(),
@@ -582,6 +626,7 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
     project.start();
     project.wait_ready("sandbox-libkrun", FIRST_UP);
     project.wait_ready("sandbox-vm-worker", FIRST_UP);
+    project.assert_project_dirs("sandbox-vm-worker", false);
     expect_reply(&project, &std::fs::read_to_string(&reply).unwrap());
 
     // The restart syncs the host copy of the source into the VM again.
@@ -618,7 +663,7 @@ const FAKE_BUILD_ID: &str = "sha256:fake";
 /// first build runs (spec 5.2): `build.json` and the image beside it.
 fn seed_builds(root: &std::path::Path, guests: &[&str]) {
     for guest in guests {
-        let dir = root.join(".build").join(guest);
+        let dir = root.join(".iii/build").join(guest);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("image.erofs"), "fake image").unwrap();
         std::fs::write(dir.join("image.id"), FAKE_BUILD_ID).unwrap();
@@ -1068,7 +1113,7 @@ fn a_026_project_is_migrated_and_built_on_its_first_up() {
     let built = calls("worker::build");
     assert_eq!(built.len(), 1, "{built:?}");
     assert_eq!(built[0]["token"], "scoped");
-    assert!(root.join(".build/app/build.json").exists());
+    assert!(root.join(".iii/build/app/build.json").exists());
     let started = calls("worker::start");
     assert_eq!(started.len(), 1, "{started:?}");
     assert_eq!(started[0]["request"]["build"]["build_id"], FAKE_BUILD_ID);
