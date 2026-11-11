@@ -12,26 +12,65 @@ function required(name: string): string {
   return value
 }
 
-const subscribe = createSubscribe({
+/**
+ * `RESEND_SEGMENTS`: `source=segment-id` pairs, comma separated
+ * (`website=bf68…,ade=…`). A source with an empty ID is accepted but joins no
+ * segment.
+ */
+function parseSegments(raw: string): Record<string, string> {
+  const segments: Record<string, string> = {}
+  for (const pair of raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean)) {
+    const [source, id = ''] = pair.split('=').map((p) => p.trim())
+    if (!source) throw new Error(`RESEND_SEGMENTS: "${pair}" has no source`)
+    segments[source] = id
+  }
+  if (!Object.hasOwn(segments, 'website')) segments.website = ''
+  return segments
+}
+
+const site = (process.env.SITE_URL ?? 'https://iii.dev').replace(/\/$/, '')
+
+const { subscribe, confirm } = createSubscribe({
   apiKey: required('RESEND_API_KEY'),
-  templateId: required('RESEND_TEMPLATE_ID'),
   from: required('RESEND_FROM'),
-  subject: required('RESEND_SUBJECT'),
-  segmentId: process.env.RESEND_SEGMENT_ID || undefined,
+  welcome: { templateId: required('RESEND_TEMPLATE_ID'), subject: required('RESEND_SUBJECT') },
+  confirmation: {
+    templateId: required('RESEND_CONFIRM_TEMPLATE_ID'),
+    subject: required('RESEND_CONFIRM_SUBJECT'),
+    // The page whose Confirm button posts the token to /api/subscribe/confirm.
+    url: `${site}/subscribe-confirm`,
+  },
+  segments: parseSegments(process.env.RESEND_SEGMENTS ?? ''),
+  defaultSource: 'website',
   allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean),
-  maxWelcomesPerMinute: process.env.MAX_WELCOMES_PER_MINUTE ? Number(process.env.MAX_WELCOMES_PER_MINUTE) : undefined,
+  maxEmailsPerMinute: process.env.MAX_EMAILS_PER_MINUTE ? Number(process.env.MAX_EMAILS_PER_MINUTE) : undefined,
 })
 
 const iii = registerWorker(process.env.III_URL ?? 'ws://localhost:49134')
 
 iii.registerFunction('subscribe::create', (req: Request) => subscribe(req), {
-  description: 'Add an email to Resend Contacts and send the iii welcome email once',
+  description: 'Email a confirmation link to a new iii.dev subscriber (double opt-in)',
 })
-iii.registerTrigger({
-  type: 'http',
-  function_id: 'subscribe::create',
-  config: { api_path: '/api/subscribe', http_method: 'POST' },
+iii.registerFunction('subscribe::confirm', (req: Request) => confirm(req), {
+  description: 'Confirm a subscription with the token from its emailed link: add the contact and send the welcome',
 })
+
+// iii 0.26: an HTTP route is an observer of the http worker's http::on-request
+// (registerTrigger is gone, and a 0.26 engine drops it without an error).
+const routes = [
+  iii.observe(
+    { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe' } },
+    'subscribe::create',
+  ),
+  iii.observe(
+    { function_id: 'http::on-request', args: { method: 'POST', path: '/api/subscribe/confirm' } },
+    'subscribe::confirm',
+  ),
+]
+await Promise.all(routes.map((route) => route.ready()))
 
 process.on('SIGTERM', async () => {
   await iii.shutdown()

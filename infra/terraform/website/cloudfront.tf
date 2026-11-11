@@ -7,10 +7,10 @@ locals {
     "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
-    "connect-src 'self' https://www.google-analytics.com https://analytics.google.com https://www.googletagmanager.com https://api.cr-relay.com https://api.mailmodo.com https://${var.search_api_origin} https://api.github.com https://discord.com",
+    "connect-src 'self' https://www.google-analytics.com https://analytics.google.com https://www.googletagmanager.com https://api.cr-relay.com https://${var.search_api_origin} https://api.github.com https://discord.com",
     # 'self': the landing page embeds its own /console-demo/index.html.
     "frame-src 'self' https://www.googletagmanager.com",
-    "form-action 'self' https://api.mailmodo.com",
+    "form-action 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     # 'self', not 'none': /console-demo/* is framed by the landing page.
@@ -140,6 +140,21 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
+  # Email signup API, hosted on iii Cloud (services/subscribe).
+  origin {
+    origin_id   = "subscribe-api"
+    domain_name = var.subscribe_origin
+
+    custom_origin_config {
+      http_port                = 80
+      https_port               = 443
+      origin_protocol_policy   = "https-only"
+      origin_ssl_protocols     = ["TLSv1.2"]
+      origin_keepalive_timeout = 5
+      origin_read_timeout      = 30
+    }
+  }
+
   # domain_name is docs.iii.dev so origin TLS SNI matches iii-dev-tls-docs at
   # ingress-nginx; the /docs* and /registry* behaviors forward Host: iii.dev via
   # AllViewer, which reaches the iii-edge-proxy nginx server block for iii.dev.
@@ -188,6 +203,26 @@ resource "aws_cloudfront_distribution" "site" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
 
     # No function_association: SPA fallback must not rewrite /api/search responses.
+  }
+
+  # Email signup: POST /api/subscribe and POST /api/subscribe/confirm, both
+  # from iii.dev pages. CloudFront accepts only three method sets (GET+HEAD,
+  # +OPTIONS, or all seven), so allowing POST means listing all seven; the
+  # origin answers only those two POST routes (any other method or path is a
+  # 404 or 405 from the http worker). iii Cloud routes by Host, so the viewer's
+  # Host: iii.dev must not be forwarded (same reason as the search origin
+  # above). No caching.
+  ordered_cache_behavior {
+    path_pattern           = "/api/subscribe*"
+    target_origin_id       = "subscribe-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id            = local.cache_policy_disabled_id
+    origin_request_policy_id   = local.origin_request_all_viewer_except_host_id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.site.id
   }
 
   # Two behaviors because CloudFront path patterns are literal: /docs matches

@@ -745,7 +745,12 @@ impl Daemon {
     /// Keep the candidate in memory until loading and metadata-lock acquisition
     /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
-        crate::report::in_project_scope(file, self.prepare_start_project_scoped(file, frozen)).await
+        // Boxed: inline, this future overflows a debug build's stack.
+        crate::report::in_project_scope(
+            file,
+            Box::pin(self.prepare_start_project_scoped(file, frozen)),
+        )
+        .await
     }
 
     async fn prepare_start_project_scoped(
@@ -772,16 +777,14 @@ impl Daemon {
             prepared
         } else {
             let mut prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
             let path = compose.path.clone();
-            let mut install = false;
             if let Some(migration) =
                 crate::sandbox::migrate(&path, &mut edited, &mut compose, &namespace, &mut prepared)
                     .await?
             {
                 rewritten.extend(migration.containers);
                 if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter {
-                    install = true;
                     rewritten.push(adapter.key.clone());
                     updated_adapter = Some(adapter.key);
                 }
@@ -800,7 +803,6 @@ impl Daemon {
                 )
                 .await?
             {
-                install = true;
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -811,9 +813,9 @@ impl Daemon {
                     false,
                 );
             }
-            if install {
-                prepared.install(&package_cache).await?;
-            }
+            // Resolved first, the adapter `migrate` or the change added included: everything
+            // downloads in one batch.
+            prepared.install(&package_cache).await?;
             prepared
         };
         crate::sandbox::validate_scripts(&compose)?;
@@ -1196,9 +1198,8 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_with_versions(
+                crate::lockfile::prepare_metadata_with_versions(
                     &mut current,
-                    &package_cache,
                     &force,
                     &selected_versions,
                 ),
@@ -1237,14 +1238,8 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some()
-            || migration
-                .as_ref()
-                .is_some_and(|migration| migration.adapter.is_some())
-        {
-            self.prepare(&operation_id, prepared.install(&package_cache))
-                .await??;
-        }
+        self.prepare(&operation_id, prepared.install(&package_cache))
+            .await??;
         let yaml_changed =
             !added.is_empty() || !replaced.is_empty() || adapter.is_some() || migration.is_some();
         for (root, nodes) in resolved_graphs {
@@ -4712,6 +4707,7 @@ containers:
     /// registry that serves any version of them. The build of `<key>` fails while
     /// `<root>/fail-<key>` exists; while `<root>/slow` does, the first build passes and the next
     /// one hangs, touching `<root>/building`.
+    #[cfg(unix)]
     async fn running_package_project(
         root: &Path,
         keys: &[&str],
@@ -4793,6 +4789,7 @@ containers:
     }
 
     /// The pid container `key` runs as, once it runs.
+    #[cfg(unix)]
     fn pid_of(root: &Path, key: &str) -> u32 {
         std::fs::read_to_string(root.join(key).join("pid"))
             .unwrap()
@@ -4805,6 +4802,7 @@ containers:
     /// restarts nothing and answers `OPERATION_CANCELLED`, naming the container it already
     /// rebuilt; the retry restarts both, that one included: its package is current, but the add
     /// or update that rebuilt it did not restart it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_cancelled_rebuild_restarts_nothing_and_a_retry_finishes_it() {
         for operation in ["add", "update"] {
@@ -4870,6 +4868,7 @@ containers:
 
     /// Spec 3.3 and 5.3: the restart after `compose::build` is the user's. An update that changes
     /// nothing afterwards restarts nothing, and answers that all is up to date.
+    #[cfg(unix)]
     #[tokio::test]
     async fn an_explicit_build_leaves_the_next_unchanged_update_restarting_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -4921,6 +4920,7 @@ containers:
     /// Spec 5.3 through `compose::add` and `compose::update`: the rebuild for the new package runs
     /// while the old build does; one that fails leaves it running, answers `BUILD_FAILED` saying
     /// how to finish, and a retry of the same call finishes it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_and_update_rebuild_before_restarting_and_a_retry_finishes() {
         for operation in ["add", "update"] {
@@ -4983,6 +4983,7 @@ containers:
     }
 
     /// Spec 3.3: `compose::remove` takes the container's `.build/` and `.workers/` along.
+    #[cfg(unix)]
     #[tokio::test]
     async fn remove_takes_the_build_and_package_directories_of_the_container() {
         let dir = tempfile::tempdir().unwrap();
@@ -5038,6 +5039,7 @@ containers:
 
     /// Spec 7.1: `compose::add` of a registry bundle writes `start_after` and both `scripts`,
     /// beside the generated adapter, and answers for the bundle it added.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_writes_the_explicit_vm_mode_of_a_bundle() {
         use sha2::{Digest, Sha256};
@@ -5126,6 +5128,8 @@ containers:
 
     /// Spec 7.2: an `up` that moves a running generated adapter into ADAPTER_RANGE restarts it
     /// on the new release, and the container that runs its VM through it follows.
+    // Writes an executable shell script, which needs Unix permissions.
+    #[cfg(unix)]
     #[tokio::test]
     async fn up_restarts_a_running_adapter_it_moved_into_range() {
         use sha2::{Digest, Sha256};
@@ -5248,6 +5252,7 @@ containers:
 
     /// Spec 7.1: `compose::add` of a `path://` worker whose manifest sets `runtime.base_image`
     /// writes `start_after` and both `scripts`, beside the generated adapter.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_writes_the_explicit_vm_mode_of_a_base_image_worker() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5287,6 +5292,7 @@ containers:
 
     /// Spec 7.4: `compose::build` builds a named container or every one that declares a build,
     /// skips `""`, restarts nothing, and stops at `compose::cancel` or `down`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn compose_build_runs_the_builds_and_stops_at_cancel_or_down() {
         let dir = tempfile::tempdir().unwrap();
@@ -5389,6 +5395,7 @@ containers:
 
     /// Spec 11: `up` writes the adapter a VM needs, locks and installs it, and
     /// the project loaded before that edit holds it with the VM wired after it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn up_writes_installs_and_wires_the_adapter_a_vm_needs() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5432,6 +5439,7 @@ containers:
 
     /// `build` runs outside the daemon's mutation lock: a file saved while it
     /// prepared is refused, never overwritten from build's snapshot.
+    #[cfg(unix)]
     #[tokio::test]
     async fn build_does_not_overwrite_an_edit_made_while_it_prepared() {
         use sha2::Digest;
@@ -5640,6 +5648,7 @@ containers:
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5787,6 +5796,7 @@ containers:
     /// name, before or after a VM generated it, outlives the last VM, whose
     /// removal would otherwise destroy its live sandboxes. One only a VM asked
     /// for goes with it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;

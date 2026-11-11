@@ -1,3 +1,9 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
 //! Decision 60: an older SDK's `source.on` / `source.deliver` are translated
 //! at registration instead of refused, and every one of the 528 old
 //! `on` x `deliver` x `capture` combinations fires on exactly the outcomes it
