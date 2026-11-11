@@ -458,6 +458,34 @@ async fn up_scoped(
     })
 }
 
+/// Starts `key` alone, ahead of the `up` it belongs to, and supervises it as
+/// that `up` would. `Some(true)` when it started it, `Some(false)` when it was
+/// running already, `None` when it did not come up or was interrupted: the `up`
+/// that follows starts it again and reports why.
+pub(crate) async fn start_ahead(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<bool> {
+    if is_running(children, key) {
+        return Some(false);
+    }
+    report::plan_labeled(&[(key.to_string(), 0)], &version_labels(ctx.file, [key]));
+    report::starting(key, "starting");
+    let began = Instant::now();
+    match start_one_with_retries(ctx, key, Some(shutdown), None).await {
+        StartAttempt::Ready { record, child, .. } => {
+            report::ready(key, began.elapsed());
+            records.insert(key.to_string(), record);
+            children.insert(key.to_string(), *child);
+            Some(true)
+        }
+        StartAttempt::Failed(_) | StartAttempt::Interrupted => None,
+    }
+}
+
 /// Whether this container's failure fails the operation. A container the file
 /// no longer declares is treated as required: the strict rule is the one that
 /// refuses rather than the one that carries on.

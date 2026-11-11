@@ -118,6 +118,60 @@ pub(crate) fn needed_by(needs: &[Need]) -> Vec<&str> {
     }
 }
 
+/// The adapter and the bundle containers it boots, when the adapter can start
+/// ahead of the rest of the project: a package that waits for nothing. A start
+/// then has it pull those bundles' images while the other packages download,
+/// instead of after them. `file` must be lock-attached, as for [`needs`].
+pub(crate) fn ahead(
+    file: &ComposeFile,
+    project_namespace: &str,
+) -> Result<Option<(String, Vec<String>)>> {
+    let bundles: Vec<String> = needs(file, project_namespace)
+        .into_iter()
+        .filter_map(|need| match need {
+            Need::VmBundle(key) => Some(key),
+            Need::VmLocal(_) | Need::Explicit => None,
+        })
+        .collect();
+    if bundles.is_empty() {
+        return Ok(None);
+    }
+    let Some(adapter) = adapter_key(file, adapter_name(file))? else {
+        return Ok(None);
+    };
+    let container = &file.containers[&adapter];
+    let alone = matches!(container.worker, WorkerSource::Package { .. })
+        && container.start_after.is_empty();
+    Ok(alone.then_some((adapter, bundles)))
+}
+
+/// `worker::prepare` for bundle container `key` before it starts, so its image
+/// is pulled and its base built while the rest of the project downloads. Best
+/// effort: its start prepares again, which waits on a pull still in flight, and
+/// reports whatever fails.
+pub(crate) async fn prepare_ahead(ctx: &LifecycleCtx<'_>, key: &str) {
+    let Some(resolved) = ctx
+        .file
+        .containers
+        .get(key)
+        .and_then(|container| container.resolved_package.as_ref())
+    else {
+        return;
+    };
+    let Ok(installed) = crate::registry::install_resolved(key, resolved, ctx.package_cache).await
+    else {
+        return;
+    };
+    let crate::registry::Payload::Bundle(install_dir) = installed.payload else {
+        return;
+    };
+    let start = StartSpec::Vm(VmSpec::Bundle {
+        package: installed.alias_of.unwrap_or(installed.name),
+        install_dir,
+    });
+    let _ = prepare_vm(ctx, key, &start, BTreeMap::new()).await;
+}
+
 /// `--frozen` never edits the file, so a need with no declared adapter fails.
 /// `file` must be lock-attached, as for [`needs`].
 pub(crate) fn require_declared_adapter(file: &ComposeFile, project_namespace: &str) -> Result<()> {
@@ -349,7 +403,9 @@ pub(crate) async fn iii_sandbox_request(file: &ComposeFile) -> Result<NewContain
 
 /// Applies [`adapter_change`] to `edited` and `current`, then prepares the lock
 /// again: the adapter at its exact version, every other entry at the version
-/// the first pass chose, so nothing else resolves differently.
+/// the first pass chose, so nothing else resolves differently. Only the adapter
+/// reaches the registry: the rest reuse what the first pass resolved. Call it
+/// before installing, so the adapter downloads with everything else.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_adapter_change(
     path: &Path,
@@ -396,7 +452,8 @@ pub(crate) async fn apply_adapter_change(
                 .or_insert_with(|| version.to_string());
         }
     }
-    *prepared = crate::lockfile::prepare_metadata_with_versions(current, force, &versions).await?;
+    *prepared =
+        crate::lockfile::prepare_metadata_reusing(current, force, &versions, prepared).await?;
     Ok(Some(change))
 }
 
@@ -1629,6 +1686,23 @@ pub(crate) mod tests {
         );
     }
 
+    /// Only the bundles go ahead (a local VM has nothing to download), and only
+    /// with an adapter that waits for nothing.
+    #[test]
+    fn an_adapter_that_waits_for_nothing_goes_ahead_with_the_bundles() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = vm_project(dir.path());
+        assert_eq!(
+            ahead(&file, "default").unwrap(),
+            Some(("sb".to_string(), vec!["app".to_string()]))
+        );
+        file.containers["sb"].start_after.push("bin".to_string());
+        assert_eq!(ahead(&file, "default").unwrap(), None);
+        file.containers["sb"].start_after.clear();
+        file.containers["app"].resolved_package = Some(package("name: app, type: binary"));
+        assert_eq!(ahead(&file, "default").unwrap(), None);
+    }
+
     #[test]
     fn a_binding_to_another_namespace_needs_no_adapter_here() {
         let dir = tempfile::tempdir().unwrap();
@@ -1921,6 +1995,77 @@ pub(crate) mod tests {
             panic!("the adapter is new");
         };
         assert!(edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+    }
+
+    /// Adding the adapter a bundle needs asks the registry for the adapter only: the bundle the
+    /// first pass resolved is not resolved again.
+    #[tokio::test]
+    async fn adding_the_adapter_resolves_only_the_adapter_again() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let dir = tempfile::tempdir().unwrap();
+        let server = adapter_registry(b"").await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "tour" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "tour", "version": "1.0.0", "type": "bundle",
+                    "archive_url": format!("{}/artifact", server.uri()),
+                    "sha256": "a".repeat(64),
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let text = "containers:\n  tour: {worker: package://tour, version: 1.0.0}\n";
+        let mut file = parse(dir.path(), text);
+        let mut edited = text.to_string();
+        let path = file.path.clone();
+        let (change, prepared) = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), async {
+                let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new())
+                    .await
+                    .unwrap();
+                let change = apply_adapter_change(
+                    &path,
+                    &mut edited,
+                    &mut file,
+                    "default",
+                    &mut prepared,
+                    &mut BTreeSet::new(),
+                    &mut BTreeMap::new(),
+                    false,
+                    false,
+                )
+                .await
+                .unwrap();
+                (change, prepared)
+            })
+            .await;
+
+        assert!(
+            matches!(change, Some(AdapterChange::Upsert(_))),
+            "{change:?}"
+        );
+        assert_eq!(prepared.resolved_version("tour"), Some("1.0.0"));
+        assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.3.0"));
+        let asked: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/resolve")
+            .map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                body["worker"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            asked.iter().filter(|worker| *worker == "tour").count(),
+            1,
+            "{asked:?}"
+        );
     }
 
     #[tokio::test]

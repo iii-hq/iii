@@ -145,6 +145,15 @@ const SUPERVISION_INTERVAL: Duration = Duration::from_millis(250);
 /// `AddPlanStale` rather than edit from a plan made against another file.
 const ADD_REPLAN_LIMIT: u32 = 2;
 
+/// What a start finishes after its preparation when the sandbox adapter goes
+/// ahead: the lock with the packages still to download, the adapter to start
+/// meanwhile, and the bundle containers it prepares.
+struct VmsAhead {
+    prepared: crate::lockfile::PreparedLock,
+    adapter: String,
+    bundles: Vec<String>,
+}
+
 struct AddPlan {
     snapshot: String,
     wanted: Vec<crate::edit::NewContainer>,
@@ -723,14 +732,26 @@ impl Daemon {
     /// Keep the candidate in memory until loading and metadata-lock acquisition
     /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
-        crate::report::in_project_scope(file, self.prepare_start_project_scoped(file, frozen)).await
+        // Boxed, as below: inline, this future overflows a debug build's stack.
+        let (project, _) = crate::report::in_project_scope(
+            file,
+            Box::pin(self.prepare_start_project_scoped(file, frozen, false)),
+        )
+        .await?;
+        Ok(project)
     }
 
+    /// [`Self::prepare_start_project`], but with `vms_ahead` and a project whose
+    /// bundles need the sandbox adapter, only the adapter and those bundles are
+    /// acquired: the rest is left in the [`VmsAhead`] returned, for the start to
+    /// download while the adapter prepares the bundles' images. The lock is
+    /// complete either way.
     async fn prepare_start_project_scoped(
         &self,
         file: &Path,
         frozen: bool,
-    ) -> Result<Arc<Project>> {
+        vms_ahead: bool,
+    ) -> Result<(Arc<Project>, Option<VmsAhead>)> {
         let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
             path: file.to_path_buf(),
             source,
@@ -741,29 +762,39 @@ impl Daemon {
         crate::manifest::validate_offline(&compose, &namespace)?;
         let package_cache = crate::state::StateStore::package_cache()?;
         let mut edited = text.clone();
-        let prepared = if frozen {
+        let (prepared, ahead) = if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut compose, &package_cache).await?;
             crate::sandbox::require_declared_adapter(&compose, &namespace)?;
-            prepared
+            (prepared, None)
         } else {
             let mut prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
             let path = compose.path.clone();
-            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
-                crate::sandbox::apply_adapter_change(
-                    &path,
-                    &mut edited,
-                    &mut compose,
-                    &namespace,
-                    &mut prepared,
-                    &mut BTreeSet::new(),
-                    &mut BTreeMap::new(),
-                    false,
-                    false,
-                )
-                .await?
-            {
-                prepared.install(&package_cache).await?;
+            let change = crate::sandbox::apply_adapter_change(
+                &path,
+                &mut edited,
+                &mut compose,
+                &namespace,
+                &mut prepared,
+                &mut BTreeSet::new(),
+                &mut BTreeMap::new(),
+                false,
+                false,
+            )
+            .await?;
+            let ahead = if vms_ahead {
+                crate::sandbox::ahead(&compose, &namespace)?
+            } else {
+                None
+            };
+            match &ahead {
+                Some((adapter, bundles)) => {
+                    let first = bundles.iter().chain([adapter]).cloned().collect();
+                    prepared.install_only(&package_cache, &first).await?;
+                }
+                None => prepared.install(&package_cache).await?,
+            }
+            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = change {
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -774,7 +805,7 @@ impl Daemon {
                     false,
                 );
             }
-            prepared
+            (prepared, ahead)
         };
         let project = self.project(file).await?;
         if edited != text {
@@ -783,7 +814,58 @@ impl Daemon {
         project
             .commit_prepared_packages(&compose, &prepared)
             .await?;
-        Ok(project)
+        let ahead = ahead.map(|(adapter, bundles)| VmsAhead {
+            prepared,
+            adapter,
+            bundles,
+        });
+        Ok((project, ahead))
+    }
+
+    /// Downloads what preparation left of `ahead` while its adapter starts and
+    /// prepares the bundles. `None` when cancelled, else whether this started
+    /// the adapter. Stopping it again, when the startup it went ahead of does
+    /// not finish, is then the caller's.
+    async fn download_with_vms_ahead(
+        &self,
+        file: &Path,
+        project: &Arc<Project>,
+        ahead: VmsAhead,
+        operation_id: &str,
+        shutdown: &crate::shutdown::ShutdownSignal,
+    ) -> Result<Option<bool>> {
+        let VmsAhead {
+            mut prepared,
+            adapter,
+            bundles,
+        } = ahead;
+        let package_cache = crate::state::StateStore::package_cache()?;
+        let start = async {
+            let started = project.start_ahead(&adapter, shutdown.clone()).await == Some(true);
+            if started {
+                // Not awaited: a pull can outlast the downloads, and the bundle's
+                // own start waits on it at the adapter.
+                let project = Arc::clone(project);
+                tokio::spawn(async move { project.prepare_vms_ahead(&bundles).await });
+            }
+            started
+        };
+        let (installed, started) = crate::report::in_project_scope(file, async {
+            futures::join!(shutdown.run(prepared.install(&package_cache)), start)
+        })
+        .await;
+        if let Some(Ok(())) = installed {
+            return Ok(Some(started));
+        }
+        if started {
+            project
+                .down(Some(&adapter), format!("{operation_id}-ahead"))
+                .await;
+        }
+        match installed {
+            Some(Err(error)) => Err(error),
+            _ => Ok(None),
+        }
     }
 
     /// The project `file` declares, loading it if this is the first time.
@@ -947,20 +1029,60 @@ impl Daemon {
             return Ok(None);
         };
         // Drop only preparation; lifecycle startup must roll back owned children.
-        let Some(project) = shutdown.run(self.prepare_start_project(file, frozen)).await else {
+        // A whole-project start lets the sandbox adapter go ahead of the rest.
+        let preparation = crate::report::in_project_scope(
+            file,
+            Box::pin(self.prepare_start_project_scoped(file, frozen, container.is_none())),
+        );
+        let Some(prepared) = shutdown.run(preparation).await else {
             return Ok(None);
         };
-        let project = project?;
+        let (project, ahead) = prepared?;
         if shutdown.requested() {
             return Ok(None);
+        }
+        let mut ahead_adapter = None;
+        if let Some(ahead) = ahead {
+            let adapter = ahead.adapter.clone();
+            match Box::pin(self.download_with_vms_ahead(
+                file,
+                &project,
+                ahead,
+                &operation_id,
+                &shutdown,
+            ))
+            .await?
+            {
+                None => return Ok(None),
+                Some(started) => ahead_adapter = started.then_some(adapter),
+            }
         }
         crate::report::in_project_scope(file, async {
             crate::report::containers_starting();
         })
         .await;
-        Ok(project
-            .up_until_shutdown(container, operation_id, shutdown)
-            .await)
+        let mut result = project
+            .up_until_shutdown(container, operation_id.clone(), shutdown)
+            .await;
+        let Some(adapter) = ahead_adapter else {
+            return Ok(result);
+        };
+        match result.as_mut() {
+            // Its `up` found it running, but this startup is what started it.
+            Some(result) if result.status == OpStatus::Ok => {
+                result.changed = true;
+                for entry in &mut result.containers {
+                    entry.changed |= entry.container == adapter;
+                }
+            }
+            // The startup's rollback stops only what its `up` started.
+            _ => {
+                project
+                    .down(Some(&adapter), format!("{operation_id}-ahead"))
+                    .await;
+            }
+        }
+        Ok(result)
     }
 
     /// Adds containers to a project's file, then reconciles the project once.
@@ -1147,9 +1269,8 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_with_versions(
+                crate::lockfile::prepare_metadata_with_versions(
                     &mut current,
-                    &package_cache,
                     &force,
                     &selected_versions,
                 ),
@@ -1172,10 +1293,8 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some() {
-            self.prepare(&operation_id, prepared.install(&package_cache))
-                .await??;
-        }
+        self.prepare(&operation_id, prepared.install(&package_cache))
+            .await??;
         let yaml_changed = !added.is_empty() || !replaced.is_empty() || adapter.is_some();
         for (root, nodes) in resolved_graphs {
             prepared.replace_graph(&root, nodes);

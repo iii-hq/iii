@@ -139,10 +139,29 @@ impl PreparedLock {
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
     pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
+        self.install_where(cache_root, |_| true).await
+    }
+
+    /// [`Self::install`] for `keys` only, the ones a start needs before the rest.
+    pub(crate) async fn install_only(
+        &mut self,
+        cache_root: &Path,
+        keys: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.install_where(cache_root, |key| keys.contains(key))
+            .await
+    }
+
+    async fn install_where(
+        &mut self,
+        cache_root: &Path,
+        wanted: impl Fn(&str) -> bool,
+    ) -> Result<()> {
         let requests = self
             .lock
             .containers
             .iter()
+            .filter(|(key, _)| wanted(key))
             .map(|(key, entry)| (key.clone(), entry.resolved.clone()))
             .collect::<Vec<_>>();
         let cache_root = cache_root.to_path_buf();
@@ -188,24 +207,13 @@ pub fn attach(compose: &mut ComposeFile) -> Result<()> {
 
 /// Resolves missing, changed, or explicitly forced declarations, verifies the
 /// selected artifacts, and attaches the immutable result to the runtime model.
+#[cfg(test)]
 pub async fn prepare(
     compose: &mut ComposeFile,
     cache_root: &Path,
     force: &BTreeSet<String>,
 ) -> Result<PreparedLock> {
-    prepare_with_versions(compose, cache_root, force, &BTreeMap::new()).await
-}
-
-/// Prepares a lock while using exact versions already selected by one registry
-/// graph. This keeps `compose::add worker=name@next` on the same graph result
-/// even if the tag moves before its artifacts are acquired.
-pub async fn prepare_with_versions(
-    compose: &mut ComposeFile,
-    cache_root: &Path,
-    force: &BTreeSet<String>,
-    selected_versions: &BTreeMap<String, String>,
-) -> Result<PreparedLock> {
-    let mut prepared = prepare_metadata_with_versions(compose, force, selected_versions).await?;
+    let mut prepared = prepare_metadata(compose, force).await?;
     prepared.install(cache_root).await?;
     Ok(prepared)
 }
@@ -334,6 +342,42 @@ pub(crate) async fn prepare_metadata_with_versions(
         selected_versions,
         |key, reference, range| async move {
             crate::registry::resolve_package(&key, &reference, &range).await
+        },
+    )
+    .await
+}
+
+/// [`prepare_metadata_with_versions`] again after an edit, with `earlier` the
+/// candidate prepared before it: a declaration whose exact version `earlier`
+/// already resolved takes that result instead of a second registry round trip.
+/// Without it, adding the sandbox adapter to a project that has no lock yet
+/// resolved every container twice.
+pub(crate) async fn prepare_metadata_reusing(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    selected_versions: &BTreeMap<String, String>,
+    earlier: &PreparedLock,
+) -> Result<PreparedLock> {
+    prepare_metadata_with_resolver(
+        compose,
+        force,
+        selected_versions,
+        |key, reference, range| {
+            let reused = earlier
+                .lock
+                .containers
+                .get(&key)
+                .filter(|entry| {
+                    entry.worker == format!("package://{reference}")
+                        && entry.resolved.version == range
+                })
+                .map(|entry| entry.resolved.clone());
+            async move {
+                match reused {
+                    Some(resolved) => Ok(resolved),
+                    None => crate::registry::resolve_package(&key, &reference, &range).await,
+                }
+            }
         },
     )
     .await
