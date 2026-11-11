@@ -654,6 +654,9 @@ pub enum ComposeError {
     /// before the file and the lock are written and again before the packages
     /// are materialized, so the message claims nothing about what was written:
     /// each write is atomic, and the next build starts from what is on disk.
+    /// The check and the write are not atomic across processes: a lock the
+    /// daemon commits between them is still overwritten, and the late check,
+    /// which compares with the lock this build wrote, then passes.
     #[error(
         "{} changed while build was preparing it, so the build stopped instead of working from \
          a stale plan. Run the build again.",

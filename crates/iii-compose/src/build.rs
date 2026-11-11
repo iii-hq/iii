@@ -168,9 +168,14 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         } else {
             read_if_present(prepared.path())? == found_lock
         };
-        if !file_holds || !lock_holds {
+        if !file_holds {
             return Err(ComposeError::BuildPlanStale {
                 path: file.path.clone(),
+            });
+        }
+        if !lock_holds {
+            return Err(ComposeError::BuildPlanStale {
+                path: prepared.path().to_path_buf(),
             });
         }
         Ok(())

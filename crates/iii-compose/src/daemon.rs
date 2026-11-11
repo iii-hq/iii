@@ -5580,6 +5580,8 @@ containers:
             .unwrap_err();
 
         assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        // The late check names what changed: the lock, not the file.
+        assert!(error.to_string().contains("worker-compose.lock"), "{error}");
         assert_eq!(std::fs::read_to_string(&lock).unwrap(), saved);
         assert_eq!(
             std::fs::read_to_string(workers.join(".packages.json")).ok(),
