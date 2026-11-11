@@ -17,6 +17,8 @@ from .observe_types import ObserveReason, ObserverState
 log = logging.getLogger("iii.observe")
 
 StateListener = Callable[[ObserverState, "ObserveReason | None"], None]
+#: A subscription: its own token and the listener.
+_Subscription = tuple[object, StateListener]
 
 _STATES = frozenset({"pending", "active", "suspended", "error", "disposed"})
 
@@ -55,9 +57,12 @@ class ObserverHandle:
         self._sdk_thread = sdk_thread
         self._state: ObserverState = "pending"
         self._reason: ObserveReason | None = None
-        self._listeners: list[StateListener] = []
+        #: One entry per subscription, keyed by its own token: the same callable
+        #: subscribed again is a new subscription.
+        self._listeners: dict[object, StateListener] = {}
         self._schedule = schedule
-        self._undelivered: deque[tuple[ObserverState, ObserveReason | None]] = deque()
+        # Each change with the subscriptions that existed when it happened.
+        self._undelivered: deque[tuple[ObserverState, ObserveReason | None, tuple[_Subscription, ...]]] = deque()
         self._delivering = False
         self._changed = threading.Condition()
         #: Sent on some connection: the engine may hold it, so disposing it needs an ``unobserve``.
@@ -155,15 +160,16 @@ class ObserverHandle:
             raise error
 
     def on_state_change(self, listener: StateListener) -> Callable[[], None]:
-        """Calls ``listener(state, reason)`` on every state change, in order,
-        on the SDK's callback thread. Returns the unsubscribe function."""
-        self._listeners.append(listener)
+        """Calls ``listener(state, reason)`` on every state change after it
+        subscribes, in order, on the SDK's callback thread. Returns the
+        unsubscribe function; a change still queued then is not delivered to it."""
+        token = object()
+        with self._changed:
+            self._listeners[token] = listener
 
         def off() -> None:
-            try:
-                self._listeners.remove(listener)
-            except ValueError:
-                pass
+            with self._changed:
+                self._listeners.pop(token, None)
 
         return off
 
@@ -194,7 +200,12 @@ class ObserverHandle:
                 return
             # Delivered later, in order: a listener never runs on the read path
             # (or inside dispose()), so it may call the client freely.
-            self._undelivered.append((state, reason))
+            # The listeners now: one that subscribes after this change, before
+            # it is delivered, must not hear it.
+            listeners = tuple(self._listeners.items())
+            if not listeners:
+                return
+            self._undelivered.append((state, reason, listeners))
             if self._delivering:
                 return
             self._delivering = True
@@ -206,8 +217,11 @@ class ObserverHandle:
                 if not self._undelivered:
                     self._delivering = False
                     return
-                state, reason = self._undelivered.popleft()
-            for listener in list(self._listeners):
+                state, reason, listeners = self._undelivered.popleft()
+            for token, listener in listeners:
+                with self._changed:
+                    if token not in self._listeners:
+                        continue
                 try:
                     listener(state, reason)
                 except Exception:

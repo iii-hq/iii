@@ -2841,12 +2841,14 @@ mod tests {
         assert!(err.to_string().contains("../escape"));
     }
 
-    /// A package archive: an executable `worker`, `lib/data.txt` holding `body`, and on Unix a
-    /// symlink `current -> lib`.
+    /// A package archive: an executable `worker` (`worker.exe` on Windows, the only name
+    /// [`installed_binary`] takes there), `lib/data.txt` holding `body`, and on Unix a symlink
+    /// `current -> lib`.
     fn package_archive(body: &str) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut archive = tar::Builder::new(encoder);
-        for (name, mode) in [("worker", 0o755), ("lib/data.txt", 0o644)] {
+        let worker = format!("worker{}", std::env::consts::EXE_SUFFIX);
+        for (name, mode) in [(worker.as_str(), 0o755), ("lib/data.txt", 0o644)] {
             let mut header = tar::Header::new_gnu();
             header.set_size(body.len() as u64);
             header.set_mode(mode);
@@ -3175,7 +3177,11 @@ mod tests {
         materialize_project(project.path(), cache.path(), &lock)
             .await
             .unwrap();
-        assert!(workers.join("state/worker").is_file());
+        assert!(
+            workers
+                .join(format!("state/worker{}", std::env::consts::EXE_SUFFIX))
+                .is_file()
+        );
 
         std::fs::write(workers.join("state/stale"), "").unwrap();
         std::fs::write(workers.join(".packages.json"), "{\"schema\":").unwrap();

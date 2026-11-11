@@ -86,15 +86,12 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             crate::sandbox::require_declared_adapter(&file, &namespace)?;
             return Ok::<_, ComposeError>(prepared);
         }
-        let mut prepared = crate::lockfile::prepare(&mut file, &cache, &BTreeSet::new()).await?;
+        let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()).await?;
         let path = file.path.clone();
         // Spec 7.2 and 7.3 first, so the adapter check sees the rewritten
         // containers and re-resolves, or removes, the adapter `migrate` added.
-        let migrated =
-            crate::sandbox::migrate(&path, &mut edited, &mut file, &namespace, &mut prepared)
-                .await?
-                .is_some_and(|migration| migration.adapter.is_some());
-        let adapted = crate::sandbox::apply_adapter_change(
+        crate::sandbox::migrate(&path, &mut edited, &mut file, &namespace, &mut prepared).await?;
+        crate::sandbox::apply_adapter_change(
             &path,
             &mut edited,
             &mut file,
@@ -105,11 +102,9 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             false,
             false,
         )
-        .await?
-        .is_some();
-        if migrated || adapted {
-            prepared.install(&cache).await?;
-        }
+        .await?;
+        // Resolved first, the adapter included: everything downloads in one batch.
+        prepared.install(&cache).await?;
         Ok(prepared)
     }
     .await;
@@ -428,6 +423,12 @@ mod tests {
         assert!(error.to_string().contains("container 'first'"));
     }
 
+    /// The executable of a binary package: `worker`, `worker.exe` on Windows, the only name
+    /// `installed_binary` takes there.
+    fn worker_file() -> String {
+        format!("worker{}", std::env::consts::EXE_SUFFIX)
+    }
+
     /// A tar.gz holding `files`: name, mode, body.
     fn archive(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
@@ -509,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn build_locks_and_copies_each_package_into_the_project() {
         let server = wiremock::MockServer::start().await;
-        let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
         serve(
             &server,
             "state",
@@ -533,7 +534,11 @@ mod tests {
 
         assert_eq!(report.packages, 1);
         assert!(project.path().join("worker-compose.lock").is_file());
-        assert!(project.path().join(".iii/workers/state/worker").is_file());
+        assert!(
+            crate::build_record::package_dir(project.path(), "state")
+                .join(worker_file())
+                .is_file()
+        );
         assert_eq!(recorded_containers(project.path()), ["state"]);
     }
 
@@ -595,7 +600,7 @@ mod tests {
         use wiremock::{Mock, ResponseTemplate, matchers};
 
         let server = wiremock::MockServer::start().await;
-        let state = archive(&[("worker", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
         let resolved = serde_json::json!({
             "name": "state",
             "version": "1.0.0",
