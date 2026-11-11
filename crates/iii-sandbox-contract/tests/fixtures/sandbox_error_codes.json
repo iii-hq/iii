@@ -32,6 +32,9 @@
     {"code": "S503", "type": "validation", "retryable": false, "rust_variant": null, "summary": "InstanceMismatch: the request names a different instance than the live VM; fix carries the live vm_id and instance"},
     {"code": "S504", "type": "validation", "retryable": false, "rust_variant": null, "summary": "VmNotFound: no VM with this vm_id"},
     {"code": "S505", "type": "validation", "retryable": false, "rust_variant": null, "summary": "Unauthorized: the request auth token does not match"},
-    {"code": "S506", "type": "transient", "retryable": true, "rust_variant": null, "summary": "PrepareFailed: worker::prepare failed; retry"}
+    {"code": "S506", "type": "transient", "retryable": true, "rust_variant": null, "summary": "PrepareFailed: worker::prepare failed; retry"},
+    {"code": "S507", "type": "execution", "retryable": false, "rust_variant": null, "summary": "BuildFailed: scripts.setup or scripts.install exited non-zero, or the image could not be written; the message carries the tail of the output"},
+    {"code": "S508", "type": "validation", "retryable": false, "rust_variant": null, "summary": "BuildMismatch: worker::start's build.build_id does not match the image in build_dir, or its image.id is missing; build again"},
+    {"code": "S509", "type": "validation", "retryable": false, "rust_variant": null, "summary": "BuildInProgress: a build for this state_key is already running"}
   ]
 }

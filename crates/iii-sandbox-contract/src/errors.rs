@@ -42,6 +42,14 @@ pub enum SandboxErrorCode {
     S504,
     S505,
     S506,
+    /// BuildFailed: a setup or install step of `worker::build` exited non-zero, or the image
+    /// could not be written; the message carries the tail of the output. Since contract 1.3.
+    S507,
+    /// BuildMismatch: `worker::start`'s `build.build_id` does not match the image in
+    /// `build.build_dir`, or its `image.id` is missing. Since contract 1.3.
+    S508,
+    /// BuildInProgress: a build for this state key is already running. Since contract 1.3.
+    S509,
 }
 
 impl SandboxErrorCode {
@@ -77,6 +85,9 @@ impl SandboxErrorCode {
             Self::S504 => "S504",
             Self::S505 => "S505",
             Self::S506 => "S506",
+            Self::S507 => "S507",
+            Self::S508 => "S508",
+            Self::S509 => "S509",
         }
     }
 
@@ -90,11 +101,13 @@ impl SandboxErrorCode {
             | Self::S502
             | Self::S503
             | Self::S504
-            | Self::S505 => "validation",
+            | Self::S505
+            | Self::S508
+            | Self::S509 => "validation",
             Self::S100 | Self::S302 | Self::S303 | Self::S400 => "config",
             Self::S101 => "internal",
             Self::S102 | Self::S218 | Self::S301 | Self::S506 => "transient",
-            Self::S200 => "execution",
+            Self::S200 | Self::S507 => "execution",
             Self::S210
             | Self::S211
             | Self::S212

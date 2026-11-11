@@ -18,7 +18,10 @@ use iii::workers::engine_fn::EngineFunctionsWorker;
 use iii::workers::sandbox::SandboxRouter;
 use iii::workers::traits::Worker;
 use iii::workers::worker::WorkerManager;
-use iii_sandbox_contract::{OPERATIONS, ROUTER_INFO_ID, SandboxErrorCode, code_of, error_payload};
+use iii_sandbox_contract::{
+    CONTRACT_MAJOR, CONTRACT_MINOR, OPERATIONS, ROUTER_INFO_ID, SandboxErrorCode, code_of,
+    error_payload,
+};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -255,7 +258,7 @@ async fn unbound_router_answers_s303_but_info_never_errors() {
     assert_eq!(
         info.unwrap(),
         Some(
-            json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 2}, "info": null})
+            json!({"adapter": null, "namespace": null, "contract": {"major": CONTRACT_MAJOR, "minor": CONTRACT_MINOR}, "info": null})
         )
     );
 }
@@ -291,7 +294,7 @@ async fn bound_router_without_adapter_answers_s301() {
     assert_eq!(
         info.unwrap(),
         Some(
-            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": CONTRACT_MAJOR, "minor": CONTRACT_MINOR}, "info": null})
         )
     );
 }
@@ -313,7 +316,7 @@ async fn info_names_the_binding_when_the_adapter_hangs() {
     assert_eq!(
         info.unwrap(),
         Some(
-            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": CONTRACT_MAJOR, "minor": CONTRACT_MINOR}, "info": null})
         )
     );
     assert_eq!(adapter.info_calls.load(Ordering::Relaxed), 1);

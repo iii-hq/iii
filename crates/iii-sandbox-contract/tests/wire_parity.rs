@@ -1,12 +1,13 @@
 use iii_sandbox_contract::{
-    AdapterInfo, AdapterInfoRequest, CatalogListRequest, ChannelDirection, ContractVersion,
-    DOCS_BASE, EnvShape, ExecRequest, ExecResponse, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
-    GrepRequest, ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS, ReadResponse,
-    RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State, StopRequest, StreamChannelRef,
-    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
-    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
-    WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest, WriteContent,
-    WriteRequest, code_of, error_payload,
+    AdapterInfo, AdapterInfoRequest, BaseImageRef, CONTRACT_MAJOR, CONTRACT_MINOR,
+    CatalogListRequest, ChannelDirection, ContractVersion, DOCS_BASE, EnvShape, ExecRequest,
+    ExecResponse, FEATURE_BUILD, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, GrepRequest,
+    ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS, ReadResponse, RouterInfo,
+    RunResponse, SandboxErrorCode, SedRequest, State, StopRequest, StreamChannelRef,
+    WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
+    WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerPrepareRequest,
+    WorkerPrepareResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
+    WorkerStatusRequest, WorkerStopRequest, WriteContent, WriteRequest, code_of, error_payload,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, from_value, json, to_value};
@@ -40,20 +41,21 @@ fn enforce_exhaustive(c: SandboxErrorCode) -> SandboxErrorCode {
     match c {
         S001 | S002 | S003 | S004 | S100 | S101 | S102 | S200 | S210 | S211 | S212 | S213
         | S214 | S215 | S216 | S217 | S218 | S219 | S300 | S301 | S302 | S303 | S304 | S400
-        | S501 | S502 | S503 | S504 | S505 | S506 => c,
+        | S501 | S502 | S503 | S504 | S505 | S506 | S507 | S508 | S509 => c,
     }
 }
 
-const ALL: [SandboxErrorCode; 30] = [
+const ALL: [SandboxErrorCode; 33] = [
     S001, S002, S003, S004, S100, S101, S102, S200, S210, S211, S212, S213, S214, S215, S216, S217,
-    S218, S219, S300, S301, S302, S303, S304, S400, S501, S502, S503, S504, S505, S506,
+    S218, S219, S300, S301, S302, S303, S304, S400, S501, S502, S503, S504, S505, S506, S507, S508,
+    S509,
 ];
 
 #[test]
 fn fixture_rows_match_error_payload() {
     let f = fixture();
     assert_eq!(f.docs_base, DOCS_BASE);
-    assert_eq!(f.codes.len(), 30);
+    assert_eq!(f.codes.len(), ALL.len());
     for row in &f.codes {
         let code: SandboxErrorCode =
             serde_json::from_value(Value::String(row.code.clone())).expect("row code is a variant");
@@ -79,6 +81,21 @@ fn every_code_has_a_fixture_row() {
             "no fixture row for {}",
             c.as_str()
         );
+    }
+}
+
+/// The build codes keep the categories section 6.5 of the explicit VM mode spec gives them.
+#[test]
+fn build_codes_have_their_categories() {
+    for (code, error_type) in [
+        (S507, "execution"),
+        (S508, "validation"),
+        (S509, "validation"),
+    ] {
+        let p = error_payload(code, "x", None, None);
+        assert_eq!(p["type"], error_type, "{}", code.as_str());
+        assert_eq!(p["retryable"], false, "{}", code.as_str());
+        assert_eq!(code_of(&p.to_string()), Some(code));
     }
 }
 
@@ -190,6 +207,22 @@ fn requests_ignore_unknown_fields() {
     from_value::<ListRequest>(json!({"show_all": true})).expect("ListRequest");
     from_value::<CatalogListRequest>(json!({"x": 1})).expect("CatalogListRequest");
     from_value::<StopRequest>(json!({"sandbox_id": "s", "extra": 1})).expect("StopRequest");
+}
+
+/// A field a later minor adds to a `worker::*` request is ignored, as a 1.2 adapter ignores
+/// `build`.
+#[test]
+fn worker_requests_ignore_unknown_fields() {
+    let with_extra = |name: &str| {
+        let mut example = wire_examples().remove(name).unwrap();
+        example
+            .as_object_mut()
+            .unwrap()
+            .insert("added_in_a_later_minor".into(), json!({"x": 1}));
+        example
+    };
+    from_value::<WorkerStartRequest>(with_extra("WorkerStartRequest")).expect("WorkerStartRequest");
+    from_value::<WorkerBuildRequest>(with_extra("WorkerBuildRequest")).expect("WorkerBuildRequest");
 }
 
 #[test]
@@ -346,7 +379,82 @@ fn router_info_unbound_json() {
     };
     assert_eq!(
         to_value(unbound).unwrap(),
-        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 2}, "info": null})
+        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 3}, "info": null})
+    );
+}
+
+fn wire_examples() -> BTreeMap<String, Value> {
+    serde_json::from_str(include_str!("fixtures/wire_examples.json")).expect("fixture parses")
+}
+
+#[test]
+fn contract_1_3_announces_build() {
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 3));
+    assert_eq!(FEATURE_BUILD, "worker.build");
+
+    let examples = wire_examples();
+    let version: ContractVersion = from_value(examples["ContractVersion"].clone()).unwrap();
+    assert_eq!(
+        (version.major, version.minor),
+        (CONTRACT_MAJOR, CONTRACT_MINOR)
+    );
+    let info: AdapterInfo = from_value(examples["AdapterInfo"].clone()).unwrap();
+    assert_eq!(
+        (info.contract.major, info.contract.minor),
+        (CONTRACT_MAJOR, CONTRACT_MINOR)
+    );
+    assert!(info.supports(FEATURE_BUILD));
+}
+
+/// A 1.2 peer sends none of the 1.3 fields; each reads as "not there".
+#[test]
+fn fields_added_in_1_3_read_as_absent_from_an_older_peer() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.3.0",
+        "contract": {"major": 1, "minor": 2},
+        "features": [FEATURE_SCOPED_AUTH, FEATURE_LOGS_FROM_END]
+    }))
+    .unwrap();
+    assert!(!info.supports(FEATURE_BUILD));
+
+    let start: WorkerStartRequest = from_value(json!({
+        "auth": "tok",
+        "state_key": "k",
+        "worker_name": "w",
+        "source": {"kind": "bundle", "package": "b", "host_path": "/c"},
+        "env": {},
+        "engine_url": "ws://127.0.0.1:49134"
+    }))
+    .unwrap();
+    assert!(start.build.is_none());
+    assert!(to_value(&start).unwrap().get("build").is_none());
+}
+
+/// `logs` is required: a build without a reader would have nothing bounding it.
+#[test]
+fn worker_build_request_requires_logs() {
+    let mut example = wire_examples().remove("WorkerBuildRequest").unwrap();
+    let request: WorkerBuildRequest = from_value(example.clone()).unwrap();
+    assert!(matches!(request.logs.direction, ChannelDirection::Write));
+
+    example.as_object_mut().unwrap().remove("logs");
+    let error = from_value::<WorkerBuildRequest>(example).unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `logs`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn base_image_digest_is_omitted_when_unknown() {
+    let base = BaseImageRef {
+        reference: "docker.io/iiidev/node:latest".into(),
+        digest: None,
+    };
+    assert_eq!(
+        to_value(base).unwrap(),
+        json!({"reference": "docker.io/iiidev/node:latest"})
     );
 }
 
@@ -489,8 +597,7 @@ macro_rules! round_trip_by_name {
 
 #[test]
 fn wire_examples_round_trip() {
-    let examples: BTreeMap<String, Value> =
-        serde_json::from_str(include_str!("fixtures/wire_examples.json")).expect("fixture parses");
+    let examples = wire_examples();
 
     // Types declared in info.rs and worker.rs; the fixture needs one example for each.
     let declared: BTreeSet<String> = [
@@ -517,7 +624,11 @@ fn wire_examples_round_trip() {
             RouterInfo,
             WorkerPrepareRequest,
             WorkerPrepareResponse,
+            WorkerBuildRequest,
+            WorkerBuildResponse,
+            BaseImageRef,
             WorkerStartRequest,
+            WorkerBuildRef,
             WorkerSource,
             WorkerStartResponse,
             WorkerStatusRequest,

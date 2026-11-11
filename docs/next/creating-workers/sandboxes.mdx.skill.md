@@ -870,6 +870,12 @@ links to the matching entry below.
 - <a id="S504"></a>**S504** (validation): VmNotFound: no VM with this vm_id
 - <a id="S505"></a>**S505** (validation): Unauthorized: the request auth token does not match
 - <a id="S506"></a>**S506** (transient): PrepareFailed: worker::prepare failed; retry
+- <a id="S507"></a>**S507** (execution): BuildFailed: scripts.setup or scripts.install exited
+  non-zero, or the image could not be written; the message carries the tail of the output
+- <a id="S508"></a>**S508** (validation): BuildMismatch: worker::start's build.build_id does not
+  match the image in build_dir, or its image.id is missing; build again
+- <a id="S509"></a>**S509** (validation): BuildInProgress: a build for this state_key is already
+  running
 
 <Note>The codes belong to the sandbox contract, not to one worker.</Note>
 ````
