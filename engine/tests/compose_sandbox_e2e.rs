@@ -174,8 +174,10 @@ struct Project {
 impl Project {
     /// `containers` is the operator's share of the `containers:` mapping, each
     /// entry indented two spaces. The adapter follows exactly as Compose writes
-    /// it, pre-declared because `up` would resolve `^0.3` against the live
-    /// registry, which a required check cannot depend on (D5).
+    /// it, pre-declared because `up` would resolve `^0.4` against the live
+    /// registry, which a required check cannot depend on (D5). With
+    /// [`LOCAL_ADAPTER`] (`III_E2E_SANDBOX_LIBKRUN`) set, it is a `path://`
+    /// adapter running that binary instead.
     fn new(containers: &str) -> Self {
         let Some(binary) = std::env::var_os(LOCAL_ADAPTER) else {
             return Self::declaring(&format!(
