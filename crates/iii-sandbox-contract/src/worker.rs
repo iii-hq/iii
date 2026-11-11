@@ -58,8 +58,8 @@ pub enum WorkerSource {
     Bundle {
         /// Manifest name, not the container key.
         package: String,
-        /// The container's directory in the project's `.workers/`,
-        /// `<project>/.workers/<container>`. `worker::build` copies it into the image; a
+        /// The container's directory in the project's `.iii/workers/`,
+        /// `<project>/.iii/workers/<container>`. `worker::build` copies it into the image; a
         /// `worker::start` with `build` does not mount it. Before contract 1.3 it was the bundle
         /// in Compose's package cache.
         host_path: String,
@@ -109,7 +109,7 @@ pub struct WorkerBuildRequest {
     /// Container key, for logs and errors.
     pub worker_name: String,
     pub source: WorkerSource,
-    /// Absolute host directory of the build: `<project>/.build/<container>`. Must be under the
+    /// Absolute host directory of the build: `<project>/.iii/build/<container>`. Must be under the
     /// adapter's host roots. The adapter writes `image.erofs` there through a temporary file
     /// and a rename.
     pub output_dir: String,
