@@ -547,8 +547,8 @@ const WORKERS_LOCK_FILE: &str = ".lock";
 ///   when it is missing or damaged. The cache itself is only read. Its entry leaves
 ///   `.packages.json` before it is replaced, and comes back once the copy is in place: a
 ///   replacement that never finished is copied again by the next run, never taken for the
-///   package it replaced. The tree it replaced stays aside, for a host process that still runs
-///   from it, until the next run.
+///   package it replaced. An entry whose directory is gone leaves the file before any copy.
+///   The tree it replaced stays aside until the next run: see [`replace_directory`].
 /// - A directory made again for the artifact it held (it was gone, or `.packages.json` could
 ///   not be read) loses what a host build wrote into it, so that build's record
 ///   (`.build/<container>/build.json` without `image`, made from this same package) is deleted
@@ -629,6 +629,7 @@ pub(crate) async fn materialize_project_checked(
 
     // A directory that is gone takes its entry with it, so a failure below leaves no entry
     // naming a package that is not on disk.
+    let found = previous.containers.len();
     let mut record = ProjectPackages {
         containers: previous
             .containers
@@ -641,6 +642,11 @@ pub(crate) async fn materialize_project_checked(
             .collect(),
         ..ProjectPackages::default()
     };
+    // On disk too, before any directory changes: an entry whose directory is gone must not
+    // outlive a copy that this run starts and does not finish.
+    if record.containers.len() != found {
+        write_project_packages(&workers, &record)?;
+    }
     let mut failure = None;
     for (container, (resolved, package)) in &wanted {
         if record.containers.get(container) == Some(package) {
@@ -777,9 +783,11 @@ async fn copy_package(
 
 /// Copies `source` beside `destination`, then swaps the copy into place: the old directory is
 /// renamed aside first, so `destination` is only ever missing between two renames. The old tree
-/// stays aside, whole: a host bundle that still runs from it keeps reading its files until it
-/// stops, and keeps them if what replaced it fails to start. The next run prunes it, with any
-/// leftover staging copy ([`prune_packages`]).
+/// stays aside, whole, until the next materialization prunes it with any leftover staging copy
+/// ([`prune_packages`]), whether a process still runs from it or not. A host bundle that runs
+/// through the swap keeps what it reads relative to its working directory, which moved with the
+/// rename; what it resolves through an absolute path (`III_PACKAGE_DIR`, Node's `require`,
+/// Python's `sys.path`) reads the new tree.
 fn replace_directory(
     source: &Path,
     destination: &Path,
@@ -3175,77 +3183,85 @@ mod tests {
     }
 
     /// A directory about to be replaced has no `.packages.json` entry until its copy is in
-    /// place, so a run stopped in between leaves nothing the next one would skip.
+    /// place, so a run stopped in between leaves nothing the next one would skip: neither when
+    /// it held the previous package, nor when it was gone and only its entry was left.
     #[tokio::test]
     async fn a_directory_being_replaced_has_no_entry_until_its_copy_is_in_place() {
         use wiremock::{Mock, ResponseTemplate, matchers};
 
-        let server = wiremock::MockServer::start().await;
-        let project = tempfile::tempdir().unwrap();
-        let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
-        let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
-        let lock = locked_from(
-            project.path(),
-            cache.path(),
-            &[("state", "1.0.0", &state)],
-            &server.uri(),
-        )
-        .await;
-        materialize_project(project.path(), cache.path(), &lock)
-            .await
-            .unwrap();
-        let lock = locked_from(
-            project.path(),
-            cache.path(),
-            &[("state", "1.1.0", &updated)],
-            &server.uri(),
-        )
-        .await;
-        // Damaged in the cache, so the copy downloads it again: the download sees the project
-        // as a run stopped there would leave it.
-        std::fs::write(
-            cache_entry(cache.path(), &lock, "state").join("lib/data.txt"),
-            "damaged",
-        )
-        .unwrap();
-        // What the project holds while the copy downloads: the entries, and the directory's data.
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let (record, data, seen_in, body) = (
-            workers.join(".packages.json"),
-            workers.join("state/lib/data.txt"),
-            std::sync::Arc::clone(&seen),
-            updated.clone(),
-        );
-        Mock::given(matchers::method("GET"))
-            .and(matchers::path("/state-1.1.0"))
-            .respond_with(move |_: &wiremock::Request| {
-                let entries: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
-                let held = std::fs::read_to_string(&data).unwrap_or_default();
-                seen_in.lock().unwrap().push((entries, held));
-                ResponseTemplate::new(200).set_body_bytes(body.clone())
-            })
-            .mount(&server)
+        for gone in [false, true] {
+            let server = wiremock::MockServer::start().await;
+            let project = tempfile::tempdir().unwrap();
+            let cache = tempfile::tempdir().unwrap();
+            let workers = project.path().join(".workers");
+            let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
+            let lock = locked_from(
+                project.path(),
+                cache.path(),
+                &[("state", "1.0.0", &state)],
+                &server.uri(),
+            )
             .await;
-
-        materialize_project(project.path(), cache.path(), &lock)
-            .await
+            materialize_project(project.path(), cache.path(), &lock)
+                .await
+                .unwrap();
+            let lock = locked_from(
+                project.path(),
+                cache.path(),
+                &[("state", "1.1.0", &updated)],
+                &server.uri(),
+            )
+            .await;
+            if gone {
+                // Gone, as a manual delete or an older version can leave it: only its entry is left.
+                std::fs::remove_dir_all(workers.join("state")).unwrap();
+            }
+            // Damaged in the cache, so the copy downloads it again: the download sees the project
+            // as a run stopped there would leave it.
+            std::fs::write(
+                cache_entry(cache.path(), &lock, "state").join("lib/data.txt"),
+                "damaged",
+            )
             .unwrap();
+            // What the project holds while the copy downloads: the entries, and the directory's data.
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let (record, data, seen_in, body) = (
+                workers.join(".packages.json"),
+                workers.join("state/lib/data.txt"),
+                std::sync::Arc::clone(&seen),
+                updated.clone(),
+            );
+            Mock::given(matchers::method("GET"))
+                .and(matchers::path("/state-1.1.0"))
+                .respond_with(move |_: &wiremock::Request| {
+                    let entries: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+                    let held = std::fs::read_to_string(&data).unwrap_or_default();
+                    seen_in.lock().unwrap().push((entries, held));
+                    ResponseTemplate::new(200).set_body_bytes(body.clone())
+                })
+                .mount(&server)
+                .await;
 
-        let seen = seen.lock().unwrap();
-        assert_eq!(seen.len(), 1, "the copy downloaded once");
-        assert_eq!(seen[0].1, "state 1", "the old directory is still in place");
-        assert_eq!(
-            seen[0].0["containers"].get("state"),
-            None,
-            "{:?}",
-            seen[0].0
-        );
-        assert_eq!(
-            recorded(project.path())["containers"]["state"],
-            serde_json::json!({ "name": "state", "version": "1.1.0", "sha256": sha256_of(&updated) })
-        );
+            materialize_project(project.path(), cache.path(), &lock)
+                .await
+                .unwrap();
+
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen.len(), 1, "the copy downloaded once");
+            let held = if gone { "" } else { "state 1" };
+            assert_eq!(seen[0].1, held, "the old directory is as it was");
+            assert_eq!(
+                seen[0].0["containers"].get("state"),
+                None,
+                "{:?}",
+                seen[0].0
+            );
+            assert_eq!(
+                recorded(project.path())["containers"]["state"],
+                serde_json::json!({ "name": "state", "version": "1.1.0", "sha256": sha256_of(&updated) })
+            );
+        }
     }
 
     #[tokio::test]
