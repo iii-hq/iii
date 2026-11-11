@@ -2068,6 +2068,7 @@ containers:
     }
 
     /// What `sh -c` reads back is the command as it was written.
+    #[cfg(unix)]
     #[test]
     fn the_wrapped_command_is_single_quoted_for_sh() {
         for command in ["python main.py", "echo 'hi' && echo \"$HOME\"", "a'b''c"] {
