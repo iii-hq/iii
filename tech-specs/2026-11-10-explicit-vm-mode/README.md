@@ -674,11 +674,13 @@ recorded it (section 6.2), and a record counts only under the project token that
 new state directory brings a new `state.json` and a new project token, so the old VMs'
 records stop counting and no build gets `S505`. A VM's `state_key` can change while its token
 survives: the same `state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`,
-or state moved or copied together with its token. The old VM's record then still holds the
-container's build directory, and the new VM's build and start get `S505` there; the message
-names the way out: destroy the old VM, or delete its record,
+or state moved or copied together with its token to another `III_COMPOSE_STATE_DIR`, while
+the compose file, and so the container's build directory, stays where it is. The old VM's
+record then still holds the container's build directory, and the new VM's build and start get
+`S505` there; the message names the way out: destroy the old VM, or delete its record,
 `~/.iii/sandbox/workers/<vm_id>/build-dir`. Moving a container's build directory needs
-nothing: its next build or start records the new one and releases the old.
+nothing: its next build or start records the new one and releases the old. Moving or copying
+the whole project changes the build directory too, and nothing gets `S505`.
 
 ## 8. CLI
 
