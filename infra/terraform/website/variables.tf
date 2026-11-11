@@ -34,6 +34,12 @@ variable "search_api_origin" {
   default     = "iii-docs.vercel.app"
 }
 
+variable "subscribe_origin" {
+  description = "iii Cloud hostname of the email signup API (services/subscribe) that /api/subscribe is proxied to"
+  type        = string
+  default     = "iii.iii.cloud"
+}
+
 variable "alarm_email" {
   description = "Email address that receives SNS notifications for production alarms"
   type        = string
