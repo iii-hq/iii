@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Prepare every registry package in a compose file without starting anything: lock it,
-//! download it into the shared cache, and copy it into the project's `.workers/` (spec 7.5).
+//! download it into the shared cache, and copy it into the project's `.iii/workers/` (spec 7.5).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -38,7 +38,7 @@ struct PackageRequest {
 }
 
 /// Lock and download every `package://` container declared by `file` into the
-/// cache shared with `compose::up`, then copy each into `.workers/<container>/`
+/// cache shared with `compose::up`, then copy each into `.iii/workers/<container>/`
 /// beside the file. Not frozen, it first migrates the containers 0.26 ran in a
 /// VM (spec 7.3).
 pub async fn build(file: &Path) -> Result<BuildReport> {
@@ -144,14 +144,14 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     if prepared.changed() {
         report::lock_changed(prepared.path(), !prepared.existed());
     }
-    // `.workers/` follows the lock just written, under `--frozen` too (spec 7.5).
+    // `.iii/workers/` follows the lock just written, under `--frozen` too (spec 7.5).
     // The daemon materializes too, and may have changed the file or the lock
-    // since this build read them: checked again under `.workers/.lock`, every
-    // time, so a stale build never undoes the daemon's newer `.workers/`.
+    // since this build read them: checked again under `.iii/workers/.lock`, every
+    // time, so a stale build never undoes the daemon's newer `.iii/workers/`.
     // The lock must still be the one this build stands on: the one it found
     // when it wrote none, or, when it wrote one, a lock resolving every
     // container to the package it wrote. A build that wrote nothing compares
-    // the lock alone, since `.workers/` follows the lock: an edit of the file
+    // the lock alone, since `.iii/workers/` follows the lock: an edit of the file
     // made meanwhile is kept and fails nothing. One that wrote also compares
     // the file with what it wrote.
     let wrote = edited != text || prepared.changed();
@@ -207,7 +207,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
 }
 
 /// Whether the lock at `path` resolves the same containers to the same packages as
-/// `prepared`: what this build wrote, in the part `.workers/` is made from. Compared
+/// `prepared`: what this build wrote, in the part `.iii/workers/` is made from. Compared
 /// parsed, so the check does not depend on re-reading the bytes it wrote; a lock that is
 /// missing or does not parse holds nothing.
 fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock) -> Result<bool> {
@@ -495,7 +495,7 @@ mod tests {
 
     fn recorded_containers(project: &Path) -> Vec<String> {
         let packages: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(project.join(".workers/.packages.json")).unwrap(),
+            &std::fs::read(project.join(".iii/workers/.packages.json")).unwrap(),
         )
         .unwrap();
         packages["containers"]
@@ -533,7 +533,7 @@ mod tests {
 
         assert_eq!(report.packages, 1);
         assert!(project.path().join("worker-compose.lock").is_file());
-        assert!(project.path().join(".workers/state/worker").is_file());
+        assert!(project.path().join(".iii/workers/state/worker").is_file());
         assert_eq!(recorded_containers(project.path()), ["state"]);
     }
 
@@ -578,13 +578,13 @@ mod tests {
         assert!(
             project
                 .path()
-                .join(".workers/app/iii.worker.yaml")
+                .join(".iii/workers/app/iii.worker.yaml")
                 .is_file()
         );
         assert!(
             project
                 .path()
-                .join(".workers/sandbox-libkrun/sandbox-libkrun")
+                .join(".iii/workers/sandbox-libkrun/sandbox-libkrun")
                 .is_file()
         );
     }

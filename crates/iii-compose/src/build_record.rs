@@ -4,12 +4,13 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! `.build/<container>/build.json`: what a container's last build was made from (spec 5.4), and
-//! the comparison that tells whether that build is out of date (spec 5.5).
+//! `.iii/build/<container>/build.json`: what a container's last build was made from (spec 5.4),
+//! and the comparison that tells whether that build is out of date (spec 5.5).
 //!
-//! Both project directories sit beside the compose file (spec 3.2): `.build/<container>/` holds
-//! a container's build, `.workers/<container>/` the copy of its package. Each gets a
-//! `.gitignore` of `*` from Compose, so a project stays clean without editing its own.
+//! Both project directories sit in the `.iii/` beside the compose file (spec 3.2), wherever
+//! `III_COMPOSE_STATE_DIR` puts Compose's state: `.iii/build/<container>/` holds a container's
+//! build, `.iii/workers/<container>/` the copy of its package. Each gets a `.gitignore` of `*`
+//! from Compose, so a project stays clean without editing its own.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -27,10 +28,12 @@ pub const SCHEMA: u32 = 1;
 
 /// The record's file name in a build directory.
 pub(crate) const BUILD_FILE: &str = "build.json";
-/// Beside the compose file: one package directory per container (spec 3.2).
-pub(crate) const WORKERS_DIR: &str = ".workers";
-/// Beside the compose file: one build directory per container (spec 3.2).
-pub(crate) const BUILDS_DIR: &str = ".build";
+/// Beside the compose file: the project's `.iii/`, which holds [`WORKERS_DIR`] and [`BUILDS_DIR`].
+const III_DIR: &str = ".iii";
+/// In [`III_DIR`]: one package directory per container (spec 3.2).
+const WORKERS_DIR: &str = "workers";
+/// In [`III_DIR`]: one build directory per container (spec 3.2).
+const BUILDS_DIR: &str = "build";
 /// What Compose writes to the `.gitignore` of [`WORKERS_DIR`] and [`BUILDS_DIR`].
 const IGNORE_ALL: &[u8] = b"*\n";
 
@@ -164,12 +167,13 @@ pub fn read(build_dir: &Path) -> Result<Option<BuildRecord>> {
 /// Writes `<build_dir>/build.json` atomically: `build.json.tmp-<id>`, unique to the writer,
 /// then a rename. The `build.json.tmp*` an interrupted write left are removed first.
 ///
-/// Creates `build_dir`, and the `.gitignore` of its `.build/` when there is none yet (spec
-/// 3.2). Only a parent named `.build` gets one: a `build_dir` elsewhere leaves its parent alone.
+/// Creates `build_dir`, and the `.gitignore` of its `.iii/build/` when there is none yet (spec
+/// 3.2). Only a parent that is a `.iii/build` gets one: a `build_dir` elsewhere leaves its parent
+/// alone.
 pub fn write(build_dir: &Path, record: &BuildRecord) -> Result<()> {
     if let Some(builds) = build_dir
         .parent()
-        .filter(|parent| parent.file_name() == Some(std::ffi::OsStr::new(BUILDS_DIR)))
+        .filter(|parent| parent.ends_with(Path::new(III_DIR).join(BUILDS_DIR)))
     {
         ignore_all(builds)?;
     }
@@ -215,11 +219,12 @@ fn remove_temporary_files(build_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The container's current source: `.workers/.packages.json` beside `compose_file`, or the file.
+/// The container's current source: `.iii/workers/.packages.json` beside `compose_file`, or the
+/// file.
 ///
 /// The compose file says which kind the container is. A `path://` gives its directory as
 /// declared (`${VAR}` expanded, as Compose reads it). A `package://` gives the package that
-/// `.workers/<container>/` holds, as `.workers/.packages.json` records it, and is
+/// `.iii/workers/<container>/` holds, as `.iii/workers/.packages.json` records it, and is
 /// `PACKAGE_NOT_INSTALLED` until `materialize_project` copied it there.
 pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
     let worker = declared_worker(compose_file, container)?;
@@ -323,22 +328,32 @@ pub fn changes(
     Ok(changes)
 }
 
-/// `<compose dir>/.build/<container>`, the container's build directory.
+/// `<compose dir>/.iii/build`, the project's build directories (spec 3.2).
+pub(crate) fn builds_root(compose_dir: &Path) -> PathBuf {
+    compose_dir.join(III_DIR).join(BUILDS_DIR)
+}
+
+/// `<compose dir>/.iii/workers`, the project's package directories (spec 3.2).
+pub(crate) fn workers_root(compose_dir: &Path) -> PathBuf {
+    compose_dir.join(III_DIR).join(WORKERS_DIR)
+}
+
+/// `<compose dir>/.iii/build/<container>`, the container's build directory.
 ///
 /// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
 pub fn build_dir(compose_dir: &Path, container: &str) -> PathBuf {
-    compose_dir.join(BUILDS_DIR).join(container)
+    builds_root(compose_dir).join(container)
 }
 
-/// `<compose dir>/.workers/<container>`, the container's package directory.
+/// `<compose dir>/.iii/workers/<container>`, the container's package directory.
 ///
 /// `container` is joined as it is: the caller checks it with [`is_directory_name`] first.
 pub fn package_dir(compose_dir: &Path, container: &str) -> PathBuf {
-    compose_dir.join(WORKERS_DIR).join(container)
+    workers_root(compose_dir).join(container)
 }
 
-/// Whether a container key can name its own directory in `.build/` and `.workers/`: one plain
-/// path component, not hidden, so it can neither leave them nor collide with Compose's own
+/// Whether a container key can name its own directory in `.iii/build/` and `.iii/workers/`: one
+/// plain path component, not hidden, so it can neither leave them nor collide with Compose's own
 /// files there. The compose file does not check its keys for this, so every caller that joins a
 /// key into one of these directories ([`build_dir`], [`package_dir`]) checks it first.
 pub(crate) fn is_directory_name(container: &str) -> bool {
@@ -349,7 +364,7 @@ pub(crate) fn is_directory_name(container: &str) -> bool {
         && components.next().is_none()
 }
 
-/// The directory of `compose_file`, where `.build/` and `.workers/` sit.
+/// The directory of `compose_file`, whose `.iii/` holds `build/` and `workers/`.
 pub(crate) fn compose_dir(compose_file: &Path) -> &Path {
     compose_file
         .parent()
@@ -561,11 +576,11 @@ mod tests {
         let project = Path::new("/project");
         assert_eq!(
             build_dir(project, "link"),
-            Path::new("/project/.build/link")
+            Path::new("/project/.iii/build/link")
         );
         assert_eq!(
             package_dir(project, "onboarding"),
-            Path::new("/project/.workers/onboarding")
+            Path::new("/project/.iii/workers/onboarding")
         );
     }
 
@@ -613,10 +628,10 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    /// `.workers/.packages.json` holding `onboarding` at `version`.
+    /// `.iii/workers/.packages.json` holding `onboarding` at `version`.
     fn record_package(project: &Path, version: &str, sha256: &str) {
         write_file(
-            &project.join(".workers/.packages.json"),
+            &project.join(".iii/workers/.packages.json"),
             &serde_json::json!({
                 "schema": 1,
                 "containers": {
@@ -765,26 +780,29 @@ mod tests {
     #[test]
     fn write_adds_the_gitignore_of_an_existing_build_directory_only() {
         let dir = tempfile::tempdir().unwrap();
-        // A project that already had builds, and no `.gitignore` in `.build/`.
-        write_file(&dir.path().join(".build/api/old.txt"), "old");
+        // A project that already had builds, and no `.gitignore` in `.iii/build/`.
+        write_file(&dir.path().join(".iii/build/api/old.txt"), "old");
         let record = vm_record(path_source("./link"), None);
         write(&build_dir(dir.path(), "link"), &record).unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(".build/.gitignore")).unwrap(),
+            std::fs::read_to_string(dir.path().join(".iii/build/.gitignore")).unwrap(),
             "*\n"
         );
 
         // One written by hand is kept.
-        std::fs::write(dir.path().join(".build/.gitignore"), "image.erofs\n").unwrap();
+        std::fs::write(dir.path().join(".iii/build/.gitignore"), "image.erofs\n").unwrap();
         write(&build_dir(dir.path(), "api"), &record).unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(".build/.gitignore")).unwrap(),
+            std::fs::read_to_string(dir.path().join(".iii/build/.gitignore")).unwrap(),
             "image.erofs\n"
         );
 
-        // A build directory outside `.build/` leaves its parent alone.
+        // A build directory outside `.iii/build/` leaves its parent alone, even one named `build`.
         write(&dir.path().join("elsewhere/link"), &record).unwrap();
         assert!(!dir.path().join("elsewhere/.gitignore").exists());
+        write(&dir.path().join("build/link"), &record).unwrap();
+        assert!(!dir.path().join("build/.gitignore").exists());
+        assert!(!dir.path().join(".gitignore").exists());
     }
 
     #[test]
@@ -813,7 +831,7 @@ mod tests {
         assert_eq!(
             source(&file, "onboarding").unwrap_err().code(),
             "PACKAGE_NOT_INSTALLED",
-            "no .workers/ yet"
+            "no .iii/workers/ yet"
         );
 
         record_package(dir.path(), "0.2.0", "sha256:8c3406");
@@ -823,13 +841,13 @@ mod tests {
         );
 
         write_file(
-            &dir.path().join(".workers/.packages.json"),
+            &dir.path().join(".iii/workers/.packages.json"),
             "{\"schema\": 1",
         );
         let error = source(&file, "onboarding").unwrap_err();
         assert!(error.to_string().contains(".packages.json"), "{error}");
         write_file(
-            &dir.path().join(".workers/.packages.json"),
+            &dir.path().join(".iii/workers/.packages.json"),
             "{\"schema\": 2, \"packages\": []}",
         );
         let error = source(&file, "onboarding").unwrap_err();

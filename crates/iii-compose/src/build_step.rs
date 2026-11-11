@@ -98,7 +98,7 @@ impl Drop for Registered {
     }
 }
 
-/// What this process knows of one `.build/<container>`.
+/// What this process knows of one `.iii/build/<container>`.
 #[derive(Default)]
 struct Entry {
     /// Who decides on and runs its build now: see [`Slot`].
@@ -125,7 +125,7 @@ fn with_entry<T>(dir: &Path, f: impl FnOnce(&mut Entry) -> T) -> T {
 }
 
 /// The right to decide whether container `key` builds, and to run that build. A start, a rebuild
-/// and `compose::build` each hold it from [`due`] to the end of the build, so one `.build/<c>`
+/// and `compose::build` each hold it from [`due`] to the end of the build, so one `.iii/build/<c>`
 /// never has two builds at once: the second would write over the first, or meet S509.
 pub(crate) struct Slot {
     dir: PathBuf,
@@ -213,12 +213,12 @@ fn compose_dir(compose_file: &Path) -> PathBuf {
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-/// `.build/<container>` beside the compose file.
+/// `.iii/build/<container>` beside the compose file.
 pub(crate) fn build_dir(compose_file: &Path, key: &str) -> PathBuf {
     crate::build_record::build_dir(&compose_dir(compose_file), key)
 }
 
-/// What container `key` is built from: its `path://` directory, or its `.workers/<container>/`.
+/// What container `key` is built from: its `path://` directory, or its `.iii/workers/<container>/`.
 pub(crate) fn worker_dir(compose_file: &Path, key: &str, container: &Container) -> PathBuf {
     container.worker_dir().map_or_else(
         || crate::build_record::package_dir(&compose_dir(compose_file), key),
@@ -527,8 +527,8 @@ pub(crate) async fn run(
     }
 }
 
-/// `.build/<container>/`, and `.build/.gitignore` with `*`, so the project's own `.gitignore`
-/// needs no edit (spec 3.2).
+/// `.iii/build/<container>/`, and `.iii/build/.gitignore` with `*`, so the project's own
+/// `.gitignore` needs no edit (spec 3.2).
 fn prepare_build_dir(dir: &Path) -> Result<()> {
     let io = |path: &Path| {
         let path = path.to_path_buf();
@@ -767,7 +767,7 @@ mod tests {
             message: "[build] warned".into()
         }));
         assert_eq!(
-            std::fs::read_to_string(project.dir.path().join(".build/.gitignore")).unwrap(),
+            std::fs::read_to_string(project.dir.path().join(".iii/build/.gitignore")).unwrap(),
             "*\n"
         );
     }
@@ -781,7 +781,7 @@ mod tests {
             project.build(None, None).await,
             Outcome::Built { build_id: None }
         );
-        assert!(!project.dir.path().join(".build").exists());
+        assert!(!project.dir.path().join(".iii/build").exists());
     }
 
     /// Spec 4.1: another command fails as `EXIT_<status>` with its last 20 lines, and the start
@@ -1010,7 +1010,7 @@ mod tests {
         );
     }
 
-    /// One build at a time per `.build/<container>`: a second taker waits for the first, the
+    /// One build at a time per `.iii/build/<container>`: a second taker waits for the first, the
     /// wait gives way to a cancel, and another container's slot is free meanwhile.
     #[tokio::test]
     async fn one_build_slot_per_directory_and_its_wait_gives_way_to_a_cancel() {

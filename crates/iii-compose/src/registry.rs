@@ -468,12 +468,12 @@ pub async fn install_resolved(
     })
 }
 
-/// `.workers/.packages.json`: which artifact each package directory holds (spec 3.2, 11.2).
+/// `.iii/workers/.packages.json`: which artifact each package directory holds (spec 3.2, 11.2).
 pub(crate) const PROJECT_PACKAGES_FILE: &str = ".packages.json";
 /// The `schema` of the `.packages.json` this version writes and reads.
 const PROJECT_PACKAGES_SCHEMA: u32 = 1;
 
-/// `.workers/.packages.json`: `{ "schema": 1, "containers": { <container>: { name, version,
+/// `.iii/workers/.packages.json`: `{ "schema": 1, "containers": { <container>: { name, version,
 /// sha256 } } }`. It sits outside the package directories, so no guest can write it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProjectPackages {
@@ -490,7 +490,7 @@ impl Default for ProjectPackages {
     }
 }
 
-/// The artifact one `.workers/<container>/` holds.
+/// The artifact one `.iii/workers/<container>/` holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ProjectPackage {
     /// The package; for an alias, the package it stands for, as the cache names it.
@@ -514,11 +514,9 @@ impl ProjectPackage {
     }
 }
 
-/// Reads `.workers/.packages.json` of the project in `compose_dir`; `None` when there is none.
+/// Reads `.iii/workers/.packages.json` of the project in `compose_dir`; `None` when there is none.
 pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<ProjectPackages>> {
-    let path = compose_dir
-        .join(crate::build_record::WORKERS_DIR)
-        .join(PROJECT_PACKAGES_FILE);
+    let path = crate::build_record::workers_root(compose_dir).join(PROJECT_PACKAGES_FILE);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -533,29 +531,29 @@ pub(crate) fn read_project_packages(compose_dir: &Path) -> Result<Option<Project
     .map(Some)
 }
 
-/// The lock file in `.workers/` that one materialization holds at a time.
+/// The lock file in `.iii/workers/` that one materialization holds at a time.
 const WORKERS_LOCK_FILE: &str = ".lock";
 
-/// Makes `.workers/` match the lock: copies missing or changed packages from the cache, removes
-/// the directories of containers no longer locked, rewrites `.workers/.packages.json`.
+/// Makes `.iii/workers/` match the lock: copies missing or changed packages from the cache, removes
+/// the directories of containers no longer locked, rewrites `.iii/workers/.packages.json`.
 ///
 /// - One run at a time per project: the daemon and `iii compose build` both materialize, so a
-///   run holds `.workers/.lock` from its first change to its last, its disk jobs included.
+///   run holds `.iii/workers/.lock` from its first change to its last, its disk jobs included.
 /// - A directory whose `.packages.json` entry matches the lock is left as it is, with whatever
 ///   a host build wrote into it. Any other is replaced whole by a copy of the cache entry, made
 ///   beside it and renamed into place; the cache entry is verified first, and downloaded again
 ///   when it is missing or damaged. The cache itself is only read.
 /// - A directory made again for the artifact it held (it was gone, or `.packages.json` could
 ///   not be read) loses what a host build wrote into it, so that build's record
-///   (`.build/<container>/build.json` without `image`, made from this same package) is deleted
+///   (`.iii/build/<container>/build.json` without `image`, made from this same package) is deleted
 ///   first, and the container gets its first build again (spec 5.2). A package update keeps
 ///   the record: its source no longer matches, `build_record::changes` reports it, and the
 ///   container rebuilds as spec 5.3 says. A VM build keeps its record: its image holds its own
 ///   copy of the package.
 /// - Only what Compose made is removed: the directories `.packages.json` recorded for containers
 ///   no longer locked, and the temporary copies and files an interrupted run left. Anything
-///   else in `.workers/` stays.
-/// - A project with no package and no `.workers/` gets none.
+///   else in `.iii/workers/` stays.
+/// - A project with no package and no `.iii/workers/` gets none.
 pub async fn materialize_project(
     compose_dir: &Path,
     cache_root: &Path,
@@ -564,7 +562,7 @@ pub async fn materialize_project(
     materialize_project_checked(compose_dir, cache_root, lock, || Ok(())).await
 }
 
-/// [`materialize_project`], calling `check` before anything changes, once `.workers/.lock` is
+/// [`materialize_project`], calling `check` before anything changes, once `.iii/workers/.lock` is
 /// held: `iii compose build` makes sure there that the compose file and the lock it worked from
 /// are still the ones on disk, so a stale build never undoes the daemon's newer copy.
 pub(crate) async fn materialize_project_checked(
@@ -573,7 +571,7 @@ pub(crate) async fn materialize_project_checked(
     lock: &PreparedLock,
     check: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
-    let workers = compose_dir.join(crate::build_record::WORKERS_DIR);
+    let workers = crate::build_record::workers_root(compose_dir);
     let mut wanted = BTreeMap::new();
     for (container, resolved) in lock.packages() {
         if !crate::build_record::is_directory_name(container) {
@@ -581,7 +579,7 @@ pub(crate) async fn materialize_project_checked(
                 path: workers.join(container),
                 source: std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
-                    format!("container key '{container}' cannot name a directory in .workers/"),
+                    format!("container key '{container}' cannot name a directory in .iii/workers/"),
                 ),
             });
         }
@@ -595,9 +593,9 @@ pub(crate) async fn materialize_project_checked(
     }
     std::fs::create_dir_all(&workers).map_err(io_error(&workers))?;
     // Shared with every disk job below: a job outlives a dropped future until it next checks
-    // its cancellation, and must not meet another run in `.workers/` meanwhile.
+    // its cancellation, and must not meet another run in `.iii/workers/` meanwhile.
     let guard = std::sync::Arc::new(lock_exclusive(&workers.join(WORKERS_LOCK_FILE)).await?);
-    // Before the check: `.workers/.lock` exists now, and must stay ignored even when the check
+    // Before the check: `.iii/workers/.lock` exists now, and must stay ignored even when the check
     // fails.
     crate::build_record::ignore_all(&workers)?;
     check()?;
@@ -660,7 +658,7 @@ pub(crate) async fn materialize_project_checked(
     }
 }
 
-/// Deletes `.build/<container>/build.json` when it records a host build made from `package`,
+/// Deletes `.iii/build/<container>/build.json` when it records a host build made from `package`,
 /// the artifact about to be copied again: see [`materialize_project`]. No record, a VM build's,
 /// one made from another package, or one that does not parse (which already asks for a
 /// rebuild) is left alone.
@@ -721,7 +719,7 @@ fn is_temporary_copy(name: &str) -> bool {
 }
 
 /// `.packages.json.tmp-<id>` or `.gitignore.tmp-<id>`, the temporary files
-/// `build_record::replace_file` writes Compose's own files of `.workers/` through.
+/// `build_record::replace_file` writes Compose's own files of `.iii/workers/` through.
 fn is_temporary_file(name: &str) -> bool {
     [PROJECT_PACKAGES_FILE, ".gitignore"].iter().any(|file| {
         name.strip_prefix(file)
@@ -730,7 +728,7 @@ fn is_temporary_file(name: &str) -> bool {
 }
 
 /// Replaces `<workers>/<container>` with a copy of the package's cache entry; the copy holds
-/// `guard`, the project's `.workers/.lock`, until it has finished.
+/// `guard`, the project's `.iii/workers/.lock`, until it has finished.
 async fn copy_package(
     container: &str,
     resolved: &ResolvedPackage,
@@ -857,7 +855,7 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> ComposeError {
     move |source| ComposeError::Io { path, source }
 }
 
-/// Writes `.workers/.packages.json` atomically.
+/// Writes `.iii/workers/.packages.json` atomically.
 fn write_project_packages(workers: &Path, record: &ProjectPackages) -> Result<()> {
     let path = workers.join(PROJECT_PACKAGES_FILE);
     let mut json = serde_json::to_vec_pretty(record).map_err(|error| ComposeError::Io {
@@ -2973,7 +2971,7 @@ mod tests {
     }
 
     fn recorded(project: &Path) -> serde_json::Value {
-        serde_json::from_slice(&std::fs::read(project.join(".workers/.packages.json")).unwrap())
+        serde_json::from_slice(&std::fs::read(project.join(".iii/workers/.packages.json")).unwrap())
             .unwrap()
     }
 
@@ -2998,7 +2996,7 @@ mod tests {
             .await
             .unwrap();
 
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         assert_eq!(
             names(&workers),
             [".gitignore", ".lock", ".packages.json", "queue", "state"]
@@ -3048,7 +3046,7 @@ mod tests {
     async fn materialize_keeps_what_a_build_wrote_until_the_package_changes() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
         let packages = [
             ("state", "1.0.0", &state[..]),
@@ -3103,7 +3101,7 @@ mod tests {
     async fn materialize_removes_what_the_lock_no_longer_holds() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
         let lock = locked(
             project.path(),
@@ -3147,7 +3145,7 @@ mod tests {
             serde_json::json!({ "state": { "name": "state", "version": "1.0.0", "sha256": sha256_of(&state) } })
         );
 
-        // The last package removed: `.workers/` stays, empty of packages.
+        // The last package removed: `.iii/workers/` stays, empty of packages.
         let lock = locked(project.path(), cache.path(), &[]).await;
         materialize_project(project.path(), cache.path(), &lock)
             .await
@@ -3166,7 +3164,7 @@ mod tests {
     async fn materialize_copies_again_a_missing_directory_or_an_unreadable_record() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let state = package_archive("state 1");
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
         materialize_project(project.path(), cache.path(), &lock)
@@ -3199,7 +3197,7 @@ mod tests {
         materialize_project(project.path(), cache.path(), &lock)
             .await
             .unwrap();
-        assert!(!project.path().join(".workers").exists());
+        assert!(!project.path().join(".iii/workers").exists());
     }
 
     /// The cache entry `lock` installs for `container`.
@@ -3259,7 +3257,7 @@ mod tests {
     async fn a_failed_check_in_a_new_project_leaves_workers_ignored() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let state = package_archive("state 1");
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
         assert!(!workers.exists());
@@ -3291,7 +3289,7 @@ mod tests {
     async fn a_package_copied_again_drops_the_host_build_made_from_it() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let (state, queue) = (package_archive("state 1"), package_archive("queue 2"));
         let lock = locked(
             project.path(),
@@ -3366,7 +3364,7 @@ mod tests {
             &host,
             &project.path().join("worker-compose.yaml"),
             "state",
-            &project.path().join(".workers/state"),
+            &project.path().join(".iii/workers/state"),
         )
         .unwrap();
         assert_eq!(
@@ -3382,7 +3380,7 @@ mod tests {
     /// Every `.packages.json` entry names a directory holding that package: what one run at a
     /// time guarantees, whichever run went last.
     fn assert_consistent(project: &Path, bodies: &[(&str, &str)]) {
-        let workers = project.join(".workers");
+        let workers = project.join(".iii/workers");
         let record = recorded(project);
         let containers = record["containers"].as_object().unwrap();
         let mut directories: Vec<String> = names(&workers)
@@ -3454,7 +3452,7 @@ mod tests {
     async fn a_failed_check_leaves_workers_as_it_was() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let (state, updated) = (package_archive("state 1"), package_archive("state 2"));
         let lock = locked(project.path(), cache.path(), &[("state", "1.0.0", &state)]).await;
         materialize_project(project.path(), cache.path(), &lock)
@@ -3484,7 +3482,7 @@ mod tests {
     async fn a_damaged_cache_entry_that_cannot_be_fetched_keeps_the_previous_directory() {
         let project = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
-        let workers = project.path().join(".workers");
+        let workers = project.path().join(".iii/workers");
         let (queue, updated, state) = (
             package_archive("queue 1"),
             package_archive("queue 2"),
@@ -3555,7 +3553,7 @@ mod tests {
             .await
             .unwrap();
 
-        for copy in [project.path().join(".workers/state"), entry] {
+        for copy in [project.path().join(".iii/workers/state"), entry] {
             assert_eq!(
                 std::fs::read_to_string(copy.join("lib/data.txt")).unwrap(),
                 "state 1"
@@ -3596,7 +3594,7 @@ mod tests {
             error.to_string().contains("cannot name a directory"),
             "{error}"
         );
-        assert!(!project.path().join(".workers").exists());
+        assert!(!project.path().join(".iii/workers").exists());
         assert!(!project.path().join("x").exists());
     }
 }
