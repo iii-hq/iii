@@ -841,7 +841,8 @@ Inside Compose, as a container's `scripts.build`, it builds its own container. I
 adapter advertises `worker.build`, calls `worker::build` with the build output streamed to stdout,
 then writes `build.json` (see [`build.json`](../using-iii/compose#buildjson)). There, `--file`,
 `--namespace`, and `--engine` fail with `SANDBOX_INVALID_ARGUMENTS`: they find a daemon from outside
-Compose.
+Compose. If the container's package was replaced while it built, by an `iii compose build` in
+another process, it writes nothing and fails with `BUILD_INPUT_CHANGED`. Build again.
 
 Outside Compose, it calls `compose::build worker=<container>` on the project's daemon, or
 `compose::build` for every container that declares `scripts.build` when no container is named; an
@@ -854,12 +855,12 @@ waits for the result. It finds the daemon as `iii compose logs` does, from `--fi
 iii sandbox build link
 ```
 
-| Exit code | Meaning                                                                                                                                             |
-| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `0`       | Built.                                                                                                                                              |
-| `1`       | The build failed: the adapter's S-code, such as [S507](#S507), [S509](#S509), or [S501](#S501) for a source outside its host roots, or `TIMED_OUT`. |
-| `125`     | `iii sandbox` itself failed. The codes are in the table below.                                                                                      |
-| `130`     | Cancelled (`OPERATION_CANCELLED`). Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting.             |
+| Exit code | Meaning                                                                                                                                                                    |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`       | Built.                                                                                                                                                                     |
+| `1`       | The build failed: the adapter's S-code, such as [S507](#S507), [S509](#S509), or [S501](#S501) for a source outside its host roots, `TIMED_OUT`, or `BUILD_INPUT_CHANGED`. |
+| `125`     | `iii sandbox` itself failed. The codes are in the table below.                                                                                                             |
+| `130`     | Cancelled (`OPERATION_CANCELLED`). Outside Compose, `Ctrl-C` sends `compose::cancel` for its operation and waits for it before exiting.                                    |
 
 On failure, the last line has this form, which Compose parses for `BUILD_FAILED`:
 
