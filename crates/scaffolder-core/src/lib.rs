@@ -1,7 +1,7 @@
 //! Scaffolder Core - Shared library for project scaffolding CLIs
 //!
 //! This library provides the core functionality for scaffolding projects from templates.
-//! It is designed to be used by multiple CLI binaries (e.g., `motia`, `iii`) that share
+//! It is designed to be used by multiple CLI binaries (e.g., `iii`) that share
 //! the same underlying scaffolding logic but have different product configurations.
 //!
 //! # Architecture

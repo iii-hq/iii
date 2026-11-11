@@ -253,7 +253,7 @@ def branch_repo(release_repo, tmp_path):
         "sdk/packages/python/observability/pyproject.toml",
         "sdk/packages/python/helpers/pyproject.toml",
         "crates/iii-filter/Cargo.toml",
-        "crates/scaffolder-core/Cargo.toml", "crates/motia-tools/Cargo.toml",
+        "crates/scaffolder-core/Cargo.toml",
     ]
     for path in manifests:
         file = release_repo / path

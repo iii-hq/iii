@@ -2297,18 +2297,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "motia-tools"
-version = "0.26.1-rc.1"
-dependencies = [
- "anyhow",
- "clap",
- "console 0.15.11",
- "ctrlc",
- "scaffolder-core",
- "tokio",
-]
-
-[[package]]
 name = "munge"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
