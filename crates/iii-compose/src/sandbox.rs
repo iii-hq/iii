@@ -649,7 +649,8 @@ pub(crate) async fn iii_sandbox_request(file: &ComposeFile) -> Result<NewContain
 
 /// Re-reads `edited` into `current` and prepares the lock again: each `force`d entry at its
 /// `selected` version, every other at the version `prepared` chose, so nothing else resolves
-/// differently.
+/// differently. Only what changed reaches the registry: an entry at the exact version `prepared`
+/// already resolved reuses that result.
 async fn reprepare(
     path: &Path,
     edited: &str,
@@ -667,13 +668,16 @@ async fn reprepare(
                 .or_insert_with(|| version.to_string());
         }
     }
-    *prepared = crate::lockfile::prepare_metadata_with_versions(current, force, &versions).await?;
+    *prepared =
+        crate::lockfile::prepare_metadata_reusing(current, force, &versions, prepared).await?;
     Ok(())
 }
 
 /// Applies [`adapter_change`] to `edited` and `current`, then prepares the lock
 /// again: the adapter at its exact version, every other entry at the version
-/// the first pass chose, so nothing else resolves differently.
+/// the first pass chose, so nothing else resolves differently. Only the adapter
+/// reaches the registry: the rest reuse what the first pass resolved. Call it
+/// before installing, so the adapter downloads with everything else.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_adapter_change(
     path: &Path,
@@ -1742,6 +1746,77 @@ pub(crate) mod tests {
             panic!("the adapter is new");
         };
         assert!(edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+    }
+
+    /// Adding the adapter a bundle needs asks the registry for the adapter only: the bundle the
+    /// first pass resolved is not resolved again.
+    #[tokio::test]
+    async fn adding_the_adapter_resolves_only_the_adapter_again() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let dir = tempfile::tempdir().unwrap();
+        let server = adapter_registry(b"").await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "tour" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "tour", "version": "1.0.0", "type": "bundle",
+                    "archive_url": format!("{}/artifact", server.uri()),
+                    "sha256": "a".repeat(64),
+                }]
+            })))
+            .mount(&server)
+            .await;
+        let text = "containers:\n  tour: {worker: package://tour, version: 1.0.0}\n";
+        let mut file = parse(dir.path(), text);
+        let mut edited = text.to_string();
+        let path = file.path.clone();
+        let (change, prepared) = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), async {
+                let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new())
+                    .await
+                    .unwrap();
+                let change = apply_adapter_change(
+                    &path,
+                    &mut edited,
+                    &mut file,
+                    "default",
+                    &mut prepared,
+                    &mut BTreeSet::new(),
+                    &mut BTreeMap::new(),
+                    false,
+                    false,
+                )
+                .await
+                .unwrap();
+                (change, prepared)
+            })
+            .await;
+
+        assert!(
+            matches!(change, Some(AdapterChange::Upsert(_))),
+            "{change:?}"
+        );
+        assert_eq!(prepared.resolved_version("tour"), Some("1.0.0"));
+        assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.4.0"));
+        let asked: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/resolve")
+            .map(|request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                body["worker"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            asked.iter().filter(|worker| *worker == "tour").count(),
+            1,
+            "{asked:?}"
+        );
     }
 
     #[tokio::test]

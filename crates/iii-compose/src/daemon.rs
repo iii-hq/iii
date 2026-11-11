@@ -745,7 +745,12 @@ impl Daemon {
     /// Keep the candidate in memory until loading and metadata-lock acquisition
     /// finish, so cancellation cannot persist a partially prepared startup.
     async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
-        crate::report::in_project_scope(file, self.prepare_start_project_scoped(file, frozen)).await
+        // Boxed: inline, this future overflows a debug build's stack.
+        crate::report::in_project_scope(
+            file,
+            Box::pin(self.prepare_start_project_scoped(file, frozen)),
+        )
+        .await
     }
 
     async fn prepare_start_project_scoped(
@@ -772,16 +777,14 @@ impl Daemon {
             prepared
         } else {
             let mut prepared =
-                crate::lockfile::prepare(&mut compose, &package_cache, &BTreeSet::new()).await?;
+                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
             let path = compose.path.clone();
-            let mut install = false;
             if let Some(migration) =
                 crate::sandbox::migrate(&path, &mut edited, &mut compose, &namespace, &mut prepared)
                     .await?
             {
                 rewritten.extend(migration.containers);
                 if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter {
-                    install = true;
                     rewritten.push(adapter.key.clone());
                     updated_adapter = Some(adapter.key);
                 }
@@ -800,7 +803,6 @@ impl Daemon {
                 )
                 .await?
             {
-                install = true;
                 let needs = crate::sandbox::needs(&compose, &namespace);
                 crate::report::daemon_line(
                     &format!(
@@ -811,9 +813,9 @@ impl Daemon {
                     false,
                 );
             }
-            if install {
-                prepared.install(&package_cache).await?;
-            }
+            // Resolved first, the adapter `migrate` or the change added included: everything
+            // downloads in one batch.
+            prepared.install(&package_cache).await?;
             prepared
         };
         crate::sandbox::validate_scripts(&compose)?;
@@ -1196,9 +1198,8 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_with_versions(
+                crate::lockfile::prepare_metadata_with_versions(
                     &mut current,
-                    &package_cache,
                     &force,
                     &selected_versions,
                 ),
@@ -1237,14 +1238,8 @@ impl Daemon {
                 ),
             )
             .await??;
-        if adapter.is_some()
-            || migration
-                .as_ref()
-                .is_some_and(|migration| migration.adapter.is_some())
-        {
-            self.prepare(&operation_id, prepared.install(&package_cache))
-                .await??;
-        }
+        self.prepare(&operation_id, prepared.install(&package_cache))
+            .await??;
         let yaml_changed =
             !added.is_empty() || !replaced.is_empty() || adapter.is_some() || migration.is_some();
         for (root, nodes) in resolved_graphs {
