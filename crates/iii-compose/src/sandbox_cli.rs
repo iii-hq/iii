@@ -103,7 +103,7 @@ pub const SANDBOX_UNSUPPORTED_PLATFORM: &str = "SANDBOX_UNSUPPORTED_PLATFORM";
 pub const BUILD_MISSING: &str = "BUILD_MISSING";
 /// `iii sandbox build` ran for longer than `III_BUILD_TIMEOUT_MS`.
 pub const TIMED_OUT: &str = "TIMED_OUT";
-/// The package `iii sandbox build` built was replaced before its `build.json` was written, by an
+/// The source a build started from was replaced before its `build.json` was written, by an
 /// `iii compose build` in another process: nothing is recorded, and building again fixes it.
 pub const BUILD_INPUT_CHANGED: &str = "BUILD_INPUT_CHANGED";
 /// `iii sandbox build` was stopped by a signal, or its `compose::build` operation was cancelled:
@@ -1383,21 +1383,13 @@ pub(crate) async fn build_vm(
 
     let built = reply.map_err(|error| build_call_failure(&error, target))?;
     // Read again: the image must be recorded with the package it was built from, and an
-    // `iii compose build` in another process may have replaced it meanwhile (spec 5.4).
-    let source = records
-        .source(&bctx.compose_file, &ctx.worker_name)
-        .map_err(|error| Failure::compose(&error))?;
-    if source != inputs.source {
-        return Err(Failure::build(
-            BUILD_INPUT_CHANGED,
-            format!(
-                "the package of {} changed while it built ({} -> {}), so its image is not \
-                 recorded; build it again",
-                ctx.worker_name,
-                crate::build_step::describe_source(&inputs.source),
-                crate::build_step::describe_source(&source)
-            ),
-        ));
+    // `iii compose build` in another process may have replaced it meanwhile (spec 5.4). The
+    // adapter already put the image in place; only `build.json` is not written.
+    let now = records.source(&bctx.compose_file, &ctx.worker_name);
+    if let Some(message) = crate::build_step::input_changed(&ctx.worker_name, &inputs.source, now)
+        .map_err(|error| Failure::compose(&error))?
+    {
+        return Err(Failure::build(BUILD_INPUT_CHANGED, message));
     }
     let record = build_record_of(bctx, &info, inputs, built);
     records
@@ -2137,6 +2129,8 @@ mod tests {
         events: Arc<Mutex<Vec<String>>>,
         /// The package that replaced the first one: what every `source` after the first reads.
         replaced: Option<BuildSource>,
+        /// Every `source` after the first finds no package, as while its directory is replaced.
+        missing_later: bool,
         source_reads: Mutex<usize>,
     }
 
@@ -2182,6 +2176,11 @@ mod tests {
                 && let Some(replaced) = &self.replaced
             {
                 return Ok(replaced.clone());
+            }
+            if *reads > 1 && self.missing_later {
+                return Err(ComposeError::PackageNotInstalled {
+                    container: container.to_string(),
+                });
             }
             Ok(BuildSource::Package {
                 name: "onboarding".into(),
@@ -3063,10 +3062,11 @@ mod tests {
     }
 
     /// Spec 5.4: a package replaced while it built (by an `iii compose build` in another
-    /// process) leaves the build unrecorded, failed with `BUILD_INPUT_CHANGED`.
+    /// process), or being replaced when it is read again, leaves the build unrecorded, failed with
+    /// `BUILD_INPUT_CHANGED`.
     #[tokio::test]
     async fn a_package_replaced_while_it_builds_is_not_recorded() {
-        let records = FakeRecords {
+        let replaced = FakeRecords {
             replaced: Some(BuildSource::Package {
                 name: "onboarding".into(),
                 version: "0.3.0".into(),
@@ -3074,27 +3074,38 @@ mod tests {
             }),
             ..FakeRecords::default()
         };
-        let (client, _called, _) = build_engine(
-            adapter(|suffix, _| (suffix == "worker::build").then(built)),
-            Vec::new(),
-        )
-        .await;
-        let (printer, _printed) = captured();
+        let being_replaced = FakeRecords {
+            missing_later: true,
+            ..FakeRecords::default()
+        };
+        for (records, now) in [
+            (replaced, "onboarding@0.3.0"),
+            (being_replaced, "none, being replaced"),
+        ] {
+            let (client, _called, _) = build_engine(
+                adapter(|suffix, _| (suffix == "worker::build").then(built)),
+                Vec::new(),
+            )
+            .await;
+            let (printer, _printed) = captured();
 
-        let failure = build_vm(&build_context(), &records, &client, &never(), printer)
-            .await
-            .unwrap_err();
+            let failure = build_vm(&build_context(), &records, &client, &never(), printer)
+                .await
+                .unwrap_err();
 
-        assert_eq!(
-            (failure.code.as_str(), failure.exit),
-            (BUILD_INPUT_CHANGED, BUILD_FAILED_EXIT)
-        );
-        assert_eq!(
-            failure.message,
-            "the package of api changed while it built (onboarding@0.2.0 -> onboarding@0.3.0), so \
-             its image is not recorded; build it again"
-        );
-        assert!(records.written.lock().unwrap().is_empty());
+            assert_eq!(
+                (failure.code.as_str(), failure.exit),
+                (BUILD_INPUT_CHANGED, BUILD_FAILED_EXIT)
+            );
+            assert_eq!(
+                failure.message,
+                format!(
+                    "the source of api changed while it built (onboarding@0.2.0 -> {now}), so the \
+                     build is not recorded; build it again"
+                )
+            );
+            assert!(records.written.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]

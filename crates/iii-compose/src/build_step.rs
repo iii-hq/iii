@@ -260,11 +260,33 @@ impl Reason {
 }
 
 /// A build's source as its log lines name it: `name@version`, or the `path://` directory.
-pub(crate) fn describe_source(source: &BuildSource) -> String {
+fn describe_source(source: &BuildSource) -> String {
     match source {
         BuildSource::Package { name, version, .. } => format!("{name}@{version}"),
         BuildSource::Path { dir } => dir.clone(),
     }
+}
+
+/// `BUILD_INPUT_CHANGED`'s message when container `key`'s source, read again (`now`) as its build
+/// ends, is not `before`, the one read as it began (spec 5.4); `None` when it is the same. A
+/// package no longer installed counts as changed: the first read found it, so its directory is
+/// being replaced (`materialize_project` takes its entry out of `.packages.json` meanwhile).
+pub(crate) fn input_changed(
+    key: &str,
+    before: &BuildSource,
+    now: Result<BuildSource>,
+) -> Result<Option<String>> {
+    let now = match now {
+        Ok(now) if now == *before => return Ok(None),
+        Ok(now) => describe_source(&now),
+        Err(ComposeError::PackageNotInstalled { .. }) => "none, being replaced".to_string(),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(format!(
+        "the source of {key} changed while it built ({} -> {now}), so the build is not \
+         recorded; build it again",
+        describe_source(before)
+    )))
 }
 
 /// Spec 5.2, 5.3 and 5.5 before container `key` runs: `Some` when it builds first, because it has
@@ -451,6 +473,21 @@ pub(crate) async fn run(
             message: error.to_string(),
         };
     }
+    // A host build is recorded with the source it was built from, read before it runs and again
+    // after (spec 5.4); `iii sandbox build` reads it itself.
+    let before = if vm {
+        None
+    } else {
+        match host_source(spawn.compose_file, key).await {
+            Ok(source) => Some(source),
+            Err(error) => {
+                return Outcome::Failed {
+                    code: error.code().to_string(),
+                    message: format!("the build could not be recorded, so it did not run: {error}"),
+                };
+            }
+        }
+    };
     let start = StartSpec::Shell(command.to_string());
     let plan = spawn_plan(&SpawnCtx {
         start: &start,
@@ -533,8 +570,13 @@ pub(crate) async fn run(
                 };
             }
             let worker = worker_dir(spawn.compose_file, key, container);
-            match record_host_build(spawn.compose_file, key, command, &worker, &dir).await {
-                Ok(()) => Outcome::Built { build_id: None },
+            let before = before.expect("a host build read its source");
+            match record_host_build(spawn.compose_file, key, command, &worker, &dir, before).await {
+                Ok(None) => Outcome::Built { build_id: None },
+                Ok(Some(message)) => Outcome::Failed {
+                    code: crate::sandbox_cli::BUILD_INPUT_CHANGED.to_string(),
+                    message,
+                },
                 Err(error) => Outcome::Failed {
                     code: error.code().to_string(),
                     message: format!("the build ran, but build.json could not be written: {error}"),
@@ -654,13 +696,30 @@ async fn recorded_build_id(dir: PathBuf) -> Option<String> {
 }
 
 /// The `build.json` of a host build (spec 5.4): the same keys, without `image`.
+/// Container `key`'s source, as its `build.json` records it.
+async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
+    let (file, key) = (
+        crate::spawn::canonical_compose_file(compose_file),
+        key.to_string(),
+    );
+    tokio::task::spawn_blocking(move || record::source(&file, &key))
+        .await
+        .map_err(|error| ComposeError::Io {
+            path: compose_file.to_path_buf(),
+            source: std::io::Error::other(error.to_string()),
+        })?
+}
+
+/// Writes the `build.json` of a host build of container `key` made from `before`; `Some` with
+/// the message of `BUILD_INPUT_CHANGED`, and nothing written, when its source is no longer that.
 async fn record_host_build(
     compose_file: &Path,
     key: &str,
     command: &str,
     worker_dir: &Path,
     dir: &Path,
-) -> Result<()> {
+    before: BuildSource,
+) -> Result<Option<String>> {
     let (file, key, command, worker_dir, dir) = (
         crate::spawn::canonical_compose_file(compose_file),
         key.to_string(),
@@ -670,16 +729,19 @@ async fn record_host_build(
     );
     let at = dir.join("build.json");
     tokio::task::spawn_blocking(move || {
+        if let Some(changed) = input_changed(&key, &before, record::source(&file, &key))? {
+            return Ok(Some(changed));
+        }
         let record = BuildRecord {
             schema: SCHEMA,
-            source: record::source(&file, &key)?,
+            source: before,
             container: key,
             command,
             dependency_files: record::dependency_files(&worker_dir)?,
             image: None,
             built_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         };
-        record::write(&dir, &record)
+        record::write(&dir, &record).map(|()| None)
     })
     .await
     .map_err(|error| ComposeError::Io {
@@ -987,6 +1049,35 @@ mod tests {
         record::write(&dir, &built).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
         assert_eq!(project.due().await, None);
+    }
+
+    /// Spec 5.4: a host build whose source changed while it ran (here its compose file, which
+    /// the build itself replaces) records nothing and fails with `BUILD_INPUT_CHANGED`.
+    // Runs `cp`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_host_build_whose_source_changed_while_it_ran_records_nothing() {
+        let project =
+            project("scripts: {build: 'cp ../moved.yaml ../worker-compose.yaml', run: x}");
+        std::fs::write(
+            project.dir.path().join("moved.yaml"),
+            "containers:\n  api: {worker: path://./moved, scripts: {build: 'true', run: x}}\n",
+        )
+        .unwrap();
+
+        let outcome = project.build(None, None).await;
+
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                code: "BUILD_INPUT_CHANGED".into(),
+                message:
+                    "the source of api changed while it built (./api -> ./moved), so the build \
+                          is not recorded; build it again"
+                        .into(),
+            }
+        );
+        assert_eq!(project.record(), None);
     }
 
     /// The image of a VM build of `api`, from `runtime.base_image: docker.io/iiidev/python`.
