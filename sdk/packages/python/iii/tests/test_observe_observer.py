@@ -397,13 +397,31 @@ def test_a_listener_hears_only_the_changes_made_after_it_subscribed() -> None:
     handle.on_state_change(lambda state, reason: late.append(state))  # before "active" is delivered
     gone: list[str] = []
     off = handle.on_state_change(lambda state, reason: gone.append(state))
+    back: list[str] = []
+
+    def come_back(state: str, reason: Any) -> None:
+        back.append(state)
+
+    off_back = handle.on_state_change(come_back)
+    twice: list[str] = []
+
+    def subscribed_twice(state: str, reason: Any) -> None:
+        twice.append(state)
+
+    handle.on_state_change(subscribed_twice)
+    off_one = handle.on_state_change(subscribed_twice)
     handle._set_state("suspended")
     off()  # before "suspended" is delivered
+    off_back()
+    handle.on_state_change(come_back)  # the same callable, subscribed again after "suspended"
+    off_one()  # one of its two subscriptions
     for deliver in queued:
         deliver()
     assert early == ["active", "suspended"]
     assert late == ["suspended"]
     assert gone == []
+    assert back == []
+    assert twice == ["suspended"]
 
 
 def test_ready_from_the_sdk_loop_thread_is_refused(engine: FakeEngine, connect: Any) -> None:
