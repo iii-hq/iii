@@ -413,6 +413,12 @@ pub(crate) async fn run(
     let vm = is_sandbox_build(command);
     let key = spawn.container_key;
     let dir = build_dir(spawn.compose_file, key);
+    // Registered before anything runs, then the remove mark read: [`stop`] marks first and then
+    // looks for the build, so it either finds this one or marked the container before this read.
+    let (_registered, mut stopped) = Registered::new(&dir);
+    if *stopped.borrow() || with_entry(&dir, |entry| entry.stopping > 0) {
+        return Outcome::stopped();
+    }
     if let Err(error) = prepare_build_dir(&dir) {
         return Outcome::Failed {
             code: error.code().to_string(),
@@ -458,7 +464,6 @@ pub(crate) async fn run(
         )));
     }
 
-    let (_registered, mut stopped) = Registered::new(&dir);
     let budget =
         container.scripts.build_timeout + if vm { VM_TIMEOUT_SLACK } else { Duration::ZERO };
     let waited = async {
@@ -894,6 +899,28 @@ mod tests {
                 .unwrap()
                 .contains_key(&build_dir(&project.file.path, "api")),
             "a stopped build stayed registered"
+        );
+    }
+
+    /// A remove that marked the container before its build registered still stops that build,
+    /// which then runs nothing.
+    #[tokio::test]
+    async fn a_remove_marked_before_the_build_registers_stops_it_unrun() {
+        let project = project("scripts: {build: 'touch built', run: x}");
+        let stopping = stop(&project.file.path, "api").await;
+        let outcome = project.build(None, None).await;
+        drop(stopping);
+        assert!(
+            matches!(outcome, Outcome::Failed { ref code, .. } if code == "BUILD_STOPPED"),
+            "{outcome:?}"
+        );
+        assert!(!project.dir.path().join("api/built").exists());
+        assert!(
+            !running()
+                .lock()
+                .unwrap()
+                .contains_key(&build_dir(&project.file.path, "api")),
+            "a build that never ran stayed registered"
         );
     }
 
