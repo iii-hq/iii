@@ -43,7 +43,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 colored = "3"
 dirs = "6"
 url = "2"
-walkdir = "2"
 open = "5"
 cliclack = "0.3"
 console = "0.15"

@@ -72,9 +72,14 @@ async fn timeout_returns_actionable_error() {
 
 #[tokio::test]
 async fn connection_refused_returns_clear_error() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener); // Port is now closed
+    // Hold the port for the whole test with a socket that is bound but never
+    // listening: connecting to it is refused, and no other test can be handed
+    // the same port. Binding a listener and dropping it would free the port,
+    // and a mock server started by a test running in parallel can get it
+    // before this request goes out.
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let addr = socket.local_addr().unwrap();
 
     let invoker = permissive_invoker();
     let url = format!("http://{}/endpoint", addr);

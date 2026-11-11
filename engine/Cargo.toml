@@ -107,7 +107,6 @@ open = { workspace = true }
 ctrlc = { workspace = true }
 tokio = { version = "1", features = ["process", "macros", "rt-multi-thread", "fs", "signal", "time", "io-std", "io-util"] }
 tower = { version = "0.5", features = ["util", "timeout", "limit"] }
-tower-http = { version = "0.6", features = ["cors", "timeout"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json", "registry"] }
 tracing-opentelemetry = "0.33"
@@ -116,7 +115,6 @@ opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["tonic", "grpc-tonic", "logs", "tls-roots", "tls-ring"] }
 futures = "0.3"
 futures-util = "0.3"
-http-body-util = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 axum = { version = "0.8", features = ["ws", "macros"] }
