@@ -5039,6 +5039,7 @@ containers:
 
     /// Spec 7.1: `compose::add` of a registry bundle writes `start_after` and both `scripts`,
     /// beside the generated adapter, and answers for the bundle it added.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_writes_the_explicit_vm_mode_of_a_bundle() {
         use sha2::{Digest, Sha256};
@@ -5251,6 +5252,7 @@ containers:
 
     /// Spec 7.1: `compose::add` of a `path://` worker whose manifest sets `runtime.base_image`
     /// writes `start_after` and both `scripts`, beside the generated adapter.
+    #[cfg(unix)]
     #[tokio::test]
     async fn add_writes_the_explicit_vm_mode_of_a_base_image_worker() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5393,6 +5395,7 @@ containers:
 
     /// Spec 11: `up` writes the adapter a VM needs, locks and installs it, and
     /// the project loaded before that edit holds it with the VM wired after it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn up_writes_installs_and_wires_the_adapter_a_vm_needs() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5436,6 +5439,7 @@ containers:
 
     /// `build` runs outside the daemon's mutation lock: a file saved while it
     /// prepared is refused, never overwritten from build's snapshot.
+    #[cfg(unix)]
     #[tokio::test]
     async fn build_does_not_overwrite_an_edit_made_while_it_prepared() {
         use sha2::Digest;
@@ -5644,6 +5648,7 @@ containers:
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -5791,6 +5796,7 @@ containers:
     /// name, before or after a VM generated it, outlives the last VM, whose
     /// removal would otherwise destroy its live sandboxes. One only a VM asked
     /// for goes with it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn only_an_adapter_no_one_named_goes_with_the_last_vm() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;

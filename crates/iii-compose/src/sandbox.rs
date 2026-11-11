@@ -2642,6 +2642,7 @@ pub(crate) mod tests {
 
     /// Spec 7.3: per container, keyed on `scripts`, comments kept, and a second run changes
     /// nothing; the lock keeps its format.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_026_project_is_rewritten_container_by_container_and_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -2707,6 +2708,7 @@ pub(crate) mod tests {
 
     /// A bundle without `scripts.run` moves into the VM; one with a host command stays where it
     /// is, with or without its lock; a rewrite that breaks a rule of spec 4.2 writes nothing.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_bundle_is_rewritten_unless_it_runs_on_the_host() {
         let dir = tempfile::tempdir().unwrap();
@@ -2771,6 +2773,7 @@ pub(crate) mod tests {
 
     /// Spec 7.2: a generated 0.3.x adapter moves to the newest release in range before the
     /// rewrite, in a project with a VM container; one with ephemeral sandboxes only keeps it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_generated_adapter_too_old_for_a_vm_is_updated_with_its_lock() {
         let server = adapter_registry(b"").await;
@@ -2902,6 +2905,7 @@ pub(crate) mod tests {
     }
 
     /// Spec 4.2, a code per rule.
+    #[cfg(unix)]
     #[test]
     fn the_rules_of_the_explicit_mode_have_their_codes() {
         let dir = tempfile::tempdir().unwrap();
