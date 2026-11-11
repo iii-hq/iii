@@ -206,11 +206,13 @@ pub(crate) async fn stop(compose_file: &Path, key: &str) -> Stopping {
     Stopping { dir }
 }
 
-/// The compose file's directory, as `III_COMPOSE_DIR` names it.
+/// The compose file's directory, as `III_COMPOSE_DIR` names it: [`build_record::compose_dir`] of
+/// the canonical file.
+///
+/// [`build_record::compose_dir`]: crate::build_record::compose_dir
 fn compose_dir(compose_file: &Path) -> PathBuf {
     let file = crate::spawn::canonical_compose_file(compose_file);
-    file.parent()
-        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    crate::build_record::compose_dir(&file).to_path_buf()
 }
 
 /// `.iii/build/<container>` beside the compose file.
@@ -413,7 +415,7 @@ pub(crate) async fn run(
     let vm = is_sandbox_build(command);
     let key = spawn.container_key;
     let dir = build_dir(spawn.compose_file, key);
-    if let Err(error) = prepare_build_dir(&dir) {
+    if let Err(error) = prepare_build_dir(spawn.compose_file, &dir) {
         return Outcome::Failed {
             code: error.code().to_string(),
             message: error.to_string(),
@@ -527,21 +529,16 @@ pub(crate) async fn run(
     }
 }
 
-/// `.iii/build/<container>/`, and `.iii/build/.gitignore` with `*`, so the project's own
+/// `dir`, the container's `.iii/build/<container>/`, and the `.gitignore` of `.iii/build/`, as
+/// `build_record::write` and `materialize_project` make theirs, so the project's own
 /// `.gitignore` needs no edit (spec 3.2).
-fn prepare_build_dir(dir: &Path) -> Result<()> {
-    let io = |path: &Path| {
-        let path = path.to_path_buf();
-        move |source| ComposeError::Io { path, source }
-    };
-    std::fs::create_dir_all(dir).map_err(io(dir))?;
-    if let Some(root) = dir.parent() {
-        let ignore = root.join(".gitignore");
-        if !ignore.exists() {
-            std::fs::write(&ignore, "*\n").map_err(io(&ignore))?;
-        }
-    }
-    Ok(())
+fn prepare_build_dir(compose_file: &Path, dir: &Path) -> Result<()> {
+    let builds = crate::build_record::builds_root(&compose_dir(compose_file));
+    crate::build_record::ignore_all(&builds)?;
+    std::fs::create_dir_all(dir).map_err(|source| ComposeError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })
 }
 
 /// The exit code a failure is named after: the code, or 128 plus the signal that ended it.
