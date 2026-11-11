@@ -2098,7 +2098,7 @@ mod adapter_restart_tests {
         format!(
             "#!/bin/sh\n\
              if [ \"$2\" = build ]; then\n\
-             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
+             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"image\":{{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{{\"declared\":null,\"reference\":\"python\",\"digest\":null}},\"adapter\":{{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"}},\"contract\":{{\"major\":1,\"minor\":3}}}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
              exit 0\n\
              fi\n\
              test -e ../refuse && exit 125\n\

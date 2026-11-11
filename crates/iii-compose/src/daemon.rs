@@ -5166,7 +5166,7 @@ containers:
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(
             bin.join("iii"),
-            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
+            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"image\":{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{\"declared\":null,\"reference\":\"python\",\"digest\":null},\"adapter\":{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"},\"contract\":{\"major\":1,\"minor\":3}},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
         )
         .unwrap();
         std::fs::set_permissions(

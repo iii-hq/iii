@@ -233,6 +233,10 @@ pub(crate) enum Reason {
     First,
     /// Its package is not the one `build.json` was made from (spec 5.3).
     PackageChanged { old: String, new: String },
+    /// `build.json` records a build of the other kind than `scripts.build` makes (spec 5.2): a
+    /// host build where it is now `iii sandbox build` (`to_vm`), or an image where it is now a
+    /// host command.
+    ModeChanged { to_vm: bool },
 }
 
 impl Reason {
@@ -242,6 +246,14 @@ impl Reason {
             Self::First => "no build yet; running scripts.build".to_string(),
             Self::PackageChanged { old, new } => {
                 format!("package changed ({old} -> {new}); rebuilding")
+            }
+            Self::ModeChanged { to_vm: true } => {
+                "its build is a host build, and scripts.build now builds a VM image; rebuilding"
+                    .to_string()
+            }
+            Self::ModeChanged { to_vm: false } => {
+                "its build is a VM image, and scripts.build now runs on the host; rebuilding"
+                    .to_string()
             }
         }
     }
@@ -255,7 +267,8 @@ fn describe_source(source: &BuildSource) -> String {
 }
 
 /// Spec 5.2, 5.3 and 5.5 before container `key` runs: `Some` when it builds first, because it has
-/// a non-empty `scripts.build` and no `build.json` yet, or its package changed. Logs the other
+/// a non-empty `scripts.build` and no `build.json` yet, or one of the other kind (an image for a
+/// host command, or a host build for `iii sandbox build`), or its package changed. Logs the other
 /// differences, once per start, and lets it run on its current build. The check only informs: one
 /// that fails is logged and the container runs.
 pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -> Option<Reason> {
@@ -279,7 +292,7 @@ async fn assess(
     container: &Container,
     log: bool,
 ) -> Option<Reason> {
-    container.scripts.build_command()?;
+    let vm = is_sandbox_build(container.scripts.build_command()?);
     let dir = build_dir(compose_file, key);
     if !dir.join("build.json").is_file() {
         return Some(Reason::First);
@@ -289,17 +302,29 @@ async fn assess(
         key.to_string(),
         worker_dir(compose_file, key, container),
     );
+    /// What `build.json` says against the container's current inputs.
+    enum Recorded {
+        Missing,
+        /// A build of the other kind: told apart by its image alone, so a new command text of
+        /// the same kind is not a change (spec 5.5).
+        OtherKind,
+        Changes(Vec<Change>),
+    }
     // Blocking: the dependency files are hashed, and a lock file can be large.
-    let checked = tokio::task::spawn_blocking(move || -> Result<Option<Vec<Change>>> {
+    let checked = tokio::task::spawn_blocking(move || -> Result<Recorded> {
         let Some(record) = record::read(&dir)? else {
-            return Ok(None);
+            return Ok(Recorded::Missing);
         };
-        record::changes(&record, &file, &owned_key, &worker).map(Some)
+        if record.image.is_some() != vm {
+            return Ok(Recorded::OtherKind);
+        }
+        record::changes(&record, &file, &owned_key, &worker).map(Recorded::Changes)
     })
     .await;
     let changes = match checked {
-        Ok(Ok(Some(changes))) => changes,
-        Ok(Ok(None)) => return Some(Reason::First),
+        Ok(Ok(Recorded::Changes(changes))) => changes,
+        Ok(Ok(Recorded::OtherKind)) => return Some(Reason::ModeChanged { to_vm: vm }),
+        Ok(Ok(Recorded::Missing)) => return Some(Reason::First),
         Ok(Err(_)) | Err(_) if !log => return None,
         Ok(Err(error)) => {
             stale_check_failed(key, &error.to_string());
@@ -961,9 +986,11 @@ mod tests {
         record::write(&dir, &built).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
         assert_eq!(project.due().await, None);
+    }
 
-        let mut imaged = built.clone();
-        imaged.image = Some(BuildImage {
+    /// The image of a VM build of `api`, from `runtime.base_image: docker.io/iiidev/python`.
+    fn image() -> BuildImage {
+        BuildImage {
             file: "image.erofs".into(),
             build_id: "sha256:1".into(),
             base_image: BuildBaseImage {
@@ -976,9 +1003,50 @@ mod tests {
                 version: "0.4.0".into(),
             },
             contract: BuildContract { major: 1, minor: 3 },
-        });
-        record::write(&dir, &imaged).unwrap();
-        assert_eq!(project.due().await, None);
+        }
+    }
+
+    /// A `build.json` of `api` made by `command`, with `image` for a VM build.
+    fn recorded(command: &str, image: Option<BuildImage>) -> BuildRecord {
+        BuildRecord {
+            schema: SCHEMA,
+            container: "api".into(),
+            source: BuildSource::Path {
+                dir: "./api".into(),
+            },
+            command: command.into(),
+            dependency_files: BTreeMap::new(),
+            image,
+            built_at: "2026-11-10T00:00:00Z".into(),
+        }
+    }
+
+    /// Spec 5.2: a build of the other kind than `scripts.build` makes rebuilds, in either
+    /// direction; another command of the same kind does not (spec 5.5).
+    #[tokio::test]
+    async fn a_build_of_the_other_kind_rebuilds() {
+        let host = project("scripts: {build: 'true', run: x}");
+        let dir = build_dir(&host.file.path, "api");
+        record::write(&dir, &recorded("iii sandbox build", Some(image()))).unwrap();
+        assert_eq!(host.due().await, Some(Reason::ModeChanged { to_vm: false }));
+        record::write(&dir, &recorded("make", None)).unwrap();
+        assert_eq!(host.due().await, None, "another host command rebuilt");
+
+        let vm = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let dir = build_dir(&vm.file.path, "api");
+        record::write(&dir, &recorded("true", None)).unwrap();
+        assert_eq!(vm.due().await, Some(Reason::ModeChanged { to_vm: true }));
+        record::write(&dir, &recorded("iii  sandbox build --x", Some(image()))).unwrap();
+        assert_eq!(vm.due().await, None, "an image of the same kind rebuilt");
+
+        assert_eq!(
+            Reason::ModeChanged { to_vm: true }.describe(),
+            "its build is a host build, and scripts.build now builds a VM image; rebuilding"
+        );
+        assert_eq!(
+            Reason::ModeChanged { to_vm: false }.describe(),
+            "its build is a VM image, and scripts.build now runs on the host; rebuilding"
+        );
     }
 
     /// The failure line on stderr names the failure even when stdout's output comes after it.
@@ -1011,27 +1079,14 @@ mod tests {
 
     /// Spec 5.5 and 10: each kind of change is one line, worded as the spec says, and the
     /// container runs on its build.
-    #[cfg(unix)]
     #[tokio::test]
     async fn an_out_of_date_build_warns_once_per_kind_and_runs() {
-        let project = project("scripts: {build: 'true', run: x}");
-        project.build(None, None).await;
-        let mut record = project.record().unwrap();
-        record.image = Some(BuildImage {
-            file: "image.erofs".into(),
-            build_id: "sha256:1".into(),
-            base_image: BuildBaseImage {
-                declared: Some("docker.io/iiidev/python".into()),
-                reference: "docker.io/iiidev/python:latest".into(),
-                digest: None,
-            },
-            adapter: BuildAdapter {
-                name: "sandbox-libkrun".into(),
-                version: "0.4.0".into(),
-            },
-            contract: BuildContract { major: 1, minor: 3 },
-        });
-        record::write(&build_dir(&project.file.path, "api"), &record).unwrap();
+        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        record::write(
+            &build_dir(&project.file.path, "api"),
+            &recorded("iii sandbox build", Some(image())),
+        )
+        .unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
 
         let (due, lines) = crate::report::capture_daemon_lines(project.due()).await;
