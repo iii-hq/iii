@@ -259,7 +259,8 @@ impl Reason {
     }
 }
 
-fn describe_source(source: &BuildSource) -> String {
+/// A build's source as its log lines name it: `name@version`, or the `path://` directory.
+pub(crate) fn describe_source(source: &BuildSource) -> String {
     match source {
         BuildSource::Package { name, version, .. } => format!("{name}@{version}"),
         BuildSource::Path { dir } => dir.clone(),
