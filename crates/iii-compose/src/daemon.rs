@@ -5126,6 +5126,8 @@ containers:
 
     /// Spec 7.2: an `up` that moves a running generated adapter into ADAPTER_RANGE restarts it
     /// on the new release, and the container that runs its VM through it follows.
+    // Writes an executable shell script, which needs Unix permissions.
+    #[cfg(unix)]
     #[tokio::test]
     async fn up_restarts_a_running_adapter_it_moved_into_range() {
         use sha2::{Digest, Sha256};
