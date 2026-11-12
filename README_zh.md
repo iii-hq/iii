@@ -59,10 +59,11 @@ worker.registerFunction('alerts::big-order', async ({ input }: { input: { total:
 })
 
 // When orders::create runs with a total of 500 or more, alerts::big-order runs
-worker.observe(
+const observer = worker.observe(
   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
   'alerts::big-order',
 )
+await observer.ready()
 
 // Run orders::create now and wait for its result
 const order = await worker.call({ function_id: 'orders::create', payload: { item: 'widget', total: 750 } })
@@ -99,10 +100,18 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interact
 
 ## 快速入门
 
+在第一个终端中创建并启动项目：
+
 ```bash
-iii project init my-app && cd my-app   # create a project
-iii compose --up                       # start the engine and the project's workers
-iii call compose::add worker=http      # add a worker from the registry
+iii project init my-app && cd my-app
+iii compose --up   # start the engine and the project's workers; keep it running
+```
+
+在第二个终端中从注册表添加一个 worker：
+
+```bash
+cd my-app
+iii call compose::add worker=http
 ```
 
 引擎监听 `ws://localhost:49134`。控制台运行在 http://127.0.0.1:3113。下一步请阅读[快速入门](https://iii.dev/docs/quickstart)。

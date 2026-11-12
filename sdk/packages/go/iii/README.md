@@ -95,7 +95,7 @@ The handler's return value is what the function's observers observe.
 ```go
 result, err := client.Call(ctx, iii.CallRequest{
 	FunctionID: "orders::create",
-	Payload:    json.RawMessage(`{"item":"widget"}`),
+	Payload:    json.RawMessage(`{"body":{"item":"widget"}}`),
 })
 
 client.Call(ctx, iii.CallRequest{

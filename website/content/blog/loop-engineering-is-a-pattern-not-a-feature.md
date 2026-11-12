@@ -85,11 +85,11 @@ superfast, basically free, and correct every time.
 
 ## Orchestrating a turn with functions and observers in iii
 
-For the readers new to iii: it is an unreasonably simple approach to
-software engineering. In iii, [everything is a Worker, a Function, or an
-Observer](https://iii.dev/docs/understanding-iii).
-
 > _This post was updated to match iii’s current, optimized execution model._
+
+For the readers new to iii: it is an unreasonably simple approach to
+software engineering. In iii, [everything is a Function, which you call or
+observe](https://iii.dev/docs/understanding-iii).
 
 I used the iii harness, which works directly with iii's one primitive, to
 set up a workflow that scans a GitHub repository for security

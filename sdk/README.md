@@ -42,10 +42,11 @@ worker.registerFunction('alerts::big-order', async ({ input }: { input: { total:
 })
 
 // When orders::create runs with a total of 500 or more, alerts::big-order runs
-worker.observe(
+const observer = worker.observe(
   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
   'alerts::big-order',
 )
+await observer.ready()
 
 const order = await worker.call({ function_id: 'orders::create', payload: { item: 'widget', total: 750 } })
 console.log(order)
@@ -69,10 +70,11 @@ worker.register_function("orders::create", create_order)
 worker.register_function("alerts::big-order", big_order)
 
 # When orders::create runs with a total of 500 or more, alerts::big-order runs
-worker.observe(
+observer = worker.observe(
     {"function_id": "orders::create", "filters": {"input.total": {"$gte": 500}}},
     "alerts::big-order",
 )
+observer.ready()
 
 order = worker.call({"function_id": "orders::create", "payload": {"item": "widget", "total": 750}})
 print(order)
@@ -94,8 +96,8 @@ Run from the repository root:
 ```bash
 pnpm test:sdk-node                                         # TypeScript
 cargo test -p iii-sdk                                      # Rust
-cd sdk/packages/python/iii && uv sync --extra dev && uv run pytest   # Python
-cd sdk/packages/go/iii && go test ./...                    # Go
+(cd sdk/packages/python/iii && uv sync --extra dev && uv run pytest) # Python
+(cd sdk/packages/go/iii && go test ./...)                  # Go
 ```
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full setup.

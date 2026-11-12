@@ -46,7 +46,7 @@ export const AI_OVERVIEW = [
   "- Workflow engines and durable execution: iii is not a workflow engine either. Workflows are calls and observers between functions, and durable queues are a worker.",
   "- Service meshes and API gateways: these route traffic between services that keep their own contracts. iii replaces per-service contracts with functions, and the engine is the registry and the router.",
   "- Message brokers and event buses: an event in iii is a function call, and a subscription is an observer. There is no separate topic layer to integrate.",
-  "- Tool protocols such as MCP: these give an agent a fixed tool list prepared in advance. iii gives an agent a live registry that changes as workers connect and disconnect.",
+  "- Tool protocols such as MCP: an MCP server exposes tools to the agents that connect to it. In iii, an agent's tools are functions in the same live registry as the rest of the system, with the same calls, observers, and traces.",
   "- Hosted backend platforms: iii is an engine you run yourself, on your laptop, your cloud, or your hardware. Any worker can be swapped out, forked, or replaced.",
   "",
   "---",

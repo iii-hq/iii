@@ -59,10 +59,11 @@ worker.registerFunction('alerts::big-order', async ({ input }: { input: { total:
 })
 
 // When orders::create runs with a total of 500 or more, alerts::big-order runs
-worker.observe(
+const observer = worker.observe(
   { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
   'alerts::big-order',
 )
+await observer.ready()
 
 // Run orders::create now and wait for its result
 const order = await worker.call({ function_id: 'orders::create', payload: { item: 'widget', total: 750 } })
@@ -99,10 +100,18 @@ The [install guide](https://iii.dev/docs/install) has all installer options.
 
 ## Quickstart
 
+In one terminal, create and start a project:
+
 ```bash
-iii project init my-app && cd my-app   # create a project
-iii compose --up                       # start the engine and the project's workers
-iii call compose::add worker=http      # add a worker from the registry
+iii project init my-app && cd my-app
+iii compose --up   # start the engine and the project's workers; keep it running
+```
+
+In a second terminal, add a worker from the registry:
+
+```bash
+cd my-app
+iii call compose::add worker=http
 ```
 
 The engine listens on `ws://localhost:49134`. The console serves at http://127.0.0.1:3113. Continue with the [Quickstart](https://iii.dev/docs/quickstart).
