@@ -56,7 +56,7 @@ The engine contains these workers. Each one has a README in [`src/workers/`](src
 | `iii-http-functions` | Functions served by external HTTP endpoints |
 | `iii-stream` | Deprecated. See the [migration guide](https://iii.dev/docs/upgrading/migrate-from-streams). |
 
-All other capabilities (HTTP, cron, queues, state, agents) are workers from the [worker registry](https://iii.dev/registry).
+All other capabilities (HTTP, databases, queues, state, agents) are workers from the [worker registry](https://iii.dev/registry).
 
 ## Build from source
 

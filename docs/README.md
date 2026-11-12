@@ -10,7 +10,7 @@ type: "explanation"
 
 iii is a software system that eliminates integration complexity. It organizes software around one
 primitive, the Function, which you call or observe. Workers host functions, so every capability
-(queues, cron, streaming, sandboxing, observability, agents, frontend UIs) can be built and composed
+(queues, databases, streaming, sandboxing, observability, agents, frontend UIs) can be built and composed
 from the same piece. The rendered documentation site is the canonical reference; this directory
 holds the Mintlify source.
 
