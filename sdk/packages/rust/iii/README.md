@@ -1,6 +1,6 @@
 # iii-sdk
 
-Rust SDK for the [iii engine](https://github.com/iii-hq/iii).
+Rust SDK for the [iii engine](https://iii.dev).
 
 [![crates.io](https://img.shields.io/crates/v/iii-sdk)](https://crates.io/crates/iii-sdk)
 [![docs.rs](https://img.shields.io/docsrs/iii-sdk)](https://docs.rs/iii-sdk)

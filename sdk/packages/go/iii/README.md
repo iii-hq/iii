@@ -1,6 +1,6 @@
 # iii Go SDK
 
-Go SDK for the [iii engine](https://github.com/iii-hq/iii).
+Go SDK for the [iii engine](https://iii.dev).
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/iii-hq/iii/sdk/packages/go/iii.svg)](https://pkg.go.dev/github.com/iii-hq/iii/sdk/packages/go/iii)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)

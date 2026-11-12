@@ -1,6 +1,6 @@
 # iii SDKs
 
-The SDKs connect a program to the [iii engine](../engine/README.md) as a worker. A worker registers functions, calls functions, and observes functions. Every SDK has the same API and speaks the same JSON-over-WebSocket protocol.
+The SDKs connect a program to the [iii engine](https://iii.dev) as a worker. A worker registers functions, calls functions, and observes functions. Every SDK has the same API and speaks the same JSON-over-WebSocket protocol.
 
 ## Packages
 

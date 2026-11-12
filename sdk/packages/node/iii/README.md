@@ -1,6 +1,6 @@
 # iii-sdk
 
-Node.js / TypeScript SDK for the [iii engine](https://github.com/iii-hq/iii).
+Node.js / TypeScript SDK for the [iii engine](https://iii.dev).
 
 [![npm](https://img.shields.io/npm/v/iii-sdk)](https://www.npmjs.com/package/iii-sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../../LICENSE)

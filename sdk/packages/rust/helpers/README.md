@@ -1,6 +1,6 @@
 # iii-helpers
 
-Shared helper primitives across the iii SDKs.
+Shared helper primitives across the [iii](https://iii.dev) SDKs.
 
 OpenTelemetry types are re-exported at `iii_helpers::observability::opentelemetry`.
 Use that path rather than depending on `opentelemetry` directly: the crate pins one

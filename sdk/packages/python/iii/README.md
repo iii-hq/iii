@@ -1,6 +1,6 @@
 # iii-sdk
 
-Python SDK for the [iii engine](https://github.com/iii-hq/iii).
+Python SDK for the [iii engine](https://iii.dev).
 
 [![PyPI](https://img.shields.io/pypi/v/iii-sdk)](https://pypi.org/project/iii-sdk/)
 [![Python](https://img.shields.io/pypi/pyversions/iii-sdk)](https://pypi.org/project/iii-sdk/)
