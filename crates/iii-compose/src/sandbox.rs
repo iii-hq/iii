@@ -352,13 +352,17 @@ pub(crate) async fn prepare_metadata_with_adapter_ahead(
 /// any.
 pub(crate) fn adapter_to_resolve_ahead(file: &ComposeFile) -> Option<String> {
     let adapter = adapter_name(file);
-    // The first pass goes to the registry only for a package with no lock.
-    let resolves = file
+    // The first pass goes to the registry only for a package with no lock, and
+    // the adapter takes a resolve slot of its own: only a spare one, so the
+    // two never exceed the operator's limit.
+    let packages = file
         .containers
         .values()
-        .any(|container| matches!(container.worker, WorkerSource::Package { .. }));
+        .filter(|container| matches!(container.worker, WorkerSource::Package { .. }))
+        .count();
+    let spare = packages < crate::parallelism::max_parallel_resolves();
     let undeclared = adapter_key(file, adapter).ok()?.is_none();
-    (resolves && undeclared && !crate::lockfile::lock_path(&file.path).exists())
+    (packages > 0 && spare && undeclared && !crate::lockfile::lock_path(&file.path).exists())
         .then(|| adapter.to_string())
 }
 
@@ -2263,6 +2267,15 @@ pub(crate) mod tests {
             "containers:\n  w:\n    worker: path://.\n    scripts: { run: echo ready }\n",
         );
         assert_eq!(adapter_to_resolve_ahead(&local), None);
+        // No spare resolve slot for it: the pass already fills the limit.
+        let limit = crate::parallelism::max_parallel_resolves();
+        let full = parse(
+            dir.path(),
+            &(0..limit).fold(String::from("containers:\n"), |text, index| {
+                text + &format!("  w{index}: {{worker: package://w{index}, version: 1.0.0}}\n")
+            }),
+        );
+        assert_eq!(adapter_to_resolve_ahead(&full), None);
         std::fs::write(crate::lockfile::lock_path(&file.path), "").unwrap();
         assert_eq!(adapter_to_resolve_ahead(&file), None);
     }
