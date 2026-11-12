@@ -57,6 +57,10 @@ const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// connection otherwise sat about 30 s before it reset. Even a slow link
 /// delivers some bytes every fraction of a second.
 const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one attempt waits for the response headers: a server that took
+/// the connection and answers nothing is tried again, not waited out for the
+/// whole [`DOWNLOAD_TIMEOUT`] three times.
+const DOWNLOAD_HEADERS_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
 const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1236,18 +1240,23 @@ async fn download_and_extract(
 
 /// One GET of an artefact, hashed as it arrives: the bytes, their digest and
 /// their count. The error says whether fetching it again may help: a
-/// connection that failed or broke off, or a 5xx, may; any other status will
-/// not.
+/// connection that failed, broke off or stalled, or a 5xx, may; any other
+/// status, or an attempt that ran out the whole [`DOWNLOAD_TIMEOUT`] on a link
+/// that slow, will not.
 async fn fetch_artifact(
     client: &reqwest::Client,
     container: &str,
     url: &str,
 ) -> std::result::Result<(Vec<u8>, String, u64), (bool, String)> {
-    let mut response = client
-        .get(url)
-        .send()
+    let mut response = tokio::time::timeout(DOWNLOAD_HEADERS_TIMEOUT, client.get(url).send())
         .await
-        .map_err(|err| (true, err.to_string()))?;
+        .map_err(|_| {
+            (
+                true,
+                format!("no response for {}s", DOWNLOAD_HEADERS_TIMEOUT.as_secs()),
+            )
+        })?
+        .map_err(|err| (!err.is_timeout(), err.to_string()))?;
     if let Err(err) = response.error_for_status_ref() {
         return Err((response.status().is_server_error(), err.to_string()));
     }
@@ -1269,7 +1278,7 @@ async fn fetch_artifact(
                 format!("no data for {}s", DOWNLOAD_STALL_TIMEOUT.as_secs()),
             )
         })?
-        .map_err(|err| (true, err.to_string()))?
+        .map_err(|err| (!err.is_timeout(), err.to_string()))?
     {
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         hasher.update(&chunk);
@@ -1625,7 +1634,7 @@ mod tests {
     }
 
     /// A registry whose artefact answers `first` once, then the archive.
-    async fn registry_failing_once(first: u16) -> MockServer {
+    async fn registry_failing_once(first: ResponseTemplate) -> MockServer {
         let server = MockServer::start().await;
         let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
         let digest = hex::encode(Sha256::digest(&archive));
@@ -1642,7 +1651,7 @@ mod tests {
             .await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/artifact"))
-            .respond_with(ResponseTemplate::new(first))
+            .respond_with(first)
             .up_to_n_times(1)
             .with_priority(1)
             .mount(&server)
@@ -1667,7 +1676,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_download_that_gets_a_server_error_is_fetched_again() {
-        let server = registry_failing_once(503).await;
+        let server = registry_failing_once(ResponseTemplate::new(503)).await;
         let cache = tempfile::tempdir().unwrap();
         install_from_registry("shell", &server.uri(), "shell", "1.0.0", cache.path())
             .await
@@ -1676,8 +1685,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_download_whose_headers_do_not_come_is_fetched_again() {
+        let server = registry_failing_once(
+            ResponseTemplate::new(200).set_delay(DOWNLOAD_HEADERS_TIMEOUT * 5),
+        )
+        .await;
+        let cache = tempfile::tempdir().unwrap();
+        let began = std::time::Instant::now();
+        install_from_registry("shell", &server.uri(), "shell", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        assert!(began.elapsed() < DOWNLOAD_HEADERS_TIMEOUT * 4);
+        assert_eq!(artifact_requests(&server).await, 2);
+    }
+
+    #[tokio::test]
     async fn a_download_the_server_refuses_is_not_fetched_again() {
-        let server = registry_failing_once(404).await;
+        let server = registry_failing_once(ResponseTemplate::new(404)).await;
         let cache = tempfile::tempdir().unwrap();
         let error = install_from_registry("shell", &server.uri(), "shell", "1.0.0", cache.path())
             .await
