@@ -207,6 +207,108 @@ jobs:
       #   run: cargo clippy -p iii -p function-macros -p iii-sdk --all-targets --all-features -- -D warnings
 
   # ──────────────────────────────────────────────────────────────
+  # Unused Dependencies — warnings, never a failure. One job per
+  # language runs .github/scripts/unused_deps.py: cargo-shear (Rust
+  # workspace), knip (Node, the pnpm workspace), deptry (Python, every uv
+  # project) and `go mod tidy -diff` (Go, every module). Each finding is
+  # a warning annotation on its manifest line. Keep an intentional
+  # dependency in the tool's ignore list: [package.metadata.cargo-shear]
+  # or [workspace.metadata.cargo-shear], knip.jsonc, [tool.deptry].
+  # ──────────────────────────────────────────────────────────────
+
+  unused-deps-rust:
+    name: Unused Dependencies - Rust (warning only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # A failed install only makes the check warn that it could not run.
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-shear@1.13.4
+
+      - name: Check unused dependencies
+        run: python3 .github/scripts/unused_deps.py cargo-shear
+
+  unused-deps-node:
+    name: Unused Dependencies - Node (warning only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      # knip reads each project's installed tooling. A failed install only
+      # makes the check warn that it could not run.
+      - name: Install dependencies
+        continue-on-error: true
+        run: pnpm install --frozen-lockfile
+
+      - name: Check unused dependencies
+        run: python3 .github/scripts/unused_deps.py knip
+
+  unused-deps-python:
+    name: Unused Dependencies - Python (warning only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      # deptry runs in each uv project's locked environment. A project whose
+      # environment cannot be set up warns instead of failing.
+      - name: Check unused dependencies
+        run: |
+          set -uo pipefail
+          git ls-files '*pyproject.toml' | while IFS= read -r manifest; do
+            project="$(dirname "$manifest")"
+            [[ -f "$project/uv.lock" ]] || continue
+            uv run --project "$project" --frozen --all-extras --with deptry==0.25.1 \
+              python3 .github/scripts/unused_deps.py deptry --directory "$project" \
+              || echo "::warning title=$project: unused dependencies (deptry)::Could not set up the environment of $project; see the log above."
+          done
+
+  unused-deps-go:
+    name: Unused Dependencies - Go (warning only)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: "**/go.sum"
+
+      # Every module except test fixtures (testdata/).
+      - name: Check unused dependencies
+        run: |
+          set -uo pipefail
+          git ls-files '*go.mod' | while IFS= read -r manifest; do
+            module="$(dirname "$manifest")"
+            [[ "/$module/" == */testdata/* ]] && continue
+            python3 .github/scripts/unused_deps.py go --directory "$module"
+          done
+
+  # ──────────────────────────────────────────────────────────────
   # CLI Docs Built — regenerate docs/next/cli-reference/ from the
   # clap definitions (hidden `gen-cli-docs` subcommands) and fail when
   # the committed pages don't match. Guarantees the published CLI
