@@ -48,6 +48,15 @@ const RESOLVE_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Downloads get their own budget: an artefact is megabytes over a link we do
 /// not control.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+/// A download whose connection fails or breaks off mid-body (a CDN reset reads
+/// as "error decoding response body"), or that gets a 5xx, starts over: one
+/// such break no longer fails a whole `up`.
+const DOWNLOAD_ATTEMPTS: usize = 3;
+const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// A body that sends nothing for this long counts as broken off: a stalled CDN
+/// connection otherwise sat about 30 s before it reset. Even a slow link
+/// delivers some bytes every fraction of a second.
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1191,38 +1200,20 @@ async fn download_and_extract(
         .build()
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
 
-    let mut response = client
-        .get(&artifact.url)
-        .send()
-        .await
-        .and_then(|response| response.error_for_status())
-        .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
-    crate::report::download_started(container, response.content_length());
-
-    let capacity = response
-        .content_length()
-        .and_then(|length| usize::try_from(length).ok())
-        .unwrap_or_default()
-        .min(8 * 1024 * 1024);
-    let mut bytes = Vec::with_capacity(capacity);
-    let mut hasher = Sha256::new();
-    let mut downloaded = 0_u64;
-    loop {
-        let chunk = match response.chunk().await {
-            Ok(Some(chunk)) => chunk,
-            Ok(None) => break,
-            Err(err) => {
-                crate::report::download_failed(container);
-                return Err(download_error(container, &artifact.url, &err.to_string()));
+    let mut attempt = 1;
+    let (bytes, digest, downloaded) = loop {
+        match fetch_artifact(&client, container, &artifact.url).await {
+            Ok(fetched) => break fetched,
+            Err((true, _)) if attempt < DOWNLOAD_ATTEMPTS => {
+                attempt += 1;
+                tokio::time::sleep(DOWNLOAD_RETRY_DELAY).await;
             }
-        };
-        downloaded = downloaded.saturating_add(chunk.len() as u64);
-        hasher.update(&chunk);
-        bytes.extend_from_slice(&chunk);
-        crate::report::download_progress(container, downloaded);
-    }
-
-    let digest = hex::encode(hasher.finalize());
+            Err((_, message)) => {
+                crate::report::download_failed(container);
+                return Err(download_error(container, &artifact.url, &message));
+            }
+        }
+    };
     if !digest.eq_ignore_ascii_case(&artifact.sha256) {
         crate::report::download_failed(container);
         return Err(ComposeError::PackageDigestMismatch {
@@ -1241,6 +1232,51 @@ async fn download_and_extract(
         extract_and_publish(bytes, &install_dir, &archive_sha256, &cancel)
     })
     .await
+}
+
+/// One GET of an artefact, hashed as it arrives: the bytes, their digest and
+/// their count. The error says whether fetching it again may help: a
+/// connection that failed or broke off, or a 5xx, may; any other status will
+/// not.
+async fn fetch_artifact(
+    client: &reqwest::Client,
+    container: &str,
+    url: &str,
+) -> std::result::Result<(Vec<u8>, String, u64), (bool, String)> {
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| (true, err.to_string()))?;
+    if let Err(err) = response.error_for_status_ref() {
+        return Err((response.status().is_server_error(), err.to_string()));
+    }
+    crate::report::download_started(container, response.content_length());
+
+    let capacity = response
+        .content_length()
+        .and_then(|length| usize::try_from(length).ok())
+        .unwrap_or_default()
+        .min(8 * 1024 * 1024);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut hasher = Sha256::new();
+    let mut downloaded = 0_u64;
+    while let Some(chunk) = tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, response.chunk())
+        .await
+        .map_err(|_| {
+            (
+                true,
+                format!("no data for {}s", DOWNLOAD_STALL_TIMEOUT.as_secs()),
+            )
+        })?
+        .map_err(|err| (true, err.to_string()))?
+    {
+        downloaded = downloaded.saturating_add(chunk.len() as u64);
+        hasher.update(&chunk);
+        bytes.extend_from_slice(&chunk);
+        crate::report::download_progress(container, downloaded);
+    }
+    Ok((bytes, hex::encode(hasher.finalize()), downloaded))
 }
 
 /// Checks between chunks of one large archive entry, not only between files.
@@ -1586,6 +1622,71 @@ mod tests {
             .unwrap();
         archive.write_all(body).unwrap();
         archive.finish().unwrap().into_inner()
+    }
+
+    /// A registry whose artefact answers `first` once, then the archive.
+    async fn registry_failing_once(first: u16) -> MockServer {
+        let server = MockServer::start().await;
+        let archive = executable_archive(b"#!/bin/sh\nexit 0\n");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let url = format!("{}/artifact", server.uri());
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"graph": [{
+                    "name": "shell", "version": "1.0.0", "type": "binary",
+                    "binaries": { (host_target()): { "sha256": digest, "url": url } },
+                }]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(first))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn artifact_requests(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| request.url.path() == "/artifact")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_download_that_gets_a_server_error_is_fetched_again() {
+        let server = registry_failing_once(503).await;
+        let cache = tempfile::tempdir().unwrap();
+        install_from_registry("shell", &server.uri(), "shell", "1.0.0", cache.path())
+            .await
+            .unwrap();
+        assert_eq!(artifact_requests(&server).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_download_the_server_refuses_is_not_fetched_again() {
+        let server = registry_failing_once(404).await;
+        let cache = tempfile::tempdir().unwrap();
+        let error = install_from_registry("shell", &server.uri(), "shell", "1.0.0", cache.path())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ComposeError::PackageDownloadFailed { .. }),
+            "{error:?}"
+        );
+        assert_eq!(artifact_requests(&server).await, 1);
     }
 
     #[tokio::test]
