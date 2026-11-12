@@ -30,11 +30,13 @@ English | [简体中文](README_zh.md)
 
 </div>
 
-## What is iii
+## Why iii
 
-iii (pronounced "three eye") is an engine and one open protocol (JSON over WebSocket). Services, agents, and tools connect to the engine as **workers**. Each worker registers **functions**. Every call between them goes through the engine.
+Every service comes with its own runtime, API, and failure modes. Connecting them takes gateways, retries, sync, tracing, and glue code that needs maintenance forever. Each new service adds integration work with every service already in the stack: four services have six possible integration edges, and twenty have 190.
 
-Each new service usually adds integration work with every service already in the stack. Four services have six possible integration edges. Twenty services have 190. With iii, adding two workers or two hundred is the same operation.
+iii removes that work with one primitive, the **Function**. Services, agents, and tools connect to one engine as workers, and everything they can do is a function that any other worker can call or observe, in any language and on any machine. HTTP routes, queues, database changes, agents, and business logic all work the same way, so adding the two-hundredth worker is the same operation as adding the second.
+
+The result is a system that is composable, observable, discoverable, extensible, and reactive. See [Built for C.O.D.E.R.](#built-for-coder).
 
 ## One primitive: the Function
 
