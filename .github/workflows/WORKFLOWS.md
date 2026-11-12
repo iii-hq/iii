@@ -66,18 +66,17 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `unused-deps-python` | — | deptry in each uv project's locked environment (the `dev` extra counts as development dependencies). Warning only |
 | `unused-deps-go` | — | `go mod tidy -diff` in each Go module except `testdata/`. Warning only |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
-| `sdk-test-workers` | — | Builds the `state`, `http`, `pubsub`, `cron` and `queue` workers from `iii-hq/workers` at `sdk/fixtures/workers-ref` against this checkout's Rust SDK (`scripts/ci/sdk-test-workers.sh build`), uploads them as the `sdk-test-workers` artifact. Cached on the workers commit and the Rust SDK sources |
-| `sdk-node-ci` | `engine-build`, `sdk-test-workers` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
-| `sdk-node-browser-ci` | `engine-build`, `sdk-test-workers` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
-| `sdk-python-ci` | `engine-build`, `sdk-test-workers` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
-| `sdk-rust-ci` | `engine-build`, `sdk-test-workers` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
-| `sdk-go-ci` | `engine-build`, `sdk-test-workers` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
+| `sdk-node-ci` | `engine-build` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
+| `sdk-node-browser-ci` | `engine-build` | Type check, build, unit tests, start engine, run `iii-browser-sdk` integration tests |
+| `sdk-python-ci` | `engine-build` | Lint (ruff), type check (mypy), start engine, run pytest. Matrix: Python 3.10/3.11/3.12 |
+| `sdk-rust-ci` | `engine-build` | Fmt, clippy and tests for `iii-sdk`, `iii-helpers`, `iii-observability`, `iii-filter` against a live engine |
+| `sdk-go-ci` | `engine-build` | gofmt, vet, race unit tests, start engine, run `-tags integration` tests |
 
-All SDK tests download the engine binary and the `sdk-test-workers` artifacts, write fixture variants whose containers run those workers (`scripts/ci/sdk-test-workers.sh fixtures`), and start a live engine instance from them before running.
+All SDK tests download the engine binary artifact and start a live engine instance from the committed `sdk/fixtures` configurations before running.
 
 The `unused-deps-*` jobs never fail: `.github/scripts/unused_deps.py` turns every unused (or misplaced) dependency into a warning annotation on its manifest line, and a check that cannot run into one warning. Keep an intentional dependency in the tool's ignore list: `ignored` under `[package.metadata.cargo-shear]` / `[workspace.metadata.cargo-shear]`, `ignoreDependencies` in `knip.jsonc`, or `[tool.deptry]` in the project's `pyproject.toml`.
 
-Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`, so the committed `Cargo.lock` is what gets tested; the Makefile targets omit it for local use. The `sdk-test-workers` build runs without it: its `[patch.crates-io]` override resolves each worker's own lockfile to this checkout's SDK crates.
+Every `cargo build|test|clippy|bench|nextest` invocation in CI passes `--locked`, so the committed `Cargo.lock` is what gets tested; the Makefile targets omit it for local use.
 
 ---
 
