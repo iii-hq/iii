@@ -217,6 +217,8 @@ jobs:
   unused-deps:
     name: Unused Dependencies (warning only)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -230,18 +232,21 @@ jobs:
         with:
           tool: cargo-shear@1.13.4
 
-      # cargo-shear exits 1 on findings and 2 when it cannot run. Both end
-      # as warnings: findings as annotations on the manifest lines, errors
-      # as one annotation pointing at the log.
+      # cargo-shear reports error-level findings (unused or misplaced
+      # dependencies) with exit 1, warning-level ones (unused optional or
+      # feature-only dependencies, ...) as ::warning with exit 0, and exits 2
+      # when it cannot run. Every case ends as warnings: findings as
+      # annotations on the manifest lines, a failed run as one annotation
+      # pointing at the log.
       - name: Check unused dependencies
         run: |
           set -uo pipefail
           status=0
           output="$(cargo shear --locked --format=github 2>&1)" || status=$?
-          findings="$(grep '^::error ' <<< "$output" || true)"
+          findings="$(grep -E '^::(error|warning|notice) ' <<< "$output" || true)"
           if [[ -n "$findings" ]]; then
             sed 's/^::error /::warning /' <<< "$findings"
-            echo "::warning title=Unused dependencies::cargo-shear found unused or misplaced dependencies. Run 'cargo shear --fix', or list an intentional one under [package.metadata.cargo-shear] ignored."
+            echo "::warning title=Unused dependencies::cargo-shear reported dependency findings. Run 'cargo shear --fix', or list an intentional one under [package.metadata.cargo-shear] ignored."
           elif (( status != 0 )); then
             printf '%s\n' "$output"
             echo "::warning title=Unused dependencies::cargo-shear could not run (exit $status); see the log above."
