@@ -6,7 +6,7 @@ const MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 const PATTERN_PERIOD = 97
 const PATTERN_CYCLE = PATTERN_PERIOD * ALPHABET.length
-const LINK = 'https://iii.dev/docs/creating-workers/channels#payload-size'
+const LINK = 'https://iii.dev/docs/creating-workers/streaming#payload-size'
 const sdk = registerWorker(process.env.JSON_SIZE_TEST_URL!, {
   workerName: 'json-size-node',
   enableMetricsReporting: false,
@@ -30,7 +30,7 @@ function assertPattern(value: unknown, size: number, marker: string): asserts va
 
 function checkLimitMessage(message: string): void {
   const match =
-    /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(
+    /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use streams for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/streaming#payload-size$/.exec(
       message,
     )
   assert.ok(match, message)

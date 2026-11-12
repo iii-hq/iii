@@ -2,13 +2,13 @@
 
 The iii-stream worker (its `set` / `get` / `delete` / `list` / `list_groups` / `list_all` / `send` / `update` functions, its `stream::on-changed`, `stream::on-join` and `stream::on-leave` sources, and the dedicated Streams WebSocket) is deprecated (iii-stream) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-streams
 
-These three recipes rebuild what applications used iii-stream for with SDK primitives that already exist: function registration, a worker-owned observable source, observers and channels. None of them calls an iii-stream function or observes an iii-stream source, and they all run on an engine **without** iii-stream.
+These three recipes rebuild what applications used iii-stream for with SDK primitives that already exist: function registration, a worker-owned observable source, observers and call-native streams. None of them calls an iii-stream function or observes an iii-stream source, and they all run on an engine **without** iii-stream.
 
 | Recipe | Existing requirement | Replaces | Replacement |
 |---|---|---|---|
 | [`owned-source.ts`](./owned-source.ts) | Ephemeral change/lifecycle notification | iii-stream `set` / `send` used only to notify; observing iii-stream changes or the Streams WebSocket to listen | The domain worker hosts its own private source (`orders::on-changed`) with `args_format`, matched by keys; consumers observe it |
 | [`stored-records.ts`](./stored-records.ts) | Queryable records with live updates | iii-stream `set` / `get` / `list` / `delete` as a generic KV store plus observing it | Explicit storage owned by the domain worker, `tasks::get` + paginated `tasks::list`, and a `tasks::on-changed` source called after commit with `{ id, revision, op }`; consumers do an initial read, reconcile by revision and resync after reconnect |
-| [`channel.ts`](./channel.ts) | Continuous content for one operation | Writing progress or partial output into stream items per job and watching them over the WebSocket | A channel created for the operation, with an explicit lifetime (deadline, cancel, close) and bounded buffering |
+| [`channel.ts`](./channel.ts) | Continuous content for one operation | Writing progress or partial output into stream items per job and watching them over the WebSocket | A pipe created for the operation (`iii.pipe()`), its `OutputStream` end passed in the call, with an explicit lifetime (deadline, cancel, close) and bounded buffering |
 
 A notification is not a database or a durable event log. If consumers need history or replay, keep and query a source of truth (recipe 2); do not rebuild an unbounded event store.
 
@@ -21,7 +21,7 @@ A notification is not a database or a durable event log. If consumers need histo
 | iii-stream `send` (ephemeral event) | `iii.call({ function_id: '<worker>::on-changed', payload: event })`: iii delivers it to the observers whose args and filters match. iii-stream `send` already skips the KV write but still depends on iii-stream and has a different event envelope, so switching `set` to `send` is not a migration |
 | Observing `stream::on-changed` with filters on `{ stream_name, group_id }` | `iii.observe({ function_id: '<worker>::on-changed', args: { ...validated by args_format } }, target)` |
 | Groups, `stream:join` / `stream:leave`, the Streams `auth_function` | A required tenant/scope key in the observer's args that `args_format` requires and `onObservationMatch` files observers under; who may observe is enforced with worker-manager RBAC. A transport change alone does not reproduce these policies |
-| Browser or Streams WebSocket subscription | The Browser SDK observes the same sources (it is a worker too); long content goes over a channel |
+| Browser or Streams WebSocket subscription | The Browser SDK observes the same sources (it is a worker too); long content goes over a stream |
 
 ## What each recipe demonstrates
 
@@ -40,8 +40,9 @@ A notification is not a database or a durable event log. If consumers need histo
 - Recovery: after a reconnect (`getConnectionState()` back to `connected`) or a restart with a cached view, the consumer re-queries everything and settles deletions through the tombstone revision. A failed read is retried as one resync with capped backoff.
 
 **`channel.ts`** (producer `reports`, caller)
-- The caller creates the channel (`createChannel(iii, 16)`, bounded engine buffer) and passes `writerRef` in the call. The producer writes NDJSON lines and awaits `'drain'`, so its local buffer stays at the Writable high-water mark. The reader's `Readable` pauses the socket when full, and one line is capped at 64 KiB.
-- Lifetime: the producer always ends the writer (done, deadline or error). The caller has its own deadline and can stop early with `reports::cancel` plus closing its end. The producer caps concurrent operations and yields to the event loop so it can see a cancel.
+- The caller creates the pipe (`iii.pipe({ bufferSize: 16 })`, bounded engine buffer) and passes its `output` end in the call; the SDK sends its ref, and the producer receives an `OutputStream`. The producer awaits each `out.write(line)`, so one NDJSON line is in flight at a time. The caller reads `pipe.input` (an `InputStream`), which pauses its socket when its queue is full, and one line is capped at 64 KiB.
+- Lifetime: the producer always closes the stream (done, deadline or error). The caller has its own deadline and can stop early with `reports::cancel` plus leaving its read loop, which cancels its end (the producer's next write then fails). The producer caps concurrent operations and yields to the event loop so it can see a cancel.
+- The self-checks call the handler directly with a local sink: `OutputStream.to(writable)`.
 
 ## Run them
 

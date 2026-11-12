@@ -64,13 +64,22 @@ describe('Package Exports', () => {
     expect(Object.keys(stateModule).length).toBeGreaterThan(0)
   })
 
-  it('should export channel symbols from the subpath only, not the root', async () => {
-    const ch = await import('../src/channel')
-    expect(ch.ChannelReader).toBeDefined()
-    expect(ch.ChannelWriter).toBeDefined()
+  it('exports the stream types from the root, and no channel API', async () => {
     const root = (await import('../src/index')) as Record<string, unknown>
-    expect(root.ChannelReader).toBeUndefined()
-    expect(root.ChannelWriter).toBeUndefined()
+    expect(typeof root.InputStream).toBe('function')
+    expect(typeof root.OutputStream).toBe('function')
+    expect(typeof root.StreamAbortedError).toBe('function')
+    for (const removed of ['ChannelReader', 'ChannelWriter', 'Channel', 'createChannel']) {
+      expect(root[removed]).toBeUndefined()
+    }
+  })
+
+  it('has no iii-sdk/channel subpath', async () => {
+    const pkg = (await import('../package.json', { with: { type: 'json' } })).default as {
+      exports: Record<string, unknown>
+    }
+    expect(pkg.exports['./channel']).toBeUndefined()
+    expect(pkg.exports['./protocol']).toBeDefined()
   })
 
   it('should import the runtime subpath module', async () => {

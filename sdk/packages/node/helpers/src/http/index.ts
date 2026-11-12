@@ -48,8 +48,8 @@ export type HttpRequest<TBody = unknown> = {
   headers: Record<string, string | string[]>
   /** HTTP method of the request (e.g. `GET`, `POST`). */
   method: string
-  /** Streaming reader for the raw request body. */
-  request_body: HttpStreamReader
+  /** The raw request body, as an `InputStream` of `iii-sdk`: read it, or pass it on unread. */
+  request_body: HttpInputStream
 }
 
 /**
@@ -76,22 +76,35 @@ export type HttpResponse<TStatus extends number = number, TBody = string | Buffe
   body?: TBody
 }
 
+/** One frame of {@link HttpInputStream.frames}: bytes, or a text message. */
+type HttpStreamFrame = { type: 'binary'; value: Buffer } | { type: 'text'; value: string }
+
 /**
- * Structural shape of the reader end of a stream channel. Declared locally so
- * the helpers package does not runtime-depend on the core SDK.
+ * Structural shape of the `InputStream` of `iii-sdk` (the read side of a
+ * stream). Declared locally so the helpers package does not depend on the
+ * core SDK.
  */
-type HttpStreamReader = {
-  stream: NodeJS.ReadableStream
-  readAll: () => Promise<Buffer>
-  onMessage: (callback: (msg: string) => void) => void
-  close: () => void
+type HttpInputStream = AsyncIterable<Buffer> & {
+  bytes: () => Promise<Buffer>
+  text: () => Promise<string>
+  lines: () => AsyncIterableIterator<string>
+  messages: <T = unknown>() => AsyncIterableIterator<T>
+  frames: () => AsyncIterableIterator<HttpStreamFrame>
+  cancel: () => Promise<void>
+  tee: () => [HttpInputStream, HttpInputStream]
+  toReadable: () => NodeJS.ReadableStream
+  toWebStream: () => ReadableStream<Uint8Array>
 }
 
-/** Structural shape of the writer end of a stream channel. */
-type HttpStreamWriter = {
-  sendMessage: (message: string) => unknown
-  stream: NodeJS.WritableStream
-  close: () => unknown
+/** Structural shape of the `OutputStream` of `iii-sdk` (the write side of a stream). */
+type HttpOutputStream = {
+  write: (chunk: Uint8Array | string) => Promise<void>
+  send: (message: unknown) => Promise<void>
+  close: () => Promise<void>
+  abort: (reason?: string | Error) => Promise<void>
+  keepOpen: () => HttpOutputStream
+  toWritable: () => NodeJS.WritableStream
+  toWebStream: () => WritableStream<Uint8Array>
 }
 
 /** Structural shape of a streaming request passed to the {@link http} handler. */
@@ -101,23 +114,39 @@ type HttpStreamingRequest = {
   body: unknown
   headers: Record<string, string | string[]>
   method: string
-  request_body: HttpStreamReader
+  request_body: HttpInputStream
 }
 
 /** Structural shape of the streaming response passed to the {@link http} handler. */
 type HttpStreamingResponse = {
-  status: (statusCode: number) => void
-  headers: (headers: Record<string, string>) => void
+  /** Sets the status code: a `set_status` message on the response stream. */
+  status: (statusCode: number) => Promise<void>
+  /** Sets response headers: a `set_headers` message on the response stream. */
+  headers: (headers: Record<string, string>) => Promise<void>
+  /** Writes a chunk of the body. */
+  write: (chunk: Uint8Array | string) => Promise<void>
+  /** A Writable for the body (pipe into it); ending it ends the response. */
   stream: NodeJS.WritableStream
-  close: () => void
+  /** Ends the response. */
+  close: () => Promise<void>
 }
 
 /** Structural shape of the internal request delivered by the runtime. */
-type HttpInternalRequest = HttpStreamingRequest & { response: HttpStreamWriter }
+type HttpInternalRequest = HttpStreamingRequest & { response: HttpOutputStream }
+
+/** `p`, marked handled: a status or header that is not awaited does not crash the process when it fails. */
+function quiet(p: Promise<void>): Promise<void> {
+  p.catch(() => undefined)
+  return p
+}
 
 /**
  * Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
- * into the function handler format expected by the SDK.
+ * into the function handler format expected by the SDK. `res.status()` and
+ * `res.headers()` send the `set_status` / `set_headers` messages the HTTP
+ * worker reads; the body goes through `res.write()` or `res.stream`. The SDK
+ * closes a response the handler used when it returns, and aborts it when it
+ * throws; return an `HttpResponse` instead for a buffered response.
  *
  * @param callback - Async handler receiving a streaming request and response.
  * @returns A function handler compatible with `IIIClient.registerFunction`.
@@ -129,10 +158,9 @@ type HttpInternalRequest = HttpStreamingRequest & { response: HttpStreamWriter }
  * worker.registerFunction(
  *   'my-api',
  *   http(async (req, res) => {
- *     res.status(200)
- *     res.headers({ 'content-type': 'application/json' })
- *     res.stream.end(JSON.stringify({ hello: 'world' }))
- *     res.close()
+ *     await res.status(200)
+ *     await res.headers({ 'content-type': 'application/json' })
+ *     await res.write(JSON.stringify({ hello: 'world' }))
  *   }),
  * )
  * ```
@@ -143,13 +171,18 @@ export const http = (
 ) => {
   return async (req: HttpInternalRequest) => {
     const { response, ...request } = req
+    let stream: NodeJS.WritableStream | undefined
 
     const httpResponse: HttpStreamingResponse = {
-      status: (status_code: number) => response.sendMessage(JSON.stringify({ type: 'set_status', status_code })),
-      headers: (headers: Record<string, string>) =>
-        response.sendMessage(JSON.stringify({ type: 'set_headers', headers })),
-      stream: response.stream,
-      close: () => response.close(),
+      status: (status_code: number) => quiet(response.send({ type: 'set_status', status_code })),
+      headers: (headers: Record<string, string>) => quiet(response.send({ type: 'set_headers', headers })),
+      write: (chunk: Uint8Array | string) => quiet(response.write(chunk)),
+      // Opened on first use: a response the handler never touches stays untouched.
+      get stream() {
+        stream ??= response.toWritable()
+        return stream
+      },
+      close: () => quiet(response.close()),
     }
 
     return callback(request, httpResponse)
