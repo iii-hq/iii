@@ -49,7 +49,7 @@ common functionality for your Worker, look in these two places first.
   <Card title="Worker manifest" href="./worker-manifest" icon="file-code">
     Provision and start a Worker from `iii.worker.yaml`.
   </Card>
-  <Card title="Channels" href="./channels" icon="stream">
-    Stream large or binary payloads between Workers.
+  <Card title="Streaming" href="./streaming" icon="stream">
+    Send, return, and forward streams of bytes or messages between Functions.
   </Card>
 </CardGroup>

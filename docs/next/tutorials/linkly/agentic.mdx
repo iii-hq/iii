@@ -525,10 +525,10 @@ iii call link::click_summary
 The exploratory [Ch. 5: Stream live clicks](./streaming) explains the feed function, `private`
 functions and the `onObserverAdded` hook, and shows a terminal listener for the feed.
 
-## Ch. 6: Move bulk data with channels
+## Ch. 6: Move bulk data with a stream
 
 Sometimes users will arrive with a CSV of thousands of links to load at once. This chapter adds a
-bulk-importer that reads the rows off a channel and creates each link. As always we're utilizing
+bulk-importer that reads the rows off a stream and creates each link. As always we're utilizing
 existing functionality to **extend** our application. A well built iii application never needs to
 special case tasks like bulk imports because everything shares the same interface: Workers,
 Functions, and Observers.
@@ -540,24 +540,26 @@ browser. When we say iii is **extensible** we mean it.
 <CodeGroup>
 
 ```text Prompt
-Bulk-load links from a CSV in a single streamed upload over a channel.
+Bulk-load links from a CSV in a single streamed upload, sent as a stream in the call payload.
 
-- Create a bulk-importer worker that accepts a channel, reads CSV rows, and calls link::create for
-  each. Skip a row whose code is already taken (link::create's error message ends with "is already
-  taken"; never match the database's error text) instead of aborting the batch, but re-throw
-  anything else (a timeout, a worker that is down). Return the imported and skipped counts.
-- Create channel-client/import-links.js: a Node script that opens a channel and streams a small CSV
-  of links to the importer. Take the CSV path as an OPTIONAL argument that defaults to test.csv, so
-  `node channel-client/import-links.js` runs with no arguments.
+- Create a bulk-importer worker whose function receives the CSV as an InputStream, reads it line
+  by line, and calls link::create for each row. Skip a row whose code is already taken
+  (link::create's error message ends with "is already taken"; never match the database's error
+  text) instead of aborting the batch, but re-throw anything else (a timeout, a worker that is
+  down). Return the imported and skipped counts.
+- Create channel-client/import-links.js: a Node script that calls the importer with the CSV file
+  as a stream in the payload (a createReadStream of the file). Take the CSV path as an OPTIONAL
+  argument that defaults to test.csv, so `node channel-client/import-links.js` runs with no
+  arguments.
 - Create an example CSV for the user (example.csv). Do not import it. For the client's test run,
   create test.csv with exactly two rows whose codes are mylink and mydocslink (any https URLs).
 
 Agree on the import_csv payload shape first, then run two subagents on separate files at the same
 time:
-- Subagent A: the bulk-importer worker (read the CSV off the channel, skip a rejected row but
+- Subagent A: the bulk-importer worker (read the CSV off the stream, skip a rejected row but
   re-throw other failures, return the imported and skipped counts) and add it with compose.
-- Subagent B: channel-client/import-links.js (open a channel, stream the CSV, call
-  bulk-importer::import_csv).
+- Subagent B: channel-client/import-links.js (call bulk-importer::import_csv with the CSV file as
+  a stream in the payload).
 
 When it works, tell me to continue to the next chapter of the Linkly tutorial.
 ```
@@ -579,7 +581,8 @@ the result.
 
 From the CLI, run `iii call link::resolve code=mylink`.
 
-Visit [Ch. 6: Move bulk data with channels](./channels) to understand channels and `createChannel`.
+Visit [Ch. 6: Move bulk data with a stream](./channels) to understand how a stream travels in a call
+payload.
 
 ## Ch. 7: Bring in the browser
 

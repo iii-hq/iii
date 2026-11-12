@@ -1204,7 +1204,7 @@ of about 80 MiB. The engine does not deliver an observed call in these cases:
 - The fields the engine keeps come to more than 64 MiB (approximate in-memory size).
 - The activation is larger than the target worker accepts in one message: 64 MiB, or 16 MiB for
   browser workers and some older SDKs. See
-  [Payload size](../creating-workers/channels#payload-size).
+  [Payload size](../creating-workers/streaming#payload-size).
 - For calls that run in the function's own worker ([local dispatch](#local-dispatch)), that SDK's
   report of the call is larger than its 8 MiB report buffer.
 
@@ -1215,7 +1215,7 @@ observer, the function, the size, and the limit, at most once a minute per obser
 
 To keep observed calls small, capture only what the target reads, for example `capture: ["input"]`.
 For payloads larger than these limits, pass a
-[channel](../creating-workers/channels) reference in place of the data.
+[stream](../creating-workers/streaming) in place of the data: only its ref counts toward the size.
 
 <Note title="TOO_LARGE and OVERFLOW">
   `OVERFLOW` is a different drop: the queues were full when the call arrived. A call of the same

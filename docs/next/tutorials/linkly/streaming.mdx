@@ -271,5 +271,5 @@ removes it once the grace period (30 seconds by default) ends without a reconnec
 Linkly now pushes every click to its listeners in real time: `click-streamer` observes
 `link::record_click` and runs its `click-streamer::on-click` feed once per click, and every listener
 observes the feed. The `clicks` table stays the source of truth behind `link::click_summary`. Next,
-in [Ch. 6: Move bulk data with channels](./channels), you bulk-load links from a CSV in a single
+in [Ch. 6: Move bulk data with a stream](./channels), you bulk-load links from a CSV in a single
 streamed upload.

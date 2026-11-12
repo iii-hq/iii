@@ -3,7 +3,7 @@ name: iii-core-primitives
 description: >-
   Use when registering iii functions, calling them (call with sync, void, or enqueue), observing
   functions and event sources, creating workers, inspecting the live worker registry, installing
-  registry workers, moving channel data, or adapting external HTTP functions across TypeScript,
+  registry workers, streaming data between functions, or adapting external HTTP functions across TypeScript,
   Python, and Rust.
 ---
 
@@ -235,8 +235,11 @@ iii.observe(
   overrides iii's defaults with `onObserverAdded` (set up from `obs.args`), `onObserverRemoved`
   (tear down), `onObservationMatch` (which observers want each call), and `onObservationDeliver`
   (deliver each call itself and return what the caller gets). See `iii-observe`.
-- **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
-  JSON payloads. Pass `readerRef` or `writerRef` through a function payload.
+- **Streams**: for binary or streaming data that should not be serialized into JSON, put a stream in
+  the payload or the result (a Node `Readable`, a Python async generator or
+  `InputStream.from_file()`, a Rust `InputStream::from_reader()`). The other side receives an
+  `InputStream` to read, or an `OutputStream` for a sink. Use `iii.pipe()` only when the stream must
+  exist before its data. Go and the browser SDK keep `CreateChannel` / `createChannel` in 0.27.
 - **HTTP-invoked functions**: use `HttpInvocationConfig` for legacy APIs, third-party endpoints, or
   immutable services. Use environment variable names for auth fields, not raw secrets.
 - **Schemas**: Rust can derive request/response schemas with `schemars::JsonSchema`; Python can use
@@ -245,7 +248,7 @@ iii.observe(
 ## When to Use
 
 - Use this skill for function registration, calling functions, invocation mode decisions, worker
-  creation, worker registry access, the built-in source functions and their args, channels, and
+  creation, worker registry access, the built-in source functions and their args, streams, and
   HTTP-invoked functions.
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 

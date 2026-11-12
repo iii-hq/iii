@@ -21,6 +21,14 @@
     {
       "source": "/next/how-to/use-trigger-conditions",
       "destination": "/next/reference/filters"
+    },
+    {
+      "source": "/next/understanding-iii/channels",
+      "destination": "/next/understanding-iii/streaming"
+    },
+    {
+      "source": "/next/creating-workers/channels",
+      "destination": "/next/creating-workers/streaming"
     }
   ],
   "theme": "mint",
@@ -125,7 +133,7 @@
                   "next/understanding-iii/engine",
                   "next/understanding-iii/compose",
                   "next/understanding-iii/namespaces",
-                  "next/understanding-iii/channels"
+                  "next/understanding-iii/streaming"
                 ]
               },
               {
@@ -147,12 +155,13 @@
                   "next/creating-workers/functions",
                   "next/creating-workers/observable-functions",
                   "next/creating-workers/worker-manifest",
-                  "next/creating-workers/channels"
+                  "next/creating-workers/streaming"
                 ]
               },
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-26-x",
                   "next/upgrading/from-0-25-x",
                   "next/upgrading/sandbox-worker",
                   "next/upgrading/from-0-24-x",
