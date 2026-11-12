@@ -249,7 +249,24 @@ pub async fn send_cli_update_failed(target_binary: &str, from_version: &str, err
 }
 
 pub async fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
-    if let Some(event) = build_event(
+    if let Some(event) = project_init_succeeded(with_docker, project_id) {
+        send_before_exit(event).await;
+    }
+}
+
+/// [`send_project_init_succeeded`] on a task of its own, for a command that
+/// goes on running after it: wait for it with [`wait_for_report`] before the
+/// command exits.
+pub(crate) fn spawn_project_init_succeeded(
+    with_docker: bool,
+    project_id: &str,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let event = project_init_succeeded(with_docker, project_id)?;
+    Some(tokio::spawn(send_direct(event)))
+}
+
+fn project_init_succeeded(with_docker: bool, project_id: &str) -> Option<ProductEvent> {
+    build_event(
         "project_init_succeeded",
         serde_json::json!({
             "with_docker": with_docker,
@@ -257,9 +274,7 @@ pub async fn send_project_init_succeeded(with_docker: bool, project_id: &str) {
             "install_method": environment::detect_install_method(),
         }),
         None,
-    ) {
-        send_before_exit(event).await;
-    }
+    )
 }
 
 pub async fn send_project_init_failed(stage: &str, error: &str) {
@@ -458,6 +473,43 @@ mod tests {
         }
         restore_home();
         assert_eq!(delivered, vec![1, 2, 3, 4]);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn a_success_sent_beside_the_tour_holds_nothing_and_still_arrives() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        clear_opt_out_vars();
+        let _home = isolated_home();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/batch/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+        unsafe {
+            env::set_var("POSTHOG_HOST", server.uri());
+        }
+
+        let began = std::time::Instant::now();
+        let sending = spawn_project_init_succeeded(false, "project-1");
+        let held = began.elapsed();
+        wait_for_report(sending).await;
+        let delivered = server.received_requests().await.unwrap_or_default().len();
+
+        unsafe {
+            env::remove_var("POSTHOG_HOST");
+        }
+        restore_home();
+        assert!(
+            held < std::time::Duration::from_millis(100),
+            "held for {held:?}"
+        );
+        assert_eq!(delivered, 1);
     }
 
     #[tokio::test]

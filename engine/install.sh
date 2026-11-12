@@ -118,6 +118,15 @@ iii_emit_event() {
     >/dev/null 2>&1 || true
 }
 
+# The success path's events go out while the install carries on: the binary
+# sends each on its own and gives up after 3 s, and nothing here waits for the
+# network. The telemetry IDs exist before the first one (see below), so these
+# sends only read them and race nothing. A non-interactive shell runs them
+# with SIGINT ignored, so a Ctrl+C at the next prompt does not cut them short.
+iii_emit_event_in_background() {
+  iii_emit_event "$1" "$2" &
+}
+
 # ---------------------------------------------------------------------------
 # GitHub API
 # ---------------------------------------------------------------------------
@@ -634,16 +643,20 @@ fi
 # ---------------------------------------------------------------------------
 
 telemetry_emitter="$bin_file"
+# Best-effort: have the binary initialize its telemetry IDs, in the foreground
+# and with no network, before any event is sent beside the install.
+# Older binaries won't have this flag — silently skip.
+"$bin_file" --install-only-generate-ids >/dev/null 2>&1 || true
 if [ "$install_event_prefix" = "upgrade" ]; then
   payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
     "$(json_str "$from_version")" "$(json_str "$release_version")" "$(json_str "$BIN_NAME")")
-  iii_emit_event "upgrade_started" "$payload"
+  iii_emit_event_in_background "upgrade_started" "$payload"
 else
   payload=$(printf '{"install_method":"sh","target_binary":%s,"os":%s,"arch":%s}' \
     "$(json_str "$BIN_NAME")" \
     "$(json_str "$(echo "$uname_s" | tr '[:upper:]' '[:lower:]')")" \
     "$(json_str "$uname_m")")
-  iii_emit_event "install_started" "$payload"
+  iii_emit_event_in_background "install_started" "$payload"
 fi
 
 install_bin "$bin_file" "$bin_dir/$BIN_NAME" \
@@ -661,19 +674,20 @@ fi
 # Telemetry: success
 # ---------------------------------------------------------------------------
 
+# Sent from the installed binary: the one in $tmpdir goes with the EXIT trap,
+# maybe before a job started this late has run it. A `*_started` job was
+# started before the copy, and the only early exit after it (`err`) first
+# runs a synchronous event from that same binary.
+telemetry_emitter="$bin_dir/$BIN_NAME"
 if [ "$install_event_prefix" = "upgrade" ]; then
   payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
     "$(json_str "$from_version")" "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
-  iii_emit_event "upgrade_succeeded" "$payload"
+  iii_emit_event_in_background "upgrade_succeeded" "$payload"
 else
   payload=$(printf '{"installed_version":%s,"install_method":"sh","target_binary":%s}' \
     "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
-  iii_emit_event "install_succeeded" "$payload"
+  iii_emit_event_in_background "install_succeeded" "$payload"
 fi
-
-# Best-effort: have the binary initialize its telemetry IDs.
-# Older binaries won't have this flag — silently skip.
-"$bin_dir/$BIN_NAME" --install-only-generate-ids >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # Post-install verification
