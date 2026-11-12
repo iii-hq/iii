@@ -52,7 +52,7 @@ graph TD
   External["external event (request, timer, queue, ...)"] -->|"native protocol"| Provider
 ```
 
-Every edge to the engine is a WebSocket. An event-source worker terminates some native protocol — an inbound request, a timer, a queue message — and calls one of its functions (`http::on-request`, `cron::on-tick`, `queue::on-message`) once per event; observers of that function run.
+Every edge to the engine is a WebSocket. An event-source worker terminates some native protocol — an inbound request, a database write, a queue message — and calls one of its functions (`http::on-request`, `database::on-row-changed`, `queue::on-message`) once per event; observers of that function run.
 
 ## Need a capability? Discover before you build — in this order
 
@@ -159,7 +159,7 @@ Rule of thumb: if a retry might succeed, throw; if it will fail the same way, re
 
 ## Observers — discover the function, don't hardcode it
 
-Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `cron::on-tick`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
+Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `database::on-row-changed`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
 
 ```jsonc
 // engine::functions::list             → every function, event sources included.

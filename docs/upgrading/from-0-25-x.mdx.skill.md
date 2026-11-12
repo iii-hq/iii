@@ -3,8 +3,7 @@
 
 iii 0.26 has one primitive, the Function, with two operators: call and observe. Workers host
 functions. `iii.observe(a, b)` means: when `a` runs, `b` runs. That is how a worker reacts to
-anything, whether `a` is a plain function, a cron tick, an HTTP request, a queue message, or a row
-change.
+anything, whether `a` is a plain function, an HTTP request, a queue message, or a row change.
 
 - **Triggers are removed.** Every trigger type is an observable function (`cron` is
   `cron::on-tick`), and every trigger is an observer of that function. The trigger's `config`

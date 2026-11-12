@@ -18,8 +18,8 @@ two operators:
 **Workers** host functions. A worker is a process that connects to the engine, registers functions,
 and calls and observes them.
 
-Everything is reactive. An HTTP request, a cron tick, a queue message, and a state change are each a
-call of a source function (`http::on-request`, `cron::on-tick`, `queue::on-message`,
+Everything is reactive. An HTTP request, a database write, a queue message, and a state change are each a
+call of a source function (`http::on-request`, `database::on-row-changed`, `queue::on-message`,
 `state::on-changed`), so observing that function is how work starts on the event. See `iii-observe`.
 
 Use `::` in function IDs, leading slashes in HTTP `path` args, and `expression` for cron args.
@@ -33,7 +33,7 @@ iii should call an existing external endpoint.
 | --- | --- |
 | `registerFunction(id, handler, options?)` | Local worker code |
 | `registerFunction(id, HttpInvocationConfig, options?)` | Existing HTTP services |
-| `observe(source, target, options?)` | Running `target` when `source` runs: another function, an HTTP route, a cron schedule, a queue topic, an engine event (`iii-observe`) |
+| `observe(source, target, options?)` | Running `target` when `source` runs: another function, an HTTP route, a database change, a queue topic, an engine event (`iii-observe`) |
 | `call({ function_id, payload, action?, timeoutMs? })` | Calling any function by ID |
 
 Functions and observers can carry metadata for ownership, discovery, and generated skills. Do not

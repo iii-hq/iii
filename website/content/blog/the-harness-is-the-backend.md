@@ -102,16 +102,16 @@ more broadly as our abstraction completely encapsulates the execution context
 of "the backend". So we built iii to make that abstraction available to
 everyone.
 
-iii works just like my description above:
+> _This post was updated to match iii’s current, optimized execution model._
 
-- A **Function** is a unit of work with a stable identifier (e.g. `orders::validate`) that receives input and optionally returns output. It can live in any process, in any language.
-- An **Observer** connects two functions: when the source runs, the target runs. An HTTP request, a cron tick, a queue message, and a state change are each a call of a source function (`http::on-request`, `cron::on-tick`, `queue::on-message`, `state::on-changed`). Observers are declarative: the worker says "this function runs when that one runs," and iii handles routing, serialization, and delivery.
-- A **Worker** is any process that connects to the engine, registers functions, and calls them.
+iii works just like my description above. It has one primitive, the **Function**, and two operators:
+
+- A **Function** is a unit of work with a stable identifier (e.g. `orders::validate`) that receives input and optionally returns output. It can live in any process, in any language. You **call** it to run it now.
+- You **observe** a function to run another function when it runs. An HTTP request, a database write, a queue message, and a state change are each a call of a source function (`http::on-request`, `database::on-row-changed`, `queue::on-message`, `state::on-changed`). Observers are declarative: the worker says "this function runs when that one runs," and iii handles routing, serialization, and delivery.
+- A **Worker** is any process that connects to the engine and hosts functions. It is where functions run, not a second primitive.
 
 A TypeScript API service is a worker. A Python ML pipeline is a worker. A Rust
 microservice is a worker. And an agent is a worker.
-
-> _This post was updated to match iii’s current, optimized execution model._
 
 This is the idea that changes everything. An agent connects to the engine,
 registers functions and observers, persists context through `state::set`,

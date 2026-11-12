@@ -203,9 +203,9 @@ Function itself restricts it.
 
 This is how everything in iii is reactive. A Worker that produces events exposes each kind of event
 as a Function and calls it when the event happens: each HTTP request is a call of
-`http::on-request`, each cron tick a call of `cron::on-tick`, each queue message a call of
-`queue::on-message`, each state write a call of `state::on-changed`, and each row change a call of
-`database::on-row-changed`. Reacting to any of them is the same `observe`.
+`http::on-request`, each queue message a call of `queue::on-message`, each state write a call of
+`state::on-changed`, and each row change a call of `database::on-row-changed`. Reacting to any of
+them is the same `observe`.
 
 ### What an Observer sees
 
@@ -218,27 +218,30 @@ capturing `error` gets it the failed calls of the observed Function too.
 ### Args and filters
 
 Some Functions take `args` from each Observer. The route of an `http::on-request` Observer and the
-schedule of a `cron::on-tick` Observer are `args`:
+table of a `database::on-row-changed` Observer are `args`:
 
 ```typescript
 worker.observe(
-  { function_id: "cron::on-tick", args: { expression: "0 0 9 * * * *" } },
-  "reports::daily-summary",
+  {
+    function_id: "database::on-row-changed",
+    args: { db: "primary", table: "orders", ops: ["insert", "update"] },
+  },
+  "orders::project",
 );
 ```
 
-`args` are for the Function's Worker: the cron Worker reads `expression` and runs that schedule. The
-documentation of each Function lists the `args` it takes. `filters` are for iii: they select which
-calls run the target, by the call's input, output, error, caller, and metadata, for example only
-orders with a total of 500 or more.
+`args` are for the Function's Worker: the database Worker reads `db`, `table`, and `ops` and
+captures those row changes. The documentation of each Function lists the `args` it takes. `filters`
+are for iii: they select which calls run the target, by the call's input, output, error, caller, and
+metadata, for example only orders with a total of 500 or more.
 
 ### Defaults a Worker can override
 
 By default iii accepts every Observer and runs the target of each one whose filters match. The
-Worker that hosts a Function can override these defaults, for example to start the cron job an
-Observer's `expression` asks for, or to give each HTTP request to the Observer of its route; see
-[Observable functions](../creating-workers/observable-functions). The http, cron, queue, and
-database Workers use this to set up a route, schedule, consumer, or capture for each Observer.
+Worker that hosts a Function can override these defaults, for example to capture the table an
+Observer's `args` name, or to give each HTTP request to the Observer of its route; see
+[Observable functions](../creating-workers/observable-functions). The http, queue, and database
+Workers use this to set up a route, consumer, or capture for each Observer.
 
 The Engine and the observability Worker also host Functions for their own events, such as
 `engine::on-functions-changed`, `engine::on-workers-changed`, `engine::on-observers-changed`,

@@ -172,7 +172,7 @@ browser tab as a first-class participant? Add a worker." And: "Unix won on
 bet for the entire software stack." The bet is not that agents are different from
 traditional software. The bet is the opposite: that the same primitive --
 the Function, called and observed -- that models a message queue also models an agent loop,
-a cron job, a pub/sub subscriber, and a sub-agent orchestrator. The harness
+a database trigger, a pub/sub subscriber, and a sub-agent orchestrator. The harness
 worker is that primitive, composed.
 
 The developer who built the Korean translation pipeline did not fail because the

@@ -28,8 +28,9 @@ operators: you **call** a function, or you **observe** it. `call(a)` runs functi
 capability in every system can be built from functions and these two operators: queues, cron,
 streaming, sandboxing, observability, agents, business logic, devices, even frontend browser UIs.
 
-An HTTP request is a call of `http::on-request`, a cron tick is a call of `cron::on-tick`, and a
-queue message is a call of `queue::on-message`. Reacting to any of them is the same `observe`.
+An HTTP request is a call of `http::on-request`, a database write is a call of
+`database::on-row-changed`, and a queue message is a call of `queue::on-message`. Reacting to any of
+them is the same `observe`.
 
 ## Have a Need? Add a Worker
 
@@ -60,11 +61,11 @@ iii gives agents the same runtime the whole system already runs on. This makes i
 agentic. In iii an agent is a worker and can, with permission, act on every part of the system
 through the shared system runtime.
 
-Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is
-calls and observers. The agent does not call out to a separate "agent runtime" to do work. The runtime is the
-rest of the system. An agent that hits a task outside its current capabilities can register a worker
-at runtime, expose new functions, and extend the system it operates inside. That is what makes iii
-different.
+Agents are workers. An agent's tools are functions. Its memory is state. Its orchestration is calls
+and observers. The agent does not call out to a separate "agent runtime" to do work. The runtime is
+the rest of the system. An agent that hits a task outside its current capabilities can register a
+worker at runtime, expose new functions, and extend the system it operates inside. That is what
+makes iii different.
 
 Humans and agents share one mental model. A new engineer is productive on day one because the mental
 model never changes from one capability to the next. AI agents can reliably reason about an entire

@@ -106,7 +106,7 @@ encapsulate everything else, and two operators:
   process in any language. Functions invoke other functions through
   `call()`. The engine handles routing, serialization, and delivery.
 - **Observing** a function runs another function when it runs. An HTTP request, a
-  cron tick, a queue message, a state change, and a stream event are each a
+  database write, a queue message, a state change, and a stream event are each a
   call of a source function, so observing it binds that event to any
   function. Observers are declarative. The function doesn't change when you
   add a new way to invoke it.
