@@ -1,11 +1,11 @@
 //! Product configuration trait for CLI binaries
 //!
-//! This trait defines the interface that each product (motia, iii) must implement
+//! This trait defines the interface that each product (e.g. iii) must implement
 //! to configure the scaffolding behavior for their specific needs.
 
 /// Configuration trait for different CLI products
 ///
-/// Each product (motia, iii) implements this trait to define:
+/// Each product (e.g. iii) implements this trait to define:
 /// - Product identity (name, display name)
 /// - Template source URLs
 /// - Tool dependencies

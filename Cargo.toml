@@ -12,7 +12,6 @@ members = [
   "crates/iii-filter",
   "crates/iii-sandbox-contract",
   "crates/scaffolder-core",
-  "crates/motia-tools",
 ]
 
 [workspace.package]
