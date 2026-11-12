@@ -124,7 +124,14 @@ async fn run_init(args: InitArgs) -> i32 {
         return run_learn_iii(args).await;
     }
     if template_flow_requested(&args) {
-        return run_init_with_template(args).await;
+        let docker = args.docker;
+        return match run_init_with_template(args).await {
+            Ok(project_id) => {
+                crate::cli::telemetry::send_project_init_succeeded(docker, &project_id).await;
+                0
+            }
+            Err(code) => code,
+        };
     }
 
     let target = args.target_dir().map(|s| s.to_string());
@@ -252,7 +259,10 @@ async fn run_init(args: InitArgs) -> i32 {
     0
 }
 
-async fn run_init_with_template(args: InitArgs) -> i32 {
+/// The template flow up to its `project_init_succeeded`, which is the
+/// caller's to send: the id it reports for, or the exit code of a failure
+/// already reported.
+async fn run_init_with_template(args: InitArgs) -> Result<String, i32> {
     // Restore terminal cursor on panic and on Ctrl+C — scaffolder runs an
     // interactive TUI via cliclack and we don't want to leave the cursor hidden.
     let default_panic = std::panic::take_hook();
@@ -298,7 +308,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
             "see scaffolder output above",
         );
         crate::cli::telemetry::send_project_init_failed("scaffolder", &e.to_string()).await;
-        return code;
+        return Err(code);
     }
 
     let project_id_for_event = if let Some(root) = target_dir.as_ref() {
@@ -326,7 +336,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
                         );
                         crate::cli::telemetry::send_project_init_failed("fetcher", &e.to_string())
                             .await;
-                        return code;
+                        return Err(code);
                     }
                 };
                 if let Err(e) = apply_docker(&mut fetcher, root, &device_id).await {
@@ -337,7 +347,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
                     );
                     crate::cli::telemetry::send_project_init_failed("apply_docker", &e.to_string())
                         .await;
-                    return code;
+                    return Err(code);
                 }
             }
 
@@ -350,8 +360,7 @@ async fn run_init_with_template(args: InitArgs) -> i32 {
         String::new()
     };
 
-    crate::cli::telemetry::send_project_init_succeeded(args.docker, &project_id_for_event).await;
-    0
+    Ok(project_id_for_event)
 }
 
 const LEARN_III_TEMPLATE: &str = "harness";
@@ -369,14 +378,25 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
     args.template = Some(LEARN_III_TEMPLATE.to_string());
     args.directory = Some(dir.to_string_lossy().into_owned());
 
-    let code = run_init_with_template(args).await;
-    if code != 0 {
-        return code;
-    }
+    let docker = args.docker;
+    // Sent while the tour runs, and waited for only once it ends: the process
+    // stays up for the whole tour, so nothing is lost by not holding the tour
+    // for it.
+    let succeeded = match run_init_with_template(args).await {
+        Ok(project_id) => crate::cli::telemetry::spawn_project_init_succeeded(docker, &project_id),
+        Err(code) => return code,
+    };
+    let code = run_tour(&dir).await;
+    crate::cli::telemetry::wait_for_report(succeeded).await;
+    code
+}
 
+/// Seeds the tour's container into the project at `dir` and runs
+/// `iii compose --up` there, for as long as the tour lasts.
+async fn run_tour(dir: &Path) -> i32 {
     // The tour's own worker is declared in the compose file, not added at
     // runtime.
-    seed_onboarding_container(&dir);
+    seed_onboarding_container(dir);
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -405,7 +425,7 @@ async fn run_learn_iii(mut args: InitArgs) -> i32 {
 
     let code = match tokio::process::Command::new(exe)
         .args(["compose", "--up"])
-        .current_dir(&dir)
+        .current_dir(dir)
         .status()
         .await
     {
