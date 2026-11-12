@@ -5,10 +5,6 @@
 //! definition. Constants are also drawn from [`runtime::tool::iii_tool`]
 //! where possible to keep docs/install URLs in a single place.
 //!
-//! See `crates/motia-tools/src/main.rs` for the parallel `MotiaConfig` impl
-//! (which lives in its own binary because that binary is published
-//! separately as `motia-tools`).
-//!
 //! [`ProductConfig`]: crate::ProductConfig
 
 use crate::product::ProductConfig;

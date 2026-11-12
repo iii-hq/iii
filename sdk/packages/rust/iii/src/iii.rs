@@ -1884,6 +1884,10 @@ impl RegisterFunction {
     }
 }
 
+/// The first retry before a worker has ever connected; it doubles up to
+/// [`ConnTimings::retry_delay`].
+const FIRST_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 /// Connection-loop timings.
 ///
 /// Private knobs — unit tests shorten them to exercise reconnect paths
@@ -3139,6 +3143,7 @@ impl IIIClient {
         // back in the report buffer.
         let mut reports: Vec<PreparedEnvelope> = Vec::new();
         let mut has_connected_before = false;
+        let mut first_attempts: u32 = 0;
 
         while self.inner.running.load(Ordering::SeqCst) {
             let t = *self.inner.timings.lock_or_recover();
@@ -3351,7 +3356,18 @@ impl IIIClient {
             }
 
             if self.inner.running.load(Ordering::SeqCst) {
-                sleep(t.retry_delay).await;
+                // Before the first connection the engine is usually still
+                // starting (a worker spawned beside it): try again soon, then
+                // back off to `retry_delay`.
+                let delay = if has_connected_before {
+                    t.retry_delay
+                } else {
+                    first_attempts = first_attempts.saturating_add(1);
+                    t.retry_delay.min(
+                        FIRST_RETRY_DELAY.saturating_mul(2u32.saturating_pow(first_attempts - 1)),
+                    )
+                };
+                sleep(delay).await;
             }
         }
         // stopped (shutdown or a fatal rejection)
@@ -4593,6 +4609,10 @@ mod tests {
     async fn spawn_ws_server(silent: bool) -> (std::net::SocketAddr, Arc<AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        (addr, serve_ws(listener, silent))
+    }
+
+    fn serve_ws(listener: tokio::net::TcpListener, silent: bool) -> Arc<AtomicUsize> {
         let handshakes = Arc::new(AtomicUsize::new(0));
         let counter = handshakes.clone();
         tokio::spawn(async move {
@@ -4614,7 +4634,7 @@ mod tests {
                 });
             }
         });
-        (addr, handshakes)
+        handshakes
     }
 
     fn client_with_timings(addr: std::net::SocketAddr, timings: ConnTimings) -> IIIClient {
@@ -4639,6 +4659,22 @@ mod tests {
             }
             sleep(Duration::from_millis(25)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn the_first_connect_retries_soon_while_the_engine_is_still_starting() {
+        // Nothing listens there yet, as when a worker starts beside its engine.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let iii = client_with_timings(addr, ConnTimings::default());
+        sleep(Duration::from_millis(150)).await;
+        let handshakes = serve_ws(tokio::net::TcpListener::bind(addr).await.unwrap(), false);
+
+        let n = wait_for_count(&handshakes, 1, Duration::from_millis(1500)).await;
+        iii.shutdown_async().await;
+        assert_eq!(n, 1, "the first connect waited the whole retry delay");
     }
 
     #[tokio::test]

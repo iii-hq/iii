@@ -1002,26 +1002,26 @@
               {
                 "group": "Engine protocol",
                 "pages": [
-                  "0-21-0/sdk-reference/engine-sdk"
+                  "0-21-0/reference/engine-protocol"
                 ]
               },
               {
                 "group": "Language SDKs",
                 "expanded": true,
                 "pages": [
-                  "0-21-0/api-reference/sdk-node",
-                  "0-21-0/api-reference/sdk-python",
-                  "0-21-0/api-reference/sdk-rust",
-                  "0-21-0/api-reference/sdk-browser"
+                  "0-21-0/reference/sdk-node",
+                  "0-21-0/reference/sdk-python",
+                  "0-21-0/reference/sdk-rust",
+                  "0-21-0/reference/sdk-browser"
                 ]
               },
               {
                 "group": "Helpers",
                 "expanded": true,
                 "pages": [
-                  "0-21-0/api-reference/helpers-node",
-                  "0-21-0/api-reference/helpers-python",
-                  "0-21-0/api-reference/helpers-rust"
+                  "0-21-0/reference/helpers-node",
+                  "0-21-0/reference/helpers-python",
+                  "0-21-0/reference/helpers-rust"
                 ]
               },
               {

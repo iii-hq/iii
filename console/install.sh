@@ -6,7 +6,6 @@
 # binary was removed in iii 0.25.0 in favour of the iii console in ADE
 # (MOT-3619), so this script installs nothing: it only tells anyone who still
 # runs the old one-liner where to go, and fails so a pipeline notices.
-# It mirrors CONSOLE_REMOVED_NOTICE in engine/src/cli/mod.rs.
 # =============================================================================
 
 cat >&2 <<'MSG'

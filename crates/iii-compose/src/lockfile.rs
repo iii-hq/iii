@@ -430,7 +430,7 @@ where
             }
         }))
         // Overlap registry requests without changing which declared failure is reported first.
-        .buffered(crate::parallelism::max_parallel_workers());
+        .buffered(crate::parallelism::max_parallel_resolves());
 
     while let Some(result) = resolutions.next().await {
         let (key, entry) = result?;
@@ -897,11 +897,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metadata_resolution_overlaps_requests_with_the_compose_limit() {
+    async fn metadata_resolution_overlaps_requests_with_the_resolve_limit() {
         use std::cell::Cell;
 
         let dir = tempfile::tempdir().unwrap();
-        let limit = crate::parallelism::max_parallel_workers();
+        let limit = crate::parallelism::max_parallel_resolves();
         let count = limit + 1;
         let mut yaml = String::from("containers:\n");
         for index in 0..count {

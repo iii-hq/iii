@@ -51,7 +51,7 @@ sdk/packages/go/iii/             Go SDK (github.com/iii-hq/iii/sdk/packages/go/i
 skills/                          8 agent skills (auto-discovered by SkillKit)
 docs/                            Documentation site (Mintlify/MDX)
 website/                         iii.dev website
-website/presentations/           Tech-spec presentations site (iii.dev/tech-specs/) — SOP in its README
+website/roadmap/                 Tech-spec roadmap: spec pages and decks (iii.dev/roadmap/) — SOP in its README
 tech-specs/                      Markdown-only specs; frontmatter in each README.md lists it on the site
 scripts/                         Build and CI scripts
 ```
