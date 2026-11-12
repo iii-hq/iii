@@ -25,6 +25,11 @@ iii-example = "src.main:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
+[tool.deptry.package_module_name_map]
+# The editable path install of iii-sdk carries no top-level metadata, so deptry
+# cannot tell that it provides the `iii` module (CI unused-dependency check).
+iii-sdk = "iii"
+
 [tool.ruff]
 line-length = 120
 target-version = "py310"
