@@ -15,9 +15,9 @@ tokens as they are generated, or for the output of a long job. For small JSON, u
 
 <Note>
   The TypeScript (Node), Python, and Rust examples use the stream API of the 0.27 SDKs. The Go SDK
-  and the browser SDK are unchanged in 0.27: they keep the channel API, and the Go tabs show it. See
-  [Go and the browser SDK](#go-and-the-browser-sdk). To move code from the channel API, see
-  [Upgrading from 0.26.x](../upgrading/from-0-26-x).
+  and the browser SDK keep the channel API in 0.27, and the Go tabs show it. See [Go and the browser
+  SDK](#go-and-the-browser-sdk). To move code from the channel API, see [Upgrading from
+  0.26.x](../upgrading/from-0-26-x).
 </Note>
 
 ## Send a stream to a function
@@ -1306,11 +1306,12 @@ limit is not delivered: the observer counts a `TOO_LARGE` drop and the engine lo
 
 Use a stream for payloads above **64 MiB**. A stream carries its bytes outside the JSON function
 envelope, so only its ref counts toward the limit. See
-[Send a stream to a function](#send-a-stream-to-a-function).
+[Send a stream to a function](#send-a-stream-to-a-function). In the Go SDK and the browser SDK, a
+stream is a channel: see [Go and the browser SDK](#go-and-the-browser-sdk).
 
 ## Go and the browser SDK
 
-The Go SDK and the browser SDK are unchanged in 0.27. They keep the channel API:
+The Go SDK and the browser SDK keep the channel API in 0.27:
 
 - **Go:** `worker.CreateChannel(ctx, bufferSize)` returns a channel with a `Writer`, a `Reader`, a
   `WriterRef`, and a `ReaderRef`. A handler finds refs in its payload with `iii.ExtractChannelRefs`

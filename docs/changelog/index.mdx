@@ -11,9 +11,9 @@ type: "reference"
   The TypeScript (Node), Python, and Rust SDKs replace the Channels API with call-native streams. A
   stream is a value of a call: put a file, a readable, or a generator in a payload or a result, and
   the function on the other side receives an `InputStream` to read; put a writable or a file to
-  create there, and it receives an `OutputStream` to write. This release changes only the SDKs: the
-  engine, its channel functions, and the wire are unchanged. It is a breaking change for the workers
-  whose SDK you upgrade; workers on 0.26 SDKs need no change. See
+  create there, and it receives an `OutputStream` to write. The engine, its channel functions, and
+  the wire are unchanged, except for the text of `payload_too_large` errors. It is a breaking
+  change for the workers whose SDK you upgrade; workers on 0.26 SDKs need no change. See
   [Upgrading from 0.26.x](/next/upgrading/from-0-26-x).
 
   - The SDK finds streams in what it sends, call payloads and handler results, creates one pipe per
@@ -65,7 +65,8 @@ type: "reference"
   - The HTTP worker's `request_body` and `response` are an `InputStream` and an `OutputStream`. The
     status and the headers are messages (`response.send({ type: "set_status", status_code })`), and
     the body is bytes (`response.write(chunk)`). The JSON the HTTP worker reads is unchanged.
-  - The `payload_too_large` error links to
+  - The `payload_too_large` error of the engine and of every SDK, Go and browser included, says `Use
+    streams for larger payloads` and links to
     [Streaming / Payload size](/next/creating-workers/streaming#payload-size).
 
   See [Streaming](/next/creating-workers/streaming) and
@@ -95,7 +96,7 @@ type: "reference"
     A worker you move to a 0.27 TypeScript, Python, or Rust SDK must replace its channel code in the
     same change: the old names have no deprecated aliases. Workers on 0.26 SDKs keep working on the
     same engine, and refs cross between old and new SDKs in both directions. The Go SDK and the
-    browser SDK are unchanged in 0.27 and keep the channel API. See
+    browser SDK keep the channel API in 0.27. See
     [Upgrading from 0.26.x](/next/upgrading/from-0-26-x).
   </Callout>
 </Update>

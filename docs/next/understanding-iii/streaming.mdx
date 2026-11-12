@@ -205,8 +205,8 @@ makes through an observer, such as the HTTP worker's call of a route with its `r
 
 ## Old and new SDKs
 
-The engine and the wire are unchanged: a 0.26 engine serves 0.27 SDKs, and the ref JSON is the same
-for every SDK. Workers on old and new SDKs work together in one project:
+The wire is unchanged: a 0.26 engine serves 0.27 SDKs, and the ref JSON is the same for every SDK.
+Workers on old and new SDKs work together in one project:
 
 - A ref that a 0.26 SDK, the Go SDK, or the browser SDK sends arrives in a 0.27 handler as an
   `InputStream` or an `OutputStream`, and in a 0.27 call result the same way.

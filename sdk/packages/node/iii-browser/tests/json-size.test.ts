@@ -5,7 +5,7 @@ import type { ISdk } from '../src/types'
 import { MockEngine, type MockWebSocket } from './mock-websocket'
 
 const LIMIT = 16 * 1024 * 1024
-const LINK = 'https://iii.dev/docs/creating-workers/channels#payload-size'
+const LINK = 'https://iii.dev/docs/creating-workers/streaming#payload-size'
 const message = (data: string) => ({ type: MessageType.InvokeFunction, data })
 
 type Internal = ISdk & {
@@ -45,7 +45,7 @@ function expectPayloadTooLarge(error: unknown, size: number) {
   expect(error).toMatchObject({
     name: 'InvocationError',
     code: 'payload_too_large',
-    message: `payload_too_large: Serialized JSON envelope is ${size} bytes; limit is ${LIMIT} bytes. Use channels for larger payloads: ${LINK}`,
+    message: `payload_too_large: Serialized JSON envelope is ${size} bytes; limit is ${LIMIT} bytes. Use streams for larger payloads: ${LINK}`,
   })
 }
 
@@ -102,7 +102,7 @@ describe('Browser JSON frame size', () => {
       }),
     ).byteLength
     expect((rejection as Error).message).toBe(
-      `payload_too_large: Serialized JSON envelope is ${serializedBytes} bytes; limit is ${LIMIT} bytes. Use channels for larger payloads: ${LINK}`,
+      `payload_too_large: Serialized JSON envelope is ${serializedBytes} bytes; limit is ${LIMIT} bytes. Use streams for larger payloads: ${LINK}`,
     )
     expect(sdk.invocations.size).toBe(0)
     expect(sdk.messagesToSend).toHaveLength(0)
@@ -134,7 +134,7 @@ describe('Browser JSON frame size', () => {
     expect(result).not.toHaveProperty('result')
     // The wire body carries the bare message; the code travels in `code`, not as a message prefix.
     expect((result?.error as { message: string }).message).toMatch(
-      /^Serialized JSON envelope is \d+ bytes; limit is 16777216 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/,
+      /^Serialized JSON envelope is \d+ bytes; limit is 16777216 bytes\. Use streams for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/streaming#payload-size$/,
     )
     expect(socket.readyState).toBe(WebSocket.OPEN)
     await sdk.call({ function_id: 'browser::still-open', payload: {}, action: { type: 'void' } })

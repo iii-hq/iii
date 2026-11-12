@@ -3918,9 +3918,9 @@ impl EngineTrait for Engine {
 
 fn payload_too_large_error(size: usize, limit: usize, requires_upgrade: bool) -> ErrorBody {
     let remediation = if requires_upgrade {
-        " It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+        " It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use streams: https://iii.dev/docs/creating-workers/streaming#payload-size"
     } else {
-        " Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+        " Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
     };
     ErrorBody::new(
         "payload_too_large",
@@ -3935,7 +3935,7 @@ fn inbound_payload_too_large_error(size: u64, limit: usize) -> ErrorBody {
     ErrorBody::new(
         "payload_too_large",
         format!(
-            "Serialized JSON envelope is {size} bytes; the engine reads up to {limit} bytes from a worker. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            "Serialized JSON envelope is {size} bytes; the engine reads up to {limit} bytes from a worker. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
         ),
     )
 }
@@ -9078,7 +9078,7 @@ mod tests {
 
         assert_eq!(
             error.message,
-            "Serialized JSON envelope is 20 bytes; target worker accepts up to 16 bytes. It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use channels: https://iii.dev/docs/creating-workers/channels#payload-size"
+            "Serialized JSON envelope is 20 bytes; target worker accepts up to 16 bytes. It did not declare large-messages.v1 (SDK 0.25.0 or later), and the version it reports is older than 0.24.5 or unknown. Upgrade the target worker SDK to 0.25.0 or later, or use streams: https://iii.dev/docs/creating-workers/streaming#payload-size"
         );
         assert_eq!(
             protocol_message_type(&Message::WorkerRegistered {

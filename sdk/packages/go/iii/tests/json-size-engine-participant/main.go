@@ -22,7 +22,7 @@ const (
 	patternAlphabet   = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
 
-var sizeMessage = regexp.MustCompile(`^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https://iii\.dev/docs/creating-workers/channels#payload-size$`)
+var sizeMessage = regexp.MustCompile(`^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use streams for larger payloads: https://iii\.dev/docs/creating-workers/streaming#payload-size$`)
 
 func expectedByte(index int, marker byte) byte {
 	return patternAlphabet[(index%patternPeriod+int(marker))%len(patternAlphabet)]

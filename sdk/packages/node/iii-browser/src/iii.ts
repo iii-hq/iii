@@ -110,10 +110,10 @@ export type TelemetryOptions = {
 // Browser WebSocket APIs expose no control over framing, so outbound JSON is limited to the 16 MiB single-frame size.
 const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
 const JSON_ENCODER = new TextEncoder()
-const PAYLOAD_SIZE_DOCS = 'https://iii.dev/docs/creating-workers/channels#payload-size'
+const PAYLOAD_SIZE_DOCS = 'https://iii.dev/docs/creating-workers/streaming#payload-size'
 
 function payloadTooLargeMessage(size: number): string {
-  return `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for larger payloads: ${PAYLOAD_SIZE_DOCS}`
+  return `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use streams for larger payloads: ${PAYLOAD_SIZE_DOCS}`
 }
 
 function createPayloadTooLargeError(size: number, functionId?: string): InvocationError {

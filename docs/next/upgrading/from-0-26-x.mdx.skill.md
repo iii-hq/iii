@@ -11,9 +11,11 @@ writable or a file to create there, and it receives an `OutputStream` to write.
   `create_channel_async`, `reader_ref`, `writer_ref`; Rust `iii_sdk::helpers::create_channel` and
   `iii_sdk::channel::*`) give way to `InputStream` and `OutputStream`, and to `iii.pipe()` for an
   explicit pipe. This is a breaking change with no deprecated aliases.
-- **The engine and the wire are unchanged.** A 0.26 engine serves 0.27 SDKs, and a ref has the same
-  JSON in every SDK, so workers on 0.26 and 0.27 SDKs work together in one project.
-- **Go and the browser SDK are unchanged in 0.27.** They keep the channel API.
+- **The wire is unchanged.** A 0.26 engine serves 0.27 SDKs, and a ref has the same JSON in every
+  SDK, so workers on 0.26 and 0.27 SDKs work together in one project. The 0.27 engine changes only
+  the text of its `payload_too_large` errors.
+- **Go and the browser SDK keep the channel API in 0.27.** Their `payload_too_large` error now links
+  to [Streaming / Payload size](../creating-workers/streaming#payload-size).
 
 ## Before you upgrade
 
