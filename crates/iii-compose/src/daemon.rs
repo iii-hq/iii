@@ -770,14 +770,10 @@ impl Daemon {
             // A first lock-less start learns only from this pass that a VM
             // needs the adapter: resolving the adapter beside it saves the
             // round trip that would follow it.
-            let adapter_ahead = crate::sandbox::adapter_to_resolve_ahead(&compose);
             crate::registry::remembering(async {
-                let none = BTreeSet::new();
-                let (prepared, ()) = tokio::join!(
-                    crate::lockfile::prepare_metadata(&mut compose, &none),
-                    crate::sandbox::resolve_adapter_ahead(adapter_ahead),
-                );
-                let mut prepared = prepared?;
+                let mut prepared =
+                    crate::sandbox::prepare_metadata_with_adapter_ahead(&mut compose, &namespace)
+                        .await?;
                 let path = compose.path.clone();
                 let change = crate::sandbox::apply_adapter_change(
                     &path,

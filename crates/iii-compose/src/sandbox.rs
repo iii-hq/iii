@@ -309,18 +309,47 @@ pub(crate) async fn adapter_request(adapter: &str) -> Result<NewContainer> {
     Ok(request)
 }
 
-/// Resolves the adapter a project with no lock yet would add, alongside the
-/// first pass that finds out whether a VM needs it, so that inside
-/// [`crate::registry::remembering`] adding it costs no round trip after that
-/// pass. A project with a lock, or with its adapter declared, sends nothing;
-/// a failure is the later, real request's to report.
-pub(crate) async fn resolve_adapter_ahead(adapter: Option<String>) {
-    if let Some(adapter) = adapter {
-        let _ = adapter_request(&adapter).await;
+/// The first pass ([`crate::lockfile::prepare_metadata`]), with the adapter a
+/// project with no lock yet would add resolved alongside it, so that inside
+/// [`crate::registry::remembering`] adding it costs no round trip after the
+/// pass.
+///
+/// It is waited for only when the pass succeeded and the adapter is to be
+/// added: a failed pass, or a project that needs no adapter, does not wait on
+/// it. A failure of it is the later, real request's to report.
+pub(crate) async fn prepare_metadata_with_adapter_ahead(
+    compose: &mut ComposeFile,
+    project_namespace: &str,
+) -> Result<crate::lockfile::PreparedLock> {
+    let adapter = adapter_to_resolve_ahead(compose);
+    let ahead = async move {
+        if let Some(adapter) = adapter {
+            let _ = adapter_request(&adapter).await;
+        }
+    };
+    tokio::pin!(ahead);
+    let mut resolved_ahead = false;
+    let prepared = {
+        let none = BTreeSet::new();
+        let first = crate::lockfile::prepare_metadata(compose, &none);
+        tokio::pin!(first);
+        loop {
+            tokio::select! {
+                prepared = &mut first => break prepared?,
+                () = &mut ahead, if !resolved_ahead => resolved_ahead = true,
+            }
+        }
+    };
+    let adds = !needs(compose, project_namespace).is_empty()
+        && adapter_key(compose, adapter_name(compose))?.is_none();
+    if adds && !resolved_ahead {
+        ahead.await;
     }
+    Ok(prepared)
 }
 
-/// The adapter [`resolve_adapter_ahead`] resolves for `file`, if any.
+/// The adapter [`prepare_metadata_with_adapter_ahead`] resolves for `file`, if
+/// any.
 pub(crate) fn adapter_to_resolve_ahead(file: &ComposeFile) -> Option<String> {
     let adapter = adapter_name(file);
     // The first pass goes to the registry only for a package with no lock.
@@ -2103,6 +2132,114 @@ pub(crate) mod tests {
             1,
             "{asked:?}"
         );
+    }
+
+    /// `/resolve` answers `name` as one binary or bundle at 1.0.0.
+    async fn resolves(server: &wiremock::MockServer, name: &str, kind: &str) {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let url = format!("{}/artifact", server.uri());
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": name }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": name, "version": "1.0.0", "type": kind,
+                    "binaries": { (crate::registry::host_targets()[0]): {
+                        "sha256": "a".repeat(64), "url": url,
+                    }},
+                    "archive_url": url, "sha256": "a".repeat(64),
+                }]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_project_that_needs_no_adapter_does_not_wait_for_it() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let dir = tempfile::tempdir().unwrap();
+        let server = wiremock::MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "sandbox-libkrun" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(60)))
+            .mount(&server)
+            .await;
+        resolves(&server, "api", "binary").await;
+        let mut file = parse(
+            dir.path(),
+            "containers:\n  api: {worker: package://api, version: 1.0.0}\n",
+        );
+
+        let prepared = tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::registry::TEST_REGISTRY.scope(
+                server.uri(),
+                crate::registry::remembering(prepare_metadata_with_adapter_ahead(
+                    &mut file, "default",
+                )),
+            ),
+        )
+        .await
+        .expect("waited for an adapter the project does not need")
+        .unwrap();
+        assert_eq!(prepared.resolved_version("api"), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn the_adapter_resolved_ahead_is_not_asked_for_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = adapter_registry(b"").await;
+        resolves(&server, "tour", "bundle").await;
+        let text = "containers:\n  tour: {worker: package://tour, version: 1.0.0}\n";
+        let mut file = parse(dir.path(), text);
+        let mut edited = text.to_string();
+        let path = file.path.clone();
+        crate::registry::TEST_REGISTRY
+            .scope(
+                server.uri(),
+                crate::registry::remembering(async {
+                    let mut prepared = prepare_metadata_with_adapter_ahead(&mut file, "default")
+                        .await
+                        .unwrap();
+                    let asked = adapter_requests(&server).await;
+                    apply_adapter_change(
+                        &path,
+                        &mut edited,
+                        &mut file,
+                        "default",
+                        &mut prepared,
+                        &mut BTreeSet::new(),
+                        &mut BTreeMap::new(),
+                        false,
+                        false,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(asked, 1, "the pass did not resolve the adapter alongside");
+                    assert_eq!(adapter_requests(&server).await, 1);
+                    assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.3.0"));
+                }),
+            )
+            .await;
+    }
+
+    async fn adapter_requests(server: &wiremock::MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                request.url.path() == "/resolve"
+                    && serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["worker"]
+                        == "sandbox-libkrun"
+            })
+            .count()
     }
 
     #[test]
