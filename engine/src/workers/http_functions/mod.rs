@@ -13,6 +13,7 @@ use futures::Future;
 use serde_json::Value;
 
 use crate::{
+    deprecation::{self, Caller, Feature},
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::FunctionResult,
     invocation::{
@@ -26,6 +27,13 @@ use crate::{
 };
 
 use config::HttpFunctionsConfig;
+
+/// Deprecation entry point logged once per process when the worker starts.
+const WORKER_ENTRY: &str = "iii-http-functions worker";
+
+/// Deprecation entry point logged when a worker registers a function with an
+/// HTTP invocation. Named after the SDK type the caller used.
+pub(crate) const REGISTRATION_ENTRY: &str = "HttpInvocationConfig";
 
 type HandlerFuture = Pin<Box<dyn Future<Output = FunctionResult<Option<Value>, ErrorBody>> + Send>>;
 
@@ -89,6 +97,17 @@ impl HttpFunctionsWorker {
                 }
             })
         })
+    }
+
+    /// Rate-limited deprecation warning for an HTTP-invocation registration,
+    /// attributed to the registering worker connection.
+    pub(crate) fn warn_deprecated_registration(&self, worker_id: uuid::Uuid) {
+        deprecation::warn_deprecated(
+            Feature::HttpFunctions,
+            REGISTRATION_ENTRY,
+            Caller::Worker(worker_id),
+            &self.engine.worker_registry,
+        );
     }
 
     /// Registers an HTTP-invocation function into `namespace`.
@@ -189,6 +208,9 @@ impl Worker for HttpFunctionsWorker {
     fn register_functions(&self, _engine: Arc<Engine>) {}
 
     async fn initialize(&self) -> anyhow::Result<()> {
+        // Once per process: a reload re-runs initialize but must not repeat it.
+        deprecation::warn_deprecated_once(Feature::HttpFunctions, WORKER_ENTRY);
+
         self.engine
             .service_registry
             .register_service("http_functions", Arc::new(self.clone()));
@@ -200,7 +222,7 @@ impl Worker for HttpFunctionsWorker {
 crate::register_worker!(
     "iii-http-functions",
     HttpFunctionsWorker,
-    description = "Expose external HTTP endpoints from config as callable functions."
+    description = "Deprecated: expose external HTTP endpoints as callable functions."
 );
 
 #[cfg(test)]
@@ -380,6 +402,24 @@ mod tests {
         assert!(Arc::strong_count(module.http_invoker()) >= 1);
         assert!(module.http_functions().is_empty());
         module.register_functions(engine.clone());
+    }
+
+    #[tokio::test]
+    async fn registration_deprecation_warns_once_per_registering_worker() {
+        ensure_default_meter();
+        let _lock = crate::deprecation::test_support::GLOBAL_LIMITER_LOCK
+            .lock()
+            .await;
+        let engine = Arc::new(crate::engine::Engine::new());
+        let module = build_module(engine.clone());
+        let worker_id = uuid::Uuid::new_v4();
+
+        module.warn_deprecated_registration(worker_id);
+        module.warn_deprecated_registration(worker_id);
+
+        let warnings = crate::deprecation::test_support::emitted_for(&worker_id.to_string());
+        assert_eq!(warnings.len(), 1, "rate limited per worker: {warnings:?}");
+        assert_eq!(warnings[0].entry_point, REGISTRATION_ENTRY);
     }
 
     #[tokio::test]

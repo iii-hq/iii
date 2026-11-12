@@ -731,8 +731,8 @@ containers:
 | `workers`                         | map     | empty                  | Direct configs for engine-owned workers. Values must be mappings; use `{}` for defaults. |
 | `sandbox`                         | map     | absent                 | Binds the engine's `sandbox::*` router to an adapter. See below.                         |
 
-Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions`, and
-`iii-stream` (deprecated; still accepted). Use `#instance` for another instance of an allowed type, for example
+Allowed worker keys are `configuration`, `iii-worker-manager`, `iii-http-functions` (deprecated;
+still accepted), and `iii-stream` (deprecated; still accepted). Use `#instance` for another instance of an allowed type, for example
 `iii-worker-manager#rbac`. The engine injects `iii-engine-functions`, `iii-telemetry` for anonymous
 usage analytics, `iii-observability` for OpenTelemetry traces, metrics, and logs, and the
 `iii-sandbox` router. Do not declare these workers. A file that declares `iii-sandbox` under

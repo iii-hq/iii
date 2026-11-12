@@ -529,6 +529,12 @@ whether it runs in the same worker or goes through the engine.
 
 ## HTTP-invoked functions
 
+<Warning title="Deprecated">
+  HTTP-invoked functions are deprecated (iii-http-functions) and will be removed in an upcoming
+  release. Behavior is unchanged for now. Register a handler that makes the HTTP call instead; see
+  [Migrate from HTTP-invoked functions](../upgrading/migrate-from-http-functions).
+</Warning>
+
 A worker can register a function that the engine invokes over HTTP. The registration carries an
 `HttpInvocationConfig` instead of a handler: the engine makes the HTTP call whenever the function is
 invoked, and the worker declares only the endpoint.
