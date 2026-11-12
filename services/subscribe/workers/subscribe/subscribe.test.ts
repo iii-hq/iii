@@ -233,6 +233,72 @@ test('subscribe: a raw JSON string body is parsed too', async () => {
   expect(res.status_code).toBe(200)
 })
 
+function serverPost(body: unknown): Request {
+  return { method: 'POST', headers: {}, body }
+}
+
+test('ade: a server-to-server signup with no Origin follows the usual flow into the ade segment', async () => {
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  const res = await subscribe(serverPost({ email: 'ada@example.com', source: 'ade' }))
+
+  expect(res.status_code).toBe(200)
+  expect(routes(resend.calls)).toEqual(['GET /contacts/ada%40example.com', 'POST /emails'])
+
+  // The emailed link is confirmed on iii.dev, in a browser.
+  await confirm(post({ token: sentToken(resend.calls) }))
+  expect(resend.calls.at(-1)?.body).toEqual({
+    email: 'ada@example.com',
+    unsubscribed: false,
+    segments: [{ id: 'seg-ade' }],
+  })
+})
+
+test('ade: Origin rules on subscribe', async () => {
+  const resend = fakeResend()
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  const body = { email: 'ada@example.com', source: 'ade' }
+
+  expect((await subscribe(serverPost(body))).status_code).toBe(200)
+  expect((await subscribe(post(body, 'https://iii.dev'))).status_code).toBe(200)
+  // Present but not allowed: still refused, including the opaque `null` origin and an empty one.
+  for (const origin of ['https://evil.example', 'null', '', 'http://localhost:3000']) {
+    expect((await subscribe(post(body, origin))).status_code).toBe(403)
+  }
+  // Origin is matched whatever its header's case.
+  expect((await subscribe({ method: 'POST', headers: { Origin: 'https://evil.example' }, body })).status_code).toBe(403)
+})
+
+test('ade: an invalid email or an unknown source with no Origin is a 400 before Resend', async () => {
+  const resend = fakeResend()
+  const { subscribe } = createSubscribe(config, resend.fetch)
+  expect((await subscribe(serverPost({ email: 'not-an-email', source: 'ade' }))).body).toEqual({
+    error: 'invalid_email',
+  })
+  expect((await subscribe(serverPost({ email: 'ada@example.com', source: 'invalid' }))).body).toEqual({
+    error: 'invalid_source',
+  })
+  expect(resend.calls.length).toBe(0)
+})
+
+test('confirm still needs an allowed Origin: a missing one is refused', async () => {
+  const resend = fakeResend()
+  const { subscribe, confirm } = createSubscribe(config, resend.fetch)
+  await subscribe(post({ email: 'ada@example.com' }))
+  const token = sentToken(resend.calls)
+
+  resend.calls.length = 0
+  expect((await confirm(serverPost({ token }))).status_code).toBe(403)
+  expect(resend.calls.length).toBe(0)
+})
+
+test('the per-minute cap applies to calls with no Origin too', async () => {
+  const resend = fakeResend()
+  const { subscribe } = createSubscribe({ ...config, maxEmailsPerMinute: 1 }, resend.fetch, () => 0)
+  expect((await subscribe(serverPost({ email: 'a@example.com', source: 'ade' }))).status_code).toBe(200)
+  expect((await subscribe(serverPost({ email: 'b@example.com', source: 'ade' }))).status_code).toBe(429)
+})
+
 test('both routes refuse other methods and origins before Resend', async () => {
   const resend = fakeResend()
   const { subscribe, confirm } = createSubscribe(config, resend.fetch)
