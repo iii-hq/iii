@@ -20,7 +20,7 @@ An agent that hits a task outside its current capabilities can install a worker 
 
 ## Install / start
 
-For **current install paths and prerequisites**, use **[iii.dev/docs/install](https://iii.dev/docs/install)**—the snippets below may lag the docs.
+For **current install paths and prerequisites**, use **[iii.dev/docs/install.md](https://iii.dev/docs/install.md)**—the snippets below may lag the docs.
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh   # answer "y" at the prompt to let the installer scaffold and start the harness
@@ -46,7 +46,7 @@ Install an SDK:
 - Node (browser, RBAC-scoped): `npm install iii-browser-sdk`
 - Python: `pip install iii-sdk`
 
-Full docs: https://iii.dev/docs
+Full docs: https://iii.dev/docs/index.md
 
 ## Guardrails
 
@@ -107,7 +107,7 @@ The iii engine and CLI are Elastic License 2.0 (ELv2). The SDKs, console, docs, 
 
 - Homepage: https://iii.dev/
 - Manifesto: https://iii.dev/manifesto
-- Docs: https://iii.dev/docs
+- Docs: https://iii.dev/docs/index.md
 - Blog index (markdown): https://iii.dev/blog/index.md
 - llms.txt (AI discovery): https://iii.dev/llms.txt
 - This file: https://iii.dev/AGENTS.md

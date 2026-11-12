@@ -6,7 +6,7 @@
 export const AI_OVERVIEW = [
   "# iii: overview for AI readers",
   "",
-  "This file explains what iii is and how it works. To install iii and build with it, read https://iii.dev/AGENTS.md and https://iii.dev/docs/install.",
+  "This file explains what iii is and how it works. To install iii and build with it, read https://iii.dev/AGENTS.md and https://iii.dev/docs/install.md.",
   "",
   "## What iii is",
   "",

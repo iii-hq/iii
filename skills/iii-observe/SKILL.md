@@ -244,7 +244,7 @@ reason code.
 ## Filters
 
 Filters are declarative JSON, evaluated by the same `iii-filter` language in the engine and every
-SDK. Full reference: https://iii.dev/docs/reference/filters.
+SDK. Full reference: https://iii.dev/docs/reference/filters.md.
 
 - A clause is `"<path>": { "$op": operand }`. Explicit operators only: `{ "input.op": "insert" }`
   is `INVALID_FILTER`; write `{ "input.op": { "$eq": "insert" } }`. Clauses are ANDed.
@@ -267,7 +267,7 @@ SDK. Full reference: https://iii.dev/docs/reference/filters.
 
 This is provider-side work: a worker that turns something outside iii (a schedule, a socket, a
 database log) into calls of a function others observe. Full guide:
-https://iii.dev/docs/creating-workers/observable-functions.
+https://iii.dev/docs/creating-workers/observable-functions.md.
 
 The worker registers a function whose handler returns the event, and calls it when the event
 happens. iii does the rest by default. Four hooks override those defaults:
@@ -625,7 +625,7 @@ iii.observe(
 ## Code written for 0.25
 
 To move code written for 0.25 to 0.26, follow the upgrade guide:
-https://iii.dev/docs/upgrading/from-0-25-x.
+https://iii.dev/docs/upgrading/from-0-25-x.md.
 
 - `source.on` and `source.deliver` are deprecated, not refused. A 0.26 engine translates them to
   the 0.25 behavior (`deliver: "output"` hands the target the bare output, `null` after a failure)
@@ -655,7 +655,7 @@ https://iii.dev/docs/upgrading/from-0-25-x.
 
 Inspect observers with `engine::observers::list({ function_id?, namespace?, worker? })` and
 `engine::observers::get({ id })`; `engine::observers::dispose({ id })` removes one. Docs:
-https://iii.dev/docs/using-iii/observers.
+https://iii.dev/docs/using-iii/observers.md.
 
 ## When to Use
 

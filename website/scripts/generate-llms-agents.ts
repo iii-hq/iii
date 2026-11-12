@@ -198,9 +198,9 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
   const tail = `
 ## Core pages
 
-- [Docs](${SITE_ORIGIN}/docs): what iii is, and how to build and run an iii system
-- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii): the Function, call and observe, and the workers and engine that host and route it
-- [Quickstart](${SITE_ORIGIN}/docs/quickstart): two workers in two languages, composed through the engine
+- [Docs](${SITE_ORIGIN}/docs/index.md): what iii is, and how to build and run an iii system
+- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii.md): the Function, call and observe, and the workers and engine that host and route it
+- [Quickstart](${SITE_ORIGIN}/docs/quickstart.md): two workers in two languages, composed through the engine
 - [Worker registry](${SITE_ORIGIN}/registry): workers you can add to a project with \`compose::add\`
 - [Manifesto](${SITE_ORIGIN}/manifesto): why iii exists
 
@@ -213,7 +213,7 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
 
 ## Want to build on iii?
 
-Read [AGENTS.md](${SITE_ORIGIN}/AGENTS.md) for install steps, guardrails, and agent skills, then the [install guide](${SITE_ORIGIN}/docs/install).
+Read [AGENTS.md](${SITE_ORIGIN}/AGENTS.md) for install steps, guardrails, and agent skills, then the [install guide](${SITE_ORIGIN}/docs/install.md).
 
 Last updated: ${isoDate()}
 `.trimStart()
