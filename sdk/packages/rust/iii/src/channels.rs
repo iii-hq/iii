@@ -1,19 +1,32 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+//! The wire side of streams: the ref a payload carries for one end of an
+//! engine pipe, and the WebSocket that end is read or written through.
+//!
+//! The public stream types ([`InputStream`](crate::InputStream),
+//! [`OutputStream`](crate::OutputStream)) are built on the sockets here. The
+//! ref types are public under [`protocol`](crate::protocol).
 
-use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
+use std::pin::Pin;
+
+use bytes::Bytes;
+use futures_util::{SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{Mutex, watch};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue, Request};
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 use crate::error::Error;
 use crate::transport::{self, WsConnectResult, WsStream};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+/// Which end of a pipe a [`StreamChannelRef`] opens: `read` is received as an
+/// [`InputStream`](crate::InputStream), `write` as an
+/// [`OutputStream`](crate::OutputStream).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelDirection {
     #[default]
@@ -21,22 +34,61 @@ pub enum ChannelDirection {
     Write,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, schemars::JsonSchema)]
+impl ChannelDirection {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ChannelDirection::Read => "read",
+            ChannelDirection::Write => "write",
+        }
+    }
+}
+
+/// One end of an engine pipe as a payload carries it:
+/// `{ channel_id, access_key, direction }`. The JSON is the same in every SDK
+/// and release, so new and old SDKs read each other's refs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema)]
 pub struct StreamChannelRef {
     pub channel_id: String,
     pub access_key: String,
     pub direction: ChannelDirection,
 }
 
-#[derive(Debug, Clone)]
+/// One frame of a stream: a text frame carries a message, a binary frame
+/// bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChannelItem {
     Text(String),
     Binary(Vec<u8>),
 }
 
+/// A frame as the SDK reads it: binary frames keep the socket's buffer.
+#[derive(Debug, Clone)]
+pub(crate) enum Frame {
+    Binary(Bytes),
+    Text(String),
+}
+
+impl From<Frame> for ChannelItem {
+    fn from(frame: Frame) -> Self {
+        match frame {
+            Frame::Binary(bytes) => ChannelItem::Binary(Vec::from(bytes)),
+            Frame::Text(text) => ChannelItem::Text(text),
+        }
+    }
+}
+
+/// The frames of a stream, in order. An `Err` is the last item.
+pub(crate) type FrameStream = Pin<Box<dyn Stream<Item = Result<Frame, Error>> + Send>>;
+
 type WsWriter = futures_util::stream::SplitSink<WsStream, WsMessage>;
 
 type WsReader = futures_util::stream::SplitStream<WsStream>;
+
+/// The largest binary frame a writer sends; a larger write is split.
+pub(crate) const MAX_FRAME_SIZE: usize = 64 * 1024;
+
+/// The longest close reason a WebSocket close frame carries, in bytes.
+const MAX_CLOSE_REASON: usize = 123;
 
 /// Opens a channel end with its handshake headers (see [`handshake_headers`]).
 /// Channel frames are often small (HTTP bodies, control messages), so
@@ -83,6 +135,16 @@ pub(crate) fn handshake_request(
     Ok(request)
 }
 
+/// The URL of one end of a channel on the engine at `engine_ws_base`.
+pub(crate) fn channel_url(engine_ws_base: &str, channel_ref: &StreamChannelRef) -> String {
+    build_channel_url(
+        engine_ws_base,
+        &channel_ref.channel_id,
+        &channel_ref.access_key,
+        channel_ref.direction.as_str(),
+    )
+}
+
 fn build_channel_url(
     engine_ws_base: &str,
     channel_id: &str,
@@ -121,243 +183,194 @@ fn urlencoded(s: &str) -> String {
     result
 }
 
-/// WebSocket-backed writer for streaming binary data and text messages.
-pub struct ChannelWriter {
-    url: String,
-    headers: HashMap<String, String>,
-    ws: Arc<Mutex<Option<WsWriter>>>,
+/// `reason` cut to what a close frame carries, on a character boundary.
+pub(crate) fn close_reason(reason: &str) -> String {
+    if reason.len() <= MAX_CLOSE_REASON {
+        return reason.to_string();
+    }
+    let mut end = MAX_CLOSE_REASON;
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    reason[..end].to_string()
 }
 
-impl ChannelWriter {
-    /// Authenticates with `III_TOKEN` as a bearer token when it is set.
-    pub fn new(engine_ws_base: &str, channel_ref: &StreamChannelRef) -> Self {
+/// The write end of a channel: dialed on first use, then frames until it is
+/// closed or aborted. Dropping it with the socket open ends the socket with
+/// no close frame, which the engine relays to the reader as an abort.
+pub(crate) struct WriterEnd {
+    url: String,
+    headers: HashMap<String, String>,
+    ws: Option<WsWriter>,
+    /// Closed or aborted: the socket is gone and is not dialed again.
+    ended: bool,
+}
+
+impl WriterEnd {
+    pub(crate) fn new(url: String, headers: HashMap<String, String>) -> Self {
         Self {
-            url: build_channel_url(
-                engine_ws_base,
-                &channel_ref.channel_id,
-                &channel_ref.access_key,
-                "write",
-            ),
-            headers: handshake_headers(None),
-            ws: Arc::new(Mutex::new(None)),
+            url,
+            headers,
+            ws: None,
+            ended: false,
         }
     }
 
-    /// Connect with `explicit` handshake headers (plus the `III_TOKEN` bearer,
-    /// see [`handshake_headers`]) instead of the token alone.
-    pub(crate) fn with_headers(mut self, explicit: Option<HashMap<String, String>>) -> Self {
-        self.headers = handshake_headers(explicit);
-        self
-    }
-
-    async fn ensure_connected(&self) -> Result<(), Error> {
-        let mut guard = self.ws.lock().await;
-        if guard.is_some() {
-            return Ok(());
+    async fn socket(&mut self) -> Result<&mut WsWriter, Error> {
+        if self.ended {
+            return Err(Error::Runtime("the stream is closed".into()));
         }
-        // Through connect_channel: it negotiates TCP_NODELAY (MOT-5377).
-        let (stream, _) = connect_channel(&self.url, &self.headers).await?;
-        let (writer, _reader) = stream.split();
-        *guard = Some(writer);
-        Ok(())
+        if self.ws.is_none() {
+            // Through connect_channel: it negotiates TCP_NODELAY (MOT-5377).
+            let (stream, _) = connect_channel(&self.url, &self.headers).await?;
+            let (writer, _reader) = stream.split();
+            self.ws = Some(writer);
+        }
+        Ok(self.ws.as_mut().expect("dialed above"))
     }
 
-    const MAX_FRAME_SIZE: usize = 64 * 1024;
-
-    pub async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        self.ensure_connected().await?;
-        let mut guard = self.ws.lock().await;
-        let ws = guard.as_mut().ok_or(Error::NotConnected)?;
-        for chunk in data.chunks(Self::MAX_FRAME_SIZE) {
-            ws.send(WsMessage::Binary(chunk.to_vec().into())).await?;
+    /// Sends `data` in binary frames of at most [`MAX_FRAME_SIZE`] bytes.
+    /// Resolves once the socket took them.
+    pub(crate) async fn write(&mut self, data: &[u8]) -> Result<(), Error> {
+        let ws = self.socket().await?;
+        for chunk in data.chunks(MAX_FRAME_SIZE) {
+            ws.send(WsMessage::Binary(Bytes::copy_from_slice(chunk)))
+                .await?;
         }
         Ok(())
     }
 
-    pub async fn send_message(&self, msg: &str) -> Result<(), Error> {
-        self.ensure_connected().await?;
-        let mut guard = self.ws.lock().await;
-        let ws = guard.as_mut().ok_or(Error::NotConnected)?;
-        ws.send(WsMessage::Text(msg.to_string().into())).await?;
+    /// Sends one text frame.
+    pub(crate) async fn send_text(&mut self, text: &str) -> Result<(), Error> {
+        let ws = self.socket().await?;
+        ws.send(WsMessage::Text(text.into())).await?;
         Ok(())
     }
 
-    /// End the stream cleanly. Dropping a writer that has written, without
-    /// calling `close()`, ends the socket with no close frame; the reader gets
-    /// that as an error.
-    pub async fn close(&self) -> Result<(), Error> {
+    /// Ends the stream cleanly: a close frame with no code. A socket never
+    /// dialed is dialed first, so the reader sees an empty stream.
+    pub(crate) async fn close(&mut self) -> Result<(), Error> {
         // Delay the close frame slightly to allow the TCP stack to flush
         // all buffered send() data. Without this, the close frame can arrive
         // at the engine before all data frames, causing data truncation.
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let mut guard = self.ws.lock().await;
-        if let Some(ws) = guard.as_mut() {
-            ws.send(WsMessage::Close(None)).await?;
-        }
-        *guard = None;
-        Ok(())
+        let result = match self.socket().await {
+            Ok(ws) => ws.send(WsMessage::Close(None)).await.map_err(Error::from),
+            Err(error) => Err(error),
+        };
+        self.ws = None;
+        self.ended = true;
+        result
+    }
+
+    /// Ends the stream with an error: a close frame with code 1011 and
+    /// `reason`, which the engine relays to the reader as an abort. A socket
+    /// never dialed is dialed first, so the reader always learns of it.
+    pub(crate) async fn abort(&mut self, reason: &str) -> Result<(), Error> {
+        let frame = CloseFrame {
+            code: CloseCode::Error,
+            reason: close_reason(reason).into(),
+        };
+        let result = match self.socket().await {
+            Ok(ws) => ws
+                .send(WsMessage::Close(Some(frame)))
+                .await
+                .map_err(Error::from),
+            Err(error) => Err(error),
+        };
+        self.ws = None;
+        self.ended = true;
+        result
+    }
+
+    /// The open socket, taken: for an abort sent from `Drop`.
+    pub(crate) fn take_socket(&mut self) -> Option<WsWriter> {
+        self.ended = true;
+        self.ws.take()
     }
 }
 
-type MessageCallback = Box<dyn Fn(String) + Send + Sync>;
-type MessageCallbackList = Arc<Mutex<Vec<MessageCallback>>>;
-
-/// WebSocket-backed reader for streaming binary data and text messages.
-pub struct ChannelReader {
-    url: String,
-    headers: HashMap<String, String>,
-    ws: Arc<Mutex<Option<WsReader>>>,
-    message_callbacks: MessageCallbackList,
-    /// The error that ended the stream. The socket reads as ended after an
-    /// error, so later reads return this instead of a clean end.
-    failed: Mutex<Option<Error>>,
-    /// Set by `close()`: an end the reader made itself is not an error.
-    closed: watch::Sender<bool>,
+/// Sends a 1011 close frame with `reason` on `ws`, from a task of its own.
+pub(crate) fn abort_detached(mut ws: WsWriter, reason: &'static str) {
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+            let frame = CloseFrame {
+                code: CloseCode::Error,
+                reason: reason.into(),
+            };
+            let _ = ws.send(WsMessage::Close(Some(frame))).await;
+        });
+    }
+    // Without a runtime the socket just drops: no close frame, which the
+    // engine also relays to the reader as an abort.
 }
 
-impl ChannelReader {
-    /// Authenticates with `III_TOKEN` as a bearer token when it is set.
-    pub fn new(engine_ws_base: &str, channel_ref: &StreamChannelRef) -> Self {
-        Self {
-            url: build_channel_url(
-                engine_ws_base,
-                &channel_ref.channel_id,
-                &channel_ref.access_key,
-                "read",
-            ),
-            headers: handshake_headers(None),
-            ws: Arc::new(Mutex::new(None)),
-            message_callbacks: Arc::new(Mutex::new(Vec::new())),
-            failed: Mutex::new(None),
-            closed: watch::Sender::new(false),
-        }
+/// The frames the read end at `url` receives, dialed on the first poll.
+///
+/// A close with no code or code 1000 ends the stream. Any other close code,
+/// or the connection ending without a close, is an
+/// [`Error::StreamAborted`] carrying the reason: the data read so far is
+/// incomplete. A dial that fails (the engine is unreachable, or the channel
+/// is gone and the engine answers 404) is an error too, not an empty stream.
+pub(crate) fn read_frames(url: String, headers: HashMap<String, String>) -> FrameStream {
+    enum State {
+        Dial(String, HashMap<String, String>),
+        Open(WsReader),
+        Done,
     }
-
-    /// Connect with `explicit` handshake headers (plus the `III_TOKEN` bearer,
-    /// see [`handshake_headers`]) instead of the token alone.
-    pub(crate) fn with_headers(mut self, explicit: Option<HashMap<String, String>>) -> Self {
-        self.headers = handshake_headers(explicit);
-        self
-    }
-
-    async fn ensure_connected(&self) -> Result<(), Error> {
-        let mut guard = self.ws.lock().await;
-        if guard.is_some() {
-            return Ok(());
-        }
-        // Through connect_channel: it negotiates TCP_NODELAY (MOT-5377).
-        let (stream, _) = connect_channel(&self.url, &self.headers).await?;
-        let (_writer, reader) = stream.split();
-        *guard = Some(reader);
-        Ok(())
-    }
-
-    /// Register a callback for text messages received on this channel.
-    pub async fn on_message<F>(&self, callback: F)
-    where
-        F: Fn(String) + Send + Sync + 'static,
-    {
-        self.message_callbacks.lock().await.push(Box::new(callback));
-    }
-
-    /// Read the next binary chunk from the channel.
-    /// Text messages are dispatched to registered callbacks.
-    /// Returns `None` when the writer ended the stream cleanly (a close with no
-    /// code or code 1000). Any other close code, or the connection ending
-    /// without a close, is an `Err` carrying the code and reason: the data
-    /// read so far is incomplete. Once a read failed, later reads fail too.
-    /// After `close()`, reads (and one in flight) return `None`.
-    pub async fn next_binary(&self) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(error) = self.failed.lock().await.clone() {
-            return Err(error);
-        }
-        let mut closed = self.closed.subscribe();
-        // Never dial again after close(): the engine removed the channel.
-        if *closed.borrow() {
-            return Ok(None);
-        }
-        if let Err(error) = self.ensure_connected().await {
-            // close() during the dial: its failure is the reader's own end.
-            return if *closed.borrow() {
-                Ok(None)
-            } else {
-                Err(error)
-            };
-        }
-
-        loop {
-            let mut guard = self.ws.lock().await;
-            // close() during the first connect drops the socket the dial made.
-            let Some(mut reader) = guard.take() else {
-                return if *closed.borrow() {
-                    Ok(None)
-                } else {
-                    Err(Error::NotConnected)
-                };
-            };
-            drop(guard);
-
-            let msg = tokio::select! {
-                msg = reader.next() => msg,
-                _ = closed.wait_for(|closed| *closed) => return Ok(None),
-            };
-
-            let mut guard = self.ws.lock().await;
-            // close() ran meanwhile: drop the socket instead of keeping it.
-            if *closed.borrow() {
-                return Ok(None);
-            }
-            *guard = Some(reader);
-            drop(guard);
-
-            let error = match msg {
-                Some(Ok(WsMessage::Binary(data))) => return Ok(Some(data.to_vec())),
-                Some(Ok(WsMessage::Text(text))) => {
-                    let callbacks = self.message_callbacks.lock().await;
-                    for cb in callbacks.iter() {
-                        cb(text.to_string());
+    Box::pin(futures_util::stream::unfold(
+        State::Dial(url, headers),
+        |state| async move {
+            let mut reader = match state {
+                State::Dial(url, headers) => match connect_channel(&url, &headers).await {
+                    // Through connect_channel: it negotiates TCP_NODELAY (MOT-5377).
+                    Ok((stream, _)) => stream.split().1,
+                    Err(error) => {
+                        return Some((Err(Error::WebSocket(error.to_string())), State::Done));
                     }
-                    continue;
-                }
-                Some(Ok(WsMessage::Close(Some(frame)))) if frame.code != CloseCode::Normal => {
-                    Error::WebSocket(format!(
-                        "channel closed with code {}: {}",
-                        frame.code, frame.reason
-                    ))
-                }
-                Some(Ok(WsMessage::Close(_))) | None => return Ok(None),
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => Error::WebSocket(e.to_string()),
+                },
+                State::Open(reader) => reader,
+                State::Done => return None,
             };
-            *self.failed.lock().await = Some(error.clone());
-            return Err(error);
-        }
-    }
-
-    /// Read the entire stream into a single `Vec<u8>`.
-    pub async fn read_all(&self) -> Result<Vec<u8>, Error> {
-        let mut buffer = Vec::new();
-        while let Some(chunk) = self.next_binary().await? {
-            buffer.extend_from_slice(&chunk);
-        }
-        Ok(buffer)
-    }
-
-    pub async fn close(&self) -> Result<(), Error> {
-        // Flag first: a read that puts the socket back checks it under the lock.
-        self.closed.send_replace(true);
-        let mut guard = self.ws.lock().await;
-        *guard = None;
-        Ok(())
-    }
+            loop {
+                let error = match reader.next().await {
+                    Some(Ok(WsMessage::Binary(data))) => {
+                        return Some((Ok(Frame::Binary(data)), State::Open(reader)));
+                    }
+                    Some(Ok(WsMessage::Text(text))) => {
+                        return Some((Ok(Frame::Text(text.to_string())), State::Open(reader)));
+                    }
+                    Some(Ok(WsMessage::Close(Some(frame)))) if frame.code != CloseCode::Normal => {
+                        let reason = if frame.reason.is_empty() {
+                            format!("channel closed with code {}", frame.code)
+                        } else {
+                            frame.reason.to_string()
+                        };
+                        Error::StreamAborted { reason }
+                    }
+                    Some(Ok(WsMessage::Close(_))) | None => return None,
+                    Some(Ok(_)) => continue,
+                    Some(Err(error)) => Error::StreamAborted {
+                        reason: format!("connection lost: {error}"),
+                    },
+                };
+                return Some((Err(error), State::Done));
+            }
+        },
+    ))
 }
 
-/// Check if a JSON value looks like a StreamChannelRef.
+/// Check if a JSON value looks like a [`StreamChannelRef`]: an object with a
+/// string `channel_id`, a string `access_key` and `direction` `"read"` or
+/// `"write"`. Extra keys are tolerated.
 pub fn is_channel_ref(value: &Value) -> bool {
     value.is_object()
         && value.get("channel_id").is_some_and(|v| v.is_string())
         && value.get("access_key").is_some_and(|v| v.is_string())
-        && value.get("direction").is_some_and(|v| v.is_string())
+        && value
+            .get("direction")
+            .and_then(Value::as_str)
+            .is_some_and(|d| d == "read" || d == "write")
 }
 
 /// Extract all channel references from a JSON value's top-level fields,
@@ -407,67 +420,56 @@ fn extract_refs_recursive(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
     use super::*;
 
     // ---------------------------------------------------------------------------
-    // ChannelWriter::close() – timing and state tests
+    // WriterEnd::close() – timing and state tests
     // ---------------------------------------------------------------------------
 
-    /// close() must sleep at least 10 ms before clearing the ws field, even when
-    /// there is no live WebSocket connection (ws = None).
+    /// close() must sleep at least 10 ms before the close frame, even when the
+    /// dial then fails.
     #[tokio::test]
-    async fn close_sleeps_before_clearing_ws() {
+    async fn close_sleeps_before_the_close_frame() {
         tokio::time::pause();
-
-        let writer = ChannelWriter {
-            url: "ws://test".to_string(),
-            headers: HashMap::new(),
-            ws: Arc::new(Mutex::new(None)),
-        };
+        let mut writer = WriterEnd::new("ws://127.0.0.1:1".to_string(), HashMap::new());
 
         let start = tokio::time::Instant::now();
-        writer.close().await.expect("close() should not fail");
-        let elapsed = start.elapsed();
-
+        let _ = writer.close().await;
         assert!(
-            elapsed >= std::time::Duration::from_millis(10),
+            start.elapsed() >= std::time::Duration::from_millis(10),
             "expected at least 10 ms elapsed, got {:?}",
-            elapsed
+            start.elapsed()
         );
     }
 
-    /// close() must return Ok(()) when the writer was never connected (ws = None).
+    /// After close(), the end is gone: writes fail without dialing again.
     #[tokio::test]
-    async fn close_when_not_connected_succeeds() {
-        let writer = ChannelWriter {
-            url: "ws://test".to_string(),
-            headers: HashMap::new(),
-            ws: Arc::new(Mutex::new(None)),
-        };
-
-        let result = writer.close().await;
-        assert!(result.is_ok(), "expected Ok(()), got {:?}", result);
+    async fn writes_after_close_fail() {
+        let mut writer = WriterEnd::new("ws://127.0.0.1:1".to_string(), HashMap::new());
+        let _ = writer.close().await;
+        assert!(writer.ws.is_none());
+        let error = writer.write(b"x").await.unwrap_err();
+        assert!(error.to_string().contains("closed"), "{error}");
     }
 
-    /// After close() completes, ws must be None regardless of its initial value.
-    #[tokio::test]
-    async fn close_sets_ws_to_none() {
-        let writer = ChannelWriter {
-            url: "ws://test".to_string(),
-            headers: HashMap::new(),
-            ws: Arc::new(Mutex::new(None)),
-        };
+    #[test]
+    fn close_reason_is_cut_on_a_char_boundary() {
+        assert_eq!(close_reason("short"), "short");
+        let long = "é".repeat(100);
+        let cut = close_reason(&long);
+        assert!(cut.len() <= MAX_CLOSE_REASON);
+        assert!(long.starts_with(&cut));
+    }
 
-        writer.close().await.expect("close() should not fail");
-
-        let guard = writer.ws.lock().await;
-        assert!(
-            guard.is_none(),
-            "expected ws to be None after close(), but it was Some"
-        );
+    #[test]
+    fn channel_refs_need_a_read_or_write_direction() {
+        let ok =
+            serde_json::json!({"channel_id": "c", "access_key": "k", "direction": "read", "x": 1});
+        assert!(is_channel_ref(&ok));
+        let other = serde_json::json!({"channel_id": "c", "access_key": "k", "direction": "up"});
+        assert!(!is_channel_ref(&other));
+        let missing = serde_json::json!({"channel_id": "c", "direction": "read"});
+        assert!(!is_channel_ref(&missing));
     }
 
     // ---------------------------------------------------------------------------
@@ -569,24 +571,33 @@ mod nodelay_tests {
 #[cfg(test)]
 mod end_of_stream_tests {
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
-    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
     use super::*;
     use crate::transport::test_engine;
 
-    fn channel_ref() -> StreamChannelRef {
-        StreamChannelRef {
-            channel_id: "test".into(),
-            access_key: "key".into(),
-            direction: ChannelDirection::Read,
+    fn url(address: std::net::SocketAddr) -> String {
+        format!("ws://{address}/ws/channels/test?key=key&dir=read")
+    }
+
+    async fn collect(mut frames: FrameStream) -> (Vec<u8>, Option<Error>) {
+        let mut bytes = Vec::new();
+        while let Some(frame) = frames.next().await {
+            match frame {
+                Ok(Frame::Binary(data)) => bytes.extend_from_slice(&data),
+                Ok(Frame::Text(_)) => {}
+                Err(error) => {
+                    // The error is the last item.
+                    assert!(frames.next().await.is_none());
+                    return (bytes, Some(error));
+                }
+            }
         }
+        (bytes, None)
     }
 
     /// Reads a stream whose server sends `[1, 2]`, then closes with `close`,
     /// or drops the connection without a close frame when it is `None`.
-    async fn read_stream(
-        close: Option<Option<CloseFrame>>,
-    ) -> (ChannelReader, Result<Vec<u8>, Error>) {
+    async fn read_stream(close: Option<Option<CloseFrame>>) -> (Vec<u8>, Option<Error>) {
         let (address, server) = test_engine::spawn(false).await;
         let server = tokio::spawn(async move {
             let mut ws = server.await.unwrap();
@@ -595,10 +606,9 @@ mod end_of_stream_tests {
                 ws.close(frame).await.unwrap();
             }
         });
-        let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
-        let result = reader.read_all().await;
+        let result = collect(read_frames(url(address), HashMap::new())).await;
         server.await.unwrap();
-        (reader, result)
+        result
     }
 
     #[tokio::test]
@@ -610,107 +620,42 @@ mod end_of_stream_tests {
                 reason: "stream_complete".into(),
             }),
         ] {
-            let (_, result) = read_stream(Some(close)).await;
-            assert_eq!(result.unwrap(), vec![1, 2]);
+            let (bytes, error) = read_stream(Some(close)).await;
+            assert_eq!(bytes, vec![1, 2]);
+            assert!(error.is_none(), "{error:?}");
         }
     }
 
     // The engine sends 1011 when the writer aborted: what was read is not the
-    // whole stream, and reading on must not turn it into a clean end.
+    // whole stream, and it ends with an abort that carries the reason.
     #[tokio::test]
-    async fn close_with_another_code_is_an_error_that_stays() {
-        let (reader, result) = read_stream(Some(Some(CloseFrame {
+    async fn close_with_another_code_is_an_abort() {
+        let (bytes, error) = read_stream(Some(Some(CloseFrame {
             code: CloseCode::Error,
-            reason: "channel writer aborted: connection lost before close".into(),
+            reason: "channel writer aborted: closed with code 1011".into(),
         })))
         .await;
-        let error = result.unwrap_err().to_string();
-        assert!(
-            error.contains("1011") && error.contains("channel writer aborted"),
-            "{error}"
-        );
-        assert_eq!(reader.next_binary().await.unwrap_err().to_string(), error);
-        reader.close().await.unwrap();
-        assert_eq!(reader.next_binary().await.unwrap_err().to_string(), error);
-    }
-
-    // A local close is not an error: it ends a read in flight and drops the
-    // socket, and later reads end too without dialing again (test_engine
-    // takes one connection, so a redial fails).
-    #[tokio::test]
-    async fn close_ends_the_stream_cleanly() {
-        let (address, server) = test_engine::spawn(false).await;
-        let server = tokio::spawn(async move {
-            let mut ws = server.await.unwrap();
-            ws.send(WsMessage::Binary(vec![1, 2].into())).await.unwrap();
-            ws.next().await
-        });
-        let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
-        assert_eq!(reader.next_binary().await.unwrap(), Some(vec![1, 2]));
-
-        let wait = std::time::Duration::from_secs(1);
-        let (read, closed) =
-            tokio::join!(tokio::time::timeout(wait, reader.next_binary()), async {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                reader.close().await
-            });
-        closed.unwrap();
-        assert_eq!(read.expect("close() ends a read in flight").unwrap(), None);
-        tokio::time::timeout(wait, server)
-            .await
-            .expect("close() drops the socket")
-            .unwrap();
-
-        assert_eq!(reader.next_binary().await.unwrap(), None);
-        assert_eq!(reader.read_all().await.unwrap(), Vec::<u8>::new());
-    }
-
-    // close() queued on the lock the first dial holds takes the socket before
-    // the read does: that read ends cleanly too, and so it does when that
-    // dial fails (the engine already removed the channel).
-    #[tokio::test]
-    async fn close_during_the_first_connect_ends_the_read_cleanly() {
-        for handshake in [true, false] {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let (accepted_tx, accepted) = tokio::sync::oneshot::channel();
-            let (go_tx, go) = tokio::sync::oneshot::channel::<()>();
-            let server = tokio::spawn(async move {
-                let (socket, _) = listener.accept().await.unwrap();
-                accepted_tx.send(()).unwrap();
-                go.await.unwrap();
-                if handshake {
-                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
-                    ws.next().await;
-                }
-            });
-            let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
-
-            let (read, ()) = tokio::join!(reader.next_binary(), async {
-                accepted.await.unwrap();
-                let mut close = std::pin::pin!(reader.close());
-                assert!(futures_util::poll!(close.as_mut()).is_pending());
-                go_tx.send(()).unwrap();
-                close.await.unwrap();
-            });
-            assert_eq!(read.unwrap(), None, "handshake: {handshake}");
-            tokio::time::timeout(std::time::Duration::from_secs(1), server)
-                .await
-                .expect("close() drops the socket")
-                .unwrap();
+        assert_eq!(bytes, vec![1, 2]);
+        match error {
+            Some(Error::StreamAborted { reason }) => {
+                assert_eq!(reason, "channel writer aborted: closed with code 1011")
+            }
+            other => panic!("expected an abort, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn connection_lost_without_close_is_an_error_that_stays() {
-        let (reader, result) = read_stream(None).await;
-        let error = result.unwrap_err().to_string();
-        // The socket is fused after the error and yields `None` next.
-        assert_eq!(reader.next_binary().await.unwrap_err().to_string(), error);
+    async fn connection_lost_without_close_is_an_abort() {
+        let (bytes, error) = read_stream(None).await;
+        assert_eq!(bytes, vec![1, 2]);
+        assert!(
+            matches!(error, Some(Error::StreamAborted { .. })),
+            "{error:?}"
+        );
     }
 
-    // A dial that fails with no close() (engine unreachable, or the channel is
-    // gone and the engine answers 404) is an error, not an empty stream.
+    // A dial that fails (engine unreachable, or the channel is gone and the
+    // engine answers 404) is an error, not an end of stream.
     #[tokio::test]
     #[expect(
         clippy::result_large_err,
@@ -723,7 +668,6 @@ mod end_of_stream_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let not_found = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            // read_all dials again, so every dial gets the 404.
             while let Ok((socket, _)) = listener.accept().await {
                 let _ = tokio_tungstenite::accept_hdr_async(socket, |_: &Request, _: Response| {
                     Err(Response::builder().status(404).body(None).unwrap())
@@ -733,19 +677,19 @@ mod end_of_stream_tests {
         });
 
         for address in [unreachable, not_found] {
-            let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
-            reader.next_binary().await.unwrap_err();
-            reader.read_all().await.unwrap_err();
+            let (_, error) = collect(read_frames(url(address), HashMap::new())).await;
+            assert!(matches!(error, Some(Error::WebSocket(_))), "{error:?}");
         }
     }
 
     // The engine reads a writer's end from its close frame: close() must put
-    // one with no code on the wire, and a writer dropped without close() must
-    // leave none, so the reader is told the stream was cut.
+    // one with no code on the wire, abort() one with 1011 and the reason, and
+    // a writer dropped without either must leave none, so the reader is told
+    // the stream was cut.
     #[tokio::test]
     async fn writer_close_sends_a_clean_close_frame() {
         let (address, server) = test_engine::spawn(false).await;
-        let writer = ChannelWriter::new(&format!("ws://{address}"), &channel_ref());
+        let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
         writer.write(&[1]).await.unwrap();
         writer.close().await.unwrap();
 
@@ -758,9 +702,33 @@ mod end_of_stream_tests {
     }
 
     #[tokio::test]
+    async fn writer_close_never_dialed_still_closes_cleanly() {
+        let (address, server) = test_engine::spawn(false).await;
+        let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
+        writer.close().await.unwrap();
+        let mut ws = server.await.unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap(), WsMessage::Close(None));
+    }
+
+    #[tokio::test]
+    async fn writer_abort_sends_1011_with_the_reason() {
+        let (address, server) = test_engine::spawn(false).await;
+        let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
+        writer.abort("disk full").await.unwrap();
+        let mut ws = server.await.unwrap();
+        assert_eq!(
+            ws.next().await.unwrap().unwrap(),
+            WsMessage::Close(Some(CloseFrame {
+                code: CloseCode::Error,
+                reason: "disk full".into()
+            }))
+        );
+    }
+
+    #[tokio::test]
     async fn writer_dropped_without_close_sends_no_close_frame() {
         let (address, server) = test_engine::spawn(false).await;
-        let writer = ChannelWriter::new(&format!("ws://{address}"), &channel_ref());
+        let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
         writer.write(&[1]).await.unwrap();
         drop(writer);
 
@@ -774,5 +742,22 @@ mod end_of_stream_tests {
             matches!(end, Some(Err(_))),
             "expected no close frame, got {end:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn writes_are_split_into_64_kib_frames() {
+        let (address, server) = test_engine::spawn(false).await;
+        let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
+        writer.write(&vec![7; MAX_FRAME_SIZE + 1]).await.unwrap();
+        writer.close().await.unwrap();
+        let mut ws = server.await.unwrap();
+        let sizes: Vec<usize> = [ws.next().await, ws.next().await]
+            .into_iter()
+            .map(|m| match m.unwrap().unwrap() {
+                WsMessage::Binary(b) => b.len(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(sizes, vec![MAX_FRAME_SIZE, 1]);
     }
 }

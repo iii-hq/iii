@@ -147,62 +147,40 @@ impl LogSink {
         }
     }
 
-    /// Writes every `LogRecord` text frame on `reader` until the channel
-    /// closes, or [`RECORD_QUEUE`] fills, then resolves to the cursor of the
+    /// Writes every `LogRecord` text frame on `reader` until the stream
+    /// ends, or [`RECORD_QUEUE`] fills, then resolves to the cursor of the
     /// last record it wrote, the one to ask again from.
     pub(crate) fn capture_records(
         &self,
-        reader: iii_sdk::channel::ChannelReader,
+        reader: iii_sdk::InputStream,
     ) -> tokio::task::JoinHandle<Option<u64>> {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use tokio::sync::mpsc::error::TryRecvError;
+        use futures::StreamExt;
+        use iii_sdk::protocol::ChannelItem;
 
         let sink = self.clone();
         tokio::spawn(async move {
-            // The frame callback is sync, so it cannot wait for the writer:
-            // once the queue is full it drops every later record, the socket
-            // closes so the adapter stops sending them, and the capture ends
-            // when the queue has drained.
+            // The reader does not wait for the writer: once the queue is full
+            // it stops reading and drops the stream, so its socket closes and
+            // the adapter stops sending what would be dropped; the capture
+            // ends when the queue has drained.
             let (sender, mut records) = tokio::sync::mpsc::channel(RECORD_QUEUE);
-            let full = Arc::new(AtomicBool::new(false));
-            let overflowed = full.clone();
-            let cut = Arc::new(tokio::sync::Notify::new());
-            let cutting = cut.clone();
-            reader
-                .on_message(move |frame| {
-                    if !full.load(Ordering::SeqCst)
+            let pump = tokio::spawn(async move {
+                let mut frames = std::pin::pin!(reader.frames());
+                while let Some(Ok(frame)) = frames.next().await {
+                    if let ChannelItem::Text(frame) = frame
                         && let Ok(record) = serde_json::from_str::<contract::LogRecord>(&frame)
                         && sender.try_send(record).is_err()
                     {
-                        full.store(true, Ordering::SeqCst);
-                        cutting.notify_one();
+                        break;
                     }
-                })
-                .await;
-            // The reader owns the callback, so its sender drops when it does.
-            let pump = tokio::spawn(async move {
-                tokio::select! {
-                    () = cut.notified() => {}
-                    () = async { while let Ok(Some(_)) = reader.next_binary().await {} } => {}
                 }
             });
             let mut last = None;
-            loop {
-                let record = match records.try_recv() {
-                    Ok(record) => record,
-                    Err(TryRecvError::Empty) if overflowed.load(Ordering::SeqCst) => {
-                        pump.abort();
-                        break;
-                    }
-                    Err(TryRecvError::Empty) => match records.recv().await {
-                        Some(record) => record,
-                        None => break,
-                    },
-                    Err(TryRecvError::Disconnected) => break,
-                };
+            while let Some(record) = records.recv().await {
                 sink.write_record(&record).await;
                 last = Some(record.cursor);
             }
+            let _ = pump.await;
             last
         })
     }
@@ -991,6 +969,16 @@ pub(crate) mod tests {
         );
     }
 
+    /// A stream read from the engine stand-in at `address`.
+    fn stream_at(address: std::net::SocketAddr) -> iii_sdk::InputStream {
+        let reader: iii_sdk::InputStream = serde_json::from_value(serde_json::json!({
+            "channel_id": "", "access_key": "", "direction": "read"
+        }))
+        .unwrap();
+        reader.bind(&iii_sdk::IIIClient::new(&format!("ws://{address}")));
+        reader
+    }
+
     #[tokio::test]
     async fn captured_records_resolve_to_the_last_cursor_when_the_channel_closes() {
         use futures::SinkExt;
@@ -1013,10 +1001,7 @@ pub(crate) mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let store = LogStore::open(dir.path().to_path_buf()).unwrap();
-        let reader = iii_sdk::channel::ChannelReader::new(
-            &format!("ws://{address}"),
-            &iii_sdk::channel::StreamChannelRef::default(),
-        );
+        let reader = stream_at(address);
         assert_eq!(
             store.sink("web").capture_records(reader).await.unwrap(),
             Some(7)
@@ -1082,10 +1067,7 @@ pub(crate) mod tests {
         });
         holding.recv().unwrap();
 
-        let reader = iii_sdk::channel::ChannelReader::new(
-            &format!("ws://{address}"),
-            &iii_sdk::channel::StreamChannelRef::default(),
-        );
+        let reader = stream_at(address);
         let capture = store.sink("web").capture_records(reader);
         let sent = all_sent.await.unwrap();
         assert!(sent < CAP, "the stream was read past a full queue");

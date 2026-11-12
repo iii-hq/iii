@@ -1,7 +1,7 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Same JSON as `iii_sdk::channels::StreamChannelRef`, pinned by `tests/stream_channel_ref.rs`.
+//! Same JSON as `iii_sdk::protocol::StreamChannelRef`, pinned by `tests/stream_channel_ref.rs`.
 //! Copied rather than re-exported so the contract crate does not depend on the SDK.
 
 use schemars::JsonSchema;

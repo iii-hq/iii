@@ -4,8 +4,6 @@
 //! first argument so the public API surface of `IIIClient` stays focused on the
 //! core lifecycle and registration methods.
 
-pub use crate::channels::{ChannelDirection, ChannelItem, extract_channel_refs, is_channel_ref};
-
 use std::sync::Arc;
 
 #[allow(deprecated)]
@@ -18,14 +16,6 @@ use crate::error::Error;
 use crate::iii::{IIIClient, RegisterFunction};
 #[allow(deprecated)]
 use crate::stream_provider::IStream;
-use crate::types::Channel;
-
-/// Create a streaming channel pair for worker-to-worker data transfer.
-///
-/// Free-function form of `IIIClient`'s former `create_channel` instance method.
-pub async fn create_channel(iii: &IIIClient, buffer_size: Option<usize>) -> Result<Channel, Error> {
-    crate::iii::internal_create_channel(iii, buffer_size).await
-}
 
 /// Register a custom stream provider for a stream name.
 ///

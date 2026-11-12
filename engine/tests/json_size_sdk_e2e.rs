@@ -144,6 +144,8 @@ const FRAME_LIMIT: usize = 16 * 1024 * 1024;
 const MESSAGE_LIMIT: usize = 64 * 1024 * 1024;
 const LARGE: usize = 40 * 1024 * 1024;
 const LINK: &str = "https://iii.dev/docs/creating-workers/channels#payload-size";
+// The engine keeps the 0.26 wording; the 0.27 TypeScript, Python and Rust SDKs point at the streaming page.
+const SDK_LINK: &str = "https://iii.dev/docs/creating-workers/streaming#payload-size";
 const PERIOD: usize = 97;
 const ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const TEST_BLOCK: usize = 1024 * 1024;
@@ -287,7 +289,7 @@ fn assert_sdk_error(message: &str) {
     assert_eq!(
         message,
         format!(
-            "Serialized JSON envelope is {size} bytes; limit is {MESSAGE_LIMIT} bytes. Use channels for larger payloads: {LINK}"
+            "Serialized JSON envelope is {size} bytes; limit is {MESSAGE_LIMIT} bytes. Use streams for larger payloads: {SDK_LINK}"
         )
     );
 }

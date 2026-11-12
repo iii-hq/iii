@@ -1854,6 +1854,7 @@ version = "0.26.1-rc.1"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "bytes",
  "criterion",
  "ctor",
  "futures-util",

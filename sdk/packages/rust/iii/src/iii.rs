@@ -194,7 +194,7 @@ mod json_size_tests {
         assert_eq!(
             error.invocation_error().unwrap().message,
             format!(
-                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
             )
         );
     }
@@ -252,7 +252,7 @@ mod json_size_tests {
         assert_eq!(
             error.invocation_error().unwrap().message,
             format!(
-                "Serialized JSON envelope is {byte_count} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                "Serialized JSON envelope is {byte_count} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
             )
         );
     }
@@ -277,7 +277,7 @@ mod json_size_tests {
         assert_eq!(
             error.invocation_error().unwrap().message,
             format!(
-                "Serialized JSON envelope is {envelope_bytes} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                "Serialized JSON envelope is {envelope_bytes} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
             )
         );
     }
@@ -473,7 +473,7 @@ mod json_size_tests {
         assert_eq!(
             parsed["error"]["message"],
             format!(
-                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
             )
         );
         assert!(parsed.get("result").is_none());
@@ -578,9 +578,7 @@ use iii_helpers::http::HttpInvocationConfig;
 use arc_swap::ArcSwap;
 
 use crate::{
-    channels::{
-        ChannelReader, ChannelWriter, StreamChannelRef, handshake_headers, handshake_request,
-    },
+    channels::{handshake_headers, handshake_request},
     context::{InvocationCtx, with_current},
     dispatch::{Hosted, Route, run_reporter},
     error::Error,
@@ -590,14 +588,14 @@ use crate::{
     observable::{FunctionEntry, HookOp, Observer},
     observe::{NOT_SENT, ObserverEntry, ObserverReason},
     protocol::{
-        Activation, CallAction, CallRequest, CallRequestWithMetadata, Caller, Dispatch, ErrorBody,
+        Activation, CallAction, CallRequestWithMetadata, Caller, Dispatch, ErrorBody,
         FEATURE_OBSERVE_V1, FEATURE_OBSERVE_V2, FUNCTION_NAMESPACE_CONFLICT, Message,
         ObserverState, ParentCaller, RegisterFunctionMessage, SDK_FEATURES,
         WORKER_NAMESPACE_CONFLICT, observe_codes,
     },
     reporter::Reporter,
     transport::{self, WsConnectResult, WsStream},
-    types::{Channel, RemoteFunctionData, RemoteFunctionHandlerWithMetadata},
+    types::{RemoteFunctionData, RemoteFunctionHandlerWithMetadata},
 };
 
 use iii_helpers::observability as telemetry;
@@ -1990,6 +1988,10 @@ pub struct IIIClient {
     pub(crate) inner: Arc<IIIInner>,
 }
 
+/// Every client made in this process, for a received stream to bind to when
+/// it is the only one alive.
+static LIVE_CLIENTS: Mutex<Vec<std::sync::Weak<IIIInner>>> = Mutex::new(Vec::new());
+
 impl IIIClient {
     /// Create a new III with default worker metadata (auto-detected runtime, os, hostname)
     pub fn new(address: &str) -> Self {
@@ -2053,13 +2055,41 @@ impl IIIClient {
             held_frames: Mutex::new(Vec::new()),
             marker: Mutex::new(None),
         };
-        Self {
-            inner: Arc::new(inner),
+        let inner = Arc::new(inner);
+        {
+            let mut live = LIVE_CLIENTS.lock_or_recover();
+            live.retain(|client| client.strong_count() > 0);
+            live.push(Arc::downgrade(&inner));
         }
+        Self { inner }
     }
 
     pub(crate) fn from_inner(inner: Arc<IIIInner>) -> Self {
         Self { inner }
+    }
+
+    /// The only client alive in this process (not shut down), if there is
+    /// exactly one.
+    pub(crate) fn only_live() -> Option<IIIClient> {
+        let candidates: Vec<Arc<IIIInner>> = {
+            let mut live = LIVE_CLIENTS.lock_or_recover();
+            live.retain(|client| client.strong_count() > 0);
+            live.iter().filter_map(std::sync::Weak::upgrade).collect()
+        };
+        let mut alive = candidates.into_iter().filter(|inner| {
+            !(inner.started.load(Ordering::SeqCst) && !inner.running.load(Ordering::SeqCst))
+        });
+        let only = alive.next()?;
+        alive.next().is_none().then(|| IIIClient::from_inner(only))
+    }
+
+    /// Where this client's streams open their sockets: the engine address and
+    /// the handshake headers.
+    pub(crate) fn stream_endpoint(&self) -> (String, HashMap<String, String>) {
+        (
+            self.inner.address.clone(),
+            handshake_headers(self.inner.headers.lock_or_recover().clone()),
+        )
     }
 
     pub(crate) fn functions(&self) -> MutexGuard<'_, HashMap<String, RemoteFunctionData>> {
@@ -2716,6 +2746,37 @@ impl IIIClient {
         } = request.into();
         // `null` metadata is no metadata, local or routed (decision 54).
         let metadata = metadata.filter(|metadata| !metadata.is_null());
+        let mut req = req;
+
+        // R9: a queued job can run after its pipes expired, and a retry
+        // cannot read a stream again. Refused before anything is sent.
+        if matches!(req.action, Some(CallAction::Enqueue { .. }))
+            && crate::streams::contains_stream(&req.payload)
+        {
+            crate::streams::release(&req.payload);
+            return Err(crate::streams::enqueue_rejection());
+        }
+        // One stream twice is refused the same way on every path.
+        if let Err(error) = crate::streams::check_sent_once(&req.payload) {
+            crate::streams::release(&req.payload);
+            return Err(error);
+        }
+        if metadata
+            .as_ref()
+            .is_some_and(crate::streams::has_placeholder)
+        {
+            crate::streams::release(&req.payload);
+            metadata.iter().for_each(crate::streams::release);
+            return Err(Error::Runtime(
+                "a stream cannot travel in metadata: put it in the payload".into(),
+            ));
+        }
+        // Received refs passed on as raw JSON are the callee's now: the
+        // handler guard leaves them alone.
+        crate::streams::mark_transferred(&req.payload);
+        // The call's timeout bounds its wait for the sinks it passes, too.
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(req.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
 
         // Through an observer: the engine routes to the observer's stored
         // target, whatever namespace a request names, and checks that this
@@ -2727,7 +2788,9 @@ impl IIIClient {
                 return Err(Error::Handler(OBSERVER_CALL_METADATA.to_string()));
             }
             let (caller, observe_depth) = self.outgoing_caller();
-            return self
+            let detach = matches!(req.action, Some(CallAction::Void));
+            let pumps = crate::streams::prepare(self, &mut req.payload).await?;
+            let result = self
                 .invoke_remote(RemoteCall {
                     function_id: req.function_id,
                     payload: req.payload,
@@ -2743,6 +2806,7 @@ impl IIIClient {
                     }),
                 })
                 .await;
+            return pumps.settle(result, detach, deadline).await;
         }
 
         // Engine-owned builtins always live in `default`. Other implicit calls
@@ -2769,19 +2833,56 @@ impl IIIClient {
             }
         }
 
+        // Streams in the payload: each gets a pipe, its ref takes its place,
+        // and the call resolves once every sink it passed got its stream.
+        // A void call does not wait: its pumps run on their own.
+        let detach = matches!(req.action, Some(CallAction::Void));
+        let pumps = crate::streams::prepare(self, &mut req.payload).await?;
         let (caller, observe_depth) = self.outgoing_caller();
-        self.invoke_remote(RemoteCall {
-            function_id: req.function_id,
-            payload: req.payload,
-            action: req.action,
-            timeout: req.timeout_ms.map(Duration::from_millis),
-            metadata,
-            namespace,
-            caller,
-            observe_depth,
-            activation: None,
-        })
-        .await
+        let result = self
+            .invoke_remote(RemoteCall {
+                function_id: req.function_id,
+                payload: req.payload,
+                action: req.action,
+                timeout: req.timeout_ms.map(Duration::from_millis),
+                metadata,
+                namespace,
+                caller,
+                observe_depth,
+                activation: None,
+            })
+            .await;
+        pumps.settle(result, detach, deadline).await
+    }
+
+    /// Creates a pipe on the engine and returns both ends: send one in a
+    /// call payload (or a handler result) and use the other here. This
+    /// worker owns the pipe: it must stay connected until the other side
+    /// attached, or the engine aborts it.
+    ///
+    /// Most code does not need it: an [`InputStream`](crate::InputStream)
+    /// built with `from_reader`/`from_stream`/`from_bytes`, or an
+    /// [`OutputStream`](crate::OutputStream) built with `to_writer`, put in a
+    /// payload gets its pipe from the SDK.
+    ///
+    /// ```rust,no_run
+    /// # use iii_sdk::{CallRequest, IIIClient};
+    /// # use serde_json::json;
+    /// # async fn demo(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
+    /// let pipe = iii.pipe().await?;
+    /// let call = iii.call(CallRequest::new(
+    ///     "files::process",
+    ///     json!({ "filename": "report.csv", "body": pipe.input }),
+    /// ));
+    /// let upload = async {
+    ///     pipe.output.write(b"id,total\n1,10\n").await?;
+    ///     pipe.output.close().await
+    /// };
+    /// let (result, ()) = tokio::try_join!(call, upload)?;
+    /// # Ok(()) }
+    /// ```
+    pub async fn pipe(&self) -> Result<crate::Pipe, Error> {
+        crate::streams::pipe(self).await
     }
 
     /// [`call`](Self::call) under its 0.25 name.
@@ -3058,7 +3159,7 @@ impl IIIClient {
             });
         }
         let error_message = format!(
-            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+            "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
         );
         if let Message::InvocationResult {
             invocation_id,
@@ -3102,6 +3203,19 @@ impl IIIClient {
     }
 
     pub(crate) fn send_message(&self, message: Message) -> Result<(), Error> {
+        // A stream placeholder is replaced by a pipe ref before a call or a
+        // result is sent: one on the wire is a bug.
+        debug_assert!(
+            !match &message {
+                Message::InvokeFunction { data, .. } => crate::streams::has_placeholder(data),
+                Message::InvocationResult {
+                    result: Some(result),
+                    ..
+                } => crate::streams::has_placeholder(result),
+                _ => false,
+            },
+            "a stream placeholder reached the wire"
+        );
         let envelope = match self.prepare_outbound(&message) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -4054,6 +4168,7 @@ impl IIIClient {
                     parent_cx,
                     payload: data,
                     route,
+                    answered: reply_to.is_some(),
                 })
                 .await;
 
@@ -4065,7 +4180,16 @@ impl IIIClient {
                     let _guard = answer.otel_cx.attach();
                     inject_trace_headers()
                 };
-                let (result, error) = match answer.result {
+                // Streams in the result: pipes replace them, and their pumps
+                // start now, while the caller reads.
+                let mut result = answer.result;
+                if let Ok(value) = &mut result {
+                    match crate::streams::prepare(&iii, value).await {
+                        Ok(pumps) => drop(pumps),
+                        Err(error) => result = Err(crate::dispatch::error_body(error, None)),
+                    }
+                }
+                let (result, error) = match result {
                     Ok(value) => (Some(value), None),
                     Err(body) => (None, Some(body)),
                 };
@@ -4082,8 +4206,14 @@ impl IIIClient {
                     matched,
                     delivered,
                 });
-            } else if let Err(body) = answer.result {
-                tracing::warn!(code = %body.code, error = %body.message, "error handling async invocation");
+            } else {
+                match answer.result {
+                    // Nobody reads a void call's result.
+                    Ok(value) => crate::streams::release(&value),
+                    Err(body) => {
+                        tracing::warn!(code = %body.code, error = %body.message, "error handling async invocation");
+                    }
+                }
             }
         });
     }
@@ -4296,7 +4426,7 @@ impl IIIClient {
             return Err(Error::Remote {
                 code: "payload_too_large".to_string(),
                 message: format!(
-                    "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+                    "Serialized JSON envelope is {size} bytes; limit is {MAX_JSON_MESSAGE_BYTES} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
                 ),
                 stacktrace: None,
             });
@@ -4479,54 +4609,14 @@ impl IIIClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal implementations for items relocated to the `helpers` submodule.
-// Exposed at `pub(crate)` so the thin wrappers in `crate::helpers` can call
-// them; user code must continue to go through `crate::helpers::*`.
-// ---------------------------------------------------------------------------
-
-pub(crate) async fn internal_create_channel(
-    iii: &IIIClient,
-    buffer_size: Option<usize>,
-) -> Result<Channel, Error> {
-    let result = iii
-        .call(CallRequest::new(
-            "engine::channels::create",
-            serde_json::json!({ "buffer_size": buffer_size }),
-        ))
-        .await?;
-
-    let writer_ref: StreamChannelRef = serde_json::from_value(
-        result
-            .get("writer")
-            .cloned()
-            .ok_or_else(|| Error::Serde("missing 'writer' in channel response".into()))?,
-    )
-    .map_err(|e| Error::Serde(e.to_string()))?;
-
-    let reader_ref: StreamChannelRef = serde_json::from_value(
-        result
-            .get("reader")
-            .cloned()
-            .ok_or_else(|| Error::Serde("missing 'reader' in channel response".into()))?,
-    )
-    .map_err(|e| Error::Serde(e.to_string()))?;
-
-    let headers = iii.inner.headers.lock_or_recover().clone();
-    Ok(Channel {
-        writer: ChannelWriter::new(&iii.inner.address, &writer_ref).with_headers(headers.clone()),
-        reader: ChannelReader::new(&iii.inner.address, &reader_ref).with_headers(headers),
-        writer_ref,
-        reader_ref,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::ffi::OsString;
 
     use serde_json::json;
+
+    use crate::protocol::CallRequest;
 
     use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
 
@@ -4910,12 +5000,8 @@ mod tests {
         iii
     }
 
-    fn channel_ref(direction: crate::channels::ChannelDirection) -> StreamChannelRef {
-        StreamChannelRef {
-            channel_id: "chan".into(),
-            access_key: "key".into(),
-            direction,
-        }
+    fn channel_ref(direction: &str) -> Value {
+        serde_json::json!({ "channel_id": "chan", "access_key": "key", "direction": direction })
     }
 
     /// `III_TOKEN` alone authenticates the main connection and both channel
@@ -4923,7 +5009,7 @@ mod tests {
     /// the env guard is a std mutex that must not be held across an await.
     #[test]
     fn iii_token_authenticates_the_handshake_of_the_connection_and_channels() {
-        use crate::channels::ChannelDirection::{Read, Write};
+        use crate::{InputStream, OutputStream};
 
         let env = ScopedEnvVar::new("III_TOKEN");
         env.set("secret");
@@ -4951,23 +5037,26 @@ mod tests {
             );
             iii.shutdown_async().await;
 
-            // The base query survives, and the channel's own params follow it.
-            let base = format!("ws://{addr}/?token=abc");
-            let writer = ChannelWriter::new(&base, &channel_ref(Write));
-            writer.send_message("hi").await.unwrap();
+            // A stream bound to a client dials its engine with its headers. The
+            // base query survives, and the channel's own params follow it.
+            let base = IIIClient::new(&format!("ws://{addr}/?token=abc"));
+            let writer: OutputStream = serde_json::from_value(channel_ref("write")).unwrap();
+            writer.bind(&base).send_text("hi").await.unwrap();
             let handshake = next_handshake(&mut rx).await;
             assert_eq!(handshake.0, "/ws/channels/chan?token=abc&key=key&dir=write");
             assert_eq!(auth(&handshake).as_deref(), Some("Bearer secret"));
 
-            let reader = ChannelReader::new(&base, &channel_ref(Read));
-            let _ = tokio::time::timeout(Duration::from_millis(500), reader.next_binary()).await;
+            let reader: InputStream = serde_json::from_value(channel_ref("read")).unwrap();
+            reader.bind(&base);
+            let _ = tokio::time::timeout(Duration::from_millis(500), reader.read_all()).await;
             let handshake = next_handshake(&mut rx).await;
             assert_eq!(handshake.0, "/ws/channels/chan?token=abc&key=key&dir=read");
             assert_eq!(auth(&handshake).as_deref(), Some("Bearer secret"));
 
-            let writer =
-                ChannelWriter::new(&base, &channel_ref(Write)).with_headers(Some(explicit));
-            writer.send_message("hi").await.unwrap();
+            let explicit_client = IIIClient::new(&format!("ws://{addr}/?token=abc"));
+            explicit_client.set_headers(explicit);
+            let writer: OutputStream = serde_json::from_value(channel_ref("write")).unwrap();
+            writer.bind(&explicit_client).send_text("hi").await.unwrap();
             assert_eq!(
                 auth(&next_handshake(&mut rx).await).as_deref(),
                 Some("Bearer explicit")
