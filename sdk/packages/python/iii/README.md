@@ -38,6 +38,7 @@ print(result)  # {"message": "Hello, world!"}
 | Call (fire-and-forget)   | `iii.call({"function_id": id, ..., "action": CallAction.Void()})`                          | Fire-and-forget                                          |
 | Call (enqueue)           | `iii.call({"function_id": id, ..., "action": CallAction.Enqueue(queue="name")})`           | Route the call through a named queue                     |
 | Call through an observer | `iii.call({"observer": obs, "payload": data})`                                             | Run an observer's target from a deliver hook             |
+| Stream                   | `InputStream.from_file(path)`, `OutputStream.to_file(path)`, `iii.pipe()`                  | Bytes in a call's payload or result (see Streams)        |
 | Observe                  | `iii.observe("fn::id", target, options?)`                                                  | Run `target` when the function runs                      |
 | Observer hooks           | `iii.on_observer_added`, `on_observer_removed`, `on_observation_match`, `on_observation_deliver` | Decide what observing a function this worker hosts means |
 | Current invocation       | `iii.current_invocation()`                                                                 | The invocation the running handler serves                |
@@ -75,6 +76,103 @@ once the engine confirmed it (no frames on the wire unless someone observes
 it): a sync handler on a thread of its own, an async one on the calling loop.
 Pass `"dispatch": "remote"` to go through the engine anyway, or register the
 function with `local_dispatch=False`.
+
+### Streams
+
+A stream is a value in a call's payload or result. An `InputStream` is read,
+an `OutputStream` is written; every other field of the payload stays JSON.
+
+```python
+from iii import InputStream, OutputStream
+
+# Send: the handler gets an InputStream
+async def count(payload):
+    total = 0
+    async for chunk in payload["body"]:  # bytes chunks
+        total += len(chunk)
+    return {"bytes": total}
+
+iii.register_function("files::count", count)
+await iii.call_async({"function_id": "files::count", "payload": {"body": InputStream.from_file("big.csv")}})
+
+# Return: an async generator (or an InputStream) in the result reaches the caller as an InputStream
+async def export(payload):
+    async def rows():
+        for row in await load_rows(payload["report_id"]):
+            yield (",".join(row) + "\n").encode()
+    return {"report_id": payload["report_id"], "csv": rows()}
+
+result = await iii.call_async({"function_id": "reports::export", "payload": {"report_id": "r-1"}})
+async for line in result["csv"].lines():
+    ...
+
+# Sink: the handler writes an OutputStream; the call resolves once the bytes are in the file
+async def render(payload):
+    out = payload["out"]
+    await out.send({"type": "progress", "pct": 50})  # a JSON message frame
+    await out.write(pdf_bytes)
+
+await iii.call_async({"function_id": "reports::render", "payload": {"out": OutputStream.to_file("r.pdf")}})
+```
+
+Sources a payload may carry where a stream goes: `InputStream.from_bytes`,
+`from_file` (a path or an open binary file), `from_iter` (a sync or async
+iterable of `bytes`/`str`; a sync one is advanced on an SDK thread), an open
+binary file, or an async generator. A sync generator or a text-mode file is
+refused with a `TypeError` that says how to wrap it. Sinks:
+`OutputStream.to_file(path)` and `OutputStream.to(binary_file)`. `iii.pipe()` (or
+`await iii.pipe_async()`) returns a `Pipe` with `.input` and `.output` ends, for
+reading a handler's output while the call runs.
+
+`InputStream`: `async for`, `read_all()`, `text()`, `lines()`, `messages()`
+(the JSON message frames), `frames()` (every frame in order), `tee()` and
+`cancel()`. A stream has one reader: a second read, the same stream twice in
+one payload, or passing on a stream already sent or read to the end raises
+`StreamInUseError` (code `STREAM_IN_USE`). `tee()` gives two copies to read at
+the same time (two tasks or threads): each holds at most 16 frames the other
+copy read, and past that the faster reader waits for the slower one, so do not
+read one copy to the end before starting the other.
+`OutputStream`: `write(bytes | str)`, `send(json_value)`, `close()`,
+`abort(reason)`, `keep_open()`, and `async with` (closes, or aborts on an
+exception). A write after `close()` or `abort()` raises `StreamClosedError`
+(code `STREAM_CLOSED`). Both errors are also `RuntimeError`s.
+
+- A stream the handler did not read is passed on as is when it calls another
+  function with it: no bytes go through this worker.
+- When the handler returns, an output it wrote is closed (aborted if the
+  handler raised) and an input it partly read is cancelled. An output it never
+  touched is closed when it returns, so a caller's sink always ends; the
+  exception is an observer activation (an HTTP route target, for one) that
+  returned a value other than `None`, which leaves it untouched (the HTTP
+  worker then sends the returned value as a buffered response). When the
+  handler raises, an output it never touched is left as it is.
+  `out.keep_open()` keeps an output open after the handler returns.
+- A call resolves once the sinks it carried finished, unless its result hands
+  back a stream to write (its own sink, say): the caller writes that after the
+  call returns, so the sinks then finish in the background.
+- An aborted stream raises `StreamAbortedError` (code `STREAM_ABORTED`) in its
+  reader; a call whose sink was aborted rejects with it.
+- `CallAction.Void()` carries streams; `CallAction.Enqueue(...)` rejects them
+  with `STREAM_NOT_ALLOWED` before anything is sent.
+- An observer of a streamed call sees each stream as a `StreamInfo`
+  (`stream`, `direction`, `id`) in its `input` and `output`.
+
+Stream methods are coroutines and work from any event loop. From sync code,
+run them with `asyncio.run(...)`:
+
+```python
+def count_sync(payload):
+    return len(asyncio.run(payload["body"].read_all()))
+
+result = iii.call({"function_id": "reports::export", "payload": {"report_id": "r-1"}})
+csv = asyncio.run(result["csv"].read_all())
+```
+
+`iii.call()` blocks its thread. From a thread whose event loop is running, it
+refuses (with `RuntimeError`, before sending) a stream that runs on that loop:
+`InputStream.from_iter()` of an async iterable, or `OutputStream.to()` of a
+writer that is not a file object, made there. Use `await iii.call_async(...)`
+in async code.
 
 ### Observing Functions
 

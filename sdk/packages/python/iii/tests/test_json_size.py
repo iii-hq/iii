@@ -80,8 +80,8 @@ def test_unicode_and_escapes_count_serialized_bytes():
     assert raised.value.code == "payload_too_large"
     assert raised.value.message == (
         f"Serialized JSON envelope is {serialized_size} bytes; limit is "
-        f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use channels for larger payloads: "
-        "https://iii.dev/docs/creating-workers/channels#payload-size"
+        f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use streams for larger payloads: "
+        "https://iii.dev/docs/creating-workers/streaming#payload-size"
     )
 
 
@@ -602,8 +602,8 @@ async def test_outbound_limit_acceptance_and_exact_over_limit_error():
     assert raised.value.function_id == "f"
     assert raised.value.message == (
         f"Serialized JSON envelope is {_MAX_JSON_OUTBOUND_BYTES + 1} bytes; limit is "
-        f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use channels for larger payloads: "
-        "https://iii.dev/docs/creating-workers/channels#payload-size"
+        f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use streams for larger payloads: "
+        "https://iii.dev/docs/creating-workers/streaming#payload-size"
     )
 
 

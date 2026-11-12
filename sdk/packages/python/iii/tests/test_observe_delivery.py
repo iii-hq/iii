@@ -893,18 +893,18 @@ def test_a_call_for_one_observer_carries_its_metadata_to_the_match_hook_and_the_
 # ── private and output_is_input ────────────────────────────────────────────
 
 
-def test_channel_refs_are_resolved_and_the_rest_of_the_value_is_kept(engine: FakeEngine, connect: Any) -> None:
-    from iii.channels import ChannelReader
+def test_stream_refs_are_resolved_and_the_rest_of_the_value_is_kept(engine: FakeEngine, connect: Any) -> None:
+    from iii import InputStream
 
     client = connect(engine)
     plain = {"a": [1, {"b": 2}], "c": (3,)}
-    assert client._resolve_channels(plain) is plain
+    assert client._materialize(plain) is plain
     ref = {"channel_id": "ch-1", "access_key": "k", "direction": "read"}
     keep = {"x": 1}
     value = {"body": {"stream": ref}, "keep": keep, "list": [ref, 2]}
-    resolved = client._resolve_channels(value)
+    resolved = client._materialize(value)
     assert resolved is not value and value["body"]["stream"] is ref  # the caller's value is untouched
-    assert isinstance(resolved["body"]["stream"], ChannelReader) and isinstance(resolved["list"][0], ChannelReader)
+    assert isinstance(resolved["body"]["stream"], InputStream) and isinstance(resolved["list"][0], InputStream)
     assert resolved["keep"] is keep and resolved["list"][1] == 2
 
 
@@ -931,10 +931,10 @@ _REF = {"channel_id": "ch-1", "access_key": "k", "direction": "read"}
 
 
 @pytest.mark.parametrize("private", [True, False])
-def test_the_delivery_sees_channel_refs_as_sent_and_the_handler_gets_readers(
+def test_the_delivery_sees_stream_refs_as_sent_and_the_handler_gets_streams(
     engine: FakeEngine, connect: Any, private: bool
 ) -> None:
-    from iii.channels import ChannelReader
+    from iii import InputStream
 
     client = connect(engine)
     bodies: list[Any] = []
@@ -954,14 +954,14 @@ def test_the_delivery_sees_channel_refs_as_sent_and_the_handler_gets_readers(
     engine.deliver(invoke("files::put", {"name": "b.txt", "body": _REF}, "r-ref"))
     [answer] = engine.wait_for(lambda: answers(engine, "r-ref"), what="the answer")
     settle(client, engine)
-    assert len(bodies) == 2 and all(isinstance(body, ChannelReader) for body in bodies)
+    assert len(bodies) == 2 and all(isinstance(body, InputStream) for body in bodies)
     # filters see the ref; the report carries it, and the engine has the routed call's input as it was sent
     [item] = _items(engine, "files::put")
     assert (item["matched"], item["input"]) == (["o"], {"name": "a.txt", "body": _REF})
     assert answer["result"] == {"stored": "b.txt"} and "matched" not in answer and "delivered" not in answer
 
 
-def test_a_deliver_hook_forwards_the_call_input_with_its_channel_refs(engine: FakeEngine, connect: Any) -> None:
+def test_a_deliver_hook_forwards_the_call_input_with_its_stream_refs(engine: FakeEngine, connect: Any) -> None:
     client = connect(engine)
     forwarded: list[Any] = []
 
