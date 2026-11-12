@@ -516,7 +516,9 @@ static CHILD_OWNS_TERMINAL: AtomicBool = AtomicBool::new(false);
 /// its own default port for when that entry has no `http_port` yet.
 const CONSOLE_CONFIG: &str = "console";
 const DEFAULT_CONSOLE_PORT: u16 = 3113;
-const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+/// A local `compose::status` call: polled often, so the console link follows
+/// the project's last container by tens of milliseconds, not half a second.
+const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 /// Room for compose's startup renderer to print its closing line and stop
 /// repainting before anything else writes to the terminal.
 const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
