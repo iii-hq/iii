@@ -95,7 +95,7 @@ correct: do not flag it.
   `start`, `stop`, `restart`, `list`, `sync`, `verify`, `status`, `logs`, `exec`), together with the
   `worker::*` functions, were removed in 0.23. Replacement: `iii compose` and the `compose::*`
   functions, called with `iii call compose::<verb>`.
-- `iii console` prints a notice that points to the console in ADE and exits; the console is the ADE
+- `iii console`, which only printed a notice pointing to the console in ADE. Replacement: the ADE
   worker (`ade` in the registry), added with `iii call compose::add worker=ade`.
 - Top-level `iii sandbox <verb>` and `iii worker sandbox <verb>`. Replacement:
   `iii call sandbox::<verb>`.
