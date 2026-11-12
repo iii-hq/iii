@@ -39,21 +39,21 @@ engine:
 containers:
   state:
     worker: package://api.workers.iii.dev/state
-    version: "0.22.2"
+    version: "0.23.1"
     config_name: state
   http:
     worker: package://api.workers.iii.dev/http
-    version: "0.21.3"
+    version: "0.23.2"
     config_name: http
   pubsub:
     worker: package://api.workers.iii.dev/pubsub
-    version: "0.21.2"
+    version: "0.22.1"
     config_name: pubsub
   cron:
     worker: package://api.workers.iii.dev/cron
-    version: "0.21.9"
+    version: "0.22.1"
     config_name: cron
   queue:
     worker: package://api.workers.iii.dev/queue
-    version: "0.21.5"
+    version: "0.22.2"
     config_name: queue
