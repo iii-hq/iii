@@ -43,7 +43,7 @@ iii 围绕一个原语 **Function** 和两个操作来组织软件：
 - `worker.call(a)` 立即运行函数 `a`。
 - `worker.observe(a, b)` 使函数 `a` 运行时，函数 `b` 也运行。
 
-worker 托管函数。队列、cron、HTTP、流、沙箱、可观测性、智能体和业务逻辑都是函数。一个 HTTP 请求是对 `http::on-request` 的一次调用。一次 cron 触发是对 `cron::on-tick` 的一次调用。一条队列消息是对 `queue::on-message` 的一次调用。要响应其中任何一个，都使用同一个 `observe`。
+worker 托管函数。队列、数据库、HTTP、流、沙箱、可观测性、智能体和业务逻辑都是函数。一个 HTTP 请求是对 `http::on-request` 的一次调用。一次数据库写入是对 `database::on-row-changed` 的一次调用。一条队列消息是对 `queue::on-message` 的一次调用。要响应其中任何一个，都使用同一个 `observe`。
 
 ```typescript
 import { registerWorker } from 'iii-sdk'

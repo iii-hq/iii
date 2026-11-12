@@ -290,13 +290,13 @@ containers:
 
 The first replacement is immediate. If it fails, later attempts use exponential backoff from `delay`
 up to `max_delay`. During `up`, the progress row shows the current attempt and wait. For a run-time
-exit, only the named worker bounces: workers that name it in `start_after` keep running and see
+exit, only the named worker bounces: workers that specify it in `start_after` keep running and see
 their connection drop and reconnect. VM workers cannot outlive the sandbox adapter: when it crashes
 and its own policy restarts it, they exit with it and each one follows its own policy, so a VM
-worker with no policy ends `failed` and one with `restart: always` spends an attempt.
-`compose::status` reports the worker as `restarting` while it waits for a run-time replacement. Once
-`max_attempts` is spent, `required` controls whether the startup operation fails. At run time, the
-worker is marked `failed`, its dependents are stopped, and `last_error` says the supervisor gave up.
+worker with no policy ends `failed`. `compose::status` reports the worker as `restarting` while it
+waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
+startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
+`last_error` says the supervisor gave up.
 
 ### Stopping a project
 

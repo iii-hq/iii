@@ -20,7 +20,7 @@ export const AI_OVERVIEW = [
   "",
   "iii organizes software around one primitive, the Function, and two operators. `call(a)` runs function `a` now. `observe(a, b)` makes function `b` run when function `a` runs. Workers host functions. Function IDs use `::` as the separator, for example `orders::create`.",
   "",
-  "Events are function calls too. An HTTP request is a call of `http::on-request`, a cron tick is a call of `cron::on-tick`, and a queue message is a call of `queue::on-message`. To react to any of them, a worker uses the same `observe`. Queues, cron, streaming, sandboxes, observability, agents, and business logic are all built from functions and these two operators.",
+  "Events are function calls too. An HTTP request is a call of `http::on-request`, a database write is a call of `database::on-row-changed`, and a queue message is a call of `queue::on-message`. To react to any of them, a worker uses the same `observe`. Queues, databases, streaming, sandboxes, observability, agents, and business logic are all built from functions and these two operators.",
   "",
   "## Same contract, both sides",
   "",

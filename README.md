@@ -43,7 +43,7 @@ iii organizes software around one primitive, the **Function**, and two operators
 - `worker.call(a)` runs function `a` now.
 - `worker.observe(a, b)` makes function `b` run when function `a` runs.
 
-Workers host functions. Queues, cron, HTTP, streaming, sandboxes, observability, agents, and business logic are all functions. An HTTP request is a call of `http::on-request`. A cron tick is a call of `cron::on-tick`. A queue message is a call of `queue::on-message`. To react to any of them, you use the same `observe`.
+Workers host functions. Queues, databases, HTTP, streaming, sandboxes, observability, agents, and business logic are all functions. An HTTP request is a call of `http::on-request`. A database write is a call of `database::on-row-changed`. A queue message is a call of `queue::on-message`. To react to any of them, you use the same `observe`.
 
 ```typescript
 import { registerWorker } from 'iii-sdk'
