@@ -61,6 +61,7 @@ Runs the full test suite across the monorepo. Cancels in-progress runs for PRs.
 | `engine-coverage` | `changes` | Tests `iii` and `iii-sandbox-contract` with `--all-features` under `cargo llvm-cov`. PRs: only when engine paths change. Push/dispatch: always |
 | `engine-benches` | — | `cargo bench --benches --no-run` to verify benches compile |
 | `engine-fmt` | — | `cargo fmt --all -- --check` |
+| `unused-deps` | — | `cargo shear` over the workspace. Warning only: each unused or misplaced dependency becomes a warning annotation and the job never fails. Intentional entries go under `ignored` in `[package.metadata.cargo-shear]` / `[workspace.metadata.cargo-shear]` |
 | `engine-build-matrix` | — | Cross-platform build validation (macOS, Windows, Linux, musl) |
 | `sdk-test-workers` | — | Builds the `state`, `http`, `pubsub`, `cron` and `queue` workers from `iii-hq/workers` at `sdk/fixtures/workers-ref` against this checkout's Rust SDK (`scripts/ci/sdk-test-workers.sh build`), uploads them as the `sdk-test-workers` artifact. Cached on the workers commit and the Rust SDK sources |
 | `sdk-node-ci` | `engine-build`, `sdk-test-workers` | Build + test `@iii-dev/helpers`, type check, build, start engines, run `iii-sdk` tests |
