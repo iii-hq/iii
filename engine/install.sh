@@ -674,6 +674,11 @@ fi
 # Telemetry: success
 # ---------------------------------------------------------------------------
 
+# Sent from the installed binary: the one in $tmpdir goes with the EXIT trap,
+# maybe before a job started this late has run it. A `*_started` job was
+# started before the copy, and the only early exit after it (`err`) first
+# runs a synchronous event from that same binary.
+telemetry_emitter="$bin_dir/$BIN_NAME"
 if [ "$install_event_prefix" = "upgrade" ]; then
   payload=$(printf '{"from_version":%s,"to_version":%s,"install_method":"sh","target_binary":%s}' \
     "$(json_str "$from_version")" "$(json_str "$installed_version")" "$(json_str "$BIN_NAME")")
