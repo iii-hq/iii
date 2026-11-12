@@ -12,9 +12,9 @@ voice reference. Examples of the target voice:
 
 - "Software engineering is an exercise in assembling categories of services."
 - "iii fundamentally eliminates this complexity."
-- "worker. trigger. function."
+- "one primitive. call it, or observe it."
 - Analogies to paradigm shifts: Unix (everything-is-a-file), React (everything-is-a-component),
-  iii (everything-is-a-worker).
+  iii (everything-is-a-function).
 
 ## Recurring theme: compose from the registry
 

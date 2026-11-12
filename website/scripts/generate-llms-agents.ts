@@ -199,7 +199,7 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
 ## Core pages
 
 - [Docs](${SITE_ORIGIN}/docs): what iii is, and how to build and run an iii system
-- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii): workers, functions, observers, and the engine
+- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii): the Function, call and observe, and the workers and engine that host and route it
 - [Quickstart](${SITE_ORIGIN}/docs/quickstart): two workers in two languages, composed through the engine
 - [Worker registry](${SITE_ORIGIN}/registry): workers you can add to a project with \`compose::add\`
 - [Manifesto](${SITE_ORIGIN}/manifesto): why iii exists

@@ -1,6 +1,6 @@
 ## What iii is, to an agent
 
-An engine and a single open protocol (JSON over WebSocket) with three primitives: Worker, Function, Observer. An agent is a worker. Its tools are functions. Its memory is state. Its orchestration is observers: when one function runs, another runs.
+An engine and a single open protocol (JSON over WebSocket) built on one primitive, the Function, and two operators: call and observe. Workers host functions. An agent is a worker. Its tools are functions. Its memory is state. Its orchestration is observers: when one function runs, another runs.
 
 No harness separate from the backend. No tool layer wired by hand. No memory system you integrate. One system, one trace, one set of primitives. The harness IS the system.
 
@@ -10,13 +10,13 @@ MCP gives an agent a fixed tool menu prepared in advance. iii gives an agent a l
 
 An agent that hits a task outside its current capabilities can install a worker at runtime and use its functions immediately. Workers can create workers. For autonomous systems, this is the difference between scripted LLM calls and actual autonomy.
 
-## Primitives (wire-level)
+## Primitive and operators (wire-level)
 
-| Primitive | What it is                                                                                                                                                                                                                             | How an agent uses it                                                                                                  |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Worker    | A process that speaks the iii protocol, registers functions, and calls them                                                                                                                                                            | Spawn via SDK; self-registers on connect                                                                              |
-| Function  | Stable identifier (e.g. `orders::validate`) wrapping input → output                                                                                                                                                                    | Call it from another worker with your language SDK's `call` against the engine (not the `iii call` CLI for app logic) |
-| Observer  | `observe(a, b)`: when function `a` runs, function `b` runs. HTTP requests, cron ticks, queue messages, and state changes are calls of source functions (`http::on-request`, `cron::on-tick`, `queue::on-message`, `state::on-changed`) | Observe from your worker; the engine handles routing and delivery                                                     |
+| Piece    | What it is                                                                                                                                                                                                                                               | How an agent uses it                                                                                                  |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Function | The one primitive. A stable identifier (e.g. `orders::validate`) wrapping input → output                                                                                                                                                                 | Call it from another worker with your language SDK's `call` against the engine (not the `iii call` CLI for app logic) |
+| observe  | The second operator. `observe(a, b)`: when function `a` runs, function `b` runs. HTTP requests, cron ticks, queue messages, and state changes are calls of source functions (`http::on-request`, `cron::on-tick`, `queue::on-message`, `state::on-changed`) | Observe from your worker; the engine handles routing and delivery                                                     |
+| Worker   | A process that speaks the iii protocol and hosts functions                                                                                                                                                                                               | Spawn via SDK; self-registers on connect                                                                              |
 
 ## Install / start
 

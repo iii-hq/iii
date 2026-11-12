@@ -1,6 +1,6 @@
 ---
 title: 'The Four Loops, Clearly Explained'
-description: 'Loop engineering is a pattern, not one right answer. Four agentic loops -- turn-based, goal-based, time-based, and proactive -- differ only in what starts a run and what decides the work is done. Each one is a distributed-systems pattern you already know, built on iii with the same three primitives.'
+description: 'Loop engineering is a pattern, not one right answer. Four agentic loops -- turn-based, goal-based, time-based, and proactive -- differ only in what starts a run and what decides the work is done. Each one is a distributed-systems pattern you already know, built on iii with the same one primitive: functions you call and observe.'
 pubDate: 2026-07-30
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'harness', 'loops', 'observers', 'workers']
@@ -30,12 +30,14 @@ and *into a system* that runs without you.
 In this article, we show how you can implement four different types of
 agentic loops using iii.
 
-## Background: Workers, Functions, and Observers
+> _This post was updated to match iii’s current, optimized execution model._
 
-iii consists of three primitives: Workers, Functions, and Observers.
+## Background: Functions, call and observe
 
-**Workers register functions. Observers run one function when another runs.
-The engine routes between them.**
+iii has one primitive, the Function, and two operators: call and observe.
+
+**Workers host functions. Observing a function runs another function when it
+runs. The engine routes between them.**
 
 While in many harnesses loops are a separate concept, in iii you get agentic
 loops when you register an observer whose target is another agent turn.
@@ -309,7 +311,7 @@ second agent's turn ends. This reviewer reads the original event, the
 criteria triage set, and the drafted output, then returns approve, revise, or
 escalate.
 
-The composition is where iii's primitives pay off. A **cron writes new events
+The composition is where iii's one primitive pays off. A **cron writes new events
 to state**. An observer of `state::on-changed` picks them up and starts
 triage. An observer of **turn-completed**, filtered to the analysis session,
 runs the reviewer. Three sources, one engine, one registry. Everything runs completely
@@ -331,8 +333,8 @@ Moreso, the proactive loop in iii is not a fixed architecture. If you need to
 add adversarial checks, insert human gates, or shift the boundaries of your
 scope, you just modify the logic. You aren't fighting against a rigid
 framework or learning a proprietary hook system that lives outside your
-stack. Every change you make still uses the same three primitives:
-**workers, functions, and observers.**
+stack. Every change you make still uses the same one primitive:
+**functions you call and observe.**
 
 ```text
 Set up a proactive workflow for new issues opened on https://github.com/iii-hq/templates that produces a triage response comment, adversarially validated before it posts.
@@ -473,5 +475,5 @@ prompt above added a queue, shared state, and a review gate the same way a
 standing service would. If you wanted to lift that loop out of the harness
 and run it as its own orchestration, you would follow the same functions and
 observers it already used. **That is the next post,** and it is why loop
-engineering and the orchestration you deploy are the same three primitives
+engineering and the orchestration you deploy are the same one primitive
 all the way down.

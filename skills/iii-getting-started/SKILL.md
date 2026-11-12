@@ -9,9 +9,8 @@ description: >-
 # Getting Started with iii
 
 iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability
-pipeline with a single engine and three primitives: **Worker**, **Function**, **Observer**. Workers
-host functions, any worker runs a function with `call`, and `iii.observe(a, b)` means "when `a`
-runs, `b` runs".
+pipeline with a single engine and one primitive, the **Function**. Workers host functions, any
+worker runs a function with `call`, and `iii.observe(a, b)` means "when `a` runs, `b` runs".
 
 ## Step 1: Install the Engine
 
@@ -189,7 +188,8 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent the top-level iii model: workers, functions, observers, registry access,
+Skills teach your agent the top-level iii model: functions (call and observe), the workers that
+host them, registry access,
 SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
 live with the worker docs and registry entries.
 

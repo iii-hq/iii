@@ -7,13 +7,16 @@ description: >-
   Python, and Rust.
 ---
 
-# Core Primitives
+# Core Primitive: the Function
 
-iii has three primitives:
+iii has one primitive, the **Function**: a named unit of work such as `orders::validate`. There are
+two operators:
 
-- **Worker**: a process that connects to the engine, registers functions, and calls them
-- **Function**: a named unit of work such as `orders::validate`; any worker runs it with `call`
-- **Observer**: `iii.observe(a, b)`: when `a` runs, `b` runs
+- **call**: any worker runs a function now with `call`
+- **observe**: `iii.observe(a, b)`: when `a` runs, `b` runs
+
+**Workers** host functions. A worker is a process that connects to the engine, registers functions,
+and calls and observes them.
 
 Everything is reactive. An HTTP request, a cron tick, a queue message, and a state change are each a
 call of a source function (`http::on-request`, `cron::on-tick`, `queue::on-message`,

@@ -1,8 +1,9 @@
 ---
-title: "Workers, Functions, and Observers"
+title: "Functions: call and observe"
 description:
-  "A walkthrough of the four pieces that make up every iii system (Workers, Functions, Observers,
-  and the Engine), using the Quickstart tutorial as an example."
+  "A walkthrough of the one primitive in every iii system, the Function, with its two operators
+  (call and observe) and the Workers and Engine that host and route it, using the Quickstart
+  tutorial as an example."
 owner: "devrel"
 type: "explanation"
 ---
@@ -18,8 +19,8 @@ that one primitive and its two operators, everything else in iii is a variation 
 
 ## The pieces
 
-This is a brief recap of the pieces; the sections below expand each one with the Quickstart as
-an example. More details about their actual usage are in [Using iii / Workers](../using-iii/workers)
+This is a brief recap of the pieces; the sections below expand each one with the Quickstart as an
+example. More details about their actual usage are in [Using iii / Workers](../using-iii/workers)
 and the rest of the "Using iii" section.
 
 ### Worker
@@ -211,9 +212,8 @@ as a Function and calls it when the event happens: each HTTP request is a call o
 An Observer observes the calls of its observed Function: the input, the output (the value the
 handler returns), and the caller. By default, each successful call runs the target, and the target
 receives a payload with the call's input, output, and caller (its metadata only when the Observer
-captures it). What an Observer captures
-decides what its target receives and which calls run it: capturing `error` gets it the failed calls
-of the observed Function too.
+captures it). What an Observer captures decides what its target receives and which calls run it:
+capturing `error` gets it the failed calls of the observed Function too.
 
 ### Args and filters
 

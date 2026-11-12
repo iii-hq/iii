@@ -111,10 +111,12 @@ iii works just like my description above:
 A TypeScript API service is a worker. A Python ML pipeline is a worker. A Rust
 microservice is a worker. And an agent is a worker.
 
+> _This post was updated to match iii’s current, optimized execution model._
+
 This is the idea that changes everything. An agent connects to the engine,
 registers functions and observers, persists context through `state::set`,
 hands off work through queues, and broadcasts results via pub/sub. It doesn't call "the backend" through a separate integration layer.
-It participates in the same system, with the same primitives, as everything
+It participates in the same system, with the same primitive, as everything
 else.
 
 ```typescript
@@ -277,7 +279,7 @@ agents and services can invoke them. When the sandbox is no longer needed, it
 disconnects and its functions unregister.
 
 The sandbox is not a separate "sandbox product." It is a worker, using the
-same primitives as everything else — it just happens to provide hardware
+same primitive as everything else — it just happens to provide hardware
 isolation. An agent creating a sandbox worker is just one worker creating
 another.
 
@@ -300,7 +302,7 @@ functions you register and how you compose them. A thin harness is an agent
 worker with a few functions that lets the model decide what to `call()`
 next. A thick harness is an agent worker with more functions, explicit
 approval gates, and conditional logic before enqueuing the next step. It's
-the same primitives and system, but a different pattern.
+the same primitive and system, but a different pattern.
 
 The scaffolding metaphor shifts too. The industry talks about harness
 scaffolding as temporary. As models improve, you remove it. Manus has
@@ -308,7 +310,7 @@ described rebuilding Claude's agent framework four times, with each rewrite
 the result of discovering a better way to shape context. Claude Code strips
 planning steps as new models absorb the capability.
 
-If the harness is built from the same primitives as the rest of the backend,
+If the harness is built from the same primitive as the rest of the backend,
 then removing scaffolding just means simplifying a function. You don't
 rearchitect an integration layer. You don't rebuild the interface between two
 systems. You just register fewer functions, or compose them differently.
@@ -316,7 +318,7 @@ systems. You just register fewer functions, or compose them differently.
 ## Anything is a worker
 
 A worker is anything that can open a WebSocket, register a function, and
-speak the primitives interface. There is no constraint on what that thing is
+speak the primitive interface. There is no constraint on what that thing is
 or what language it's written in.
 
 iii ships SDKs for TypeScript, Python, and Rust. But those aren't the
@@ -325,7 +327,7 @@ protocol: JSON over WebSocket. The engine doesn't know what language is on
 the other end of the connection. It sees functions, observers, and a
 connection. If your team writes Go, or Java, or Swift, or Zig, you write a
 small SDK that speaks the protocol and you're a first-class participant. The
-primitives interface is the contract. Everything else is a design pattern.
+primitive interface is the contract. Everything else is a design pattern.
 
 This means the set of what can be a worker is genuinely unbounded. A Node.js
 service. A Python ML pipeline. An agent. A queue. A sandbox running inside a
@@ -338,7 +340,7 @@ A Raspberry Pi is a worker. An IoT sensor at the edge is a worker. A phone
 running a thin client is a worker. A CI runner that spins up, registers a
 function, does work, and disconnects is a worker. The engine doesn't
 distinguish between these. Every new language, every new device, every new
-runtime that implements the primitives interface gets the full system for
+runtime that implements the primitive interface gets the full system for
 free: live discovery, live extensibility, live observability, durable
 queues, cross-everything invocation. Not because we built a special
 integration for each one, but because the primitive allows this composition.
@@ -350,8 +352,8 @@ debate matters, but it takes for granted that the harness is its own world,
 separate from the backend and separate from the infrastructure that actually
 runs when a tool fires.
 
-iii makes a different bet: that the right primitives (worker, function,
-observer) are small enough and universal enough that the question "what can
+iii makes a different bet: that the right primitive (the function,
+called and observed) is small enough and universal enough that the question "what can
 participate in this system?" has the answer: anything. A cloud service. An
 agent. A browser. A microcontroller. A sandbox an agent just spun up. They
 all compose the same way. They all discover each other. They all trace the
@@ -363,12 +365,12 @@ architecturally different from any other, the system simplifies in a way
 that adding features never achieves. The boundaries between harness and
 backend, between cloud and edge, between infrastructure and application, and
 between human-written services and agent-created workers all dissolve into
-the same three primitives.
+the same primitive.
 
 The harness isn't on top of the backend. The harness *is* a part of the
 backend. And the backend is whatever connects to iii.
 
-When you get the primitives right, the categories collapse and complexity is
+When you get the primitive right, the categories collapse and complexity is
 radically simplified.
 
 iii is open source. Get started with our [quickstart](https://docs.iii.dev).
