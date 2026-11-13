@@ -32,11 +32,13 @@ English | [简体中文](README_zh.md)
 
 ## Why iii
 
-Every service comes with its own runtime, API, and failure modes. Connecting them takes gateways, retries, sync, tracing, and glue code that needs maintenance forever. Each new service adds integration work with every service already in the stack: four services have six possible integration edges, and twenty have 190.
+Every service comes with its own runtime, API, and failure modes. Getting services to work together means endless integration work: error handling, gateways, sync, tracing, and maintenance that never stops.
 
-iii removes that work with one primitive, the **Function**. Services, agents, and tools connect to one engine as workers, and everything they can do is a function that any other worker can call or observe, in any language and on any machine. HTTP routes, queues, database changes, agents, and business logic all work the same way, so adding the two-hundredth worker is the same operation as adding the second.
+It's estimated that up to 70% of development time is dedicated to integrations. 40% is the lowest estimate we could find.
 
-The result is a system that is composable, observable, discoverable, extensible, and reactive. See [Built for C.O.D.E.R.](#built-for-coder).
+iii removes that work with one primitive, the **Function**. Services, agents, and tools connect to one engine as workers, and everything they can do is a Function that any other worker can call or observe, in any language and on any machine. Workers can then be defined in a Compose file and run them on any infrastructure. An entire service stack can be brought up, down, upgraded, or swapped out with ease.
+
+iii is like having an entire app platform at your fingertips without the vendor lock-in. The result is a system that is composable, observable, discoverable, extensible, and reactive. See [Built for C.O.D.E.R.](#built-for-coder).
 
 ## One primitive: the Function
 
@@ -78,11 +80,11 @@ The same API is in every SDK. See [sdk/README.md](sdk/README.md).
 
 | | Property | What you get |
 | --- | --- | --- |
-| **C** | Composability | Functions in different languages work together through the same engine. |
-| **O** | Observability | One trace follows a request across languages and machines. Logs stay attached to the span that wrote them. Export over OTLP. |
-| **D** | Discoverability | The engine holds a live registry of every worker and function. Search the running system, then the worker registry. |
-| **E** | Extensibility | `compose::add` adds a worker and resolves its dependencies. Every other worker can call it immediately. |
-| **R** | Reactivity | Observers make the system reactive. Add a new reaction to an event, and the event source does not change. |
+| **C** | Composability | Functions in different languages and locations work together seamlessly. |
+| **O** | Observability | One trace follows every execution step across languages and machines. Export over OTLP. |
+| **D** | Discoverability | The engine holds a live registry of every Function. It's always up to date so developers and agents have a clear picture. |
+| **E** | Extensibility | Workers can be added and removed at any time with a single command. |
+| **R** | Reactivity | Anything can be an observer or observed. Reactivity and events do not need to be pre-planned. |
 
 ## Install
 
@@ -161,6 +163,6 @@ Report bugs and request features in [GitHub issues](https://github.com/iii-hq/ii
 ## License
 
 - `engine/` (engine and CLI): [Elastic License 2.0](engine/LICENSE)
-- Everything else, including the SDKs: [Apache License 2.0](sdk/LICENSE)
+- iii Workers and SDKs: [Apache License 2.0](sdk/LICENSE)
 
-All contributions are made under Apache 2.0. See [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions).
+All contributions are made under Apache 2.0. See [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions) for full contribution and licensing details.
