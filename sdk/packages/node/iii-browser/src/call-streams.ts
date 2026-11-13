@@ -91,6 +91,8 @@ type OutputState = {
   /** Settles when the stream finished: resolves after a clean close, rejects after an abort. */
   done: Promise<void>
   settleDone: (error?: unknown) => void
+  /** Its sink (built by {@link OutputStream.to}) failed: the stream aborted with this ({@link sinkFailure}). */
+  sinkFailure?: StreamAbortedError
   id?: string
   scope?: StreamScope
 }
@@ -651,7 +653,10 @@ export class OutputStream {
   /**
    * An OutputStream that writes into `sink`, a Web `WritableStream`: bytes
    * only (messages sent to it are dropped). Closing it closes the sink;
-   * aborting it aborts the sink with a {@link StreamAbortedError}.
+   * aborting it aborts the sink with a {@link StreamAbortedError}. When the
+   * sink fails, the stream aborts: every write fails with `STREAM_CLOSED`, and
+   * a call that passed it rejects with a {@link StreamAbortedError}
+   * (`the sink failed: …`, the sink's error its `cause`).
    */
   static to(sink: OutputStreamSink): OutputStream {
     return makeOutput({ sink: frameSinkOf(sink), local: true, used: false, kept: false, transferred: false })
@@ -769,6 +774,7 @@ export class OutputStream {
 
 function refusal(st: OutputState): Error | undefined {
   if (st.transferred) return transferredError()
+  if (st.sinkFailure) return sinkClosedError(st.sinkFailure)
   if (st.ended) return streamClosedError(`the stream was already ${st.ended === 'closed' ? 'closed' : 'aborted'}`)
   return undefined
 }
@@ -789,20 +795,61 @@ function sinkOf(st: OutputState): FrameSink {
 function enqueue(st: OutputState, op: (sink: FrameSink) => Promise<void>): Promise<void> {
   const run = st.chain.then(async () => {
     if (st.failure !== undefined) throw st.failure
-    const pending = op(sinkOf(st))
-    pending.catch(noop)
+    const pending = op(sinkOf(st)).then(noop, (error: unknown) => ({ error }))
     st.inflight++
+    let failed: { error: unknown } | undefined
     try {
       // An abort does not wait for an operation the sink holds: it fails at once (st.cut).
-      return await Promise.race([pending, st.cut])
+      failed = await Promise.race([pending, st.cut])
     } finally {
       st.inflight--
     }
+    if (failed === undefined) return
+    // The sink of this process failed (not the stream aborted under it): the stream aborts.
+    throw st.local ? failSink(st, failed.error) : failed.error
   })
   st.chain = run.catch((error) => {
     st.failure ??= error
   })
   return run
+}
+
+/**
+ * The error a call rejects with when the sink it passed failed (a `Writable`
+ * that errored, a `WritableStream` whose write rejected): `STREAM_ABORTED`,
+ * with the sink's own error as its `cause`.
+ */
+function sinkFailure(error: unknown): StreamAbortedError {
+  const failure = new StreamAbortedError(`the sink failed: ${errorText(error)}`, { cause: error })
+  sinkFailures.add(failure)
+  return failure
+}
+
+const sinkFailures = new WeakSet<StreamAbortedError>()
+
+/** What a write into a stream whose sink failed gets: the reader of the stream left. */
+function sinkClosedError(failure: StreamAbortedError): Error {
+  return streamClosedError(`the stream is closed: ${failure.reason}`, causeOf(failure))
+}
+
+/**
+ * The sink of `st` failed with `error`: the stream aborts (its `done` rejects
+ * with {@link sinkFailure}), the sink is aborted in the background, and every
+ * write, the one that failed included, fails with `STREAM_CLOSED`. Returns
+ * that error.
+ */
+function failSink(st: OutputState, error: unknown): Error {
+  if (!st.sinkFailure) {
+    const failure = sinkFailure(error)
+    st.sinkFailure = failure
+    // A close that failed is not a close: the sink may not hold the whole stream.
+    st.ended = 'aborted'
+    st.failure = sinkClosedError(failure)
+    st.end ??= Promise.resolve()
+    st.settleDone(failure)
+    sinkOf(st).abort(failure.reason).catch(noop)
+  }
+  return sinkClosedError(st.sinkFailure)
 }
 
 function frameSinkOf(sink: OutputStreamSink): FrameSink {
@@ -824,8 +871,9 @@ function webSink(ws: WritableStream<Uint8Array>): FrameSink {
     },
     // A byte sink: messages have nowhere to go.
     send: async () => undefined,
-    close: () => open().close(),
-    abort: (reason) => open().abort(new StreamAbortedError(reason)),
+    // Async: a writer that cannot be taken (the stream is locked) fails the operation as the sink's error.
+    close: async () => open().close(),
+    abort: async (reason) => open().abort(new StreamAbortedError(reason)),
   }
 }
 
@@ -882,6 +930,16 @@ export function isLocalSink(s: OutputStream): boolean {
 /** Settles once `s` finished: resolves after its clean close, rejects with a StreamAbortedError after an abort. */
 export function outputDone(s: OutputStream): Promise<void> {
   return outputState(s).done
+}
+
+/** The failure of `s`'s sink (one built by {@link OutputStream.to}) when it failed. */
+export function sinkFailureOf(s: OutputStream): StreamAbortedError | undefined {
+  return outputState(s).sinkFailure
+}
+
+/** What a call's {@link StreamAbortedError} is caused by: the sink's own error for a sink that failed, else `error`. */
+export function causeOf(error: StreamAbortedError): unknown {
+  return sinkFailures.has(error) ? (error as { cause?: unknown }).cause : error
 }
 
 /** Whether `s` was closed or aborted. */
@@ -983,10 +1041,15 @@ export async function pumpStream(input: InputStream, output: OutputStream): Prom
       }
     } catch (error) {
       await cancelInput(ist, false).catch(noop)
-      throw error
+      // A sink of this process that failed: the pump fails with that (STREAM_ABORTED, the sink's error its cause).
+      throw ost.sinkFailure ?? error
     }
   }
-  await output.close()
+  try {
+    await output.close()
+  } catch (error) {
+    throw ost.sinkFailure ?? error
+  }
 }
 
 /**

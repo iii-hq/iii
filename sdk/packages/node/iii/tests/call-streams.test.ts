@@ -289,9 +289,100 @@ describe('pumpStream', () => {
         }
       })(),
     )
-    const sink = new Writable({ write: (_c, _e, cb) => cb(new Error('disk full')) })
-    await expect(pumpStream(input, OutputStream.to(sink))).rejects.toThrow('disk full')
+    const diskFull = new Error('disk full')
+    const sink = new Writable({ write: (_c, _e, cb) => cb(diskFull) })
+    const error = await pumpStream(input, OutputStream.to(sink)).catch((e: unknown) => e)
+    // The sink's failure, as the Python and Rust SDKs report it: STREAM_ABORTED, the sink's error its cause.
+    expect(error).toBeInstanceOf(StreamAbortedError)
+    expect(error).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
+    expect((error as { cause?: unknown }).cause).toBe(diskFull)
     expect(closed).toBe(true)
+  })
+})
+
+describe('a sink that fails (as the Python and Rust SDKs)', () => {
+  const sinks: Record<string, (error: Error) => Writable | WritableStream<Uint8Array>> = {
+    Writable: (error) => new Writable({ write: (_c, _e, cb) => cb(error) }),
+    WritableStream: (error) =>
+      new WritableStream<Uint8Array>({
+        write() {
+          throw error
+        },
+      }),
+  }
+
+  it('aborts the stream: that write and the next fail with STREAM_CLOSED, and it ends with "the sink failed"', async () => {
+    for (const [kind, make] of Object.entries(sinks)) {
+      const diskFull = new Error('disk full')
+      const out = OutputStream.to(make(diskFull))
+      const closed = {
+        code: 'STREAM_CLOSED',
+        message: 'STREAM_CLOSED: the stream is closed: the sink failed: disk full',
+      }
+      await expect(out.write('a'), kind).rejects.toMatchObject(closed)
+      await expect(out.write('b'), kind).rejects.toMatchObject(closed)
+      await expect(out.send({ c: 1 }), kind).rejects.toMatchObject(closed)
+      const done = await outputDone(out).catch((e: unknown) => e)
+      expect(done, kind).toBeInstanceOf(StreamAbortedError)
+      expect(done, kind).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
+      expect((done as { cause?: unknown }).cause, kind).toBe(diskFull)
+      // Ended already: closing or aborting it does nothing more.
+      await expect(out.close(), kind).resolves.toBeUndefined()
+      await expect(out.abort('later'), kind).resolves.toBeUndefined()
+    }
+  })
+
+  it('a Writable that errored after it took a write fails the next write with its own error', async () => {
+    const diskFull = new Error('disk full')
+    const sink = new Writable({
+      highWaterMark: 1 << 20,
+      write: (_c, _e, cb) => {
+        setTimeout(() => cb(diskFull), 5)
+      },
+    })
+    const out = OutputStream.to(sink)
+    await out.write('taken')
+    await new Promise<void>((resolve) => sink.once('error', () => resolve()))
+    await expect(out.write('next')).rejects.toMatchObject({
+      code: 'STREAM_CLOSED',
+      message: 'STREAM_CLOSED: the stream is closed: the sink failed: disk full',
+    })
+    await expect(outputDone(out)).rejects.toMatchObject({ reason: 'the sink failed: disk full', cause: diskFull })
+  })
+
+  it('a close the sink fails is no close: STREAM_CLOSED, and the stream ends with "the sink failed"', async () => {
+    const diskFull = new Error('disk full')
+    const closers: Record<string, () => Writable | WritableStream<Uint8Array>> = {
+      Writable: () => new Writable({ write: (_c, _e, cb) => cb(), final: (cb) => cb(diskFull) }),
+      WritableStream: () =>
+        new WritableStream<Uint8Array>({
+          close() {
+            throw diskFull
+          },
+        }),
+    }
+    for (const [kind, make] of Object.entries(closers)) {
+      const out = OutputStream.to(make())
+      await out.write('all of it')
+      await expect(out.close(), kind).rejects.toMatchObject({
+        code: 'STREAM_CLOSED',
+        message: 'STREAM_CLOSED: the stream is closed: the sink failed: disk full',
+      })
+      await expect(outputDone(out), kind).rejects.toMatchObject({
+        code: 'STREAM_ABORTED',
+        reason: 'the sink failed: disk full',
+        cause: diskFull,
+      })
+    }
+  })
+
+  it('an abort is not a sink failure: a write the abort cut fails with STREAM_CLOSED, the stream ends with its reason', async () => {
+    const out = OutputStream.to(new WritableStream<Uint8Array>({ write: () => new Promise<void>(() => undefined) }))
+    const held = out.write('held')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await out.abort('stopped')
+    await expect(held).rejects.toMatchObject({ code: 'STREAM_CLOSED', message: expect.stringMatching(/aborted/) })
+    await expect(outputDone(out)).rejects.toMatchObject({ code: 'STREAM_ABORTED', reason: 'stopped' })
   })
 })
 

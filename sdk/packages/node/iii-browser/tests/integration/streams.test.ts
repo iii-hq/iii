@@ -934,3 +934,106 @@ describe('cancelled, aborted and sent streams (regressions from the Go adversari
     expect(writeErrors.local).toBe('STREAM_CLOSED')
   })
 })
+
+describe('a caller sink that fails (as the Python and Rust SDKs)', () => {
+  it('rejects the call with STREAM_ABORTED "the sink failed", its cause the sink error, over what the handler did; the handler write after it is STREAM_CLOSED (routed and local)', async () => {
+    const writeErrors: Record<string, unknown> = {}
+    /** Writes until a write fails (routed, once the caller stopped reading), then throws or returns. */
+    const writer =
+      (key: string, end: 'throw' | 'return') =>
+      async ({ out }: { out: OutputStream }) => {
+        try {
+          for (let i = 0; i < 300; i++) {
+            await out.write('chunk;')
+            await sleep(10)
+          }
+        } catch (error) {
+          writeErrors[key] = (error as { code?: string }).code
+        }
+        if (end === 'throw') throw new Error('the handler gave up')
+        return 'returned'
+      }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('sink-fails-throw'), writer('routed-throw', 'throw'))
+      host.registerFunction(fid('sink-fails-return'), writer('routed-return', 'return'))
+    })
+    caller.registerFunction(fid('local-sink-fails-throw'), writer('local-throw', 'throw'))
+    caller.registerFunction(fid('local-sink-fails-return'), writer('local-return', 'return'))
+    await localDispatchReady(caller, fid('local-sink-fails-throw'))
+    await localDispatchReady(caller, fid('local-sink-fails-return'))
+    for (const path of ['routed', 'local'] as const) {
+      for (const end of ['throw', 'return'] as const) {
+        const key = `${path}-${end}`
+        const function_id = fid(`${path === 'local' ? 'local-' : ''}sink-fails-${end}`)
+        const diskFull = new Error('disk full')
+        const sink = new WritableStream<Uint8Array>({
+          write() {
+            throw diskFull
+          },
+        })
+        const error = await within(caller.call({ function_id, payload: { out: sink } }), 8000).catch((e: unknown) => e)
+        expect(error, key).toBeInstanceOf(StreamAbortedError)
+        expect(error, key).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full', function_id })
+        expect((error as { cause?: unknown }).cause, key).toBe(diskFull)
+        await waitFor(() => writeErrors[key], `${key}: the handler write failed`)
+        expect(writeErrors[key], key).toBe('STREAM_CLOSED')
+      }
+    }
+  })
+
+  it('the sink failure wins over the call timeout of a handler that hangs after its write failed (routed and local)', async () => {
+    const hang = async ({ out }: { out: OutputStream }) => {
+      try {
+        for (let i = 0; i < 300; i++) {
+          await out.write('chunk;')
+          await sleep(10)
+        }
+      } catch {
+        await sleep(3000)
+      }
+    }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('sink-fails-hang'), hang)
+    })
+    caller.registerFunction(fid('local-sink-fails-hang'), hang)
+    await localDispatchReady(caller, fid('local-sink-fails-hang'))
+    for (const function_id of [fid('sink-fails-hang'), fid('local-sink-fails-hang')]) {
+      const diskFull = new Error('disk full')
+      const sink = new WritableStream<Uint8Array>({
+        write() {
+          throw diskFull
+        },
+      })
+      const error = await within(caller.call({ function_id, payload: { out: sink }, timeoutMs: 800 })).catch(
+        (e: unknown) => e,
+      )
+      expect(error, function_id).toMatchObject({
+        code: 'STREAM_ABORTED',
+        reason: 'the sink failed: disk full',
+        function_id,
+      })
+      expect((error as { cause?: unknown }).cause, function_id).toBe(diskFull)
+    }
+  })
+
+  it('local: a handler that hands back the sink it could not write still fails the call with the sink failure', async () => {
+    const solo = worker('streams-local-sink-back')
+    solo.registerFunction(fid('local-sink-back'), async ({ out }: { out: OutputStream }) => {
+      await out.write('x').catch(() => undefined)
+      return { out }
+    })
+    await localDispatchReady(solo, fid('local-sink-back'))
+    const diskFull = new Error('disk full')
+    const sink = new WritableStream<Uint8Array>({
+      write() {
+        throw diskFull
+      },
+    })
+    const error = await within(solo.call({ function_id: fid('local-sink-back'), payload: { out: sink } })).catch(
+      (e: unknown) => e,
+    )
+    expect(error).toBeInstanceOf(StreamAbortedError)
+    expect(error).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
+    expect((error as { cause?: unknown }).cause).toBe(diskFull)
+  })
+})

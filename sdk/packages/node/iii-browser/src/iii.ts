@@ -1,6 +1,7 @@
 import {
   abortInput,
   asStream,
+  causeOf,
   detach,
   errorText,
   forwardableRef,
@@ -19,6 +20,7 @@ import {
   releaseInput,
   type StreamBinding,
   StreamScope,
+  sinkFailureOf,
   streamInfoOf,
 } from './call-streams'
 import { streamInUseError } from './channels'
@@ -314,6 +316,8 @@ type OutboundStreams = {
   start(): Promise<void>[]
   /** Stops the pumps (the call failed): the pipes' ends are aborted, the sinks with them. */
   cancel(error: unknown): void
+  /** The sinks of this process the value carries, each fed through a pipe. */
+  sinks: OutputStream[]
 }
 
 /** `STREAM_IN_USE`: one payload carries the same stream twice; a stream has one reader. */
@@ -1125,6 +1129,9 @@ class Sdk implements ISdk {
     const running: Array<{ pump: Promise<void>; stop: (error: unknown) => void; sink: boolean }> = []
     return {
       value: replaced,
+      sinks: piped
+        .map((entry) => entry.stream)
+        .filter((stream): stream is OutputStream => stream instanceof OutputStream),
       start: () => {
         for (const { stream, end } of piped) {
           if (stream instanceof OutputStream) {
@@ -1307,7 +1314,8 @@ class Sdk implements ISdk {
       result = await sent
     } catch (error) {
       outbound.cancel(error)
-      throw error
+      // The caller's own sink failed: that is why the call failed (the function's writes failed after it).
+      throw this.failedSink(outbound.sinks, request.function_id) ?? error
     }
     // Fire-and-forget: the pumps run on, nobody waits for the sinks.
     if (request.action?.type === 'void') return result as TOutput
@@ -1321,10 +1329,14 @@ class Sdk implements ISdk {
     }
     // The call's timeout bounds the wait for the sinks too: when it expires first, the pumps stop
     // (the sinks are aborted, their reader ends cancelled) and the call rejects with TIMEOUT.
-    await this.awaitSinks(sinks, request.function_id, timeoutMs, startedAt, (error) => {
-      outbound.cancel(error)
-      this.discardStreams(received)
-    })
+    try {
+      await this.awaitSinks(sinks, request.function_id, timeoutMs, startedAt, (error) => {
+        outbound.cancel(error)
+        this.discardStreams(received)
+      })
+    } catch (error) {
+      throw this.failedSink(outbound.sinks, request.function_id) ?? error
+    }
     return received as TOutput
   }
 
@@ -1365,6 +1377,20 @@ class Sdk implements ISdk {
   private sinkFailure(error: unknown, function_id: string): Error {
     if (error instanceof StreamAbortedError) return new StreamAbortedError(error.reason, { function_id, cause: error })
     return error instanceof Error ? error : new Error(errorText(error))
+  }
+
+  /**
+   * The error a call rejects with when a sink of this process it passed
+   * failed: `STREAM_ABORTED`, reason `the sink failed: …`, the sink's own
+   * error as its `cause`. It wins over the call's other errors: the handler's
+   * writes failed after it.
+   */
+  private failedSink(sinks: OutputStream[], function_id: string): StreamAbortedError | undefined {
+    for (const sink of sinks) {
+      const failure = sinkFailureOf(sink)
+      if (failure) return new StreamAbortedError(failure.reason, { function_id, cause: causeOf(failure) })
+    }
+    return undefined
   }
 
   /** Closes the sources of a result nobody receives (a fire-and-forget call, a result that failed to go out). */
@@ -1814,7 +1840,11 @@ class Sdk implements ISdk {
             unclaimed = result
             // As on the routed path: a result that hands the caller a write side ends the wait for the sinks.
             const waited = withStreams && holdsWriteSide(result) ? [] : sinks
-            for (const settled of await Promise.allSettled(waited.map(outputDone))) {
+            const outcomes = await Promise.allSettled(waited.map(outputDone))
+            // The caller's own sink failed: that is why the call failed, whatever the handler did.
+            const failed = this.failedSink(sinks, function_id)
+            if (failed) throw failed
+            for (const settled of outcomes) {
               if (settled.status === 'rejected') throw this.sinkFailure(settled.reason, function_id)
             }
             if (timeout !== undefined) clearTimeout(timeout)
@@ -1830,7 +1860,7 @@ class Sdk implements ISdk {
         (error) => {
           if (timeout !== undefined) clearTimeout(timeout)
           abortSinks(error)
-          reject(error)
+          reject(this.failedSink(sinks, function_id) ?? error)
         },
       )
       // Runs until the handler returned and the sinks finished (R4): the call's timeout bounds both.
@@ -1840,7 +1870,7 @@ class Sdk implements ISdk {
         abortSinks(error)
         for (const source of sources) void abortInput(source, errorText(error))
         this.discardStreams(unclaimed)
-        reject(error)
+        reject(this.failedSink(sinks, function_id) ?? error)
       }, effectiveTimeout)
     })
   }
