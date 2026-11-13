@@ -18,8 +18,8 @@ tokens as they are generated, or for the output of a long job. For small JSON, u
 </Note>
 
 <Note>
-  The TypeScript (Node), Python, and Rust examples use the stream API of the 0.27 SDKs. The Go SDK
-  and the browser SDK keep the channel API in 0.27, and the Go tabs show it. See [Go and the browser
+  The examples use the stream API of the 0.27 SDKs. The browser SDK follows the TypeScript API with
+  Web streams only. For what differs in Go and in the browser, see [Go and the browser
   SDK](#go-and-the-browser-sdk). To move code from the channel API, see [Upgrading from
   0.26.x](../upgrading/from-0-26-x).
 </Note>
@@ -123,48 +123,29 @@ the data while the call runs. The handler receives the field as an `InputStream`
   </Tab>
   <Tab title="Go">
     ```go
-    // Handler: find the ref in the payload and open it
-    worker.RegisterFunction("files::process", func(ctx context.Context, data json.RawMessage) (any, error) {
-    	refs, err := iii.ExtractChannelRefs(data)
+    // Handler: the field arrives as an *iii.InputStream
+    type upload struct {
+    	Filename string           `json:"filename"`
+    	Body     *iii.InputStream `json:"body"`
+    }
+
+    iii.RegisterFunctionTyped(worker, "files::process", func(ctx context.Context, in upload) (map[string]any, error) {
+    	bytes, err := io.Copy(io.Discard, in.Body) // an InputStream is an io.Reader
     	if err != nil {
     		return nil, err
     	}
-    	ref, ok := refs["body"]
-    	if !ok || ref.Direction != iii.ChannelRead {
-    		return nil, errors.New("missing body stream")
-    	}
-    	reader := worker.OpenReader(ref)
-    	defer reader.Close()
-
-    	bytes := 0
-    	for {
-    		chunk, more, err := reader.NextBinary(ctx)
-    		if err != nil {
-    			return nil, err
-    		}
-    		if !more {
-    			break
-    		}
-    		bytes += len(chunk)
-    	}
-    	return map[string]int{"bytes": bytes}, nil
+    	return map[string]any{"filename": in.Filename, "bytes": bytes}, nil
     })
 
-    // Caller: create a channel, write it while the call runs, and pass its reader ref
-    data, err := os.ReadFile("report.csv")
+    // Caller, in any worker: put the stream in the payload
+    file, err := os.Open("report.csv")
     if err != nil {
     	return err
     }
-    channel, err := worker.CreateChannel(ctx, nil)
-    if err != nil {
-    	return err
-    }
-    go func() {
-    	// A Close after a failed Write aborts the stream instead of ending it.
-    	_ = channel.Writer.Write(ctx, data)
-    	_ = channel.Writer.Close()
-    }()
-    payload, err := json.Marshal(map[string]any{"filename": "report.csv", "body": channel.ReaderRef})
+    payload, err := json.Marshal(map[string]any{
+    	"filename": "report.csv",
+    	"body":     iii.InputStreamFromReader(file), // the SDK closes the file at the end
+    })
     if err != nil {
     	return err
     }
@@ -186,6 +167,12 @@ and arrays, stays JSON:
 - **Rust:** an `InputStream` built with `InputStream::from_reader` (an `AsyncRead`),
   `InputStream::from_stream` (a `Stream` of `Result<Bytes, E>`), or `InputStream::from_bytes`. A
   payload is a serde value, so the constructors mark what streams.
+- **Go:** an `*iii.InputStream` built with `iii.InputStreamFromReader` (an `io.Reader`, closed at
+  the end when it is an `io.Closer`) or `iii.InputStreamFromBytes`. You marshal the payload
+  yourself, so the constructors mark what streams.
+- **Browser:** an `InputStream`, a `ReadableStream`, a `Blob` or `File`, or an async generator
+  object. `InputStream.from(...)` also takes a `Uint8Array`, an `ArrayBuffer`, a string, or an
+  iterable or async iterable of them.
 
 A call can carry any number of streams, in any field. The SDK creates their pipes in parallel before
 it sends the call, and a pipe that cannot be created fails the call before it is sent.
@@ -194,30 +181,30 @@ it sends the call, and a pipe that cannot be created fails the call before it is
 
 The handler reads an `InputStream` once, in the form that fits the data:
 
-| To                               | TypeScript                                       | Python                                 | Rust                                                    |
-| -------------------------------- | ------------------------------------------------ | -------------------------------------- | ------------------------------------------------------- |
-| Read byte chunks                 | `for await (const chunk of s)`                   | `async for chunk in s`                 | `s` is a `Stream` of `Result<Bytes>` and an `AsyncRead` |
-| Read it all                      | `await s.bytes()`, `await s.text()`              | `await s.read_all()`, `await s.text()` | `s.read_all().await`, `s.text().await`                  |
-| Read lines, without the newline  | `for await (const line of s.lines())`            | `async for line in s.lines()`          | `s.lines()`, a `Stream` of `Result<String>`             |
-| Read JSON messages               | `for await (const msg of s.messages<T>())`       | `async for msg in s.messages()`        | `s.messages::<T>()`                                     |
-| Read bytes and messages in order | `s.frames()`                                     | `s.frames()`                           | `s.frames()`                                            |
-| Stop reading                     | `await s.cancel()`                               | `await s.cancel()`                     | `s.cancel().await`                                      |
-| Hand it to a native API          | `s.toReadable()` (Node), `s.toWebStream()` (Web) | the stream is an async iterator        | `AsyncRead`                                             |
+| To                               | TypeScript                                       | Python                                 | Rust                                                    | Go                                                    |
+| -------------------------------- | ------------------------------------------------ | -------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------- |
+| Read byte chunks                 | `for await (const chunk of s)`                   | `async for chunk in s`                 | `s` is a `Stream` of `Result<Bytes>` and an `AsyncRead` | `s` is an `io.Reader`: `s.Read(p)`, `io.Copy(dst, s)` |
+| Read it all                      | `await s.bytes()`, `await s.text()`              | `await s.read_all()`, `await s.text()` | `s.read_all().await`, `s.text().await`                  | `s.ReadAll(ctx)`, `s.Text(ctx)`                       |
+| Read lines, without the newline  | `for await (const line of s.lines())`            | `async for line in s.lines()`          | `s.lines()`, a `Stream` of `Result<String>`             | `for line, err := range s.Lines(ctx)`                 |
+| Read JSON messages               | `for await (const msg of s.messages<T>())`       | `async for msg in s.messages()`        | `s.messages::<T>()`                                     | `for msg, err := range s.Messages(ctx)`               |
+| Read bytes and messages in order | `s.frames()`                                     | `s.frames()`                           | `s.frames()`                                            | `s.Frames(ctx)`                                       |
+| Stop reading                     | `await s.cancel()`                               | `await s.cancel()`                     | `s.cancel().await`                                      | `s.Cancel()`                                          |
+| Hand it to a native API          | `s.toReadable()` (Node), `s.toWebStream()` (Web) | the stream is an async iterator        | `AsyncRead`                                             | `io.Reader`                                           |
 
 The handler writes an `OutputStream`:
 
-| To                           | TypeScript                                           | Python                                    | Rust                      |
-| ---------------------------- | ---------------------------------------------------- | ----------------------------------------- | ------------------------- |
-| Write bytes                  | `await out.write(chunk)`, a `Uint8Array` or a string | `await out.write(data)`, `bytes` or `str` | `out.write(&data).await`  |
-| Send a JSON message          | `await out.send(value)`                              | `await out.send(value)`                   | `out.send(&value).await`  |
-| Finish                       | `await out.close()`                                  | `await out.close()`                       | `out.close().await`       |
-| Fail                         | `await out.abort(reason)`                            | `await out.abort(reason)`                 | `out.abort(reason).await` |
-| Keep it open after returning | `out.keepOpen()`                                     | `out.keep_open()`                         | `out.keep_open()`         |
-| Hand it to a native API      | `out.toWritable()` (Node), `out.toWebStream()` (Web) | `async with out:`                         | `AsyncWrite`              |
+| To                           | TypeScript                                           | Python                                    | Rust                      | Go                                 |
+| ---------------------------- | ---------------------------------------------------- | ----------------------------------------- | ------------------------- | ---------------------------------- |
+| Write bytes                  | `await out.write(chunk)`, a `Uint8Array` or a string | `await out.write(data)`, `bytes` or `str` | `out.write(&data).await`  | `out.Write(ctx, data)`, a `[]byte` |
+| Send a JSON message          | `await out.send(value)`                              | `await out.send(value)`                   | `out.send(&value).await`  | `out.Send(ctx, value)`             |
+| Finish                       | `await out.close()`                                  | `await out.close()`                       | `out.close().await`       | `out.Close()`                      |
+| Fail                         | `await out.abort(reason)`                            | `await out.abort(reason)`                 | `out.abort(reason).await` | `out.Abort(reason)`                |
+| Keep it open after returning | `out.keepOpen()`                                     | `out.keep_open()`                         | `out.keep_open()`         | `out.KeepOpen()`                   |
+| Hand it to a native API      | `out.toWritable()` (Node), `out.toWebStream()` (Web) | `async with out:`                         | `AsyncWrite`              | `out.Writer(ctx)`, an `io.Writer`  |
 
 A string passed to `write` is sent as its UTF-8 bytes. `write` and `send` resolve when the chunk is
-accepted, so a loop of awaited writes follows the reader's pace. Each end connects when it is first
-read or written.
+accepted (Go's `Write` and `Send` return then), so a loop of awaited writes follows the reader's
+pace. Each end connects when it is first read or written.
 
 ## Return a stream from a function
 
@@ -318,36 +305,54 @@ SDK pumps the data after it answers.
   </Tab>
   <Tab title="Go">
     ```go
-    // Caller: the result holds a reader ref; open it
-    result, err := worker.Call(ctx, iii.CallRequest{
+    type exportRequest struct {
+    	ReportID string `json:"report_id"`
+    }
+
+    type export struct {
+    	ReportID string           `json:"report_id"`
+    	CSV      *iii.InputStream `json:"csv"`
+    }
+
+    // Handler: return the stream as part of the result
+    iii.RegisterFunctionTyped(worker, "reports::export", func(ctx context.Context, req exportRequest) (export, error) {
+    	pr, pw := io.Pipe()
+    	go func() {
+    		// nil ends the stream, an error aborts it
+    		pw.CloseWithError(writeCSV(pw, req.ReportID))
+    	}()
+    	return export{ReportID: req.ReportID, CSV: iii.InputStreamFromReader(pr)}, nil
+    })
+
+    // Caller: the field arrives as an *iii.InputStream
+    out, err := worker.Call(ctx, iii.CallRequest{
     	FunctionID: "reports::export",
     	Payload:    json.RawMessage(`{"report_id":"r-42"}`),
     })
     if err != nil {
     	return err
     }
-    refs, err := iii.ExtractChannelRefs(result)
-    if err != nil {
+    var res export
+    if err := json.Unmarshal(out, &res); err != nil {
     	return err
     }
-    ref, ok := refs["csv"]
-    if !ok || ref.Direction != iii.ChannelRead {
-    	return errors.New("missing csv stream")
+    for line, err := range res.CSV.Lines(ctx) {
+    	if err != nil {
+    		return err
+    	}
+    	render(line)
     }
-    reader := worker.OpenReader(ref)
-    defer reader.Close()
-    csv, err := reader.ReadAll(ctx)
     ```
 
   </Tab>
 </Tabs>
 
-A Go handler returns a stream by creating a channel with `CreateChannel`, writing its `Writer` from
-a goroutine, and returning its `ReaderRef`.
-
 The worker that returns the stream owns its pipe: keep it connected until the caller has read the
 stream. In Rust, a stream decoded from a result binds to the only client in the process. With
-several clients in one process, call `stream.bind(&worker)` before reading.
+several clients in one process, call `stream.bind(&worker)` before reading. In Go, a stream
+unmarshalled from a handler's input or from a call's result binds to that client. One unmarshalled
+from other JSON binds to the only client in the process; with several, call `stream.Bind(worker)`
+before using it.
 
 ## Write into the caller's sink
 
@@ -444,58 +449,52 @@ it as an `OutputStream`, and the call resolves once the sink has received everyt
   </Tab>
   <Tab title="Go">
     ```go
-    // Handler: open the writer ref the caller passed
+    type renderPDF struct {
+    	ReportID string            `json:"report_id"`
+    	Out      *iii.OutputStream `json:"out"`
+    }
+
+    // Handler: the field arrives as an *iii.OutputStream
     worker.RegisterFunction("reports::render-pdf", func(ctx context.Context, data json.RawMessage) (any, error) {
-    	refs, err := iii.ExtractChannelRefs(data)
-    	if err != nil {
+    	var req renderPDF
+    	if err := json.Unmarshal(data, &req); err != nil {
     		return nil, err
     	}
-    	ref, ok := refs["out"]
-    	if !ok || ref.Direction != iii.ChannelWrite {
-    		return nil, errors.New("missing out stream")
-    	}
-    	writer := worker.OpenWriter(ref)
-    	for _, page := range renderPages() {
-    		if err := writer.Write(ctx, page); err != nil {
-    			_ = writer.Close() // a Close after a failed Write aborts the stream
+    	for _, page := range renderPages(req.ReportID) {
+    		if err := req.Out.Write(ctx, page); err != nil {
     			return nil, err
     		}
     	}
-    	return nil, writer.Close()
+    	// Returning closes Out. An error aborts it, so the caller gets an error, not a short file.
+    	return nil, nil
     })
 
-    // Caller: pass the writer ref, and read the reader end while the call runs
-    channel, err := worker.CreateChannel(ctx, nil)
+    // Caller: pass where the bytes go; the call returns once the file is written
+    file, err := os.Create("r-42.pdf")
     if err != nil {
     	return err
     }
-    payload, err := json.Marshal(map[string]any{"report_id": "r-42", "out": channel.WriterRef})
+    defer file.Close() // the SDK closes it when the stream ends; this covers a failed call
+    payload, err := json.Marshal(map[string]any{"report_id": "r-42", "out": iii.OutputStreamToWriter(file)})
     if err != nil {
     	return err
     }
-    done := make(chan error, 1)
-    go func() {
-    	_, err := worker.Call(ctx, iii.CallRequest{FunctionID: "reports::render-pdf", Payload: payload})
-    	done <- err
-    }()
-    pdf, err := channel.Reader.ReadAll(ctx)
-    if err != nil {
-    	return err
-    }
-    if err := <-done; err != nil {
-    	return err
-    }
-    return os.WriteFile("r-42.pdf", pdf, 0o644)
+    _, err = worker.Call(ctx, iii.CallRequest{FunctionID: "reports::render-pdf", Payload: payload})
     ```
 
   </Tab>
 </Tabs>
 
-These values are sinks: an `OutputStream`, a Node `Writable` (not a `Duplex`), or a Web
-`WritableStream` in TypeScript; an `OutputStream` built with `OutputStream.to_file(path)` or
-`OutputStream.to(writer)` in Python, where `writer` is a binary file object, an asyncio
-`StreamWriter`, or any object with a `write` method; and `OutputStream::to_writer` (an `AsyncWrite`)
-in Rust.
+These values are sinks:
+
+- **TypeScript:** an `OutputStream`, a Node `Writable` (not a `Duplex`), or a Web `WritableStream`.
+- **Python:** an `OutputStream` built with `OutputStream.to_file(path)` or
+  `OutputStream.to(writer)`, where `writer` is a binary file object, an asyncio `StreamWriter`, or
+  any object with a `write` method.
+- **Rust:** `OutputStream::to_writer` (an `AsyncWrite`).
+- **Go:** `iii.OutputStreamToWriter` (an `io.Writer`). When the stream ends, the SDK calls the
+  writer's `Flush() error` method if it has one, and closes it if it is an `io.Closer`.
+- **Browser:** a `WritableStream` or an `OutputStream`.
 
 A sink receives bytes only: messages the function sends on its `OutputStream` (`send`) are dropped.
 Pass an `iii.pipe()` end instead when the caller needs the messages too.
@@ -504,10 +503,11 @@ If the stream into a sink aborts, the call fails with `STREAM_ABORTED`, even whe
 returned. If the call fails, the SDK stops copying and closes the sink with the error. Either way,
 the sink may hold part of the data: remove a partly written file.
 
-The call's timeout (`timeoutMs`, Python `timeout_ms`, Rust `CallRequest::timeout`) covers the copy
-into its sinks too, from the start of the call. When it expires before a sink has finished, the SDK
-aborts the open sinks and the call fails with `TIMEOUT`. Set a longer timeout for a call whose sink
-takes long to fill, such as a handler that calls `keepOpen()` and keeps writing after it returns.
+The call's timeout (`timeoutMs`, Python `timeout_ms`, Rust `CallRequest::timeout`, Go
+`CallRequest.Timeout`) covers the copy into its sinks too, from the start of the call. When it
+expires before a sink has finished, the SDK aborts the open sinks and the call fails with `TIMEOUT`.
+Set a longer timeout for a call whose sink takes long to fill, such as a handler that calls
+`keepOpen()` and keeps writing after it returns.
 
 A call whose result hands a stream to write back to the caller (an `OutputStream` or a write end in
 the result) resolves without waiting for its sinks, since they may depend on what the caller writes
@@ -602,15 +602,9 @@ straight to `files::process`.
   </Tab>
   <Tab title="Go">
     ```go
-    worker.RegisterFunction("files::upload", func(ctx context.Context, data json.RawMessage) (any, error) {
-    	var req struct {
-    		PathParams  map[string]string `json:"path_params"`
-    		RequestBody json.RawMessage   `json:"request_body"`
-    	}
-    	if err := json.Unmarshal(data, &req); err != nil {
-    		return nil, err
-    	}
-    	// request_body is a ref: pass it on as it is, and the receiving worker opens it
+    // iiihttp is github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http
+    iii.RegisterFunctionTyped(worker, "files::upload", func(ctx context.Context, req iiihttp.Request[json.RawMessage]) (map[string]any, error) {
+    	// RequestBody is an *iii.InputStream: pass it on without reading it
     	payload, err := json.Marshal(map[string]any{
     		"filename": req.PathParams["name"],
     		"body":     req.RequestBody,
@@ -733,26 +727,38 @@ bytes for the body. A route that streams its response:
   </Tab>
   <Tab title="Go">
     ```go
+    type download struct {
+    	PathParams map[string]string `json:"path_params"`
+    	Response   *iii.OutputStream `json:"response"`
+    }
+
     worker.RegisterFunction("reports::download", func(ctx context.Context, data json.RawMessage) (any, error) {
-    	refs, err := iii.ExtractChannelRefs(data)
-    	if err != nil {
+    	var req download
+    	if err := json.Unmarshal(data, &req); err != nil {
     		return nil, err
     	}
-    	response := worker.OpenWriter(refs["response"])
     	// Messages: the HTTP worker reads the status and the headers from text frames
-    	if err := response.SendMessage(ctx, `{"type":"set_status","status_code":200}`); err != nil {
+    	if err := req.Response.Send(ctx, map[string]any{"type": "set_status", "status_code": 200}); err != nil {
     		return nil, err
     	}
-    	if err := response.SendMessage(ctx, `{"type":"set_headers","headers":{"content-type":"text/csv"}}`); err != nil {
+    	headers := map[string]any{"type": "set_headers", "headers": map[string]string{"content-type": "text/csv"}}
+    	if err := req.Response.Send(ctx, headers); err != nil {
     		return nil, err
     	}
     	// Bytes: the body
-    	if err := response.Write(ctx, []byte("id,total\n")); err != nil {
-    		_ = response.Close()
-    		return nil, err
+    	for _, line := range csvLines(req.PathParams["id"]) {
+    		if err := req.Response.Write(ctx, []byte(line)); err != nil {
+    			return nil, err
+    		}
     	}
-    	return nil, response.Close()
+    	// Returning closes the response, which ends the body.
+    	return nil, nil
     })
+
+    worker.Observe(iii.Source{
+    	FunctionID: "http::on-request",
+    	Args:       iii.Args{"method": "GET", "path": "/reports/:id/csv"},
+    }, "reports::download")
     ```
 
   </Tab>
@@ -765,14 +771,15 @@ through an observer, which is how the HTTP worker calls a route, the SDK leaves 
 To read a stream that mixes both, iterate `frames()`, which yields bytes and messages in the order
 they were sent. In TypeScript, a frame is `{ type: "binary", value }` (a `Uint8Array`) or
 `{ type: "text", value }` (the frame's string). Python and Rust yield `ChannelItem` values, with a
-text or a binary payload.
+text or a binary payload. Go yields `iii.StreamFrame` values: `Type` is `iii.FrameBinary` or
+`iii.FrameText`, and `Data` holds the frame.
 
 ## Handle aborts and errors
 
 A stream that ends with a clean close is complete. A stream that aborts gives its reader the data
-that was already sent, and then an error: `StreamAbortedError` in TypeScript and Python, and
-`Error::StreamAborted` in Rust. Its code is `STREAM_ABORTED` (Rust `err.code()`). Treat it as an
-incomplete transfer.
+that was already sent, and then an error: `StreamAbortedError` in TypeScript and Python,
+`Error::StreamAborted` in Rust, and an `*iii.InvocationError` in Go. Its code is `STREAM_ABORTED`
+(Rust `err.code()`, Go `iii.CodeStreamAborted`). Treat it as an incomplete transfer.
 
 A stream aborts in these cases:
 
@@ -786,8 +793,9 @@ Two more codes report a misuse rather than a failed transfer. `STREAM_CLOSED` is
 after the stream was closed or aborted, or after its reader left. `STREAM_IN_USE` is a second read
 of an `InputStream`, the same stream twice in one payload, or passing on a stream that was already
 read to the end or already sent. TypeScript throws an `InvocationError` with that `code`, Python
-raises `StreamClosedError` or `StreamInUseError` (both `InvocationError`s), and Rust returns
-`Error::StreamClosed` or `Error::StreamInUse`.
+raises `StreamClosedError` or `StreamInUseError` (both `InvocationError`s), Rust returns
+`Error::StreamClosed` or `Error::StreamInUse`, and Go returns an `*iii.InvocationError` with the
+code `iii.CodeStreamClosed` or `iii.CodeStreamInUse`.
 
 The error's `reason` is what the reader was told. Through the engine, that is the engine's own text,
 such as `channel writer aborted: closed with code 1011`: the engine does not relay the writer's
@@ -864,14 +872,20 @@ in its result.
   </Tab>
   <Tab title="Go">
     ```go
-    // Reader: an abort is a websocket.CloseError, not the end of the stream
-    body, err := reader.ReadAll(ctx)
-    var closeErr websocket.CloseError
-    if errors.As(err, &closeErr) {
-    	// the writer aborted: the data is incomplete
+    // Reader: an abort is an *iii.InvocationError with the code STREAM_ABORTED, after the data already sent
+    if _, err := io.Copy(dst, upload.Body); err != nil {
+    	var streamErr *iii.InvocationError
+    	if errors.As(err, &streamErr) && streamErr.Code == iii.CodeStreamAborted {
+    		store.Remove(key) // the upload is incomplete
+    	}
+    	return nil, err
     }
 
-    // Writer: Go has no abort call. A Close after a failed Write or SendMessage aborts.
+    // Writer: fail the stream, and still answer the call with the cause
+    if err := renderInto(ctx, req.Out); err != nil {
+    	_ = req.Out.Abort("render failed: " + err.Error())
+    	return map[string]any{"ok": false, "error": err.Error()}, nil
+    }
     ```
 
   </Tab>
@@ -900,18 +914,18 @@ returns: there is no way to keep a received `InputStream` open after it.
 A call through an observer is the exception for an `OutputStream` the handler never used. The HTTP
 worker calls a route's handler this way, and reads an untouched `response` with a result as a
 buffered response. So in a call through an observer, an unused `OutputStream` is closed only when
-the handler returns nothing or `null` (Python `None`, Rust `()`), and left alone when it returns any
-other value. The event source that passed the stream decides what an untouched stream means. A
-worker that calls through an observer with a sink of its own gets `TIMEOUT` when the call's timeout
-expires if the target ignores the sink and returns a value.
+the handler returns nothing or `null` (Python `None`, Rust `()`, Go `nil`), and left alone when it
+returns any other value. The event source that passed the stream decides what an untouched stream
+means. A worker that calls through an observer with a sink of its own gets `TIMEOUT` when the call's
+timeout expires if the target ignores the sink and returns a value.
 
 Calls that the SDK dispatches to a function in the same worker follow the same rules, in process and
 without a pipe.
 
 ### Keep writing after the handler returns
 
-Call `keepOpen()` (Python and Rust `keep_open()`) before returning, and then close or abort the
-stream yourself.
+Call `keepOpen()` (Python and Rust `keep_open()`, Go `KeepOpen()`) before returning, and then close
+or abort the stream yourself.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -988,6 +1002,27 @@ stream yourself.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    type startJob struct {
+    	JobID string            `json:"job_id"`
+    	Log   *iii.OutputStream `json:"log"`
+    }
+
+    iii.RegisterFunctionTyped(worker, "jobs::start", func(ctx context.Context, req startJob) (map[string]bool, error) {
+    	req.Log.KeepOpen() // this handler answers now and keeps writing
+    	go func() {
+    		if err := runJob(ctx, req.JobID, req.Log); err != nil {
+    			_ = req.Log.Abort(err.Error())
+    			return
+    		}
+    		_ = req.Log.Close()
+    	}()
+    	return map[string]bool{"started": true}, nil
+    })
+    ```
+
+  </Tab>
 </Tabs>
 
 When the caller passed a sink, its call still resolves only after the stream ends. A caller that
@@ -996,8 +1031,9 @@ wants the answer first passes the output of a [pipe](#create-a-pipe-explicitly) 
 ### Read a stream more than once
 
 A stream has one reader. A second read of the same `InputStream` (iterating it again, or calling
-`bytes()`, `messages()`, `frames()`, or a native bridge after another read) fails. In TypeScript and
-Python, call `tee()` before the first read to get two copies in the same process:
+`bytes()`, `messages()`, `frames()`, or a native bridge after another read) fails. In TypeScript
+(Node and browser) and Python, call `tee()` before the first read to get two copies in the same
+process:
 
 ```typescript
 const [forHash, forStore] = body.tee();
@@ -1016,9 +1052,10 @@ starting the other never finishes.
 ### Queue a call
 
 A queued call can run after its pipe has expired, and a retry cannot read a stream again. A call
-sent with `CallAction.Enqueue` and a stream anywhere in its payload is refused before it is sent,
-with the code `STREAM_NOT_ALLOWED`. Store the data first, for example in object storage, and enqueue
-its key. `CallAction.Void` is allowed: the call is live, and only its result is dropped.
+sent with `CallAction.Enqueue` (Go `iii.EnqueueAction(queue)`) and a stream anywhere in its payload
+is refused before it is sent, with the code `STREAM_NOT_ALLOWED`. Store the data first, for example
+in object storage, and enqueue its key. `CallAction.Void` is allowed: the call is live, and only its
+result is dropped.
 
 ## Create a pipe explicitly
 
@@ -1139,32 +1176,57 @@ ends.
   </Tab>
   <Tab title="Go">
     ```go
-    // Caller: CreateChannel is the Go form of a pipe
-    channel, err := worker.CreateChannel(ctx, nil)
-    if err != nil {
-    	return err
+    type complete struct {
+    	Prompt string            `json:"prompt"`
+    	Tokens *iii.OutputStream `json:"tokens"`
     }
-    channel.Reader.OnMessage(func(msg string) {
-    	var m struct{ Token string `json:"token"` }
-    	if json.Unmarshal([]byte(msg), &m) == nil {
-    		fmt.Print(m.Token)
+
+    // Handler: send each token as a message; returning closes Tokens
+    worker.RegisterFunction("llm::complete", func(ctx context.Context, data json.RawMessage) (any, error) {
+    	var req complete
+    	if err := json.Unmarshal(data, &req); err != nil {
+    		return nil, err
     	}
+    	for token := range model.Stream(req.Prompt) {
+    		if err := req.Tokens.Send(ctx, map[string]string{"token": token}); err != nil {
+    			return nil, err
+    		}
+    	}
+    	return nil, nil
     })
-    payload, err := json.Marshal(map[string]any{
-    	"prompt": "Summarize report r-42",
-    	"tokens": channel.WriterRef,
-    })
+
+    // Caller: hand over the output, read the input while the call runs
+    input, output, err := worker.Pipe(ctx)
     if err != nil {
     	return err
     }
+    payload, err := json.Marshal(map[string]any{"prompt": "Summarize report r-42", "tokens": output})
+    if err != nil {
+    	return err
+    }
+    readCtx, stopReading := context.WithCancel(ctx)
+    defer stopReading()
     done := make(chan error, 1)
     go func() {
     	_, err := worker.Call(ctx, iii.CallRequest{FunctionID: "llm::complete", Payload: payload})
+    	if err != nil {
+    		stopReading() // a handler that fails before it writes leaves the output open
+    	}
     	done <- err
     }()
-    // ReadAll hands each message to OnMessage and returns when the stream ends
-    if _, err := channel.Reader.ReadAll(ctx); err != nil {
-    	return err
+    for msg, err := range input.Messages(readCtx) {
+    	if err != nil {
+    		if callErr := <-done; callErr != nil {
+    			return callErr
+    		}
+    		return err
+    	}
+    	var m struct {
+    		Token string `json:"token"`
+    	}
+    	if json.Unmarshal(msg, &m) == nil {
+    		fmt.Print(m.Token)
+    	}
     }
     return <-done
     ```
@@ -1172,9 +1234,10 @@ ends.
   </Tab>
 </Tabs>
 
-In TypeScript, `worker.pipe({ bufferSize })` sets the number of frames the engine buffers between
-the two ends: 64 by default, at most 1024. Each end of a pipe that no worker attaches is dropped
-after about five minutes.
+In TypeScript and the browser, `worker.pipe({ bufferSize })` sets the number of frames the engine
+buffers between the two ends: 64 by default, at most 1024. Go's `worker.Pipe(ctx)` returns the two
+ends as `(*iii.InputStream, *iii.OutputStream, error)` and uses the engine's default. Each end of a
+pipe that no worker attaches is dropped after about five minutes.
 
 A handler that throws before it writes to the pipe's output leaves it alone, so a reader of the
 input keeps waiting until that end is dropped. Watch the call as well as the stream: the call's
@@ -1248,6 +1311,31 @@ observes.
     ```
 
   </Tab>
+  <Tab title="Go">
+    ```go
+    type uploadSeen struct {
+    	Filename string         `json:"filename"`
+    	Body     iii.StreamInfo `json:"body"`
+    }
+
+    worker.RegisterFunction("audit::uploads", func(ctx context.Context, data json.RawMessage) (any, error) {
+    	var event iii.Observed
+    	if err := json.Unmarshal(data, &event); err != nil {
+    		return nil, err
+    	}
+    	var upload uploadSeen
+    	if err := json.Unmarshal(event.Input, &upload); err != nil {
+    		return nil, err
+    	}
+    	// Body is a StreamInfo: it says a stream was passed, and holds no bytes
+    	log.Printf("upload of %s (stream %s)", upload.Filename, upload.Body.ID)
+    	return nil, nil
+    })
+
+    worker.Observe(iii.Source{FunctionID: "files::process", Capture: []iii.Capture{iii.CaptureInput}}, "audit::uploads")
+    ```
+
+  </Tab>
 </Tabs>
 
 The target's SDK applies this rule to the `Observed` payload the engine builds. A function that a
@@ -1255,9 +1343,9 @@ worker calls through an observer, such as a route that the HTTP worker calls wit
 and `response`, receives live streams.
 
 <Warning>
-  The ref, with its access key, is still in the observed payload on the wire. A target in Go, in the
-  browser, or on an SDK before 0.27 receives the ref, as before. Do not open it: the first socket to
-  attach takes the stream from the function you observe.
+  The ref, with its access key, is still in the observed payload on the wire. A target on an SDK
+  before 0.27 receives the ref, as before. Do not open it: the first socket to attach takes the
+  stream from the function you observe.
 </Warning>
 
 ## Payload size
@@ -1310,25 +1398,47 @@ limit is not delivered: the observer counts a `TOO_LARGE` drop and the engine lo
 
 Use a stream for payloads above **64 MiB**. A stream carries its bytes outside the JSON function
 envelope, so only its ref counts toward the limit. See
-[Send a stream to a function](#send-a-stream-to-a-function). In the Go SDK and the browser SDK, a
-stream is a channel: see [Go and the browser SDK](#go-and-the-browser-sdk).
+[Send a stream to a function](#send-a-stream-to-a-function).
 
 ## Go and the browser SDK
 
-The Go SDK and the browser SDK keep the channel API in 0.27:
+The Go SDK and the browser SDK follow the model above. These are the differences a worker needs to
+know about.
 
-- **Go:** `worker.CreateChannel(ctx, bufferSize)` returns a channel with a `Writer`, a `Reader`, a
-  `WriterRef`, and a `ReaderRef`. A handler finds refs in its payload with `iii.ExtractChannelRefs`
-  and opens them with `worker.OpenReader` and `worker.OpenWriter`.
-- **Browser:** `createChannel(worker)` from `iii-browser-sdk/helpers` returns the same four parts,
-  and a handler receives refs in its payload as a `ChannelReader` or a `ChannelWriter`.
+In Go:
 
-Their refs are the same JSON, so they work with the 0.27 TypeScript, Python, and Rust SDKs in both
-directions. A ref a Go or browser worker sends arrives in a 0.27 handler or call result as an
-`InputStream` (a reader ref) or an `OutputStream` (a writer ref). A stream a 0.27 worker sends
-reaches Go as a ref to open, and a browser handler as a `ChannelReader` or a `ChannelWriter`. The
-0.27 lifecycle rules apply to the 0.27 side only: a Go or browser writer still has to close its
-writer itself.
+- A stream field is an `*iii.InputStream` or an `*iii.OutputStream` in the struct you unmarshal the
+  payload or the result into. The handler receives its payload as JSON, and the field unmarshals to
+  the stream.
+- Reads take a `context.Context`, except `Read`, which makes an `InputStream` an `io.Reader`.
+  `Lines`, `Messages`, and `Frames` are iterators: breaking out of the loop cancels the stream.
+  After a failed read, every later read returns the same error.
+- There is no `tee()`. Read the stream once, and copy it with `io.TeeReader` or `io.MultiWriter`.
+- When a stream into an `iii.OutputStreamToWriter` sink aborts, the SDK closes only a writer that
+  has a `CloseWithError` method, such as an `*io.PipeWriter`. Close and remove a file yourself when
+  the call fails.
+- The HTTP helpers in `github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http` wrap a route's
+  streams: `iiihttp.Wrap(fn)` hands the handler a `StreamRequest` (an `io.Reader` over
+  `request_body`) and a `StreamResponse` (`Status`, `Headers`, `Write`), and the SDK closes or
+  aborts the response by the rules above.
+
+In the browser:
+
+- The API is the TypeScript one, with Web streams only. Sources are `ReadableStream`, `Blob` and
+  `File`, async generators, and `InputStream`; sinks are `WritableStream` and `OutputStream`. There
+  is no `toReadable()` or `toWritable()`: the bridge is `toWebStream()`. The ref helpers are in
+  `iii-browser-sdk/protocol`.
+- An abort closes the stream's socket with code 4011, because a browser can only send 1000 or a code
+  from 3000 to 4999. The engine treats it as an abort, so the reader's `reason` is
+  `channel writer aborted: closed with code 4011`.
+- `write` resolves once the socket holds 1 MiB or less of unsent data, and `close()` waits until
+  that buffer has drained.
+- Reading has no backpressure. A page cannot pause its socket, so the frames that arrive before the
+  page reads them wait in memory. Read a stream as it arrives, or cancel it.
+- A stream's socket keeps the query of the engine URL, such as `?token=`.
+
+Refs are the same JSON in every SDK, so streams cross between the five SDKs, and between 0.26 and
+0.27 SDKs. See [Old and new SDKs](../understanding-iii/streaming#old-and-new-sdks).
 
 <Note>
   For the per-language stream API surface, see the SDK reference: [Node](../reference/sdk-node),

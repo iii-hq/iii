@@ -60,8 +60,8 @@ the helpers package, installed alongside the SDK: `@iii-dev/helpers` (Node, with
 | Match observers to calls | `onObservationMatch(id, (obs, call) => boolean)` or `onObservationMatch(id, { observer, call })` | `on_observation_match(id, predicate)` or `on_observation_match(id, observer=, call=)` | `Match::predicate(f)` or `Match::keys(observer_keys, call_keys)` | `iii.MatchFunc(f)` or `iii.MatchKeys(observerKeys, callKeys)` |
 | Call through an observer (no metadata) | `call({ observer: obs, payload })` | `call_async({"observer": obs, "payload": p})` | `call(CallRequest::observer(&obs, payload))` | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: p})` |
 | Current invocation | `currentInvocation()` | `current_invocation()` | `iii_sdk::current_invocation()` | `iii.InvocationFromContext(ctx)` |
-| Stream data | Node: a source or a sink in `payload` or in the result; the other side gets `InputStream` / `OutputStream` (`iii-sdk`). Browser: `createChannel(iii)` (`iii-browser-sdk/helpers`) | the same; `InputStream.from_file(path)`, `OutputStream.to_file(path)` (`iii`) | `InputStream::from_reader(r)`, `OutputStream::to_writer(w)` fields (`iii_sdk`) | channels: `client.CreateChannel(ctx, nil)`, pass `ReaderRef` / `WriterRef` |
-| Explicit pipe | Node: `await iii.pipe({ bufferSize })` returns `{ input, output }`. Browser: `createChannel(iii)` | `iii.pipe()` / `await iii.pipe_async()` | `iii.pipe().await?` returns `Pipe { input, output }` | `client.CreateChannel(ctx, nil)` |
+| Stream data | a source or a sink in `payload` or in the result; the other side gets `InputStream` / `OutputStream` (`iii-sdk`, `iii-browser-sdk`; the browser takes Web streams, `Blob`, and `File`) | the same; `InputStream.from_file(path)`, `OutputStream.to_file(path)` (`iii`) | `InputStream::from_reader(r)`, `OutputStream::to_writer(w)` fields (`iii_sdk`) | `iii.InputStreamFromReader(r)`, `iii.OutputStreamToWriter(w)`; `*iii.InputStream` / `*iii.OutputStream` fields |
+| Explicit pipe | `await iii.pipe({ bufferSize })` returns `{ input, output }` (Node and browser) | `iii.pipe()` / `await iii.pipe_async()` | `iii.pipe().await?` returns `Pipe { input, output }` | `input, output, err := client.Pipe(ctx)` |
 
 A call's `metadata` is any JSON value, delivered to the handler beside the payload. `null` (Python
 `None`, Rust `Value::Null`, Go `json.RawMessage("null")`) is the same as no metadata on every path,
@@ -210,45 +210,60 @@ sources.
 
 ## Streams
 
-From 0.27, the TypeScript (Node), Python, and Rust SDKs carry streams as values of a call. There is
-no `createChannel`, no refs to pass, and no `iii-sdk/channel` subpath.
+From 0.27, every SDK (TypeScript for Node and the browser, Python, Rust, and Go) carries streams as
+values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to pass, and no
+`iii-sdk/channel` subpath.
 
 - **Send:** put a source in a payload. TypeScript: a Node `Readable`, a Web `ReadableStream`, a
   `Blob`/`File`, an async generator, or `InputStream.from(x)` (a string, a `Uint8Array`, or an
   iterable of them). Python: an async generator, a binary file opened for reading,
   `InputStream.from_file(path)`, `InputStream.from_iter(it)`, or `InputStream.from_bytes(b)`. Rust:
   `InputStream::from_reader(AsyncRead)`, `::from_stream(Stream<Item = Result<Bytes, E>>)`, or
-  `::from_bytes(b)`. Plain objects, strings, and buffers stay JSON.
+  `::from_bytes(b)`. Go: `iii.InputStreamFromReader(io.Reader)` or `iii.InputStreamFromBytes(b)`.
+  Browser: a `ReadableStream`, a `Blob`/`File`, an async generator, or `InputStream.from(x)`. Plain
+  objects, strings, and buffers stay JSON.
 - **Receive:** the handler gets an `InputStream` where the source was. In Rust, declare
   `InputStream` / `OutputStream` fields in a `Deserialize + JsonSchema` struct; they bind to the
-  handler's worker on first use (`stream.bind(&iii)` when a process has several clients).
+  handler's worker on first use (`stream.bind(&iii)` when a process has several clients). In Go,
+  declare `*iii.InputStream` / `*iii.OutputStream` fields in the struct you unmarshal into
+  (`stream.Bind(client)` for JSON from outside a handler or a call result, with several clients).
 - **Return:** put a source in the handler's result; the caller gets an `InputStream` in the result.
 - **Sink:** pass a Node `Writable` / Web `WritableStream`, Python `OutputStream.to_file(path)` /
-  `OutputStream.to(writer)`, or Rust `OutputStream::to_writer(w)`. The handler gets an
-  `OutputStream`, and the call resolves once the sink has everything.
+  `OutputStream.to(writer)`, Rust `OutputStream::to_writer(w)`, or Go
+  `iii.OutputStreamToWriter(io.Writer)`. The handler gets an `OutputStream`, and the call resolves
+  once the sink has everything.
 - **Forward:** pass a received, unread `InputStream` on in another call: only its ref travels.
 - **Read:** iterate for byte chunks; `bytes()` / `text()` (Python and Rust `read_all()`, `text()`);
   `lines()`; `messages()` for JSON text frames; `frames()` for both in order; `cancel()`; `tee()`
-  before the first read for two copies (TypeScript, Python). One reader: a second read fails.
+  before the first read for two copies (TypeScript, browser, Python). One reader: a second read
+  fails. Go: an `InputStream` is an `io.Reader`; `ReadAll(ctx)`, `Text(ctx)`, and the iterators
+  `Lines(ctx)`, `Messages(ctx)`, `Frames(ctx)`; `Cancel()`; no `tee()`.
 - **Write:** `await out.write(chunk)` (bytes), `await out.send(value)` (one JSON message),
   `close()`, `abort(reason)`, `keepOpen()` (Python and Rust `keep_open()`), and the bridges
-  `toReadable()` / `toWritable()` / `toWebStream()`.
+  `toReadable()` / `toWritable()` / `toWebStream()` (the browser has only `toWebStream()`). Go:
+  `out.Write(ctx, b)`, `out.Send(ctx, v)`, `Close()`, `Abort(reason)`, `KeepOpen()`, and
+  `Writer(ctx)` for an `io.Writer`.
 - **Lifecycle:** returning closes a received `OutputStream` the handler used, and throwing aborts
   it; an `InputStream` the handler started and did not finish is cancelled. An untouched
   `OutputStream` is closed when the handler returns, except in a call through an observer (an HTTP
   route), where it is closed only when the handler returns nothing, so a route that returns
   `{ status_code, body }` keeps its buffered response.
-- **Abort:** the reader gets `StreamAbortedError` (TypeScript, Python) or `Error::StreamAborted`
-  (Rust), code `STREAM_ABORTED`, after the data already sent. The `reason` is the engine's text, not
-  the writer's. A call whose sink was aborted fails with `STREAM_ABORTED`.
-- **Queues:** `CallAction.Enqueue` with a stream in the payload is refused with
-  `STREAM_NOT_ALLOWED`; `CallAction.Void` is allowed.
+- **Abort:** the reader gets `StreamAbortedError` (TypeScript, browser, Python),
+  `Error::StreamAborted` (Rust), or an `*iii.InvocationError` (Go, `iii.CodeStreamAborted`), code
+  `STREAM_ABORTED`, after the data already sent. The browser aborts with close code 4011. The
+  `reason` is the engine's text, not the writer's. A call whose sink was aborted fails with
+  `STREAM_ABORTED`.
+- **Queues:** `CallAction.Enqueue` (Go `iii.EnqueueAction(queue)`) with a stream in the payload is
+  refused with `STREAM_NOT_ALLOWED`; `CallAction.Void` is allowed.
 - **HTTP:** a route's `request_body` is an `InputStream` and `response` an `OutputStream`:
   `await response.send({ type: "set_status", status_code: 200 })`, then `await response.write(chunk)`.
+  In Go, `iiihttp.Wrap(fn)` (`helpers/http`) hands the handler a `StreamRequest`, an `io.Reader`
+  over `request_body`, and a `StreamResponse` with `Status`, `Headers`, and `Write`.
 - **Observers:** a captured `input` or `output` field that carried a stream arrives as
   `StreamInfo` (`{ stream: true, direction, id }`), not a live end.
 - **Low-level refs:** `extractChannelRefs`, `isChannelRef`, `StreamChannelRef`, `ChannelDirection`,
-  and `ChannelItem` live in `iii-sdk/protocol`, `iii.protocol`, and `iii_sdk::protocol`.
+  and `ChannelItem` live in `iii-sdk/protocol`, `iii-browser-sdk/protocol`, `iii.protocol`, and
+  `iii_sdk::protocol`. Go keeps `iii.StreamChannelRef` and `iii.ChannelDirection`.
 
 ```typescript
 import { createReadStream } from "node:fs";
@@ -300,13 +315,29 @@ iii.call(CallRequest::new(
 .await?;
 ```
 
-Go and the browser SDK keep the channel API in 0.27, on the same wire. Go:
-`client.CreateChannel(ctx, nil)` returns `Writer`, `Reader`, `WriterRef`, and `ReaderRef`; a handler
-finds refs with `iii.ExtractChannelRefs(data)` and opens them with `client.OpenReader(ref)` /
-`client.OpenWriter(ref)`. Browser: `createChannel(iii)` from `iii-browser-sdk/helpers`, and refs in
-handler input arrive as `ChannelReader` / `ChannelWriter`. A Go writer aborts with `Close` after a
-failed `Write`, and a Go reader then returns a `websocket.CloseError` instead of the end of the
-stream. Refs cross between these and the 0.27 SDKs in both directions.
+```go
+type upload struct {
+	Body *iii.InputStream `json:"body"`
+}
+
+iii.RegisterFunctionTyped(client, "files::process", func(ctx context.Context, u upload) (map[string]int64, error) {
+	n, err := io.Copy(io.Discard, u.Body)
+	return map[string]int64{"bytes": n}, err
+})
+
+file, err := os.Open("report.csv")
+if err != nil {
+	return err
+}
+payload, err := json.Marshal(map[string]any{"body": iii.InputStreamFromReader(file)})
+if err != nil {
+	return err
+}
+_, err = client.Call(ctx, iii.CallRequest{FunctionID: "files::process", Payload: payload})
+```
+
+Refs are the same JSON in every SDK, so streams cross between SDKs and between 0.26 and 0.27
+workers in both directions.
 
 ## Namespaces
 

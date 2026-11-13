@@ -25,8 +25,8 @@ The `pubsub` worker is a global topic bus. Its topics are free strings that no w
 `publish` delivers fire-and-forget with silent drops.
 
 The replacements exist in Node, Browser, Python, Rust and Go: function registration with observer
-hooks, observers, streams (the channel API in Go and the browser SDK), the `state` and `database`
-workers, and the `queue` worker. They put each concern with the worker that owns the data.
+hooks, observers, streams, the `state` and `database` workers, and the `queue` worker. They put each
+concern with the worker that owns the data.
 
 <Note>
   Do not replace `stream::set` with `state::set` mechanically. That keeps the storage cost of
@@ -84,8 +84,8 @@ Deprecated with `pubsub` (the registry worker `pubsub`, formerly `iii-pubsub`):
 Not deprecated, keep using them:
 
 - Function registration, observer hooks, and `observe` in every SDK.
-- [Streams](../creating-workers/streaming) (`InputStream`, `OutputStream`, `iii.pipe()`), the
-  channel API of the Go and browser SDKs, and `StreamChannelRef`.
+- [Streams](../creating-workers/streaming) (`InputStream`, `OutputStream`, `iii.pipe()`) and
+  `StreamChannelRef`.
 - `StreamRequest` and `StreamResponse` used for request/response streaming.
 - `UpdateOp`, `MergePath`, `UpdateOpError`, and the Rust `StreamSetResult`, `StreamUpdateResult` and
   `StreamDeleteResult` types. The `state` worker uses them.
@@ -349,7 +349,7 @@ Rules for streams:
 - Streams need a live call: a call sent with `CallAction.Enqueue` cannot carry one.
 - For bidirectional traffic, pass two streams.
 
-The Go and browser SDKs keep the channel API in 0.27. See
+The Go and browser SDKs use the same stream API, with their own sources and sinks. See
 [Streaming / Go and the browser SDK](../creating-workers/streaming#go-and-the-browser-sdk).
 
 ## Provider and consumer obligations

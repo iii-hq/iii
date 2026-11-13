@@ -236,10 +236,11 @@ iii.observe(
   (tear down), `onObservationMatch` (which observers want each call), and `onObservationDeliver`
   (deliver each call itself and return what the caller gets). See `iii-observe`.
 - **Streams**: for binary or streaming data that should not be serialized into JSON, put a stream in
-  the payload or the result (a Node `Readable`, a Python async generator or
-  `InputStream.from_file()`, a Rust `InputStream::from_reader()`). The other side receives an
-  `InputStream` to read, or an `OutputStream` for a sink. Use `iii.pipe()` only when the stream must
-  exist before its data. Go and the browser SDK keep `CreateChannel` / `createChannel` in 0.27.
+  the payload or the result (a Node `Readable`, a browser `File` or `ReadableStream`, a Python async
+  generator or `InputStream.from_file()`, a Rust `InputStream::from_reader()`, a Go
+  `iii.InputStreamFromReader()`). The other side receives an `InputStream` to read, or an
+  `OutputStream` for a sink. Use `iii.pipe()` (Go `client.Pipe(ctx)`) only when the stream must
+  exist before its data.
 - **HTTP-invoked functions**: use `HttpInvocationConfig` for legacy APIs, third-party endpoints, or
   immutable services. Use environment variable names for auth fields, not raw secrets.
 - **Schemas**: Rust can derive request/response schemas with `schemars::JsonSchema`; Python can use

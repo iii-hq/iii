@@ -17,9 +17,8 @@ pass around: the SDK finds the stream values in what it sends, and turns what it
 streams.
 
 <Note>
-  This is the model of the TypeScript (Node), Python, and Rust SDKs from 0.27. The Go SDK and the
-  browser SDK keep the channel API in 0.27, on the same wire. See [Old and new
-  SDKs](#old-and-new-sdks).
+  This is the model of every iii SDK from 0.27: TypeScript (Node and browser), Python, Rust, and Go.
+  SDKs before 0.27 use the channel API on the same wire. See [Old and new SDKs](#old-and-new-sdks).
 </Note>
 
 ## The model
@@ -90,15 +89,18 @@ resolves after the sink has received everything.
 The SDK streams only the values it recognizes. Plain objects, arrays, strings, and buffers stay
 JSON.
 
-| SDK        | Sources (arrive as `InputStream`)                                                                | Sinks (arrive as `OutputStream`)                      |
-| ---------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| TypeScript | `InputStream`, Node `Readable`, Web `ReadableStream`, `Blob` and `File`, async generator objects | `OutputStream`, Node `Writable`, Web `WritableStream` |
-| Python     | `InputStream`, async generator objects, binary file objects opened for reading                   | `OutputStream`, built with `to_file()` or `to()`      |
-| Rust       | `InputStream`, built with `from_reader`, `from_stream`, or `from_bytes`                          | `OutputStream`, built with `to_writer`                |
+| SDK        | Sources (arrive as `InputStream`)                                                                | Sinks (arrive as `OutputStream`)                       |
+| ---------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| TypeScript | `InputStream`, Node `Readable`, Web `ReadableStream`, `Blob` and `File`, async generator objects | `OutputStream`, Node `Writable`, Web `WritableStream`  |
+| Browser    | `InputStream`, `ReadableStream`, `Blob` and `File`, async generator objects                      | `OutputStream`, `WritableStream`                       |
+| Python     | `InputStream`, async generator objects, binary file objects opened for reading                   | `OutputStream`, built with `to_file()` or `to()`       |
+| Rust       | `InputStream`, built with `from_reader`, `from_stream`, or `from_bytes`                          | `OutputStream`, built with `to_writer`                 |
+| Go         | `*iii.InputStream`, built with `InputStreamFromReader` or `InputStreamFromBytes`                 | `*iii.OutputStream`, built with `OutputStreamToWriter` |
 
-Anything else becomes a source with `InputStream.from(...)` (TypeScript), `InputStream.from_iter()`
-or `InputStream.from_bytes()` (Python), and the Rust constructors. Rust has no detection: a payload
-is a serde value, so the constructors mark what streams.
+Anything else becomes a source with `InputStream.from(...)` (TypeScript and the browser),
+`InputStream.from_iter()` or `InputStream.from_bytes()` (Python), and the Rust and Go constructors.
+Rust and Go have no detection: a payload is a serde value in Rust, and JSON you marshal yourself in
+Go, so the constructors mark what streams.
 
 ## Bytes and messages
 
@@ -134,11 +136,12 @@ The SDKs apply the same rules, so the common path needs no cleanup code:
   they may depend on what the caller writes next.
 - **Forwarding an unread `InputStream` sends its ref.** No bytes pass through the forwarding worker.
   Once it has been read from, forwarding pumps the rest.
-- **A stream has one reader.** Reading an `InputStream` a second time fails. In TypeScript and
-  Python, `tee()` makes copies in the same process, before the first read.
-- **Streams need a live call.** A call sent with `CallAction.Enqueue` and a stream in its payload is
-  refused with `STREAM_NOT_ALLOWED`: the job can run after the pipe expired, and a retry cannot read
-  the stream again. `CallAction.Void` is allowed.
+- **A stream has one reader.** Reading an `InputStream` a second time fails. In TypeScript (Node and
+  browser) and Python, `tee()` makes copies in the same process, before the first read.
+- **Streams need a live call.** A call sent with `CallAction.Enqueue` (Go
+  `iii.EnqueueAction(queue)`) and a stream in its payload is refused with `STREAM_NOT_ALLOWED`: the
+  job can run after the pipe expired, and a retry cannot read the stream again. `CallAction.Void` is
+  allowed.
 
 Streams connect lazily. Creating a pipe allocates its refs, and each end opens its socket when it is
 first read or written. `write` and `send` resolve when the chunk is accepted, so a loop of awaited
@@ -150,8 +153,10 @@ A clean close ends the stream: the reader receives everything that was written, 
 Any other close aborts it. The engine relays an abort to the reader as a close with code 1011 and
 its own reason, such as `channel writer aborted: closed with code 1011`, and the reader's SDK
 reports it as an error after the data that was already sent: `StreamAbortedError` in TypeScript and
-Python, and `Error::StreamAborted` in Rust, all with the code `STREAM_ABORTED`. The engine does not
-relay the writer's reason, so the cause of a failure travels in the call's error or result.
+Python, `Error::StreamAborted` in Rust, and an `*iii.InvocationError` in Go, all with the code
+`STREAM_ABORTED`. The engine does not relay the writer's reason, so the cause of a failure travels
+in the call's error or result. A browser cannot close a socket with code 1011, so the browser SDK
+aborts with code 4011, which the engine treats as an abort too.
 
 A writer aborts on purpose with `abort(reason)`, which is one call in every SDK. If its socket never
 opened, `abort` opens it first, so the reader always learns of the failure. A crash or a lost
@@ -198,9 +203,8 @@ makes through an observer, such as the HTTP worker's call of a route with its `r
 `response`, is not an observed call: its target receives live streams.
 
 <Warning>
-  The ref, with its access key, is still in the observed payload on the wire. A target on the Go or
-  browser SDK, or on an SDK before 0.27, receives that ref as it does today, and opening it races
-  the observed function for the stream.
+  The ref, with its access key, is still in the observed payload on the wire. A target on an SDK
+  before 0.27 receives that ref, and opening it races the observed function for the stream.
 </Warning>
 
 ## Old and new SDKs
@@ -208,12 +212,10 @@ makes through an observer, such as the HTTP worker's call of a route with its `r
 The wire is unchanged: a 0.26 engine serves 0.27 SDKs, and the ref JSON is the same for every SDK.
 Workers on old and new SDKs work together in one project:
 
-- A ref that a 0.26 SDK, the Go SDK, or the browser SDK sends arrives in a 0.27 handler as an
-  `InputStream` or an `OutputStream`, and in a 0.27 call result the same way.
+- A ref that a 0.26 SDK sends arrives in a 0.27 handler as an `InputStream` or an `OutputStream`,
+  and in a 0.27 call result the same way.
 - A stream that a 0.27 SDK sends arrives as a `ChannelReader` or a `ChannelWriter` in a handler on a
-  0.26 TypeScript or Python SDK or on the browser SDK, and as the ref JSON in Go and in 0.26 Rust.
+  0.26 TypeScript, Python, or browser SDK, and as the ref JSON on a 0.26 Go or Rust SDK.
 
-The Go SDK (`client.CreateChannel`, `client.OpenReader`, `client.OpenWriter`) and the browser SDK
-(`createChannel`) keep the channel API in 0.27. For the code, see
-[Streaming](../creating-workers/streaming). For the move from the channel API, see
+For the code, see [Streaming](../creating-workers/streaming). For the move from the channel API, see
 [Upgrading from 0.26.x](../upgrading/from-0-26-x).
