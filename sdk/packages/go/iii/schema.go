@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -204,93 +205,174 @@ func (b *schemaBuilder) name(t reflect.Type) string {
 	return name
 }
 
-// recursiveTypes returns the types that contain themselves within t. It reflects t once
-// with a definition and a reference for every named type (the reflector's default mode,
-// which ends on cycles), and a type is recursive when its definition reaches its own
-// reference. Using the reflector for this walks the type graph exactly as the inlining
-// pass does: the same fields, tags, aliases and custom schemas.
+// The interfaces the reflector checks a type against, for recursiveTypes.
+type (
+	schemaAliaser         interface{ JSONSchemaAlias() any }
+	schemaPropertyAliaser interface{ JSONSchemaProperty(prop string) any }
+	schemaProvider        interface{ JSONSchema() *jsonschema.Schema }
+	protoEnumer           interface{ EnumDescriptor() ([]byte, []int) }
+)
+
+var (
+	schemaAliaserType         = reflect.TypeFor[schemaAliaser]()
+	schemaPropertyAliaserType = reflect.TypeFor[schemaPropertyAliaser]()
+	schemaProviderType        = reflect.TypeFor[schemaProvider]()
+	protoEnumerType           = reflect.TypeFor[protoEnumer]()
+	rawMessageType            = reflect.TypeFor[json.RawMessage]()
+	byteType                  = reflect.TypeFor[byte]()
+)
+
+// recursiveTypes returns the types that contain themselves within t. It walks the types
+// the reflector (invopop/jsonschema v0.14.0) walks, by the same rules: exported fields,
+// json "-" and jsonschema "-" skipped, embedded and `inline` structs flattened into
+// their parent, JSONSchemaAlias and JSONSchemaProperty followed, and a type with its own
+// JSONSchema method, json.RawMessage and []byte as leaves. It does not reflect, so the
+// types' JSONSchemaExtend hooks only run in the inline pass, on the schemas they always
+// got. The nodes are the named types the reflector hands to the Mapper (a cycle always
+// goes through one); a node is recursive when it reaches itself.
 func recursiveTypes(t reflect.Type) map[reflect.Type]bool {
-	keys := map[reflect.Type]string{}
-	types := map[string]reflect.Type{}
-	reflector := &jsonschema.Reflector{
-		// A key per type: by default a definition is named by the bare type name, which
-		// two packages can share.
-		Namer: func(t reflect.Type) string {
-			if t.Name() == "" {
-				return "" // an unnamed type (a slice, a map, struct{...}) gets no definition
-			}
-			key, ok := keys[t]
-			if !ok {
-				key = "t" + strconv.Itoa(len(keys))
-				keys[t] = key
-				types[key] = t
-			}
-			return key
-		},
-	}
-	defs := reflector.ReflectFromType(t).Definitions
-	refs := make(map[string][]string, len(defs))
-	for key, def := range defs {
-		refs[key] = localRefs(def)
+	g := typeGraph{edges: map[reflect.Type][]reflect.Type{}}
+	var roots []reflect.Type
+	g.collect(t, &roots)
+	for _, root := range roots {
+		g.visit(root)
 	}
 	recursive := map[reflect.Type]bool{}
-	for key := range defs {
-		if reaches(refs, key) {
-			recursive[types[key]] = true
+	for node := range g.edges {
+		if g.reaches(node) {
+			recursive[node] = true
 		}
 	}
 	return recursive
 }
 
-// localRefs lists the definitions a schema references ("$ref": "#/$defs/<key>").
-func localRefs(schema *jsonschema.Schema) []string {
-	var doc any
-	raw, err := json.Marshal(schema)
-	if err == nil {
-		err = json.Unmarshal(raw, &doc)
-	}
-	if err != nil {
-		// A schema that does not marshal would fail the final json.Marshal too; fail here
-		// (schemaOf reports it) rather than miss a reference and recurse without end.
-		panic(err)
-	}
-	var keys []string
-	var walk func(v any)
-	walk = func(v any) {
-		switch v := v.(type) {
-		case map[string]any:
-			for k, child := range v {
-				if ref, ok := child.(string); k == "$ref" && ok {
-					if key, ok := strings.CutPrefix(ref, "#/$defs/"); ok {
-						keys = append(keys, key)
-					}
-					continue
-				}
-				walk(child)
-			}
-		case []any:
-			for _, child := range v {
-				walk(child)
-			}
-		}
-	}
-	walk(doc)
-	return keys
+// typeGraph maps each named type to the named types its schema contains directly (not
+// through another named type).
+type typeGraph struct {
+	edges map[reflect.Type][]reflect.Type
 }
 
-// reaches reports whether the definition key leads back to itself through refs.
-func reaches(refs map[string][]string, key string) bool {
-	seen := map[string]bool{}
-	stack := append([]string(nil), refs[key]...)
+func (g *typeGraph) visit(node reflect.Type) {
+	if _, seen := g.edges[node]; seen {
+		return
+	}
+	g.edges[node] = nil // seen: ends cycles
+	var out []reflect.Type
+	g.collectBody(node, &out)
+	g.edges[node] = out
+	for _, next := range out {
+		g.visit(next)
+	}
+}
+
+// collect adds the node an occurrence of t stands for: pointers and JSONSchemaAlias are
+// followed, a named type is a node, and an unnamed one (a slice, a map, struct{...}) is
+// part of the schema that contains it.
+func (g *typeGraph) collect(t reflect.Type, out *[]reflect.Type) {
+	if t.Kind() == reflect.Pointer {
+		g.collect(t.Elem(), out)
+		return
+	}
+	if t.Implements(schemaAliaserType) {
+		g.collect(reflect.TypeOf(reflect.New(t).Interface().(schemaAliaser).JSONSchemaAlias()), out)
+		return
+	}
+	if t.Name() != "" {
+		*out = append(*out, t)
+		return
+	}
+	g.collectBody(t, out)
+}
+
+// collectBody adds the nodes in the schema of t itself.
+func (g *typeGraph) collectBody(t reflect.Type, out *[]reflect.Type) {
+	if t.Implements(schemaProviderType) || t.Implements(protoEnumerType) {
+		return
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		g.collectFields(t, out, map[reflect.Type]bool{})
+	case reflect.Slice, reflect.Array:
+		if t == rawMessageType || (t.Kind() == reflect.Slice && t.Elem() == byteType) {
+			return
+		}
+		g.collect(t.Elem(), out)
+	case reflect.Map:
+		g.collect(t.Elem(), out)
+	}
+}
+
+// collectFields adds the nodes of a struct's properties, embedded structs included.
+func (g *typeGraph) collectFields(t reflect.Type, out *[]reflect.Type, embedded map[reflect.Type]bool) {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct || embedded[t] {
+		return
+	}
+	embedded[t] = true
+	var propertyAlias func(string) any
+	if t.Implements(schemaPropertyAliaserType) {
+		propertyAlias = reflect.New(t).Interface().(schemaPropertyAliaser).JSONSchemaProperty
+	}
+	for i := range t.NumField() {
+		f := t.Field(i)
+		name, embed := schemaFieldName(f)
+		if embed {
+			g.collectFields(f.Type, out, embedded)
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		field := f.Type
+		if propertyAlias != nil {
+			if alias := propertyAlias(name); alias != nil {
+				field = reflect.TypeOf(alias)
+			}
+		}
+		g.collect(field, out)
+	}
+}
+
+// schemaFieldName is the reflector's reflectFieldName, reduced to what recursiveTypes
+// needs: the property name of f ("" for none), and whether f's fields are flattened into
+// its parent's.
+func schemaFieldName(f reflect.StructField) (string, bool) {
+	jsonTags := strings.Split(f.Tag.Get("json"), ",")
+	if jsonTags[0] == "-" || strings.Split(f.Tag.Get("jsonschema"), ",")[0] == "-" {
+		return "", false
+	}
+	if f.Anonymous && jsonTags[0] == "" {
+		if k := f.Type.Kind(); k == reflect.Struct || (k == reflect.Pointer && f.Type.Elem().Kind() == reflect.Struct) {
+			return "", true
+		}
+	}
+	if slices.Contains(jsonTags[1:], "inline") {
+		return "", true
+	}
+	if !f.Anonymous && !f.IsExported() {
+		return "", false
+	}
+	if jsonTags[0] != "" {
+		return jsonTags[0], false
+	}
+	return f.Name, false
+}
+
+// reaches reports whether node leads back to itself.
+func (g *typeGraph) reaches(node reflect.Type) bool {
+	seen := map[reflect.Type]bool{}
+	stack := append([]reflect.Type(nil), g.edges[node]...)
 	for len(stack) > 0 {
 		next := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if next == key {
+		if next == node {
 			return true
 		}
 		if !seen[next] {
 			seen[next] = true
-			stack = append(stack, refs[next]...)
+			stack = append(stack, g.edges[next]...)
 		}
 	}
 	return false

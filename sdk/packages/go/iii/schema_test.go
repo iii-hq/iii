@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/invopop/jsonschema"
 )
 
 type greetReq struct {
@@ -202,11 +203,33 @@ type pinnedOrder struct {
 	Skipped   string            `json:"-"`
 }
 
-// pinnedHiddenParent points at its own type only through a field JSON skips, so it is
-// not recursive and stays inline.
+// pinnedHiddenParent points at its own type only through fields the schema skips, so it
+// is not recursive and stays inline.
 type pinnedHiddenParent struct {
 	Name   string              `json:"name"`
 	Parent *pinnedHiddenParent `json:"-"`
+	Shadow *pinnedHiddenParent `jsonschema:"-"`
+	parent *pinnedHiddenParent
+}
+
+var _ = pinnedHiddenParent{}.parent
+
+// pinnedHiddenHolder nests pinnedHiddenParent, which is inlined there too.
+type pinnedHiddenHolder struct {
+	Item pinnedHiddenParent `json:"item"`
+}
+
+type pinnedTags []string
+
+// pinnedExtended has a JSONSchemaExtend hook that reads a nested schema, which must be
+// the inline one (a $ref in its place has no Items).
+type pinnedExtended struct {
+	Tags pinnedTags `json:"tags"`
+}
+
+func (pinnedExtended) JSONSchemaExtend(s *jsonschema.Schema) {
+	tags, _ := s.Properties.Get("tags")
+	tags.Items.Pattern = "^[a-z]+$"
 }
 
 // TestInferSchemaKeepsExistingSchemas pins the exact bytes of schemas for types without
@@ -223,6 +246,8 @@ func TestInferSchemaKeepsExistingSchemas(t *testing.T) {
 		{"*pinnedAddress", InferSchema[*pinnedAddress], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-address","properties":{"street":{"type":"string","minLength":1},"zip":{"type":"string","pattern":"^[0-9]{5}$"}},"additionalProperties":false,"type":"object","required":["street"]}`},
 		{"string", InferSchema[string], `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"}`},
 		{"pinnedHiddenParent", InferSchema[pinnedHiddenParent], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-hidden-parent","properties":{"name":{"type":"string"}},"additionalProperties":false,"type":"object","required":["name"]}`},
+		{"pinnedHiddenHolder", InferSchema[pinnedHiddenHolder], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-hidden-holder","properties":{"item":{"properties":{"name":{"type":"string"}},"additionalProperties":false,"type":"object","required":["name"]}},"additionalProperties":false,"type":"object","required":["item"]}`},
+		{"pinnedExtended", InferSchema[pinnedExtended], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-extended","properties":{"tags":{"items":{"type":"string","pattern":"^[a-z]+$"},"type":"array"}},"additionalProperties":false,"type":"object","required":["tags"]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,6 +353,26 @@ type schemaForest struct {
 	Self  schemaSelf   `json:"self"`
 }
 
+// schemaOuter recurses through the fields of an embedded struct, which the schema
+// flattens into schemaOuter.
+type schemaOuter struct {
+	schemaInner
+	Name string `json:"name"`
+}
+
+type schemaInner struct {
+	Next *schemaOuter `json:"next,omitempty"`
+}
+
+// schemaTreeAlias is described as a schemaTree (JSONSchemaAlias).
+type schemaTreeAlias struct{}
+
+func (schemaTreeAlias) JSONSchemaAlias() any { return schemaTree{} }
+
+type schemaAliasHolder struct {
+	Tree schemaTreeAlias `json:"tree"`
+}
+
 type schemaGenericList[T any] struct {
 	Value T                     `json:"value"`
 	Next  *schemaGenericList[T] `json:"next,omitempty"`
@@ -353,6 +398,8 @@ func TestInferSchemaRecursiveTypes(t *testing.T) {
 		{"schemaListNode", InferSchema[schemaListNode], []string{"schemaList", "schemaListNode"}},
 		{"schemaJSONTree", InferSchema[schemaJSONTree], []string{"schemaJSONTree"}},
 		{"schemaForest", InferSchema[schemaForest], []string{"schemaSelf", "schemaTree"}},
+		{"schemaOuter", InferSchema[schemaOuter], []string{"schemaOuter"}},
+		{"schemaAliasHolder", InferSchema[schemaAliasHolder], []string{"schemaTree"}},
 		{"schemaGenericList", InferSchema[schemaGenericList[int]], []string{"schemaGenericList_int_"}},
 	}
 	for _, tc := range cases {
