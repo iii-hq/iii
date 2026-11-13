@@ -9239,7 +9239,7 @@ mod tests {
         let event = otel::StoredSpanEvent {
             name: "invocation".to_string(),
             timestamp_unix_nano: 1,
-            attributes: vec![("iii.payload.json".to_string(), "x".repeat(1024))],
+            attributes: vec![("iii.payload.json".to_string(), "1".repeat(1024))],
         };
         let mut ok = make_span("t-1", "s-1", None, "turn", "svc", 1, 10, "ok", vec![]);
         ok.events = vec![event.clone()];
@@ -9298,7 +9298,7 @@ mod tests {
         root.events = vec![otel::StoredSpanEvent {
             name: "invocation".to_string(),
             timestamp_unix_nano: 1,
-            attributes: vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))],
+            attributes: vec![("iii.payload.json".to_string(), "1".repeat(64 * 1024))],
         }];
         let child = make_span(
             "t-1",

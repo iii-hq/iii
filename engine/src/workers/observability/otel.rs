@@ -7638,7 +7638,7 @@ mod tests {
             name: "iii.invocation.input".to_string(),
             timestamp_unix_nano: 1,
             attributes: vec![
-                ("iii.payload.json".to_string(), "x".repeat(200 * 1024)),
+                ("iii.payload.json".to_string(), "1".repeat(200 * 1024)),
                 ("iii.payload.truncated".to_string(), "false".to_string()),
             ],
         });
@@ -7666,7 +7666,7 @@ mod tests {
             .1;
         assert_eq!(
             payload,
-            &format!("{}…[truncated 139264 bytes]", "x".repeat(64 * 1024))
+            &format!("{}…[truncated 139264 bytes]", "1".repeat(64 * 1024))
         );
         assert!(payload.len() <= 64 * 1024 + 40);
         assert!(payload.contains("…[truncated"));

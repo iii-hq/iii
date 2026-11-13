@@ -19,8 +19,8 @@
 //! - in the JSON text of `iii.payload.json`, the value of every sensitive key
 //!   at any depth is replaced. The text is rewritten in place instead of
 //!   parsed and re-serialized, so key order and formatting survive and a
-//!   truncated payload is still redacted. A text whose structure the scanner
-//!   cannot follow is replaced as a whole (fail closed).
+//!   truncated payload is still redacted. A text that is not JSON is replaced
+//!   as a whole (fail closed).
 
 use std::borrow::Cow;
 
@@ -119,7 +119,9 @@ fn is_sensitive_normalized(key: &[u8]) -> bool {
 pub(crate) fn redact_attribute(key: &str, value: &mut String) {
     if is_sensitive_key(key) {
         if value != REDACTED {
-            REDACTED.clone_into(value);
+            // A fresh string: reusing the buffer would keep the allocation of
+            // the value it replaces.
+            *value = REDACTED.to_string();
         }
     } else if key == PAYLOAD_ATTRIBUTE_KEY
         && let Some(redacted) = redact_payload_json(value)
@@ -142,7 +144,10 @@ pub(crate) fn redact_payload_json(json: &str) -> Option<String> {
     if ranges.is_empty() {
         return None;
     }
-    let mut out = String::with_capacity(json.len());
+    // Exact size, so a short placeholder replacing a large value does not
+    // leave the stored payload holding an allocation sized for the original.
+    let removed: usize = ranges.iter().map(|(start, end)| end - start).sum();
+    let mut out = String::with_capacity(json.len() - removed + ranges.len() * REDACTED_JSON.len());
     let mut copied = 0;
     for (start, end) in ranges {
         out.push_str(&body[copied..start]);
@@ -155,8 +160,11 @@ pub(crate) fn redact_payload_json(json: &str) -> Option<String> {
 }
 
 /// Byte ranges of the values under sensitive keys in `json`, in order, or
-/// `None` when the text stops looking like JSON. A text that just ends (a
-/// truncated payload) is fine: a value cut short runs to the end.
+/// `None` when the text is not JSON: a non-string key, a literal that is not
+/// one, or a value followed by anything but a delimiter. That last check
+/// keeps text from slipping past unread, such as `abc` in
+/// `{"authorization":Bearer abc}`. A text that just ends (a truncated
+/// payload) is fine: a value cut short runs to the end.
 ///
 /// Every position the scanner stops at is an ASCII byte or the end of the
 /// text, so each range falls on char boundaries.
@@ -167,12 +175,25 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
     let mut open: Vec<u8> = Vec::new();
     // At the start of an object or after a comma in one: a key comes next.
     let mut key_next = false;
+    // A value just ended: only a comma, a closing bracket or the end of the
+    // text may follow.
+    let mut value_done = false;
     let mut i = 0;
     while i < bytes.len() {
-        match bytes[i] {
-            b' ' | b'\t' | b'\n' | b'\r' => i += 1,
+        let byte = bytes[i];
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+            continue;
+        }
+        if value_done && !matches!(byte, b',' | b'}' | b']') {
+            return None;
+        }
+        match byte {
             b',' => {
-                key_next = open.last() == Some(&b'{');
+                // Outside any container a comma joins two values: `1,2`.
+                let container = *open.last()?;
+                key_next = container == b'{';
+                value_done = false;
                 i += 1;
             }
             b'{' => {
@@ -191,6 +212,7 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
                     return None;
                 }
                 key_next = false;
+                value_done = true;
                 i += 1;
             }
             b'"' if key_next => {
@@ -206,22 +228,95 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
                 }
                 i = skip_whitespace(bytes, i + 1);
                 if sensitive {
+                    // Replaced whatever it is, so it need not be valid JSON.
                     let end = value_end(bytes, i);
                     if &json[i..end] != REDACTED_JSON {
                         ranges.push((i, end));
                     }
                     i = end;
+                    value_done = true;
                 }
             }
             // An object key that is not a string (`{password: 1}`) is not JSON.
             _ if key_next => return None,
-            b'"' => i = string_end(bytes, i),
+            b'"' => {
+                i = string_end(bytes, i);
+                value_done = true;
+            }
             // A colon only ever follows a key, consumed above.
             b':' => return None,
-            _ => i = literal_end(bytes, i),
+            _ => {
+                let end = literal_end(bytes, i);
+                if !is_json_literal(&bytes[i..end], end == bytes.len()) {
+                    return None;
+                }
+                i = end;
+                value_done = true;
+            }
         }
     }
     Some(ranges)
+}
+
+/// Whether `token` is a JSON literal: `true`, `false`, `null` or a number,
+/// plus the `NaN`, `Infinity` and `-Infinity` that Python's `json.dumps`
+/// writes for non-finite floats. A token that runs to the end of the text may
+/// have been cut short, so any prefix of one passes there.
+fn is_json_literal(token: &[u8], at_end: bool) -> bool {
+    const WORDS: [&[u8]; 6] = [
+        b"true",
+        b"false",
+        b"null",
+        b"NaN",
+        b"Infinity",
+        b"-Infinity",
+    ];
+    let word = WORDS.iter().any(|word| {
+        if at_end {
+            word.starts_with(token)
+        } else {
+            *word == token
+        }
+    });
+    word || number_prefix(token).is_some_and(|whole| whole || at_end)
+}
+
+/// Reads `token` as a JSON number: `Some(true)` for a whole number,
+/// `Some(false)` for a proper prefix of one (`-`, `1.`, `2e+`), `None` for
+/// anything else.
+fn number_prefix(token: &[u8]) -> Option<bool> {
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while token.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i - start
+    };
+    let mut i = usize::from(token.first() == Some(&b'-'));
+    match token.get(i) {
+        None => return Some(false),
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            digits(&mut i);
+        }
+        Some(_) => return None,
+    }
+    if token.get(i) == Some(&b'.') {
+        i += 1;
+        if digits(&mut i) == 0 {
+            return (i == token.len()).then_some(false);
+        }
+    }
+    if matches!(token.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(token.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if digits(&mut i) == 0 {
+            return (i == token.len()).then_some(false);
+        }
+    }
+    (i == token.len()).then_some(true)
 }
 
 /// The key's text without its quotes, with escapes decoded when it has any.
@@ -431,8 +526,10 @@ mod tests {
             "null",
             "[]",
             "{}",
-            "xxxx",
             "",
+            // What Python's json.dumps writes for non-finite floats.
+            r#"{"x":NaN,"y":-Infinity,"z":[Infinity,-0.5e-3,0,1E+9]}"#,
+            " { \"a\" : [ 1 , true ] } ",
         ] {
             assert_eq!(redact_payload_json(payload), None, "{payload}");
         }
@@ -487,6 +584,13 @@ mod tests {
                 Some(r#"{"cookie":"[REDACTED]""#.to_string()),
             ),
             (r#"{"cook"#.to_string(), None),
+            // A literal cut short is still a literal.
+            (cut(r#"{"ok":tr"#), None),
+            (r#"{"n":-1.5e"#.to_string(), None),
+            (
+                cut(r#"{"cookie":tr"#),
+                Some(cut(r#"{"cookie":"[REDACTED]""#)),
+            ),
         ];
         for (payload, expected) in cases {
             assert_eq!(redact_payload_json(&payload), expected, "{payload}");
@@ -500,6 +604,17 @@ mod tests {
             r#"{"a":1]"#,
             r#"{"a":1}}"#,
             "key: value",
+            "xxxx",
+            // Text after a sensitive value would otherwise stay visible.
+            r#"{"authorization":Bearer abc}"#,
+            r#"{"cookie":"a" "b"}"#,
+            // Not JSON, so nothing tells a sensitive key apart.
+            "cookie=sid=abc",
+            "cookie=sid=abc; token=xyz",
+            r#"{"a":01}"#,
+            "[1 2]",
+            "1,2",
+            r#"{"a":1}{"cookie":"x"}"#,
         ] {
             assert_eq!(
                 redact_payload_json(payload).as_deref(),
@@ -507,6 +622,23 @@ mod tests {
                 "{payload}"
             );
         }
+    }
+
+    #[test]
+    fn redacted_values_do_not_keep_the_original_allocation() {
+        let payload = format!(r#"{{"cookie":"{}","a":1}}"#, "s".repeat(64 * 1024));
+        let redacted = redact_payload_json(&payload).unwrap();
+        assert_eq!(redacted, r#"{"cookie":"[REDACTED]","a":1}"#);
+        assert!(
+            redacted.capacity() < 1024,
+            "{} bytes kept",
+            redacted.capacity()
+        );
+
+        let mut header = "s".repeat(64 * 1024);
+        redact_attribute("cookie", &mut header);
+        assert_eq!(header, REDACTED);
+        assert!(header.capacity() < 1024, "{} bytes kept", header.capacity());
     }
 
     #[test]
