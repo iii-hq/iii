@@ -39,7 +39,11 @@ func (c *Client) localTarget(functionID, namespace string) (registeredFunction, 
 // the wire), except for a private function, whose payload and result pass by
 // reference. Timeouts and errors have the remote path's shape: ErrTimeout, and an
 // *InvocationError carrying the error body.
-func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest) (json.RawMessage, error) {
+//
+// Streams pass as they are: the handler reads the caller's source, or writes into the
+// caller's sink, with no pipe. The call returns once the sinks it passed ended, by
+// deadline (R4).
+func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest, deadline time.Time) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -95,9 +99,10 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
 	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
+	void := req.Action != nil && req.Action.Type == "void"
 	run := func() outcome {
 		started := time.Now()
-		return c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
+		return c.runInvocation(hctx, fn.handler, input, !private, streamCall{answered: !void}, func(ctx context.Context, handler outcome) outcome {
 			duration := time.Since(started)
 			c.reporter.recordLocal(functionID, handler.errBody == nil, float64(duration)/float64(time.Millisecond))
 			if !delivering {
@@ -116,7 +121,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		})
 	}
 
-	if req.Action != nil && req.Action.Type == "void" {
+	if void {
 		go func() {
 			if out := run(); out.errBody != nil {
 				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.errBody.Code, out.errBody.Message)
@@ -125,21 +130,31 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		return nil, nil
 	}
 
+	// The sinks the caller passes: the call returns once they ended.
+	sinks := localSinks(data)
 	done := make(chan outcome, 1)
 	go func() { done <- run() }()
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
+	var result json.RawMessage
+	var err error
 	select {
 	case out := <-done:
 		if out.errBody != nil {
-			return nil, newInvocationError(out.errBody, functionID)
+			err = newInvocationError(out.errBody, functionID)
+		} else {
+			result = out.result
 		}
-		return out.result, nil
 	case <-timer.C:
-		return nil, ErrTimeout
+		err = ErrTimeout
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		err = ctx.Err()
 	case <-c.shutdown:
-		return nil, ErrNotConnected
+		err = ErrNotConnected
 	}
+	if result, err = settleLocalSinks(ctx, sinks, result, err, deadline); err != nil {
+		return nil, err
+	}
+	c.trackResult(result)
+	return result, nil
 }

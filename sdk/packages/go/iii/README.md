@@ -123,8 +123,9 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Match observers | `iii.MatchFunc(func(obs, call) bool)`, `iii.MatchKeys(observerKeys, callKeys)` | A predicate, or keys the SDK indexes. |
 | Call through an observer | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` | Run an observer's target from a deliver hook. |
 | Observed? | `ref.IsObserved()`, `ref.IsObservedFor(call)`, `ref.Observers()` (or `client.IsObserved(id)`, `client.IsObservedFor(id, call)`, `client.Observers(id)`) | The active observers of a function this worker hosts. |
-| Create channel | `client.CreateChannel(ctx, bufferSize)` | Open a streaming data channel (writer + reader ends). |
-| Open channel end | `client.OpenReader(ref)`, `client.OpenWriter(ref)` | Open the end of a channel received in a payload, with the client's address and headers. |
+| Stream bytes to a function | `iii.InputStreamFromReader(r)`, `iii.InputStreamFromBytes(b)` in a payload or result | The other side reads them as an `*iii.InputStream`. |
+| Take a function's bytes | `iii.OutputStreamToWriter(w)` in a payload | The function writes an `*iii.OutputStream`; the call returns once `w` got the whole stream. |
+| Pipe | `client.Pipe(ctx) (*iii.InputStream, *iii.OutputStream, error)` | Both ends of an engine pipe, for the cases a stream value does not cover. |
 | Shut down | `client.Shutdown(ctx) error` | Stop gracefully: flush reports and telemetry within ctx, cancel pending calls, close the socket with a handshake. |
 | Close | `client.Close() error` | Stop at once (io.Closer): short fixed flush bounds, cancel pending calls, drop the socket. |
 
@@ -141,7 +142,7 @@ Pass options to `New` or `RegisterWorker`:
 | `iii.WithName(name)` | Worker name reported to the engine (default `hostname:pid`; a non-empty `III_WORKER_NAME` wins). |
 | `iii.WithNamespace(namespace)` | Namespace the worker registers into (else `III_NAMESPACE`, else the engine default). |
 | `iii.WithDescription(text)` | One-line summary shown by `engine::workers::list` / `engine::workers::info`. |
-| `iii.WithHeaders(h)` | Headers for the WebSocket handshake of the main connection and of channels. |
+| `iii.WithHeaders(h)` | Headers for the WebSocket handshake of the main connection and of stream sockets. |
 | `iii.WithReconnectConfig(cfg)` | Reconnect schedule (see [Connection behavior](#connection-behavior)). |
 | `iii.WithInvocationTimeout(d)` | How long `Call` waits when `CallRequest.Timeout` is zero (default `iii.DefaultInvocationTimeout`, 30s). |
 | `iii.WithTelemetry(iii.TelemetryOptions{...})` | Language, project name and framework reported in the worker metadata. |
@@ -646,34 +647,48 @@ if err := client.Shutdown(ctx); err != nil {
 }
 ```
 
-## Streaming channels
+## Streams
 
-For bulk or streaming data, open a channel instead of passing everything through a single
-invocation result. `CreateChannel` returns a writer and a reader, each backed by its own
-WebSocket; pass either end's ref (`WriterRef` / `ReaderRef`) to another worker inside a
-call payload, and it opens the opposite end.
+For bulk or streaming data, put a stream in the payload instead of passing everything
+through a single invocation result. An `*iii.InputStream` is bytes the other side reads; an
+`*iii.OutputStream` is where it writes. The SDK makes the engine pipes and moves the bytes.
 
 ```go
-ch, err := client.CreateChannel(ctx, nil)
-// stream bytes...
-ch.Writer.Write(ctx, payload)        // binary frames (64 KiB chunks)
-ch.Writer.SendMessage(ctx, progress) // discrete text message
-ch.Writer.Close()                    // signals end-of-stream
+// Caller: send a file, and take the converted one.
+src, _ := os.Open("report.csv")
+dst, _ := os.Create("report.pdf")
+payload, _ := json.Marshal(map[string]any{
+	"body": iii.InputStreamFromReader(src), // read when the function reads it
+	"out":  iii.OutputStreamToWriter(dst),  // the call returns once dst got the whole stream
+})
+_, err := client.Call(ctx, iii.CallRequest{FunctionID: "files::convert", Payload: payload})
 
-// hand ch.ReaderRef to a processor function via Call; on that side:
-refs, _ := iii.ExtractChannelRefs(data)
-reader := client.OpenReader(refs["reader"]) // client address, WithHeaders and III_TOKEN
-reader.OnMessage(func(m string) { /* text messages */ })
-all, _ := reader.ReadAll(ctx)        // binary stream, until the writer closes
+// Function: the fields unmarshal to streams.
+type convertArgs struct {
+	Body *iii.InputStream  `json:"body"`
+	Out  *iii.OutputStream `json:"out"`
+}
+client.RegisterFunction("files::convert", func(ctx context.Context, data json.RawMessage) (any, error) {
+	var args convertArgs
+	if err := json.Unmarshal(data, &args); err != nil {
+		return nil, err
+	}
+	csv, err := args.Body.ReadAll(ctx) // or io.Copy, Lines, Messages, Frames
+	if err != nil {
+		return nil, err
+	}
+	return nil, args.Out.Write(ctx, toPDF(csv)) // closed when the handler returns
+})
 ```
 
-On a channel socket, **a text frame is a message** (`SendMessage` / `OnMessage`) and **a
-binary frame is stream data** (`Write` / `ReadAll`), told apart by WebSocket opcode,
-no envelope. The writer ends the stream with `Close`; the reader sees that as EOF. If a
-`Write` or `SendMessage` failed, `Close` ends the socket without the clean close instead,
-and so does a process that exits before `Close`: the engine aborts the channel and
-`NextBinary` / `ReadAll` return an error (with the bytes read so far) instead of EOF. A
-reader's own `Close` ends its reads as EOF.
+Bytes travel as binary frames (`Write`, `Read`) and messages as JSON text frames (`Send`,
+`Messages`). When a handler returns, the SDK ends the streams it received: an
+`OutputStream` it used is closed on success and aborted on failure (`KeepOpen` keeps it
+open), and an `InputStream` it started reading is cancelled. A reader of an aborted stream
+gets an `*iii.InvocationError` with code `iii.CodeStreamAborted`, never a short stream that
+looks whole. A stream has one reader and is sent once (`iii.CodeStreamInUse`), a write after
+the end fails with `iii.CodeStreamClosed`, and an enqueued call refuses streams
+(`iii.CodeStreamNotAllowed`). See https://iii.dev/docs/creating-workers/streaming.
 
 ## Observability
 

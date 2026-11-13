@@ -87,6 +87,51 @@ func (e *RegistrationRejectedError) Error() string {
 		e.Code, e.WorkerName, e.Namespace, e.OwnerWorkerID)
 }
 
+// The codes of the stream errors: an [*InvocationError] with one of these Code values,
+// returned by stream operations and by a call whose streams failed. Recover the code
+// with errors.As:
+//
+//	var ie *iii.InvocationError
+//	if errors.As(err, &ie) && ie.Code == iii.CodeStreamAborted {
+//	    // the writer aborted: the data read so far is incomplete
+//	}
+const (
+	// CodeStreamAborted: the stream ended with an abort (its writer called
+	// [OutputStream.Abort], failed, or went away before it closed), or could not be
+	// opened. The data read before it is not the whole stream. A call whose sink
+	// received an aborted stream fails with it too, even when the function succeeded.
+	// Through an engine pipe the Message is the engine's reason (channel writer aborted:
+	// closed with code 1011); in-process it is the writer's own.
+	CodeStreamAborted = "STREAM_ABORTED"
+	// CodeStreamNotAllowed: a payload holding a stream sent with [EnqueueAction]. A
+	// queued job can run after the pipe expired, and a retry cannot read the stream
+	// again. Nothing was sent.
+	CodeStreamNotAllowed = "STREAM_NOT_ALLOWED"
+	// CodeStreamClosed: a write or a send on a stream already closed or aborted, or
+	// after its reader left.
+	CodeStreamClosed = "STREAM_CLOSED"
+	// CodeStreamInUse: a stream already in use: a second read of an [InputStream], the
+	// same stream twice in one payload, or a stream sent on after it was read to the end
+	// or already sent.
+	CodeStreamInUse = "STREAM_IN_USE"
+)
+
+func streamError(code, message string) *InvocationError {
+	return &InvocationError{Code: code, Message: message}
+}
+
+func streamAbortedError(reason string) *InvocationError {
+	return streamError(CodeStreamAborted, reason)
+}
+
+func streamClosedError(message string) *InvocationError {
+	return streamError(CodeStreamClosed, message)
+}
+
+func streamInUseError(message string) *InvocationError {
+	return streamError(CodeStreamInUse, message)
+}
+
 // newInvocationError builds an InvocationError from a wire ErrorBody and the function
 // it targeted. body must be non-nil.
 func newInvocationError(body *ErrorBody, functionID string) *InvocationError {
