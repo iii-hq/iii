@@ -1856,9 +1856,11 @@ fn received_stream(key: &RefKey) -> Option<Tracked> {
     received(key).filter(|tracked| !tracked.transferred())
 }
 
-/// How deep the walks of received values go: a ref nested deeper is not
-/// tracked (and the walks stay off the stack's limits).
-const WALK_DEPTH: usize = 64;
+/// How deep the walks of values go: a ref nested deeper is not tracked (and
+/// the walks stay off the stack's limits). serde_json, which parses every
+/// message here and in the engine, refuses JSON nested deeper than 128 levels,
+/// so no value that crosses the engine holds a stream deeper than this.
+const WALK_DEPTH: usize = 128;
 
 /// The real refs (not placeholders) in `value`.
 fn visit_refs<'a>(value: &'a Value, depth: usize, visit: &mut impl FnMut(&'a Value)) {
@@ -2707,6 +2709,26 @@ mod tests {
     use super::*;
     use futures_util::TryStreamExt;
     use tokio::io::AsyncReadExt;
+
+    /// A ref as deep as any value the engine relays (serde_json refuses more
+    /// than 128 levels) is found; one nested deeper than the walk is not.
+    #[test]
+    fn the_walk_finds_a_ref_as_deep_as_the_engine_relays() {
+        let nest = |depth: usize| {
+            let mut value = json!({"channel_id": "deep", "access_key": "k", "direction": "read"});
+            for _ in 0..depth {
+                value = json!({ "next": value });
+            }
+            value
+        };
+        let found = |value: &Value| {
+            let mut ids = Vec::new();
+            visit_refs(value, 0, &mut |r| ids.push(r["channel_id"].clone()));
+            ids
+        };
+        assert_eq!(found(&nest(120)), [json!("deep")]);
+        assert!(found(&nest(WALK_DEPTH + 1)).is_empty());
+    }
 
     #[tokio::test]
     async fn a_local_source_reads_once() {

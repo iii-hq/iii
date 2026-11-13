@@ -54,8 +54,9 @@ const placeholderPrefix = "local:"
 const streamTTL = 5 * time.Minute
 
 // walkDepth bounds the walks of payloads and results: a stream nested deeper is not
-// seen.
-const walkDepth = 64
+// seen. The engine parses messages with serde_json, which refuses JSON nested deeper
+// than 128 levels, so no value it relays holds a stream deeper than this.
+const walkDepth = 128
 
 var streamIDs atomic.Uint64
 

@@ -1527,3 +1527,27 @@ func TestCallerSinkFailure(t *testing.T) {
 		}
 	}
 }
+
+// TestWalkFindsARefAsDeepAsTheEngineRelays: the engine parses with serde_json, which
+// refuses JSON nested deeper than 128 levels; a ref 120 levels down is found, and the
+// walk stops past walkDepth.
+func TestWalkFindsARefAsDeepAsTheEngineRelays(t *testing.T) {
+	nest := func(depth int) any {
+		var v any = map[string]any{"channel_id": "deep", "access_key": "k", "direction": "read"}
+		for i := 0; i < depth; i++ {
+			v = map[string]any{"next": v}
+		}
+		return v
+	}
+	found := func(v any) []string {
+		var ids []string
+		visitRefs(v, func(ref StreamChannelRef) { ids = append(ids, ref.ChannelID) })
+		return ids
+	}
+	if ids := found(nest(120)); len(ids) != 1 || ids[0] != "deep" {
+		t.Fatalf("refs found 120 levels down = %v, want [deep]", ids)
+	}
+	if ids := found(nest(walkDepth + 1)); len(ids) != 0 {
+		t.Fatalf("refs found past walkDepth = %v, want none", ids)
+	}
+}
