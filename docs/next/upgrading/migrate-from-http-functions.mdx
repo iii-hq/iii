@@ -181,7 +181,11 @@ environment instead of the engine's.
                 body = response.read()
         except urllib.error.HTTPError as error:
             if 300 <= error.code < 400:
-                return None  # a success with no result, as the engine did
+                # A success with no result unless the body is JSON, as the engine did.
+                try:
+                    return json.loads(error.read())
+                except ValueError:
+                    return None
             # Callers see a raised error as invocation_failed: keep the service's code in the message.
             try:
                 code = json.loads(error.read())["error"]["code"]
