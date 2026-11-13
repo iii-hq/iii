@@ -143,7 +143,7 @@ the wire unless an observer's filters match);
 When a function runs, its observers run. `observe(source, target)` calls
 `target` (a registered function) after each call of `source` that its filters
 match; what it observes is the function's return value. `args` are for the
-worker that hosts the function (a route, a cron expression), `filters` pick
+worker that hosts the function (a route, a table), `filters` pick
 the calls:
 
 ```rust
@@ -230,35 +230,35 @@ use iii_sdk::{Call, CallRequest, Error, Match, ObserveRejection, Observer, Regis
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct CronArgs { expression: String }
+struct TableArgs { table: String }
 
-iii.on_observer_added_for("cron::on-tick", |obs: Observer| async move {
-    let CronArgs { expression } = obs.args()?; // validated by the engine
-    if expression.split_whitespace().count() != 7 {
-        return Err(ObserveRejection::new("INVALID_CRON_EXPRESSION", expression));
+iii.on_observer_added_for("database::on-row-changed", |obs: Observer| async move {
+    let TableArgs { table } = obs.args()?; // validated by the engine
+    if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(ObserveRejection::new("INVALID_TABLE", table));
     }
-    Ok(()) // start the expression's job
+    Ok(()) // start capturing the table's changes
 });
-// an observer of expression X wants the ticks of expression X; by keys, iii
-// keeps an index, however many observers there are
+// an observer of table X wants the changes of table X; by keys, iii keeps an
+// index, however many observers there are
 iii.on_observation_match_for(
-    "cron::on-tick",
+    "database::on-row-changed",
     Match::keys(
-        |obs| obs.args_value()["expression"].as_str().into(),
-        |call| call.input["expression"].as_str().into(),
+        |obs| obs.args_value()["table"].as_str().into(),
+        |call| call.input["table"].as_str().into(),
     ),
 );
-let on_tick = iii.register_function(
-    "cron::on-tick",
-    RegisterFunction::new(|tick: serde_json::Value| Ok::<_, Error>(tick))
-        .args_format::<CronArgs>()
+let on_row_changed = iii.register_function(
+    "database::on-row-changed",
+    RegisterFunction::new(|change: serde_json::Value| Ok::<_, Error>(change))
+        .args_format::<TableArgs>()
         .private(),
 );
 
-// a tick: skipped when nobody observes its expression
-let call = Call { input: json!({ "expression": "0 0 9 * * * *" }), ..Call::default() };
-if on_tick.is_observed_for(&call) {
-    iii.call(CallRequest::new("cron::on-tick", call.input)).await?;
+// a row change: skipped when nobody observes its table
+let call = Call { input: json!({ "table": "orders", "op": "insert", "row": { "id": 1 } }), ..Call::default() };
+if on_row_changed.is_observed_for(&call) {
+    iii.call(CallRequest::new("database::on-row-changed", call.input)).await?;
 }
 ```
 

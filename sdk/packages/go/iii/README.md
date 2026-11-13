@@ -167,31 +167,31 @@ the `args` its observers pass, and `Private: true` lets only this worker call
 it:
 
 ```go
-client.OnObserverAddedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) error {
-	expression, _ := obs.Args["expression"].(string)
-	if !isValidCron(expression) {
-		return iii.ObserveRejection("INVALID_CRON_EXPRESSION", "bad expression")
+client.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+	table, _ := obs.Args["table"].(string)
+	if !db.HasTable(table) {
+		return iii.ObserveRejection("UNKNOWN_TABLE", "no such table")
 	}
-	return scheduler.Retain(expression)
+	return changeFeed.Retain(table)
 })
-client.OnObserverRemovedFor("cron::on-tick", func(ctx context.Context, obs *iii.Observer) {
-	expression, _ := obs.Args["expression"].(string)
-	scheduler.Release(expression)
+client.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
+	table, _ := obs.Args["table"].(string)
+	changeFeed.Release(table)
 })
-// each tick reaches the observers of its expression
-client.OnObservationMatchFor("cron::on-tick", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
-	var tick struct{ Expression string `json:"expression"` }
-	_ = json.Unmarshal(call.Input, &tick)
-	return obs.Args["expression"] == tick.Expression
+// each change reaches the observers of its table
+client.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+	var change struct{ Table string `json:"table"` }
+	_ = json.Unmarshal(call.Input, &change)
+	return obs.Args["table"] == change.Table
 }))
 
-client.RegisterFunction("cron::on-tick", iii.Identity, iii.FunctionOptions{
-	ArgsFormat: json.RawMessage(`{"type":"object","required":["expression"],"properties":{"expression":{"type":"string"}}}`),
+client.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
+	ArgsFormat: json.RawMessage(`{"type":"object","required":["table"],"properties":{"table":{"type":"string"}}}`),
 	Private:    true,
 })
 
 // a consumer
-client.Observe(iii.Source{FunctionID: "cron::on-tick", Args: iii.Args{"expression": "0 0 9 * * * *"}}, "reports::daily")
+client.Observe(iii.Source{FunctionID: "database::on-row-changed", Args: iii.Args{"table": "orders"}}, "orders::project")
 ```
 
 With many observers, match by keys instead: the SDK keeps an index, one

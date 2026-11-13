@@ -129,31 +129,31 @@ before registering the function so they run for every observer.
 ```python
 from iii import Call, Observer, ObserveRejection
 
-@iii.on_observer_added("cron::on-tick")
+@iii.on_observer_added("database::on-row-changed")
 def start(obs: Observer) -> None:
-    if not scheduler.is_valid(obs.args["expression"]):
-        raise ObserveRejection("INVALID_CRON_EXPRESSION", "invalid expression")
-    scheduler.retain(obs.args["expression"])
+    if not db.has_table(obs.args["table"]):
+        raise ObserveRejection("UNKNOWN_TABLE", "no such table")
+    change_feed.retain(obs.args["table"])
 
-@iii.on_observer_removed("cron::on-tick")
+@iii.on_observer_removed("database::on-row-changed")
 def stop(obs: Observer) -> None:
-    scheduler.release(obs.args["expression"])
+    change_feed.release(obs.args["table"])
 
-# an observer of expression X gets the ticks of expression X
-@iii.on_observation_match("cron::on-tick")
-def same_expression(obs: Observer, call: Call) -> bool:
-    return obs.args["expression"] == call.input["expression"]
+# an observer of table X gets the changes of table X
+@iii.on_observation_match("database::on-row-changed")
+def same_table(obs: Observer, call: Call) -> bool:
+    return obs.args["table"] == call.input["table"]
 
 iii.register_function(
-    "cron::on-tick",
-    lambda tick: tick,  # an event source returns the event it is called with
-    args_format={"type": "object", "required": ["expression"],
-                 "properties": {"expression": {"type": "string"}}},
+    "database::on-row-changed",
+    lambda change: change,  # an event source returns the event it is called with
+    args_format={"type": "object", "required": ["table"],
+                 "properties": {"table": {"type": "string"}}},
     private=True,
 )
 
-# a tick is a call of the function
-iii.call({"function_id": "cron::on-tick", "payload": {"expression": "*/5 * * * * *", "scheduled_time": now}})
+# a row change is a call of the function
+iii.call({"function_id": "database::on-row-changed", "payload": {"table": "orders", "op": "insert", "row": {"id": 1}}})
 ```
 
 `on_observation_match` takes a predicate `(obs, call) -> bool`, asked once per
