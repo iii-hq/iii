@@ -568,3 +568,71 @@ describe('the stream walk', () => {
     expect(isObservedEnvelope({ observer_id: 'o1', activation_id: 'a1' }, { observer_id: 'o1' })).toBe(false)
   })
 })
+
+describe('regressions from the adversarial run', () => {
+  it('send() of a value JSON cannot serialize returns a rejected promise, it does not throw', async () => {
+    const out = OutputStream.to(new WritableStream<Uint8Array>())
+    let sent: Promise<void> | undefined
+    expect(() => {
+      sent = out.send(BigInt(1))
+    }).not.toThrow()
+    await expect(sent).rejects.toThrow(TypeError)
+    const cycle: Record<string, unknown> = {}
+    cycle.self = cycle
+    await expect(out.send(cycle)).rejects.toThrow(TypeError)
+    // A refused message is not a write: the stream goes on.
+    await out.send({ ok: true })
+    await out.close()
+  })
+
+  it('an abort passed on keeps its reason: no second "stream aborted" prefix', async () => {
+    const original = new StreamAbortedError('channel writer aborted: closed with code 1011')
+    const message = 'STREAM_ABORTED: stream aborted: channel writer aborted: closed with code 1011'
+    const reasonOf = (s: OutputStream) => outputDone(s).catch((e: StreamAbortedError) => e)
+
+    // A pump whose input was aborted aborts its sink (a WritableStream, a Writable) with the same abort.
+    let webReason: unknown
+    const web = OutputStream.to(
+      new WritableStream<Uint8Array>({
+        abort: (r) => {
+          webReason = r
+        },
+      }),
+    )
+    const failing = () =>
+      InputStream.from(
+        (async function* () {
+          yield 'x'
+          throw original
+        })(),
+      )
+    await expect(pumpStream(failing(), web)).rejects.toBe(original)
+    expect((webReason as Error).message).toBe(message)
+    expect(await reasonOf(web)).toMatchObject({ reason: original.reason, message })
+    let destroyedWith: Error | undefined
+    const writable = new Writable({
+      write: (_c, _e, cb) => cb(),
+      destroy: (error, cb) => {
+        destroyedWith = error ?? undefined
+        cb(null)
+      },
+    })
+    const node = OutputStream.to(writable)
+    await expect(pumpStream(failing(), node)).rejects.toBe(original)
+    expect(destroyedWith?.message).toBe(message)
+
+    // abort() with an abort, toWebStream().abort() with one, and the guard of a handler that failed with one.
+    const aborted = OutputStream.to(new WritableStream<Uint8Array>())
+    await aborted.abort(original)
+    expect(await reasonOf(aborted)).toMatchObject({ reason: original.reason, message })
+    const bridged = OutputStream.to(new WritableStream<Uint8Array>())
+    await bridged.toWebStream().abort(original)
+    expect(await reasonOf(bridged)).toMatchObject({ reason: original.reason, message })
+    const guarded = OutputStream.to(new WritableStream<Uint8Array>())
+    const scope = new StreamScope()
+    scope.adopt(guarded)
+    await guarded.write('x')
+    scope.settle({ ok: false, error: original })
+    expect(await reasonOf(guarded)).toMatchObject({ reason: original.reason, message })
+  })
+})

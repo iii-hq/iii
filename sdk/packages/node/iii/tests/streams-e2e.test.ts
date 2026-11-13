@@ -639,3 +639,84 @@ describe('call-native streams through the engine', () => {
     expect(error).toMatchObject({ code: 'STREAM_ABORTED', reason: 'local boom midway' })
   })
 })
+
+describe('refusals claim nothing (regressions from the adversarial run)', () => {
+  it('the same stream twice in a nested local call is refused before anything is adopted: the outer call resolves and its sink closes', async () => {
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('x09-b'), async (_input: unknown) => 'b')
+      host.registerFunction(fid('x09-a'), async ({ out }: { out: OutputStream }) => {
+        try {
+          await host.call({ function_id: fid('x09-b'), payload: { a: out, b: out } })
+          return 'ok'
+        } catch (error) {
+          return (error as { code?: string }).code
+        }
+      })
+    })
+    const { sink, finished } = collectorSink()
+    await expect(
+      within(caller.call({ function_id: fid('x09-a'), payload: { out: sink }, timeoutMs: 4000 }), 3000),
+    ).resolves.toBe('STREAM_IN_USE')
+    await waitFor(() => finished(), 'the sink finished')
+  })
+
+  it('a partly read input twice in a call is refused before it leaves the guard, which still cancels it (routed and local)', async () => {
+    const { host, caller } = await pair((host, other) => {
+      other.registerFunction(fid('x09-take'), async (_input: unknown) => 'taken')
+      host.registerFunction(fid('x09-local-take'), async (_input: unknown) => 'taken')
+      host.registerFunction(fid('x09-dup-input'), async ({ body, to }: { body: InputStream; to: string }) => {
+        const it = body[Symbol.asyncIterator]()
+        await it.next()
+        try {
+          await host.call({ function_id: to, payload: { a: body, b: body } })
+          return 'ok'
+        } catch (error) {
+          return (error as { code?: string }).code
+        }
+      })
+    })
+    await localDispatchReady(host, fid('x09-local-take'))
+    for (const to of [fid('x09-take'), fid('x09-local-take')]) {
+      let closed = false
+      async function* endless() {
+        try {
+          for (;;) yield Buffer.alloc(16 * 1024, 1)
+        } finally {
+          closed = true
+        }
+      }
+      await expect(
+        within(caller.call({ function_id: fid('x09-dup-input'), payload: { body: endless(), to } })),
+      ).resolves.toBe('STREAM_IN_USE')
+      await waitFor(() => closed, `the source closed (${to})`)
+    }
+  })
+
+  it('a stream in metadata is refused before anything is sent, as the Rust SDK does (routed and local)', async () => {
+    let ran = 0
+    const take = async ({ body }: { body: InputStream }) => {
+      ran++
+      return body.text()
+    }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('meta'), take)
+    })
+    caller.registerFunction(fid('local-meta'), take)
+    await localDispatchReady(caller, fid('local-meta'))
+    for (const function_id of [fid('meta'), fid('local-meta')]) {
+      for (const metadata of [
+        { s: Readable.from(['m']) },
+        { list: [collectorSink().sink] },
+        { nested: { input: InputStream.from('m') } },
+      ]) {
+        const body = Readable.from(['payload'])
+        await expect(caller.call({ function_id, payload: { body }, metadata: metadata as never })).rejects.toThrow(
+          'a stream cannot travel in metadata: put it in the payload',
+        )
+        // Nothing was claimed: the same source goes in the next call.
+        await expect(caller.call({ function_id, payload: { body } })).resolves.toBe('payload')
+      }
+    }
+    expect(ran).toBe(6)
+  })
+})

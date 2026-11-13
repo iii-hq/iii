@@ -8,6 +8,7 @@ import {
   errorText,
   forwardableRef,
   handOn,
+  handOnRefusal,
   InputStream,
   inputFromRef,
   isLocalSink,
@@ -136,6 +137,7 @@ import type { IStream } from './stream'
 import {
   cloneKeepingStreams,
   containsStreams,
+  containsStreamValues,
   holdsWriteSide,
   isObservedEnvelope,
   mapStreams,
@@ -286,6 +288,9 @@ function duplicateStream(): InvocationError {
 function alreadySent(): InvocationError {
   return streamInUseError('a stream in the payload was already sent to another function')
 }
+
+/** A stream in a call's metadata: it has no pipe there, and would reach the handler as `{}`. The Rust SDK's error. */
+const STREAM_IN_METADATA = 'a stream cannot travel in metadata: put it in the payload'
 
 /** `STREAM_NOT_ALLOWED`: a queued call cannot carry a stream (R9). */
 function streamNotAllowed(function_id: string): InvocationError {
@@ -934,7 +939,10 @@ class Sdk implements IIIClient {
    * the hook.
    */
   // biome-ignore lint/suspicious/noExplicitAny: the call's types default to any so untyped hooks read their input
-  onObservationDeliver = <I = any, O = any, R = O>(functionId: string, hook: DeliverHook<I, O, R> | null): IIIClient => {
+  onObservationDeliver = <I = any, O = any, R = O>(
+    functionId: string,
+    hook: DeliverHook<I, O, R> | null,
+  ): IIIClient => {
     this.setFunctionHook(functionId, 'deliver', hook as DeliverHook | null)
     return this
   }
@@ -1207,16 +1215,11 @@ class Sdk implements IIIClient {
   private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
     type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
     const slots = new Map<unknown, Slot>()
-    mapStreams(value, (slot, kind) => {
-      if (kind === 'ref') return slot
-      if (slots.has(slot)) throw duplicateStream()
-      const stream = asStream(slot)
-      if (isTransferred(stream)) throw alreadySent()
+    for (const [slot, stream] of this.streamValues(value)) {
       const ref = forwardableRef(stream)
-      // A stream a read began on is pumped from where that read is; one read to its end cannot go (R6).
+      // A stream a read began on is pumped from where that read is.
       slots.set(slot, { stream: ref === undefined && stream instanceof InputStream ? handOn(stream) : stream, ref })
-      return slot
-    })
+    }
     const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
     const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
     const pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
@@ -1284,6 +1287,28 @@ class Sdk implements IIIClient {
   }
 
   /**
+   * The stream values of an outgoing `value` (not its refs), each as an
+   * {@link InputStream} or {@link OutputStream}, keyed by the value it was.
+   * Every refusal happens here, before any stream leaves its guard or is
+   * adopted: the same stream twice, a stream already sent by its ref, an
+   * InputStream read to its end (R6). A refused call has claimed nothing.
+   */
+  private streamValues(value: unknown): Map<unknown, InputStream | OutputStream> {
+    const streams = new Map<unknown, InputStream | OutputStream>()
+    mapStreams(value, (slot, kind) => {
+      if (kind === 'ref') return slot
+      if (streams.has(slot)) throw duplicateStream()
+      const stream = asStream(slot)
+      if (isTransferred(stream)) throw alreadySent()
+      const refused = stream instanceof InputStream ? handOnRefusal(stream) : undefined
+      if (refused) throw refused
+      streams.set(slot, stream)
+      return slot
+    })
+    return streams
+  }
+
+  /**
    * Turns the channel refs of a received `value` (a handler's input, a call's
    * result) into an {@link InputStream} (a read ref) or an {@link OutputStream}
    * (a write ref), bound to this worker, and gives them to `scope`. In an
@@ -1324,18 +1349,15 @@ class Sdk implements IIIClient {
    */
   private localize(value: unknown, scope?: StreamScope, found?: Array<InputStream | OutputStream>): unknown {
     const binding = this.streamBinding()
-    const seen = new Set<unknown>()
+    // The same refusals as the routed path (prepareOutbound), all of them before any stream is adopted.
+    const values = this.streamValues(value)
     return mapStreams(value, (slot, kind) => {
       let stream: InputStream | OutputStream
       if (kind === 'ref') {
         const ref = wireRef(slot as StreamChannelRef)
         stream = ref.direction === 'read' ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
       } else {
-        // The same checks as the routed path (prepareOutbound).
-        if (seen.has(slot)) throw duplicateStream()
-        seen.add(slot)
-        stream = asStream(slot)
-        if (isTransferred(stream)) throw alreadySent()
+        stream = values.get(slot) as InputStream | OutputStream
         if (stream instanceof InputStream) stream = handOn(stream)
       }
       if (scope) scope.adopt(stream)
@@ -1504,6 +1526,9 @@ class Sdk implements IIIClient {
     if (request.action?.type === 'enqueue' && containsStreams(request.payload)) {
       throw streamNotAllowed(request.function_id ?? request.observer?.target ?? '')
     }
+    // Refused before anything is sent or claimed: the payload's streams stay the caller's.
+    const callMetadata = (request as { metadata?: unknown }).metadata
+    if (callMetadata != null && containsStreamValues(callMetadata)) throw new Error(STREAM_IN_METADATA)
     if (request.observer !== undefined) {
       const { observer, payload, action, timeoutMs } = request
       // Its target's metadata is the observer's: refused before anything is

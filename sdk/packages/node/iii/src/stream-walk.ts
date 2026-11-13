@@ -64,6 +64,16 @@ export function containsStreams(value: unknown): boolean {
   return false
 }
 
+/** Whether `value` holds a stream value (a source, a sink, a stream), not counting channel refs. */
+export function containsStreamValues(value: unknown): boolean {
+  let found = false
+  mapStreams(value, (slot, kind) => {
+    if (kind !== 'ref') found = true
+    return slot
+  })
+  return found
+}
+
 /**
  * Whether `value` hands whoever receives it a write side: an OutputStream, a
  * native sink, or a write ref. A call that returns one does not wait for its

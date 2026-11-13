@@ -108,6 +108,8 @@ function handled<T>(p: Promise<T>): Promise<T> {
 }
 
 export function errorText(error: unknown): string {
+  // An abort passed on is the same abort: its reason, not its message, or each hop would prefix it again.
+  if (error instanceof StreamAbortedError) return error.reason
   if (error instanceof Error) return error.message
   if (typeof error === 'string') return error
   return String(error ?? 'aborted')
@@ -593,7 +595,13 @@ export class OutputStream {
     const st = outputState(this)
     const refused = refusal(st)
     if (refused) return handled(Promise.reject(refused))
-    const text = JSON.stringify(message)
+    let text: string | undefined
+    try {
+      // A BigInt or a cycle throws here: a rejected promise, as for any other failed send.
+      text = JSON.stringify(message)
+    } catch (error) {
+      return handled(Promise.reject(error))
+    }
     if (text === undefined) return handled(Promise.reject(new TypeError('the message is not JSON-serializable')))
     st.used = true
     return handled(enqueue(st, (sink) => sink.send(text)))
@@ -852,6 +860,12 @@ export function releaseInput(s: InputStream): Promise<void> {
   return handled(cancelInput(inputState(s), false))
 }
 
+/** Why {@link handOn} would refuse `s`, checked with no effect: a stream read to its end (R6). */
+export function handOnRefusal(s: InputStream): Error | undefined {
+  const st = inputState(s)
+  return st.claimed && st.finished ? oneReaderError() : undefined
+}
+
 /**
  * What `s` is passed on as when it goes to another function without its ref
  * (in-process, or pumped into a pipe). Never read: `s` itself. A read began
@@ -860,9 +874,10 @@ export function releaseInput(s: InputStream): Promise<void> {
  * reading it again would throw.
  */
 export function handOn(s: InputStream): InputStream {
+  const refused = handOnRefusal(s)
+  if (refused) throw refused
   const st = inputState(s)
   if (!st.claimed) return s
-  if (st.finished) throw oneReaderError()
   detach(s)
   return makeInput(localInputState({ next: () => pullFrame(st), cancel: () => cancelInput(st, false) }))
 }
