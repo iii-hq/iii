@@ -32,7 +32,7 @@ English | [简体中文](README_zh.md)
 
 ## Why iii
 
-Every service comes with its own runtime, API, and failure modes. Getting services to work together means endless integration work: error handling, gateways, sync, tracing, and maintenance that never stops.
+Every service comes with its own runtime, API, and failure modes. Getting services to work together means endless integration and instrumentation work: error handling, gateways, sync, tracing, and maintenance that never stops.
 
 It's estimated that up to 70% of development time is dedicated to integrations. 40% is the lowest estimate we could find.
 
