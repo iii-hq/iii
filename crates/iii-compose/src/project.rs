@@ -2795,7 +2795,7 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_container_that_runs_its_own_vm_is_built_before_its_process_starts() {
         let (dir, project, _) = own_vm_project("").await;
-        let build = dir.path().join(".build/own/build.json");
+        let build = dir.path().join(".iii/build/own/build.json");
 
         let up = project.up(None, "up".into()).await;
 
@@ -2803,7 +2803,7 @@ mod adapter_restart_tests {
         assert!(alive(dir.path(), "own").is_some());
         let built = std::fs::metadata(&build).unwrap().modified().unwrap();
         assert_eq!(
-            std::fs::read_to_string(dir.path().join(".build/.gitignore")).unwrap(),
+            std::fs::read_to_string(dir.path().join(".iii/build/.gitignore")).unwrap(),
             "*\n"
         );
 
@@ -2985,7 +2985,7 @@ mod adapter_restart_tests {
         let (running, called, build) = (
             legacy.clone(),
             calls.clone(),
-            dir.path().join(".build/own/build.json"),
+            dir.path().join(".iii/build/own/build.json"),
         );
         let project = open_small_project(&path, &daemon, move |function, payload| {
             let live = running.load(std::sync::atomic::Ordering::SeqCst);
@@ -3021,7 +3021,7 @@ mod adapter_restart_tests {
             [("sandbox-libkrun::worker::stop".to_string(), false)],
             "{recorded:?}"
         );
-        assert!(dir.path().join(".build/own/build.json").exists());
+        assert!(dir.path().join(".iii/build/own/build.json").exists());
         assert!(alive(dir.path(), "own").is_some());
         assert_eq!(store.load().unwrap().unwrap().containers["own"].vm, None);
         project.shutdown().await;
@@ -3071,7 +3071,7 @@ mod adapter_restart_tests {
         .await;
         let up = project.up(Some("own"), "up".into()).await;
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
-        assert!(!dir.path().join(".build").exists());
+        assert!(!dir.path().join(".iii/build").exists());
         project.shutdown().await;
     }
 
@@ -3082,7 +3082,7 @@ mod adapter_restart_tests {
         let fixture = fixture("").await;
         fixture.project.down(None, "down".into()).await;
         assert!(fixture.alive("sb").is_none());
-        std::fs::remove_dir_all(fixture.dir.path().join(".build")).unwrap();
+        std::fs::remove_dir_all(fixture.dir.path().join(".iii/build")).unwrap();
         let controller = crate::shutdown::ShutdownController::default();
 
         let results = fixture
@@ -3106,7 +3106,7 @@ mod adapter_restart_tests {
         assert!(fixture.alive("sb").is_some());
         assert_eq!(fixture.alive("vm"), None);
         assert_eq!(fixture.started(), Vec::<String>::new());
-        assert!(fixture.dir.path().join(".build/vm/build.json").exists());
+        assert!(fixture.dir.path().join(".iii/build/vm/build.json").exists());
         fixture.project.shutdown().await;
     }
 
@@ -3141,7 +3141,7 @@ mod adapter_restart_tests {
             "{:?}",
             began.elapsed()
         );
-        assert!(!dir.path().join(".build/own").exists());
+        assert!(!dir.path().join(".iii/build/own").exists());
         project.shutdown().await;
     }
 
@@ -3209,7 +3209,7 @@ mod adapter_restart_tests {
         let results = building.await.unwrap().unwrap().results;
         assert_eq!(results[0].status, lifecycle::BuildStatus::Failed);
         assert_eq!(results[0].error.as_ref().unwrap().code, "BUILD_STOPPED");
-        assert!(!dir.path().join(".build/own").exists());
+        assert!(!dir.path().join(".iii/build/own").exists());
         project.shutdown().await;
     }
 
@@ -3235,7 +3235,7 @@ mod adapter_restart_tests {
         let up = project.up(Some("own"), "up".into()).await;
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         let running = alive(dir.path(), "own").unwrap();
-        let build = dir.path().join(".build/own");
+        let build = dir.path().join(".iii/build/own");
         let built = build_record::read(&build).unwrap().unwrap();
         let moved = |record: &crate::build_record::BuildRecord| {
             let mut moved = record.clone();
@@ -3361,7 +3361,7 @@ mod adapter_restart_tests {
         let up = project.up(Some("own"), "up".into()).await;
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
         let running = alive(dir.path(), "own").unwrap();
-        let build = dir.path().join(".build/own");
+        let build = dir.path().join(".iii/build/own");
         let mut moved = build_record::read(&build).unwrap().unwrap();
         moved.source = crate::build_record::BuildSource::Path {
             dir: "./old".into(),

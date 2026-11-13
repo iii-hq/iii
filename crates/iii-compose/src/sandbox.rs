@@ -804,7 +804,7 @@ fn utf8_path(key: &str, path: &Path) -> Result<String> {
 }
 
 /// Lays `III_PACKAGE_DIR` and `III_PACKAGE_NAME` over `user_env` when container `key` is a
-/// registry bundle, in a VM or on the host (spec 7.5): its `.workers/<container>/`, and its
+/// registry bundle, in a VM or on the host (spec 7.5): its `.iii/workers/<container>/`, and its
 /// manifest name, which for an alias is the package it stands for.
 pub(crate) fn layer_package_env(
     file: &ComposeFile,
@@ -3091,7 +3091,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             Path::new(&env[sandbox_cli::BUILD_DIR_ENV]),
-            compose_dir.join(".build/api")
+            compose_dir.join(".iii/build/api")
         );
         assert_eq!(env[sandbox_cli::BUILD_TIMEOUT_ENV], "90000");
         assert_eq!(
@@ -3104,7 +3104,7 @@ pub(crate) mod tests {
         layer_own_vm_env(&file, "app", "p", Path::new("/state"), "orders", &mut env).unwrap();
         assert_eq!(
             Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV]),
-            compose_dir.join(".workers/app")
+            compose_dir.join(".iii/workers/app")
         );
         assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "app");
         let keys = forwarded(&env);

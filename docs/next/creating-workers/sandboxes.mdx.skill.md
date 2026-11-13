@@ -820,7 +820,7 @@ A Compose container runs in a VM when its compose file says so:
 ```
 
 - `iii sandbox build` asks the sandbox adapter to build an image of the worker, locally, and leaves
-  it in `<project>/.build/<container>/`.
+  it in `<project>/.iii/build/<container>/`.
 - `iii sandbox run` boots that image. Nothing is installed at boot.
 - Compose starts both as processes, like any other command. It keeps no VM boot path of its own.
 
@@ -932,10 +932,10 @@ Compose hands `iii sandbox build` and `iii sandbox run` these variables:
 | `III_WORKER_DIR`         | A `path://` worker's directory, synced into the VM.                                   |
 | `III_WORKER_ENV_KEYS`    | Comma-separated names of the variables that belong to the worker and reach the guest. |
 | `III_STOP_TIMEOUT_MS`    | How long Compose waits after its `SIGTERM` before it kills the command.               |
-| `III_BUILD_DIR`          | `<project>/.build/<container>`.                                                       |
+| `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
-| `III_PACKAGE_DIR`        | `<project>/.workers/<container>`, for a bundle.                                       |
+| `III_PACKAGE_DIR`        | `<project>/.iii/workers/<container>`, for a bundle.                                   |
 | `III_PACKAGE_NAME`       | The bundle's manifest name, for a bundle.                                             |
 
 `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`, and
@@ -964,7 +964,7 @@ case.
 | `state_key`   | The VM the build is for. A scoped token is checked against it.                                                                                 |
 | `worker_name` | Container key, for logs and errors.                                                                                                            |
 | `source`      | The worker source, as for `worker::start`.                                                                                                     |
-| `output_dir`  | Absolute host directory of the build, `<project>/.build/<container>`. Must be under the adapter's host roots.                                  |
+| `output_dir`  | Absolute host directory of the build, `<project>/.iii/build/<container>`. Must be under the adapter's host roots.                              |
 | `env`         | Environment of the setup and install steps: the guest's variables, nothing from the host.                                                      |
 | `logs`        | Writer end of a channel for the build's output, one `LogRecord` JSON per text frame. Required: the build lasts as long as the caller reads it. |
 
@@ -1002,9 +1002,9 @@ boots the image without running `scripts.setup` or `scripts.install`. It compare
 `build_dir/image.id` and refuses a mismatch or a missing file with [S508](#S508). It does not hash
 the image on start.
 
-`WorkerSource::Bundle.host_path` is the container's directory in `.workers/`, not the global package
-cache. The adapter copies it into the image at build time, and a run does not mount it. What a
-`path://` copy leaves out, and what a boot removes from `/workspace`, are in
+`WorkerSource::Bundle.host_path` is the container's directory in `.iii/workers/`, not the global
+package cache. The adapter copies it into the image at build time, and a run does not mount it. What
+a `path://` copy leaves out, and what a boot removes from `/workspace`, are in
 [Compose / What the guest sees](../using-iii/compose#what-the-guest-sees).
 
 The data disk stays as the overlay upper when the image under it changes. overlayfs accepts a

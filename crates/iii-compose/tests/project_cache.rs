@@ -11,7 +11,7 @@
 //! loses the race into the cache is still handed to its caller — which can
 //! then take down processes the other believes it supervises.
 //!
-//! The project also keeps its own copy of each locked package, in `.workers/`,
+//! The project also keeps its own copy of each locked package, in `.iii/workers/`,
 //! beside the global package cache (spec 3.2 and 7.5): the tests at the end.
 
 use std::sync::Arc;
@@ -755,9 +755,10 @@ fn listing(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 }
 
 /// Spec 3.2 and 7.5: `iii compose build --frozen` copies each locked package from the global
-/// cache into `.workers/<container>/`, records it in `.workers/.packages.json`, and follows the
-/// lock as it changes; the cache keeps its layout. A project that already had `.workers/` and
-/// `.build/` gets their `.gitignore`.
+/// cache into `.iii/workers/<container>/`, records it in `.iii/workers/.packages.json`, and
+/// follows the lock as it changes; the cache keeps its layout. A project that already had
+/// `.iii/workers/` and `.iii/build/` gets their `.gitignore`. Both stay in the project's `.iii/`
+/// while `III_COMPOSE_STATE_DIR` moves Compose's state elsewhere.
 #[tokio::test]
 async fn frozen_build_copies_the_locked_packages_into_the_project() {
     isolate_state();
@@ -767,8 +768,8 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     let project = tmp.path();
     // A project from before: a directory Compose did not record, which it leaves alone, and a
     // build.
-    std::fs::create_dir_all(project.join(".workers/retired")).unwrap();
-    std::fs::create_dir_all(project.join(".build/api")).unwrap();
+    std::fs::create_dir_all(project.join(".iii/workers/retired")).unwrap();
+    std::fs::create_dir_all(project.join(".iii/build/api")).unwrap();
 
     let server = wiremock::MockServer::start().await;
     let state = package_archive("state 1");
@@ -786,7 +787,7 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     let report = iii_compose::build::build_frozen(&file).await.unwrap();
     assert_eq!(report.packages, 2);
 
-    let workers = project.join(".workers");
+    let workers = project.join(".iii/workers");
     assert_eq!(
         listing(&workers, ""),
         [
@@ -851,7 +852,7 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
         ]
     );
 
-    // A build record in the `.build/` the project already had.
+    // A build record in the `.iii/build/` the project already had.
     let build = iii_compose::build_record::build_dir(project, "api");
     let record = iii_compose::build_record::BuildRecord {
         schema: iii_compose::build_record::SCHEMA,
@@ -865,13 +866,17 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     };
     iii_compose::build_record::write(&build, &record).unwrap();
     assert_eq!(
-        std::fs::read_to_string(project.join(".build/.gitignore")).unwrap(),
+        std::fs::read_to_string(project.join(".iii/build/.gitignore")).unwrap(),
         "*\n"
     );
     assert_eq!(
         iii_compose::build_record::read(&build).unwrap(),
         Some(record)
     );
+    // The state directory is elsewhere: the project's `.iii/` holds these two only, and its root
+    // nothing of Compose's besides.
+    assert_eq!(listing(&project.join(".iii"), ""), ["build", "workers"]);
+    assert!(!project.join(".workers").exists() && !project.join(".build").exists());
 
     // An update and a removal in the lock.
     let updated = package_archive("state 2");
@@ -927,8 +932,8 @@ async fn frozen_build_through_a_symlinked_compose_file_passes_its_check() {
     }
 
     assert_eq!(
-        std::fs::read_to_string(stacks.join(".workers/symlinked-link/lib/data.txt")).unwrap(),
+        std::fs::read_to_string(stacks.join(".iii/workers/symlinked-link/lib/data.txt")).unwrap(),
         "link 1"
     );
-    assert!(!tmp.path().join(".workers").exists());
+    assert!(!tmp.path().join(".iii/workers").exists());
 }
