@@ -217,15 +217,19 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
             }
             b'"' if key_next => {
                 key_next = false;
+                let key_start = i;
                 let key_end = string_end(bytes, i);
-                let sensitive = is_sensitive_key(&key_text(&json[i..key_end]));
                 i = skip_whitespace(bytes, key_end);
                 if i == bytes.len() {
+                    // Cut short in or after the key: no value to redact.
                     break;
                 }
                 if bytes[i] != b':' {
                     return None;
                 }
+                // Text follows, so the key is complete: if its escapes do not
+                // decode it is not JSON, and the sensitive key may hide in them.
+                let sensitive = is_sensitive_key(&key_text(&json[key_start..key_end])?);
                 i = skip_whitespace(bytes, i + 1);
                 if sensitive {
                     // Replaced whatever it is, so it need not be valid JSON.
@@ -319,16 +323,15 @@ fn number_prefix(token: &[u8]) -> Option<bool> {
     (i == token.len()).then_some(true)
 }
 
-/// The key's text without its quotes, with escapes decoded when it has any.
-fn key_text(quoted: &str) -> Cow<'_, str> {
+/// The text of a complete key without its quotes, with escapes decoded when
+/// it has any; `None` when they do not decode (`\q`, a lone surrogate).
+fn key_text(quoted: &str) -> Option<Cow<'_, str>> {
     let inner = quoted.strip_prefix('"').unwrap_or(quoted);
     let inner = inner.strip_suffix('"').unwrap_or(inner);
-    if inner.contains('\\')
-        && let Ok(decoded) = serde_json::from_str::<String>(quoted)
-    {
-        return Cow::Owned(decoded);
+    if inner.contains('\\') {
+        return serde_json::from_str::<String>(quoted).ok().map(Cow::Owned);
     }
-    Cow::Borrowed(inner)
+    Some(Cow::Borrowed(inner))
 }
 
 /// End of the value starting at `start`: past its closing quote or bracket,
@@ -584,6 +587,9 @@ mod tests {
                 Some(r#"{"cookie":"[REDACTED]""#.to_string()),
             ),
             (r#"{"cook"#.to_string(), None),
+            // A key cut inside an escape has no value to redact.
+            (r#"{"a":1,"\u00"#.to_string(), None),
+            (cut(r#"{"\u0063ookie"#), None),
             // A literal cut short is still a literal.
             (cut(r#"{"ok":tr"#), None),
             (r#"{"n":-1.5e"#.to_string(), None),
@@ -615,6 +621,9 @@ mod tests {
             "[1 2]",
             "1,2",
             r#"{"a":1}{"cookie":"x"}"#,
+            // A complete key whose escapes do not decode.
+            r#"{"\u0063ookie\q":"sid=abc"}"#,
+            r#"{"a":{"\x":1}}"#,
         ] {
             assert_eq!(
                 redact_payload_json(payload).as_deref(),

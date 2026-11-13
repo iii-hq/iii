@@ -4268,10 +4268,14 @@ impl OtlpAnyValue {
 }
 
 /// Redacts a worker's spans as they arrive, before anything stores them or
-/// forwards them to the collector.
+/// forwards them to the collector. That includes the worker's resource, which
+/// the SDK span forwarder ships with them (`build_forward_resource`).
 fn redact_otlp_request(request: &mut OtlpExportTraceServiceRequest) {
-    for resource in &mut request.resource_spans {
-        for scope in &mut resource.scope_spans {
+    for resource_spans in &mut request.resource_spans {
+        if let Some(resource) = &mut resource_spans.resource {
+            redact_otlp_attributes(&mut resource.attributes);
+        }
+        for scope in &mut resource_spans.scope_spans {
             for span in &mut scope.spans {
                 redact_otlp_attributes(&mut span.attributes);
                 for event in &mut span.events {
@@ -10899,7 +10903,8 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "resourceSpans": [{
                 "resource": {"attributes": [
-                    {"key": "service.name", "value": {"stringValue": "http"}}
+                    {"key": "service.name", "value": {"stringValue": "http"}},
+                    {"key": "deployment.api_key", "value": {"stringValue": "k-123"}}
                 ]},
                 "scopeSpans": [{
                     "spans": [{
@@ -10958,6 +10963,18 @@ mod tests {
             );
         }
         assert!(values.iter().any(|value| value == "api::login"));
+        // The resource the forwarder attaches to them.
+        let resource = build_forward_resource(&request.resource_spans[0].resource);
+        let attribute = |key: &'static str| {
+            resource
+                .get(&opentelemetry::Key::from_static_str(key))
+                .map(|value| value.as_str().into_owned())
+        };
+        assert_eq!(attribute("service.name").as_deref(), Some("http"));
+        assert_eq!(
+            attribute("deployment.api_key").as_deref(),
+            Some("[REDACTED]")
+        );
         let payload = span.events.events[0]
             .attributes
             .iter()
