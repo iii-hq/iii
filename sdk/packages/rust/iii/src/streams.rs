@@ -248,8 +248,9 @@ enum ReadStatus {
     Ended,
     /// It ended with this error (an abort, a failed dial).
     Failed(Error),
-    /// Cancelled by its reader, or by the handler guard.
-    Cancelled,
+    /// Cancelled by its reader, or by the handler guard: every later read
+    /// fails with [`Error::StreamClosed`] and this reason, never ends.
+    Cancelled(&'static str),
     /// Its own ref was sent on: the other side reads it.
     Forwarded,
     /// A pump took the rest of it, to send it on through a pipe.
@@ -320,6 +321,11 @@ impl InputInner {
     /// The next frame for `reader`. A second reader gets an error (R6).
     fn poll_frame(&self, cx: &mut Context<'_>, reader: u64) -> Poll<Option<Result<Frame, Error>>> {
         let mut st = self.state.lock_or_recover();
+        // A cancel is never the end of the stream: what was read is not all
+        // of it, so every read from then on fails.
+        if let ReadStatus::Cancelled(reason) = &st.status {
+            return Poll::Ready(Some(Err(Error::StreamClosed((*reason).to_string()))));
+        }
         if st.reader == 0 {
             st.reader = reader;
         } else if st.reader != reader {
@@ -327,7 +333,10 @@ impl InputInner {
         }
         match &st.status {
             ReadStatus::Unread | ReadStatus::Reading => {}
-            ReadStatus::Ended | ReadStatus::Cancelled => return Poll::Ready(None),
+            ReadStatus::Ended => return Poll::Ready(None),
+            ReadStatus::Cancelled(reason) => {
+                return Poll::Ready(Some(Err(Error::StreamClosed((*reason).to_string()))));
+            }
             ReadStatus::Forwarded | ReadStatus::Piped => {
                 return Poll::Ready(Some(Err(already_read())));
             }
@@ -380,21 +389,67 @@ impl InputInner {
     }
 
     /// Stops reading: the socket, if open, is dropped, and a read in flight
-    /// ends. A stream never read opens no socket.
-    fn cancel(&self) {
+    /// fails, as every later one does, with `reason`. A stream never read
+    /// opens no socket. A stream that already ended stays as it is.
+    fn cancel(&self, reason: &'static str) {
+        self.stop(ReadStatus::Cancelled(reason));
+    }
+
+    /// Fails the stream for its reader with an abort: the source a call
+    /// passed in-process, when the call ended before its handler read it all
+    /// (as the pipe of a call through the engine aborts).
+    fn abort(&self, reason: &str) {
+        self.stop(ReadStatus::Failed(Error::StreamAborted {
+            reason: reason.to_string(),
+        }));
+    }
+
+    fn stop(&self, status: ReadStatus) {
         let (frames, waker) = {
             let mut st = self.state.lock_or_recover();
             if !matches!(st.status, ReadStatus::Unread | ReadStatus::Reading) {
                 return;
             }
-            st.status = ReadStatus::Cancelled;
+            st.status = status;
             st.leftover = None;
+            st.failure_seen = false;
             (st.frames.take(), st.waker.take())
         };
         drop(frames);
         if let Some(waker) = waker {
             waker.wake();
         }
+    }
+
+    /// Hands the stream to the in-process receiver of a call: a new inner
+    /// takes what is left of it (its first reader reads the rest), and this
+    /// one counts as sent, so sending or reading it here again fails with
+    /// `STREAM_IN_USE`, as for a stream a call pumped into a pipe. `None` for
+    /// a stream that is not readable any more: the receiver gets it as is,
+    /// and its reads fail as they would here.
+    fn hand_off(&self) -> Option<Arc<InputInner>> {
+        let (moved, waker) = {
+            let mut st = self.state.lock_or_recover();
+            if !matches!(st.status, ReadStatus::Unread | ReadStatus::Reading) {
+                return None;
+            }
+            let moved = InputInner::new(self.channel.clone(), st.frames.take());
+            {
+                let mut next = moved.state.lock_or_recover();
+                next.status = st.status.clone();
+                next.leftover = st.leftover.take();
+                // Its receiver's guard takes it once the handler holds it.
+                next.holder = SENT;
+            }
+            *moved.bound.lock_or_recover() = self.bound.lock_or_recover().clone();
+            st.status = ReadStatus::Piped;
+            st.reader = SENT;
+            (moved, st.waker.take())
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+        Some(Arc::new(moved))
     }
 
     /// R3: cancels a stream the handler started reading and did not finish.
@@ -415,7 +470,7 @@ impl InputInner {
             matches!(st.status, ReadStatus::Reading) && st.holder == holder
         };
         if reading {
-            self.cancel();
+            self.cancel(CANCELLED_BY_GUARD);
         }
     }
 
@@ -456,8 +511,8 @@ impl InputInner {
                 }
                 ReadStatus::Ended => return Err(read_to_the_end()),
                 ReadStatus::Failed(error) => return Err(error.clone()),
-                ReadStatus::Cancelled => {
-                    return Err(Error::Runtime("the stream was cancelled".into()));
+                ReadStatus::Cancelled(reason) => {
+                    return Err(Error::StreamClosed((*reason).to_string()));
                 }
                 ReadStatus::Forwarded | ReadStatus::Piped => return Err(already_sent()),
             };
@@ -471,8 +526,15 @@ impl InputInner {
         Ok(source)
     }
 
-    fn read_to_the_end(&self) -> bool {
-        matches!(self.state.lock_or_recover().status, ReadStatus::Ended)
+    /// Why sending it fails, checked before anything is sent: read to the
+    /// end or already sent (`STREAM_IN_USE`), or cancelled (`STREAM_CLOSED`).
+    fn refusal(&self) -> Option<Error> {
+        match &self.state.lock_or_recover().status {
+            ReadStatus::Ended => Some(read_to_the_end()),
+            ReadStatus::Forwarded | ReadStatus::Piped => Some(already_sent()),
+            ReadStatus::Cancelled(reason) => Some(Error::StreamClosed((*reason).to_string())),
+            ReadStatus::Unread | ReadStatus::Reading | ReadStatus::Failed(_) => None,
+        }
     }
 
     fn describe(&self) -> &'static str {
@@ -481,12 +543,19 @@ impl InputInner {
             ReadStatus::Reading => "reading",
             ReadStatus::Ended => "ended",
             ReadStatus::Failed(_) => "failed",
-            ReadStatus::Cancelled => "cancelled",
+            ReadStatus::Cancelled(_) => "cancelled",
             ReadStatus::Forwarded => "forwarded",
             ReadStatus::Piped => "piped",
         }
     }
 }
+
+/// Why a read of a stream its reader cancelled fails.
+const CANCELLED: &str = "the stream was cancelled";
+
+/// Why a read of a stream the handler guard cancelled fails (R3).
+const CANCELLED_BY_GUARD: &str =
+    "the stream was cancelled when its handler returned: read it before returning";
 
 fn read_to_the_end() -> Error {
     Error::StreamInUse(
@@ -750,9 +819,11 @@ impl InputStream {
     }
 
     /// Stops reading. The socket, if open, closes, and the engine then
-    /// closes the writer, as it does when a reader leaves. Later reads end.
+    /// closes the writer, as it does when a reader leaves. A read in flight,
+    /// and every later read, fails with [`Error::StreamClosed`]: what was
+    /// read is not the whole stream. A stream read to its end stays ended.
     pub async fn cancel(&self) {
-        self.inner.cancel();
+        self.inner.cancel(CANCELLED);
     }
 }
 
@@ -1008,14 +1079,20 @@ pub(crate) struct OutputInner {
     released: AtomicBool,
     done: watch::Sender<Option<Outcome>>,
     token: OnceLock<String>,
+    /// Why its local sink failed (a write or the shutdown): the stream was
+    /// aborted with it, and the call that passed the sink fails with it.
+    sink_failure: OnceLock<String>,
 }
 
 fn closed() -> Error {
     Error::StreamClosed("the stream is closed: it was closed or aborted".into())
 }
 
-fn io_error(error: io::Error) -> Error {
-    Error::Runtime(error.to_string())
+/// The error a call fails with when the sink it passed failed.
+fn sink_failed(reason: &str) -> Error {
+    Error::StreamAborted {
+        reason: reason.to_string(),
+    }
 }
 
 impl OutputInner {
@@ -1032,6 +1109,30 @@ impl OutputInner {
             released: AtomicBool::new(false),
             done: watch::Sender::new(None),
             token: OnceLock::new(),
+            sink_failure: OnceLock::new(),
+        }
+    }
+
+    /// Its local sink failed: the stream aborts with the sink's error, and
+    /// the sink is dropped. Returns the error a pump into it fails with.
+    fn fail_sink(&self, io: &mut OutIo, error: io::Error) -> Error {
+        *io = OutIo::Local(None);
+        let reason = self
+            .sink_failure
+            .get_or_init(|| format!("the sink failed: {error}"))
+            .clone();
+        if self.outcome().is_none() {
+            self.finish(Outcome::Aborted(reason.clone()));
+        }
+        sink_failed(&reason)
+    }
+
+    /// The error the in-process receiver's write into this stream gets: a
+    /// write into a sink that failed is a write after its reader left.
+    fn bridged(&self, error: Error) -> Error {
+        match self.sink_failure.get() {
+            Some(reason) => Error::StreamClosed(format!("the stream is closed: {reason}")),
+            None => error,
         }
     }
 
@@ -1079,9 +1180,15 @@ impl OutputInner {
         self.begin()?;
         match &mut *io {
             OutIo::Ws(end) => self.writer_end(end)?.write(data).await,
-            OutIo::Local(Some(sink)) => sink.write_all(data).await.map_err(io_error),
+            OutIo::Local(Some(sink)) => match sink.write_all(data).await {
+                Ok(()) => Ok(()),
+                Err(error) => Err(self.fail_sink(&mut io, error)),
+            },
             OutIo::Local(None) => Err(closed()),
-            OutIo::Bridge(target) => Box::pin(target.write(data)).await,
+            OutIo::Bridge(target) => {
+                let written = Box::pin(target.write(data)).await;
+                written.map_err(|error| target.bridged(error))
+            }
         }
     }
 
@@ -1092,7 +1199,10 @@ impl OutputInner {
             OutIo::Ws(end) => self.writer_end(end)?.send_text(text).await,
             // A byte sink takes bytes only: messages are not written to it.
             OutIo::Local(_) => Ok(()),
-            OutIo::Bridge(target) => Box::pin(target.send_text(text)).await,
+            OutIo::Bridge(target) => {
+                let sent = Box::pin(target.send_text(text)).await;
+                sent.map_err(|error| target.bridged(error))
+            }
         }
     }
 
@@ -1120,10 +1230,17 @@ impl OutputInner {
                 Err(error) => Err(error),
             },
             OutIo::Local(sink) => match sink.take() {
-                Some(mut sink) => sink.shutdown().await.map_err(io_error),
+                Some(mut sink) => match sink.shutdown().await {
+                    Ok(()) => Ok(()),
+                    // Not closed: the sink may not hold the whole stream.
+                    Err(error) => return Err(self.fail_sink(&mut io, error)),
+                },
                 None => Ok(()),
             },
-            OutIo::Bridge(target) => Box::pin(target.close()).await,
+            OutIo::Bridge(target) => {
+                let closed = Box::pin(target.close()).await;
+                closed.map_err(|error| target.bridged(error))
+            }
         };
         self.finish(Outcome::Closed);
         result
@@ -1996,6 +2113,17 @@ pub(crate) fn release(value: &Value) {
 struct Pump {
     cancel: Option<oneshot::Sender<String>>,
     task: tokio::task::JoinHandle<Result<(), Error>>,
+    /// The local sink a sink pump writes into.
+    sink: Option<Arc<OutputInner>>,
+}
+
+/// The failure of the first sink in `sinks` that failed: what the call
+/// fails with, whatever the function answered (its writes failed once the
+/// sink's pump stopped reading).
+fn failed_sink<'a>(sinks: impl IntoIterator<Item = &'a Arc<OutputInner>>) -> Option<Error> {
+    sinks
+        .into_iter()
+        .find_map(|sink| sink.sink_failure.get().map(|reason| sink_failed(reason)))
 }
 
 /// The pumps started for what one call or result sends.
@@ -2082,10 +2210,13 @@ impl Pumps {
                         let _ = cancel.send(reason.clone());
                     }
                 }
+                let mut failed = Vec::new();
                 for sink in sinks {
                     let _ = sink.task.await;
+                    failed.extend(sink.sink);
                 }
-                Err(error)
+                // The caller's own sink failed: that is why the call failed.
+                Err(failed_sink(&failed).unwrap_or(error))
             }
         }
     }
@@ -2129,13 +2260,15 @@ pub(crate) fn check_sent_once(value: &Value) -> Result<(), Error> {
             seen.push(identity);
         }
     };
-    let mut ended = false;
+    let mut refused = None;
     visit_streams(value, 0, &mut |found| {
         if let Some((token, direction)) = placeholder_of(found) {
             // A received stream sent again is a placeholder of its own ref.
             let channel = match peek(token) {
                 Some(Local::Input(input)) => {
-                    ended |= input.read_to_the_end();
+                    if refused.is_none() {
+                        refused = input.refusal();
+                    }
                     input.channel.clone()
                 }
                 Some(Local::Output(output)) => output.channel.clone(),
@@ -2151,9 +2284,10 @@ pub(crate) fn check_sent_once(value: &Value) -> Result<(), Error> {
     });
     if twice {
         Err(sent_twice())
-    } else if ended {
-        // Refused here on every path, as a remote call's walk refuses it.
-        Err(read_to_the_end())
+    } else if let Some(error) = refused {
+        // Refused here on every path, as a remote call's walk refuses it:
+        // in-process, a stream the receiver of an earlier call holds is sent.
+        Err(error)
     } else {
         Ok(())
     }
@@ -2322,6 +2456,7 @@ async fn prepare_streams(iii: &IIIClient, value: &mut Value) -> Result<Pumps, Er
                 pumps.sources.push(Pump {
                     cancel: Some(cancel),
                     task: tokio::spawn(pump(frames, out, Some(signal))),
+                    sink: None,
                 });
             }
             Claimed::Sink(sink) => {
@@ -2330,7 +2465,8 @@ async fn prepare_streams(iii: &IIIClient, value: &mut Value) -> Result<Pumps, Er
                 let frames = read_frames(channel_url(&endpoint.address, &reader), endpoint.headers);
                 pumps.sinks.push(Pump {
                     cancel: Some(cancel),
-                    task: tokio::spawn(pump(frames, sink, Some(signal))),
+                    task: tokio::spawn(pump(frames, sink.clone(), Some(signal))),
+                    sink: Some(sink),
                 });
             }
         }
@@ -2368,6 +2504,56 @@ pub(crate) fn local_sinks(payload: &Value) -> Vec<(String, Arc<OutputInner>)> {
         }
     });
     sinks
+}
+
+/// Hands the sources `payload` passes as placeholders to the in-process
+/// receiver of a call: each gets a placeholder of its own in `payload`, and
+/// the caller's handle counts as sent (see [`InputInner::hand_off`]), as for
+/// a call through the engine, whose pump takes the source. Returns them, for
+/// [`abort_sources`].
+pub(crate) fn hand_off_sources(payload: &mut Value) -> Vec<Arc<InputInner>> {
+    fn walk(value: &mut Value, depth: usize, sources: &mut Vec<Arc<InputInner>>) {
+        if depth > WALK_DEPTH {
+            return;
+        }
+        if let Some((token, ChannelDirection::Read)) = placeholder_of(value) {
+            let token = token.to_string();
+            if let Some(Local::Input(inner)) = peek(&token)
+                && let Some(moved) = inner.hand_off()
+            {
+                drop(claim(&token));
+                let next = moved.token().to_string();
+                register(&next, Local::Input(moved.clone()));
+                value["channel_id"] = Value::String(format!("{PLACEHOLDER_PREFIX}{next}"));
+                sources.push(moved);
+            }
+            return;
+        }
+        match value {
+            Value::Object(map) => map
+                .values_mut()
+                .for_each(|item| walk(item, depth + 1, sources)),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| walk(item, depth + 1, sources)),
+            _ => {}
+        }
+    }
+    let mut sources = Vec::new();
+    if placeholders_used() {
+        walk(payload, 0, &mut sources);
+    }
+    sources
+}
+
+/// An in-process call that failed or timed out: the sources it passed that
+/// its handler has not read to the end (or cancelled) are aborted with
+/// `reason`, so a read of one fails with `STREAM_ABORTED`, as the pipe of a
+/// call through the engine aborts.
+pub(crate) fn abort_sources(sources: &[Arc<InputInner>], reason: &str) {
+    for source in sources {
+        source.abort(reason);
+    }
 }
 
 /// Settles an in-process call's sinks (R4), as `Pumps::settle` does a
@@ -2435,8 +2621,11 @@ async fn settle_sinks(
             }
         }
         Err(error) => {
+            // The handler's write into a sink that failed fails, and so may
+            // the handler: the sink's failure is why.
+            let failed = failed_sink(sinks.iter().map(|(_, sink)| sink));
             abort_all(&sinks, &error.to_string()).await;
-            Err(error)
+            Err(failed.unwrap_or(error))
         }
     }
 }
@@ -2895,6 +3084,202 @@ mod tests {
         let value = serde_json::to_value(InputStream::from_bytes(&b""[..])).unwrap();
         assert!(contains_stream(&json!({ "x": value })));
         release(&json!({ "x": value }));
+    }
+
+    /// A source of `head`, then nothing more, ever: a read past it waits.
+    fn stalled(head: Vec<Frame>) -> InputStream {
+        let frames = futures_util::stream::iter(head.into_iter().map(Ok))
+            .chain(futures_util::stream::pending());
+        InputStream::from_frames(Box::pin(frames))
+    }
+
+    fn assert_closed(error: &Error, message: &str, what: &str) {
+        assert_eq!(
+            error.code(),
+            Some(crate::protocol::STREAM_CLOSED),
+            "{what}: {error:?}"
+        );
+        assert_eq!(error.to_string(), message, "{what}");
+    }
+
+    fn io_inner(error: io::Error) -> Error {
+        *error
+            .into_inner()
+            .and_then(|inner| inner.downcast::<Error>().ok())
+            .expect("an Error inside")
+    }
+
+    /// A cancel never reads as the end of the stream: on every read path,
+    /// the next read, the one after, and a read in flight fail with
+    /// `STREAM_CLOSED`.
+    #[tokio::test]
+    async fn a_cancelled_stream_fails_every_later_read_with_stream_closed() {
+        const CANCELLED: &str = "the stream was cancelled";
+        let bytes = || stalled(vec![Frame::Binary(Bytes::from_static(b"a\n"))]);
+        let text = || stalled(vec![Frame::Text("1".into())]);
+
+        let mut input = bytes();
+        input.next().await.unwrap().unwrap();
+        input.cancel().await;
+        for _ in 0..2 {
+            assert_closed(
+                &input.next().await.unwrap().unwrap_err(),
+                CANCELLED,
+                "Stream",
+            );
+        }
+
+        let mut input = bytes();
+        let mut buf = [0u8; 2];
+        input.read_exact(&mut buf).await.unwrap();
+        input.cancel().await;
+        for _ in 0..2 {
+            let error = io_inner(input.read(&mut buf).await.unwrap_err());
+            assert_closed(&error, CANCELLED, "AsyncRead");
+        }
+
+        let input = bytes();
+        let mut lines = Box::pin(input.lines());
+        assert_eq!(lines.next().await.unwrap().unwrap(), "a");
+        input.cancel().await;
+        assert_closed(
+            &lines.next().await.unwrap().unwrap_err(),
+            CANCELLED,
+            "lines",
+        );
+
+        let input = text();
+        let mut messages = Box::pin(input.messages::<Value>());
+        assert_eq!(messages.next().await.unwrap().unwrap(), json!(1));
+        input.cancel().await;
+        assert_closed(
+            &messages.next().await.unwrap().unwrap_err(),
+            CANCELLED,
+            "messages",
+        );
+
+        let input = text();
+        let mut frames = Box::pin(input.frames());
+        frames.next().await.unwrap().unwrap();
+        input.cancel().await;
+        assert_closed(
+            &frames.next().await.unwrap().unwrap_err(),
+            CANCELLED,
+            "frames",
+        );
+
+        // In flight when the stream is cancelled.
+        for as_text in [false, true] {
+            let input = bytes();
+            let reading = tokio::spawn({
+                let input = input.clone();
+                async move {
+                    if as_text {
+                        input.text().await.map(|_| ())
+                    } else {
+                        input.read_all().await.map(|_| ())
+                    }
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            input.cancel().await;
+            let error = reading.await.unwrap().unwrap_err();
+            assert_closed(&error, CANCELLED, "read_all/text in flight");
+        }
+
+        // Cancelled before any read; a later reader of a cancelled stream.
+        let input = bytes();
+        input.cancel().await;
+        assert_closed(
+            &input.read_all().await.unwrap_err(),
+            CANCELLED,
+            "never read",
+        );
+        assert_closed(
+            &input.read_all().await.unwrap_err(),
+            CANCELLED,
+            "a second reader",
+        );
+        // A cancelled stream cannot be sent on.
+        assert_closed(
+            &input.inner.take_source().err().unwrap(),
+            CANCELLED,
+            "sent on",
+        );
+    }
+
+    /// A stream read to its end still ends after a cancel.
+    #[tokio::test]
+    async fn a_stream_read_to_the_end_still_ends_after_a_cancel() {
+        let mut input = InputStream::from_bytes(&b"ab"[..]);
+        assert_eq!(input.next().await.unwrap().unwrap(), &b"ab"[..]);
+        assert!(input.next().await.is_none());
+        input.cancel().await;
+        assert!(input.next().await.is_none());
+    }
+
+    /// The guard cancels a partly read input when its handler returns: a
+    /// read in flight then, and every later one, fails and says why.
+    #[tokio::test]
+    async fn the_guard_cancel_fails_a_read_in_flight_and_names_the_handler() {
+        const GUARD: &str =
+            "the stream was cancelled when its handler returned: read it before returning";
+        let guard = StreamGuard::new(false);
+        let mut input = stalled(vec![Frame::Binary(Bytes::from_static(b"a"))]);
+        guard.track(Tracked::Input(input.inner.clone()));
+        input.next().await.unwrap().unwrap();
+        let reading = tokio::spawn(async move {
+            let in_flight = input.next().await;
+            let later = input.next().await;
+            (in_flight, later)
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        guard.settle(&Ok(Value::Null));
+        let (in_flight, later) = reading.await.unwrap();
+        assert_closed(&in_flight.unwrap().unwrap_err(), GUARD, "in flight");
+        assert_closed(&later.unwrap().unwrap_err(), GUARD, "later");
+    }
+
+    /// A byte sink whose writes fail.
+    struct Broken;
+
+    impl AsyncWrite for Broken {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::other("the disk went away")))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink that fails names its failure: what pumps into it returns that,
+    /// and the sink is aborted with it.
+    #[tokio::test]
+    async fn a_failing_sink_names_its_failure() {
+        let sink = OutputStream::to_writer(Broken);
+        let frames: FrameStream = Box::pin(futures_util::stream::iter([Ok(Frame::Binary(
+            Bytes::from_static(b"x"),
+        ))]));
+        let error = pump(frames, sink.inner.clone(), None).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("the sink failed: the disk went away"),
+            "{error}"
+        );
+        assert_eq!(
+            sink.inner.finished().await,
+            Outcome::Aborted("the sink failed: the disk went away".into())
+        );
     }
 
     #[test]

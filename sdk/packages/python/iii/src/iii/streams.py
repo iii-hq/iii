@@ -77,6 +77,30 @@ def _reason(error: BaseException) -> str:
     return str(error) or type(error).__name__
 
 
+#: Why a read of a stream its reader cancelled fails.
+CANCELLED = "the stream was cancelled"
+#: Why a read of a stream the handler guard cancelled fails (R3).
+CANCELLED_BY_GUARD = "the stream was cancelled when its handler returned: read it before returning"
+#: Why a write fails once the engine closed the writer's socket: it does when the reader leaves.
+READER_LEFT = "the stream is closed: its reader left"
+
+
+def sink_failure(error: BaseException) -> StreamAbortedError:
+    """The error a call fails with when the sink it passed failed: its stream
+    into the sink aborted. ``error`` (the sink's own) is its cause."""
+    failure = StreamAbortedError(f"the sink failed: {_reason(error)}")
+    failure.__cause__ = error
+    failure._sink_error = error  # type: ignore[attr-defined]
+    return failure
+
+
+def cause_of(error: StreamAbortedError) -> BaseException:
+    """What a call's ``StreamAbortedError`` is raised from: the sink's own error
+    for a sink that failed, else ``error`` itself."""
+    sink_error = getattr(error, "_sink_error", None)
+    return sink_error if isinstance(sink_error, BaseException) else error
+
+
 @dataclass(frozen=True)
 class _Binding:
     """Where a received stream's socket opens: the engine, the handshake headers, and the SDK loop."""
@@ -539,6 +563,11 @@ class InputStream:
         #: The end (clean or not) was reached, or the stream was cancelled.
         self._finished = False
         self._cancelled = False
+        #: Cancelled, or aborted by the in-process call that passed it: the error
+        #: every later read (and one in flight then) raises. Never a clean end.
+        self._stopped: Callable[[], BaseException] | None = None
+        #: The error the source raised: a later read raises it again.
+        self._failure: BaseException | None = None
         #: Passed on to another call (by ref, or through a pump).
         self._transferred = False
         #: The stream this one is a tee branch of.
@@ -613,6 +642,8 @@ class InputStream:
     def _claim(self) -> None:
         if self._transferred:
             raise StreamInUseError("this InputStream was passed on to another call; it cannot be read here")
+        if self._stopped is not None:
+            raise self._stopped()
         if self._claimed:
             raise StreamInUseError(
                 "this InputStream is already being read: a stream has one reader (call tee() before reading "
@@ -627,7 +658,13 @@ class InputStream:
         return self._source
 
     async def _next(self) -> Frame | None:
-        """The next frame, ``None`` at the end; tracks how far the stream was read."""
+        """The next frame, ``None`` at the end; tracks how far the stream was read.
+        A stream cancelled (or aborted in-process) raises, also when that happened
+        while the read waited: what was read is not the whole stream."""
+        if self._stopped is not None:
+            raise self._stopped()
+        if self._failure is not None:
+            raise self._failure
         if self._finished:
             return None
         self._started = True
@@ -635,18 +672,39 @@ class InputStream:
             frame = await self._get_source().next()
         except asyncio.CancelledError:
             raise
-        except BaseException:
+        except BaseException as error:
+            if self._stopped is not None:
+                raise self._stopped() from error
             self._finished = True
+            self._failure = error
             raise
+        if self._stopped is not None:
+            raise self._stopped()
         if frame is None:
             self._finished = True
         return frame
 
-    async def _release(self) -> None:
-        """Stop reading (cancel, the handler guard, a pump whose reader left)."""
+    def _stop(self, error: Callable[[], BaseException]) -> bool:
+        """Ends the stream for its reader with ``error`` (raised by every later
+        read, and by one in flight now). ``False`` when it already ended."""
+        if self._finished:
+            return False
+        self._finished = True
+        self._stopped = error
+        return True
+
+    def _cancel_now(self, reason: str) -> bool:
+        return self._stop(lambda: StreamClosedError(reason))
+
+    def _abort_now(self, reason: str) -> bool:
+        return self._stop(lambda: StreamAbortedError(reason))
+
+    async def _release(self, reason: str = CANCELLED) -> None:
+        """Stop reading (cancel, the handler guard, a pump whose reader left): a
+        later read raises :class:`~iii.StreamClosedError` with ``reason``."""
         if self._finished and self._source is None:
             return
-        self._finished = True
+        self._cancel_now(reason)
         if self._source is not None:
             try:
                 await self._source.close()
@@ -733,14 +791,15 @@ class InputStream:
         return first, second
 
     async def cancel(self) -> None:
-        """Stop reading: the writer learns the reader left. A read in progress ends,
-        and later reads find the end of the stream."""
-        if self._cancelled:
+        """Stop reading: the writer learns the reader left. A read in progress, and
+        every later read, raises :class:`~iii.StreamClosedError`: what was read is
+        not the whole stream. A stream read to its end stays ended, and one passed
+        on to another call is that call's (a no-op here)."""
+        if self._cancelled or self._transferred:
             return
         self._cancelled = True
-        if self._finished:
+        if not self._cancel_now(CANCELLED):
             return
-        self._finished = True
         if self._source is None and self._ref is not None and self._binding is not None:
             # Never read: open the socket to close it, so the writer stops waiting for a reader.
             self._source = _RefSource(self._ref, self._binding)
@@ -758,6 +817,21 @@ class InputStream:
         self._transferred = True
         if self._parent is not None:
             self._parent._transferred = True
+
+    def _hand_off(self) -> InputStream:
+        """This stream as the in-process receiver of a call gets it: a new
+        stream that takes over what is left of it (one read from already is
+        the rest, for a reader of its own), while this one counts as passed on
+        (sending or reading it here again is ``STREAM_IN_USE``), as after a
+        call through the engine, whose pump takes the source."""
+        if self._claimed:
+            moved = InputStream(_RestSource(self))
+            moved._id = self._id
+        else:
+            moved = InputStream.__new__(InputStream)
+            moved.__dict__.update(self.__dict__)
+        self._mark_transferred()
+        return moved
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +965,8 @@ class OutputStream:
         self._transferred = False
         #: Settles when the stream closed (result) or aborted (StreamAbortedError); thread-safe.
         self._done: Future[None] = Future()
+        #: What its local sink raised: the stream aborted, and the call that passed it fails with it.
+        self._sink_error: BaseException | None = None
 
     # -- construction --------------------------------------------------------
 
@@ -977,11 +1053,42 @@ class OutputStream:
             raise self._write_failed(error) from error
 
     def _write_failed(self, error: Exception) -> Exception:
+        """What a failed write or send raises: :class:`~iii.StreamClosedError` (the
+        error is its cause). Through a pipe, the engine closed the socket because
+        the reader left, or the connection failed. A local sink that failed is a
+        reader that left too: the stream aborts, and the call that passed the
+        sink fails with :func:`sink_failure`."""
         import websockets
 
-        if isinstance(error, websockets.ConnectionClosed):
-            return StreamAbortedError("the reader closed the stream")
-        return error
+        if self._sink is not None:
+            self._sink_failed(error)
+            return StreamClosedError(f"the stream is closed: the sink failed: {_reason(error)}")
+        if isinstance(error, StreamClosedError):
+            return error
+        if isinstance(error, websockets.ConnectionClosed) or isinstance(error.__cause__, websockets.ConnectionClosed):
+            return StreamClosedError(READER_LEFT)
+        if isinstance(error, websockets.InvalidHandshake):
+            return StreamClosedError(f"could not open the stream: {_reason(error)}")
+        return StreamClosedError(f"the stream's connection failed: {_reason(error)}")
+
+    def _sink_failed(self, error: BaseException) -> None:
+        """Its local sink raised: the stream aborts (the sink is aborted in the background)."""
+        if self._sink_error is None:
+            self._sink_error = error
+        if self._closed or self._aborted is not None:
+            return
+        failure = sink_failure(error)
+        self._aborted = failure.reason
+        if not self._done.done():
+            self._done.set_exception(failure)
+        sink = self._sink
+        if sink is not None:
+            reason = failure.reason
+
+            async def abort() -> None:
+                await _on_home(sink.home, lambda: sink.abort(reason))
+
+            _spawn(abort())
 
     async def write(self, data: bytes | bytearray | memoryview | str) -> None:
         """Send bytes (``str`` is sent as UTF-8 bytes) in binary frames; returns once
@@ -1016,6 +1123,15 @@ class OutputStream:
                 await _on_home(sink.home, sink.close)
             else:
                 await _on_home(self._home, lambda: self._channel().close())
+        except Exception as error:
+            if sink is not None:
+                # Not closed: the sink may not hold the whole stream.
+                self._closed = False
+                self._sink_failed(error)
+                raise sink_failure(error) from error
+            if not self._done.done():
+                self._done.set_exception(error)
+            raise
         except BaseException as error:
             if not self._done.done():
                 self._done.set_exception(error)
@@ -1152,8 +1268,11 @@ def _reject_unstreamable(value: Any) -> None:
 
 
 def _check_forwardable_input(value: InputStream) -> None:
-    """A stream read to the end has nothing left to pass on: the same error as reading it again."""
-    if value._claimed and value._finished and not value._cancelled:
+    """A stream read to the end has nothing left to pass on: the same error as reading it
+    again. A cancelled one raises what reading it raises (``STREAM_CLOSED``)."""
+    if value._stopped is not None:
+        raise value._stopped()
+    if value._claimed and value._finished:
         raise StreamInUseError(
             f"{value!r} was already read to the end: a stream has one reader (call tee() before reading for two copies)"
         )
@@ -1390,6 +1509,12 @@ class Outbound:
         for reader, sink in self.sinks:
             self.sink_tasks.append(_spawn(pump_sink(reader, sink)))
 
+    def sink_failure(self) -> StreamAbortedError | None:
+        """The failure of the first sink of this call that failed: what the call
+        fails with, whatever the function answered (its writes failed once the
+        sink's pump stopped reading)."""
+        return local_sink_failure([sink for _, sink in self.sinks])
+
     async def wait_sinks(self, result: Any = None, timeout: float | None = None) -> bool:
         """Until every sink finished (R4), for at most ``timeout`` seconds: ``False``
         when it expired first (the caller then aborts the open sinks:
@@ -1561,23 +1686,27 @@ async def pump_source(stream: InputStream, writer: ChannelWriter) -> None:
 
 async def pump_sink(reader: ChannelReader, sink: OutputStream) -> None:
     """A pipe's reader into ``sink``: closed at the end, aborted when the stream
-    aborts (raises :class:`StreamAbortedError`) or the sink fails (raises its error)."""
+    aborts (raises :class:`StreamAbortedError`). When the sink fails, the pipe's
+    reader leaves, and this raises :func:`sink_failure` (its cause, the sink's error)."""
     try:
         while (frame := await reader.recv()) is not None:
             if isinstance(frame, bytes):
                 await sink._put(frame)
             else:
                 await sink._put_text(frame)
-    except StreamAbortedError as error:
-        await sink._fail(error.reason or error.message)
-        raise
+        await sink._finish()
     except asyncio.CancelledError:
         raise
     except BaseException as error:
+        if sink._sink_error is not None:
+            await reader.close()
+            raise sink_failure(sink._sink_error) from sink._sink_error
+        if isinstance(error, StreamAbortedError):
+            await sink._fail(error.reason or error.message)
+            raise
         await reader.close()
         await sink._fail(_reason(error))
         raise
-    await sink._finish()
 
 
 # -- handler guard ------------------------------------------------------------------
@@ -1608,7 +1737,9 @@ def guard(
             elif ok and (not activated or result is None):
                 _spawn(stream._finish())
         elif stream._started and not stream._finished and not stream._transferred:
-            _spawn(stream._release())
+            # Marked at once: a read that comes after the handler returned fails.
+            stream._cancel_now(CANCELLED_BY_GUARD)
+            _spawn(stream._release(CANCELLED_BY_GUARD))
 
 
 async def settle_local_sinks(
@@ -1652,6 +1783,65 @@ async def settle_local_sinks(
         if wait.exception() is not None:
             raise cast(BaseException, wait.exception())
     return True
+
+
+def local_sink_failure(sinks: list[OutputStream]) -> StreamAbortedError | None:
+    """The failure of the first of ``sinks`` whose sink failed (see :func:`sink_failure`)."""
+    for sink in sinks:
+        if sink._sink_error is not None:
+            return sink_failure(sink._sink_error)
+    return None
+
+
+def hand_off(value: Any) -> tuple[Any, list[InputStream]]:
+    """A local call's payload as its handler gets it: each ``InputStream`` the
+    caller passed is handed off (see :meth:`InputStream._hand_off`), so a second
+    send of it fails as after a call through the engine. Also returns the
+    streams handed off, for :func:`abort_sources`. Containers are rebuilt only
+    along the path to a stream."""
+    moved: list[InputStream] = []
+    return _handed_off(value, moved), moved
+
+
+def _handed_off(value: Any, moved: list[InputStream]) -> Any:
+    if isinstance(value, InputStream):
+        stream = value._hand_off()
+        moved.append(stream)
+        return stream
+    if isinstance(value, dict):
+        if _is_ref(value):
+            return value
+        out: dict[Any, Any] | None = None
+        for key, member in value.items():
+            new = _handed_off(member, moved)
+            if new is not member:
+                if out is None:
+                    out = dict(value)
+                out[key] = new
+        return value if out is None else out
+    if isinstance(value, (list, tuple)):
+        items = [_handed_off(member, moved) for member in value]
+        if all(new is old for new, old in zip(items, value)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
+    return value
+
+
+def abort_sources(sources: list[InputStream], reason: str, loop: asyncio.AbstractEventLoop) -> None:
+    """A local call that failed or timed out: the sources it passed that its
+    handler has not read to the end (or cancelled) are aborted with ``reason``,
+    so a read of one raises :class:`StreamAbortedError`, as the pipe of a call
+    through the engine aborts. Their sources close on ``loop``, in the background."""
+    for stream in sources:
+        if stream._abort_now(reason):
+            try:
+                loop.call_soon_threadsafe(_release_soon, stream)
+            except RuntimeError:
+                pass  # the loop is closed: nothing reads the stream any more
+
+
+def _release_soon(stream: InputStream) -> None:
+    _spawn(stream._release())
 
 
 class _RestSource(_Source):

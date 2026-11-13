@@ -885,4 +885,120 @@ def test_a_sink_the_handler_never_closes_times_the_call_out_and_is_aborted(pair:
             assert f.read() == b"partial"
     # The caller closed its end: the handler's later write learns the reader left.
     wait_for(lambda: late, "the handler's late write", 6)
-    assert isinstance(late[0], StreamAbortedError)
+    from iii import StreamClosedError
+
+    assert isinstance(late[0], StreamClosedError) and late[0].message == "the stream is closed: its reader left"
+
+
+# ── a cancelled input never ends cleanly; a write after the reader left ───────────────────
+
+
+async def _slow_chunks(count: int, size: int, pause: float) -> Any:
+    for index in range(count):
+        yield bytes([index % 256]) * size
+        await asyncio.sleep(pause)
+
+
+def test_a_read_after_the_guard_cancelled_the_input_fails_with_stream_closed(pair: Any) -> None:
+    from iii import StreamClosedError
+
+    caller, host, fid = pair
+    outcome: list[Any] = []
+    done = threading.Event()
+
+    async def head(payload: dict[str, Any]) -> int:
+        chunks = payload["body"].__aiter__()
+        first = await chunks.__anext__()
+
+        async def rest() -> None:
+            total = len(first)
+            try:
+                async for chunk in chunks:
+                    total += len(chunk)
+                outcome.append(("ended", total))
+            except BaseException as error:
+                outcome.append(error)
+            finally:
+                done.set()
+
+        # Reads on after the handler returned: the guard cancels the input under it.
+        asyncio.get_running_loop().create_task(rest())
+        return len(first)
+
+    _register(host, fid("files::head-bg"), head)
+    body = _slow_chunks(16, 64 * 1024, 0.2)
+    assert _run(caller.call_async({"function_id": fid("files::head-bg"), "payload": {"body": body}})) == 64 * 1024
+    assert done.wait(10)
+    [error] = outcome
+    assert isinstance(error, StreamClosedError), error
+    assert error.code == "STREAM_CLOSED"
+    assert error.message == "the stream was cancelled when its handler returned: read it before returning"
+
+
+def test_a_write_after_the_reader_left_fails_with_stream_closed(pair: Any) -> None:
+    from iii import StreamClosedError
+
+    caller, host, fid = pair
+
+    async def first_chunk(payload: dict[str, Any]) -> int:
+        body: InputStream = payload["body"]
+        async for chunk in body:
+            await body.cancel()  # the reader leaves: the engine closes the writer
+            return len(chunk)
+        return 0
+
+    _register(host, fid("files::first-chunk"), first_chunk)
+
+    async def run(send: bool) -> BaseException:
+        pipe = await caller.pipe_async()
+        call = asyncio.ensure_future(
+            caller.call_async({"function_id": fid("files::first-chunk"), "payload": {"body": pipe.input}})
+        )
+        await pipe.output.write(b"first")
+        assert await call == 5
+        for _ in range(200):
+            try:
+                await (pipe.output.send({"more": True}) if send else pipe.output.write(b"more"))
+            except BaseException as error:
+                return error
+            await asyncio.sleep(0.02)
+        raise AssertionError("the writes went on after the reader left")
+
+    for send in (False, True):
+        error = _run(run(send))
+        assert isinstance(error, StreamClosedError), repr(error)
+        assert error.code == "STREAM_CLOSED", error
+        assert "reader left" in error.message, error.message
+
+
+def test_a_failing_sink_fails_the_call_with_the_sink_error(pair: Any) -> None:
+    caller, host, fid = pair
+
+    class Broken:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def write(self, data: bytes) -> None:
+            self.calls += 1
+            if self.calls > 1:
+                raise ConnectionError("the disk went away")
+
+    async def render(payload: dict[str, Any]) -> None:
+        out: OutputStream = payload["out"]
+        for _ in range(64):
+            await out.write(b"x" * 64 * 1024)
+            await asyncio.sleep(0.01)
+
+    _register(host, fid("reports::render-broken"), render)
+
+    async def run() -> BaseException:
+        sink = OutputStream.to(Broken())
+        try:
+            await caller.call_async({"function_id": fid("reports::render-broken"), "payload": {"out": sink}})
+        except BaseException as error:
+            return error
+        raise AssertionError("the call succeeded with a failed sink")
+
+    error = _run(run())
+    assert "the sink failed: the disk went away" in str(error), repr(error)
+    assert isinstance(error.__cause__, ConnectionError), repr(error.__cause__)

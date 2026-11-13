@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use common::engine_ws_url;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::protocol::{
-    ChannelDirection, ChannelItem, STREAM_ABORTED, STREAM_IN_USE, STREAM_NOT_ALLOWED,
+    ChannelDirection, ChannelItem, STREAM_ABORTED, STREAM_CLOSED, STREAM_IN_USE, STREAM_NOT_ALLOWED,
 };
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
@@ -1435,5 +1435,295 @@ async fn a_partly_read_input_sent_in_process_is_the_receivers() {
         until("the receiver's read", || got.lock().unwrap().is_some()).await;
         assert_eq!(got.lock().unwrap().as_deref(), Some("twothree"), "{name}");
     }
+    iii.shutdown_async().await;
+}
+
+/// `count` chunks of `size` bytes, `pause` apart.
+fn paced(count: usize, size: usize, pause: Duration) -> InputStream {
+    InputStream::from_stream(
+        futures_util::stream::iter(0..count).then(move |index| async move {
+            if index > 0 {
+                tokio::time::sleep(pause).await;
+            }
+            Ok::<_, std::io::Error>(Bytes::from(vec![index as u8; size]))
+        }),
+    )
+}
+
+const GUARD_CANCELLED: &str =
+    "the stream was cancelled when its handler returned: read it before returning";
+
+/// A task that reads on after its handler returned: the guard cancels the
+/// partly read input under it, and the task's next read fails with
+/// `STREAM_CLOSED`, not a clean end of a short stream. Through the engine
+/// and in-process alike.
+#[tokio::test]
+async fn a_read_after_the_guard_cancelled_the_input_fails_with_stream_closed() {
+    let id = uid();
+    let iii = client(&format!("guard-bg-{id}")).await;
+    let function_id = format!("st{id}::head");
+    let outcome: Arc<Mutex<Option<Result<usize, Error>>>> = Arc::default();
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async({
+            let outcome = outcome.clone();
+            move |upload: Upload| {
+                let outcome = outcome.clone();
+                async move {
+                    let mut body = upload.body;
+                    let first = body.next().await.transpose()?.unwrap_or_default().len();
+                    tokio::spawn(async move {
+                        let mut total = first;
+                        let read = loop {
+                            match body.next().await {
+                                Some(Ok(chunk)) => total += chunk.len(),
+                                Some(Err(error)) => break Err(error),
+                                None => break Ok(total),
+                            }
+                        };
+                        *outcome.lock().unwrap() = Some(read);
+                    });
+                    Ok::<_, Error>(json!({ "first": first }))
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    for local in [false, true] {
+        outcome.lock().unwrap().take();
+        let body = paced(16, 64 * 1024, Duration::from_millis(200));
+        let out = iii
+            .call(via(
+                local,
+                &function_id,
+                json!({ "name": "x", "body": body }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(out["first"], 64 * 1024, "{local}");
+        until("the task's read", || outcome.lock().unwrap().is_some()).await;
+        let read = outcome.lock().unwrap().take().unwrap();
+        let error = read.expect_err("a cancelled stream ended cleanly");
+        assert!(
+            matches!(error, Error::StreamClosed(_)),
+            "{local}: {error:?}"
+        );
+        assert_eq!(error.to_string(), GUARD_CANCELLED, "{local}");
+    }
+    iii.shutdown_async().await;
+}
+
+/// The reader cancels: the engine closes the writer's socket, and the
+/// writer's next write or send fails with `STREAM_CLOSED`.
+#[tokio::test]
+async fn a_write_after_the_reader_left_fails_with_stream_closed() {
+    let id = uid();
+    let iii = client(&format!("reader-left-{id}")).await;
+    let function_id = format!("st{id}::first-chunk");
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async(|upload: Upload| async move {
+            let mut body = upload.body;
+            let first = body.next().await.transpose()?.unwrap_or_default();
+            body.cancel().await;
+            Ok::<_, Error>(json!({ "first": first.len() }))
+        }),
+    );
+    ready(&function).await;
+    for (local, send) in [(false, false), (false, true), (true, false), (true, true)] {
+        let pipe = iii.pipe().await.unwrap();
+        let call = iii.call(via(
+            local,
+            &function_id,
+            json!({ "name": "x", "body": pipe.input }),
+        ));
+        let (out, written) = tokio::join!(call, pipe.output.write(b"first"));
+        written.unwrap();
+        assert_eq!(out.unwrap()["first"], 5, "{local} {send}");
+        let deadline = Instant::now() + WAIT;
+        let error = loop {
+            let attempt = if send {
+                pipe.output.send(&json!({ "more": true })).await
+            } else {
+                pipe.output.write(b"more").await
+            };
+            if let Err(error) = attempt {
+                break error;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the writes went on after the reader left"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(
+            error.code(),
+            Some(STREAM_CLOSED),
+            "{local} {send}: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("reader left"),
+            "{local} {send}: {error}"
+        );
+    }
+    iii.shutdown_async().await;
+}
+
+/// A byte sink whose writes fail after the first one.
+struct Broken(usize);
+
+impl AsyncWrite for Broken {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0 += 1;
+        if self.0 > 1 {
+            return Poll::Ready(Err(std::io::Error::other("the disk went away")));
+        }
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// The caller's own sink fails: the call's error names the sink's failure,
+/// whether the function went on writing or failed on it.
+#[tokio::test]
+async fn a_failing_sink_fails_the_call_with_the_sink_error() {
+    let id = uid();
+    let iii = client(&format!("sink-fails-{id}")).await;
+    let function_id = format!("st{id}::render");
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async(|req: Render| async move {
+            for _ in 0..64 {
+                req.out.write(&vec![b'x'; 64 * 1024]).await?;
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, Error>(())
+        }),
+    );
+    ready(&function).await;
+    for local in [false, true] {
+        let out = OutputStream::to_writer(Broken(0));
+        let error = iii
+            .call(via(local, &function_id, json!({ "out": out })))
+            .await
+            .expect_err("the call succeeded with a failed sink");
+        assert!(
+            error
+                .to_string()
+                .contains("the sink failed: the disk went away"),
+            "{local}: {error}"
+        );
+    }
+    iii.shutdown_async().await;
+}
+
+/// An in-process call that times out: the sources it passed are aborted, so
+/// the handler's next read fails with `STREAM_ABORTED`, as a source pumped
+/// through the engine would.
+#[tokio::test]
+async fn an_in_process_call_that_times_out_aborts_the_sources_it_passed() {
+    let id = uid();
+    let iii = client(&format!("local-timeout-{id}")).await;
+    let function_id = format!("st{id}::slow-reader");
+    let outcome: Arc<Mutex<Option<Result<usize, Error>>>> = Arc::default();
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async({
+            let outcome = outcome.clone();
+            move |upload: Upload| {
+                let outcome = outcome.clone();
+                async move {
+                    let mut body = upload.body;
+                    let mut total = 0;
+                    let read = loop {
+                        match body.next().await {
+                            Some(Ok(chunk)) => total += chunk.len(),
+                            Some(Err(error)) => break Err(error),
+                            None => break Ok(total),
+                        }
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    };
+                    *outcome.lock().unwrap() = Some(read);
+                    Ok::<_, Error>(json!({ "total": total }))
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    let body = InputStream::from_stream(futures_util::stream::iter(
+        (0..20).map(|_| Ok::<_, std::io::Error>(Bytes::from_static(b"x"))),
+    ));
+    let error = iii
+        .call(
+            via(true, &function_id, json!({ "name": "x", "body": body }))
+                .timeout(Duration::from_millis(500)),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Timeout), "{error:?}");
+    until("the handler's read", || outcome.lock().unwrap().is_some()).await;
+    let read = outcome.lock().unwrap().take().unwrap();
+    let error = read.expect_err("the source of a call that timed out ended cleanly");
+    assert_eq!(error.code(), Some(STREAM_ABORTED), "{error:?}");
+    iii.shutdown_async().await;
+}
+
+/// An unread stream sent in two calls: the second fails with
+/// `STREAM_IN_USE`, in-process as through the engine (where the first call
+/// already pumped it).
+#[tokio::test]
+async fn an_unread_stream_sent_in_two_calls_fails_the_second_with_stream_in_use() {
+    let id = uid();
+    let iii = client(&format!("sent-twice-{id}")).await;
+    let ignore = format!("st{id}::ignore");
+    let read = format!("st{id}::read");
+    let kept: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let f1 = iii.register_function(
+        &ignore,
+        RegisterFunction::new_async({
+            let kept = kept.clone();
+            move |input: Value| {
+                let kept = kept.clone();
+                async move {
+                    kept.lock().unwrap().push(input);
+                    Ok::<_, Error>(Value::Null)
+                }
+            }
+        }),
+    );
+    let f2 = iii.register_function(
+        &read,
+        RegisterFunction::new_async(|upload: Upload| async move {
+            Ok::<_, Error>(json!({ "text": upload.body.text().await? }))
+        }),
+    );
+    ready(&f1).await;
+    ready(&f2).await;
+    for local in [true, false] {
+        let body = InputStream::from_bytes(&b"once"[..]);
+        iii.call(via(local, &ignore, json!({ "body": body.clone() })))
+            .await
+            .unwrap();
+        let error = iii
+            .call(via(local, &read, json!({ "name": "x", "body": body })))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Some(STREAM_IN_USE), "{local}: {error:?}");
+    }
+    // The first in-process handler still holds the stream: it reads it whole.
+    let first = kept.lock().unwrap()[0]["body"].clone();
+    let body: InputStream = serde_json::from_value(first).unwrap();
+    assert_eq!(body.text().await.unwrap(), "once");
     iii.shutdown_async().await;
 }

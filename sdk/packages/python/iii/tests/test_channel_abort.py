@@ -13,7 +13,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 import pytest
 import websockets
 
-from iii import InputStream, OutputStream, StreamAbortedError, StreamResponse
+from iii import InputStream, OutputStream, StreamAbortedError, StreamClosedError, StreamResponse
 from iii._channels import (
     ABORT_CLOSE_CODE,
     MAX_CLOSE_REASON_BYTES,
@@ -141,7 +141,7 @@ async def test_unclean_end_raises_stream_aborted_after_the_data(
 
 
 @pytest.mark.asyncio
-async def test_local_close_during_a_read_is_not_an_error() -> None:
+async def test_local_close_during_a_read_fails_the_read_with_stream_closed() -> None:
     drop = asyncio.Event()
 
     async def handler(ws: Any) -> None:
@@ -170,7 +170,10 @@ async def test_local_close_during_a_read_is_not_an_error() -> None:
         cancelling = asyncio.create_task(stream.cancel())
         await asyncio.sleep(0.05)
         drop.set()
-        assert await asyncio.wait_for(reading, 5) == ([b"a"], None)
+        # The socket ends without an abort, but what was read is not the whole stream.
+        chunks, error = await asyncio.wait_for(reading, 5)
+        assert chunks == [b"a"]
+        assert isinstance(error, StreamClosedError) and error.message == "the stream was cancelled"
         await asyncio.wait_for(cancelling, 5)
 
 
@@ -422,7 +425,8 @@ async def test_output_stream_context_manager_closes_or_aborts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_output_stream_write_after_the_reader_left_raises_stream_aborted() -> None:
+@pytest.mark.parametrize("send", [False, True], ids=["write", "send"])
+async def test_output_stream_write_after_the_reader_left_raises_stream_closed(send: bool) -> None:
     async def leave(ws: Any) -> None:
         await ws.recv()
         await ws.close(code=None)  # the engine closes the writer when its reader leaves
@@ -430,10 +434,15 @@ async def test_output_stream_write_after_the_reader_left_raises_stream_aborted()
     async with _serve(leave) as url:
         out = _output(url)
         await out.write(b"first")
-        with pytest.raises(StreamAbortedError, match="reader closed the stream"):
+        with pytest.raises(StreamClosedError) as error:
             for _ in range(100):
-                await out.write(b"more")
+                await (out.send({"more": True}) if send else out.write(b"more"))
                 await asyncio.sleep(0.01)
+        assert error.value.code == "STREAM_CLOSED"
+        assert error.value.message == "the stream is closed: its reader left"
+        # And every later one, though the socket is gone by now.
+        with pytest.raises(StreamClosedError, match="its reader left"):
+            await out.write(b"later")
 
 
 @pytest.mark.asyncio
@@ -524,7 +533,8 @@ async def test_cancel_of_a_never_read_stream_opens_and_closes_it() -> None:
         stream = _input(url)
         await stream.cancel()
         assert await sink.closed_with() == 1000 and sink.connections == 1
-        assert [chunk async for chunk in stream] == []  # a cancelled stream reads as ended
+        with pytest.raises(StreamClosedError, match="the stream was cancelled"):
+            await stream.read_all()  # a cancelled stream never reads as ended
 
 
 @pytest.mark.asyncio
@@ -617,7 +627,9 @@ async def test_cancelling_a_sync_iterable_while_its_next_runs_does_not_wait_for_
     t0 = asyncio.get_running_loop().time()
     await stream.cancel()
     assert asyncio.get_running_loop().time() - t0 < 0.3, "cancel waited for the blocked next()"
-    await asyncio.wait_for(pending, 5)
+    # The read in flight fails: its item came after the cancel.
+    with pytest.raises(StreamClosedError):
+        await asyncio.wait_for(pending, 5)
     assert await asyncio.to_thread(closed.wait, 5), "the generator was closed once its next() returned"
 
 
@@ -815,6 +827,148 @@ async def test_a_stream_used_twice_is_stream_in_use() -> None:
     out = OutputStream.to(io.BytesIO())
     plan_outbound({"out": out})
     assert "passed on" in await in_use(lambda: out.write(b"x"))
+
+
+# ── a cancelled stream never ends cleanly ───────────────────────────────────────────────
+
+
+def _forever(*frames: Any) -> Callable[[Any], Awaitable[None]]:
+    """Server end of a writer that sends ``frames``, then keeps the stream open."""
+
+    async def handler(ws: Any) -> None:
+        for frame in frames:
+            await ws.send(frame)
+        await ws.wait_closed()
+
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["iteration", "lines", "messages", "frames"])
+async def test_a_cancelled_stream_fails_every_later_read_with_stream_closed(path: str) -> None:
+    async with _serve(_forever(b"a\n", "1")) as url:
+        stream = _input(url)
+        reader: Any = {
+            "iteration": stream.__aiter__,
+            "lines": stream.lines,
+            "messages": stream.messages,
+            "frames": stream.frames,
+        }[path]()
+        await reader.__anext__()
+        await stream.cancel()
+        with pytest.raises(StreamClosedError) as error:
+            await reader.__anext__()
+        assert error.value.code == "STREAM_CLOSED" and error.value.message == "the stream was cancelled"
+        # A new reader of the cancelled stream, and passing it on, fail the same way.
+        with pytest.raises(StreamClosedError, match="the stream was cancelled"):
+            await stream.read_all()
+        with pytest.raises(StreamClosedError, match="the stream was cancelled"):
+            from iii.streams import plan_outbound
+
+            plan_outbound({"body": stream})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["read_all", "text", "iteration"])
+async def test_a_read_in_flight_when_the_stream_is_cancelled_fails(path: str) -> None:
+    async with _serve(_forever(b"a")) as url:
+        stream = _input(url)
+
+        async def read() -> Any:
+            if path == "iteration":
+                return [chunk async for chunk in stream]
+            return await (stream.read_all() if path == "read_all" else stream.text())
+
+        reading = asyncio.ensure_future(read())
+        while not stream._started:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        await stream.cancel()
+        with pytest.raises(StreamClosedError, match="the stream was cancelled"):
+            await asyncio.wait_for(reading, 5)
+
+
+@pytest.mark.asyncio
+async def test_tee_copies_of_a_cancelled_stream_fail_instead_of_ending() -> None:
+    async def endless() -> Any:
+        while True:
+            yield b"x"
+            await asyncio.sleep(0.01)
+
+    # A copy cancelled: its later reads fail, the other copy reads on.
+    stream = InputStream.from_iter(endless())
+    first, second = stream.tee()
+    one, two = first.__aiter__(), second.__aiter__()
+    await one.__anext__()
+    await two.__anext__()
+    await first.cancel()
+    with pytest.raises(StreamClosedError):
+        await one.__anext__()
+    assert await two.__anext__() == b"x"
+
+    # The stream under the copies cancelled (the guard does this when the handler that received
+    # it returns): each copy fails once it has read what it holds, and keeps failing.
+    stream = InputStream.from_iter(endless())
+    first, second = stream.tee()
+    one, two = first.__aiter__(), second.__aiter__()
+    await one.__anext__()
+    await stream._release()
+    for reader in (one, two):
+        with pytest.raises(StreamClosedError):
+            while True:
+                await reader.__anext__()
+    with pytest.raises(StreamClosedError):
+        await first._next()
+
+
+@pytest.mark.asyncio
+async def test_the_guard_cancel_names_the_handler_and_fails_later_reads() -> None:
+    from iii.streams import guard
+
+    async with _serve(_forever(b"a", b"b")) as url:
+        stream = _input(url)
+        chunks = stream.__aiter__()
+        assert await chunks.__anext__() == b"a"
+        guard([stream], True, None, "")
+        with pytest.raises(StreamClosedError) as error:
+            while True:
+                await chunks.__anext__()
+        assert error.value.message == "the stream was cancelled when its handler returned: read it before returning"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_read_to_its_end_still_ends_after_a_cancel() -> None:
+    stream = InputStream.from_bytes(b"whole")
+    chunks = stream.__aiter__()
+    assert [chunk async for chunk in chunks] == [b"whole"]
+    await stream.cancel()
+    assert await stream._next() is None
+    with pytest.raises(StopAsyncIteration):
+        await chunks.__anext__()
+
+
+# ── a sink that fails ───────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_failing_sink_aborts_its_stream_and_names_the_failure() -> None:
+    from iii.streams import pump_sink
+
+    class Broken:
+        async def write(self, data: bytes) -> None:
+            raise ConnectionError("the disk went away")
+
+    async with _serve(_sends_then(_clean, b"a", b"b")) as url:
+        sink = OutputStream.to(Broken())
+        with pytest.raises(StreamAbortedError) as error:
+            await pump_sink(_reader(url), sink)
+        assert error.value.reason == "the sink failed: the disk went away"
+        assert isinstance(error.value.__cause__, ConnectionError)
+        with pytest.raises(StreamAbortedError, match="the sink failed: the disk went away"):
+            await sink._wait()
+        # A writer of the stream (an in-process handler) gets STREAM_CLOSED: its reader is gone.
+        with pytest.raises(StreamClosedError, match="the sink failed"):
+            await sink.write(b"late")
 
 
 # ── a local handler's result ────────────────────────────────────────────────────────────

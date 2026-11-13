@@ -652,11 +652,14 @@ impl IIIClient {
         &self,
         handler: RemoteFunctionHandlerWithMetadata,
         entry: Arc<FunctionEntry>,
-        request: CallRequest,
+        mut request: CallRequest,
         metadata: Option<Value>,
     ) -> Result<Value, Error> {
         let ctx = self.local_ctx(&request.function_id, metadata);
         let is_void = matches!(request.action, Some(CallAction::Void));
+        // The sources the caller passes are the handler's now: sending one
+        // again fails, as after a call through the engine.
+        let sources = crate::streams::hand_off_sources(&mut request.payload);
         // The sinks the caller passes: the call resolves once they ended.
         let sinks = if is_void {
             Vec::new()
@@ -704,6 +707,11 @@ impl IIIClient {
                 Err(Error::Timeout)
             }
         };
+        // Ended without its handler (a timeout) or failed: what it did not
+        // read of its sources is aborted, as a call's pipes are.
+        if let Err(error) = &result {
+            crate::streams::abort_sources(&sources, &error.to_string());
+        }
         crate::streams::settle_local_sinks(sinks, result, deadline).await
     }
 

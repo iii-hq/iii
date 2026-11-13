@@ -317,6 +317,8 @@ class _LocalInvocation:
     tracked: list[Any] = field(default_factory=list)
     #: The sinks built in this process in the caller's payload: the call waits for them (R4).
     sinks: list[Any] = field(default_factory=list)
+    #: The InputStreams the caller passed, handed off to the handler: aborted when the call fails.
+    sources: list[Any] = field(default_factory=list)
     started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
     t0: float = field(default_factory=time.perf_counter)
 
@@ -3180,6 +3182,10 @@ class III:
         except BaseException as error:
             if plan is not None:
                 await plan.cancel(_streams._reason(error))
+                failed = plan.sink_failure()
+                if failed is not None and not isinstance(error, asyncio.CancelledError):
+                    # The caller's own sink failed: the function's writes failed after it.
+                    raise StreamAbortedError(failed.reason, function_id=call.function_id) from _streams.cause_of(failed)
             raise
         if plan is not None and plan.has_sinks and not isinstance(call.action, CallActionVoid):
             try:
@@ -3199,7 +3205,7 @@ class III:
             except StreamAbortedError as error:
                 raise StreamAbortedError(
                     error.reason, close_code=error.close_code, function_id=call.function_id
-                ) from error
+                ) from _streams.cause_of(error)
         if call.action is not None:
             return result
         return self._materialize(result)
@@ -3335,11 +3341,16 @@ class III:
         )
         if state.private:
             local.call_input, local.call_metadata = call.payload, call.metadata
-            local.input = self._materialize(call.payload)
+            given = call.payload
         else:
             if local.delivers:
                 local.call_input, local.call_metadata = _clone_value(call.payload), _clone_value(call.metadata)
-            local.input = self._materialize(_clone_value(call.payload))
+            given = _clone_value(call.payload)
+        if call.streams:
+            # The caller's InputStreams are the handler's now: sending one again fails, as after a
+            # call through the engine (whose pump takes the source).
+            given, local.sources = _streams.hand_off(given)
+        local.input = self._materialize(given)
         local.metadata = metadata
         if call.streams or local.input is not call.payload:
             local.tracked = _streams.collect_streams(local.input, [])
@@ -3527,15 +3538,24 @@ class III:
             return None
 
         # Raced, not cancelled: like a remote handler, it runs to its end.
-        finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
+        loop = asyncio.get_running_loop()
+        try:
+            finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
+        except asyncio.CancelledError:
+            _streams.abort_sources(local.sources, "the call was cancelled", loop)
+            raise
         if not finished:
             self._background.add(task)
             task.add_done_callback(self._background_done)
             failure = self._local_timeout(call, local)
+            # What the handler did not read of its sources aborts, as a call's pipes do.
+            _streams.abort_sources(local.sources, failure.message, loop)
             if local.sinks:
                 await _streams.settle_local_sinks(local.sinks, False, failure.message)
             raise failure
         error = task.exception()
+        if error is not None:
+            _streams.abort_sources(local.sources, self._settle_reason(error), loop)
         if local.sinks:
             await self._settle_local_call_sinks(
                 call,
@@ -3567,8 +3587,12 @@ class III:
             )
         except StreamAbortedError as aborted:
             if error is None:
-                raise StreamAbortedError(aborted.reason, function_id=call.function_id) from aborted
-            return
+                raise StreamAbortedError(aborted.reason, function_id=call.function_id) from _streams.cause_of(aborted)
+            finished = True
+        failed = _streams.local_sink_failure(local.sinks)
+        if failed is not None:
+            # The caller's own sink failed: that is why the call failed, whatever the handler did.
+            raise StreamAbortedError(failed.reason, function_id=call.function_id) from _streams.cause_of(failed)
         if not finished and error is None:
             raise expired
 
@@ -3653,12 +3677,16 @@ class III:
         finished, _ = concurrent.futures.wait([done], timeout=call.timeout_ms / 1000.0)
         if not finished:
             failure = self._local_timeout(call, local)
+            # What the handler did not read of its sources aborts, as a call's pipes do.
+            _streams.abort_sources(local.sources, failure.message, self._loop)
             if local.sinks:
                 asyncio.run_coroutine_threadsafe(
                     _streams.settle_local_sinks(local.sinks, False, failure.message), self._loop
                 ).result()
             raise failure
         error = done.exception()
+        if error is not None:
+            _streams.abort_sources(local.sources, self._settle_reason(error), self._loop)
         if local.sinks:
             asyncio.run_coroutine_threadsafe(
                 self._settle_local_call_sinks(

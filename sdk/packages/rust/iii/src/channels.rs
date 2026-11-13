@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 use bytes::Bytes;
-use futures_util::{SinkExt, Stream, StreamExt};
+use futures_util::{FutureExt, SinkExt, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -195,15 +195,27 @@ pub(crate) fn close_reason(reason: &str) -> String {
     reason[..end].to_string()
 }
 
+/// Why a write fails once the engine closed the writer's socket: it does
+/// when the stream's reader leaves.
+const READER_LEFT: &str = "the stream is closed: its reader left";
+
 /// The write end of a channel: dialed on first use, then frames until it is
 /// closed or aborted. Dropping it with the socket open ends the socket with
 /// no close frame, which the engine relays to the reader as an abort.
+///
+/// A write or send that fails, the socket closed by the engine because the
+/// reader left among it, is [`Error::StreamClosed`], and so is every later one.
 pub(crate) struct WriterEnd {
     url: String,
     headers: HashMap<String, String>,
     ws: Option<WsWriter>,
+    /// The socket's read half: a writer reads nothing, but the engine's close
+    /// (sent when the reader leaves) arrives on it.
+    incoming: Option<WsReader>,
     /// Closed or aborted: the socket is gone and is not dialed again.
     ended: bool,
+    /// Why a write failed: every later one fails with it (`STREAM_CLOSED`).
+    failure: Option<String>,
 }
 
 impl WriterEnd {
@@ -212,39 +224,102 @@ impl WriterEnd {
             url,
             headers,
             ws: None,
+            incoming: None,
             ended: false,
+            failure: None,
         }
     }
 
     async fn socket(&mut self) -> Result<&mut WsWriter, Error> {
+        if let Some(failure) = &self.failure {
+            return Err(Error::StreamClosed(failure.clone()));
+        }
         if self.ended {
-            return Err(Error::Runtime("the stream is closed".into()));
+            return Err(Error::StreamClosed(
+                "the stream is closed: it was closed or aborted".into(),
+            ));
         }
         if self.ws.is_none() {
             // Through connect_channel: it negotiates TCP_NODELAY (MOT-5377).
-            let (stream, _) = connect_channel(&self.url, &self.headers).await?;
-            let (writer, _reader) = stream.split();
+            let (stream, _) = match connect_channel(&self.url, &self.headers).await {
+                Ok(connected) => connected,
+                Err(error) => {
+                    return Err(Error::StreamClosed(format!(
+                        "could not open the stream: {error}"
+                    )));
+                }
+            };
+            let (writer, reader) = stream.split();
             self.ws = Some(writer);
+            self.incoming = Some(reader);
+        } else if self.reader_left() {
+            return Err(self.fail(READER_LEFT.into()));
         }
         Ok(self.ws.as_mut().expect("dialed above"))
+    }
+
+    /// Whether the engine closed the socket (its reader left): reads what
+    /// it sent so far, without waiting.
+    fn reader_left(&mut self) -> bool {
+        let Some(incoming) = self.incoming.as_mut() else {
+            return false;
+        };
+        loop {
+            match incoming.next().now_or_never() {
+                // Nothing yet: the socket is open.
+                None => return false,
+                // A ping (answered with the next frame sent), or a frame the
+                // engine never sends a writer.
+                Some(Some(Ok(WsMessage::Close(_)))) | Some(Some(Err(_))) | Some(None) => {
+                    return true;
+                }
+                Some(Some(Ok(_))) => {}
+            }
+        }
+    }
+
+    /// Ends the socket after a failed write: nothing sent from now on is read.
+    fn fail(&mut self, reason: String) -> Error {
+        self.ws = None;
+        self.incoming = None;
+        self.failure = Some(reason.clone());
+        Error::StreamClosed(reason)
+    }
+
+    /// The error of a send that failed: the reader left, when the engine's
+    /// close is what ended the socket.
+    fn send_failed(&mut self, error: tokio_tungstenite::tungstenite::Error) -> Error {
+        use tokio_tungstenite::tungstenite::Error as WsError;
+        let left = matches!(error, WsError::ConnectionClosed | WsError::AlreadyClosed)
+            || self.reader_left();
+        self.fail(if left {
+            READER_LEFT.to_string()
+        } else {
+            format!("the stream's connection failed: {error}")
+        })
     }
 
     /// Sends `data` in binary frames of at most [`MAX_FRAME_SIZE`] bytes.
     /// Resolves once the socket took them.
     pub(crate) async fn write(&mut self, data: &[u8]) -> Result<(), Error> {
         let ws = self.socket().await?;
+        let mut sent = Ok(());
         for chunk in data.chunks(MAX_FRAME_SIZE) {
-            ws.send(WsMessage::Binary(Bytes::copy_from_slice(chunk)))
-                .await?;
+            sent = ws
+                .send(WsMessage::Binary(Bytes::copy_from_slice(chunk)))
+                .await;
+            if sent.is_err() {
+                break;
+            }
         }
-        Ok(())
+        sent.map_err(|error| self.send_failed(error))
     }
 
     /// Sends one text frame.
     pub(crate) async fn send_text(&mut self, text: &str) -> Result<(), Error> {
         let ws = self.socket().await?;
-        ws.send(WsMessage::Text(text.into())).await?;
-        Ok(())
+        let sent = ws.send(WsMessage::Text(text.into())).await;
+        sent.map_err(|error| self.send_failed(error))
     }
 
     /// Ends the stream cleanly: a close frame with no code. A socket never
@@ -259,6 +334,7 @@ impl WriterEnd {
             Err(error) => Err(error),
         };
         self.ws = None;
+        self.incoming = None;
         self.ended = true;
         result
     }
@@ -279,6 +355,7 @@ impl WriterEnd {
             Err(error) => Err(error),
         };
         self.ws = None;
+        self.incoming = None;
         self.ended = true;
         result
     }
@@ -286,6 +363,7 @@ impl WriterEnd {
     /// The open socket, taken: for an abort sent from `Drop`.
     pub(crate) fn take_socket(&mut self) -> Option<WsWriter> {
         self.ended = true;
+        self.incoming = None;
         self.ws.take()
     }
 }
@@ -742,6 +820,41 @@ mod end_of_stream_tests {
             matches!(end, Some(Err(_))),
             "expected no close frame, got {end:?}"
         );
+    }
+
+    // The engine closes a writer's socket when its reader leaves: the next
+    // write or send fails with STREAM_CLOSED, and so does every later one.
+    #[tokio::test]
+    async fn a_write_after_the_reader_left_is_stream_closed() {
+        for send in [false, true] {
+            let (address, server) = test_engine::spawn(false).await;
+            let mut writer = WriterEnd::new(format!("ws://{address}"), HashMap::new());
+            writer.write(&[1]).await.unwrap();
+            let mut ws = server.await.unwrap();
+            ws.next().await.unwrap().unwrap();
+            ws.close(None).await.unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let error = loop {
+                let attempt = if send {
+                    writer.send_text("more").await
+                } else {
+                    writer.write(&[2]).await
+                };
+                if let Err(error) = attempt {
+                    break error;
+                }
+                assert!(std::time::Instant::now() < deadline, "writes went on");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            for error in [error, writer.write(&[3]).await.unwrap_err()] {
+                assert_eq!(
+                    error.code(),
+                    Some(crate::protocol::STREAM_CLOSED),
+                    "{error:?}"
+                );
+                assert_eq!(error.to_string(), READER_LEFT);
+            }
+        }
     }
 
     #[tokio::test]

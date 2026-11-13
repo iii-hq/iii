@@ -8,7 +8,7 @@ import io
 import os
 import tempfile
 import threading
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from observe_fake_engine import FakeEngine, answers, function_registered, invoke, settle, wait_until
@@ -605,3 +605,173 @@ def test_a_local_sink_never_closed_times_the_call_out_and_is_aborted(
     assert sink._aborted == "invocation timed out after 1500ms"
     with pytest.raises(InvocationError, match="STREAM_CLOSED"):
         asyncio.run(kept[0].write(b"late"))
+
+
+# ── a cancelled input never ends cleanly; the sources of a call that ended ──────────────
+
+
+async def _slow(count: int, pause: float) -> Any:
+    for index in range(count):
+        yield f"{index};".encode()
+        await asyncio.sleep(pause)
+
+
+@pytest.mark.parametrize("sync_handler", [False, True], ids=["async-handler", "sync-handler"])
+def test_a_local_read_after_the_guard_cancelled_the_input_fails_with_stream_closed(
+    engine: FakeEngine, connect: Any, sync_handler: bool
+) -> None:
+    from iii import StreamClosedError
+
+    client = connect(engine)
+    outcome: list[Any] = []
+    done = threading.Event()
+
+    async def read_on(chunks: Any, total: int) -> None:
+        try:
+            async for chunk in chunks:
+                total += len(chunk)
+            outcome.append(("ended", total))
+        except BaseException as error:
+            outcome.append(error)
+        finally:
+            done.set()
+
+    async def head(payload: dict[str, Any]) -> int:
+        chunks = payload["body"].__aiter__()
+        first = await chunks.__anext__()
+        asyncio.get_running_loop().create_task(read_on(chunks, len(first)))
+        return len(first)
+
+    def head_sync(payload: dict[str, Any]) -> int:
+        first: list[bytes] = []
+        got_first = threading.Event()
+
+        async def read() -> None:
+            chunks = payload["body"].__aiter__()
+            first.append(await chunks.__anext__())
+            got_first.set()
+            await read_on(chunks, len(first[0]))
+
+        # A thread of its own reads the first chunk, then reads on after the handler returned.
+        threading.Thread(target=lambda: asyncio.run(read()), daemon=True).start()
+        assert got_first.wait(10)
+        return len(first[0])
+
+    function_id = "files::head-bg-sync" if sync_handler else "files::head-bg"
+    client.register_function(function_id, head_sync if sync_handler else head)
+    _confirm(client, engine, function_id)
+
+    async def run() -> int:
+        result = await client.call_async({"function_id": function_id, "payload": {"body": _slow(20, 0.1)}})
+        # The reader runs on this loop (an async handler): keep it until the reader is done.
+        await asyncio.to_thread(done.wait, 10)
+        return cast(int, result)
+
+    assert asyncio.run(run()) == 2
+    assert done.wait(10)
+    [error] = outcome
+    assert isinstance(error, StreamClosedError), error
+    assert error.message == "the stream was cancelled when its handler returned: read it before returning"
+
+
+@pytest.mark.parametrize("sync_call", [False, True], ids=["call_async", "call"])
+def test_a_local_call_that_times_out_aborts_the_sources_it_passed(
+    engine: FakeEngine, connect: Any, sync_call: bool
+) -> None:
+    client = connect(engine)
+    outcome: list[Any] = []
+    done = threading.Event()
+
+    async def slow_reader(payload: dict[str, Any]) -> int:
+        total = 0
+        try:
+            async for chunk in payload["body"]:
+                total += len(chunk)
+                await asyncio.sleep(0.3)
+            outcome.append(("ended", total))
+        except BaseException as error:
+            outcome.append(error)
+        finally:
+            done.set()
+        return total
+
+    client.register_function("files::slow-reader", slow_reader)
+    _confirm(client, engine, "files::slow-reader")
+    request = {
+        "function_id": "files::slow-reader",
+        "payload": {"body": InputStream.from_iter([b"x"] * 20)},
+        "timeout_ms": 500,
+    }
+
+    async def run() -> None:
+        try:
+            await client.call_async(request)
+        finally:
+            # The handler runs on this loop past the timeout: keep it until it is done.
+            await asyncio.to_thread(done.wait, 10)
+
+    with pytest.raises(InvocationError) as error:
+        if sync_call:
+            client.call(request)
+        else:
+            asyncio.run(run())
+    assert error.value.code == "TIMEOUT"
+    assert done.wait(10)
+    [failure] = outcome
+    assert isinstance(failure, StreamAbortedError), failure
+    assert failure.reason == "invocation timed out after 500ms"
+
+
+def test_an_unread_stream_sent_in_two_local_calls_fails_the_second_with_stream_in_use(
+    engine: FakeEngine, connect: Any
+) -> None:
+    from iii import StreamInUseError
+
+    client = connect(engine)
+    seen: list[Any] = []
+    client.register_function("files::ignore", lambda payload: seen.append(payload) and None)
+    client.register_function("files::read", lambda payload: asyncio.run(payload["body"].read_all()).decode())
+    _confirm(client, engine, "files::ignore")
+    _confirm(client, engine, "files::read")
+    body = InputStream.from_bytes(b"once")
+    client.call({"function_id": "files::ignore", "payload": {"body": body}})
+    with pytest.raises(StreamInUseError) as error:
+        client.call({"function_id": "files::read", "payload": {"body": body}})
+    assert error.value.code == "STREAM_IN_USE"
+    # The first call's handler still holds the stream: it reads it whole.
+    assert asyncio.run(seen[0]["body"].read_all()) == b"once"
+
+
+@pytest.mark.parametrize("catches", [False, True], ids=["handler-fails", "handler-catches"])
+def test_a_local_call_whose_sink_failed_fails_with_the_sink_error(
+    engine: FakeEngine, connect: Any, catches: bool
+) -> None:
+    from iii import StreamClosedError
+
+    client = connect(engine)
+    seen: list[BaseException] = []
+
+    class Broken:
+        async def write(self, data: bytes) -> None:
+            raise ConnectionError("the disk went away")
+
+    async def render(payload: dict[str, Any]) -> None:
+        try:
+            await payload["out"].write(b"page")
+        except StreamClosedError as error:
+            seen.append(error)  # the sink is gone: a write after its reader left
+            if not catches:
+                raise
+
+    client.register_function("reports::render-broken", render)
+    _confirm(client, engine, "reports::render-broken")
+
+    async def run() -> None:
+        sink = OutputStream.to(Broken())
+        await client.call_async({"function_id": "reports::render-broken", "payload": {"out": sink}})
+
+    with pytest.raises(StreamAbortedError) as error:
+        asyncio.run(run())
+    assert error.value.reason == "the sink failed: the disk went away"
+    assert isinstance(error.value.__cause__, ConnectionError)
+    assert [e.message for e in seen] == ["the stream is closed: the sink failed: the disk went away"]
