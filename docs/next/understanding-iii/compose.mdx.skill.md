@@ -227,7 +227,7 @@ has to reconnect, which is the cost the file asked for by declaring a policy at 
 operator restart that reaches further is `compose::restart` of the sandbox adapter, which also
 restarts the VM workers it hosts, because they end with it. When the adapter crashes and its own
 policy restarts it, its VM workers exit with it and each one follows its own policy: a VM worker
-with no policy ends `failed`, and one with `restart: always` spends an attempt.
+with no policy ends `failed`.
 
 Replacement attempts are capped at five. The first retry is immediate. Later retries wait from 500ms
 up to a ceiling of 30 seconds. Both limits are load-bearing: a policy with no backoff turns a crash

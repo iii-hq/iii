@@ -163,15 +163,17 @@ At this point the translation table writes itself:
 The harness worker is loop engineering. It is also, in every functional detail,
 a distributed system.
 
+> _This post was updated to match iii’s current, optimized execution model._
+
 iii's manifesto puts it plainly. "Need a queue? Add a worker. Need real-time
 streaming, scheduling, sandboxing, observability, an agent, a CRM integration, a
 browser tab as a first-class participant? Add a worker." And: "Unix won on
 'everything is a file.' React won on 'everything is a component.' iii makes that
 bet for the entire software stack." The bet is not that agents are different from
-traditional software. The bet is the opposite: that the same three primitives --
-Worker, Function, Observer -- that model a message queue also model an agent loop,
-a cron job, a pub/sub subscriber, and a sub-agent orchestrator. The harness
-worker is those primitives, composed.
+traditional software. The bet is the opposite: that the same primitive --
+the Function, called and observed -- that models a message queue also models an agent loop,
+a database trigger, a pub/sub subscriber, and a sub-agent orchestrator. The harness
+worker is that primitive, composed.
 
 The developer who built the Korean translation pipeline did not fail because the
 architecture was wrong. The architecture was right. They failed because their
@@ -222,7 +224,7 @@ send.
 ![Every turn, sub-agent spawn, and provider call is one correlated trace -- the harness turn waterfall in the iii Console.](../../assets/blog/loop-engineering-is-just-software-engineering/harness-turn-waterfall.png)
 
 The infrastructure is not innovation. The insight is that all of it -- the queue,
-the store, the cron, the traces, the hooks -- uses the same three primitives as
+the store, the cron, the traces, the hooks -- uses the same primitive as
 the rest of the system. The agent is a Worker. Its memory is state. Its
 orchestration is observers. Its durable execution loop is a queue consumer.
 

@@ -13,8 +13,9 @@ fixed coordinator, it routes invocations between Workers and maintains the live 
 each Worker provides.
 
 <Note>
-  For the mental model behind Workers, Functions, Observers, and the Engine, see [Understanding iii
-  / Overview](../understanding-iii). To build Workers continue with this section.
+  For the mental model (one primitive, the Function, which you call or observe, and the workers that
+  host functions), see [Understanding iii / Overview](../understanding-iii). To build Workers
+  continue with this section.
 </Note>
 
 ## Build on existing Workers

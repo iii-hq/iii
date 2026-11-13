@@ -1,7 +1,5 @@
 # iii
 
-iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, functions, and observers. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every observer between those functions. Workers are independent processes that open a WebSocket to the engine, register **Functions** (`service::name` handlers), and **observe** functions: each matching call of the observed function invokes a target function. There is no direct worker-to-worker traffic — every call routes through the engine.
-
 This registry worker documents the in-process **`engine::*`** introspection surface. It is always present in the engine and is not configured in `config.yaml`.
 
 This worker is built into the engine and is always available; no install step is needed.
@@ -23,17 +21,6 @@ npx skills add iii-hq/iii --full-depth --skill iii
 | `engine::functions::list` owner for `engine::*` | **`iii-engine-functions`** | Until runtime name aligns with registry |
 
 Use `engine::workers::info { name: "iii-engine-functions" }` (not `"iii"`) for full introspection of the in-process surface today. Filter with `engine::functions::list { prefix: "engine::", include_internal: true }` to list `engine::*` handlers without needing the worker name.
-
-## Architecture
-
-| Primitive | What it is |
-|---|---|
-| Engine | One coordinator process. Routes every invocation. |
-| Worker | A process that opens a WebSocket to the engine. |
-| Function | A named handler inside a worker, id `service::name`. |
-| Observer | A `(source function, filters, target function)` binding: each matching call of the source invokes the target. |
-
-Every call is `caller → engine → handler`. The function id is the only contract between any two workers.
 
 ## Functions — `engine::*`
 

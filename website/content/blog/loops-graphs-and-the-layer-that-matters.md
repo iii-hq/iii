@@ -62,7 +62,9 @@ after it works.
 
 ## Patterns come down. Substrates hold.
 
-At iii, we have been reducing all patterns to a few core primitives. Here is
+> _This post was updated to match iii’s current, optimized execution model._
+
+At iii, we have been reducing all patterns to one core primitive. Here is
 what building an automation looks like when you focus on the engineering
 decisions and business logic instead of the shape of the agent's reasoning.
 
@@ -91,13 +93,13 @@ this write. That shape becomes reusable functions and observers (aka events).
 The loop the agent ran becomes a durable subscriber on a queue topic. The
 fan-out becomes parallel function calls. The verification step becomes a
 policy gate function. The one-off session becomes a permanent capability of
-the system, made of the same primitives as everything else on the iii engine.
+the system, made of the same primitive as everything else on the iii engine.
 
 At no point in that workflow did "loop engineering" or "graph engineering"
 appear as a discipline. The loop was how the agent happened to traverse the
 problem. The graph is the reusable workers and functions it produced. Both
 were inherent properties of the system. The work products are functions,
-observers, and workers, and those can be used long after the pattern that
+the observers between them, and the workers that host them, and those can be used long after the pattern that
 discovered them is gone.
 
 ## Why the disciplines keep multiplying everywhere else
@@ -144,7 +146,7 @@ artifacts a session leaves behind on iii, and they are the same artifacts the
 rest of the system is made of. The pattern that discovered them can be
 thrown away, but nothing else is lost.
 
-Loops and graphs are how agents think. Workers, functions, and observers are
+Loops and graphs are how agents think. Functions, called and observed, are
 what systems are made of. The industry keeps naming the first category
 because it has not fixed the second. We fixed the second.
 

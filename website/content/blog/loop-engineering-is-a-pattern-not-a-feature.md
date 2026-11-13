@@ -85,11 +85,13 @@ superfast, basically free, and correct every time.
 
 ## Orchestrating a turn with functions and observers in iii
 
-For the readers new to iii: it is an unreasonably simple approach to
-software engineering. In iii, [everything is a Worker, a Function, or an
-Observer](https://iii.dev/docs/understanding-iii).
+> _This post was updated to match iii’s current, optimized execution model._
 
-I used the iii harness, which works directly with these iii primitives, to
+For the readers new to iii: it is an unreasonably simple approach to
+software engineering. In iii, [everything is a Function, which you call or
+observe](https://iii.dev/docs/understanding-iii).
+
+I used the iii harness, which works directly with iii's one primitive, to
 set up a workflow that scans a GitHub repository for security
 vulnerabilities.
 
@@ -229,9 +231,9 @@ both are Functions, run by calls and observers, hosted in Workers. When a
 `vulnscan::fetch-batch` call stops being a Sonnet 5 call and becomes a
 database query, nothing that calls it changes.
 
-The small primitives pay off in the other direction too: they're what make
+The small primitive pays off in the other direction too: it's what makes
 iii systems reliable for LLMs to *use*. An agent operating inside a iii
-system has exactly three concepts to hold, one always-accurate live view of
+system has exactly one primitive to hold, one always-accurate live view of
 what exists, and function IDs that mean what they say. The same minimalism
 that lets you walk logic out of the LLM lets the LLM operate what remains.
 

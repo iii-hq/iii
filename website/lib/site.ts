@@ -20,7 +20,7 @@ export const links = {
 export const installCommand = 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh'
 
 const askPrompt =
-  'Read https://iii.dev/llms.txt and explain iii to me: its three primitives (Worker, Function, Observer), what it replaces in a typical backend, and how I would install it and build a first service.'
+  'Read https://iii.dev/llms.txt and explain iii to me: its one primitive Function, as well as call(), observe(), and Workers, what it replaces in a typical backend, and how I would install it and build a first service.'
 
 /** Assistants that accept a prefilled question in the URL, each opened on `prompt`. */
 export const askAssistants = (prompt: string) => {

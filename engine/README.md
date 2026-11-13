@@ -1,10 +1,17 @@
-# Engine
+# iii engine
 
-The iii engine provides durable orchestration, interoperable cross-language execution, live
-discovery of functionality, live system extensibility, and live system observability from three
-simple primitives: Function, Observer, and Worker.
+[![Release](https://img.shields.io/github/v/release/iii-hq/iii?label=release)](https://github.com/iii-hq/iii/releases)
+[![Docker pulls](https://img.shields.io/docker/pulls/iiidev/iii?logo=docker&logoColor=white)](https://hub.docker.com/r/iiidev/iii)
+[![License: ELv2](https://img.shields.io/badge/license-ELv2-blue)](LICENSE)
 
-For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/docs).
+The engine is the runtime at the center of an iii system, and the `iii` CLI. Workers connect to it over WebSocket. The engine routes every function call between them. It is written in Rust.
+
+## What the engine does
+
+- **Live registry.** The engine records each connected worker, the functions it registers, and the observers it creates. Workers read this registry or observe its changes.
+- **Routing.** When a function is called, the engine finds a worker that provides it and sends the call there. When a function runs, the engine runs its observers. The routing is the same for every language, runtime, and location.
+- **Disconnect cleanup.** When a worker disconnects, the engine removes its functions and cancels their in-flight calls. The rest of the system continues to operate.
+- **Hot reload.** The engine watches its config file. When the file changes, it restarts only the workers that changed.
 
 ## Install
 
@@ -12,166 +19,60 @@ For complete documentation on iii please visit [iii.dev/docs](https://iii.dev/do
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-This installs the iii engine (which includes all CLI commands).
-
-<details>
-<summary>Override install directory or pin a version</summary>
+Or run the Docker image:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | BIN_DIR=$HOME/.local/bin sh
+docker pull iiidev/iii
 ```
+
+The [install guide](https://iii.dev/docs/install) has all installer options.
+
+## CLI
+
+| Command | Purpose |
+| --- | --- |
+| `iii` | Start the engine with `config.yaml` |
+| `iii project init <name>` | Create a project |
+| `iii compose --up` | Start the engine and the workers in `worker-compose.yaml` |
+| `iii call <function> key=value` | Call a function on the running engine |
+| `iii call compose::add worker=<name>` | Add a worker from the registry to the project |
+| `iii ps` / `iii kill` | List or stop iii processes on this machine |
+| `iii update` | Update iii and its managed binaries |
+| `iii cloud` | Manage iii Cloud deployments |
+
+Run `iii --help` or `iii <command> --help` for all flags. The full reference is at [iii.dev/docs](https://iii.dev/docs).
+
+## Engine workers
+
+The engine contains these workers. Each one has a README in [`src/workers/`](src/workers/).
+
+| Worker | Purpose |
+| --- | --- |
+| `iii-worker-manager` | WebSocket listeners for SDK workers. The default port is `49134`. |
+| `configuration` | Schema-validated configuration entries for workers |
+| `iii-engine-functions` | The `engine::*` functions that read the live registry |
+| `iii-observability` | OpenTelemetry traces, logs, and metrics |
+| `iii-sandbox` | `sandbox::*` functions that run code in microVMs |
+| `iii-http-functions` | Functions served by external HTTP endpoints |
+| `iii-stream` | Deprecated. See the [migration guide](https://iii.dev/docs/upgrading/migrate-from-streams). |
+
+All other capabilities (HTTP, databases, queues, state, agents) are workers from the [worker registry](https://iii.dev/registry).
+
+## Build from source
+
+Run from the repository root:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- v0.11.3
+cargo build --release -p iii     # build the engine
+cargo run --release -p iii       # start the engine with engine/config.yaml
+cargo test -p iii                # run the engine tests
+cargo bench -p iii               # run the benchmarks in benches/
 ```
 
-</details>
+This directory also has a [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml).
 
-Verify:
-
-```bash
-command -v iii && iii --version
-```
-
-## Start the engine
-
-```bash
-iii --use-default-config
-```
-
-This starts the engine with the built-in modules and an in-memory OpenTelemetry configuration, so
-traces, metrics, and logs are available without creating `config.yaml` first.
-
-For a project-backed setup, create `config.yaml` in your working directory, or run
-`iii --config /path/to/config.yaml`.
-
-If you prefer a custom filename (for example `iii-config.yaml`), pass it explicitly:
-`iii --config /path/to/iii-config.yaml`.
-
-Open the console: add the ADE worker to your project, then open `http://127.0.0.1:3113`:
-
-```bash
-iii call compose::add worker=ade
-```
-
-Your engine is running at `ws://localhost:49134` with HTTP API at `http://localhost:3111`.
-
-Check out [iii.dev/docs](https://iii.dev/docs) to get started building with iii.
-
-## SDKs
-
-| Language | Package                                            | Install                                     |
-| -------- | -------------------------------------------------- | ------------------------------------------- |
-| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` or `npm install iii-sdk` |
-| Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                       |
-| Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | Add to `Cargo.toml`                         |
-
-## Docker
-
-```bash
-docker pull iiidev/iii:latest
-
-docker run -p 3111:3111 -p 49134:49134 \
-  -v ./iii-config.yaml:/app/iii-config.yaml:ro \
-  iiidev/iii:latest
-```
-
-### Production Example
-
-```bash
-docker run --read-only --tmpfs /tmp \
-  --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
-  --security-opt=no-new-privileges:true \
-  -v ./iii-config.yaml:/app/iii-config.yaml:ro \
-  -p 3111:3111 -p 49134:49134 -p 3112:3112 -p 9464:9464 \
-  iiidev/iii:latest
-```
-
-### Docker Compose (full stack with Redis + RabbitMQ):
-
-```bash
-docker compose up -d
-```
-
-### Docker Compose with Caddy (TLS reverse proxy):
-
-```bash
-docker compose -f docker-compose.prod.yml up -d
-```
-
-See the [Caddy documentation](https://caddyserver.com/docs/) for TLS and reverse proxy
-configuration.
-
-## Ports
-
-| Port  | Service                        |
-| ----- | ------------------------------ |
-| 49134 | WebSocket (worker connections) |
-| 3111  | HTTP API                       |
-| 3112  | Stream API                     |
-| 9464  | Prometheus metrics             |
-
-## Configuration
-
-Visit [iii.dev/docs](https://iii.dev/docs) to learn how to
-[configure the engine](https://iii.dev/docs/how-to/configure-engine)
-
-## Protocol Summary
-
-The engine speaks JSON messages over WebSocket. Key message types: `registerfunction`,
-`invokefunction`, `invocationresult`, `observe`, `unobserve`, `observeresult`,
-`observerstatechanged`, `registerservice`, `ping`, `pong`.
-
-Invocations can be fire-and-forget by omitting `invocation_id`.
-
-The engine advertises `observe.v1`, `observe.v2` and `local-dispatch.v1` in
-`workerregistered`. A worker that declares `observe.v2` delivers the calls of the
-functions it hosts: it lists the observers its delivery matched on each
-`invocationresult` (`observed`), and reports its local calls in `invocationsobserved`.
-The engine activates those observers, and evaluates the observers of every other call
-itself: calls to workers without `observe.v2`, to engine-hosted and HTTP-invoked
-functions.
-
-## Repository Layout
-
-- `src/main.rs` – CLI entrypoint (`iii` binary)
-- `src/engine/` – Worker management, routing, and invocation lifecycle
-- `src/protocol.rs` – WebSocket message schema
-- `src/modules/` – Core modules (API, queue, cron, stream, observability, shell)
-- `iii-config.yaml` – Example module configuration
-- `examples/custom_queue_adapter.rs` – Custom module + adapter example
-
-## Development
-
-```bash
-cargo run                                # start engine
-cargo run -- --config iii-config.yaml        # with config
-cargo fmt && cargo clippy -- -D warnings # lint
-make watch                               # watch mode
-```
-
-### Building Docker images locally
-
-```bash
-docker build -t iii:local .                        # production (distroless)
-docker build -f Dockerfile.debug -t iii:debug .    # debug (Debian + shell)
-```
-
-Docker image security: distroless runtime (no shell), non-root execution, Trivy scanning in CI, SBOM
-attestation, and build provenance.
-
-## Examples
-
-See the [Quickstart guide](https://iii.dev/docs/quickstart) for step-by-step tutorials.
-
-## Resources
-
-- [Documentation](https://iii.dev/docs)
-- [CLI & Engine](https://github.com/iii-hq/iii)
-- [Console](https://iii.dev/docs/using-iii/console)
-- [Examples](https://github.com/iii-hq/iii-examples)
-- [SDKs](https://github.com/iii-hq/iii/tree/main/sdk)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for code style and license headers.
 
 ## License
 
-The engine and CLI are licensed under the [Elastic License 2.0 (ELv2)](LICENSE).
+The engine and CLI are licensed under the [Elastic License 2.0](LICENSE). Contributions are made under Apache 2.0. See the [root CONTRIBUTING.md](../CONTRIBUTING.md#license-of-contributions).

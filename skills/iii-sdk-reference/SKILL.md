@@ -185,8 +185,8 @@ sources.
 ## Observers and local dispatch
 
 - `observe(source, target, options?)` is in every SDK: when the source function runs, the target
-  runs. HTTP routes, cron schedules, and queue topics are observers of `http::on-request`,
-  `cron::on-tick`, and `queue::on-message`. Details and examples per language: `iii-observe`.
+  runs. HTTP routes, database changes, and queue topics are observers of `http::on-request`,
+  `database::on-row-changed`, and `queue::on-message`. Details and examples per language: `iii-observe`.
 - `registerFunction` returns a `FunctionRef` with the hook methods, `isObserved(call?)` and
   `observers()` (Python `is_observed(call=None)`, Rust `is_observed()` / `is_observed_for(&call)`,
   Go `ref.IsObserved()` / `ref.IsObservedFor(call)`). With a call, on a function whose

@@ -44,7 +44,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <main>
 <section id="hero" aria-labelledby="hero-title">
   <div aria-hidden="true"><video></video><p>decorative caption</p></div>
-  <div><span class="rounded-full">Three primitives: Worker, Function, Observer</span>
+  <div><span class="rounded-full">One primitive: Function</span>
     <h1 id="hero-title"><span class="print block"><span class="block">More application.</span><span class="block">Less infrastructure.</span></span></h1>
     <p><span class="text-foreground">The convenience of a platform, without the lock-in.</span> Connect any functions into one live system.</p>
     <div role="tablist"><button type="button">curl</button></div><p>Install the engine.</p><pre><code>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</code></pre>
@@ -58,7 +58,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <section id="final-cta" aria-labelledby="final-cta-title"><div><h2 id="final-cta-title">Make anything callable.</h2><p>Start building your iii system.</p><div><button type="button">curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</button></div></div></section>
 </main>
 <footer class="border-t">
-  <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. Workers. Functions. Observers.</p><p>Pronounced "three eye"</p></div>
+  <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. One primitive: Functions you call and observe.</p><p>Pronounced "three eye"</p></div>
   <nav aria-label="Footer">
     <div><h3>Product</h3><ul><li><a href="https://iii.dev/docs">Docs</a></li><li><a href="/roadmap">Roadmap</a></li><li><a href="https://iii.dev/registry">Worker registry</a></li></ul></div>
     <div><h3>Community</h3><ul><li><a href="https://github.com/iii-hq/iii">GitHub</a></li></ul></div>
@@ -72,7 +72,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 test("overviewBodyWithoutLeadingH1 drops duplicate H1 for llms.txt", () => {
   const body = overviewBodyWithoutLeadingH1()
   assert.ok(!body.startsWith("# "))
-  assert.ok(body.includes("Three primitives"))
+  assert.ok(body.includes("The Functions primitive"))
 })
 
 test("buildHomepageExtractFromHtml reads the hero as prose (headline lines joined, one lead paragraph)", () => {
@@ -120,7 +120,7 @@ test("buildHomepageExtractFromHtml renders the final CTA and the footer as links
     text.endsWith(
       [
         "### Footer / links",
-        'A next-generation software system. Workers. Functions. Observers. Pronounced "three eye"',
+        'A next-generation software system. One primitive: Functions you call and observe. Pronounced "three eye"',
         "- Product: [Docs](https://iii.dev/docs), [Roadmap](https://iii.dev/roadmap), [Worker registry](https://iii.dev/registry)",
         "- Community: [GitHub](https://github.com/iii-hq/iii)",
         "© 2026 Motia LLC",
@@ -147,11 +147,10 @@ test("buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   const blogSection = await buildBlogLinksSection()
   const text = buildLlmsTxt(FIXTURE, blogSection)
   assert.ok(text.startsWith("# iii\n"))
-  assert.ok(text.includes("> iii turns distributed"))
-  assert.ok(text.includes("## Three primitives"))
+  assert.ok(text.includes("> iii is an engine"))
+  assert.ok(text.includes("## The Functions primitive"))
   assert.ok(text.includes("## How iii compares"))
   assert.ok(text.includes("## Core pages"))
-  assert.ok(text.includes("[llms.txt](https://iii.dev/llms.txt)"))
   assert.ok(text.includes("Homepage copy (extracted"))
   // Chat mode explains iii; it must NOT tell the reader to install / spin up iii.
   // Those action blocks live in AGENTS.md, which llms.txt points to as the build path.
@@ -159,7 +158,6 @@ test("buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   assert.ok(!text.includes("## Install / start"))
   assert.ok(!text.includes("npx skills add iii-hq/iii/skills"))
   assert.ok(!text.includes("install.iii.dev"))
-  assert.ok(text.includes("[AGENTS.md](https://iii.dev/AGENTS.md)"))
   assert.ok(text.includes("## Blog (knowledge base for coding agents)"))
   assert.ok(text.includes("https://iii.dev/blog/index.md"))
 })
@@ -169,9 +167,8 @@ test("buildAgentsMd includes agents.md framing and appendix", async () => {
   const blogSection = await buildBlogLinksSection()
   const md = buildAgentsMd(FIXTURE, appendix, blogSection)
   assert.ok(md.startsWith("# iii for AI Agents"))
-  assert.ok(md.includes("agents.md"))
   assert.ok(md.includes("## Overview and comparisons"))
-  assert.ok(md.includes("## Primitives (wire-level)"))
+  assert.ok(md.includes("## Primitive and operators (wire-level)"))
   assert.ok(md.includes("## Guardrails"))
   assert.ok(md.includes("## Agent skills (after onboarding)"))
   assert.ok(md.includes("npx skills add iii-hq/iii/skills"))

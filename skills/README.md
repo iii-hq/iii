@@ -1,7 +1,8 @@
 # iii Skills
 
 Top-level skills for building with the [iii engine](https://github.com/iii-hq/iii). The catalog is
-intentionally small: it teaches the iii mental model (workers, functions, observers), worker
+intentionally small: it teaches the iii mental model (one primitive, the Function: call and
+observe; workers host functions), worker
 creation and registry access, SDK usage, engine config, architecture patterns, and error
 handling. Worker-backed capability skills stay with the worker docs and
 [workers.iii.dev](https://workers.iii.dev/) instead of duplicating queue, pub/sub, state, cron,
@@ -24,7 +25,7 @@ npx skills add iii-hq/iii/skills --skill iii-core-primitives
 | Skill                                                  | What it does |
 | ------------------------------------------------------ | ------------ |
 | [iii-getting-started](./iii-getting-started)           | Install iii, create a project, write your first worker, and add registry workers |
-| [iii-core-primitives](./iii-core-primitives)           | Workers, functions, observers, calls and invocation modes, built-in source functions, registry access, channels, and HTTP-invoked functions |
+| [iii-core-primitives](./iii-core-primitives)           | Functions (call and observe), the workers that host them, invocation modes, built-in source functions, registry access, channels, and HTTP-invoked functions |
 | [iii-observe](./iii-observe)                           | `iii.observe(a, b)` (when `a` runs, `b` runs), HTTP, cron, queue, state, and engine sources, filters, event sources with `onObserverAdded` / `onObserverRemoved` / `onObservationMatch` / `onObservationDeliver`, local dispatch, and upgrading 0.25 code |
 | [iii-sdk-reference](./iii-sdk-reference)               | Node.js, browser, Python, Rust, and Go SDK usage in one place |
 | [iii-engine-config](./iii-engine-config)               | Configure engine ports, engine-owned workers, adapters, and RBAC via rbac-proxy |

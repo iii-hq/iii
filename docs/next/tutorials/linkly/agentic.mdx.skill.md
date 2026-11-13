@@ -528,8 +528,8 @@ functions and the `onObserverAdded` hook, and shows a terminal listener for the 
 Sometimes users will arrive with a CSV of thousands of links to load at once. This chapter adds a
 bulk-importer that reads the rows off a channel and creates each link. As always we're utilizing
 existing functionality to **extend** our application. A well built iii application never needs to
-special case tasks like bulk imports because everything shares the same interface: Workers,
-Functions, and Observers.
+special case tasks like bulk imports because everything shares the same interface: the Function,
+which you call or observe.
 
 This is also the first time we'll see outside clients interacting with iii, but not the last as in
 the next chapter we're going to create untrusted and permissioned workers that run in the user's

@@ -1,6 +1,6 @@
 ---
 title: 'Add a worker'
-description: 'The cloud is a bazaar, and that was okay until agents arrived and had to contend with 10,000 shops. Three primitives, one engine, and one answer to every question.'
+description: 'The cloud is a bazaar, and that was okay until agents arrived and had to contend with 10,000 shops. One primitive, one engine, and one answer to every question.'
 pubDate: 2026-05-07
 author: 'Mike Piccolo, Founder & CEO of iii'
 tags: ['agents', 'architecture', 'workers', 'cloudflare']
@@ -85,7 +85,9 @@ vocabulary will match what's on the other side.
 
 I think the answer can be the same every time.
 
-## Three primitives
+> _This post was updated to match iii’s current, optimized execution model._
+
+## One primitive
 
 When I first started building backends, I took the cloud and its hidden
 costs for granted. Agents made that cost visible. Every loop iteration
@@ -95,21 +97,21 @@ cloud: better products, better APIs, better integrations. Eventually I
 realized the answer was a smaller surface, not a bigger one. The right
 primitive is small enough to absorb every category.
 
-This is what iii does by adhering to 3 simple primitives, or shapes that can
-encapsulate everything else:
+This is what iii does by adhering to one simple primitive, a shape that can
+encapsulate everything else, and two operators:
 
 - A **Function** is a unit of work with a stable identifier
   (`cloudflare::workers::r2::get`, `azure::blob::get`, `agents::researcher`)
   that receives input, optionally returns output, and can live in any
   process in any language. Functions invoke other functions through
   `call()`. The engine handles routing, serialization, and delivery.
-- An **Observer** runs one function when another runs. An HTTP request, a
-  cron tick, a queue message, a state change, and a stream event are each a
+- **Observing** a function runs another function when it runs. An HTTP request, a
+  database write, a queue message, a state change, and a stream event are each a
   call of a source function, so observing it binds that event to any
   function. Observers are declarative. The function doesn't change when you
   add a new way to invoke it.
-- A **Worker** is any process that connects to the engine and registers
-  functions.
+- A **Worker** is any process that connects to the engine and hosts
+  functions. It is where functions run, not a second primitive.
 
 ![One worker exposes functions; observers chain those functions across other workers](../../assets/blog/add-a-worker/orders-worker-chain.png)
 
@@ -169,7 +171,7 @@ Each step is a function. Chaining them is a `call()` with an enqueue
 action.
 
 An agent needs to run on a different continent. **Add a worker** there. The
-code, the primitives, and the composition model don't change.
+code, the primitive, and the composition model don't change.
 
 The title of this post isn't a slogan. It's the answer to every
 infrastructure integration question.
@@ -208,17 +210,17 @@ functionality as easy as `iii worker add iii-http`.
 iii doesn't try to build the best version of every category. iii lets you
 seamlessly pick and choose the best version of every category. iii asks
 whether the categories need to exist at all, or whether they're patterns
-that emerge from composing a small number of primitives. A payment
+that emerge from composing one primitive. A payment
 integration is a worker. A zero-trust egress policy is a worker. An MCP
-bridge is a worker. Each is a pattern on top of the same workers,
-functions, and observers.
+bridge is a worker. Each is a pattern on top of the same
+functions, called and observed.
 
 ## The bet
 
 The cloud wasn't built for agents. Making the cloud better is one answer.
 Collapsing the cloud into a primitive is another.
 
-Three primitives, one engine, and one answer to every question: **add a
+One primitive, one engine, and one answer to every question: **add a
 worker.**
 
 iii is open source. Get started with our [quickstart](https://docs.iii.dev).

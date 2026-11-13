@@ -1,6 +1,6 @@
 # iii-sdk
 
-Node.js / TypeScript SDK for the [iii engine](https://github.com/iii-hq/iii).
+Node.js / TypeScript SDK for the [iii engine](https://iii.dev).
 
 [![npm](https://img.shields.io/npm/v/iii-sdk)](https://www.npmjs.com/package/iii-sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../../LICENSE)
@@ -125,21 +125,21 @@ it:
 import { ObserveRejection } from 'iii-sdk'
 
 iii
-  .registerFunction('cron::on-tick', (tick) => tick, {
-    args_format: { type: 'object', required: ['expression'], properties: { expression: { type: 'string' } } },
+  .registerFunction('database::on-row-changed', (change) => change, {
+    args_format: { type: 'object', required: ['table'], properties: { table: { type: 'string' } } },
     private: true,
   })
   .onObserverAdded((obs) => {
-    if (!isValidCron(obs.args.expression)) throw new ObserveRejection('INVALID_CRON_EXPRESSION', 'bad expression')
-    scheduler.retain(obs.args.expression, (scheduled_time) =>
-      iii.call({ function_id: 'cron::on-tick', payload: { expression: obs.args.expression, scheduled_time } }))
+    if (!db.hasTable(obs.args.table)) throw new ObserveRejection('UNKNOWN_TABLE', 'no such table')
+    changeFeed.retain(obs.args.table, (op, row) =>
+      iii.call({ function_id: 'database::on-row-changed', payload: { table: obs.args.table, op, row } }))
   })
-  .onObserverRemoved((obs) => scheduler.release(obs.args.expression))
-  // each tick reaches the observers of its expression
-  .onObservationMatch((obs, call) => obs.args.expression === call.input.expression)
+  .onObserverRemoved((obs) => changeFeed.release(obs.args.table))
+  // each change reaches the observers of its table
+  .onObservationMatch((obs, call) => obs.args.table === call.input.table)
 
 // a consumer
-iii.observe({ function_id: 'cron::on-tick', args: { expression: '0 0 9 * * * *' } }, 'reports::daily')
+iii.observe({ function_id: 'database::on-row-changed', args: { table: 'orders' } }, 'orders::project')
 ```
 
 With many observers, match by keys instead: the SDK keeps an index, one

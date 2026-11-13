@@ -1,11 +1,11 @@
 ---
 name: iii
-description: How iii works and the iii-sdk surface for authoring workers, functions, and observers. Teaches the ordered way to gain a capability before writing code — (1) check functions already registered in the engine, (2) search the public registry via iii-directory, (3) build a worker. Single self-contained skill — meant for system-prompt injection; do not re-fetch.
+description: How iii works and the iii-sdk surface for authoring workers that register, call, and observe functions. Teaches the ordered way to gain a capability before writing code — (1) check functions already registered in the engine, (2) search the public registry via iii-directory, (3) build a worker. Single self-contained skill — meant for system-prompt injection; do not re-fetch.
 ---
 
 # iii
 
-iii is a language-agnostic runtime where services, agents, and tools are composed of the same things: workers, functions, and observers. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every observer between those functions. Workers are independent OS processes that open a WebSocket to the engine, register **Functions** (`service::name` handlers), and **observe** functions: each matching call of the observed function invokes a target function. There is no direct worker-to-worker traffic — every call routes through the engine, which makes the language, runtime, and physical location of any worker invisible to its callers.
+iii is a language-agnostic runtime where services, agents, and tools are composed of one primitive, the Function, and two operators: call and observe. Workers host functions. One engine process (default port `49134`) holds a live registry of every connected worker, every function those workers expose, and every observer between those functions. Workers are independent OS processes that open a WebSocket to the engine, register **Functions** (`service::name` handlers), and **observe** functions: each matching call of the observed function invokes a target function. There is no direct worker-to-worker traffic — every call routes through the engine, which makes the language, runtime, and physical location of any worker invisible to its callers.
 
 ## When to Use
 
@@ -26,14 +26,14 @@ iii.registerFunction('demo::add', async (payload: { a: number; b: number }) => {
 
 The instant the handshake completes, `demo::add` is callable from any worker (and the harness itself) via `iii.call({ function_id: 'demo::add', payload: { a: 2, b: 3 } })`. No restart, no registration with the harness — the engine routes it automatically.
 
-## The four primitives
+## One primitive: the Function
 
-| Primitive | What it is | Owned by |
+| Piece | What it is | Owned by |
 |---|---|---|
+| Function | The primitive. A named handler inside a worker, id `service::name`. Stable across worker restarts. | The registering worker |
+| `call` / `observe` | The two operators. `call(a)` runs `a` now. `observe(a, b)` makes an observer, a `(source function, filters, target function)` binding: each matching call of the source invokes the target. | The calling or observing worker |
+| Worker | A process that opens a WebSocket to the engine and hosts functions. | Anyone who writes one |
 | Engine | One coordinator process. Routes every invocation. | The operator |
-| Worker | A process that opens a WebSocket to the engine. | Anyone who writes one |
-| Function | A named handler inside a worker, id `service::name`. Stable across worker restarts. | The registering worker |
-| Observer | A `(source function, filters, target function)` binding. Each matching call of the source invokes the target. | The observing worker |
 
 Three consequences worth internalising:
 
@@ -52,7 +52,7 @@ graph TD
   External["external event (request, timer, queue, ...)"] -->|"native protocol"| Provider
 ```
 
-Every edge to the engine is a WebSocket. An event-source worker terminates some native protocol — an inbound request, a timer, a queue message — and calls one of its functions (`http::on-request`, `cron::on-tick`, `queue::on-message`) once per event; observers of that function run.
+Every edge to the engine is a WebSocket. An event-source worker terminates some native protocol — an inbound request, a database write, a queue message — and calls one of its functions (`http::on-request`, `database::on-row-changed`, `queue::on-message`) once per event; observers of that function run.
 
 ## Need a capability? Discover before you build — in this order
 
@@ -159,7 +159,7 @@ Rule of thumb: if a retry might succeed, throw; if it will fail the same way, re
 
 ## Observers — discover the function, don't hardcode it
 
-Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `cron::on-tick`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
+Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `database::on-row-changed`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
 
 ```jsonc
 // engine::functions::list             → every function, event sources included.
