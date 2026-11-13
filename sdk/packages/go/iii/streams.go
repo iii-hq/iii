@@ -1003,6 +1003,9 @@ type outputInner struct {
 	reason  string
 	// closing: a close is in progress; an abort then does nothing.
 	closing bool
+	// sinkErr is the error its local sink failed with (a Write, or the Flush or Close
+	// that ends it): the call that passed it fails with it (failedSink).
+	sinkErr error
 	// ioCancel ends the write or send of a pipe end in flight: an abort does not wait
 	// behind it.
 	ioCancel context.CancelFunc
@@ -1020,12 +1023,78 @@ func errStreamEnded() error {
 	return streamClosedError("the stream is closed: it was closed or aborted")
 }
 
+// sinkFailedReason is the reason a stream whose local sink failed with err aborts with.
+func sinkFailedReason(err error) string { return "the sink failed: " + err.Error() }
+
+// sinkFailure is what a call fails with when a sink it passed failed with err:
+// STREAM_ABORTED, wrapping err.
+func sinkFailure(err error) error {
+	return &InvocationError{Code: CodeStreamAborted, Message: sinkFailedReason(err), cause: err}
+}
+
+// closedLocked is what a write gets once the stream ended: STREAM_CLOSED, wrapping the
+// sink's error when its sink failed. Called with mu held.
+func (o *outputInner) closedLocked() error {
+	if o.sinkErr != nil {
+		return &InvocationError{Code: CodeStreamClosed, Message: "the stream is closed: " + sinkFailedReason(o.sinkErr), cause: o.sinkErr}
+	}
+	return errStreamEnded()
+}
+
+// endedError is closedLocked once the stream ended, else nil. A write or a close checks
+// it before taking ioMu, so one after an abort does not wait behind a write still
+// blocked on the sink.
+func (o *outputInner) endedError() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.ended {
+		return nil
+	}
+	return o.closedLocked()
+}
+
+// failSink: the local sink failed with err. The stream aborts, so nothing more is
+// written to it (the pump that fills it stops, and the handler's next write fails with
+// STREAM_CLOSED); the sink is aborted (CloseWithError, when it has it); and the call
+// that passed it fails with sinkFailure(err). It returns what the write that failed
+// gets. A stream that had ended (aborted while the write was in flight) keeps its end.
+func (o *outputInner) failSink(err error) error {
+	o.mu.Lock()
+	if o.ended {
+		defer o.mu.Unlock()
+		return o.closedLocked()
+	}
+	reason := sinkFailedReason(err)
+	o.sinkErr = err
+	o.ended, o.aborted, o.reason = true, true, reason
+	closed := o.closedLocked()
+	o.mu.Unlock()
+	close(o.done)
+	abortSink(o.sink, reason)
+	return closed
+}
+
+// failedSink is the failure of the first of sinks whose sink failed, nil when none did:
+// what the call that passed them fails with, whatever the function returned (its writes
+// failed once the sink did).
+func failedSink(sinks []*outputInner) error {
+	for _, o := range sinks {
+		o.mu.Lock()
+		err := o.sinkErr
+		o.mu.Unlock()
+		if err != nil {
+			return sinkFailure(err)
+		}
+	}
+	return nil
+}
+
 // begin marks a write: it fails on a stream that ended or was sent on.
 func (o *outputInner) begin() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.ended {
-		return errStreamEnded()
+		return o.closedLocked()
 	}
 	switch o.usage {
 	case useForwarded:
@@ -1070,20 +1139,19 @@ func (o *outputInner) ioContext(ctx context.Context) (_ context.Context, stop fu
 	}
 }
 
-// ioError is what a write that failed returns: STREAM_CLOSED when the stream ended (an
-// abort) while it was in flight, else err.
+// ioError is what a write to a pipe end that failed returns: STREAM_CLOSED when the
+// stream ended (an abort) while it was in flight, else err.
 func (o *outputInner) ioError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if o.isEnded() {
-		return errStreamEnded()
+	if ended := o.endedError(); ended != nil {
+		return ended
 	}
 	return err
 }
 
-// isEnded: the stream closed or aborted. A write or a close checks it before taking ioMu,
-// so one after an abort does not wait behind a write still blocked on the sink.
+// isEnded: the stream closed or aborted. A close checks it before taking ioMu.
 func (o *outputInner) isEnded() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -1091,8 +1159,8 @@ func (o *outputInner) isEnded() bool {
 }
 
 func (o *outputInner) write(ctx context.Context, data []byte) error {
-	if o.isEnded() {
-		return errStreamEnded()
+	if err := o.endedError(); err != nil {
+		return err
 	}
 	o.ioMu.Lock()
 	defer o.ioMu.Unlock()
@@ -1111,13 +1179,15 @@ func (o *outputInner) write(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	_, err := o.sink.Write(data)
-	return o.ioError(err)
+	if _, err := o.sink.Write(data); err != nil {
+		return o.failSink(err)
+	}
+	return nil
 }
 
 func (o *outputInner) sendText(ctx context.Context, text []byte) error {
-	if o.isEnded() {
-		return errStreamEnded()
+	if err := o.endedError(); err != nil {
+		return err
 	}
 	o.ioMu.Lock()
 	defer o.ioMu.Unlock()
@@ -1169,8 +1239,10 @@ func (o *outputInner) close() error {
 		if w, err = o.writerLocked(); err == nil {
 			err = w.close()
 		}
-	} else {
-		err = closeSink(o.sink)
+	} else if err = closeSink(o.sink); err != nil {
+		// Not closed: the sink may not hold the whole stream.
+		_ = o.failSink(err)
+		return sinkFailure(err)
 	}
 	o.finish(false, "")
 	return err
@@ -1389,6 +1461,12 @@ type OutputStream struct {
 // abort closes w with the error when it has CloseWithError (an [*io.PipeWriter]) and
 // otherwise leaves it as is, so a truncated stream is never finished as if whole: close
 // it yourself, and remove a partly written file.
+//
+// When w fails (its Write, Flush or Close returns an error), the stream aborts: nothing
+// more is written to w, the function's next write fails with STREAM_CLOSED, and the
+// call that passed the stream fails with STREAM_ABORTED, "the sink failed: <w's
+// error>", wrapping w's error (errors.Is and errors.As reach it), whatever the function
+// returned.
 //
 // A call does not wait behind a w.Write that blocks: at the call's timeout, or when its
 // ctx ends, the call returns and the stream is aborted. A Write that never returns (and

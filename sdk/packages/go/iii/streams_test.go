@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1434,5 +1435,91 @@ func TestLocalSentStreamIsTheReceivers(t *testing.T) {
 	}
 	if _, err := src.ReadAll(streamCtx(t)); streamCode(err) != CodeStreamInUse {
 		t.Errorf("caller's read of a stream it sent = %v, want STREAM_IN_USE", err)
+	}
+}
+
+// failingSink is a sink whose Write (or, with failClose, its Close) fails with err.
+type failingSink struct {
+	err       error
+	failClose bool
+	writes    atomic.Int32
+}
+
+func (s *failingSink) Write(p []byte) (int, error) {
+	s.writes.Add(1)
+	if s.failClose {
+		return len(p), nil
+	}
+	return 0, s.err
+}
+
+func (s *failingSink) Close() error {
+	if s.failClose {
+		return s.err
+	}
+	return nil
+}
+
+// When the caller's own sink fails, the call fails with STREAM_ABORTED "the sink failed:
+// <its error>", wrapping it, whatever the handler returned: nothing more is written to
+// the sink, and the handler's next write fails with STREAM_CLOSED.
+func TestCallerSinkFailure(t *testing.T) {
+	disk := errors.New("the disk went away")
+	for _, d := range dispatches {
+		for _, tt := range []struct {
+			name      string
+			failClose bool
+			handler   string // what the handler returns: "error" (its write's) or "ok"
+		}{
+			{name: "write, handler fails", handler: "error"},
+			{name: "write, handler succeeds", handler: "ok"},
+			{name: "close", failClose: true, handler: "ok"},
+		} {
+			t.Run(d.name+"/"+tt.name, func(t *testing.T) {
+				se := newStreamEngine(t)
+				c := se.client()
+				writeErr := make(chan error, 1)
+				registerLocal(t, c, "sink::fill", func(ctx context.Context, data json.RawMessage) (any, error) {
+					var args copyArgs
+					if err := json.Unmarshal(data, &args); err != nil {
+						return nil, err
+					}
+					if tt.failClose {
+						writeErr <- nil
+						return nil, args.Dst.Write(ctx, []byte("all of it"))
+					}
+					// Write until a write fails: through a pipe, once the reader left.
+					var err error
+					for i := 0; i < 300 && err == nil; i++ {
+						if err = args.Dst.Write(ctx, []byte("chunk")); err == nil {
+							time.Sleep(10 * time.Millisecond)
+						}
+					}
+					writeErr <- err
+					if tt.handler == "error" {
+						return nil, fmt.Errorf("handler gave up: %w", err)
+					}
+					return nil, nil
+				})
+				dst := &failingSink{err: disk, failClose: tt.failClose}
+				_, err := c.Call(streamCtx(t), CallRequest{FunctionID: "sink::fill", Dispatch: d.dispatch,
+					Payload: jsonOf(t, map[string]any{"dst": OutputStreamToWriter(dst)})})
+				var ie *InvocationError
+				if !errors.As(err, &ie) || ie.Code != CodeStreamAborted || ie.Message != "the sink failed: the disk went away" {
+					t.Fatalf("err = %v, want STREAM_ABORTED (the sink failed: the disk went away)", err)
+				}
+				if !errors.Is(err, disk) {
+					t.Errorf("err = %v does not wrap the sink's error", err)
+				}
+				if werr := <-writeErr; !tt.failClose && streamCode(werr) != CodeStreamClosed {
+					t.Errorf("handler's write after the sink failed = %v, want STREAM_CLOSED", werr)
+				}
+				if !tt.failClose {
+					if n := dst.writes.Load(); n != 1 {
+						t.Errorf("the sink got %d writes, want 1: nothing after the one that failed", n)
+					}
+				}
+			})
+		}
 	}
 }

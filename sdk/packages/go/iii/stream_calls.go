@@ -391,7 +391,9 @@ type pumps struct {
 // call returned, maybe into one of these sinks). The wait ends at deadline, the call's
 // timeout, or when ctx ends: the sinks still open are then aborted, and the call fails
 // with ErrTimeout (or ctx's error). Stopping a pump does not wait for it: a sink whose
-// Write blocks does not hold the call past its deadline.
+// Write blocks does not hold the call past its deadline. A sink that failed (its
+// writer's error) is what the call fails with, whatever the function returned, unless
+// ctx ended.
 func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, detach bool, deadline time.Time) (json.RawMessage, error) {
 	if p == nil || len(p.sources)+len(p.sinks) == 0 {
 		return result, err
@@ -408,7 +410,7 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 		for _, pm := range p.sinks {
 			pm.stop(reason)
 		}
-		return nil, err
+		return nil, p.failure(ctx, err)
 	}
 	// Sources keep pumping: the function reads them.
 	timer := time.NewTimer(time.Until(deadline))
@@ -427,16 +429,32 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 			}
 		case <-timer.C:
 			stopSinks(sinkTimeout)
-			return nil, ErrTimeout
+			return nil, p.failure(ctx, ErrTimeout)
 		case <-ctx.Done():
 			stopSinks(ctx.Err().Error())
 			return nil, ctx.Err()
 		}
 	}
 	if failure != nil {
-		return nil, failure
+		return nil, p.failure(ctx, failure)
 	}
 	return result, nil
+}
+
+// failure is what a call that failed with err fails with: a sink it passed that failed
+// is why (the function's writes failed after it), unless the caller's ctx ended.
+func (p *pumps) failure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return err
+	}
+	sinks := make([]*outputInner, len(p.sinks))
+	for i, pm := range p.sinks {
+		sinks[i] = pm.out
+	}
+	if failed := failedSink(sinks); failed != nil {
+		return failed
+	}
+	return err
 }
 
 // =====================================================================================
@@ -674,7 +692,9 @@ func localSinks(payload json.RawMessage) []localSink {
 // remote call's: with a result, a sink its handler never took is closed (nothing else
 // can end it), then the call waits for every sink to end, until deadline, and fails with
 // STREAM_ABORTED if one aborted. A result that holds a stream to write is not waited
-// for. With an error, the sinks still open are aborted with it.
+// for. With an error, the sinks still open are aborted with it. A sink that failed (its
+// writer's error) is what the call fails with, whatever the handler returned, unless
+// ctx ended.
 func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMessage, err error, deadline time.Time) (json.RawMessage, error) {
 	if len(sinks) == 0 {
 		return result, err
@@ -685,9 +705,24 @@ func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMes
 			_ = s.out.abort(reason)
 		}
 	}
+	// A sink that failed is why the call failed (the handler's writes failed after it),
+	// unless the caller's ctx ended.
+	failure := func(err error) error {
+		if ctx.Err() != nil {
+			return err
+		}
+		outs := make([]*outputInner, len(sinks))
+		for i, s := range sinks {
+			outs[i] = s.out
+		}
+		if failed := failedSink(outs); failed != nil {
+			return failed
+		}
+		return err
+	}
 	if err != nil {
 		abortAll(err.Error())
-		return nil, err
+		return nil, failure(err)
 	}
 	for _, s := range sinks {
 		if _, ok := claimPlaceholder(s.token); ok {
@@ -703,11 +738,11 @@ func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMes
 		select {
 		case <-s.out.done:
 			if _, aborted, reason := s.out.outcome(); aborted {
-				return nil, streamAbortedError(reason)
+				return nil, failure(streamAbortedError(reason))
 			}
 		case <-timer.C:
 			abortAll(sinkTimeout)
-			return nil, ErrTimeout
+			return nil, failure(ErrTimeout)
 		case <-ctx.Done():
 			abortAll(ctx.Err().Error())
 			return nil, ctx.Err()

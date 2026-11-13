@@ -46,6 +46,8 @@ type InvocationError struct {
 	FunctionID string
 	// Stacktrace is the remote stack trace, when the engine provides one.
 	Stacktrace string
+	// cause is the local error behind it (a sink's own error), for Unwrap.
+	cause error
 }
 
 func (e *InvocationError) Error() string {
@@ -54,6 +56,11 @@ func (e *InvocationError) Error() string {
 	}
 	return fmt.Sprintf("iii: invocation failed: %s: %s", e.Code, e.Message)
 }
+
+// Unwrap is the local error behind e, nil for an error from the engine: for a call
+// whose sink failed (STREAM_ABORTED, "the sink failed: ..."), the sink's own error, so
+// errors.Is and errors.As reach it.
+func (e *InvocationError) Unwrap() error { return e.cause }
 
 // RegistrationRejectedError is the terminal error the engine returns when a
 // worker's registration is refused for good, typically a WORKER_NAMESPACE_CONFLICT,
@@ -101,7 +108,10 @@ const (
 	// opened. The data read before it is not the whole stream. A call whose sink
 	// received an aborted stream fails with it too, even when the function succeeded.
 	// Through an engine pipe the Message is the engine's reason (channel writer aborted:
-	// closed with code 1011); in-process it is the writer's own.
+	// closed with code 1011); in-process it is the writer's own. A call whose own sink
+	// failed (its Write, Flush or Close returned an error) fails with Message "the sink
+	// failed: <its error>", wrapping it (errors.Is and errors.As reach it), whatever the
+	// function returned.
 	CodeStreamAborted = "STREAM_ABORTED"
 	// CodeStreamNotAllowed: a payload holding a stream sent with [EnqueueAction]. A
 	// queued job can run after the pipe expired, and a retry cannot read the stream
