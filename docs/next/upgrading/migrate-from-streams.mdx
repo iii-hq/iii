@@ -463,7 +463,7 @@ be published before storage access is removed in an upcoming release.
 
 ## Worked examples in the tutorials
 
-The Linkly tutorial and the real-time todo how-to use observable functions and the `queue` worker:
+The Linkly tutorial uses observable functions and the `queue` worker:
 
 - [Ch. 5: Stream live clicks](../tutorials/linkly/streaming) is a worked example of Recipe 2. The
   `click-streamer` worker hosts `click-streamer::on-click` and calls it for each click after its row
@@ -472,9 +472,6 @@ The Linkly tutorial and the real-time todo how-to use observable functions and t
   Browser SDK through `rbac-proxy`, reads the total first, and reads it again after a reconnect.
 - [Ch. 4: Make it durable](../tutorials/linkly/durable-execution) fans `link.created` and
   `link.updated` out on durable topics with `iii::durable::publish` and `queue::on-message`.
-- [Build a real-time todo app](../how-to/build-a-realtime-todo-app) outlines Recipe 2 for a browser
-  app: stored todos, `todos::get` and `todos::list`, and a `todos::on-changed` function each browser
-  observes.
 
 ## Checklist
 
