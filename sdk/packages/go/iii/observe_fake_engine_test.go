@@ -295,15 +295,24 @@ func (fe *fakeEngine) newClient(opts ...Option) *Client {
 	return c
 }
 
-// connect connects c and waits until WorkerRegistered was applied.
+// connect connects c and waits until WorkerRegistered was applied and the connection's
+// engine::workers::register frame, the last one it sends on connect, arrived: a frame
+// counted after connect returns is the test's own, never a late one of the connect.
 func (fe *fakeEngine) connect(c *Client) {
 	fe.t.Helper()
+	next := fe.m.connectionCount()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := c.Connect(ctx); err != nil {
 		fe.t.Fatalf("Connect: %v", err)
 	}
 	waitUntil(fe.t, "WorkerRegistered applied", c.registeredNow)
+	got := fe.m.waitForFrom(next, func(msgs []map[string]json.RawMessage) bool {
+		return indexOfFunctionID(msgs, FnRegisterWorker) >= 0
+	}, 3*time.Second)
+	if indexOfFunctionID(got, FnRegisterWorker) < 0 {
+		fe.t.Fatal("no engine::workers::register frame sent on connect")
+	}
 }
 
 func (c *Client) registeredNow() bool {

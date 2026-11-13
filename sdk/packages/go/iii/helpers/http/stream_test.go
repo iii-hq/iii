@@ -49,7 +49,8 @@ func (s writeSession) body() []byte {
 // invocationresult), and the channel endpoint /ws/channels/{id} serves the streams. A
 // reader (dir=read) receives requestChunks as binary frames followed by a close, the
 // way the http worker streams a request body; a writer (dir=write) is drained and
-// recorded up to its close, the way the http worker reads the response.
+// recorded up to its close, the way the http worker reads the response. Any other path
+// is refused: the client's OpenTelemetry socket (/otel) is never taken for the worker's.
 type fakeEngine struct {
 	srv        *httptest.Server
 	reads      chan string
@@ -59,6 +60,9 @@ type fakeEngine struct {
 	mu      sync.Mutex
 	worker  *websocket.Conn
 	results map[string]chan invocationResult
+	// connected is closed once the worker's socket was accepted (worker is set).
+	connected chan struct{}
+	once      sync.Once
 }
 
 // invocationResult is the worker's answer to one invocation.
@@ -98,10 +102,17 @@ func newFakeEngineWith(t *testing.T, opts fakeOptions, requestChunks ...[]byte) 
 		writes:     make(chan writeSession, 4),
 		handshakes: make(chan handshake, 16),
 		results:    map[string]chan invocationResult{},
+		connected:  make(chan struct{}),
 	}
 	f.srv = httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/ws/channels/") {
+		switch {
+		case r.URL.Path == "" || r.URL.Path == "/":
 			f.serveWorker(w, r)
+			return
+		case !strings.HasPrefix(r.URL.Path, "/ws/channels/"):
+			// Not a socket this engine serves: the client's OpenTelemetry connection
+			// (/otel) is refused, never taken for the worker's.
+			nethttp.NotFound(w, r)
 			return
 		}
 		select {
@@ -162,6 +173,7 @@ func (f *fakeEngine) serveWorker(w nethttp.ResponseWriter, r *nethttp.Request) {
 	f.mu.Lock()
 	f.worker = conn
 	f.mu.Unlock()
+	f.once.Do(func() { close(f.connected) })
 	for {
 		_, data, err := conn.Read(r.Context())
 		if err != nil {
@@ -200,6 +212,13 @@ func (f *fakeEngine) run(t *testing.T, fn HandlerFunc, payload json.RawMessage, 
 	ctx := testContext(t)
 	if err := c.Connect(ctx); err != nil {
 		t.Fatal(err)
+	}
+	// Connect returns once the client's handshake is done, which can be before this
+	// side accepted the socket.
+	select {
+	case <-f.connected:
+	case <-ctx.Done():
+		t.Fatal("the worker never connected")
 	}
 	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", time.Now().UnixNano()%1_000_000_000_000)
 	ch := make(chan invocationResult, 1)

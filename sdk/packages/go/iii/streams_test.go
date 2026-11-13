@@ -397,7 +397,11 @@ func TestCallRefusesStreamsItCannotSend(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond)
 	if n := se.countFrames(mark); n != 0 {
-		t.Errorf("%d frames sent for refused calls", n)
+		var types []string
+		for _, raw := range se.m.receivedMessages()[mark:] {
+			types = append(types, messageType(raw)+" "+stringField(raw, "function_id"))
+		}
+		t.Errorf("%d frames sent for refused calls: %v", n, types)
 	}
 }
 
