@@ -1,13 +1,14 @@
 use iii_sandbox_contract::{
     AdapterInfo, AdapterInfoRequest, BaseImageRef, CONTRACT_MAJOR, CONTRACT_MINOR,
     CatalogListRequest, ChannelDirection, ContractVersion, DOCS_BASE, EnvShape, ExecRequest,
-    ExecResponse, FEATURE_BUILD, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, GrepRequest,
-    ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS, ReadResponse, RouterInfo,
-    RunResponse, SandboxErrorCode, SedRequest, State, StopRequest, StreamChannelRef,
-    WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
-    WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerPrepareRequest,
-    WorkerPrepareResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
-    WorkerStatusRequest, WorkerStopRequest, WriteContent, WriteRequest, code_of, error_payload,
+    ExecResponse, FEATURE_BINARY, FEATURE_BUILD, FEATURE_LOGS_FROM_END, FEATURE_PRUNE,
+    FEATURE_SCOPED_AUTH, GrepRequest, ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS,
+    ReadResponse, RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State, StopRequest,
+    StreamChannelRef, WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse,
+    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
+    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
+    WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest, WriteContent,
+    WriteRequest, code_of, error_payload,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, from_value, json, to_value};
@@ -379,7 +380,7 @@ fn router_info_unbound_json() {
     };
     assert_eq!(
         to_value(unbound).unwrap(),
-        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 3}, "info": null})
+        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 4}, "info": null})
     );
 }
 
@@ -388,9 +389,11 @@ fn wire_examples() -> BTreeMap<String, Value> {
 }
 
 #[test]
-fn contract_1_3_announces_build() {
-    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 3));
+fn contract_1_4_announces_its_features() {
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 4));
     assert_eq!(FEATURE_BUILD, "worker.build");
+    assert_eq!(FEATURE_BINARY, "worker.binary");
+    assert_eq!(FEATURE_PRUNE, "worker.prune");
 
     let examples = wire_examples();
     let version: ContractVersion = from_value(examples["ContractVersion"].clone()).unwrap();
@@ -404,6 +407,57 @@ fn contract_1_3_announces_build() {
         (CONTRACT_MAJOR, CONTRACT_MINOR)
     );
     assert!(info.supports(FEATURE_BUILD));
+    assert!(info.supports(FEATURE_BINARY));
+    assert!(info.supports(FEATURE_PRUNE));
+}
+
+/// A 1.3 peer sends none of the 1.4 fields: a 1.3 request reads as no `base_image` and no
+/// `prune`, and serializes again without `base_image`.
+#[test]
+fn fields_added_in_1_4_read_as_absent_from_an_older_peer() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.4.0",
+        "contract": {"major": 1, "minor": 3},
+        "features": [FEATURE_SCOPED_AUTH, FEATURE_LOGS_FROM_END, FEATURE_BUILD]
+    }))
+    .unwrap();
+    assert!(!info.supports(FEATURE_BINARY));
+    assert!(!info.supports(FEATURE_PRUNE));
+
+    let build_1_3 = json!({
+        "auth": "tok",
+        "state_key": "k",
+        "worker_name": "w",
+        "source": {"kind": "bundle", "package": "b", "host_path": "/p/.workers/w"},
+        "output_dir": "/p/.build/w",
+        "env": {},
+        "logs": {"channel_id": "ch", "access_key": "k", "direction": "write"}
+    });
+    let build: WorkerBuildRequest = from_value(build_1_3.clone()).unwrap();
+    assert!(build.base_image.is_none());
+    assert_eq!(to_value(&build).unwrap(), build_1_3);
+
+    let destroy: WorkerDestroyRequest =
+        from_value(json!({"auth": "tok", "state_key": "k"})).unwrap();
+    assert!(!destroy.prune);
+}
+
+/// `prune` is always sent, so a destroy that keeps the data says so on the wire.
+#[test]
+fn worker_destroy_request_always_carries_prune() {
+    let keep = WorkerDestroyRequest {
+        auth: "tok".into(),
+        state_key: "k".into(),
+        prune: false,
+    };
+    assert_eq!(
+        to_value(keep).unwrap(),
+        json!({"auth": "tok", "state_key": "k", "prune": false})
+    );
+    let example: WorkerDestroyRequest =
+        from_value(wire_examples().remove("WorkerDestroyRequest").unwrap()).unwrap();
+    assert!(example.prune);
 }
 
 /// A 1.2 peer sends none of the 1.3 fields; each reads as "not there".
@@ -535,6 +589,15 @@ fn worker_source_is_kind_tagged() {
     assert_eq!(
         to_value(local).unwrap(),
         json!({"kind": "local", "host_path": "/p", "run_override": null})
+    );
+    let binary = WorkerSource::Binary {
+        package: "my-binary".into(),
+        host_path: "/b".into(),
+        executable: "bin/my-binary".into(),
+    };
+    assert_eq!(
+        to_value(binary).unwrap(),
+        json!({"kind": "binary", "package": "my-binary", "host_path": "/b", "executable": "bin/my-binary"})
     );
 }
 

@@ -1,20 +1,27 @@
 {
-  "ContractVersion": { "major": 1, "minor": 3 },
+  "ContractVersion": { "major": 1, "minor": 4 },
   "AdapterInfoRequest": {},
   "AdapterInfo": {
     "adapter": "sandbox-libkrun",
     "adapter_version": "1.0.0",
-    "contract": { "major": 1, "minor": 3 },
-    "features": ["worker.scoped_auth", "worker.lease", "worker.logs_from_end", "worker.build"]
+    "contract": { "major": 1, "minor": 4 },
+    "features": [
+      "worker.scoped_auth",
+      "worker.lease",
+      "worker.logs_from_end",
+      "worker.build",
+      "worker.binary",
+      "worker.prune"
+    ]
   },
   "RouterInfo": {
     "adapter": "sandbox-libkrun",
     "namespace": "sandbox-libkrun",
-    "contract": { "major": 1, "minor": 3 },
+    "contract": { "major": 1, "minor": 4 },
     "info": {
       "adapter": "sandbox-libkrun",
       "adapter_version": "1.0.0",
-      "contract": { "major": 1, "minor": 3 },
+      "contract": { "major": 1, "minor": 4 },
       "features": ["worker.scoped_auth"]
     }
   },
@@ -27,11 +34,17 @@
   "WorkerBuildRequest": {
     "auth": "tok",
     "state_key": "9f2c1e",
-    "worker_name": "my-bundle",
-    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/work/proj/.workers/my-bundle" },
-    "output_dir": "/work/proj/.build/my-bundle",
+    "worker_name": "my-binary",
+    "source": {
+      "kind": "binary",
+      "package": "my-binary",
+      "host_path": "/work/proj/.iii/workers/my-binary",
+      "executable": "my-binary"
+    },
+    "output_dir": "/work/proj/.iii/build/my-binary",
     "env": { "A": "1" },
-    "logs": { "channel_id": "ch-2", "access_key": "key", "direction": "write" }
+    "logs": { "channel_id": "ch-2", "access_key": "key", "direction": "write" },
+    "base_image": "docker.io/library/alpine:3.20"
   },
   "WorkerBuildResponse": {
     "build_id": "sha256:f684ef7fe150347066bd568ad8e769e3680be2a6fe68db0aea54e18251f57108",
@@ -77,6 +90,6 @@
   "LogRecord": { "stream": "stderr", "line": "boom", "ts_ms": 1700000001000, "cursor": 8 },
   "LogStream": "stdout",
   "WorkerStopRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3, "grace_ms": 5000 },
-  "WorkerDestroyRequest": { "auth": "tok", "state_key": "9f2c1e" },
+  "WorkerDestroyRequest": { "auth": "tok", "state_key": "9f2c1e", "prune": true },
   "WorkerDestroyResponse": { "destroyed": true }
 }

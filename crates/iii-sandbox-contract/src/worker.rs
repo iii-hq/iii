@@ -64,6 +64,18 @@ pub enum WorkerSource {
         /// in Compose's package cache.
         host_path: String,
     },
+    /// A `binary` package's Linux build, run as the worker in the VM. Its build needs
+    /// [`WorkerBuildRequest::base_image`]. Since contract 1.4
+    /// ([`FEATURE_BINARY`](crate::FEATURE_BINARY)).
+    Binary {
+        /// Manifest name, not the container key.
+        package: String,
+        /// The container's package directory, as for `Bundle`, where Compose put the binary's
+        /// Linux build for the host's architecture. `worker::build` copies it into the image.
+        host_path: String,
+        /// Path of the executable, relative to `host_path`.
+        executable: String,
+    },
     /// Local sources always sync into the VM.
     Local {
         host_path: String,
@@ -120,6 +132,13 @@ pub struct WorkerBuildRequest {
     /// write for 5 s, the adapter writes a one-byte binary frame to keep the channel alive;
     /// readers take records from text frames only.
     pub logs: StreamChannelRef,
+    /// The image reference the build starts from, instead of the manifest's
+    /// `runtime.base_image`; `None` keeps the manifest's. Required with a
+    /// [`WorkerSource::Binary`], whose package names no base image: without it the build gets
+    /// `S501`. An older adapter ignores the field, so a caller sends it only to one that
+    /// announces [`FEATURE_BINARY`](crate::FEATURE_BINARY). Since contract 1.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
 }
 
 /// Reply of `worker::build`, once the image is in place. Since contract 1.3.
@@ -273,11 +292,19 @@ pub struct WorkerStopRequest {
     pub grace_ms: u64,
 }
 
-/// Refused while the VM is running.
+/// Refused while the VM is running. Deletes the VM's runtime state; `prune` says whether its
+/// data goes too.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
+    /// Delete the VM's data too, as every destroy did before contract 1.4. Without it the
+    /// adapter keeps the data disk (`upper.ext4`) and the copies the 0.26 migration kept
+    /// (`*.pre-build`), and a later `worker::start` of the same `state_key` reuses them. An older
+    /// adapter ignores the field and deletes everything, so a caller that means to keep the data
+    /// checks [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) first. Since contract 1.4.
+    #[serde(default)]
+    pub prune: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

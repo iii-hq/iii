@@ -347,10 +347,10 @@ and the container runs on its current build. A change of `source` is a package u
 rebuilds (section 5.3). A change of code alone (outside the dependency files) is not a change:
 a `path://` worker's code keeps syncing live into the guest (section 9.3).
 
-## 6. Sandbox contract 1.3
+## 6. Sandbox contract 1.3 and 1.4
 
-All changes are additive. `CONTRACT_MAJOR` stays 1; `CONTRACT_MINOR` becomes 3. Unknown fields
-are ignored by both sides, as today.
+All changes are additive. `CONTRACT_MAJOR` stays 1; `CONTRACT_MINOR` becomes 3, then 4 with
+section 6.7. Unknown fields are ignored by both sides, as today.
 
 ### 6.1 Feature
 
@@ -510,6 +510,63 @@ Each gets a row in `tests/fixtures/sandbox_error_codes.json` and an anchor in
   updated in KAN-283; no release order between the crate and the adapter is required.
 - `sandbox-libkrun` advertises `worker.build` from its next minor release (written here as
   0.4.0). Compose's `ADAPTER_RANGE` moves to `^0.4`.
+
+### 6.7 Contract 1.4: binary workers, and a destroy that keeps the data
+
+`CONTRACT_MINOR` becomes 4. Two features, advertised in `AdapterInfo.features`:
+
+```rust
+/// `worker::build` and `worker::start` take a `WorkerSource::Binary`, and `worker::build`
+/// honours `WorkerBuildRequest::base_image`. Since contract 1.4.
+pub const FEATURE_BINARY: &str = "worker.binary";
+/// `worker::destroy` keeps the VM's data disk unless `WorkerDestroyRequest::prune` is set.
+/// Since contract 1.4.
+pub const FEATURE_PRUNE: &str = "worker.prune";
+
+pub enum WorkerSource {
+    // ... Bundle and Local unchanged ...
+    /// A `binary` package's Linux build, run as the worker in the VM. Since contract 1.4.
+    Binary {
+        /// Manifest name, not the container key.
+        package: String,
+        /// The container's package directory, where Compose put the binary's Linux build for
+        /// the host's architecture. `worker::build` copies it into the image.
+        host_path: String,
+        /// Path of the executable, relative to `host_path`.
+        executable: String,
+    },
+}
+
+pub struct WorkerBuildRequest {
+    // ... unchanged fields ...
+    /// The image the build starts from, instead of the manifest's `runtime.base_image`.
+    /// Since contract 1.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
+}
+
+pub struct WorkerDestroyRequest {
+    pub auth: String,
+    pub state_key: String,
+    /// Delete the VM's data too. Since contract 1.4.
+    #[serde(default)]
+    pub prune: bool,
+}
+```
+
+- **`base_image`:** `None` keeps the manifest's. A binary package names no base image, so
+  `base_image` is required with a `Binary` source; a build without it gets `S501`.
+- **Destroy:** without `prune`, `worker::destroy` deletes the VM's runtime state but keeps its
+  data disk (`upper.ext4`) and the 0.26 copies (`*.pre-build`, section 7.3); a later
+  `worker::start` of the same `state_key` reuses them. With `prune`, everything goes, as in
+  1.3.
+- **Older peers:** a 1.3 request has neither field and reads as `base_image: None`,
+  `prune: false`. A 1.3 adapter ignores both: it deletes everything on every destroy and cannot
+  build a binary, so a caller sends them only to an adapter that announces the features.
+- **Versions:** `iii-sandbox-contract` gets the fields, the features, wire examples and
+  `CONTRACT_MINOR = 4`; `sandbox-libkrun` mirrors them in `src/wire.rs` and `tests/fixtures`
+  and advertises both features from 0.4.1. Compose requires both and moves `ADAPTER_RANGE` to
+  `^0.4.1`.
 
 ## 7. Compose
 
