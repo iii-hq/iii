@@ -36,7 +36,7 @@ Every service comes with its own runtime, API, and failure modes. Getting servic
 
 It's estimated that up to 70% of development time is dedicated to integrations. 40% is the lowest estimate we could find.
 
-iii removes that work with one primitive, the **Function**. Services, agents, and tools connect to one engine as workers, and everything they can do is a Function that any other worker can call or observe, in any language and on any machine. Workers can then be defined in a Compose file and run them on any infrastructure. An entire service stack can be brought up, down, upgraded, or swapped out with ease.
+iii removes that work with one primitive, the **Function**. Services, agents, and tools connect to one engine as workers, and everything they can do is a Function that any other worker can call or observe, in any language and on any machine. Workers can then be defined in a Compose file and run on any infrastructure. An entire service stack can be brought up, down, upgraded, or swapped out with ease.
 
 iii is like having an entire app platform at your fingertips without the vendor lock-in. The result is a system that is composable, observable, discoverable, extensible, and reactive. See [Built for C.O.D.E.R.](#built-for-coder).
 
@@ -163,6 +163,6 @@ Report bugs and request features in [GitHub issues](https://github.com/iii-hq/ii
 ## License
 
 - `engine/` (engine and CLI): [Elastic License 2.0](engine/LICENSE)
-- iii Workers and SDKs: [Apache License 2.0](sdk/LICENSE)
+- iii Workers, docs, and SDKs: [Apache License 2.0](sdk/LICENSE)
 
 All contributions are made under Apache 2.0. See [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions) for full contribution and licensing details.

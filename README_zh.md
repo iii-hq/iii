@@ -32,11 +32,13 @@
 
 ## 为什么选择 iii
 
-每个服务都有自己的运行时、API 和故障方式。连接它们需要网关、重试、同步、链路追踪，以及永远需要维护的胶水代码。每个新服务都要与技术栈中已有的每个服务做集成：四个服务有六条可能的集成边，二十个服务有 190 条。
+每个服务都有自己的运行时、API 和故障方式。让服务协同工作意味着没完没了的集成工作：错误处理、网关、同步、链路追踪，以及永无止境的维护。
 
-iii 用一个原语 **Function** 消除这些工作。服务、智能体和工具作为 worker 连接到同一个引擎，它们能做的一切都是函数，任何其他 worker 都可以调用（call）或观察（observe）它，不论使用什么语言、运行在哪台机器上。HTTP 路由、队列、数据库变更、智能体和业务逻辑都以同样的方式工作，因此添加第两百个 worker 与添加第二个是同一个操作。
+据估计，多达 70% 的开发时间花在集成上。我们能找到的最低估计也有 40%。
 
-结果是一个可组合、可观测、可发现、可扩展且具备响应能力的系统。参见[为 C.O.D.E.R. 而构建](#为-coder-而构建)。
+iii 用一个原语 **Function** 消除这些工作。服务、智能体和工具作为 worker 连接到同一个引擎，它们能做的一切都是 Function，任何其他 worker 都可以调用（call）或观察（observe）它，不论使用什么语言、运行在哪台机器上。worker 可以定义在 Compose 文件中，并运行在任何基础设施上。整个服务栈可以轻松地启动、停止、升级或替换。
+
+iii 就像把一整个应用平台握在手中，却没有供应商锁定。结果是一个可组合、可观测、可发现、可扩展且具备响应能力的系统。参见[为 C.O.D.E.R. 而构建](#为-coder-而构建)。
 
 ## 一个原语：Function
 
@@ -78,11 +80,11 @@ console.log(order)
 
 | | 特性 | 你得到什么 |
 | --- | --- | --- |
-| **C** | 可组合性（Composability） | 不同语言的函数通过同一个引擎协同工作。 |
-| **O** | 可观测性（Observability） | 一条 trace 跨语言、跨机器跟踪一个请求。日志附着在写入它的 span 上。可通过 OTLP 导出。 |
-| **D** | 可发现性（Discoverability） | 引擎维护所有 worker 和函数的实时注册表。先搜索运行中的系统，再搜索 worker 注册表。 |
-| **E** | 可扩展性（Extensibility） | `compose::add` 添加一个 worker 并解析其依赖。其他所有 worker 可以立即调用它。 |
-| **R** | 响应性（Reactivity） | observer 使系统具备响应能力。为一个事件添加新的响应时，事件源不需要改变。 |
+| **C** | 可组合性（Composability） | 不同语言、不同位置的函数无缝协同工作。 |
+| **O** | 可观测性（Observability） | 一条 trace 跨语言、跨机器跟踪每一个执行步骤。可通过 OTLP 导出。 |
+| **D** | 可发现性（Discoverability） | 引擎维护所有 Function 的实时注册表。它始终保持最新，让开发者和智能体对系统一目了然。 |
+| **E** | 可扩展性（Extensibility） | 只需一条命令，就可以随时添加或移除 worker。 |
+| **R** | 响应性（Reactivity） | 任何东西都可以是观察者或被观察者。响应和事件不需要预先规划。 |
 
 ## 安装
 
@@ -161,6 +163,6 @@ pnpm test && cargo test      # tests
 ## 许可证
 
 - `engine/`（引擎和 CLI）：[Elastic License 2.0](engine/LICENSE)
-- 其他所有内容，包括 SDK：[Apache License 2.0](sdk/LICENSE)
+- iii worker、文档和 SDK：[Apache License 2.0](sdk/LICENSE)
 
-所有贡献均以 Apache 2.0 许可提交。参见 [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions)。
+所有贡献均以 Apache 2.0 许可提交。完整的贡献和许可说明参见 [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions)。
