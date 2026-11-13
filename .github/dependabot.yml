@@ -25,3 +25,47 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directories:
+      - /sdk/packages/go/iii
+      - /sdk/packages/go/iii-example
+      - /docs/scripts/godoc-json
+      - /docs/next/scripts/godoc-json
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      gomod-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: uv
+    directories:
+      - /sdk/packages/python/iii
+      - /sdk/packages/python/helpers
+      - /sdk/packages/python/observability
+      - /sdk/packages/python/iii-example
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      uv-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: /engine
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      docker-minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: bun
+    directory: /services/subscribe/workers/subscribe
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      bun-minor-and-patch:
+        update-types: ["minor", "patch"]

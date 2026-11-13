@@ -28,7 +28,10 @@ reveals nothing about the API key, and a new API key retires every link sent bef
 sent while an address was unsubscribed can re-subscribe it, so the link of a first signup can't
 bring back someone who unsubscribed later.
 
-Both routes must come from an iii.dev origin (`ALLOWED_ORIGINS`). `Origin` is easy to forge from a
+An `Origin` header that is present must be an iii.dev origin (`ALLOWED_ORIGINS`), on both routes.
+`subscribe` also accepts a request with no `Origin` at all: a server-to-server caller sends none,
+such as ade's worker (`{"email": "...", "source": "ade"}`). Its confirmation link still opens
+iii.dev, and `confirm` requires an allowed `Origin`. `Origin` is easy to forge from a
 script, so at most `MAX_EMAILS_PER_MINUTE` (default 20, per replica) confirmation emails go out per
 minute. `subscribe` answers `{"ok": true}` whether or not the address was already on the list, a
 400 for an invalid email or source, a 403 for another origin, a 429 past the cap, or a 502 when
