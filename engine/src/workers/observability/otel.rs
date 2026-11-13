@@ -17,6 +17,7 @@ use super::config::{
     LogsExporterType, ObservabilityWorkerConfig, OtelExporterType, TraceStorageConfig,
 };
 use super::otlp_exporter::build_span_exporter;
+use super::redaction::{self, PAYLOAD_ATTRIBUTE_KEY};
 use super::sampler::AdvancedSampler;
 use opentelemetry::propagation::{TextMapCompositePropagator, TextMapPropagator};
 use opentelemetry::{
@@ -630,36 +631,15 @@ fn approx_span_size(span: &StoredSpan) -> u64 {
     total as u64
 }
 
-fn sensitive_attribute_key(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "authorization"
-            | "proxy-authorization"
-            | "cookie"
-            | "set-cookie"
-            | "x-api-key"
-            | "api-key"
-            | "api_key"
-            | "access_token"
-            | "refresh_token"
-            | "password"
-            | "secret"
-            | "credential"
-    )
-}
-
 fn sanitize_attributes(attributes: &mut [(String, String)]) {
     for (key, value) in attributes {
-        if sensitive_attribute_key(key) {
-            *value = "[REDACTED]".to_string();
-        }
+        redaction::redact_attribute(key, value);
     }
 }
 
-/// Attribute the SDKs use for a captured invocation payload, and the flag they
-/// set when they truncated it themselves. The engine raises the same flag when
-/// its own cap cuts the payload, so readers see one signal either way.
-const PAYLOAD_ATTRIBUTE_KEY: &str = "iii.payload.json";
+/// Flag the SDKs set on a captured payload (`PAYLOAD_ATTRIBUTE_KEY`) they
+/// truncated themselves. The engine raises the same flag when its own cap cuts
+/// the payload, so readers see one signal either way.
 const PAYLOAD_TRUNCATED_KEY: &str = "iii.payload.truncated";
 
 /// Marker appended to a cut attribute value: `…[truncated <N> bytes]`.
@@ -721,9 +701,9 @@ fn truncate_attributes(attributes: &mut Vec<(String, String)>, max_bytes: usize)
     }
 }
 
-/// Redact sensitive attributes and cap every attribute value at
-/// `max_attribute_bytes` (zero = uncapped). Runs once per span at ingest,
-/// before the span is measured or stored.
+/// Redact sensitive attributes and the credentials inside captured payloads,
+/// then cap every attribute value at `max_attribute_bytes` (zero = uncapped).
+/// Runs once per span at ingest, before the span is measured or stored.
 fn sanitize_span(span: &mut StoredSpan, max_attribute_bytes: usize) {
     sanitize_attributes(&mut span.attributes);
     truncate_attributes(&mut span.attributes, max_attribute_bytes);
@@ -2622,8 +2602,11 @@ impl TeeSpanExporter {
 impl SpanExporter for TeeSpanExporter {
     fn export(
         &self,
-        batch: Vec<SpanData>,
+        mut batch: Vec<SpanData>,
     ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+        // Both halves get the redacted batch: the memory side re-checks at
+        // ingest, the OTLP half ships what it is given.
+        batch.iter_mut().for_each(redact_span_data);
         // Store in memory first (for `observability::on-span` and API access).
         let stored: Vec<StoredSpan> = batch
             .iter()
@@ -2645,6 +2628,60 @@ impl SpanExporter for TeeSpanExporter {
 
     fn shutdown_with_timeout(&self, timeout: std::time::Duration) -> OTelSdkResult {
         self.otlp_exporter.shutdown_with_timeout(timeout)
+    }
+}
+
+/// Redacts the engine's own spans before an OTLP exporter ships them. The
+/// memory store redacts at ingest (`sanitize_span`) and worker spans are
+/// redacted as they arrive (`redact_otlp_request`); this covers what the
+/// engine exports itself, such as invocations of SDK workers it runs
+/// in-process.
+#[derive(Debug)]
+struct RedactingSpanExporter<E>(E);
+
+impl<E: SpanExporter> SpanExporter for RedactingSpanExporter<E> {
+    fn export(
+        &self,
+        mut batch: Vec<SpanData>,
+    ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+        batch.iter_mut().for_each(redact_span_data);
+        self.0.export(batch)
+    }
+
+    fn shutdown_with_timeout(&self, timeout: std::time::Duration) -> OTelSdkResult {
+        self.0.shutdown_with_timeout(timeout)
+    }
+
+    fn force_flush(&self) -> OTelSdkResult {
+        self.0.force_flush()
+    }
+
+    // Forwarded for the same reason as `TeeSpanExporter::set_resource`.
+    fn set_resource(&mut self, resource: &Resource) {
+        self.0.set_resource(resource);
+    }
+}
+
+fn redact_span_data(span: &mut SpanData) {
+    redact_key_values(&mut span.attributes);
+    for event in &mut span.events.events {
+        redact_key_values(&mut event.attributes);
+    }
+    for link in &mut span.links.links {
+        redact_key_values(&mut link.attributes);
+    }
+}
+
+fn redact_key_values(attributes: &mut [KeyValue]) {
+    for attribute in attributes {
+        if redaction::is_sensitive_key(attribute.key.as_str()) {
+            attribute.value = opentelemetry::Value::from(redaction::REDACTED);
+        } else if attribute.key.as_str() == PAYLOAD_ATTRIBUTE_KEY
+            && let opentelemetry::Value::String(payload) = &attribute.value
+            && let Some(redacted) = redaction::redact_payload_json(payload.as_str())
+        {
+            attribute.value = opentelemetry::Value::from(redacted);
+        }
     }
 }
 
@@ -3409,7 +3446,7 @@ where
                     // snapshots would never be replaced.
                     SdkTracerProvider::builder()
                         .with_span_processor(iii_helpers::observability::BaggageSpanProcessor)
-                        .with_batch_exporter(exporter)
+                        .with_batch_exporter(RedactingSpanExporter(exporter))
                         .with_sampler(sampler)
                         .with_id_generator(RandomIdGenerator::default())
                         .with_resource(resource)
@@ -4205,6 +4242,65 @@ impl OtlpAnyValue {
     }
 }
 
+impl OtlpAnyValue {
+    fn redacted() -> Self {
+        Self {
+            string_value: Some(redaction::REDACTED.to_string()),
+            int_value: None,
+            double_value: None,
+            bool_value: None,
+            kvlist_value: None,
+            array_value: None,
+        }
+    }
+
+    /// Redacts the sensitive entries of a map value, at any depth.
+    fn redact_nested(&mut self) {
+        if let Some(list) = &mut self.kvlist_value {
+            redact_otlp_attributes(&mut list.values);
+        }
+        if let Some(array) = &mut self.array_value {
+            for item in &mut array.values {
+                item.redact_nested();
+            }
+        }
+    }
+}
+
+/// Redacts a worker's spans as they arrive, before anything stores them or
+/// forwards them to the collector.
+fn redact_otlp_request(request: &mut OtlpExportTraceServiceRequest) {
+    for resource in &mut request.resource_spans {
+        for scope in &mut resource.scope_spans {
+            for span in &mut scope.spans {
+                redact_otlp_attributes(&mut span.attributes);
+                for event in &mut span.events {
+                    redact_otlp_attributes(&mut event.attributes);
+                }
+                for link in &mut span.links {
+                    redact_otlp_attributes(&mut link.attributes);
+                }
+            }
+        }
+    }
+}
+
+fn redact_otlp_attributes(attributes: &mut [OtlpKeyValue]) {
+    for attribute in attributes {
+        if redaction::is_sensitive_key(&attribute.key) {
+            attribute.value = Some(OtlpAnyValue::redacted());
+        } else if let Some(value) = &mut attribute.value {
+            if attribute.key == PAYLOAD_ATTRIBUTE_KEY
+                && let Some(payload) = &mut value.string_value
+                && let Some(redacted) = redaction::redact_payload_json(payload)
+            {
+                *payload = redacted;
+            }
+            value.redact_nested();
+        }
+    }
+}
+
 /// Convert OTLP status code to string with optional description
 fn otlp_status_to_string_with_description(status: Option<&OtlpStatus>) -> (String, Option<String>) {
     match status {
@@ -4502,6 +4598,9 @@ async fn ingest_otlp_request(mut request: OtlpExportTraceServiceRequest) -> anyh
     {
         schedule_held_release();
     }
+    // Redact before the spans are stored or forwarded. Spans still waiting
+    // for their root stay in memory as received and are redacted on release.
+    redact_otlp_request(&mut request);
 
     // Store in memory if available (for API access)
     if let Some(storage) = get_span_storage() {
@@ -10790,5 +10889,155 @@ mod tests {
         assert_eq!(invalidation.trace_id, "trace-live");
         assert!(storage.is_empty());
         assert!(!storage.discard_pending("trace-live", "span-live"));
+    }
+
+    /// Issue #2563: a worker span as the http worker records it, with the
+    /// session cookie in a header attribute and in the captured payload.
+    fn credential_bearing_request() -> OtlpExportTraceServiceRequest {
+        let payload =
+            r#"{"headers":{"cookie":"sid=abc"},"body":{"idToken":"eyJhbGciOi","user":"ana"}}"#;
+        serde_json::from_value(serde_json::json!({
+            "resourceSpans": [{
+                "resource": {"attributes": [
+                    {"key": "service.name", "value": {"stringValue": "http"}}
+                ]},
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+                        "spanId": "00f067aa0ba902b7",
+                        "name": "execute api::login",
+                        "startTimeUnixNano": "1",
+                        "endTimeUnixNano": "2",
+                        "attributes": [
+                            {"key": "http.request.header.cookie",
+                             "value": {"arrayValue": {"values": [{"stringValue": "sid=abc"}]}}},
+                            {"key": "http.request.headers",
+                             "value": {"kvlistValue": {"values": [
+                                {"key": "set-cookie", "value": {"stringValue": "sid=abc"}},
+                                {"key": "accept", "value": {"stringValue": "*/*"}}
+                             ]}}},
+                            {"key": "function_id", "value": {"stringValue": "api::login"}}
+                        ],
+                        "events": [{
+                            "name": "iii.invocation.input",
+                            "timeUnixNano": "1",
+                            "attributes": [
+                                {"key": "iii.payload.json", "value": {"stringValue": payload}}
+                            ]
+                        }]
+                    }]
+                }]
+            }]
+        }))
+        .expect("valid OTLP request")
+    }
+
+    #[test]
+    fn worker_spans_are_redacted_before_forwarding() {
+        let mut request = credential_bearing_request();
+        redact_otlp_request(&mut request);
+        // What the SDK span forwarder hands the collector.
+        let spans = convert_resource_span_to_span_data(&request.resource_spans[0]);
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        let values: Vec<String> = span
+            .attributes
+            .iter()
+            .chain(
+                span.events
+                    .events
+                    .iter()
+                    .flat_map(|event| &event.attributes),
+            )
+            .map(|attribute| attribute.value.as_str().into_owned())
+            .collect();
+        for value in &values {
+            assert!(
+                !value.contains("sid=abc") && !value.contains("eyJ"),
+                "credential forwarded: {value}"
+            );
+        }
+        assert!(values.iter().any(|value| value == "api::login"));
+        let payload = span.events.events[0]
+            .attributes
+            .iter()
+            .find(|attribute| attribute.key.as_str() == PAYLOAD_ATTRIBUTE_KEY)
+            .expect("payload kept");
+        assert_eq!(
+            payload.value.as_str(),
+            r#"{"headers":{"cookie":"[REDACTED]"},"body":{"idToken":"[REDACTED]","user":"ana"}}"#
+        );
+    }
+
+    #[test]
+    fn stored_spans_have_credentials_redacted() {
+        let storage = InMemorySpanStorage::new(16);
+        let mut span = archive_test_span("trace-redact", "span-redact");
+        span.attributes = vec![
+            (
+                "http.request.header.set-cookie".to_string(),
+                "sid=abc".to_string(),
+            ),
+            ("function_id".to_string(), "api::login".to_string()),
+        ];
+        span.events = vec![StoredSpanEvent {
+            name: "iii.invocation.output".to_string(),
+            timestamp_unix_nano: 1,
+            attributes: vec![(
+                PAYLOAD_ATTRIBUTE_KEY.to_string(),
+                r#"{"customToken":"t","ok":true}"#.to_string(),
+            )],
+        }];
+        storage.add_spans(vec![span]);
+
+        let stored = storage.get_spans();
+        assert_eq!(
+            stored[0].attributes,
+            vec![
+                (
+                    "http.request.header.set-cookie".to_string(),
+                    "[REDACTED]".to_string()
+                ),
+                ("function_id".to_string(), "api::login".to_string()),
+            ]
+        );
+        assert_eq!(
+            stored[0].events[0].attributes[0].1,
+            r#"{"customToken":"[REDACTED]","ok":true}"#
+        );
+    }
+
+    #[test]
+    fn engine_spans_are_redacted_before_otlp_export() {
+        use opentelemetry::trace::{Span as _, Tracer as _, TracerProvider as _};
+
+        let wire = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(RedactingSpanExporter(CapturingExporter(wire.clone())))
+            .build();
+        let tracer = provider.tracer("test");
+        let mut span = tracer
+            .span_builder("execute bridge::fn")
+            .with_attributes([KeyValue::new(
+                "http.request.header.authorization",
+                "Bearer abc",
+            )])
+            .start(&tracer);
+        span.add_event(
+            "iii.invocation.input",
+            vec![KeyValue::new(
+                PAYLOAD_ATTRIBUTE_KEY,
+                r#"{"cookie":"sid=abc","n":1}"#,
+            )],
+        );
+        span.end();
+
+        let wire = wire.lock().unwrap();
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0].attributes[0].value.as_str(), "[REDACTED]");
+        assert_eq!(
+            wire[0].events.events[0].attributes[0].value.as_str(),
+            r#"{"cookie":"[REDACTED]","n":1}"#
+        );
     }
 }

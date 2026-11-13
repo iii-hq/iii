@@ -10,6 +10,7 @@ pub mod logs_layer;
 pub mod metrics;
 pub mod otel;
 pub(crate) mod otlp_exporter;
+pub(crate) mod redaction;
 mod sampler;
 pub(crate) mod trace_store;
 pub(crate) mod ui;
