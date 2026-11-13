@@ -23,13 +23,15 @@ Use `::` in function IDs, leading slashes in HTTP `path` args, and `expression` 
 
 ## Function Registration
 
-Register local handlers when you control the implementation. Register HTTP-invoked functions when
-iii should call an existing external endpoint.
+Register local handlers when you control the implementation. To call an existing external
+endpoint, register a handler that makes the HTTP call. HTTP-invoked functions
+(`HttpInvocationConfig`, `iii-http-functions`) are deprecated and will be removed in an upcoming
+release.
 
 | Shape | Use for |
 | --- | --- |
 | `registerFunction(id, handler, options?)` | Local worker code |
-| `registerFunction(id, HttpInvocationConfig, options?)` | Existing HTTP services |
+| `registerFunction(id, HttpInvocationConfig, options?)` | Deprecated (iii-http-functions); use a handler that makes the HTTP call |
 | `observe(source, target, options?)` | Running `target` when `source` runs: another function, an HTTP route, a cron schedule, a queue topic, an engine event (`iii-observe`) |
 | `call({ function_id, payload, action?, timeoutMs? })` | Calling any function by ID |
 
@@ -241,8 +243,10 @@ iii.observe(
   `iii.InputStreamFromReader()`). The other side receives an `InputStream` to read, or an
   `OutputStream` for a sink. Use `iii.pipe()` (Go `client.Pipe(ctx)`) only when the stream must
   exist before its data.
-- **HTTP-invoked functions**: use `HttpInvocationConfig` for legacy APIs, third-party endpoints, or
-  immutable services. Use environment variable names for auth fields, not raw secrets.
+- **HTTP-invoked functions** (deprecated, iii-http-functions): `HttpInvocationConfig` still works but
+  will be removed in an upcoming release. For legacy APIs, third-party endpoints, or immutable
+  services, register a handler that makes the HTTP call and keeps its secrets in the worker's
+  environment. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions
 - **Schemas**: Rust can derive request/response schemas with `schemars::JsonSchema`; Python can use
   type hints or Pydantic; Node can pass JSON Schema manually.
 

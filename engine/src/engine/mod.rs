@@ -2439,6 +2439,8 @@ impl Engine {
                         updated_at: None,
                     };
 
+                    http_module.warn_deprecated_registration(worker.id);
+
                     if let Err(err) = http_module.register_http_function(&namespace, config).await {
                         tracing::error!(
                             worker_id = %worker.id,

@@ -561,6 +561,9 @@ class Sdk implements IIIClient {
    *
    * Pass a handler for local execution, or an {@link HttpInvocationConfig}
    * for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+   * HTTP-invoked functions are deprecated (iii-http-functions) and will be
+   * removed in an upcoming release: register a handler that makes the HTTP
+   * call instead. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions
    *
    * A function that sets `args_format`, `private: true`, `observable: false`,
    * an `onObservationMatch` hook or an `onObservationDeliver` hook needs an engine

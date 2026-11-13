@@ -166,6 +166,7 @@
                   "next/upgrading/sandbox-worker",
                   "next/upgrading/from-0-24-x",
                   "next/upgrading/migrate-from-streams",
+                  "next/upgrading/migrate-from-http-functions",
                   "next/upgrading/workers-to-compose",
                   "next/upgrading/from-0-22-x"
                 ]

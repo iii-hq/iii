@@ -27,6 +27,11 @@ import (
 // Like every registration it is kept in memory and sent again on each reconnect. An
 // empty id, or one this client already registered, is refused as in
 // [Client.RegisterFunction]; [FunctionRef.Unregister] on the returned handle removes it.
+//
+// Deprecated: HTTP-invoked functions (iii-http-functions) will be removed in an
+// upcoming release; behavior is unchanged for now. Register a handler that makes
+// the HTTP call instead. Migration guide:
+// https://iii.dev/docs/upgrading/migrate-from-http-functions
 func (c *Client) RegisterHTTPFunction(id string, invocation HTTPInvocationRef, opts ...RegisterFunctionOptions) (*FunctionRef, error) {
 	if strings.TrimSpace(invocation.URL) == "" {
 		return nil, fmt.Errorf("iii: RegisterHTTPFunction(%q): invocation URL is empty", id)
