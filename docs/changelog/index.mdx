@@ -43,7 +43,8 @@ type: "reference"
     calls `keepOpen()`. In a call through an observer, such as an HTTP route, an `OutputStream` the
     handler never used closes only when the handler returns nothing, so a route that returns a
     buffered response keeps it. A received `InputStream` the handler started and did not finish is
-    cancelled when it returns. A call resolves after the sinks passed to it finish, within the call's
+    cancelled when it returns, and a read of a cancelled stream fails with `STREAM_CLOSED` instead
+    of ending. A call resolves after the sinks passed to it finish, within the call's
     timeout, and fails with `STREAM_ABORTED` if one was aborted. Forwarding an unread `InputStream` sends its ref, so no
     bytes pass through the forwarding worker.
   - `abort(reason)` is one call in every SDK, and it opens the socket first when needed, so the

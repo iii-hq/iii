@@ -1660,9 +1660,10 @@ for await (const line of csv.lines()) render(line);
 ```
 
 There is no `toReadable()` or `toWritable()` in the browser: `toWebStream()` returns the Web stream
-of an `InputStream` or an `OutputStream`. `abort(reason)` closes the stream's socket with code 4011, because a browser can
-only send 1000 or a code from 3000 to 4999. The engine treats it as an abort, so a reader on any
-0.27 SDK gets `STREAM_ABORTED`, with the reason `channel writer aborted: closed with code 4011`.
+of an `InputStream` or an `OutputStream`. `abort(reason)` closes the stream's socket with code 4011,
+because a browser can only send 1000 or a code from 3000 to 4999. The engine treats it as an abort,
+so a reader on any 0.27 SDK gets `STREAM_ABORTED`, with the reason `channel writer aborted: closed
+with code 4011`.
 
 ## Behavior changes
 
@@ -1674,7 +1675,8 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
   handler never touched is closed as well when it returns, except in a call through an observer (an
   HTTP route, for example), where it is closed only when the handler returns nothing.
 - **A received `InputStream` that the handler started reading and did not finish is cancelled when
-  the handler returns.** Finish reading before returning.
+  the handler returns.** Finish reading before returning: a read still running after it, in a
+  background task for example, fails with `STREAM_CLOSED`.
 - **Refs in call results arrive as streams.** In 0.26 a ref in a result stayed JSON. Code that read
   a ref out of a result and opened it now receives an `InputStream` or an `OutputStream` instead.
 - **A stream has one reader.** A second read of the same `InputStream` fails; call `tee()` before

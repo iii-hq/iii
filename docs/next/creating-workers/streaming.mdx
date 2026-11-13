@@ -790,10 +790,12 @@ A stream aborts in these cases:
 - The writer's worker crashes or loses its connection.
 
 Two more codes report a misuse rather than a failed transfer. `STREAM_CLOSED` is a write or a `send`
-after the stream was closed or aborted, or after its reader left. `STREAM_IN_USE` is a second read
-of an `InputStream`, the same stream twice in one payload, or passing on a stream that was already
-read to the end or already sent. TypeScript throws an `InvocationError` with that `code`, Python
-raises `StreamClosedError` or `StreamInUseError` (both `InvocationError`s), Rust returns
+after the stream was closed or aborted, or after its reader left, and a read of an `InputStream`
+that was cancelled: by `cancel()`, by leaving a read loop early, or when its handler returned. A
+cancelled stream never ends as if it were complete. `STREAM_IN_USE` is a second read of an
+`InputStream`, the same stream twice in one payload, or passing on a stream that was already read to
+the end or already sent. TypeScript throws an `InvocationError` with that `code`, Python raises
+`StreamClosedError` or `StreamInUseError` (both `InvocationError`s), Rust returns
 `Error::StreamClosed` or `Error::StreamInUse`, and Go returns an `*iii.InvocationError` with the
 code `iii.CodeStreamClosed` or `iii.CodeStreamInUse`.
 
@@ -909,7 +911,8 @@ path needs no cleanup:
 
 Using an `OutputStream` means writing to it, sending on it, or taking its native bridge. Reading an
 `InputStream` means starting any of its reads. Finish reading an `InputStream` before the handler
-returns: there is no way to keep a received `InputStream` open after it.
+returns: there is no way to keep a received `InputStream` open after it, and a read still running
+then (in a task the handler started, for example) fails with `STREAM_CLOSED`.
 
 A call through an observer is the exception for an `OutputStream` the handler never used. The HTTP
 worker calls a route's handler this way, and reads an untouched `response` with a result as a

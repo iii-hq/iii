@@ -244,7 +244,8 @@ values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to p
   `out.Write(ctx, b)`, `out.Send(ctx, v)`, `Close()`, `Abort(reason)`, `KeepOpen()`, and
   `Writer(ctx)` for an `io.Writer`.
 - **Lifecycle:** returning closes a received `OutputStream` the handler used, and throwing aborts
-  it; an `InputStream` the handler started and did not finish is cancelled. An untouched
+  it; an `InputStream` the handler started and did not finish is cancelled, and a read of a
+  cancelled stream fails with `STREAM_CLOSED` instead of ending. An untouched
   `OutputStream` is closed when the handler returns, except in a call through an observer (an HTTP
   route), where it is closed only when the handler returns nothing, so a route that returns
   `{ status_code, body }` keeps its buffered response.

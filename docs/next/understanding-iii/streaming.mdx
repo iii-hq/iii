@@ -128,7 +128,8 @@ The SDKs apply the same rules, so the common path needs no cleanup code:
   HTTP worker reads an untouched `response` with a result as a buffered response.
 - **A received `InputStream` that the handler started reading and did not finish is cancelled when
   the handler returns.** The engine then closes the writer, as it does whenever a reader leaves. A
-  stream the handler never read is left alone.
+  read still running at that moment, or started later, fails with `STREAM_CLOSED`, so a partly read
+  stream never looks complete. A stream the handler never read is left alone.
 - **A call resolves after the sinks passed to it have finished.** If the stream into a sink aborts,
   the call fails with `STREAM_ABORTED`, even when the function succeeded. The call's timeout covers
   this wait: when it expires first, the SDK aborts the open sinks and the call fails with `TIMEOUT`.
