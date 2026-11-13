@@ -412,7 +412,7 @@ fn contract_1_4_announces_its_features() {
 }
 
 /// A 1.3 peer sends none of the 1.4 fields: a 1.3 request reads as no `base_image` and no
-/// `prune`, and serializes again without `base_image`.
+/// `prune`, and serializes again unchanged. The fixture pins those shapes under `<Type>@1.3`.
 #[test]
 fn fields_added_in_1_4_read_as_absent_from_an_older_peer() {
     let info: AdapterInfo = from_value(json!({
@@ -425,39 +425,50 @@ fn fields_added_in_1_4_read_as_absent_from_an_older_peer() {
     assert!(!info.supports(FEATURE_BINARY));
     assert!(!info.supports(FEATURE_PRUNE));
 
-    let build_1_3 = json!({
-        "auth": "tok",
-        "state_key": "k",
-        "worker_name": "w",
-        "source": {"kind": "bundle", "package": "b", "host_path": "/p/.workers/w"},
-        "output_dir": "/p/.build/w",
-        "env": {},
-        "logs": {"channel_id": "ch", "access_key": "k", "direction": "write"}
-    });
+    let examples = wire_examples();
+    let build_1_3 = &examples["WorkerBuildRequest@1.3"];
     let build: WorkerBuildRequest = from_value(build_1_3.clone()).unwrap();
     assert!(build.base_image.is_none());
-    assert_eq!(to_value(&build).unwrap(), build_1_3);
+    assert_eq!(&to_value(&build).unwrap(), build_1_3);
 
-    let destroy: WorkerDestroyRequest =
-        from_value(json!({"auth": "tok", "state_key": "k"})).unwrap();
+    let destroy_1_3 = &examples["WorkerDestroyRequest@1.3"];
+    let destroy: WorkerDestroyRequest = from_value(destroy_1_3.clone()).unwrap();
     assert!(!destroy.prune);
+    assert_eq!(&to_value(&destroy).unwrap(), destroy_1_3);
 }
 
-/// `prune` is always sent, so a destroy that keeps the data says so on the wire.
+/// `prune` is sent only when set, like `from_end`, so a destroy that keeps the data has the 1.3
+/// shape.
 #[test]
-fn worker_destroy_request_always_carries_prune() {
-    let keep = WorkerDestroyRequest {
+fn worker_destroy_request_sends_prune_only_when_set() {
+    let destroy = |prune| WorkerDestroyRequest {
         auth: "tok".into(),
         state_key: "k".into(),
-        prune: false,
+        prune,
     };
     assert_eq!(
-        to_value(keep).unwrap(),
-        json!({"auth": "tok", "state_key": "k", "prune": false})
+        to_value(destroy(false)).unwrap(),
+        json!({"auth": "tok", "state_key": "k"})
     );
-    let example: WorkerDestroyRequest =
-        from_value(wire_examples().remove("WorkerDestroyRequest").unwrap()).unwrap();
-    assert!(example.prune);
+    assert_eq!(
+        to_value(destroy(true)).unwrap(),
+        json!({"auth": "tok", "state_key": "k", "prune": true})
+    );
+}
+
+/// A binary source names its executable; there is no default to fall back on.
+#[test]
+fn binary_source_requires_executable() {
+    let error = from_value::<WorkerSource>(json!({
+        "kind": "binary",
+        "package": "my-binary",
+        "host_path": "/b"
+    }))
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `executable`"),
+        "{error}"
+    );
 }
 
 /// A 1.2 peer sends none of the 1.3 fields; each reads as "not there".
@@ -648,10 +659,15 @@ fn round_trips<T: Serialize + DeserializeOwned>(name: &str, example: &Value) {
     assert_eq!(&to_value(t).unwrap(), example, "{name}");
 }
 
+/// The type a fixture key names: `<Type>`, or `<Type>@<version>` for the shape an older peer sends.
+fn fixture_type(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(ty, _)| ty)
+}
+
 /// Maps a fixture key to its type by name; a key with no arm fails the test.
 macro_rules! round_trip_by_name {
     ($name:expr, $example:expr, $($ty:ident),+ $(,)?) => {
-        match $name {
+        match fixture_type($name) {
             $(stringify!($ty) => round_trips::<$ty>($name, $example),)+
             other => panic!("no round-trip arm for fixture key {other}"),
         }
@@ -662,7 +678,7 @@ macro_rules! round_trip_by_name {
 fn wire_examples_round_trip() {
     let examples = wire_examples();
 
-    // Types declared in info.rs and worker.rs; the fixture needs one example for each.
+    // Types declared in info.rs and worker.rs; the fixture needs an example for each.
     let declared: BTreeSet<String> = [
         include_str!("../src/info.rs"),
         include_str!("../src/worker.rs"),
@@ -675,7 +691,11 @@ fn wire_examples_round_trip() {
     })
     .map(|rest| rest.chars().take_while(|c| c.is_alphanumeric()).collect())
     .collect();
-    assert_eq!(examples.keys().cloned().collect::<BTreeSet<_>>(), declared);
+    let named: BTreeSet<String> = examples
+        .keys()
+        .map(|k| fixture_type(k).to_string())
+        .collect();
+    assert_eq!(named, declared);
 
     for (name, example) in &examples {
         round_trip_by_name!(

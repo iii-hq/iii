@@ -64,16 +64,22 @@ pub enum WorkerSource {
         /// in Compose's package cache.
         host_path: String,
     },
-    /// A `binary` package's Linux build, run as the worker in the VM. Its build needs
-    /// [`WorkerBuildRequest::base_image`]. Since contract 1.4
+    /// A `binary` package's Linux build, run as the worker in the VM. Since contract 1.4
     /// ([`FEATURE_BINARY`](crate::FEATURE_BINARY)).
+    ///
+    /// Only `worker::build`, which needs [`WorkerBuildRequest::base_image`], and a
+    /// `worker::start` with `build` take it; `worker::prepare` and a `worker::start` without
+    /// `build` refuse it with `S501`. The guest runs `/workspace/<executable>` with no arguments.
     Binary {
         /// Manifest name, not the container key.
         package: String,
         /// The container's package directory, as for `Bundle`, where Compose put the binary's
         /// Linux build for the host's architecture. `worker::build` copies it into the image.
+        /// It may hold an `iii.worker.yaml`; if it does, its name must equal `package`, it may
+        /// not set `scripts.setup`, and its `scripts.install` and `env` apply.
         host_path: String,
-        /// Path of the executable, relative to `host_path`.
+        /// Path of the executable, relative to `host_path`: normal components only, inside
+        /// `host_path`, not a symlink, and a regular executable file.
         executable: String,
     },
     /// Local sources always sync into the VM.
@@ -134,9 +140,10 @@ pub struct WorkerBuildRequest {
     pub logs: StreamChannelRef,
     /// The image reference the build starts from, instead of the manifest's
     /// `runtime.base_image`; `None` keeps the manifest's. Required with a
-    /// [`WorkerSource::Binary`], whose package names no base image: without it the build gets
-    /// `S501`. An older adapter ignores the field, so a caller sends it only to one that
-    /// announces [`FEATURE_BINARY`](crate::FEATURE_BINARY). Since contract 1.4.
+    /// [`WorkerSource::Binary`], whose package names no base image: a binary build without it,
+    /// or with an implausible reference, gets `S001`. An older adapter ignores the field, so a
+    /// caller sends it only to one that announces [`FEATURE_BINARY`](crate::FEATURE_BINARY).
+    /// Since contract 1.4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_image: Option<String>,
 }
@@ -298,16 +305,28 @@ pub struct WorkerStopRequest {
 pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
-    /// Delete the VM's data too, as every destroy did before contract 1.4. Without it the
-    /// adapter keeps the data disk (`upper.ext4`) and the copies the 0.26 migration kept
-    /// (`*.pre-build`), and a later `worker::start` of the same `state_key` reuses them. An older
-    /// adapter ignores the field and deletes everything, so a caller that means to keep the data
-    /// checks [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) first. Since contract 1.4.
-    #[serde(default)]
+    /// Delete the VM's data too, as every destroy did before contract 1.4.
+    ///
+    /// Without it the adapter keeps, in the VM's directory `~/.iii/sandbox/workers/<vm_id>/`,
+    /// the data disk (`upper.ext4`), the copies the 0.26 migration kept
+    /// (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`) and the `build-mode` seal. It
+    /// deletes the rest: `state.json`, the state-key file, `console.log*`, `root/`, scratch and
+    /// the `build-dir` record, so the VM's build directory is free again. A VM that never booted
+    /// a build first has its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`) moved to the
+    /// pre-build names. A later `worker::start` of the same `state_key` boots with the kept data
+    /// disk; the pre-build copies just stay.
+    ///
+    /// Sent only when `true`, like [`WorkerLogsRequest::from_end`]. An older adapter ignores it
+    /// and deletes everything, so a caller that means to keep the data checks
+    /// [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) first. Since contract 1.4.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prune: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyResponse {
+    /// `true` when the destroy removed the VM's runtime state, or, with `prune`, anything;
+    /// `false` when there was nothing to remove, as for a directory that holds only data and
+    /// no `prune`.
     pub destroyed: bool,
 }

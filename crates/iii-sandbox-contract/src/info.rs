@@ -22,11 +22,14 @@ pub const FEATURE_LOGS_FROM_END: &str = "worker.logs_from_end";
 /// An adapter advertises it only when it can boot a build (overlay mode); `sandbox-libkrun` in
 /// legacy mode (`III_ROOTFS_MODE=legacy`, or a build without an embedded iii-init) does not.
 pub const FEATURE_BUILD: &str = "worker.build";
-/// `worker::build` and `worker::start` take a [`crate::WorkerSource::Binary`], and
-/// `worker::build` honours [`crate::WorkerBuildRequest::base_image`]. Since contract 1.4.
+/// `worker::build` of a [`crate::WorkerSource::Binary`] with
+/// [`crate::WorkerBuildRequest::base_image`], and `worker::start` booting it with `build`. Since
+/// contract 1.4.
+///
+/// An adapter advertises it only together with [`FEATURE_BUILD`].
 pub const FEATURE_BINARY: &str = "worker.binary";
-/// `worker::destroy` keeps the VM's data disk unless [`crate::WorkerDestroyRequest::prune`] is
-/// set. Since contract 1.4.
+/// `worker::destroy` keeps the VM's data unless [`crate::WorkerDestroyRequest::prune`] is set.
+/// Since contract 1.4.
 pub const FEATURE_PRUNE: &str = "worker.prune";
 
 /// Contract version. A different major is incompatible (S302); a minor only adds fields.

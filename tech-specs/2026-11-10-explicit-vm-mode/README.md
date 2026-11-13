@@ -350,7 +350,8 @@ a `path://` worker's code keeps syncing live into the guest (section 9.3).
 ## 6. Sandbox contract 1.3 and 1.4
 
 All changes are additive. `CONTRACT_MAJOR` stays 1; `CONTRACT_MINOR` becomes 3, then 4 with
-section 6.7. Unknown fields are ignored by both sides, as today.
+section 6.7. Unknown fields are ignored by both sides, as today; a new `WorkerSource` kind is
+not a field, and a 1.3 peer refuses the `binary` tag (section 6.7).
 
 ### 6.1 Feature
 
@@ -516,10 +517,10 @@ Each gets a row in `tests/fixtures/sandbox_error_codes.json` and an anchor in
 `CONTRACT_MINOR` becomes 4. Two features, advertised in `AdapterInfo.features`:
 
 ```rust
-/// `worker::build` and `worker::start` take a `WorkerSource::Binary`, and `worker::build`
-/// honours `WorkerBuildRequest::base_image`. Since contract 1.4.
+/// `worker::build` of a `WorkerSource::Binary` with `WorkerBuildRequest::base_image`, and
+/// `worker::start` booting it with `build`. Since contract 1.4.
 pub const FEATURE_BINARY: &str = "worker.binary";
-/// `worker::destroy` keeps the VM's data disk unless `WorkerDestroyRequest::prune` is set.
+/// `worker::destroy` keeps the VM's data unless `WorkerDestroyRequest::prune` is set.
 /// Since contract 1.4.
 pub const FEATURE_PRUNE: &str = "worker.prune";
 
@@ -549,24 +550,43 @@ pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
     /// Delete the VM's data too. Since contract 1.4.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prune: bool,
 }
 ```
 
-- **`base_image`:** `None` keeps the manifest's. A binary package names no base image, so
-  `base_image` is required with a `Binary` source; a build without it gets `S501`.
-- **Destroy:** without `prune`, `worker::destroy` deletes the VM's runtime state but keeps its
-  data disk (`upper.ext4`) and the 0.26 copies (`*.pre-build`, section 7.3); a later
-  `worker::start` of the same `state_key` reuses them. With `prune`, everything goes, as in
-  1.3.
-- **Older peers:** a 1.3 request has neither field and reads as `base_image: None`,
-  `prune: false`. A 1.3 adapter ignores both: it deletes everything on every destroy and cannot
-  build a binary, so a caller sends them only to an adapter that announces the features.
-- **Versions:** `iii-sandbox-contract` gets the fields, the features, wire examples and
+- **Binary source:** `worker.binary` is advertised only together with `worker.build`. Only
+  `worker::build` and a `worker::start` with `build` take a binary source; `worker::prepare`
+  and a `worker::start` without `build` refuse it with `S501`. `executable` is relative, has
+  normal components only, stays inside `host_path`, is not a symlink and names a regular
+  executable file; the guest runs `/workspace/<executable>` with no arguments. `host_path` may
+  hold an `iii.worker.yaml`; if it does, its name must equal `package`, it may not set
+  `scripts.setup`, and its `scripts.install` and `env` apply.
+- **`base_image`:** `None` keeps the manifest's. A binary package names no base image, so a
+  binary build needs one; a build without it, or with an implausible reference, gets `S001`.
+- **Destroy without `prune`:** in the VM's directory, `~/.iii/sandbox/workers/<vm_id>/`, the
+  adapter keeps the data disk (`upper.ext4`), the 0.26 copies (`upper.ext4.pre-build[.<n>]`,
+  `root.pre-build[.<n>]`, section 7.3) and the `build-mode` seal. It deletes `state.json`, the
+  state-key file, `console.log*`, `root/`, scratch and the `build-dir` record, so the VM's
+  build directory is free again (sections 6.2, 7.7). A VM that never booted a build first has
+  its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`) moved to the pre-build names. A
+  later `worker::start` of the same `state_key` boots with the kept data disk; the pre-build
+  copies just stay. With `prune`, everything goes, as in 1.3.
+- **`WorkerDestroyResponse.destroyed`:** `true` when the destroy removed runtime state, or,
+  with `prune`, anything; `false` when there was nothing to remove, as for a directory that
+  holds only data and no `prune`.
+- **Wire:** `prune` is sent only when `true`, like `WorkerLogsRequest.from_end`. A 1.3 request
+  has neither field and reads as `base_image: None`, `prune: false`. `wire_examples.json` pins
+  that shape under `WorkerBuildRequest@1.3` and `WorkerDestroyRequest@1.3`, which round-trip
+  as their types, so a peer that drops a `serde(default)` fails its fixture test.
+- **Older adapters:** a 1.3 adapter ignores `base_image` and `prune`, so every destroy deletes
+  everything, and it refuses the `binary` tag. Compose reads both features from
+  `adapter::info` before it calls and refuses an adapter without them, so a destroy never
+  silently deletes data.
+- **Versions:** `iii-sandbox-contract` gets the fields, the features, the wire examples and
   `CONTRACT_MINOR = 4`; `sandbox-libkrun` mirrors them in `src/wire.rs` and `tests/fixtures`
-  and advertises both features from 0.4.1. Compose requires both and moves `ADAPTER_RANGE` to
-  `^0.4.1`.
+  and advertises both features from 0.5.0 (0.4.1 and 0.4.2 shipped without them). Compose's
+  `ADAPTER_RANGE` moves to `^0.5`.
 
 ## 7. Compose
 
@@ -1034,12 +1054,13 @@ KAN-284 closes the phase with: `compose_sandbox_e2e` on real VMs; the Linkly tut
 | 10 | No implicit VM path: the containers 0.26 ran in a VM are rewritten when the project next runs | 7.3 |
 | 11 | The migration keeps the 0.26 data disk as `upper.ext4.pre-build` instead of deleting it | 7.3 |
 | 12 | Compose updates a generated adapter that is too old before migrating, only in projects with a VM container | 7.2 |
-| 13 | Contract 1.3, additive, with `sandbox-libkrun` 0.4 as the minimum | 6.6 |
+| 13 | Contracts 1.3 and 1.4, additive, with `sandbox-libkrun` 0.5 as the minimum (0.4 implements 1.3 only) | 6.6, 6.7 |
 | 14 | `scripts` on packages: allowed for bundles, still refused for binaries | 4.2 |
 | 15 | Prebuilt images are out of scope | 1 |
 | 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a file that uses none of the new keys (`scripts.build`, `scripts.run` on a bundle) still loads in 0.26 | 7.3 |
 | 17 | A build lives as long as its caller reads its output; stopping the caller cancels it | 6.2, 7.4 |
 | 18 | A migrated VM project no longer loads in 0.26 (`scripts.build` is unknown there); going back means restoring the 0.26 file from git, as the upgrade guide says | 7.3, 11.1 |
+| 19 | Contract 1.4: a binary package runs in a VM from a build with an explicit `base_image`; `worker::destroy` keeps the data unless `prune`; Compose refuses an adapter without `worker.binary` and `worker.prune` | 6.7 |
 
 ## 14. Open questions
 

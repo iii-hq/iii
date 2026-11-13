@@ -46,6 +46,15 @@
     "logs": { "channel_id": "ch-2", "access_key": "key", "direction": "write" },
     "base_image": "docker.io/library/alpine:3.20"
   },
+  "WorkerBuildRequest@1.3": {
+    "auth": "tok",
+    "state_key": "9f2c1e",
+    "worker_name": "my-bundle",
+    "source": { "kind": "bundle", "package": "my-bundle", "host_path": "/work/proj/.workers/my-bundle" },
+    "output_dir": "/work/proj/.build/my-bundle",
+    "env": { "A": "1" },
+    "logs": { "channel_id": "ch-2", "access_key": "key", "direction": "write" }
+  },
   "WorkerBuildResponse": {
     "build_id": "sha256:f684ef7fe150347066bd568ad8e769e3680be2a6fe68db0aea54e18251f57108",
     "base_image": {
@@ -91,5 +100,6 @@
   "LogStream": "stdout",
   "WorkerStopRequest": { "auth": "tok", "vm_id": "vm-1", "instance": 3, "grace_ms": 5000 },
   "WorkerDestroyRequest": { "auth": "tok", "state_key": "9f2c1e", "prune": true },
+  "WorkerDestroyRequest@1.3": { "auth": "tok", "state_key": "9f2c1e" },
   "WorkerDestroyResponse": { "destroyed": true }
 }
