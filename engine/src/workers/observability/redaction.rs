@@ -53,6 +53,22 @@ const SENSITIVE_FRAGMENTS: &[&str] = &[
     "authtoken",
 ];
 
+/// Bit per lowercase letter that starts a [`SENSITIVE_FRAGMENTS`] entry, so
+/// the search skips positions where no fragment can begin. Building it also
+/// checks at compile time that every fragment starts with one.
+const FRAGMENT_FIRST_LETTERS: u32 = {
+    let mut mask = 0u32;
+    let mut i = 0;
+    while i < SENSITIVE_FRAGMENTS.len() {
+        mask |= 1 << (SENSITIVE_FRAGMENTS[i].as_bytes()[0] - b'a');
+        i += 1;
+    }
+    mask
+};
+
+/// Longest normalized key kept on the stack; longer keys go to the heap.
+const STACK_KEY_BYTES: usize = 64;
+
 /// Whether the value under `key` must not leave the engine.
 ///
 /// The key is lowercased and stripped of everything but ASCII letters and
@@ -60,16 +76,41 @@ const SENSITIVE_FRAGMENTS: &[&str] = &[
 /// match alike. It is sensitive when the result contains a
 /// [`SENSITIVE_FRAGMENTS`] entry or ends in `token` (`idToken`, `csrf_token`,
 /// `X-CSRF-Token`); counts such as `max_tokens` or `token_count` stay visible.
+///
+/// It runs for every attribute of every span and every key of every payload,
+/// so the key is normalized on the stack rather than allocated.
 pub(crate) fn is_sensitive_key(key: &str) -> bool {
-    let normalized: String = key
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .map(|c| c.to_ascii_lowercase())
-        .collect();
-    normalized.ends_with("token")
-        || SENSITIVE_FRAGMENTS
-            .iter()
-            .any(|fragment| normalized.contains(fragment))
+    let mut buf = [0u8; STACK_KEY_BYTES];
+    let mut len = 0;
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            if len == buf.len() {
+                let normalized: Vec<u8> = key
+                    .bytes()
+                    .filter(u8::is_ascii_alphanumeric)
+                    .map(|byte| byte.to_ascii_lowercase())
+                    .collect();
+                return is_sensitive_normalized(&normalized);
+            }
+            buf[len] = byte.to_ascii_lowercase();
+            len += 1;
+        }
+    }
+    is_sensitive_normalized(&buf[..len])
+}
+
+/// [`is_sensitive_key`] for a key already lowercased and stripped to ASCII
+/// letters and digits.
+fn is_sensitive_normalized(key: &[u8]) -> bool {
+    key.ends_with(b"token")
+        || (0..key.len()).any(|start| {
+            let first = key[start];
+            first.is_ascii_lowercase()
+                && FRAGMENT_FIRST_LETTERS & (1 << (first - b'a')) != 0
+                && SENSITIVE_FRAGMENTS
+                    .iter()
+                    .any(|fragment| key[start..].starts_with(fragment.as_bytes()))
+        })
 }
 
 /// Redacts one span, event or link attribute in place: the whole value when
@@ -335,6 +376,28 @@ mod tests {
         ] {
             assert!(!is_sensitive_key(key), "{key} must stay visible");
         }
+    }
+
+    #[test]
+    fn fragments_are_normalized() {
+        for fragment in SENSITIVE_FRAGMENTS {
+            assert!(
+                fragment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()),
+                "{fragment} would never match a normalized key"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_longer_than_the_stack_buffer_are_checked_whole() {
+        let padding = "x".repeat(STACK_KEY_BYTES);
+        assert!(is_sensitive_key(&format!("{padding}_password")));
+        assert!(is_sensitive_key(&format!("{padding}-Session-Token")));
+        assert!(is_sensitive_key(&format!("Cookie_{padding}")));
+        assert!(!is_sensitive_key(&format!("{padding}_max_tokens")));
+        assert!(!is_sensitive_key(&padding));
     }
 
     #[test]
