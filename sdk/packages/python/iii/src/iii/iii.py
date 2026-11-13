@@ -712,6 +712,8 @@ class III:
 
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
+        # Host name lookups (stream sockets to `localhost`) keep working after the main thread returned.
+        self._loop.set_default_executor(_streams._SdkExecutor())
         # Streams received by this worker open their sockets on this loop.
         self._stream_binding = _streams._Binding(address, self._options.headers, self._loop)
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=False)

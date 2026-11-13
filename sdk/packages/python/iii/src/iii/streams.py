@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import concurrent.futures
 import contextvars
 import inspect
 import io
@@ -175,6 +176,36 @@ async def _offload(fn: Callable[..., T], *args: Any) -> T:
 
     _WORKERS.submit(job)
     return await future
+
+
+class _SdkExecutor(concurrent.futures.ThreadPoolExecutor):
+    """The SDK loop's default executor: its work runs on the SDK's own threads.
+
+    asyncio resolves a host name (``loop.getaddrinfo``, so every socket a stream
+    opens to ``localhost``) in the loop's default executor. A
+    ``ThreadPoolExecutor`` takes no new work once the main thread ended, so a
+    worker whose main thread returned would never open a stream socket. A
+    subclass, because ``loop.set_default_executor`` accepts no other type."""
+
+    def __init__(self) -> None:
+        super().__init__(max_workers=1, thread_name_prefix="iii-unused")
+
+    def submit(self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> Future[T]:
+        future: Future[T] = Future()
+
+        def job() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as error:
+                future.set_exception(error)
+
+        _WORKERS.submit(job)
+        return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        """The SDK threads end on their own when idle."""
 
 
 _detached: set[asyncio.Future[Any]] = set()

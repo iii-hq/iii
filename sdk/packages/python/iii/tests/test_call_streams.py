@@ -816,7 +816,10 @@ def test_a_worker_whose_main_thread_returned_still_streams_files(
         iii.register_function(sys.argv[2], handle)
         """
     )  # the main thread returns here
-    process = subprocess.Popen([sys.executable, "-c", script, ENGINE_WS_URL, function_id])
+    # A host name, as in CI: resolving it uses the loop's default executor, which a plain
+    # ThreadPoolExecutor refuses once the main thread ended. An IP address skips that lookup.
+    url = ENGINE_WS_URL.replace("127.0.0.1", "localhost")
+    process = subprocess.Popen([sys.executable, "-c", script, url, function_id])
     try:
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "out.bin")
