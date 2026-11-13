@@ -2904,8 +2904,8 @@ pub(crate) mod tests {
         require_declared_adapter(&current, "default").unwrap();
     }
 
-    /// Spec 4.2, a code per rule.
-    #[cfg(unix)]
+    /// Spec 4.2, a code per rule. On Windows a container that runs `iii sandbox run` is
+    /// `SANDBOX_UNSUPPORTED_PLATFORM` first; the other rules hold there too.
     #[test]
     fn the_rules_of_the_explicit_mode_have_their_codes() {
         let dir = tempfile::tempdir().unwrap();
@@ -2923,15 +2923,23 @@ pub(crate) mod tests {
         };
         let vm = "start_after: [sb], scripts: {build: iii sandbox build, run: iii sandbox run}";
         let sb = "  sb: {worker: package://sandbox-libkrun, version: 0.4.0}\n";
+        // A container that runs `iii sandbox run`, and is not a binary package.
+        let in_vm = |code: Option<&'static str>| {
+            if cfg!(windows) {
+                Some("SANDBOX_UNSUPPORTED_PLATFORM")
+            } else {
+                code
+            }
+        };
         for (containers, code) in [
-            (format!("{sb}  vm: {{worker: path://./vm, {vm}}}\n"), None),
+            (format!("{sb}  vm: {{worker: path://./vm, {vm}}}\n"), in_vm(None)),
             (
                 format!("{sb}  app: {{worker: package://app, version: 1.0.0, {vm}}}\n"),
-                None,
+                in_vm(None),
             ),
             (
                 format!("{sb}  host: {{worker: path://./host, {vm}}}\n"),
-                Some("SANDBOX_RUN_NOT_A_VM_WORKER"),
+                in_vm(Some("SANDBOX_RUN_NOT_A_VM_WORKER")),
             ),
             (
                 format!("{sb}  bin: {{worker: package://bin, version: 1.0.0, {vm}}}\n"),
@@ -2948,11 +2956,11 @@ pub(crate) mod tests {
             ),
             (
                 format!("{sb}  vm: {{worker: path://./vm, start_after: [sb], scripts: {{build: npm ci, run: iii sandbox run}}}}\n"),
-                Some("SANDBOX_RUN_WITHOUT_BUILD"),
+                in_vm(Some("SANDBOX_RUN_WITHOUT_BUILD")),
             ),
             (
                 format!("{sb}  vm: {{worker: path://./vm, start_after: [sb], scripts: {{build: '', run: iii sandbox run}}}}\n"),
-                Some("SANDBOX_RUN_WITHOUT_BUILD"),
+                in_vm(Some("SANDBOX_RUN_WITHOUT_BUILD")),
             ),
             // On the host, with nothing to build or a build of its own.
             (

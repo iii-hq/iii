@@ -270,6 +270,12 @@ host.
 - **When:** when the container starts, after its `start_after` containers are ready, if
   `scripts.build` is set and non-empty and `.iii/build/<container>/build.json` is missing. This
   covers `compose::add`, `up`, and a migrated container.
+- **Other kind:** a `build.json` of the other kind than `scripts.build` makes is rebuilt the same
+  way: a host build (no `image`) where `scripts.build` is now `iii sandbox build`, or an image
+  where it is now a host command. Only the kind is compared, never the command's text (section
+  5.5). Logs: `<container>: its build is a host build, and scripts.build now builds a VM image;
+  rebuilding`, or `<container>: its build is a VM image, and scripts.build now runs on the host;
+  rebuilding`.
 - **Timeout:** `scripts.build_timeout` (section 4.1), then the container's `startup_timeout`
   starts for the run.
 - **Logs:** `<container>: no build yet; running scripts.build`, then the build output.
@@ -323,6 +329,15 @@ path, relative to the compose file). A host build writes the same keys without `
   place. For a host build, Compose writes it after `scripts.build` exited 0.
 - **Atomic writes:** a temporary file beside it, then rename; leftovers are swept. A `build.json` whose `build_id` does not
   match the image fails the run with `S508` (section 6.5); the fix is a rebuild.
+- **Stable source.** Each writer reads the container's `source` (`build_record::source`) before the
+  build and again before it writes `build.json`: `iii sandbox build` around `worker::build`, Compose
+  around a host `scripts.build`. An `iii compose build` in another process may replace
+  `.iii/workers/<container>/` meanwhile: it holds `.iii/workers/.lock` only while it copies, not for
+  the length of a build. When the two reads differ, or the second finds no package (its directory is
+  being replaced, section 7.5), the build records nothing (`build.json` is not written) and fails
+  with `BUILD_INPUT_CHANGED`, exit 1 for `iii sandbox build`; building again records the new
+  package. The adapter has already put a VM build's image in place: the next start rebuilds, as the
+  old `build.json` names another source, or fails with `S508`.
 
 ### 5.5 A build that is out of date
 
@@ -402,11 +417,48 @@ pub struct BaseImageRef {
 
 - **Always builds.** No input-based skip, so a rebuild picks up a moved `:latest` base.
 - **Output files:** `image.erofs` and `image.id` (the `build_id`) are written as temporary
-  files, then renamed: `image.erofs` first, `image.id` last.
+  files in `output_dir` and flushed to disk, then published in order: the adapter removes the
+  previous `image.id`, renames the new `image.erofs` into place and renames the new `image.id`
+  last, flushing `output_dir` after the removal and between the two renames. Until the last
+  rename `output_dir` holds no `image.id`, so a crash, a failed flush or a failed rename there
+  leaves an image without an id, which `worker::start` refuses with `S508` until the next
+  build; it never leaves the new image beside the previous build's id. A filesystem that
+  cannot flush a directory gets a warning, not a failed build. A start that read `image.id`
+  before the removal may still boot the newer image under the older id, a race the adapter
+  accepts. The publication assumes one writer per `output_dir` at a time. One build per
+  `state_key` runs at a time (`S509`), but nothing serializes two VMs whose builds share a
+  directory: a container's build directory sits beside the compose file in every namespace,
+  so building one container in two namespaces at once is unsupported.
 - **The running VM is not touched.** A build may run while the VM of the same `state_key`
   runs; it uses its own build VM and swaps `image.erofs` by rename, so the running VM keeps
   the file it booted.
 - **One build per `state_key` at a time:** a second one gets `S509`.
+- **Another VM's build directory:** a VM's build directory is the last `output_dir`, or
+  `worker::start` `build.build_dir` (section 6.3), that a scoped token of its `state_key`
+  presented. The adapter records it per VM, outside every guest, in
+  `~/.iii/sandbox/workers/<vm_id>/build-dir`, with an HMAC of the project token over the state
+  key and the canonical directory, flushed to disk; the record survives an adapter restart,
+  the VM's own `worker::destroy` deletes it, and a record another project token wrote counts
+  for nothing. With a scoped token, a directory another VM of the same project token has
+  recorded gets `S505`, before any file is created or written there and before `image.id` is
+  read; the message names that VM's record and the way out (destroy that VM, or delete the
+  record). The guarantee covers those directories only: the token Compose hands one container
+  can neither replace nor boot an image in a directory another VM of the same project token
+  has recorded. Two paths are one directory when they are equal or, both existing, share
+  device and inode, so a second spelling (a bind mount, another case on a case-insensitive
+  volume) does not get around it; the check never reads a directory's name. Presenting
+  another directory moves the VM there and releases the previous one, so Compose may move
+  build directories. Claims hold an flock on `~/.iii/sandbox/workers`: where the filesystem
+  can lock a directory, two adapter processes never give one directory to two VMs; elsewhere
+  (NFS) the adapter logs a warning and serializes claims within one adapter process only. A
+  scoped token takes any directory no VM of the same project token has recorded at that
+  moment: the directory of a destroyed VM that stayed on disk, the new path after a move until
+  its container builds or starts, every build directory of another namespace (a container's
+  build directory sits beside the compose file in every namespace, and each namespace has its
+  own project token), and, on a filesystem that cannot flush a directory, a directory whose
+  record a power failure lost. Compose builds or starts each container as it comes up, which
+  records its directory. The project token is not checked and records nothing. Contract 1.3
+  does not change: no new field, fixture or S-code.
 - **Timeout and cancel:** the build lives as long as its caller reads `logs`. The adapter
   writes to the channel at least every 5 s (a one-byte binary frame, as `reader_gone` does today; readers take records from text frames
   only). When
@@ -437,6 +489,9 @@ pub struct WorkerBuildRef {
 With `build`, the caller does not call `worker::prepare`. The adapter compares `build_id`
 with `build_dir/image.id` and refuses a mismatch or a missing file with `S508`; it does not
 hash the image on start.
+
+With a scoped token, a `build_dir` another VM of the same project token has recorded gets
+`S505` (section 6.2), checked before `image.id` is read.
 
 ### 6.4 `WorkerSource::Bundle.host_path`
 
@@ -564,8 +619,9 @@ iii call compose::build [file=<path>] [worker=<container>]
 ```
 
 - Request: `file` (as every project function), `worker` (a container key; omitted, every
-  container with a non-empty `scripts.build`), `operation_id` (optional, as for other
-  mutations). A container whose `scripts.build` is `""` is reported as `skipped`.
+  container that declares `scripts.build`), `operation_id` (optional, as for other
+  mutations). A container whose `scripts.build` is `""` is reported as `skipped`, named or
+  not.
 - It is asynchronous: it answers `{ operation_id, status: "accepted", requested }`, holds the project's
   mutation lock while it runs, and reports progress per container (`building`, `built`,
   `failed`) through `compose::on-operation-progress`.
@@ -589,6 +645,26 @@ container's package directory again (it was missing, or the record was unreadabl
 container's host-build `build.json`, so the next start runs the first build again (section 5.2). The
 compose file's directory is already a host root of the adapter.
 
+A directory is replaced through a copy made beside it and a rename. Its `.packages.json` entry is
+removed, and the file written, before the directory changes, and comes back once the copy is in
+place: a run stopped in between leaves no entry, so the next run copies it again instead of
+taking it for the package it replaced. An entry whose directory is gone leaves the file before
+any copy starts.
+
+The replaced tree stays aside, whole, as `.<container>.replaced-<id>`, until the next
+materialization prunes it, whether its process still runs or not. This covers part of a host
+bundle that runs through the swap: what it reads relative to its working directory stays the
+old tree, which the rename moved. What it resolves through an absolute path (`III_PACKAGE_DIR`,
+Node's `require`, Python's `sys.path`) reads the new tree, so a lazy import can mix the two
+versions until the container restarts.
+
+`iii compose build` runs outside the daemon's mutation lock. When the compose file or
+`worker-compose.lock` changed while it prepared (the daemon committed an update, say), it writes
+nothing and fails with `BUILD_PLAN_STALE`, naming the one that changed; it checks again under
+`.iii/workers/.lock` before it copies. The check and the write are not atomic across processes: a
+lock the daemon commits between the two is still overwritten, and the later check, which compares
+with the lock this build wrote, then passes.
+
 ### 7.6 What stays and what goes
 
 | Goes | Stays |
@@ -599,6 +675,21 @@ compose file's directory is already a host root of the adapter.
 | | `vm_reconciliation`, only to stop a VM a 0.26 daemon left (section 7.3, step 2) |
 
 A 0.26 `state.json` with a `vm` record is read once, its VM stopped, the record dropped.
+
+### 7.7 A VM's `state_key` and its build directory
+
+The adapter binds a build directory to the VM, that is the `state_key`, whose scoped token
+recorded it (section 6.2), and a record counts only under the project token that wrote it. A
+new state directory brings a new `state.json` and a new project token, so the old VMs'
+records stop counting and no build gets `S505`. A VM's `state_key` can change while its token
+survives: the same `state.json` reached through another spelling of `III_COMPOSE_STATE_DIR`,
+or state moved or copied together with its token to another `III_COMPOSE_STATE_DIR`, while
+the compose file, and so the container's build directory, stays where it is. The old VM's
+record then still holds the container's build directory, and the new VM's build and start get
+`S505` there; the message names the way out: destroy the old VM, or delete its record,
+`~/.iii/sandbox/workers/<vm_id>/build-dir`. Moving a container's build directory needs
+nothing: its next build or start records the new one and releases the old. Moving or copying
+the whole project changes the build directory too, and nothing gets `S505`.
 
 ## 8. CLI
 
@@ -611,14 +702,16 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
 - **Inside Compose** (the env of section 8.3 is set): builds its own container. It calls
   `adapter::info` (requires `worker.build`), then `worker::build` with the build output
   streamed to stdout, then writes `build.json` (section 5.4) from `build_record::source` and
-  `build_record::declared_base_image` (section 11.2).
+  `build_record::declared_base_image` (section 11.2). A `source` that changed during the build
+  fails it with `BUILD_INPUT_CHANGED` and records nothing (section 5.4).
 - **Outside Compose:** calls `compose::build worker=<container>` on the project's daemon,
   found as `iii compose logs` finds it (`--file`, `--namespace`, `--engine`, `III_URL`, through
   `resolve_project_target`, section 11.2), prints
   the operation's progress and the container's build output, and waits for the result. No
   engine or no loaded project: the errors `iii compose logs` gives today (`ENGINE_CALL_FAILED`,
   `UNKNOWN_PROJECT`).
-- **Exit codes:** 0 built; 1 the build failed; 125 `iii sandbox` itself failed (unreachable
+- **Exit codes:** 0 built; 1 the build failed (its S-code, `TIMED_OUT` or
+  `BUILD_INPUT_CHANGED`); 125 `iii sandbox` itself failed (unreachable
   engine, adapter without the feature, bad env); 130 cancelled (`OPERATION_CANCELLED`). Outside Compose, Ctrl-C sends
   `compose::cancel` for its operation and waits for it before exiting.
 - **Last line on failure**, parseable by Compose for `BUILD_FAILED`:
@@ -717,15 +810,22 @@ Compose and CLI codes:
 | `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter speaks another contract major |
 | `SANDBOX_FAILED` | Any other failure of `iii sandbox` itself (exit 125) |
 | `BUILD_MISSING` | `iii sandbox run` without `build.json` |
+| `BUILD_INPUT_CHANGED` | A build (`iii sandbox build` or a host `scripts.build`) whose source was replaced while it built (section 5.4); build again |
+| `BUILD_PLAN_STALE` | Existing code, new trigger: `iii compose build` also fails when `worker-compose.lock` changed while it prepared (section 7.5) |
 | `BUILD_FAILED` | A first build or a package rebuild failed; carries `{ code, message }` (section 4.1) |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE` | Kept, for `binary` packages only |
 
-S-codes: `S507`, `S508`, `S509` (section 6.5).
+S-codes: `S507`, `S508`, `S509` (section 6.5). `S505` is reused, unchanged in the fixtures:
+besides a token that does not match, it answers a scoped token whose `output_dir` or
+`build_dir` another VM of the same project token has recorded (section 6.2); the message
+names that VM's record and how to free it.
 
 Logs:
 
 - `<c>: no build yet; running scripts.build`
 - `<c>: package changed (<old> -> <new>); rebuilding`
+- `<c>: its build is a host build, and scripts.build now builds a VM image; rebuilding`, and the
+  reverse, `<c>: its build is a VM image, and scripts.build now runs on the host; rebuilding`
 - ``<c>: dependencies changed since the last build (<files>); run `iii sandbox build <c>` ``
 - ``<c>: base image changed since the last build (<old> -> <new>); run `iii sandbox build <c>` ``
 - `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)`

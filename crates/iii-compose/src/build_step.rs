@@ -235,6 +235,10 @@ pub(crate) enum Reason {
     First,
     /// Its package is not the one `build.json` was made from (spec 5.3).
     PackageChanged { old: String, new: String },
+    /// `build.json` records a build of the other kind than `scripts.build` makes (spec 5.2): a
+    /// host build where it is now `iii sandbox build` (`to_vm`), or an image where it is now a
+    /// host command.
+    ModeChanged { to_vm: bool },
 }
 
 impl Reason {
@@ -245,10 +249,19 @@ impl Reason {
             Self::PackageChanged { old, new } => {
                 format!("package changed ({old} -> {new}); rebuilding")
             }
+            Self::ModeChanged { to_vm: true } => {
+                "its build is a host build, and scripts.build now builds a VM image; rebuilding"
+                    .to_string()
+            }
+            Self::ModeChanged { to_vm: false } => {
+                "its build is a VM image, and scripts.build now runs on the host; rebuilding"
+                    .to_string()
+            }
         }
     }
 }
 
+/// A build's source as its log lines name it: `name@version`, or the `path://` directory.
 fn describe_source(source: &BuildSource) -> String {
     match source {
         BuildSource::Package { name, version, .. } => format!("{name}@{version}"),
@@ -256,8 +269,31 @@ fn describe_source(source: &BuildSource) -> String {
     }
 }
 
+/// `BUILD_INPUT_CHANGED`'s message when container `key`'s source, read again (`now`) as its build
+/// ends, is not `before`, the one read as it began (spec 5.4); `None` when it is the same. A
+/// package no longer installed counts as changed: the first read found it, so its directory is
+/// being replaced (`materialize_project` takes its entry out of `.packages.json` meanwhile).
+pub(crate) fn input_changed(
+    key: &str,
+    before: &BuildSource,
+    now: Result<BuildSource>,
+) -> Result<Option<String>> {
+    let now = match now {
+        Ok(now) if now == *before => return Ok(None),
+        Ok(now) => describe_source(&now),
+        Err(ComposeError::PackageNotInstalled { .. }) => "none, being replaced".to_string(),
+        Err(error) => return Err(error),
+    };
+    Ok(Some(format!(
+        "the source of {key} changed while it built ({} -> {now}), so the build is not \
+         recorded; build it again",
+        describe_source(before)
+    )))
+}
+
 /// Spec 5.2, 5.3 and 5.5 before container `key` runs: `Some` when it builds first, because it has
-/// a non-empty `scripts.build` and no `build.json` yet, or its package changed. Logs the other
+/// a non-empty `scripts.build` and no `build.json` yet, or one of the other kind (an image for a
+/// host command, or a host build for `iii sandbox build`), or its package changed. Logs the other
 /// differences, once per start, and lets it run on its current build. The check only informs: one
 /// that fails is logged and the container runs.
 pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -> Option<Reason> {
@@ -281,7 +317,7 @@ async fn assess(
     container: &Container,
     log: bool,
 ) -> Option<Reason> {
-    container.scripts.build_command()?;
+    let vm = is_sandbox_build(container.scripts.build_command()?);
     let dir = build_dir(compose_file, key);
     if !dir.join("build.json").is_file() {
         return Some(Reason::First);
@@ -291,17 +327,29 @@ async fn assess(
         key.to_string(),
         worker_dir(compose_file, key, container),
     );
+    /// What `build.json` says against the container's current inputs.
+    enum Recorded {
+        Missing,
+        /// A build of the other kind: told apart by its image alone, so a new command text of
+        /// the same kind is not a change (spec 5.5).
+        OtherKind,
+        Changes(Vec<Change>),
+    }
     // Blocking: the dependency files are hashed, and a lock file can be large.
-    let checked = tokio::task::spawn_blocking(move || -> Result<Option<Vec<Change>>> {
+    let checked = tokio::task::spawn_blocking(move || -> Result<Recorded> {
         let Some(record) = record::read(&dir)? else {
-            return Ok(None);
+            return Ok(Recorded::Missing);
         };
-        record::changes(&record, &file, &owned_key, &worker).map(Some)
+        if record.image.is_some() != vm {
+            return Ok(Recorded::OtherKind);
+        }
+        record::changes(&record, &file, &owned_key, &worker).map(Recorded::Changes)
     })
     .await;
     let changes = match checked {
-        Ok(Ok(Some(changes))) => changes,
-        Ok(Ok(None)) => return Some(Reason::First),
+        Ok(Ok(Recorded::Changes(changes))) => changes,
+        Ok(Ok(Recorded::OtherKind)) => return Some(Reason::ModeChanged { to_vm: vm }),
+        Ok(Ok(Recorded::Missing)) => return Some(Reason::First),
         Ok(Err(_)) | Err(_) if !log => return None,
         Ok(Err(error)) => {
             stale_check_failed(key, &error.to_string());
@@ -415,12 +463,33 @@ pub(crate) async fn run(
     let vm = is_sandbox_build(command);
     let key = spawn.container_key;
     let dir = build_dir(spawn.compose_file, key);
+    // Registered before anything runs, then the remove mark read: [`stop`] marks first and then
+    // looks for the build, so it either finds this one or marked the container before this read.
+    let (_registered, mut stopped) = Registered::new(&dir);
+    if *stopped.borrow() || with_entry(&dir, |entry| entry.stopping > 0) {
+        return Outcome::stopped();
+    }
     if let Err(error) = prepare_build_dir(spawn.compose_file, &dir) {
         return Outcome::Failed {
             code: error.code().to_string(),
             message: error.to_string(),
         };
     }
+    // A host build is recorded with the source it was built from, read before it runs and again
+    // after (spec 5.4); `iii sandbox build` reads it itself.
+    let before = if vm {
+        None
+    } else {
+        match host_source(spawn.compose_file, key).await {
+            Ok(source) => Some(source),
+            Err(error) => {
+                return Outcome::Failed {
+                    code: error.code().to_string(),
+                    message: format!("the build could not be recorded, so it did not run: {error}"),
+                };
+            }
+        }
+    };
     let start = StartSpec::Shell(command.to_string());
     let plan = spawn_plan(&SpawnCtx {
         start: &start,
@@ -460,7 +529,6 @@ pub(crate) async fn run(
         )));
     }
 
-    let (_registered, mut stopped) = Registered::new(&dir);
     let budget =
         container.scripts.build_timeout + if vm { VM_TIMEOUT_SLACK } else { Duration::ZERO };
     let waited = async {
@@ -504,8 +572,13 @@ pub(crate) async fn run(
                 };
             }
             let worker = worker_dir(spawn.compose_file, key, container);
-            match record_host_build(spawn.compose_file, key, command, &worker, &dir).await {
-                Ok(()) => Outcome::Built { build_id: None },
+            let before = before.expect("a host build read its source");
+            match record_host_build(spawn.compose_file, key, command, &worker, &dir, before).await {
+                Ok(None) => Outcome::Built { build_id: None },
+                Ok(Some(message)) => Outcome::Failed {
+                    code: crate::sandbox_cli::BUILD_INPUT_CHANGED.to_string(),
+                    message,
+                },
                 Err(error) => Outcome::Failed {
                     code: error.code().to_string(),
                     message: format!("the build ran, but build.json could not be written: {error}"),
@@ -619,14 +692,31 @@ async fn recorded_build_id(dir: PathBuf) -> Option<String> {
         .map(|image| image.build_id)
 }
 
-/// The `build.json` of a host build (spec 5.4): the same keys, without `image`.
+/// Container `key`'s source, as its `build.json` records it.
+async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
+    let (file, key) = (
+        crate::spawn::canonical_compose_file(compose_file),
+        key.to_string(),
+    );
+    tokio::task::spawn_blocking(move || record::source(&file, &key))
+        .await
+        .map_err(|error| ComposeError::Io {
+            path: compose_file.to_path_buf(),
+            source: std::io::Error::other(error.to_string()),
+        })?
+}
+
+/// Writes the `build.json` of a host build of container `key` made from `before`: the keys of
+/// spec 5.4, without `image`. `Some` with the message of `BUILD_INPUT_CHANGED`, and nothing
+/// written, when its source is no longer that.
 async fn record_host_build(
     compose_file: &Path,
     key: &str,
     command: &str,
     worker_dir: &Path,
     dir: &Path,
-) -> Result<()> {
+    before: BuildSource,
+) -> Result<Option<String>> {
     let (file, key, command, worker_dir, dir) = (
         crate::spawn::canonical_compose_file(compose_file),
         key.to_string(),
@@ -636,16 +726,19 @@ async fn record_host_build(
     );
     let at = dir.join("build.json");
     tokio::task::spawn_blocking(move || {
+        if let Some(changed) = input_changed(&key, &before, record::source(&file, &key))? {
+            return Ok(Some(changed));
+        }
         let record = BuildRecord {
             schema: SCHEMA,
-            source: record::source(&file, &key)?,
+            source: before,
             container: key,
             command,
             dependency_files: record::dependency_files(&worker_dir)?,
             image: None,
             built_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         };
-        record::write(&dir, &record)
+        record::write(&dir, &record).map(|()| None)
     })
     .await
     .map_err(|error| ComposeError::Io {
@@ -897,12 +990,34 @@ mod tests {
         );
     }
 
+    /// A remove that marked the container before its build registered still stops that build,
+    /// which then runs nothing.
+    #[tokio::test]
+    async fn a_remove_marked_before_the_build_registers_stops_it_unrun() {
+        let project = project("scripts: {build: 'touch built', run: x}");
+        let stopping = stop(&project.file.path, "api").await;
+        let outcome = project.build(None, None).await;
+        drop(stopping);
+        assert!(
+            matches!(outcome, Outcome::Failed { ref code, .. } if code == "BUILD_STOPPED"),
+            "{outcome:?}"
+        );
+        assert!(!project.dir.path().join("api/built").exists());
+        assert!(
+            !running()
+                .lock()
+                .unwrap()
+                .contains_key(&build_dir(&project.file.path, "api")),
+            "a build that never ran stayed registered"
+        );
+    }
+
     /// Spec 5.3 and 5.5: a new source rebuilds; changed dependency files or base image only
     /// warn, and the container runs on its build.
-    #[cfg(unix)]
     #[tokio::test]
     async fn only_a_new_source_rebuilds() {
-        let project = project("scripts: {build: 'true', run: x}");
+        // `exit 0` runs the same in `sh -c` and `cmd /C`.
+        let project = project("scripts: {build: 'exit 0', run: x}");
         project.build(None, None).await;
         let dir = build_dir(&project.file.path, "api");
         let built = project.record().unwrap();
@@ -931,9 +1046,40 @@ mod tests {
         record::write(&dir, &built).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
         assert_eq!(project.due().await, None);
+    }
 
-        let mut imaged = built.clone();
-        imaged.image = Some(BuildImage {
+    /// Spec 5.4: a host build whose source changed while it ran (here its compose file, which
+    /// the build itself replaces) records nothing and fails with `BUILD_INPUT_CHANGED`.
+    // Runs `cp`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_host_build_whose_source_changed_while_it_ran_records_nothing() {
+        let project =
+            project("scripts: {build: 'cp ../moved.yaml ../worker-compose.yaml', run: x}");
+        std::fs::write(
+            project.dir.path().join("moved.yaml"),
+            "containers:\n  api: {worker: path://./moved, scripts: {build: 'true', run: x}}\n",
+        )
+        .unwrap();
+
+        let outcome = project.build(None, None).await;
+
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                code: "BUILD_INPUT_CHANGED".into(),
+                message:
+                    "the source of api changed while it built (./api -> ./moved), so the build \
+                          is not recorded; build it again"
+                        .into(),
+            }
+        );
+        assert_eq!(project.record(), None);
+    }
+
+    /// The image of a VM build of `api`, from `runtime.base_image: docker.io/iiidev/python`.
+    fn image() -> BuildImage {
+        BuildImage {
             file: "image.erofs".into(),
             build_id: "sha256:1".into(),
             base_image: BuildBaseImage {
@@ -946,9 +1092,50 @@ mod tests {
                 version: "0.4.0".into(),
             },
             contract: BuildContract { major: 1, minor: 3 },
-        });
-        record::write(&dir, &imaged).unwrap();
-        assert_eq!(project.due().await, None);
+        }
+    }
+
+    /// A `build.json` of `api` made by `command`, with `image` for a VM build.
+    fn recorded(command: &str, image: Option<BuildImage>) -> BuildRecord {
+        BuildRecord {
+            schema: SCHEMA,
+            container: "api".into(),
+            source: BuildSource::Path {
+                dir: "./api".into(),
+            },
+            command: command.into(),
+            dependency_files: BTreeMap::new(),
+            image,
+            built_at: "2026-11-10T00:00:00Z".into(),
+        }
+    }
+
+    /// Spec 5.2: a build of the other kind than `scripts.build` makes rebuilds, in either
+    /// direction; another command of the same kind does not (spec 5.5).
+    #[tokio::test]
+    async fn a_build_of_the_other_kind_rebuilds() {
+        let host = project("scripts: {build: 'true', run: x}");
+        let dir = build_dir(&host.file.path, "api");
+        record::write(&dir, &recorded("iii sandbox build", Some(image()))).unwrap();
+        assert_eq!(host.due().await, Some(Reason::ModeChanged { to_vm: false }));
+        record::write(&dir, &recorded("make", None)).unwrap();
+        assert_eq!(host.due().await, None, "another host command rebuilt");
+
+        let vm = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let dir = build_dir(&vm.file.path, "api");
+        record::write(&dir, &recorded("true", None)).unwrap();
+        assert_eq!(vm.due().await, Some(Reason::ModeChanged { to_vm: true }));
+        record::write(&dir, &recorded("iii  sandbox build --x", Some(image()))).unwrap();
+        assert_eq!(vm.due().await, None, "an image of the same kind rebuilt");
+
+        assert_eq!(
+            Reason::ModeChanged { to_vm: true }.describe(),
+            "its build is a host build, and scripts.build now builds a VM image; rebuilding"
+        );
+        assert_eq!(
+            Reason::ModeChanged { to_vm: false }.describe(),
+            "its build is a VM image, and scripts.build now runs on the host; rebuilding"
+        );
     }
 
     /// The failure line on stderr names the failure even when stdout's output comes after it.
@@ -981,27 +1168,14 @@ mod tests {
 
     /// Spec 5.5 and 10: each kind of change is one line, worded as the spec says, and the
     /// container runs on its build.
-    #[cfg(unix)]
     #[tokio::test]
     async fn an_out_of_date_build_warns_once_per_kind_and_runs() {
-        let project = project("scripts: {build: 'true', run: x}");
-        project.build(None, None).await;
-        let mut record = project.record().unwrap();
-        record.image = Some(BuildImage {
-            file: "image.erofs".into(),
-            build_id: "sha256:1".into(),
-            base_image: BuildBaseImage {
-                declared: Some("docker.io/iiidev/python".into()),
-                reference: "docker.io/iiidev/python:latest".into(),
-                digest: None,
-            },
-            adapter: BuildAdapter {
-                name: "sandbox-libkrun".into(),
-                version: "0.4.0".into(),
-            },
-            contract: BuildContract { major: 1, minor: 3 },
-        });
-        record::write(&build_dir(&project.file.path, "api"), &record).unwrap();
+        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        record::write(
+            &build_dir(&project.file.path, "api"),
+            &recorded("iii sandbox build", Some(image())),
+        )
+        .unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
 
         let (due, lines) = crate::report::capture_daemon_lines(project.due()).await;

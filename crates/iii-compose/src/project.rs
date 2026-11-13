@@ -826,6 +826,25 @@ impl Project {
             .collect();
 
         for (key, record) in recorded {
+            // A VM a 0.26 daemon left running, which its container has not stopped yet: the
+            // record this daemon marked stopped, or failed when that stop failed, still names
+            // it. It stays due to be stopped (spec 7.3, step 2), unless its owner is gone and
+            // the adapter's lifeline took it.
+            if let Some(vm) = record
+                .vm
+                .clone()
+                .filter(|_| reconcile(&record) == Reconciliation::Stopped)
+            {
+                if owner_alive {
+                    self.legacy_vms
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(key.clone(), vm);
+                } else if let Some(entry) = inner.state.containers.get_mut(&key) {
+                    entry.vm = None;
+                }
+                continue;
+            }
             // Only its adapter can answer for a VM that the record says may
             // still run.
             let vm = record
@@ -1460,15 +1479,28 @@ impl Project {
                     )
                     .await;
             }
+            // The build's cancel reaches the adapter's start too: a cancelled build waits for no
+            // adapter, and builds nothing.
             let started = self
-                .up(Some(&adapter_key), format!("{operation_id}-adapter"))
+                .up_until_shutdown(
+                    Some(&adapter_key),
+                    format!("{operation_id}-adapter"),
+                    cancel.clone(),
+                )
                 .await;
-            if started.status == OpStatus::Failed {
-                daemon_line(
+            match started {
+                None => {
+                    return Ok(lifecycle::BuildRun {
+                        results: Vec::new(),
+                        cancelled: true,
+                    });
+                }
+                Some(started) if started.status == OpStatus::Failed => daemon_line(
                     &self.project_namespace,
                     &format!("{adapter_key} did not start, so the VM builds will fail"),
                     Tone::Warn,
-                );
+                ),
+                Some(_) => {}
             }
         }
 
@@ -2066,7 +2098,7 @@ mod adapter_restart_tests {
         format!(
             "#!/bin/sh\n\
              if [ \"$2\" = build ]; then\n\
-             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
+             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"image\":{{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{{\"declared\":null,\"reference\":\"python\",\"digest\":null}},\"adapter\":{{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"}},\"contract\":{{\"major\":1,\"minor\":3}}}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
              exit 0\n\
              fi\n\
              test -e ../refuse && exit 125\n\
@@ -2910,6 +2942,19 @@ mod adapter_restart_tests {
     /// stays: nothing calls `worker::destroy`.
     #[tokio::test]
     async fn a_vm_a_026_daemon_left_running_is_stopped_before_the_first_build() {
+        stops_the_026_vm_before_the_first_build(ChildStatus::Ready).await;
+    }
+
+    /// The same VM, in a project reopened before its container started: the record this daemon
+    /// marked stopped, or failed when a start could not stop the VM, still names it.
+    #[tokio::test]
+    async fn a_reopened_project_still_stops_the_026_vm_it_had_not_stopped() {
+        for recorded in [ChildStatus::Stopped, ChildStatus::Failed] {
+            stops_the_026_vm_before_the_first_build(recorded).await;
+        }
+    }
+
+    async fn stops_the_026_vm_before_the_first_build(recorded: ChildStatus) {
         let dir = tempfile::tempdir().unwrap();
         let path = write_small_project(dir.path(), EXPLICIT, &fake_iii());
         let daemon = format!("legacy-vm-{}", uuid::Uuid::new_v4());
@@ -2928,7 +2973,7 @@ mod adapter_restart_tests {
                     vm_id: "v026".into(),
                     instance: 4,
                 }),
-                status: ChildStatus::Ready,
+                status: recorded,
                 started_at: 0,
                 last_error: None,
             },
@@ -2970,10 +3015,11 @@ mod adapter_restart_tests {
 
         let up = project.up(None, "up".into()).await;
 
-        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        assert_eq!(up.status, OpStatus::Ok, "{recorded:?}: {up:?}");
         assert_eq!(
             *calls.lock().unwrap(),
-            [("sandbox-libkrun::worker::stop".to_string(), false)]
+            [("sandbox-libkrun::worker::stop".to_string(), false)],
+            "{recorded:?}"
         );
         assert!(dir.path().join(".iii/build/own/build.json").exists());
         assert!(alive(dir.path(), "own").is_some());
@@ -3062,6 +3108,41 @@ mod adapter_restart_tests {
         assert_eq!(fixture.started(), Vec::<String>::new());
         assert!(fixture.dir.path().join(".iii/build/vm/build.json").exists());
         fixture.project.shutdown().await;
+    }
+
+    /// The cancel of `compose::build` reaches the start of the adapter it waits for: the build
+    /// ends at once, cancelled, and builds nothing.
+    #[tokio::test]
+    async fn a_cancelled_compose_build_stops_waiting_for_the_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(dir.path(), EXPLICIT, &fake_iii());
+        // No worker ever registers: the adapter's start would wait out its 5 s timeout.
+        let project = open_small_project(
+            &path,
+            &format!("build-cancel-{}", uuid::Uuid::new_v4()),
+            |function, _| {
+                (function == "engine::workers::list").then(|| answered(json!({ "workers": [] })))
+            },
+        )
+        .await;
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let began = std::time::Instant::now();
+        let (run, ()) = tokio::join!(project.build(None, "build", &signal), async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            controller.cancel();
+        });
+
+        let run = run.unwrap();
+        assert!(run.cancelled);
+        assert!(run.results.is_empty(), "{:?}", run.results);
+        assert!(
+            began.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(!dir.path().join(".iii/build/own").exists());
+        project.shutdown().await;
     }
 
     /// The adapter refuses to destroy the state of a build that runs (S509): `remove` stops the
