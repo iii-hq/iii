@@ -267,10 +267,14 @@ func (g *typeGraph) visit(node reflect.Type) {
 
 // collect adds the node an occurrence of t stands for: pointers and JSONSchemaAlias are
 // followed, a named type is a node, and an unnamed one (a slice, a map, struct{...}) is
-// part of the schema that contains it.
+// part of the schema that contains it. An interface type is a leaf: it has no fields,
+// and its JSONSchemaAlias method, if any, cannot be called without a value.
 func (g *typeGraph) collect(t reflect.Type, out *[]reflect.Type) {
-	if t.Kind() == reflect.Pointer {
+	switch t.Kind() {
+	case reflect.Pointer:
 		g.collect(t.Elem(), out)
+		return
+	case reflect.Interface:
 		return
 	}
 	if t.Implements(schemaAliaserType) {

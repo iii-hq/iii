@@ -232,6 +232,10 @@ func (pinnedExtended) JSONSchemaExtend(s *jsonschema.Schema) {
 	tags.Items.Pattern = "^[a-z]+$"
 }
 
+// pinnedAliasInterface has the JSONSchemaAlias method, which the reflector cannot call on
+// an interface; it never tries for the values of a string-keyed map.
+type pinnedAliasInterface interface{ JSONSchemaAlias() any }
+
 // TestInferSchemaKeepsExistingSchemas pins the exact bytes of schemas for types without
 // recursion: support for recursive and interface types must not change them.
 func TestInferSchemaKeepsExistingSchemas(t *testing.T) {
@@ -247,6 +251,7 @@ func TestInferSchemaKeepsExistingSchemas(t *testing.T) {
 		{"string", InferSchema[string], `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"string"}`},
 		{"pinnedHiddenParent", InferSchema[pinnedHiddenParent], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-hidden-parent","properties":{"name":{"type":"string"}},"additionalProperties":false,"type":"object","required":["name"]}`},
 		{"pinnedHiddenHolder", InferSchema[pinnedHiddenHolder], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-hidden-holder","properties":{"item":{"properties":{"name":{"type":"string"}},"additionalProperties":false,"type":"object","required":["name"]}},"additionalProperties":false,"type":"object","required":["item"]}`},
+		{"map[string]pinnedAliasInterface", InferSchema[map[string]pinnedAliasInterface], `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}`},
 		{"pinnedExtended", InferSchema[pinnedExtended], `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://github.com/iii-hq/iii/sdk/packages/go/iii/pinned-extended","properties":{"tags":{"items":{"type":"string","pattern":"^[a-z]+$"},"type":"array"}},"additionalProperties":false,"type":"object","required":["tags"]}`},
 	}
 	for _, tc := range cases {
