@@ -6,7 +6,7 @@ No harness separate from the backend. No tool layer wired by hand. No memory sys
 
 ## The claim
 
-MCP connects an agent to the tools that each server exposes. iii gives an agent one live registry of every function on every connected worker, and the same registry runs the rest of the system. When a worker connects, every function on it becomes discoverable and callable. When it disconnects, it unregisters. The agent queries a live system that only contains what is actually connected right now.
+MCP connects an agent to the tools that each server exposes. iii gives an agent one live registry of every function on every connected worker, and the same registry runs the rest of the system. iii also has an MCP server: add the `mcp` worker (`iii call compose::add worker=mcp`), and an agent that speaks MCP calls the same functions as every other worker. When a worker connects, every function on it becomes discoverable and callable. When it disconnects, it unregisters. The agent queries a live system that only contains what is actually connected right now.
 
 An agent that hits a task outside its current capabilities can install a worker at runtime and use its functions immediately. Workers can create workers. For autonomous systems, this is the difference between scripted LLM calls and actual autonomy.
 

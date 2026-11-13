@@ -64,7 +64,7 @@ Run from the repository root:
 
 ```bash
 cargo build --release -p iii     # build the engine
-cargo run --release -p iii -- --config engine/config.yaml   # start the engine with engine/config.yaml
+cargo run --release -p iii       # start the engine with engine/config.yaml
 cargo test -p iii                # run the engine tests
 cargo bench -p iii               # run the benchmarks in benches/
 ```

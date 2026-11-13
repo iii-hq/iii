@@ -28,7 +28,7 @@ cargo fmt --all                   # format Rust
 cargo clippy --workspace          # lint Rust
 
 # Run
-cargo run --release -p iii -- --config engine/config.yaml   # start engine with engine/config.yaml
+cargo run --release               # start engine (reads engine/config.yaml)
 pnpm dev:docs                     # docs dev server (Mintlify)
 pnpm dev:website                  # website dev server
 
