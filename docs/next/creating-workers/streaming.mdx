@@ -500,8 +500,11 @@ A sink receives bytes only: messages the function sends on its `OutputStream` (`
 Pass an `iii.pipe()` end instead when the caller needs the messages too.
 
 If the stream into a sink aborts, the call fails with `STREAM_ABORTED`, even when the function
-returned. If the call fails, the SDK stops copying and closes the sink with the error. Either way,
-the sink may hold part of the data: remove a partly written file.
+returned. If the sink itself fails, such as a write to a full disk, the SDK stops copying and the
+call fails with `STREAM_ABORTED` too, with the reason `the sink failed: ...` and the sink's error as
+its cause; the function's next write to the stream fails with `STREAM_CLOSED`. If the call fails,
+the SDK stops copying and closes the sink with the error. In every case, the sink may hold part of
+the data: remove a partly written file.
 
 The call's timeout (`timeoutMs`, Python `timeout_ms`, Rust `CallRequest::timeout`, Go
 `CallRequest.Timeout`) covers the copy into its sinks too, from the start of the call. When it
