@@ -505,7 +505,12 @@ export type CallRequest<TInput = unknown> =
       payload: TInput
       /** Sets how the call is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `CallAction.Enqueue()`, `CallAction.Void()`). */
       action?: CallAction
-      /** Override the default invocation timeout, in milliseconds. */
+      /**
+       * Override the default invocation timeout, in milliseconds. It counts from
+       * the start of the call and also bounds the wait for the call's sinks
+       * (the WritableStreams or OutputStreams in the payload): when it expires
+       * first, the sinks are aborted and the call rejects with `TIMEOUT`.
+       */
       timeoutMs?: number
       /** Namespace to route this invocation to. Omit to inherit this worker's; say `default` to reach the engine's from a namespaced worker. */
       namespace?: string

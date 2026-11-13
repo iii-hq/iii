@@ -66,6 +66,29 @@ export class InvocationError extends Error {
 }
 
 /**
+ * A stream failed instead of ending: its writer aborted it (a source that
+ * threw, a handler that threw while writing, `out.abort()`), or its socket was
+ * lost. Thrown by the reads of an `InputStream` after the data sent before the
+ * abort, and the error a call rejects with when a sink it passed was aborted
+ * (`code` is `STREAM_ABORTED` in both cases). Mirrors the Node SDK.
+ *
+ * `reason` is what the reader was told. Across the engine that is the
+ * engine's text (`channel writer aborted: closed with code 4011` for a browser
+ * writer), not the writer's own reason: the engine does not relay it.
+ */
+export class StreamAbortedError extends InvocationError {
+  /** Why the stream was aborted, as the reader learned it. */
+  public readonly reason: string
+
+  constructor(reason: string, options?: { function_id?: string; cause?: unknown }) {
+    super({ code: 'STREAM_ABORTED', message: `stream aborted: ${reason}`, function_id: options?.function_id })
+    this.name = 'StreamAbortedError'
+    this.reason = reason
+    if (options?.cause !== undefined) (this as { cause?: unknown }).cause = options.cause
+  }
+}
+
+/**
  * The error a call that timed out rejects with, on the remote and the local
  * path: an `Error` (its message unchanged from earlier releases) that also
  * carries `code: 'TIMEOUT'` and the `function_id`, like the Node SDK's.
