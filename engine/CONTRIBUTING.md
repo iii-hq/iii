@@ -29,7 +29,6 @@ respectful and constructive in all interactions.
 - **Rust 1.91+** - Install via [rustup](https://rustup.rs/)
 - **Redis** (optional) - Required for event bus, state, and cron modules
 - **RabbitMQ** (optional) - Alternative event bus adapter
-- **pre-commit** - For Git hooks (`pip install pre-commit`)
 
 ### Fork and Clone
 
@@ -52,8 +51,8 @@ respectful and constructive in all interactions.
 # Install Rust toolchain components
 rustup component add rustfmt clippy
 
-# Install pre-commit hooks
-pre-commit install
+# Install the repository Git hooks (run from the repository root)
+make install-hooks
 
 # Install Hawkeye for license header management (cross-platform)
 cargo install hawkeye
@@ -130,15 +129,17 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ### Pre-commit Hooks
 
-Pre-commit hooks run automatically on each commit:
+`make install-hooks` (from the repository root) installs `.githooks/pre-commit`. When a commit
+stages `.rs` files, the hook runs `cargo fmt --all -- --check` and blocks the commit if formatting
+would change. It does not run clippy or the tests, so run the checks yourself before you push:
 
-- **cargo fmt** - Code formatting
-- **cargo check** - Compilation check
-- **cargo clippy** - Linting with `-D warnings`
-- **YAML validation** - Config file validation
-- **Trailing whitespace** - Cleanup
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
 
-If a hook fails, fix the issues and try committing again.
+To mirror the CI jobs locally (engine build, tests and format check, plus the SDK suites), run
+`make ci-local` from the repository root.
 
 ### Style Guidelines
 
