@@ -113,7 +113,7 @@ saves persist the submitted value. See [Configuration](./configuration).
 
 ## Engine-managed exceptions
 
-`configuration`, `iii-worker-manager`, `iii-http-functions`, and `iii-stream` (deprecated) remain
+`configuration`, `iii-worker-manager`, `iii-http-functions` (deprecated), and `iii-stream` (deprecated) remain
 engine-owned. Put them under `engine.workers` for managed Compose, or in `config.yaml` only when an
 external supervisor owns the engine. Internal `iii-engine-functions`, `iii-telemetry`,
 `iii-observability`, and the `iii-sandbox` router are injected automatically. They must not be

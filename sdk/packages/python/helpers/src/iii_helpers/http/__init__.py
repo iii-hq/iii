@@ -58,6 +58,11 @@ HttpAuthConfig = HttpAuthHmac | HttpAuthBearer | HttpAuthApiKey
 class HttpInvocationConfig(BaseModel):
     """Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
 
+    .. deprecated::
+        HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an
+        upcoming release. Behavior is unchanged for now. Migration guide:
+        https://iii.dev/docs/upgrading/migrate-from-http-functions
+
     Attributes:
         url: Target URL for the HTTP invocation.
         method: HTTP method. Defaults to ``'POST'``.

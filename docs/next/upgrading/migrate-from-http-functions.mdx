@@ -1,0 +1,269 @@
+---
+title: "Migrate from HTTP-invoked functions"
+description:
+  "Replace functions registered with HttpInvocationConfig, and the iii-http-functions engine worker,
+  with handlers your workers host that make the HTTP call themselves."
+owner: "devrel"
+type: "how-to"
+---
+
+<Warning title="Deprecated">
+  HTTP-invoked functions are deprecated (iii-http-functions) and will be removed in an upcoming
+  release. Behavior is unchanged for now. This page is the migration guide.
+</Warning>
+
+Use this page to move every function registered with an `HttpInvocationConfig` to a regular handler
+that makes the same HTTP call from your worker. Callers do not change: the function keeps its id,
+and callers, observers and traces see the same function.
+
+## Why they are deprecated
+
+An HTTP-invoked function makes the engine itself send an HTTP request to a URL that a connected
+worker chose. That puts an outbound HTTP client, its URL policy and its secrets inside the engine
+process:
+
+- Any worker allowed to register functions can make the engine reach any address its network
+  position allows. The engine has to defend that boundary with `security.url_allowlist`,
+  `block_private_ips` and `require_https`.
+- The `auth` fields name environment variables of the engine process, so a registering worker
+  decides which engine secrets are sent, and to which URL.
+- Retries, timeouts, response mapping and signing are fixed by the engine instead of the worker that
+  owns the integration.
+
+A handler in your worker does the same job with the worker's own network access and secrets, and
+the engine goes back to routing calls. Incoming HTTP is unaffected: the `http` worker keeps exposing
+functions as HTTP endpoints.
+
+## Timeline and support window
+
+| Phase             | What happens                                                                                     | When                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Deprecation (now) | Everything keeps working. The engine and the SDKs emit deprecation warnings.                     | Now                                             |
+| Support window    | Replace each HTTP-invoked function with a handler, then remove `iii-http-functions` from config. | Until the removal release                       |
+| Removal           | A separately announced breaking release removes `iii-http-functions` and `HttpInvocationConfig`. | An upcoming release, announced in the changelog |
+
+What the warnings look like:
+
+- **Engine:** a `warn` log with target `iii::deprecation` once per process when `iii-http-functions`
+  starts, and when a worker registers a function with an HTTP invocation, at most once every 10
+  minutes per registering worker. The log names the entry point (`HttpInvocationConfig`), the
+  worker when known and this guide. It never contains URLs, headers or payloads.
+- **Node SDK:** `@deprecated` JSDoc on `HttpInvocationConfig`, so editors strike it through. No
+  runtime change.
+- **Python SDK:** `register_function` with an `HttpInvocationConfig` emits a `FutureWarning`
+  pointing at your call site. Nothing is raised and behavior is unchanged.
+- **Rust SDK:** `#[deprecated]` on `RegisterFunction::http`.
+- **Go SDK:** `Deprecated:` doc comments on `Client.RegisterHTTPFunction`, `HTTPInvocationRef` and
+  `http.InvocationConfig`.
+
+## What is deprecated and what is not
+
+Deprecated:
+
+- The `iii-http-functions` engine worker and its `security` block (`url_allowlist`,
+  `block_private_ips`, `require_https`).
+- Registering a function with an HTTP invocation: Node and Python `HttpInvocationConfig` passed to
+  `registerFunction` or `register_function`, Rust `RegisterFunction::http`, and Go
+  `Client.RegisterHTTPFunction`.
+- The engine-side request signing (`x-iii-Signature`) and the `auth` types that name engine
+  environment variables (`hmac`, `bearer`, `api_key`).
+
+Not deprecated, keep using them:
+
+- Function registration with a handler, calls and observers in every SDK.
+- The `http` worker, which exposes functions as HTTP endpoints (incoming HTTP).
+- The `web` worker and its `web::fetch` function for outbound requests from a worker.
+- Alert webhooks of `iii-observability`.
+
+## Replace an HTTP-invoked function with a handler
+
+The function below was registered with an `HttpInvocationConfig`. The engine sent the input as the
+JSON body, added the bearer token read from its own `MATH_API_TOKEN` variable, and returned the JSON
+response:
+
+```typescript
+worker.registerFunction(
+  "math::multiply",
+  {
+    url: "https://math.example.com/multiply",
+    method: "POST",
+    timeout_ms: 5000,
+    auth: { type: "bearer", token_key: "MATH_API_TOKEN" },
+  },
+  { description: "Multiply two numbers in the math service" },
+);
+```
+
+Register the same id with a handler that makes the call. Set `MATH_API_TOKEN` in the worker's
+environment instead of the engine's.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    worker.registerFunction(
+      "math::multiply",
+      async (input) => {
+        const res = await fetch("https://math.example.com/multiply", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${process.env.MATH_API_TOKEN}`,
+          },
+          body: JSON.stringify(input),
+          redirect: "manual",
+          signal: AbortSignal.timeout(5000),
+        });
+        const text = await res.text();
+        if (res.status >= 400) {
+          // Callers see a thrown error as invocation_failed: keep the service's code in the message.
+          let code = `HTTP ${res.status}`;
+          try {
+            code = JSON.parse(text)?.error?.code ?? code;
+          } catch {
+            // Not a JSON error body.
+          }
+          throw new Error(`${code}: math service request failed`);
+        }
+        if (res.status >= 200 && res.status < 300) return text ? JSON.parse(text) : null;
+        // 1xx or 3xx: a success with no result unless the body is JSON, as the engine did.
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
+        }
+      },
+      { description: "Multiply two numbers in the math service" },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None  # never follow redirects, as the engine did
+
+
+    opener = urllib.request.build_opener(NoRedirect)
+
+
+    def multiply(data):
+        request = urllib.request.Request(
+            "https://math.example.com/multiply",
+            data=json.dumps(data).encode(),
+            method="POST",
+            headers={
+                "content-type": "application/json",
+                "authorization": f"Bearer {os.environ['MATH_API_TOKEN']}",
+            },
+        )
+        try:
+            with opener.open(request, timeout=5) as response:
+                body = response.read()
+        except urllib.error.HTTPError as error:
+            if 300 <= error.code < 400:
+                # A success with no result unless the body is JSON, as the engine did.
+                try:
+                    return json.loads(error.read())
+                except ValueError:
+                    return None
+            # Callers see a raised error as invocation_failed: keep the service's code in the message.
+            try:
+                code = json.loads(error.read())["error"]["code"]
+            except (ValueError, KeyError, TypeError):
+                code = f"HTTP {error.code}"
+            raise RuntimeError(f"{code}: math service request failed") from error
+        return json.loads(body) if body else None
+
+
+    worker.register_function(
+        "math::multiply",
+        multiply,
+        description="Multiply two numbers in the math service",
+    )
+    ```
+
+  </Tab>
+</Tabs>
+
+Rust and Go follow the same pattern: register the id with `RegisterFunction::new_async` or
+`Client.RegisterFunction` and make the request with the HTTP client your worker already uses.
+
+Keep the details the engine handled for you:
+
+- **Errors:** the engine treated a status of 400 or more as a failure and passed the `error.code`
+  and `error.message` of a JSON error body to the caller. An error that a handler throws or raises
+  reaches the caller as `invocation_failed` with your message, so the service's code is not kept.
+  The examples put the code in the message. Update callers and observer filters that match on
+  service codes such as `LIMIT_EXCEEDED`.
+- **Redirects:** the engine never followed redirects, and returned a 1xx or 3xx response as a
+  success with no result unless its body was JSON. The examples do the same. Following a redirect
+  can also send the `Authorization` header to another host, so keep redirects off unless the
+  target needs them.
+- **Timeouts:** `timeout_ms` defaulted to 30 seconds. Set an explicit timeout on the request.
+- **Headers:** the engine sent `x-iii-Function-Path`, `x-iii-Invocation-ID` and `x-iii-Timestamp`
+  with every request. Add them only if the target reads them.
+
+### Request signing
+
+If the target verifies `x-iii-Signature` (the `hmac` auth type), compute the same signature in the
+handler, or move the target to bearer or API key authentication. The engine computed HMAC-SHA256
+with the secret over `{timestamp}:{base64 of the body}`, sent the hex digest as `sha256={digest}`
+in `x-iii-Signature`, and sent the Unix timestamp in seconds in `x-iii-Timestamp`:
+
+```typescript
+import { createHmac } from "node:crypto";
+
+const body = JSON.stringify(input);
+const timestamp = Math.floor(Date.now() / 1000).toString();
+const digest = createHmac("sha256", process.env.MATH_SIGNING_SECRET ?? "")
+  .update(`${timestamp}:${Buffer.from(body).toString("base64")}`)
+  .digest("hex");
+const headers = {
+  "content-type": "application/json",
+  "x-iii-Timestamp": timestamp,
+  "x-iii-Signature": `sha256=${digest}`,
+};
+```
+
+### URLs that come from input
+
+The examples above call a fixed URL, so the worker decides where requests go. If the URL comes from
+the function input, call `web::fetch` from the handler instead of your own client. It rejects
+private, link-local and reserved addresses and pins the connection to the address it validated.
+Loopback addresses are allowed by default. Set `web.allow_loopback: false` to reject them.
+
+## Remove iii-http-functions from the engine
+
+After every function is a handler, delete the `iii-http-functions` entry and its `security` block:
+
+```yaml
+engine:
+  workers:
+    iii-http-functions: # remove this entry
+      security:
+        url_allowlist: ["math.example.com"]
+```
+
+An engine that a supervisor runs from `config.yaml` drops the same entry from its `workers` list.
+Once no worker registers an HTTP invocation and the entry is gone, the engine logs no
+`iii-http-functions` deprecation warnings.

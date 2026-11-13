@@ -106,6 +106,11 @@ func EnqueueAction(queue string) *CallAction {
 // Register one with [Client.RegisterHTTPFunction]; it travels as the registration's
 // "invocation" field. Auth is raw JSON because the engine's HttpAuthConfig is a tagged
 // union: build it with [HMACAuth], [BearerAuth] or [APIKeyAuth].
+//
+// Deprecated: HTTP-invoked functions (iii-http-functions) will be removed in an
+// upcoming release; behavior is unchanged for now. Register a handler that makes
+// the HTTP call instead. Migration guide:
+// https://iii.dev/docs/upgrading/migrate-from-http-functions
 type HTTPInvocationRef struct {
 	// URL is the endpoint the engine calls. Required.
 	URL string `json:"url"`

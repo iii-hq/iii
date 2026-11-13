@@ -17,7 +17,7 @@ Only workers coupled to the engine lifecycle may be declared in this file:
 
 - `configuration`
 - `iii-worker-manager`
-- `iii-http-functions`
+- `iii-http-functions` (deprecated)
 - `iii-stream` (deprecated)
 
 The engine injects `iii-engine-functions`, `iii-telemetry`, `iii-observability`, and the

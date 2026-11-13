@@ -68,6 +68,11 @@ const (
 // [iii.HTTPInvocationRef]: URL, Method (POST when empty), TimeoutMs, Headers, and Auth,
 // the JSON of a Node HttpAuthConfig: {"type":"hmac","secret_key":...},
 // {"type":"bearer","token_key":...} or {"type":"api_key","header":...,"value_key":...}.
+//
+// Deprecated: HTTP-invoked functions (iii-http-functions) will be removed in an
+// upcoming release; behavior is unchanged for now. Register a handler that makes
+// the HTTP call instead. Migration guide:
+// https://iii.dev/docs/upgrading/migrate-from-http-functions
 type InvocationConfig = iii.HTTPInvocationRef
 
 // MultiValue is a header or query parameter value, string | string[] in the Node types.
