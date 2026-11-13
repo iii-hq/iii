@@ -81,12 +81,20 @@ type OutputState = {
   end?: Promise<void>
   failure?: unknown
   chain: Promise<unknown>
+  /** Operations started on the sink and not settled yet (a write the sink holds under backpressure). */
+  inflight: number
+  /** Rejects when the stream is aborted: what an operation the sink holds fails with at once. */
+  cut: Promise<never>
+  cutWrites: (error: Error) => void
   /** Settles when the stream finished: resolves after a clean close, rejects after an abort. */
   done: Promise<void>
   settleDone: (error?: unknown) => void
   id?: string
   scope?: StreamScope
 }
+
+/** The fields an OutputStream builds itself. */
+type OwnOutputState = 'done' | 'settleDone' | 'chain' | 'inflight' | 'cut' | 'cutWrites'
 
 const inputs = new WeakMap<InputStream, InputState>()
 const outputs = new WeakMap<OutputStream, OutputState>()
@@ -127,6 +135,16 @@ function transferredError(): Error {
   return streamInUseError('the stream was sent to another function and can no longer be used here')
 }
 
+/** `STREAM_CLOSED`: a read of a cancelled stream. A partial stream must not read as a whole one. */
+function cancelledError(): Error {
+  return streamClosedError('the stream was cancelled')
+}
+
+/** `STREAM_CLOSED`: a read of a stream the handler guard cancelled. */
+function guardCancelledError(): Error {
+  return streamClosedError('the stream was cancelled when its handler returned: read it before returning')
+}
+
 // ── InputStream ────────────────────────────────────────────────────────────────
 
 /** Builds an InputStream from its state (the constructor is private). */
@@ -134,10 +152,8 @@ const makeInput = (state: InputState): InputStream =>
   new (InputStream as unknown as new (state: InputState) => InputStream)(state)
 
 /** Builds an OutputStream from its state (the constructor is private). */
-const makeOutput = (state: Omit<OutputState, 'done' | 'settleDone' | 'chain'>): OutputStream =>
-  new (OutputStream as unknown as new (state: Omit<OutputState, 'done' | 'settleDone' | 'chain'>) => OutputStream)(
-    state,
-  )
+const makeOutput = (state: Omit<OutputState, OwnOutputState>): OutputStream =>
+  new (OutputStream as unknown as new (state: Omit<OutputState, OwnOutputState>) => OutputStream)(state)
 
 /**
  * The read side of a stream. A field of a handler's input or of a call's
@@ -299,16 +315,36 @@ async function pullFrame(st: InputState): Promise<ChannelItem | null> {
     return null
   }
   if (st.transferred) throw transferredError()
+  return pullFrom(st)
+}
+
+/**
+ * The next frame of `st`, sent away or not: what {@link pullFrame} reads, and
+ * what a stream handed over in a call reads its original through. A cancel or
+ * an abort that lands while it waits is its outcome: the read fails, it does
+ * not end.
+ */
+async function pullFrom(st: InputState): Promise<ChannelItem | null> {
+  if (st.finished) {
+    if (st.failure !== undefined) throw st.failure
+    return null
+  }
   st.started = true
   if (!st.source) {
     const reader = new ChannelReader(st.binding?.wsBase ?? '', st.ref as StreamChannelRef, st.binding?.headers)
     st.source = { next: () => reader.next(), cancel: () => reader.cancel() }
   }
+  let item: ChannelItem | null
   try {
-    const item = await st.source.next()
-    if (item === null) st.finished = true
-    return item
+    item = await st.source.next()
   } catch (error) {
+    if (st.finished && st.failure !== undefined) throw st.failure
+    // A stream this one reads through (a tee, a stream handed over) was cancelled: its STREAM_CLOSED goes on as it is.
+    if ((error as { code?: unknown } | null)?.code === 'STREAM_CLOSED') {
+      st.finished = true
+      st.failure = error
+      throw error
+    }
     // A source that throws aborts the stream, in this process as across the engine.
     const failure =
       error instanceof StreamAbortedError ? error : new StreamAbortedError(errorText(error), { cause: error })
@@ -316,11 +352,24 @@ async function pullFrame(st: InputState): Promise<ChannelItem | null> {
     st.failure = failure
     throw failure
   }
+  if (st.finished) {
+    // Cancelled or aborted while this read waited.
+    if (st.failure !== undefined) throw st.failure
+    return null
+  }
+  if (item === null) st.finished = true
+  return item
 }
 
-async function cancelInput(st: InputState, attach: boolean): Promise<void> {
+/**
+ * Cancels `st`: every later read, and a read in progress now, fails with
+ * `failure` (`STREAM_CLOSED` by default) instead of ending. A stream already
+ * read to its end, or aborted, stays as it was.
+ */
+async function cancelInput(st: InputState, attach: boolean, failure: Error = cancelledError()): Promise<void> {
   if (st.finished) return
   st.finished = true
+  st.failure = failure
   if (st.source) {
     await st.source.cancel()
   } else if (attach && st.ref) {
@@ -437,6 +486,8 @@ function teeInput(st: InputState): [InputStream, InputStream] {
       localInputState({
         next: async () => {
           for (;;) {
+            // Cancelled: a read in progress stops waiting for the other branch (its read fails).
+            if (!active[i]) return null
             const item = queues[i].shift()
             if (item) {
               notify()
@@ -447,7 +498,8 @@ function teeInput(st: InputState): [InputStream, InputStream] {
               return null
             }
             if (active[1 - i] && queues[1 - i].length >= TEE_HIGH_WATER_FRAMES) await changed()
-            else await pullOnce()
+            // A cancel of this branch wakes it (changed) while the frame it waits for is still on its way.
+            else await Promise.race([pullOnce(), changed()])
           }
         },
         cancel: async () => {
@@ -556,14 +608,20 @@ function webSource(open: () => ReadableStream<Uint8Array>): FrameSource {
  * ```
  */
 export class OutputStream {
-  private constructor(state: Omit<OutputState, 'done' | 'settleDone' | 'chain'>) {
+  private constructor(state: Omit<OutputState, OwnOutputState>) {
     let settleDone: (error?: unknown) => void = noop
     const done = handled(
       new Promise<void>((resolve, reject) => {
         settleDone = (error) => (error === undefined ? resolve() : reject(error))
       }),
     )
-    outputs.set(this, { ...state, chain: Promise.resolve(), done, settleDone })
+    let cutWrites: (error: Error) => void = noop
+    const cut = handled(
+      new Promise<never>((_resolve, reject) => {
+        cutWrites = reject
+      }),
+    )
+    outputs.set(this, { ...state, chain: Promise.resolve(), inflight: 0, cut, cutWrites, done, settleDone })
   }
 
   /**
@@ -640,12 +698,23 @@ export class OutputStream {
     if (st.end) return st.end
     const text = reason === undefined ? 'aborted' : errorText(reason)
     st.ended = 'aborted'
+    const error = new StreamAbortedError(text)
+    // A write the sink holds (backpressure), and those queued behind it, fail now with STREAM_CLOSED.
+    const held = st.inflight > 0
+    st.failure ??= streamClosedError('the stream was aborted')
+    st.cutWrites(streamClosedError('the stream was aborted while the write waited'))
     // Not queued behind writes in flight: an abort cuts the stream now.
-    st.end = handled(
-      sinkOf(st)
-        .abort(text)
-        .then(() => st.settleDone(new StreamAbortedError(text))),
-    )
+    const aborted = sinkOf(st)
+      .abort(text)
+      .finally(() => st.settleDone(error))
+    if (held) {
+      // Nor does it wait for a sink that still holds a write: a WritableStream's own abort waits for it.
+      aborted.catch(noop)
+      st.settleDone(error)
+      st.end = Promise.resolve()
+    } else {
+      st.end = handled(aborted)
+    }
     return st.end
   }
 
@@ -712,9 +781,17 @@ function sinkOf(st: OutputState): FrameSink {
 
 /** Runs `op` after the operations before it, so frames keep their order. */
 function enqueue(st: OutputState, op: (sink: FrameSink) => Promise<void>): Promise<void> {
-  const run = st.chain.then(() => {
+  const run = st.chain.then(async () => {
     if (st.failure !== undefined) throw st.failure
-    return op(sinkOf(st))
+    const pending = op(sinkOf(st))
+    pending.catch(noop)
+    st.inflight++
+    try {
+      // An abort does not wait for an operation the sink holds: it fails at once (st.cut).
+      return await Promise.race([pending, st.cut])
+    } finally {
+      st.inflight--
+    }
   })
   st.chain = run.catch((error) => {
     st.failure ??= error
@@ -856,8 +933,36 @@ export function inputStarted(s: InputStream): boolean {
 }
 
 /** Cancels `s` without opening a socket that never opened. */
-export function releaseInput(s: InputStream): Promise<void> {
-  return handled(cancelInput(inputState(s), false))
+export function releaseInput(s: InputStream, failure?: Error): Promise<void> {
+  return handled(cancelInput(inputState(s), false, failure))
+}
+
+/**
+ * Fails `s` for its reader, as an aborted writer does across a pipe: every
+ * later read, and a read in progress, throws a {@link StreamAbortedError}
+ * with `reason`. Releases its source.
+ */
+export function abortInput(s: InputStream, reason: string): Promise<void> {
+  return handled(cancelInput(inputState(s), false, new StreamAbortedError(reason)))
+}
+
+/**
+ * What an InputStream goes as when a call sends it without its ref (pumped
+ * into a pipe, or in-process): one nobody read is read through a new
+ * InputStream, and `s` itself counts as sent, as when its ref travels (R5): it
+ * leaves its guard, and reading or sending it again fails with
+ * `STREAM_IN_USE`. One a read began on hands on its unread rest
+ * ({@link handOn}).
+ */
+export function handOver(s: InputStream): InputStream {
+  const st = inputState(s)
+  if (st.claimed) return handOn(s)
+  const relay = makeInput({
+    ...localInputState({ next: () => pullFrom(st), cancel: () => cancelInput(st, false) }),
+    id: streamId(st),
+  })
+  markTransferred(s)
+  return relay
 }
 
 /** Why {@link handOn} would refuse `s`, checked with no effect: a stream read to its end (R6). */
@@ -974,7 +1079,8 @@ export class StreamScope {
         const st = inputState(s)
         st.scope = undefined
         if (st.transferred || st.finished) continue
-        if (st.started || (mode.local && !st.claimed && st.ref === undefined)) void releaseInput(s)
+        if (st.started || (mode.local && !st.claimed && st.ref === undefined))
+          void releaseInput(s, guardCancelledError())
       }
     }
     this.members.clear()

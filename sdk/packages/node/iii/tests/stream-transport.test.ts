@@ -240,7 +240,7 @@ describe('stream transport over a real WebSocket', () => {
       await cancelled
     })
 
-    it('treats its own close as end of stream even when the peer drops without replying', async () => {
+    it('treats its own close as a cancel, not an abort, even when the peer drops without replying', async () => {
       const input = inputFromRef(ref('read'), { wsBase: url })
       const it = input[Symbol.asyncIterator]()
       const first = it.next()
@@ -250,7 +250,11 @@ describe('stream transport over a real WebSocket', () => {
       ws.send(Buffer.from('one'), { binary: true })
       await first
       await input.cancel()
-      expect(await it.next()).toEqual({ done: true, value: undefined })
+      // Cancelled, not aborted (the 1006 that follows is its own close): the next read fails with STREAM_CLOSED.
+      await expect(it.next()).rejects.toMatchObject({
+        code: 'STREAM_CLOSED',
+        message: 'STREAM_CLOSED: the stream was cancelled',
+      })
     })
   })
 

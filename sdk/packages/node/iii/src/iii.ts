@@ -3,12 +3,13 @@ import * as os from 'node:os'
 import { context, trace } from '@opentelemetry/api'
 import { type Data, WebSocket } from 'ws'
 import {
+  abortInput,
   asStream,
   detach,
   errorText,
   forwardableRef,
-  handOn,
   handOnRefusal,
+  handOver,
   InputStream,
   inputFromRef,
   isLocalSink,
@@ -1215,10 +1216,11 @@ class Sdk implements IIIClient {
   private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
     type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
     const slots = new Map<unknown, Slot>()
+    const slotOf = new Map<Slot, unknown>()
     for (const [slot, stream] of this.streamValues(value)) {
-      const ref = forwardableRef(stream)
-      // A stream a read began on is pumped from where that read is.
-      slots.set(slot, { stream: ref === undefined && stream instanceof InputStream ? handOn(stream) : stream, ref })
+      const entry: Slot = { stream, ref: forwardableRef(stream) }
+      slots.set(slot, entry)
+      slotOf.set(entry, slot)
     }
     const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
     const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
@@ -1226,6 +1228,10 @@ class Sdk implements IIIClient {
     const binding = this.streamBinding()
     piped.forEach((entry, i) => {
       const { reader, writer } = pipes[i]
+      // Once its pipe exists, an InputStream passed as one counts as sent (the pump reads it through another),
+      // and one a read began on is pumped from where that read is. A native source's wrapper is private already.
+      if (entry.stream instanceof InputStream && entry.stream === slotOf.get(entry))
+        entry.stream = handOver(entry.stream)
       // A sink gets the writer ref and is fed from the reader end; a source gets the reader ref and feeds the writer end.
       const sink = entry.stream instanceof OutputStream
       entry.ref = wireRef(sink ? writer : reader)
@@ -1344,7 +1350,8 @@ class Sdk implements IIIClient {
   /**
    * For a call this worker runs in-process: every stream value of `value`
    * becomes an {@link InputStream} or {@link OutputStream} (a Readable is
-   * wrapped, an InputStream stays the same object, a ref is opened), with no
+   * wrapped, an InputStream or
+   * OutputStream is handed over as the routed path sends it, a ref is opened), with no
    * pipe. The streams join `scope` and are listed in `found`.
    */
   private localize(value: unknown, scope?: StreamScope, found?: Array<InputStream | OutputStream>): unknown {
@@ -1357,14 +1364,35 @@ class Sdk implements IIIClient {
         const ref = wireRef(slot as StreamChannelRef)
         stream = ref.direction === 'read' ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
       } else {
-        stream = values.get(slot) as InputStream | OutputStream
-        if (stream instanceof InputStream) stream = handOn(stream)
+        const given = values.get(slot) as InputStream | OutputStream
+        // An InputStream or OutputStream passed as one goes as the routed path sends it, and counts as sent.
+        // A native source or sink is wrapped already, in a stream nobody else holds.
+        stream = given === slot ? this.handOverLocally(given) : given
       }
       if (scope) scope.adopt(stream)
       else detach(stream)
       found?.push(stream)
       return stream
     })
+  }
+
+  /**
+   * What the function a call runs in-process gets for `s`, as the routed path
+   * would send it (R5): a stream with a ref, never read or used, is opened
+   * again from its ref; another InputStream is handed over ({@link handOver}).
+   * Either way `s` counts as sent, and sending or reading it again fails with
+   * `STREAM_IN_USE`. Any other OutputStream (a sink of this worker, one in use)
+   * goes as it is.
+   */
+  private handOverLocally(s: InputStream | OutputStream): InputStream | OutputStream {
+    const ref = forwardableRef(s)
+    if (ref) {
+      const binding = this.streamBinding()
+      const opened = s instanceof InputStream ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
+      markTransferred(s)
+      return opened
+    }
+    return s instanceof InputStream ? handOver(s) : s
   }
 
   /**
@@ -1772,6 +1800,9 @@ class Sdk implements IIIClient {
       return Promise.reject(error)
     }
     const sinks = passed.filter((s): s is OutputStream => s instanceof OutputStream && isLocalSink(s))
+    // The sources the routed path would pipe (not a ref passed on unread): a call that ends early aborts them,
+    // so the handler's read fails with STREAM_ABORTED as it does across a pipe.
+    const sources = passed.filter((s): s is InputStream => s instanceof InputStream && forwardableRef(s) === undefined)
     /** The call failed: sinks it passed that are still open are aborted with its error. */
     const abortSinks = (error: unknown) => {
       for (const sink of sinks) if (!outputEnded(sink)) void sink.abort(errorText(error))
@@ -1837,6 +1868,7 @@ class Sdk implements IIIClient {
         timedOut = true
         const error = this.timeoutError(function_id, effectiveTimeout)
         abortSinks(error)
+        for (const source of sources) void abortInput(source, errorText(error))
         this.discardStreams(unclaimed)
         reject(error)
       }, effectiveTimeout)

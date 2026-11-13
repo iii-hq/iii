@@ -199,6 +199,27 @@ describe('Stream ends on a browser WebSocket', () => {
       await expect(stuck).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
     })
 
+    it('abort() returns at once while a write waits on backpressure, and that write fails with STREAM_CLOSED', async () => {
+      const out = outputFromRef(makeRef('write'), binding)
+      const first = out.write('a')
+      await until(() => engine.sockets.length > 0)
+      const socket = engine.sockets[0]
+      socket.simulateOpen()
+      await first
+
+      // The socket holds more than 1 MiB unsent and never drains: the next write waits.
+      socket.bufferedAmount = 2 * 1024 * 1024
+      const held = out.write('b')
+      held.catch(() => undefined)
+      await new Promise((r) => setTimeout(r, 20))
+      const started = performance.now()
+      await out.abort('stop')
+      expect(performance.now() - started).toBeLessThan(100)
+      await expect(held).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+      await until(() => socket.closeCode !== undefined)
+      expect(socket.closeCode).toBe(4011)
+    })
+
     it('fails its writes with STREAM_CLOSED when the socket never opens', async () => {
       const out = outputFromRef(makeRef('write'), binding)
       const write = out.write('lost')
@@ -319,7 +340,7 @@ describe('Stream ends on a browser WebSocket', () => {
       await expect(readPromise).rejects.toMatchObject({ code: 'STREAM_ABORTED' })
     })
 
-    it('treats its own cancel as the end, whatever close code follows', async () => {
+    it('treats its own cancel as a cancel, not an abort, whatever close code follows', async () => {
       const input = inputFromRef(makeRef('read'), binding)
       const it = input[Symbol.asyncIterator]()
       const first = it.next()
@@ -332,7 +353,10 @@ describe('Stream ends on a browser WebSocket', () => {
       await input.cancel()
       socket.simulateClose(1006)
 
-      expect(await it.next()).toEqual({ done: true, value: undefined })
+      await expect(it.next()).rejects.toMatchObject({
+        code: 'STREAM_CLOSED',
+        message: 'STREAM_CLOSED: the stream was cancelled',
+      })
     })
 
     it('cancel() on a stream never read opens it, then closes it with 1000 (the writer learns the reader left)', async () => {

@@ -720,3 +720,162 @@ describe('refusals claim nothing (regressions from the adversarial run)', () => 
     expect(ran).toBe(6)
   })
 })
+
+describe('cancelled, aborted and sent streams (regressions from the Go adversarial run)', () => {
+  const guard = {
+    code: 'STREAM_CLOSED',
+    message: 'STREAM_CLOSED: the stream was cancelled when its handler returned: read it before returning',
+  }
+  /** 16 chunks of 64 KiB (1 MiB), one every 5 ms: a read of it is in progress when its handler returns. */
+  const slowMiB = () => {
+    let sent = 0
+    return new ReadableStream<Uint8Array>({
+      pull: async (controller) => {
+        await sleep(5)
+        if (sent++ < 16) controller.enqueue(new Uint8Array(65_536).fill(1))
+        else controller.close()
+      },
+    })
+  }
+
+  it('a background read after its handler returned fails with the guard error, never a short clean end (routed and local)', async () => {
+    const results: Record<string, unknown> = {}
+    const handler =
+      (key: string) =>
+      async ({ body }: { body: InputStream }) => {
+        const it = body[Symbol.asyncIterator]()
+        let bytes = ((await it.next()).value as Uint8Array).byteLength
+        // Not awaited: it reads on after the handler returned.
+        void (async () => {
+          try {
+            for (;;) {
+              const step = await it.next()
+              if (step.done) {
+                results[key] = { bytes, ended: true }
+                return
+              }
+              bytes += step.value.byteLength
+            }
+          } catch (error) {
+            results[key] = { bytes, code: (error as { code?: string }).code, message: (error as Error).message }
+          }
+        })()
+        return 'returned'
+      }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('bg-read'), handler('routed'))
+    })
+    caller.registerFunction(fid('local-bg-read'), handler('local'))
+    await localDispatchReady(caller, fid('local-bg-read'))
+    for (const [function_id, key] of [
+      [fid('bg-read'), 'routed'],
+      [fid('local-bg-read'), 'local'],
+    ] as const) {
+      await expect(within(caller.call({ function_id, payload: { body: slowMiB() } }))).resolves.toBe('returned')
+      const result = (await waitFor(() => results[key], `the background read (${key})`)) as { bytes: number }
+      expect(result).toMatchObject(guard)
+      expect(result.bytes).toBeLessThan(1_048_576)
+    }
+  })
+
+  it('a call that times out aborts the sources it passed: the handler read fails with STREAM_ABORTED (routed and local)', async () => {
+    const seen: Record<string, unknown> = {}
+    const slowReader =
+      (key: string) =>
+      async ({ body }: { body: InputStream }) => {
+        try {
+          for await (const _ of body) {
+            // reading
+          }
+          seen[key] = 'ended'
+        } catch (error) {
+          seen[key] = (error as { code?: string }).code
+        }
+        return 'done'
+      }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('slow-read'), slowReader('routed'))
+    })
+    caller.registerFunction(fid('local-slow-read'), slowReader('local'))
+    await localDispatchReady(caller, fid('local-slow-read'))
+    for (const [function_id, key] of [
+      [fid('slow-read'), 'routed'],
+      [fid('local-slow-read'), 'local'],
+    ] as const) {
+      // Slow, so little is buffered on the way: across a pipe the abort comes after the data the engine holds.
+      const endless = new ReadableStream<Uint8Array>({
+        pull: async (controller) => {
+          await sleep(20)
+          controller.enqueue(new Uint8Array(1024).fill(2))
+        },
+      })
+      await expect(
+        within(caller.call({ function_id, payload: { body: endless }, timeoutMs: 600 })),
+      ).rejects.toMatchObject({ code: 'TIMEOUT' })
+      await waitFor(() => seen[key], `the handler's read ended (${key})`)
+      expect(seen[key]).toBe('STREAM_ABORTED')
+    }
+  })
+
+  it('an unread stream sent in two calls fails the second with STREAM_IN_USE (routed and local)', async () => {
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('ignore'), async (_input: unknown) => 'ignored')
+    })
+    caller.registerFunction(fid('local-ignore'), async (_input: unknown) => 'ignored')
+    await localDispatchReady(caller, fid('local-ignore'))
+    const kinds: Record<string, () => Promise<InputStream | OutputStream>> = {
+      'InputStream.from': async () => InputStream.from('unread'),
+      'pipe().input': async () => (await caller.pipe()).input,
+      'pipe().output': async () => (await caller.pipe()).output,
+    }
+    for (const function_id of [fid('ignore'), fid('local-ignore')]) {
+      for (const [kind, make] of Object.entries(kinds)) {
+        const stream = await make()
+        await expect(caller.call({ function_id, payload: { stream } }), kind).resolves.toBe('ignored')
+        await expect(caller.call({ function_id, payload: { stream } }), kind).rejects.toMatchObject({
+          code: 'STREAM_IN_USE',
+          message: expect.stringMatching(/already sent/),
+        })
+      }
+      // A stream sent away is no longer the caller's to read.
+      const sent = InputStream.from('mine?')
+      await caller.call({ function_id, payload: { sent } })
+      await expect(sent.text()).rejects.toMatchObject({ code: 'STREAM_IN_USE' })
+    }
+  })
+
+  it('a sink whose writes never settle does not hold a call past its timeout, and the held write fails (routed and local)', async () => {
+    const writeErrors: Record<string, unknown> = {}
+    const writer =
+      (key: string) =>
+      async ({ out }: { out: OutputStream }) => {
+        try {
+          for (let i = 0; i < 4; i++) await out.write('x')
+          return 'wrote'
+        } catch (error) {
+          writeErrors[key] = (error as { code?: string }).code
+          return 'cut'
+        }
+      }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('write-stuck'), writer('routed'))
+    })
+    caller.registerFunction(fid('local-write-stuck'), writer('local'))
+    await localDispatchReady(caller, fid('local-write-stuck'))
+    for (const function_id of [fid('write-stuck'), fid('local-write-stuck')]) {
+      const stuck = new WritableStream<Uint8Array>(
+        { write: () => new Promise<void>(() => undefined) },
+        { highWaterMark: 1 },
+      )
+      const started = performance.now()
+      const error = await within(caller.call({ function_id, payload: { out: stuck }, timeoutMs: 800 }), 3000).catch(
+        (e: unknown) => e,
+      )
+      expect(error).toMatchObject({ code: 'TIMEOUT' })
+      expect(performance.now() - started).toBeLessThan(1500)
+    }
+    // In-process, the handler wrote into the stuck sink itself: the abort at the timeout cut its write.
+    await waitFor(() => writeErrors.local, 'the held write failed')
+    expect(writeErrors.local).toBe('STREAM_CLOSED')
+  })
+})

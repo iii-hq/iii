@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  abortInput,
   asStream,
   forwardableRef,
   handOn,
+  handOver,
   InputStream,
   inputFromRef,
   isTransferred,
@@ -215,7 +217,11 @@ describe('InputStream reads', () => {
     await input.cancel()
     await input.cancel()
     expect(cancelled()).toBe(true)
-    await expect(input.bytes()).resolves.toHaveLength(0)
+    // A cancelled stream did not end: reading it fails.
+    await expect(input.bytes()).rejects.toMatchObject({
+      code: 'STREAM_CLOSED',
+      message: 'STREAM_CLOSED: the stream was cancelled',
+    })
   })
 
   it('a source that throws surfaces as the read error after the data before it', async () => {
@@ -681,5 +687,194 @@ describe('regressions from the adversarial run', () => {
     await guarded.write('x')
     scope.settle({ ok: false, error: original })
     expect(await reasonOf(guarded)).toMatchObject({ reason: original.reason, message })
+  })
+})
+
+describe('a cancelled InputStream fails its reads with STREAM_CLOSED, it does not end', () => {
+  const cancelled = { code: 'STREAM_CLOSED', message: 'STREAM_CLOSED: the stream was cancelled' }
+  const guard = {
+    code: 'STREAM_CLOSED',
+    message: 'STREAM_CLOSED: the stream was cancelled when its handler returned: read it before returning',
+  }
+  const drain = async (items: AsyncIterable<unknown>) => {
+    for await (const _ of items) {
+      // reading
+    }
+  }
+  const readers: Record<string, (s: InputStream) => Promise<unknown>> = {
+    'for await': (s) => drain(s),
+    'bytes()': (s) => s.bytes(),
+    'text()': (s) => s.text(),
+    'lines()': (s) => drain(s.lines()),
+    'messages()': (s) => drain(s.messages()),
+    'frames()': (s) => drain(s.frames()),
+    'toWebStream()': async (s) => {
+      const reader = s.toWebStream().getReader()
+      while (!(await reader.read()).done) {
+        // reading
+      }
+    },
+    'a tee branch': (s) => {
+      const [a, b] = s.tee()
+      void b.cancel()
+      return a.bytes()
+    },
+  }
+  /** A source that sends one chunk, then waits forever: a read of it is in progress until it is cancelled. */
+  const stalled = () =>
+    InputStream.from(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('first'))
+        },
+        pull: () => new Promise<void>(() => undefined),
+      }),
+    )
+  const inProgress = (s: InputStream, read: (s: InputStream) => Promise<unknown>) => {
+    const reading = read(s)
+    reading.catch(() => undefined)
+    return new Promise((r) => setTimeout(r, 20)).then(() => reading)
+  }
+
+  it.each(Object.keys(readers))('a read after cancel(): %s', async (name) => {
+    const input = InputStream.from(['a', 'b'])
+    await input.cancel()
+    await expect(readers[name](input)).rejects.toMatchObject(cancelled)
+  })
+
+  it.each(Object.keys(readers))('a read in progress when cancel() lands: %s', async (name) => {
+    const input = stalled()
+    const reading = readers[name](input)
+    reading.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 20))
+    await input.cancel()
+    await expect(reading).rejects.toMatchObject(cancelled)
+  })
+
+  it.each(
+    Object.keys(readers),
+  )('a read the handler guard cut (the handler returned while it ran): %s', async (name) => {
+    const input = stalled()
+    const scope = new StreamScope()
+    scope.adopt(input)
+    const reading = readers[name](input)
+    reading.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 20))
+    scope.settle({ ok: true, value: null })
+    await expect(reading).rejects.toMatchObject(guard)
+    void inProgress
+  })
+
+  it('a background task reading after its handler returned gets the guard error, not a short stream', async () => {
+    const input = InputStream.from(Array.from({ length: 16 }, () => new Uint8Array(65_536)))
+    const scope = new StreamScope()
+    scope.adopt(input)
+    const it = input[Symbol.asyncIterator]()
+    await it.next()
+    scope.settle({ ok: true, value: 'returned' })
+    await expect(it.next()).rejects.toMatchObject(guard)
+  })
+
+  it('in local mode, a source nobody read is released and a later read fails with the guard error', async () => {
+    const input = InputStream.from(['a'])
+    const scope = new StreamScope()
+    scope.adopt(input)
+    scope.settle({ ok: true, value: null }, { local: true })
+    await expect(input.text()).rejects.toMatchObject(guard)
+  })
+
+  it('a stream read to its end, or aborted, keeps its outcome after a cancel', async () => {
+    const ended = InputStream.from(['a'])
+    const it = ended[Symbol.asyncIterator]()
+    expect((await it.next()).done).toBe(false)
+    expect((await it.next()).done).toBe(true)
+    await ended.cancel()
+    const [a, b] = InputStream.from(['x']).tee()
+    expect(await a.text()).toBe('x')
+    await a.cancel()
+    expect(await b.text()).toBe('x')
+    const aborted = InputStream.from(
+      (async function* () {
+        yield 'a'
+        throw new Error('boom')
+      })(),
+    )
+    const reading = aborted.text()
+    await expect(reading).rejects.toMatchObject({ code: 'STREAM_ABORTED', reason: 'boom' })
+    await aborted.cancel()
+  })
+
+  it('a stream handed over (handOver) is not cancelled: the new one reads everything, the old one counts as sent', async () => {
+    const input = InputStream.from(['a', 'b'])
+    const relay = handOver(input)
+    expect(relay).not.toBe(input)
+    expect(await relay.text()).toBe('ab')
+    await expect(input.bytes()).rejects.toMatchObject({ code: 'STREAM_IN_USE' })
+    // One a read began on hands on its rest, as before.
+    const partly = InputStream.from(['head;', 'tail'])
+    const it = partly[Symbol.asyncIterator]()
+    await it.next()
+    expect(await handOver(partly).text()).toBe('tail')
+  })
+
+  it('a tee branch cancelled while its read waits fails that read; the other branch reads on', async () => {
+    let more: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      more = resolve
+    })
+    const [a, b] = InputStream.from(
+      (async function* () {
+        yield 'first;'
+        await gate
+        yield 'second'
+      })(),
+    ).tee()
+    const readA = a.bytes()
+    readA.catch(() => undefined)
+    const readB = b.text()
+    await new Promise((r) => setTimeout(r, 20))
+    await a.cancel()
+    await expect(readA).rejects.toMatchObject(cancelled)
+    more?.()
+    await expect(readB).resolves.toBe('first;second')
+  })
+
+  it('abortInput() fails a read in progress and later reads with STREAM_ABORTED', async () => {
+    const input = stalled()
+    const reading = input.bytes()
+    reading.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 20))
+    await abortInput(input, 'the call timed out')
+    await expect(reading).rejects.toMatchObject({ code: 'STREAM_ABORTED', reason: 'the call timed out' })
+  })
+})
+
+describe('an abort does not wait for a write the sink holds', () => {
+  /** A WritableStream whose writes never settle (a stuck consumer). */
+  const stuck = () =>
+    new WritableStream<Uint8Array>({ write: () => new Promise<void>(() => undefined) }, { highWaterMark: 1 })
+
+  it('abort() returns at once and the held writes fail with STREAM_CLOSED (a WritableStream)', async () => {
+    const out = OutputStream.to(stuck())
+    const first = out.write('a')
+    const second = out.write('b')
+    first.catch(() => undefined)
+    second.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 20))
+    const started = performance.now()
+    await out.abort('stop')
+    expect(performance.now() - started).toBeLessThan(100)
+    await expect(first).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+    await expect(second).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+    await expect(outputDone(out)).rejects.toMatchObject({ code: 'STREAM_ABORTED', reason: 'stop' })
+  })
+
+  it('a pump into a stuck sink stops when the sink is aborted', async () => {
+    const out = OutputStream.to(stuck())
+    const pump = pumpStream(InputStream.from(['a', 'b', 'c']), out)
+    pump.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 20))
+    await out.abort('stop')
+    await expect(pump).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
   })
 })
