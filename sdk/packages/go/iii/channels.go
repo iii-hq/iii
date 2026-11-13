@@ -126,11 +126,15 @@ type StreamFrame struct {
 // frameSource is where the frames of an input stream come from: the read end of a
 // pipe, or a local source. next returns io.EOF at the end; after an error it is not
 // called again. cancel releases the source (a socket, a reader that is an io.Closer); a
-// next in flight then ends.
+// next in flight then ends, and next fails from then on with errSourceCancelled: a
+// source cancelled before its end never looks complete (to a pump that sends it on).
 type frameSource interface {
 	next(ctx context.Context) (StreamFrame, error)
 	cancel()
 }
+
+// errSourceCancelled is what a cancelled source's next returns.
+var errSourceCancelled = streamClosedError(cancelledMessage)
 
 // emptySource is a stream with no frames.
 type emptySource struct{}
@@ -152,7 +156,7 @@ func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
 	s.mu.Lock()
 	if s.cancelled {
 		s.mu.Unlock()
-		return StreamFrame{}, io.EOF
+		return StreamFrame{}, errSourceCancelled
 	}
 	conn := s.conn
 	s.mu.Unlock()
@@ -170,7 +174,7 @@ func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
 		if s.cancelled {
 			s.mu.Unlock()
 			go closeReader(dialed)
-			return StreamFrame{}, io.EOF
+			return StreamFrame{}, errSourceCancelled
 		}
 		s.conn = dialed
 		s.mu.Unlock()
@@ -187,7 +191,7 @@ func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
 	cancelled := s.cancelled
 	s.mu.Unlock()
 	if cancelled {
-		return StreamFrame{}, io.EOF
+		return StreamFrame{}, errSourceCancelled
 	}
 	return StreamFrame{}, readError(ctx, err)
 }
@@ -248,10 +252,13 @@ type readerSource struct {
 
 func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
 	s.mu.Lock()
-	eof := s.eof || s.closed
+	eof, closed := s.eof, s.closed
 	s.mu.Unlock()
-	if eof {
+	switch {
+	case eof:
 		return StreamFrame{}, io.EOF
+	case closed:
+		return StreamFrame{}, errSourceCancelled
 	}
 	if err := ctx.Err(); err != nil {
 		return StreamFrame{}, err
@@ -259,6 +266,13 @@ func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
 	buf := make([]byte, channelFrameSize)
 	for {
 		n, err := s.r.Read(buf)
+		s.mu.Lock()
+		cancelled := s.closed && !s.eof
+		s.mu.Unlock()
+		if cancelled {
+			// Cancelled while this Read was in flight: what it returns is not the end.
+			return StreamFrame{}, errSourceCancelled
+		}
 		if n > 0 {
 			if err == io.EOF {
 				s.mu.Lock()
@@ -270,6 +284,9 @@ func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
 		}
 		switch {
 		case err == io.EOF:
+			s.mu.Lock()
+			s.eof = true
+			s.mu.Unlock()
 			s.cancel()
 			return StreamFrame{}, io.EOF
 		case err != nil:
@@ -295,13 +312,17 @@ func (s *readerSource) cancel() {
 
 // bytesSource is a stream of one buffer, in frames of up to channelFrameSize bytes.
 type bytesSource struct {
-	mu   sync.Mutex
-	rest []byte
+	mu        sync.Mutex
+	rest      []byte
+	cancelled bool
 }
 
 func (s *bytesSource) next(context.Context) (StreamFrame, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.cancelled {
+		return StreamFrame{}, errSourceCancelled
+	}
 	if len(s.rest) == 0 {
 		return StreamFrame{}, io.EOF
 	}
@@ -313,6 +334,9 @@ func (s *bytesSource) next(context.Context) (StreamFrame, error) {
 
 func (s *bytesSource) cancel() {
 	s.mu.Lock()
+	if len(s.rest) > 0 {
+		s.cancelled = true
+	}
 	s.rest = nil
 	s.mu.Unlock()
 }

@@ -183,8 +183,8 @@ func hasWriteStream(raw json.RawMessage) bool {
 	return found
 }
 
-// checkSentOnce refuses a payload that holds one stream twice, or a stream already read
-// to the end (STREAM_IN_USE), on every path, before anything is sent.
+// checkSentOnce refuses a payload that holds one stream twice, a stream already read to
+// the end, or one already sent (STREAM_IN_USE), on every path, before anything is sent.
 func checkSentOnce(raw json.RawMessage) error {
 	if !placeholdersUsed.Load() || !bytes.Contains(raw, channelIDKey) {
 		return nil
@@ -194,7 +194,7 @@ func checkSentOnce(raw json.RawMessage) error {
 		return nil
 	}
 	seen := map[receivedKey]bool{}
-	twice, ended := false, false
+	twice, ended, sent := false, false, false
 	note := func(key receivedKey) {
 		twice = twice || seen[key]
 		seen[key] = true
@@ -211,6 +211,7 @@ func checkSentOnce(raw json.RawMessage) error {
 			switch {
 			case e.in != nil:
 				ended = ended || e.in.readToTheEnd()
+				sent = sent || e.in.sentOn()
 				if e.in.ref != nil {
 					id = e.in.ref.ChannelID
 				}
@@ -225,6 +226,8 @@ func checkSentOnce(raw json.RawMessage) error {
 		return errSentTwice()
 	case ended:
 		return errReadToTheEnd()
+	case sent:
+		return errAlreadySent()
 	}
 	return nil
 }
@@ -300,13 +303,14 @@ func checkCallStreams(req CallRequest) error {
 // the reader end of a pipe into its sink.
 type pump struct {
 	cancel context.CancelCauseFunc
+	out    *outputInner
 	done   chan struct{}
 	err    error
 }
 
 func startPump(src frameSource, out *outputInner) *pump {
 	ctx, cancel := context.WithCancelCause(context.Background())
-	p := &pump{cancel: cancel, done: make(chan struct{})}
+	p := &pump{cancel: cancel, out: out, done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		defer cancel(nil)
@@ -315,8 +319,13 @@ func startPump(src frameSource, out *outputInner) *pump {
 	return p
 }
 
-// stop aborts the pump's stream with reason.
-func (p *pump) stop(reason string) { p.cancel(errors.New(reason)) }
+// stop aborts the pump's stream with reason, at once: the stream it writes has ended
+// when stop returns, without waiting for a write in flight (a sink whose Write blocks:
+// the pump's goroutine ends when that Write returns).
+func (p *pump) stop(reason string) {
+	p.cancel(errors.New(reason))
+	p.out.abortNow(reason)
+}
 
 // runPump moves src into out until src ends (then out closes) or fails (then out
 // aborts with its reason). A cancel aborts out with the cancel's reason; a failed write
@@ -381,7 +390,8 @@ type pumps struct {
 // and so does a result that holds a stream to write (the caller writes it after the
 // call returned, maybe into one of these sinks). The wait ends at deadline, the call's
 // timeout, or when ctx ends: the sinks still open are then aborted, and the call fails
-// with ErrTimeout (or ctx's error).
+// with ErrTimeout (or ctx's error). Stopping a pump does not wait for it: a sink whose
+// Write blocks does not hold the call past its deadline.
 func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, detach bool, deadline time.Time) (json.RawMessage, error) {
 	if p == nil || len(p.sources)+len(p.sinks) == 0 {
 		return result, err
@@ -390,15 +400,13 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 		return result, nil
 	}
 	if err != nil {
+		// The sinks are aborted before the call fails: a write to one after it fails.
 		reason := err.Error()
 		for _, pm := range p.sources {
 			pm.stop(reason)
 		}
 		for _, pm := range p.sinks {
 			pm.stop(reason)
-		}
-		for _, pm := range p.sinks {
-			<-pm.done
 		}
 		return nil, err
 	}
@@ -408,11 +416,6 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 	stopSinks := func(reason string) {
 		for _, pm := range p.sinks {
 			pm.stop(reason)
-		}
-		// The sinks are aborted before the call fails, as on the error path: a write
-		// to one after it fails.
-		for _, pm := range p.sinks {
-			<-pm.done
 		}
 	}
 	var failure error
@@ -576,6 +579,69 @@ func (c *Client) prepareStreams(ctx context.Context, raw json.RawMessage) (json.
 // =====================================================================================
 // In-process calls (R4 for local sinks)
 // =====================================================================================
+
+// handOverLocal hands the streams payload passes as placeholders to the handler of an
+// in-process call, as pipes would carry them: the rest of each source moves to a new
+// stream the handler reads, and the caller's counts as sent (reading or sending it again
+// fails with STREAM_IN_USE). It returns the handler's sources, which a failed call
+// aborts. As on the remote path (prepareStreams), a placeholder of no stream of this
+// process fails the call before anything moves, and a source that cannot be sent (a
+// read in flight, cancelled) fails it after releasing the sources already moved.
+func handOverLocal(payload json.RawMessage) ([]*inputInner, error) {
+	if !mayHavePlaceholder(payload) {
+		return nil, nil
+	}
+	v, ok := decodeValue(payload)
+	if !ok {
+		return nil, nil
+	}
+	type source struct {
+		token string
+		in    *inputInner
+	}
+	var found []source
+	var failure error
+	visitPlaceholders(v, func(token string, dir ChannelDirection) {
+		if failure != nil {
+			return
+		}
+		e, ok := peekPlaceholder(token)
+		switch {
+		case ok && dir == ChannelRead && e.in != nil:
+			found = append(found, source{token, e.in})
+		case ok && dir == ChannelWrite && e.out != nil:
+			// a sink: settleLocalSinks
+		default:
+			failure = gone(placeholderPrefix + token)
+		}
+	})
+	if failure != nil {
+		return nil, failure
+	}
+	moved := make([]*inputInner, 0, len(found))
+	for _, f := range found {
+		recv, err := f.in.moveOut()
+		if err != nil {
+			for _, in := range moved {
+				in.end(readFailed, err)
+			}
+			return nil, err
+		}
+		registerPlaceholder(f.token, localStream{in: recv})
+		moved = append(moved, recv)
+	}
+	return moved, nil
+}
+
+// abortLocalSources ends the sources of an in-process call that failed (its timeout,
+// its ctx, a handler error), as a remote call stops its source pumps: a read of one in
+// flight or later fails with STREAM_ABORTED, and the caller's reader is released.
+func abortLocalSources(sources []*inputInner, err error) {
+	reason := err.Error()
+	for _, in := range sources {
+		in.end(readFailed, streamAbortedError(reason))
+	}
+}
 
 type localSink struct {
 	token string

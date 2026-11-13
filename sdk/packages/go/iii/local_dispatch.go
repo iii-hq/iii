@@ -40,9 +40,10 @@ func (c *Client) localTarget(functionID, namespace string) (registeredFunction, 
 // reference. Timeouts and errors have the remote path's shape: ErrTimeout, and an
 // *InvocationError carrying the error body.
 //
-// Streams pass as they are: the handler reads the caller's source, or writes into the
-// caller's sink, with no pipe. The call returns once the sinks it passed ended, by
-// deadline (R4).
+// Streams pass with no pipe: the handler reads the rest of the caller's source, which
+// counts as sent, or writes into the caller's sink. The call returns once the sinks it
+// passed ended, by deadline (R4); a call that fails aborts the sources it passed, as a
+// remote one stops their pumps.
 func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest, deadline time.Time) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
@@ -99,6 +100,12 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
 	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
+	// The caller's sources are the handler's now.
+	sources, err := handOverLocal(data)
+	if err != nil {
+		return nil, err
+	}
+
 	void := req.Action != nil && req.Action.Type == "void"
 	run := func() outcome {
 		started := time.Now()
@@ -137,7 +144,6 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	var result json.RawMessage
-	var err error
 	select {
 	case out := <-done:
 		if out.errBody != nil {
@@ -151,6 +157,9 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		err = ctx.Err()
 	case <-c.shutdown:
 		err = ErrNotConnected
+	}
+	if err != nil {
+		abortLocalSources(sources, err)
 	}
 	if result, err = settleLocalSinks(ctx, sinks, result, err, deadline); err != nil {
 		return nil, err

@@ -158,8 +158,9 @@ func TestRefOfRejectsPartial(t *testing.T) {
 }
 
 // TestStreamEndsBeforeConnect: a stream never read opens no socket, and a cancel of it
-// opens none either; closing a stream never written opens its socket and closes it, so
-// its reader sees an empty stream rather than waiting for one.
+// opens none either (a read after it fails with STREAM_CLOSED, never a clean end);
+// closing a stream never written opens its socket and closes it, so its reader sees an
+// empty stream rather than waiting for one.
 func TestStreamEndsBeforeConnect(t *testing.T) {
 	var (
 		mu    sync.Mutex
@@ -187,8 +188,8 @@ func TestStreamEndsBeforeConnect(t *testing.T) {
 	if err := in.Close(); err != nil {
 		t.Errorf("Close of an unread stream = %v, want nil", err)
 	}
-	if n, err := in.Read(make([]byte, 4)); n != 0 || err != io.EOF {
-		t.Errorf("Read after Cancel = (%d, %v), want (0, EOF)", n, err)
+	if n, err := in.Read(make([]byte, 4)); n != 0 || streamCode(err) != CodeStreamClosed {
+		t.Errorf("Read after Cancel = (%d, %v), want (0, STREAM_CLOSED)", n, err)
 	}
 	out := writeStreamAt(wsBase(srv), StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelWrite})
 	if err := out.Close(); err != nil {
@@ -373,9 +374,10 @@ func TestInputStreamEndOfStream(t *testing.T) {
 	}
 }
 
-// TestInputStreamCancelDuringRead checks that a read cut short by Cancel, and a read
-// after it, end as end of stream. The server drops the socket on the reader's close
-// frame without a reply, as the engine does once its reader leaves.
+// TestInputStreamCancelDuringRead checks that a read cut short by Cancel, and every read
+// after it, fail with STREAM_CLOSED: a cancelled stream never looks complete. The server
+// drops the socket on the reader's close frame without a reply, as the engine does once
+// its reader leaves.
 func TestInputStreamCancelDuringRead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sum := sha1.Sum([]byte(r.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
@@ -425,18 +427,18 @@ func TestInputStreamCancelDuringRead(t *testing.T) {
 	in.Cancel()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("read cut short by Cancel = %v, want end of stream", err)
+		if streamCode(err) != CodeStreamClosed || !strings.Contains(err.Error(), cancelledMessage) {
+			t.Fatalf("read cut short by Cancel = %v, want STREAM_CLOSED (%s)", err, cancelledMessage)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("read cut short by Cancel did not return")
 	}
-	if _, err := in.inner.next(ctx, reader); err != io.EOF {
-		t.Errorf("read after Cancel = %v, want end of stream without a redial", err)
+	if _, err := in.inner.next(ctx, reader); streamCode(err) != CodeStreamClosed {
+		t.Errorf("read after Cancel = %v, want STREAM_CLOSED without a redial", err)
 	}
-	// Another reader is refused: the stream had one.
-	if _, err := in.Read(make([]byte, 4)); streamCode(err) != CodeStreamInUse {
-		t.Errorf("Read by another reader = %v, want STREAM_IN_USE", err)
+	// Any reader of a cancelled stream gets STREAM_CLOSED.
+	if _, err := in.Read(make([]byte, 4)); streamCode(err) != CodeStreamClosed {
+		t.Errorf("Read by another reader = %v, want STREAM_CLOSED", err)
 	}
 }
 

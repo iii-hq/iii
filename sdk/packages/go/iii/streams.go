@@ -297,7 +297,8 @@ const (
 	readEnded
 	// readFailed: it ended with an error (an abort, a failed dial).
 	readFailed
-	// readCancelled: cancelled by its reader, or by the handler guard.
+	// readCancelled: cancelled by its reader, or by the handler guard: every read fails
+	// with STREAM_CLOSED.
 	readCancelled
 	// readForwarded: its own ref was sent on; the other side reads it.
 	readForwarded
@@ -329,7 +330,16 @@ type inputInner struct {
 	// placeholder carries it to an in-process receiver).
 	holder uint64
 	token  string
+	// movedTo is the stream an in-process call handed the rest of it to, and taken the
+	// source a pump took: a failure of the call that sent it reaches them.
+	movedTo *inputInner
+	taken   frameSource
 }
+
+const (
+	cancelledMessage      = "the stream was cancelled"
+	guardCancelledMessage = "the stream was cancelled when its handler returned: read it before returning"
+)
 
 func newInput(ref *StreamChannelRef, src frameSource, ep *endpoint) *inputInner {
 	return &inputInner{ref: ref, src: src, bound: ep, ioReader: nextStreamID()}
@@ -356,6 +366,12 @@ func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, err
 	in.readMu.Lock()
 	defer in.readMu.Unlock()
 	in.mu.Lock()
+	// A cancelled stream fails every read, whoever reads it: what was read is not the whole
+	// stream.
+	if in.status == readCancelled {
+		defer in.mu.Unlock()
+		return StreamFrame{}, in.failure
+	}
 	if in.reader == 0 {
 		in.reader = reader
 	} else if in.reader != reader {
@@ -363,7 +379,7 @@ func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, err
 		return StreamFrame{}, errAlreadyRead()
 	}
 	switch in.status {
-	case readEnded, readCancelled:
+	case readEnded:
 		in.mu.Unlock()
 		return StreamFrame{}, io.EOF
 	case readForwarded, readPiped:
@@ -398,8 +414,9 @@ func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, err
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	switch in.status {
-	case readCancelled:
-		return StreamFrame{}, io.EOF
+	case readCancelled, readFailed:
+		// Cancelled, or failed by the call that sent it, while this read was in flight.
+		return StreamFrame{}, in.failure
 	case readForwarded, readPiped:
 		return StreamFrame{}, errAlreadyRead()
 	}
@@ -437,14 +454,35 @@ func (in *inputInner) putBack(rest []byte) {
 }
 
 // cancel stops reading: the socket, if open, closes (the engine then closes the
-// writer), and a read in flight ends. A stream never read opens no socket.
-func (in *inputInner) cancel() {
+// writer), a local source is released, and a read in flight and every later read fail
+// with STREAM_CLOSED. A stream never read opens no socket.
+func (in *inputInner) cancel() { in.end(readCancelled, streamClosedError(cancelledMessage)) }
+
+// end stops the stream with status (readCancelled or readFailed) and err: a read in
+// flight and every later read fail with err, never io.EOF, since what was read is not the
+// whole stream; the source is released. A stream that ended, failed or was sent on is
+// left as it is, except that a failure reaches what took the rest of it in-process (a
+// receiver, or a pump's source).
+func (in *inputInner) end(status readStatus, err error) {
 	in.mu.Lock()
-	if in.status != readUnread && in.status != readReading {
+	switch in.status {
+	case readUnread, readReading:
+	case readPiped:
+		next, taken := in.movedTo, in.taken
+		in.mu.Unlock()
+		switch {
+		case status != readFailed:
+		case next != nil:
+			next.end(status, err)
+		case taken != nil:
+			taken.cancel()
+		}
+		return
+	default:
 		in.mu.Unlock()
 		return
 	}
-	in.status, in.leftover = readCancelled, nil
+	in.status, in.failure, in.leftover = status, err, nil
 	src := in.src
 	in.src = nil
 	in.mu.Unlock()
@@ -473,7 +511,7 @@ func (in *inputInner) settle(id uint64) {
 	reading := in.status == readReading && in.holder == id && in.reader != 0
 	in.mu.Unlock()
 	if reading {
-		in.cancel()
+		in.end(readCancelled, streamClosedError(guardCancelledMessage))
 	}
 }
 
@@ -487,6 +525,14 @@ func (in *inputInner) readToTheEnd() bool {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	return in.status == readEnded
+}
+
+// sentOn: the stream was sent (its ref forwarded, or the rest of it taken by a pump or an
+// in-process receiver); it is not sent again.
+func (in *inputInner) sentOn() bool {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.status == readForwarded || in.status == readPiped
 }
 
 // transfer marks a received ref passed on as raw JSON: the guard leaves it alone.
@@ -533,7 +579,7 @@ func (in *inputInner) takeSource() (frameSource, error) {
 	case readFailed:
 		return nil, in.failure
 	case readCancelled:
-		return nil, errors.New("iii: the stream was cancelled: there is nothing left to send")
+		return nil, streamClosedError("the stream was cancelled: there is nothing left to send")
 	case readForwarded, readPiped:
 		return nil, errAlreadySent()
 	}
@@ -548,9 +594,24 @@ func (in *inputInner) takeSource() (frameSource, error) {
 	if len(in.leftover) > 0 {
 		src = &prependSource{first: &StreamFrame{Type: FrameBinary, Data: in.leftover}, rest: src}
 	}
-	in.src, in.leftover = nil, nil
+	in.src, in.leftover, in.taken = nil, nil, src
 	in.status, in.reader = readPiped, sentReader
 	return src, nil
+}
+
+// moveOut hands the rest of a stream an in-process call sends to its receiver: a new
+// stream that reads it, under the same placeholder. This one counts as sent, as one a
+// pipe carries does: it is not read or sent again (STREAM_IN_USE).
+func (in *inputInner) moveOut() (*inputInner, error) {
+	src, err := in.takeSource()
+	if err != nil {
+		return nil, err
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	recv := &inputInner{src: src, bound: in.bound, ioReader: nextStreamID(), holder: sentHolder, token: in.token}
+	in.movedTo, in.taken = recv, nil
+	return recv, nil
 }
 
 // InputStream is the read side of a stream: the bytes (and messages) a function
@@ -567,12 +628,17 @@ func (in *inputInner) takeSource() (frameSource, error) {
 // [InputStream.Frames] (both kinds, in order). Byte reads skip messages. A second
 // reader gets STREAM_IN_USE ([CodeStreamInUse]): Read is one reader across calls, and
 // each of the other methods is a reader of its own. The socket opens on the first read.
+// A stream read to the end returns io.EOF on further reads; one cancelled before its end
+// ([InputStream.Cancel], [InputStream.Close], a break out of Lines, Messages or Frames,
+// or the guard below) fails every later read, and a read in flight, with STREAM_CLOSED
+// ([CodeStreamClosed]), never io.EOF.
 //
 // An abort (its writer failed or called [OutputStream.Abort]) ends a read with an
 // [*InvocationError] of code [CodeStreamAborted], after the data sent before it.
 //
 // In a handler, a stream the handler started reading and did not finish is cancelled
-// when the handler returns; one never read is left alone. One sent on unread (in a call
+// when the handler returns (a goroutine still reading it gets STREAM_CLOSED: read it
+// before returning); one never read is left alone. One sent on unread (in a call
 // payload or the result) is forwarded: its ref goes, and no byte passes through this
 // worker. One sent on after reading is pumped from where it is. A stream is sent once:
 // sending it twice, or after it was read to the end, fails with STREAM_IN_USE.
@@ -657,7 +723,8 @@ func (s *InputStream) Read(p []byte) (int, error) {
 }
 
 // Close cancels the stream (see [InputStream.Cancel]) and returns nil, so an
-// InputStream is an [io.ReadCloser].
+// InputStream is an [io.ReadCloser]. After a Close before the end, reads fail with
+// STREAM_CLOSED.
 func (s *InputStream) Close() error {
 	s.Cancel()
 	return nil
@@ -793,8 +860,11 @@ func (s *InputStream) Frames(ctx context.Context) iter.Seq2[StreamFrame, error] 
 }
 
 // Cancel stops reading: the socket, if open, closes, and the engine then closes the
-// writer, as it does when a reader leaves. Later reads end (io.EOF). A stream never
-// read opens no socket; a local source is released (an io.Closer is closed).
+// writer, as it does when a reader leaves. A read in flight and every later read fail
+// with STREAM_CLOSED ([CodeStreamClosed]): what was read is not the whole stream. A
+// stream never read opens no socket; a local source is released (an io.Closer is
+// closed). Cancel does nothing to a stream read to the end, which keeps returning
+// io.EOF.
 func (s *InputStream) Cancel() {
 	if in, err := s.get(); err == nil {
 		in.cancel()
@@ -931,6 +1001,11 @@ type outputInner struct {
 	ended   bool
 	aborted bool
 	reason  string
+	// closing: a close is in progress; an abort then does nothing.
+	closing bool
+	// ioCancel ends the write or send of a pipe end in flight: an abort does not wait
+	// behind it.
+	ioCancel context.CancelFunc
 	// done is closed once the stream closed or aborted.
 	done     chan struct{}
 	keptOpen atomic.Bool
@@ -975,7 +1050,50 @@ func (o *outputInner) writerLocked() (*wsWriter, error) {
 	return o.ws, nil
 }
 
+// ioContext is ctx for a write or a send of a pipe end, ended by an abort too: an
+// abort cancels it, so a write blocked by backpressure returns at once. Call stop once
+// the write returned.
+func (o *outputInner) ioContext(ctx context.Context) (_ context.Context, stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	o.mu.Lock()
+	if o.ended {
+		cancel() // aborted since begin
+	} else {
+		o.ioCancel = cancel
+	}
+	o.mu.Unlock()
+	return ctx, func() {
+		o.mu.Lock()
+		o.ioCancel = nil
+		o.mu.Unlock()
+		cancel()
+	}
+}
+
+// ioError is what a write that failed returns: STREAM_CLOSED when the stream ended (an
+// abort) while it was in flight, else err.
+func (o *outputInner) ioError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if o.isEnded() {
+		return errStreamEnded()
+	}
+	return err
+}
+
+// isEnded: the stream closed or aborted. A write or a close checks it before taking ioMu,
+// so one after an abort does not wait behind a write still blocked on the sink.
+func (o *outputInner) isEnded() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.ended
+}
+
 func (o *outputInner) write(ctx context.Context, data []byte) error {
+	if o.isEnded() {
+		return errStreamEnded()
+	}
 	o.ioMu.Lock()
 	defer o.ioMu.Unlock()
 	if err := o.begin(); err != nil {
@@ -986,16 +1104,21 @@ func (o *outputInner) write(ctx context.Context, data []byte) error {
 		if err != nil {
 			return err
 		}
-		return w.write(ctx, data)
+		ctx, stop := o.ioContext(ctx)
+		defer stop()
+		return o.ioError(w.write(ctx, data))
 	}
 	if len(data) == 0 {
 		return nil
 	}
 	_, err := o.sink.Write(data)
-	return err
+	return o.ioError(err)
 }
 
 func (o *outputInner) sendText(ctx context.Context, text []byte) error {
+	if o.isEnded() {
+		return errStreamEnded()
+	}
 	o.ioMu.Lock()
 	defer o.ioMu.Unlock()
 	if err := o.begin(); err != nil {
@@ -1009,14 +1132,9 @@ func (o *outputInner) sendText(ctx context.Context, text []byte) error {
 	if err != nil {
 		return err
 	}
-	return w.sendText(ctx, text)
-}
-
-// skipEnd: the stream ended already, or was sent on (the other side ends it).
-func (o *outputInner) skipEnd() bool {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.ended || o.usage == useForwarded
+	ctx, stop := o.ioContext(ctx)
+	defer stop()
+	return o.ioError(w.sendText(ctx, text))
 }
 
 // finish records how the stream ended; false when it had ended already.
@@ -1033,11 +1151,18 @@ func (o *outputInner) finish(aborted bool, reason string) bool {
 }
 
 func (o *outputInner) close() error {
-	o.ioMu.Lock()
-	defer o.ioMu.Unlock()
-	if o.skipEnd() {
+	if o.isEnded() {
 		return nil
 	}
+	o.ioMu.Lock()
+	defer o.ioMu.Unlock()
+	o.mu.Lock()
+	if o.ended || o.usage == useForwarded {
+		o.mu.Unlock()
+		return nil
+	}
+	o.closing = true
+	o.mu.Unlock()
 	var err error
 	if o.ref != nil {
 		var w *wsWriter
@@ -1056,24 +1181,66 @@ func (o *outputInner) abort(reason string) error {
 		reason = "aborted"
 	}
 	if o.ref == nil {
-		// A local sink: the abort does not wait behind a write blocked on the sink (an
-		// io.Pipe nobody reads): CloseWithError ends that write.
-		if !o.forwarded() && o.finish(true, reason) {
-			abortSink(o.sink, reason)
-		}
+		o.abortSink(reason)
 		return nil
 	}
+	if !o.markAborted(reason) {
+		return nil
+	}
+	return o.abortSocket(reason)
+}
+
+// abortNow aborts the stream without waiting on its socket: it has ended when abortNow
+// returns (a write to it fails), and a pipe end gets its close frame in the background.
+func (o *outputInner) abortNow(reason string) {
+	if o.ref == nil {
+		o.abortSink(reason)
+		return
+	}
+	if o.markAborted(reason) {
+		go func() { _ = o.abortSocket(reason) }()
+	}
+}
+
+// abortSink aborts a local sink. It does not wait behind a write blocked on the sink
+// (an io.Pipe nobody reads): CloseWithError ends that write, and a Write that ignores
+// it keeps its goroutine until it returns.
+func (o *outputInner) abortSink(reason string) {
+	if !o.forwarded() && o.finish(true, reason) {
+		abortSink(o.sink, reason)
+	}
+}
+
+// markAborted ends a pipe end as aborted, at once: the write or send in flight is
+// cancelled (it returns STREAM_CLOSED), and every later one fails. False when the stream
+// had ended, is being closed, or was sent on.
+func (o *outputInner) markAborted(reason string) bool {
+	o.mu.Lock()
+	if o.ended || o.closing || o.usage == useForwarded {
+		o.mu.Unlock()
+		return false
+	}
+	o.ended, o.aborted, o.reason = true, true, reason
+	cancel := o.ioCancel
+	o.mu.Unlock()
+	close(o.done)
+	if cancel != nil {
+		cancel()
+	}
+	return true
+}
+
+// abortSocket tells the reader of an aborted pipe end: a close frame with code 1011
+// (a socket never dialled is dialled first). A write cancelled mid-frame dropped the
+// socket already, which the engine reads as an abort too.
+func (o *outputInner) abortSocket(reason string) error {
 	o.ioMu.Lock()
 	defer o.ioMu.Unlock()
-	if o.skipEnd() {
-		return nil
-	}
 	w, err := o.writerLocked()
-	if err == nil {
-		err = w.abort(reason)
+	if err != nil {
+		return err
 	}
-	o.finish(true, reason)
-	return err
+	return w.abort(reason)
 }
 
 // closeSink ends a local sink cleanly: a Flush() error is flushed, an io.Closer closed.
@@ -1223,6 +1390,10 @@ type OutputStream struct {
 // otherwise leaves it as is, so a truncated stream is never finished as if whole: close
 // it yourself, and remove a partly written file.
 //
+// A call does not wait behind a w.Write that blocks: at the call's timeout, or when its
+// ctx ends, the call returns and the stream is aborted. A Write that never returns (and
+// ignores CloseWithError) keeps the goroutine that called it until it returns.
+//
 //	f, err := os.Create("r-42.pdf")
 //	if err != nil { ... }
 //	payload, _ := json.Marshal(map[string]any{"report_id": "r-42", "out": iii.OutputStreamToWriter(f)})
@@ -1292,7 +1463,9 @@ func (s *OutputStream) Close() error {
 // Abort fails the stream with reason: the reader's read ends with STREAM_ABORTED
 // (through an engine pipe the reason the reader sees is the engine's). A stream never
 // written is opened first, so its reader always learns of it. Aborting a stream already
-// ended does nothing.
+// ended, or being closed, does nothing. Abort does not wait behind a Write or a Send in
+// flight (one blocked by a reader that does not read): that write returns STREAM_CLOSED,
+// and the stream ends at once.
 func (s *OutputStream) Abort(reason string) error {
 	o, err := s.get()
 	if err != nil {

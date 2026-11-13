@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // This file tests call-native streams: the stream values on their own, then the rules
@@ -1045,5 +1049,390 @@ func TestRawRefInterop(t *testing.T) {
 	res, err := c.Call(ctx, remote("raw::read", jsonOf(t, map[string]any{"body": reader})))
 	if err != nil || string(res) != `"from a 0.26 writer"` {
 		t.Fatalf("result %s, %v", res, err)
+	}
+}
+
+// =====================================================================================
+// Cancels, failures and blocked ends
+// =====================================================================================
+
+// A stream cancelled before its end fails a read in flight and every later read with
+// STREAM_CLOSED, never io.EOF: what was read is not the whole stream. One read to its
+// end keeps returning io.EOF.
+func TestCancelledStreamNeverLooksComplete(t *testing.T) {
+	ctx := streamCtx(t)
+	cancelled := func(t *testing.T, what string, err error) {
+		t.Helper()
+		if streamCode(err) != CodeStreamClosed || !strings.Contains(err.Error(), cancelledMessage) {
+			t.Errorf("%s = %v, want STREAM_CLOSED (%s)", what, err, cancelledMessage)
+		}
+	}
+	laterReads := func(t *testing.T, s *InputStream) {
+		t.Helper()
+		_, err := s.Read(make([]byte, 4))
+		cancelled(t, "Read", err)
+		_, err = s.ReadAll(ctx)
+		cancelled(t, "ReadAll", err)
+		_, err = s.Text(ctx)
+		cancelled(t, "Text", err)
+		for _, err := range s.Lines(ctx) {
+			cancelled(t, "Lines", err)
+		}
+		for _, err := range s.Messages(ctx) {
+			cancelled(t, "Messages", err)
+		}
+		for _, err := range s.Frames(ctx) {
+			cancelled(t, "Frames", err)
+		}
+	}
+
+	t.Run("read in flight", func(t *testing.T) {
+		pr, pw := io.Pipe()
+		defer pw.Close()
+		s := InputStreamFromReader(pr)
+		got := make(chan error, 1)
+		go func() {
+			_, err := s.ReadAll(context.Background())
+			got <- err
+		}()
+		if _, err := pw.Write([]byte("partial")); err != nil {
+			t.Fatal(err)
+		}
+		s.Cancel()
+		select {
+		case err := <-got:
+			cancelled(t, "the read in flight", err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("the read in flight did not end with the cancel")
+		}
+		laterReads(t, s)
+	})
+	t.Run("break out of Lines", func(t *testing.T) {
+		s := InputStreamFromBytes([]byte("one\ntwo\nthree\n"))
+		for range s.Lines(ctx) {
+			break
+		}
+		laterReads(t, s)
+	})
+	t.Run("Close before the end", func(t *testing.T) {
+		s := InputStreamFromBytes(bytes.Repeat([]byte("x"), 3*channelFrameSize))
+		if _, err := s.Read(make([]byte, 4)); err != nil {
+			t.Fatal(err)
+		}
+		_ = s.Close()
+		laterReads(t, s)
+	})
+	t.Run("read to the end", func(t *testing.T) {
+		s := InputStreamFromBytes([]byte("whole"))
+		if data, err := io.ReadAll(s); err != nil || string(data) != "whole" {
+			t.Fatalf("ReadAll = %q, %v", data, err)
+		}
+		s.Cancel()
+		if n, err := s.Read(make([]byte, 4)); n != 0 || err != io.EOF {
+			t.Errorf("Read of a stream read to the end, after Cancel = (%d, %v), want (0, EOF)", n, err)
+		}
+	})
+}
+
+// dispatches are the two paths of a call that carries streams.
+var dispatches = []struct {
+	name     string
+	dispatch Dispatch
+}{{"in-process", ""}, {"remote", DispatchRemote}}
+
+// R3: the guard cancels a stream its handler was still reading when it returned, so a
+// read left running (on a goroutine) fails with STREAM_CLOSED, not a clean end.
+func TestGuardCancelFailsAReadInFlight(t *testing.T) {
+	for _, d := range dispatches {
+		t.Run(d.name, func(t *testing.T) {
+			se := newStreamEngine(t)
+			c := se.client()
+			got := make(chan error, 1)
+			registerLocal(t, c, "src::background", func(ctx context.Context, data json.RawMessage) (any, error) {
+				var args copyArgs
+				if err := json.Unmarshal(data, &args); err != nil {
+					return nil, err
+				}
+				if _, err := args.Src.Read(make([]byte, 4)); err != nil {
+					return nil, err
+				}
+				go func() {
+					_, err := io.ReadAll(args.Src)
+					got <- err
+				}()
+				time.Sleep(50 * time.Millisecond) // the read is in flight
+				return nil, nil
+			})
+			pr, pw := io.Pipe()
+			t.Cleanup(func() { _ = pw.Close() })
+			go func() { _, _ = pw.Write([]byte("head")) }() // the rest never comes
+			call(t, c, CallRequest{FunctionID: "src::background", Dispatch: d.dispatch,
+				Payload: jsonOf(t, map[string]any{"src": InputStreamFromReader(pr)})})
+			select {
+			case err := <-got:
+				if streamCode(err) != CodeStreamClosed || !strings.Contains(err.Error(), guardCancelledMessage) {
+					t.Errorf("read left running = %v, want STREAM_CLOSED (%s)", err, guardCancelledMessage)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the read left running did not end when its handler returned")
+			}
+		})
+	}
+}
+
+// stuckWriter is a sink whose Write blocks until release is closed, and that has no
+// CloseWithError: an abort cannot end the Write.
+type stuckWriter struct {
+	entered chan struct{}
+	once    sync.Once
+	release chan struct{}
+}
+
+func newStuckWriter(t *testing.T) *stuckWriter {
+	w := &stuckWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(w.release) })
+	return w
+}
+
+func (w *stuckWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return len(p), nil
+}
+
+// R4: a sink whose Write blocks does not hold a remote call past its timeout, its ctx or
+// its error: the call returns, and the sink is aborted.
+func TestRemoteCallDoesNotWaitBehindABlockedSink(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		fail    bool
+		timeout time.Duration
+		ctx     time.Duration
+		want    func(error) bool
+	}{
+		{name: "timeout", timeout: 300 * time.Millisecond, want: func(err error) bool { return errors.Is(err, ErrTimeout) }},
+		{name: "ctx", ctx: 300 * time.Millisecond, want: func(err error) bool { return errors.Is(err, context.DeadlineExceeded) }},
+		{name: "error", fail: true, want: func(err error) bool {
+			var ie *InvocationError
+			return errors.As(err, &ie) && strings.Contains(ie.Message, "handler failed")
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			se := newStreamEngine(t)
+			c := se.client()
+			w := newStuckWriter(t)
+			registerLocal(t, c, "sink::stuck", func(ctx context.Context, data json.RawMessage) (any, error) {
+				var args copyArgs
+				if err := json.Unmarshal(data, &args); err != nil {
+					return nil, err
+				}
+				args.Dst.KeepOpen()
+				if err := args.Dst.Write(ctx, []byte("started")); err != nil {
+					return nil, err
+				}
+				select { // the caller's pump is blocked in the sink's Write
+				case <-w.entered:
+				case <-time.After(2 * time.Second):
+					return nil, errors.New("the sink was never written")
+				}
+				if tt.fail {
+					return nil, errors.New("handler failed")
+				}
+				return nil, nil
+			})
+			ctx := streamCtx(t)
+			if tt.ctx > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.ctx)
+				defer cancel()
+			}
+			dst := OutputStreamToWriter(w)
+			req := remote("sink::stuck", jsonOf(t, map[string]any{"dst": dst}))
+			req.Timeout = tt.timeout
+			got := make(chan error, 1)
+			go func() {
+				_, err := c.Call(ctx, req)
+				got <- err
+			}()
+			select {
+			case err := <-got:
+				if !tt.want(err) {
+					t.Errorf("err = %v, want the call's %s", err, tt.name)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("the call waited behind a sink whose Write blocks")
+			}
+			if _, aborted, _ := dst.inner.outcome(); !aborted {
+				t.Error("the sink was not aborted when the call failed")
+			}
+			if err := dst.Write(context.Background(), []byte("late")); streamCode(err) != CodeStreamClosed {
+				t.Errorf("write to the sink after the call failed = %v, want STREAM_CLOSED", err)
+			}
+		})
+	}
+}
+
+// An abort of a pipe end does not wait behind a write blocked by backpressure (a reader
+// that does not read): Abort returns at once, and the write returns STREAM_CLOSED.
+func TestOutputStreamAbortDoesNotWaitBehindABlockedWrite(t *testing.T) {
+	quit := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		<-quit // never reads
+	}))
+	defer srv.Close()
+	defer close(quit)
+
+	out := writeStreamAt(wsBase(srv), StreamChannelRef{ChannelID: "c", AccessKey: "k", Direction: ChannelWrite})
+	var written atomic.Int64
+	wrote := make(chan error, 1)
+	go func() {
+		chunk := make([]byte, 64<<10)
+		for {
+			if err := out.Write(context.Background(), chunk); err != nil {
+				wrote <- err
+				return
+			}
+			written.Add(1)
+		}
+	}()
+	// A write is blocked once no write ended for a while.
+	deadline := time.Now().Add(10 * time.Second)
+	for last := int64(-1); ; {
+		time.Sleep(300 * time.Millisecond)
+		n := written.Load()
+		if n == last {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the writes never blocked")
+		}
+		last = n
+	}
+	aborted := make(chan struct{})
+	go func() {
+		_ = out.Abort("stop")
+		close(aborted)
+	}()
+	select {
+	case <-aborted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Abort waited behind a write blocked by backpressure")
+	}
+	select {
+	case err := <-wrote:
+		wantCode(t, err, CodeStreamClosed)
+	case <-time.After(3 * time.Second):
+		t.Fatal("the blocked write did not end with the abort")
+	}
+}
+
+// A failed in-process call (its timeout, its ctx, a handler error) aborts the sources it
+// passed, as a remote one stops their pumps: the handler's read in flight fails with
+// STREAM_ABORTED, and the caller's reader is closed.
+func TestLocalFailedCallAbortsItsSources(t *testing.T) {
+	se := newStreamEngine(t)
+	c := se.client()
+	reads := make(chan error, 1)
+	registerLocal(t, c, "src::stall", func(ctx context.Context, data json.RawMessage) (any, error) {
+		var args copyArgs
+		if err := json.Unmarshal(data, &args); err != nil {
+			return nil, err
+		}
+		_, err := args.Src.ReadAll(context.Background())
+		reads <- err
+		return nil, err
+	})
+	registerLocal(t, c, "src::fail", func(ctx context.Context, data json.RawMessage) (any, error) {
+		return nil, errors.New("handler failed")
+	})
+	for _, tt := range []struct {
+		name    string
+		timeout time.Duration
+		ctx     time.Duration
+		want    error
+	}{
+		{name: "timeout", timeout: 200 * time.Millisecond, want: ErrTimeout},
+		{name: "ctx", ctx: 200 * time.Millisecond, want: context.DeadlineExceeded},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pr, pw := io.Pipe() // nothing is ever written
+			defer pw.Close()
+			ctx := streamCtx(t)
+			if tt.ctx > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.ctx)
+				defer cancel()
+			}
+			_, err := c.Call(ctx, CallRequest{FunctionID: "src::stall", Timeout: tt.timeout,
+				Payload: jsonOf(t, map[string]any{"src": InputStreamFromReader(pr)})})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			select {
+			case err := <-reads:
+				wantCode(t, err, CodeStreamAborted)
+			case <-time.After(3 * time.Second):
+				t.Fatal("the handler's read did not end when the call failed")
+			}
+			if _, err := pw.Write([]byte("x")); !errors.Is(err, io.ErrClosedPipe) {
+				t.Errorf("write to the caller's source after the call failed = %v, want its reader closed", err)
+			}
+		})
+	}
+	t.Run("handler error", func(t *testing.T) {
+		src := &trackedReader{Reader: strings.NewReader("never read")}
+		_, err := c.Call(streamCtx(t), CallRequest{FunctionID: "src::fail",
+			Payload: jsonOf(t, map[string]any{"src": InputStreamFromReader(src)})})
+		if err == nil {
+			t.Fatal("the failed call returned no error")
+		}
+		waitUntil(t, "the source of a failed call is released", src.closed.Load)
+	})
+}
+
+// An in-process call takes the streams it sends, as pipes do: sending one again, or
+// reading it after it was sent, fails with STREAM_IN_USE, as on the remote path.
+func TestLocalSentStreamIsTheReceivers(t *testing.T) {
+	se := newStreamEngine(t)
+	c := se.client()
+	registerLocal(t, c, "src::ignore", func(ctx context.Context, data json.RawMessage) (any, error) {
+		return nil, nil
+	})
+	registerLocal(t, c, "src::text", func(ctx context.Context, data json.RawMessage) (any, error) {
+		var args copyArgs
+		if err := json.Unmarshal(data, &args); err != nil {
+			return nil, err
+		}
+		return args.Src.Text(ctx)
+	})
+	for _, void := range []bool{false, true} {
+		src := InputStreamFromBytes([]byte("once"))
+		first := CallRequest{FunctionID: "src::ignore", Payload: jsonOf(t, map[string]any{"src": src})}
+		if void {
+			first.Action = VoidAction()
+		}
+		if _, err := c.Call(streamCtx(t), first); err != nil {
+			t.Fatalf("first call (void %v): %v", void, err)
+		}
+		_, err := c.Call(streamCtx(t), CallRequest{FunctionID: "src::text", Payload: jsonOf(t, map[string]any{"src": src})})
+		if streamCode(err) != CodeStreamInUse {
+			t.Errorf("second call with a stream sent unread (void %v) = %v, want STREAM_IN_USE", void, err)
+		}
+		if _, err := src.Read(make([]byte, 4)); streamCode(err) != CodeStreamInUse {
+			t.Errorf("caller's read of a stream it sent (void %v) = %v, want STREAM_IN_USE", void, err)
+		}
+	}
+	// The receiver reads the whole stream; the caller no longer can.
+	src := InputStreamFromBytes([]byte("whole"))
+	if out := call(t, c, CallRequest{FunctionID: "src::text", Payload: jsonOf(t, map[string]any{"src": src})}); string(out) != `"whole"` {
+		t.Errorf("result %s, want the whole stream", out)
+	}
+	if _, err := src.ReadAll(streamCtx(t)); streamCode(err) != CodeStreamInUse {
+		t.Errorf("caller's read of a stream it sent = %v, want STREAM_IN_USE", err)
 	}
 }
