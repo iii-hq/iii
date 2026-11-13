@@ -877,8 +877,13 @@ async fn frozen_build_copies_the_locked_packages_into_the_project() {
     let updated = package_archive("state 2");
     let file = lock_project(project, &server, &[("kan281-state", "1.1.0", &updated)]).await;
     iii_compose::build::build_frozen(&file).await.unwrap();
+    // The tree the update replaced stays aside until the next run.
+    let listed: Vec<String> = listing(&workers, "")
+        .into_iter()
+        .filter(|name| !name.starts_with(".kan281-state.replaced-"))
+        .collect();
     assert_eq!(
-        listing(&workers, ""),
+        listed,
         [
             ".gitignore",
             ".lock",

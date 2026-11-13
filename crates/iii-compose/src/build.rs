@@ -119,21 +119,29 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     for (container, reference, canonical) in prepared.aliases() {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
-    // The daemon's mutation lock is in its own process: an edit made while
-    // this prepared must not be overwritten from the snapshot. A build that
-    // writes nothing (frozen, or already locked) overwrites nothing.
-    if (edited != text || prepared.changed())
-        && std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+    // The daemon's mutation lock is in its own process: an edit of the file, or
+    // a lock it committed, while this prepared must not be overwritten from the
+    // snapshot. A build that writes nothing (frozen, or already locked)
+    // overwrites nothing.
+    let wrote = edited != text || prepared.changed();
+    if wrote {
+        let stale = if std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
             path: file.path.clone(),
             source,
         })? != text
-    {
-        let error = ComposeError::BuildPlanStale {
-            path: file.path.clone(),
+        {
+            Some(file.path.clone())
+        } else if read_if_present(prepared.path())? != found_lock {
+            Some(prepared.path().to_path_buf())
+        } else {
+            None
         };
-        report::plan_done();
-        report::summary_failed("build", error.code(), began.elapsed());
-        return Err(error);
+        if let Some(path) = stale {
+            let error = ComposeError::BuildPlanStale { path };
+            report::plan_done();
+            report::summary_failed("build", error.code(), began.elapsed());
+            return Err(error);
+        }
     }
     crate::daemon::persist_mutation(&file.path, &text, &edited, &prepared)?;
     if prepared.changed() {
@@ -149,7 +157,6 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     // the lock alone, since `.workers/` follows the lock: an edit of the file
     // made meanwhile is kept and fails nothing. One that wrote also compares
     // the file with what it wrote.
-    let wrote = edited != text || prepared.changed();
     let unchanged = || {
         let file_holds = !wrote
             || std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
@@ -161,9 +168,14 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         } else {
             read_if_present(prepared.path())? == found_lock
         };
-        if !file_holds || !lock_holds {
+        if !file_holds {
             return Err(ComposeError::BuildPlanStale {
                 path: file.path.clone(),
+            });
+        }
+        if !lock_holds {
+            return Err(ComposeError::BuildPlanStale {
+                path: prepared.path().to_path_buf(),
             });
         }
         Ok(())
@@ -594,6 +606,53 @@ mod tests {
                 .join(".workers/sandbox-libkrun/sandbox-libkrun")
                 .is_file()
         );
+    }
+
+    /// The daemon's mutation lock is in its own process: a lock it committed while this build
+    /// prepared is not overwritten, and nothing is copied: `BUILD_PLAN_STALE`.
+    #[tokio::test]
+    async fn build_does_not_overwrite_a_lock_written_while_it_prepared() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let server = wiremock::MockServer::start().await;
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
+        serve(
+            &server,
+            "state",
+            serde_json::json!({ "type": "binary" }),
+            state.clone(),
+        )
+        .await;
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let lock_path = project.path().join("worker-compose.lock");
+        // The daemon commits its own resolution while the build downloads.
+        let theirs = "version: 1\ncontainers: {}\n";
+        let target = lock_path.clone();
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/state"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, theirs).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(state.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+
+        let error = build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert!(error.to_string().contains("worker-compose.lock"), "{error}");
+        assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), theirs);
+        assert!(!project.path().join(".workers").exists());
     }
 
     #[tokio::test]

@@ -1542,11 +1542,9 @@ async fn stop_one(
         && let Ok(user_env) = container.resolve_user_env(key)
     {
         let start = StartSpec::Shell(script);
-        let working_dir = resolve_working_dir(
-            container.working_dir.as_deref(),
-            container.worker_dir(),
-            &ctx.file.base_dir,
-        );
+        // Where the container ran, as its start and `pre_run` had it: a bundle's
+        // `.workers/<container>/` included.
+        let working_dir = container_working_dir(ctx, key, container);
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
             namespace: ctx.project_namespace,
