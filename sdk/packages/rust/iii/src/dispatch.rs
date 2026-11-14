@@ -61,6 +61,7 @@ use crate::{
         LocalFunctionStats, Message, observe_codes,
     },
     reporter::{CaptureMask, Gate, PendingItem, STATS_INTERVAL},
+    streams::StreamGuard,
     types::RemoteFunctionHandlerWithMetadata,
 };
 
@@ -96,14 +97,18 @@ fn trace_payloads_enabled() -> bool {
 
 /// Runs `handler` inside an `execute <fn>` span (a child of `parent_cx`) with
 /// `ctx` as the current invocation, `local_depth` local calls deep. A panic
-/// in the handler becomes an error.
+/// in the handler becomes an error. The streams in an `answered` result get
+/// their pipes before the handler's own streams are settled.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute(
+    client: &IIIClient,
     parent_cx: OtelContext,
-    data: Value,
+    mut data: Value,
     metadata: Option<Value>,
     handler: RemoteFunctionHandlerWithMetadata,
     mut ctx: InvocationCtx,
     local_depth: u32,
+    answered: bool,
 ) -> Executed {
     use iii_helpers::observability::opentelemetry::KeyValue;
     use iii_helpers::observability::opentelemetry::trace::{
@@ -130,9 +135,23 @@ pub(crate) async fn execute(
         let _guard = otel_cx.clone().attach();
         inject_trace_headers()
     };
+    // An observer activation of an engine-built `Observed`: its captured
+    // streams reach the handler as `StreamInfo`.
+    let observed = ctx
+        .activation
+        .as_ref()
+        .is_some_and(|activation| crate::streams::rewrite_observed(&mut data, activation));
+    let streams = Arc::new(StreamGuard::new(ctx.activation.is_some()));
+    // Every stream ref the handler receives is its own, typed or not: the
+    // guard applies to it. An `Observed` envelope copies another call's.
+    if !observed {
+        streams.track_input(client, &data);
+    }
     let frame = Arc::new(Frame {
         ctx: Some(ctx),
         local_depth,
+        client: Some(client.clone()),
+        streams: Some(streams.clone()),
     });
 
     let trace_payloads = otel_cx.span().is_recording() && trace_payloads_enabled();
@@ -156,7 +175,7 @@ pub(crate) async fn execute(
     // The handler is called inside the scope and the span: a sync handler's
     // body runs at that call.
     let run = scope_frame(frame.clone(), async move { handler(data, metadata).await });
-    let result = AssertUnwindSafe(run.with_context(otel_cx.clone()))
+    let mut result = AssertUnwindSafe(run.with_context(otel_cx.clone()))
         .catch_unwind()
         .await
         .unwrap_or_else(|panic| {
@@ -165,6 +184,24 @@ pub(crate) async fn execute(
                 panic_message(&panic)
             )))
         });
+    // The streams in the result are sent: they get their pipes (and pumps)
+    // first, so the guard leaves them alone. Nobody reads a void call's.
+    if let Ok(value) = &mut result {
+        if answered {
+            match crate::streams::prepare(client, value).await {
+                Ok(pumps) => drop(pumps),
+                Err(error) => result = Err(error),
+            }
+        } else {
+            crate::streams::release(value);
+        }
+    }
+    if let Ok(value) = &result {
+        crate::streams::mark_transferred(value);
+    }
+    // R2, R3: the streams the handler received are closed, aborted or
+    // cancelled now, without delaying the answer.
+    streams.settle(&result);
 
     if trace_payloads {
         let (output_json, truncated, ok) = match &result {
@@ -254,6 +291,15 @@ pub(crate) fn error_body(error: Error, stacktrace: Option<String>) -> ErrorBody 
             // loop's backtrace, which points at the SDK, not the error site.
             stacktrace,
         },
+        // A stream error keeps its code: the caller can tell an abort apart.
+        error @ (Error::StreamAborted { .. }
+        | Error::StreamNotAllowed(_)
+        | Error::StreamClosed(_)
+        | Error::StreamInUse(_)) => ErrorBody {
+            code: error.code().unwrap_or_default().to_string(),
+            message: error.to_string(),
+            stacktrace: None,
+        },
         other => ErrorBody {
             code: "invocation_failed".to_string(),
             message: other.to_string(),
@@ -329,6 +375,8 @@ pub(crate) struct Hosted {
     pub parent_cx: OtelContext,
     pub payload: Value,
     pub route: Route,
+    /// Someone reads the result (not a void call).
+    pub answered: bool,
 }
 
 /// What a call of a function this worker hosts produced, once delivered.
@@ -504,7 +552,12 @@ fn item(
     matched: Vec<String>,
     mask: CaptureMask,
 ) -> PendingItem {
-    let raw = |value: &Value| to_raw_value(value).ok();
+    // A local stream's placeholder must not reach the wire: a report carries
+    // it as a `StreamInfo`.
+    let raw = |value: &Value| match crate::streams::report_form(value) {
+        Some(value) => to_raw_value(&value).ok(),
+        None => to_raw_value(value).ok(),
+    };
     let input = view.input.filter(|_| mask.input);
     let output = view.output.filter(|_| mask.output);
     let output_is_input = matches!((input, output), (Some(i), Some(o)) if same_json(i, o));
@@ -599,12 +652,23 @@ impl IIIClient {
         &self,
         handler: RemoteFunctionHandlerWithMetadata,
         entry: Arc<FunctionEntry>,
-        request: CallRequest,
+        mut request: CallRequest,
         metadata: Option<Value>,
     ) -> Result<Value, Error> {
         let ctx = self.local_ctx(&request.function_id, metadata);
         let is_void = matches!(request.action, Some(CallAction::Void));
+        // The sources the caller passes are the handler's now: sending one
+        // again fails, as after a call through the engine.
+        let sources = crate::streams::hand_off_sources(&mut request.payload);
+        // The sinks the caller passes: the call resolves once they ended.
+        let sinks = if is_void {
+            Vec::new()
+        } else {
+            crate::streams::local_sinks(&request.payload)
+        };
         let depth = local_depth() + 1;
+        let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+        let deadline = tokio::time::Instant::now() + timeout;
         let run = self.clone().run_local(
             handler,
             entry,
@@ -612,6 +676,7 @@ impl IIIClient {
             depth,
             OtelContext::current(),
             request.payload,
+            !is_void,
         );
         if is_void {
             tokio::spawn(async move {
@@ -621,7 +686,6 @@ impl IIIClient {
             });
             return Ok(Value::Null);
         }
-        let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
         let mut run: std::pin::Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>> =
             if depth % LOCAL_LEVELS_PER_TASK == 0 {
                 let task = tokio::spawn(run);
@@ -633,7 +697,7 @@ impl IIIClient {
             } else {
                 Box::pin(run)
             };
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             result = &mut run => result,
             _ = tokio::time::sleep(timeout) => {
@@ -642,9 +706,16 @@ impl IIIClient {
                 tokio::spawn(run);
                 Err(Error::Timeout)
             }
+        };
+        // Ended without its handler (a timeout) or failed: what it did not
+        // read of its sources is aborted, as a call's pipes are.
+        if let Err(error) = &result {
+            crate::streams::abort_sources(&sources, &error.to_string());
         }
+        crate::streams::settle_local_sinks(sinks, result, deadline).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_local(
         self,
         handler: RemoteFunctionHandlerWithMetadata,
@@ -653,6 +724,7 @@ impl IIIClient {
         local_depth: u32,
         parent_cx: OtelContext,
         payload: Value,
+        answered: bool,
     ) -> Result<Value, Error> {
         let hosted = self
             .run_hosted(Hosted {
@@ -663,6 +735,7 @@ impl IIIClient {
                 parent_cx,
                 payload,
                 route: Route::Local,
+                answered,
             })
             .await;
         hosted.result.map_err(|body| Error::Remote {
@@ -685,6 +758,7 @@ impl IIIClient {
             parent_cx,
             payload,
             route,
+            answered,
         } = run;
         let local = route == Route::Local;
         let delivers = route != Route::Engine && entry.delivers();
@@ -701,7 +775,17 @@ impl IIIClient {
             };
             let started = Instant::now();
             let metadata = ctx.metadata.clone();
-            let executed = execute(parent_cx, payload, metadata, handler, ctx, local_depth).await;
+            let executed = execute(
+                self,
+                parent_cx,
+                payload,
+                metadata,
+                handler,
+                ctx,
+                local_depth,
+                answered,
+            )
+            .await;
             if local {
                 entry
                     .stats
@@ -732,7 +816,17 @@ impl IIIClient {
             stacktrace,
             otel_cx,
             frame,
-        } = execute(parent_cx, payload, metadata, handler, ctx, local_depth).await;
+        } = execute(
+            self,
+            parent_cx,
+            payload,
+            metadata,
+            handler,
+            ctx,
+            local_depth,
+            answered,
+        )
+        .await;
         let elapsed = started.elapsed();
         if local {
             entry.stats.record(result.is_ok(), elapsed);

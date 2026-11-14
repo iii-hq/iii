@@ -161,7 +161,7 @@ Rules:
   bytes of serialized envelope), sent as one WebSocket text frame or as a fragmented message. The
   engine then sends it messages up to that size whatever `version` it reports, except to
   `runtime: "browser"` (16 MiB). Without it, the engine falls back to the reported SDK version; no
-  other feature counts. See [Payload size](../creating-workers/channels#payload-size).
+  other feature counts. See [Payload size](../creating-workers/streaming#payload-size).
 - An SDK enables `observe()` only when the engine advertised `observe.v1`; against an older engine,
   `observe()` fails with `UNSUPPORTED`. An SDK runs one of its own functions in-process only after
   the engine confirmed that function with `FunctionRegistered { local_dispatch: true }`.

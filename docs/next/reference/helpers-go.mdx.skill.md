@@ -28,12 +28,12 @@ import iiihttp "github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http"
 
 ### NewStreamResponse
 
-NewStreamResponse returns a StreamResponse writing to writer, the response channel of an http invocation opened with `iii.Client.OpenWriter`. ctx bounds the channel dial and every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil writer every method returns `ErrMissingChannel`.
+NewStreamResponse returns a StreamResponse writing to stream, the response stream of an http invocation (`InternalRequest`.Response). ctx bounds every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil stream every method returns `ErrMissingChannel`.
 
 **Signature**
 
 ```go
-func NewStreamResponse(ctx context.Context, writer *iii.ChannelWriter) *StreamResponse
+func NewStreamResponse(ctx context.Context, stream *iii.OutputStream) *StreamResponse
 ```
 
 #### Parameters
@@ -41,7 +41,7 @@ func NewStreamResponse(ctx context.Context, writer *iii.ChannelWriter) *StreamRe
 <ParamField body="ctx" type="context.Context" required>
 </ParamField>
 
-<ParamField body="writer" type="*iii.ChannelWriter" required>
+<ParamField body="stream" type="*iii.OutputStream" required>
 </ParamField>
 
 
@@ -51,26 +51,22 @@ func NewStreamResponse(ctx context.Context, writer *iii.ChannelWriter) *StreamRe
 
 Wrap adapts an HTTP-style handler into an `iii.Handler` for the target of an http::on-request observer; it is the Go counterpart of the Node http() helper. Register the result with `iii.Client.RegisterFunction`.
 
-For each invocation Wrap decodes the `InternalRequest`, opens the request body channel for reading and the response channel for writing with `iii.Client.OpenReader` and `iii.Client.OpenWriter` (so the dials use the client's engine address and send its `iii.WithHeaders`, plus III_TOKEN), and calls fn with the `StreamRequest` and `StreamResponse`. When fn returns, Wrap closes the request body reader and finishes the response like a net/http handler:
+For each invocation Wrap decodes the `InternalRequest` and calls fn with the `StreamRequest` and `StreamResponse`. The SDK settles the streams when fn returns, as it does for every handler:
 
-- a streamed body, or a nil result without error, ends the response stream cleanly (no explicit Close needed);
-- a buffered result, or an error before any body, leaves the channel untouched so the http worker answers from the returned value or reports the error;
-- a failed Status, Headers or Write aborts the response, whatever fn returns;
-- an error after body bytes were written aborts the response too, so the truncated body is not taken for a complete one.
+- a response fn used (a status, headers or body sent) is closed when fn succeeded, and aborted when it failed, so a truncated body is not taken for a complete one;
+- an untouched response is closed when fn returned nil, so the http worker answers with an empty 200, and left alone otherwise, so the http worker answers from the returned value (`Response`) or reports the error;
+- a request body fn started reading and did not finish is cancelled.
 
-fn must not use req or res after it returns. Wrap returns nil when fn is nil; it panics when client is nil.
+fn must not use req or res after it returns, unless it called KeepOpen on res.Stream(). Wrap returns nil when fn is nil.
 
 **Signature**
 
 ```go
-func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler
+func Wrap(fn HandlerFunc) iii.Handler
 ```
 
 <Tabs>
   <Tab title="Parameters">
-
-<ParamField body="client" type="*iii.Client" required>
-</ParamField>
 
 <ParamField body="fn" type="HandlerFunc" required>
 </ParamField>
@@ -83,7 +79,7 @@ func Wrap(client *iii.Client, fn HandlerFunc) iii.Handler
 client := iii.RegisterWorker(iii.DefaultEngineURL)
 defer client.Close()
 
-_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
+_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(
 	func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 		body, err := io.ReadAll(req)
 		if err != nil {
@@ -109,10 +105,7 @@ _, _ = client.Observe(iii.Source{
 ```
 
 ```go
-client := iii.New(iii.DefaultEngineURL)
-defer client.Close()
-
-handler := iiihttp.Wrap(client,
+handler := iiihttp.Wrap(
 	func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 		return iiihttp.Response[map[string]string]{
 			StatusCode: 200,
@@ -136,18 +129,17 @@ fmt.Println(string(out))
 
 | Name | Value | Description |
 | --- | --- | --- |
-| `ErrMissingChannel` | `errors.New("iii/helpers/http: the invocation carries no channel for this stream")` | ErrMissingChannel is returned by `StreamRequest.Read` and the `StreamResponse` methods when the invocation carried no channel ref for that stream, which happens when the function was not invoked by the http worker. |
-| `ErrResponseClosed` | `errors.New("iii/helpers/http: the response is closed")` | ErrResponseClosed is returned by the `StreamResponse` write methods after `StreamResponse.Close`. |
+| `ErrMissingChannel` | `errors.New("iii/helpers/http: the invocation carries no stream for this")` | ErrMissingChannel is returned by `StreamRequest.Read` and the `StreamResponse` methods when the invocation carried no stream for them, which happens when the function was not invoked by the http worker. |
 
 ### Types
 
-[`HandlerFunc`](#handlerfunc) · [`InternalRequest`](#internalrequest) · [`InvocationConfig`](#invocationconfig) · [`Method`](#method) · [`MultiValue`](#multivalue) · [`Request`](#request) · [`Response`](#response) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
+[`HandlerFunc`](#handlerfunc) · [`InternalRequest`](#internalrequest) · [`Method`](#method) · [`MultiValue`](#multivalue) · [`Request`](#request) · [`Response`](#response) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse)
 
 ### HandlerFunc
 
 HandlerFunc is an HTTP-style handler for the target of an http::on-request observer, the callback of the Node http() helper. Adapt it with `Wrap`.
 
-Write the response to res and return nil to stream it, or return a `Response` (any non-nil value with status_code, headers and body) to answer buffered without touching res. A returned error is reported as the invocation error, which the http worker answers with a 500; if body bytes were already streamed, `Wrap` aborts the response instead of ending it, so the truncated body is not taken for a complete one.
+Write the response to res and return nil to stream it, or return a `Response` (any non-nil value with status_code, headers and body) to answer buffered without touching res. A returned error is reported as the invocation error, which the http worker answers with a 500; a response the handler already used is then aborted, so a truncated body is not taken for a complete one.
 
 ```go
 type HandlerFunc func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error)
@@ -157,7 +149,7 @@ type HandlerFunc func(ctx context.Context, req *StreamRequest, res *StreamRespon
 
 ### InternalRequest
 
-InternalRequest is the payload the http worker sends to the target of an http::on-request observer, Node InternalHttpRequest: the parsed request plus the two channel refs. The Node SDK resolves the refs into a reader and a writer before it calls the handler; in Go they stay refs, opened by `Wrap` or by hand with `iii.Client.OpenReader` and `iii.Client.OpenWriter`.
+InternalRequest is the payload the http worker sends to the target of an http::on-request observer, Node InternalHttpRequest: the parsed request plus its two streams. `Wrap` decodes it; decode it by hand to use the streams directly.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -167,30 +159,8 @@ InternalRequest is the payload the http worker sends to the target of an http::o
 | `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
 | `Path` | `string` | No | Path is the route template that matched. The Node type does not declare it; the http worker sends it. |
 | `Method` | `string` | Yes | Method is the HTTP method of the request. |
-| `Response` | `iii.StreamChannelRef` | Yes | Response is the write end of the response channel. |
-| `RequestBody` | `iii.StreamChannelRef` | Yes | RequestBody is the read end of the request body channel. |
-
----
-
-### InvocationConfig
-
-InvocationConfig configures a function the engine invokes over HTTP (Lambda, Cloudflare Workers and similar), Node HttpInvocationConfig. It is the core `iii.HTTPInvocationRef`: URL, Method (POST when empty), TimeoutMs, Headers, and Auth, the JSON of a Node HttpAuthConfig: \{"type":"hmac","secret_key":...\}, \{"type":"bearer","token_key":...\} or \{"type":"api_key","header":...,"value_key":...\}.
-
-```go
-timeout := uint64(10_000)
-cfg := iiihttp.InvocationConfig{
-	URL:       "https://example.com/lambda/report",
-	Method:    iiihttp.MethodPost,
-	TimeoutMs: &timeout,
-	Auth:      json.RawMessage(`{"type":"hmac","secret_key":"REPORT_SECRET"}`),
-}
-out, _ := json.Marshal(cfg)
-fmt.Println(string(out))
-```
-
-```go
-type InvocationConfig = iii.HTTPInvocationRef
-```
+| `Response` | `*iii.OutputStream` | No | Response is the response stream: control messages and the body. |
+| `RequestBody` | `*iii.InputStream` | No | RequestBody is the raw request body. |
 
 ---
 
@@ -255,7 +225,7 @@ fmt.Println(req.QueryParams["tag"], req.Headers["accept"].First())
 | `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
 | `Path` | `string` | No | Path is the route template that matched (for example /users/:id), as in the Rust HttpRequest. The Node type does not declare it; the http worker sends it. |
 | `Method` | `string` | Yes | Method is the HTTP method of the request (for example GET or POST). |
-| `RequestBody` | `*iii.StreamChannelRef` | No | RequestBody is the channel carrying the raw request body; open it with `iii.Client.OpenReader`. nil when the invocation carried none. |
+| `RequestBody` | `*iii.InputStream` | No | RequestBody is the raw request body: read it, or pass it on unread. nil when the invocation carried none. |
 
 ---
 
@@ -283,8 +253,8 @@ StreamRequest is the incoming request a `HandlerFunc` receives, Node StreamReque
 | `Headers` | map[string][`MultiValue`](#multivalue) | Yes | Headers holds the request headers. |
 | `Path` | `string` | No | Path is the route template that matched. The Node type does not declare it; the http worker sends it. |
 | `Method` | `string` | Yes | Method is the HTTP method of the request. |
-| `RequestBody` | `*iii.ChannelReader` | No | RequestBody is the channel reader carrying the raw request body (Node request_body), nil when the invocation carried none. `StreamRequest.Read` reads from it; use it directly only for OnMessage, and do not mix the two. |
-| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the raw request body from RequestBody and implements `io.Reader`. It returns io.EOF only once the http worker has sent the whole body and ended the channel cleanly. If the channel was aborted instead (its writer failed or went away before finishing, or the connection dropped), Read returns that error, never io.EOF: the body read so far is incomplete, and io.ReadAll returns it together with the error. An abort reported by the engine is a websocket close error with code 1011 and a reason (websocket.CloseStatus reads the code). Bytes received before the abort are returned first, and once Read failed every later call returns the same error. Read returns `ErrMissingChannel` when RequestBody is nil. Reads are bound to the invocation context; a StreamRequest is not safe for concurrent reads. |
+| `RequestBody` | `*iii.InputStream` | No | RequestBody is the raw request body (Node request_body), nil when the invocation carried none. `StreamRequest.Read` reads it; read it another way (its Lines or Frames, say), or pass it on unread in a call payload, instead, not as well. |
+| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the raw request body and implements `io.Reader`: it is `iii.InputStream.Read` on RequestBody. It returns io.EOF only once the http worker sent the whole body and closed the stream. If the stream was aborted instead (its writer failed or went away before finishing), Read returns an `*iii.InvocationError` with code `iii.CodeStreamAborted`, never io.EOF: the body read so far is incomplete, and io.ReadAll returns it together with the error. Read returns `ErrMissingChannel` when RequestBody is nil. A body the handler started reading and did not finish is cancelled when it returns. |
 
 ---
 
@@ -292,15 +262,16 @@ StreamRequest is the incoming request a `HandlerFunc` receives, Node StreamReque
 
 StreamResponse is the response a `HandlerFunc` writes, Node StreamResponse: Status and Headers send control messages, Write streams the body and Close ends it. StreamResponse is an `io.Writer`. Its methods are safe for concurrent use.
 
-A response whose writer failed is aborted, never reported complete. Once Status, Headers or Write returned an error, every later call returns that error, and Close (or `Wrap`, when the handler returns) ends the channel without a clean close: the http worker's reader gets an error instead of a truncated body that looks whole.
+The SDK ends the response when the handler returns: closed when the handler used it and succeeded, aborted when it used it and failed. Closing it is optional.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `NewStreamResponse` | func(ctx context.Context, writer *iii.ChannelWriter) *[`StreamResponse`](#streamresponse) | Yes | NewStreamResponse returns a StreamResponse writing to writer, the response channel of an http invocation opened with `iii.Client.OpenWriter`. ctx bounds the channel dial and every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil writer every method returns `ErrMissingChannel`. |
-| `Close` | `func() error` | Yes | Close ends the response: the http worker sends the status and headers set so far (200 by default) and finishes the body. After a failed Status, Headers or Write, Close aborts the response instead: the channel ends without a clean close, the http worker's reader gets an error, and Close returns nil (the failing call already returned the error). Close is idempotent; `Wrap` ends the response when the handler returns, so calling it is optional there. |
+| `NewStreamResponse` | func(ctx context.Context, stream *iii.OutputStream) *[`StreamResponse`](#streamresponse) | Yes | NewStreamResponse returns a StreamResponse writing to stream, the response stream of an http invocation (`InternalRequest`.Response). ctx bounds every write. `Wrap` builds one for each invocation; call NewStreamResponse only when handling an `InternalRequest` by hand. With a nil stream every method returns `ErrMissingChannel`. |
+| `Close` | `func() error` | Yes | Close ends the response: the http worker sends the status and headers set so far (200 by default) and finishes the body. Close is idempotent, and optional in a `Wrap` handler: the SDK closes a response the handler used when it returns. |
 | `Headers` | `func(headers map[string]string) error` | Yes | Headers sets response headers by sending \{"type":"set_headers","headers":\{...\}\}. Repeated calls merge, later values winning. Like Status, headers must be sent before the first body chunk. |
 | `Status` | `func(statusCode int) error` | Yes | Status sets the HTTP status code by sending \{"type":"set_status","status_code":N\}. The http worker applies it when it arrives before the first body chunk and ignores codes outside 100-599. |
-| `Write` | `func(p []byte) (int, error)` | Yes | Write streams p as response body (BINARY frames of at most 64 KiB) and implements `io.Writer`. The first body chunk commits the status and headers. A failed Write leaves the body incomplete, so the response can then only be aborted. |
+| `Stream` | `func() *iii.OutputStream` | Yes | Stream returns the response stream itself (nil when the invocation carried none), for `iii.OutputStream.KeepOpen` or `iii.OutputStream.Abort`, say. |
+| `Write` | `func(p []byte) (int, error)` | Yes | Write streams p as response body (bytes, in frames of at most 64 KiB) and implements `io.Writer`. The first body chunk commits the status and headers. A write after Close fails with `iii.CodeStreamClosed`. |
 
 ## helpers/queue
 

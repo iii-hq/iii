@@ -76,6 +76,10 @@ def json_view(value: Any) -> Any:
             return value.model_dump(mode="json", by_alias=True, exclude_none=True)
         except Exception:
             return ABSENT
+    # A stream (``InputStream`` / ``OutputStream``) reads as its StreamInfo.
+    view = getattr(type(value), "__iii_json__", None)
+    if view is not None:
+        return view(value)
     try:
         return json_view(to_jsonable_python(value))
     except Exception:

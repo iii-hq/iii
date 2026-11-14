@@ -35,8 +35,15 @@ from iii_helpers.stream import (
 from websockets.asyncio.client import ClientConnection
 
 from . import _wire_json
-from .channels import ChannelReader, ChannelWriter, resolve_headers
-from .errors import InvocationError, ObserveRejection, RegistrationRejectedError, _wrap_wire_error
+from . import streams as _streams
+from ._channels import resolve_headers
+from .errors import (
+    InvocationError,
+    ObserveRejection,
+    RegistrationRejectedError,
+    StreamAbortedError,
+    _wrap_wire_error,
+)
 from .filter._value import ABSENT, to_json_value
 from .format_utils import extract_request_format, extract_response_format
 from .function_ref import FunctionRef
@@ -131,7 +138,8 @@ from .observer_handle import ObserverHandle, to_observer_state
 from .process_marker import announce_process
 from .reporter import FunctionStatus, Reporter
 from .stream import IStream
-from .types import Channel, RemoteFunctionData, is_channel_ref
+from .streams import InputStream, OutputStream, Pipe
+from .types import RemoteFunctionData
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
 
@@ -215,6 +223,12 @@ def _clone_value(value: Any) -> Any:
         return None if mapped is ABSENT else mapped
 
 
+def _in_activation() -> bool:
+    """The running invocation is an observer activation: the engine's frame carried ``activation``."""
+    ctx = current_context()
+    return ctx is not None and ctx.activation is not None
+
+
 def _handler_error_body(error: BaseException) -> dict[str, Any]:
     """The error a handler's failure becomes, the same on the local and the remote path."""
     return {
@@ -263,6 +277,12 @@ _MAX_LOCAL_DEPTH = 64
 #: §4.6, decision 53); the same message in every SDK.
 _OBSERVER_CALL_METADATA = "a call through an observer takes no metadata; its target receives the observer's metadata"
 
+#: Why ``call`` refuses an enqueued payload that holds streams (R9).
+_STREAM_NOT_ALLOWED = (
+    "streams need a live call and cannot be queued: the job can run after the stream expired, and a retry "
+    "cannot read it again. Call without an action, or with CallAction.Void()"
+)
+
 
 @dataclass
 class _Request:
@@ -279,6 +299,8 @@ class _Request:
     #: The local function when the call runs in-process.
     local: RemoteFunctionData | None = None
     state: FunctionObservers | None = None
+    #: The payload holds stream values (``InputStream``, ``OutputStream``, raw sources).
+    streams: bool = False
 
 
 @dataclass
@@ -296,6 +318,12 @@ class _LocalInvocation:
     metadata: Any = None
     call_input: Any = None
     call_metadata: Any = None
+    #: The streams its handler receives (the guard settles them when it returns).
+    tracked: list[Any] = field(default_factory=list)
+    #: The sinks built in this process in the caller's payload: the call waits for them (R4).
+    sinks: list[Any] = field(default_factory=list)
+    #: The InputStreams the caller passed, handed off to the handler: aborted when the call fails.
+    sources: list[Any] = field(default_factory=list)
     started_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
     t0: float = field(default_factory=time.perf_counter)
 
@@ -691,6 +719,10 @@ class III:
 
         # Background event loop thread
         self._loop = asyncio.new_event_loop()
+        # Host name lookups (stream sockets to `localhost`) keep working after the main thread returned.
+        self._loop.set_default_executor(_streams._SdkExecutor())
+        # Streams received by this worker open their sockets on this loop.
+        self._stream_binding = _streams._Binding(address, self._options.headers, self._loop)
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=False)
         self._thread.start()
         self._loop.call_soon_threadsafe(self._reporter.start)
@@ -1075,8 +1107,8 @@ class III:
             ),
             message=(
                 f"Serialized JSON envelope is {size} bytes; limit is "
-                f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use channels for larger payloads: "
-                "https://iii.dev/docs/creating-workers/channels#payload-size"
+                f"{_MAX_JSON_OUTBOUND_BYTES} bytes. Use streams for larger payloads: "
+                "https://iii.dev/docs/creating-workers/streaming#payload-size"
             ),
         )
         if data.get("type") == MessageType.INVOCATION_RESULT.value:
@@ -1879,32 +1911,50 @@ class III:
                 raise guarded from error
         return outcome.result, outcome.traceparent
 
-    def _resolve_channels(self, data: Any) -> Any:
-        """``data`` with its channel refs as readers and writers. Containers
-        are rebuilt only along the path to a ref: without refs it is ``data``
-        itself (a private function's input passes by reference)."""
-        if is_channel_ref(data):
-            ref = StreamChannelRef(**data)
-            return (
-                ChannelReader(self._address, ref, self._options.headers)
-                if ref.direction == "read"
-                else ChannelWriter(self._address, ref, self._options.headers)
-            )
-        if isinstance(data, dict):
-            resolved_dict: dict[Any, Any] | None = None
-            for key, value in data.items():
-                resolved = self._resolve_channels(value)
-                if resolved is not value:
-                    if resolved_dict is None:
-                        resolved_dict = dict(data)
-                    resolved_dict[key] = resolved
-            return data if resolved_dict is None else resolved_dict
-        if isinstance(data, (list, tuple)):
-            items = [self._resolve_channels(v) for v in data]
-            if all(new is old for new, old in zip(items, data)):
-                return data
-            return items if isinstance(data, list) else tuple(items)
-        return data
+    def _materialize(
+        self,
+        data: Any,
+        tracked: list[InputStream | OutputStream] | None = None,
+        activation: dict[str, Any] | None = None,
+    ) -> Any:
+        """``data`` with its stream refs as :class:`InputStream` and
+        :class:`OutputStream` (added to ``tracked``). Containers are rebuilt
+        only along the path to a ref: without refs it is ``data`` itself (a
+        private function's input passes by reference). In an engine-built
+        ``Observed`` payload, the refs under ``input`` and ``output`` become
+        :class:`StreamInfo`."""
+        if _streams.is_observed_envelope(data, activation):
+            return _streams.materialize_observed(data, self._stream_binding, tracked)
+        return _streams.materialize(data, self._stream_binding, tracked)
+
+    async def _create_pipe(self, buffer_size: int | None = None) -> tuple[StreamChannelRef, StreamChannelRef]:
+        """One pipe (``engine::channels::create``), owned by this worker: ``(writer ref, reader ref)``."""
+        result = await self._invoke_remote(
+            "engine::channels::create",
+            {} if buffer_size is None else {"buffer_size": buffer_size},
+            None,
+            None,
+            self._invocation_namespace(None, "engine::channels::create"),
+            None,
+        )
+        return StreamChannelRef(**result["writer"]), StreamChannelRef(**result["reader"])
+
+    async def _plan_result(self, value: Any) -> _streams.Outbound:
+        """A handler result about to be sent: the streams in it get pipes (pumped once it is sent)."""
+        plan = _streams.plan_outbound(value)
+        await plan.create_pipes(self._create_pipe, self._stream_binding)
+        return plan
+
+    async def _send_answer(self, answer: InvocationResultMessage, plan: _streams.Outbound | None) -> None:
+        """Sends a handler's answer, then starts the pumps of the streams in its result."""
+        try:
+            await self._send(answer)
+        except BaseException as error:
+            if plan is not None:
+                await plan.cancel(_streams._reason(error))
+            raise
+        if plan is not None:
+            plan.start()
 
     async def _handle_invoke(
         self,
@@ -1965,10 +2015,13 @@ class III:
                 )
             return
 
+        # The streams the handler receives: what it leaves of them is settled when it returns (R2, R3).
+        tracked: list[InputStream | OutputStream] = []
         try:
-            resolved_data = self._resolve_channels(data)
+            ctx = current_context()
+            resolved_data = self._materialize(data, tracked, ctx.activation if ctx is not None else None)
         except Exception as e:
-            log.exception("Failed to resolve channel refs")
+            log.exception("Failed to resolve stream refs")
             if invocation_id:
                 await self._send(
                     InvocationResultMessage(
@@ -1985,9 +2038,7 @@ class III:
 
         if not invocation_id:
             task = asyncio.create_task(
-                self._invoke_with_otel_context(
-                    path, func.handler, resolved_data, traceparent, baggage, metadata
-                )
+                self._invoke_unanswered(path, func.handler, resolved_data, traceparent, baggage, metadata, tracked)
             )
             task.add_done_callback(self._log_task_exception)
             return
@@ -2014,6 +2065,7 @@ class III:
                     traceparent,
                     baggage,
                     metadata,
+                    tracked,
                 )
                 return
 
@@ -2026,17 +2078,35 @@ class III:
                 baggage,
                 metadata,
             )
-            await self._send(
+            try:
+                plan = await self._plan_result(result)
+            except Exception as error:
+                # The streams of the result could not get their pipes: the call fails.
+                log.exception(f"Failed to send the streams of {path}'s result")
+                _streams.guard(tracked, False, None, _streams._reason(error))
+                await self._send(
+                    InvocationResultMessage(
+                        invocation_id=invocation_id,
+                        function_id=path,
+                        error=_handler_error_body(error),
+                        traceparent=response_traceparent,
+                    )
+                )
+                return
+            _streams.guard(tracked, True, result, "", activated=_in_activation())
+            await self._send_answer(
                 InvocationResultMessage(
                     invocation_id=invocation_id,
                     function_id=path,
-                    result=result,
+                    result=plan.value,
                     traceparent=response_traceparent,
-                )
+                ),
+                plan,
             )
         except _TraceContextError as te:
             original = te.__cause__
             log.exception(f"Error in handler {path}")
+            _streams.guard(tracked, False, None, _streams._reason(cast(BaseException, original)))
             await self._send(
                 InvocationResultMessage(
                     invocation_id=invocation_id,
@@ -2051,6 +2121,7 @@ class III:
             )
         except Exception as e:
             log.exception(f"Error in handler {path}")
+            _streams.guard(tracked, False, None, _streams._reason(e))
             await self._send(
                 InvocationResultMessage(
                     invocation_id=invocation_id,
@@ -2062,6 +2133,24 @@ class III:
                     },
                 )
             )
+
+    async def _invoke_unanswered(
+        self,
+        path: str,
+        handler: Callable[..., Awaitable[Any]],
+        data: Any,
+        traceparent: str | None,
+        baggage: str | None,
+        metadata: dict[str, Any] | None,
+        tracked: list[InputStream | OutputStream],
+    ) -> None:
+        """An invocation nobody waits for (no ``invocation_id``): the handler, then the guard of its streams."""
+        try:
+            result, _ = await self._invoke_with_otel_context(path, handler, data, traceparent, baggage, metadata)
+        except BaseException as error:
+            _streams.guard(tracked, False, None, _streams._reason(original_error(error, (_TraceContextError,))))
+            raise
+        _streams.guard(tracked, True, result, "", activated=_in_activation())
 
     async def _invoke_routed_and_deliver(
         self,
@@ -2076,11 +2165,12 @@ class III:
         traceparent: str | None,
         baggage: str | None,
         metadata: dict[str, Any] | None,
+        tracked: list[InputStream | OutputStream],
     ) -> None:
         """A routed call of an observed function, or of one with a match or
         deliver hook, on an ``observe.v2`` engine: the handler, then its
-        delivery, then the answer. The handler gets ``resolved_data`` (channel
-        refs as readers and writers); its delivery sees ``data``, the input as
+        delivery, then the answer. The handler gets ``resolved_data`` (stream
+        refs as streams); its delivery sees ``data``, the input as
         it arrived. The engine evaluates capture and filters (decision 55): the
         answer of a function with a deliver hook carries ``delivered: true``,
         that of a function with a match hook the ids it matched in
@@ -2092,12 +2182,14 @@ class III:
         t0 = time.perf_counter()
         delivery: Delivery | None = None
         answer: InvocationResultMessage
+        plan: _streams.Outbound | None = None
         try:
             with self._execute_span(path, resolved_data, traceparent, baggage) as outcome:
                 output: Any = None
                 handler_error: BaseException | None = None
                 try:
-                    output = await handler(resolved_data, metadata)
+                    # Raw sources (async generators, files) as InputStreams: what the deliver hook sees.
+                    output = _streams.wrap_sources(await handler(resolved_data, metadata), _streams.StreamScan())
                 except asyncio.CancelledError:
                     raise
                 except BaseException as error:
@@ -2126,19 +2218,35 @@ class III:
                 if not ok:
                     raise guard_exit(value)
                 outcome.result = value
-            answer = InvocationResultMessage(
-                invocation_id=invocation_id,
-                function_id=path,
-                result=value,
-                traceparent=outcome.traceparent,
-                matched=_routed_matched(delivery, active, hook),
-                delivered=delivered,
-            )
+            try:
+                plan = await self._plan_result(value)
+            except Exception as error:
+                log.error("Failed to send the streams of %s's result", path, exc_info=error)
+                _streams.guard(tracked, False, None, _streams._reason(error))
+                answer = InvocationResultMessage(
+                    invocation_id=invocation_id,
+                    function_id=path,
+                    error=_handler_error_body(error),
+                    traceparent=outcome.traceparent,
+                    matched=_routed_matched(delivery, active, hook),
+                    delivered=delivered,
+                )
+            else:
+                _streams.guard(tracked, True, value, "", activated=ctx.activation is not None)
+                answer = InvocationResultMessage(
+                    invocation_id=invocation_id,
+                    function_id=path,
+                    result=plan.value,
+                    traceparent=outcome.traceparent,
+                    matched=_routed_matched(delivery, active, hook),
+                    delivered=delivered,
+                )
         except _TraceContextError as te:
             failure = original_error(cast(BaseException, te.__cause__))
             own = delivery is not None and failure is delivery.handler_error
             if not own:
                 log.error("Error in on_observation_deliver of %s", path, exc_info=failure)
+            _streams.guard(tracked, False, None, _streams._reason(failure))
             answer = InvocationResultMessage(
                 invocation_id=invocation_id,
                 function_id=path,
@@ -2147,7 +2255,7 @@ class III:
                 matched=_routed_matched(delivery, active, hook),
                 delivered=delivered,
             )
-        await self._send(answer)
+        await self._send_answer(answer, plan)
 
     # Connection state management
 
@@ -2843,16 +2951,37 @@ class III:
                 for a call through an observer ``'NOT_FUNCTION_OWNER'``,
                 ``'OBSERVER_NOT_FOUND'``, ``'OBSERVER_NOT_ACTIVE'``,
                 ``'OVERFLOW'``, ``'LOOP_GUARD'``.
+            RuntimeError: Called from a thread whose event loop is running, with a
+                stream that runs on that loop (``InputStream.from_iter()`` of an
+                async iterable, ``OutputStream.to()`` of an asyncio writer): use
+                ``call_async``.
 
         Examples:
             >>> result = worker.call({'function_id': 'greet', 'payload': {'name': 'World'}})
             >>> worker.call({'function_id': 'notify', 'payload': {}, 'action': CallAction.Void()})
             >>> worker.call({'observer': obs, 'payload': request})  # in a deliver hook
         """
-        req = self._prepare_call(request)
+        req = self._prepare_call(request, sync=True)
+        if req.streams:
+            self._check_not_blocking_a_stream(req)
         if req.local is not None:
             return self._invoke_local_sync(req)
         return self._run_on_loop(self._invoke_remote_call(req))
+
+    @staticmethod
+    def _check_not_blocking_a_stream(call: _Request) -> None:
+        """``call()`` blocks its thread: a stream of the payload that runs on this
+        thread's event loop would wait for it forever. Raised before anything is sent."""
+        loop = _streams._running_loop()
+        if loop is None:
+            return
+        bound = _streams.bound_to(call.payload, loop)
+        if bound:
+            raise RuntimeError(
+                f"iii.call() would block the event loop that {bound[0]!r} runs on (an InputStream.from_iter() "
+                "of an async iterable, or an OutputStream.to() of a writer that is not a file object, made on "
+                "this loop): the stream could never be read or written. Use `await iii.call_async(...)` here."
+            )
 
     async def call_async(self, request: "dict[str, Any] | CallRequest") -> Any:
         """Call a function and return its result (on any event loop).
@@ -2939,8 +3068,9 @@ class III:
             f"Migration guide: {_UPGRADE_GUIDE}{_TRIGGER_TYPE_SECTION}"
         )
 
-    def _prepare_call(self, request: "dict[str, Any] | CallRequest") -> _Request:
-        """Normalizes a call request and picks the path (local or routed)."""
+    def _prepare_call(self, request: "dict[str, Any] | CallRequest", sync: bool = False) -> _Request:
+        """Normalizes a call request and picks the path (local or routed). ``sync``:
+        the caller blocks its thread (``call()``) while the call runs."""
         if self._fatal_error is not None:
             raise self._fatal_error
         # Read field by field: `observer` is an Observer, not something to dump.
@@ -2959,6 +3089,16 @@ class III:
         if dispatch not in (None, "auto", "remote"):
             raise ValueError(f"dispatch must be 'auto' or 'remote', got {dispatch!r}")
         timeout_ms = req.get("timeout_ms") or self._options.invocation_timeout_ms
+        # Raw sources (async generators, open binary files) become InputStreams here, on the
+        # caller's loop: an async generator is read where it was made.
+        scan = _streams.StreamScan()
+        payload = _streams.wrap_sources(req.get("payload"), scan, here=not sync)
+        if isinstance(action, CallActionEnqueue) and (scan.streams or scan.refs):
+            raise InvocationError(
+                code="STREAM_NOT_ALLOWED",
+                message=_STREAM_NOT_ALLOWED,
+                function_id=req.get("function_id") if isinstance(req.get("function_id"), str) else None,
+            )
         observer = req.get("observer")
         if observer is not None:
             # Through an observer: always the engine, which routes to the
@@ -2976,12 +3116,13 @@ class III:
                 raise ValueError("call: a call through an observer cannot be enqueued")
             return _Request(
                 function_id=observer.target,
-                payload=req.get("payload"),
+                payload=payload,
                 action=action,
                 metadata=None,
                 namespace=None,
                 timeout_ms=timeout_ms,
                 observer_id=observer.id,
+                streams=scan.streams,
             )
         function_id = req.get("function_id")
         if not isinstance(function_id, str) or not function_id:
@@ -2991,11 +3132,12 @@ class III:
         namespace = self._invocation_namespace(req.get("namespace"), function_id, "CallRequest.namespace")
         call = _Request(
             function_id=function_id,
-            payload=req.get("payload"),
+            payload=payload,
             action=action,
             metadata=req.get("metadata"),
             namespace=namespace,
             timeout_ms=timeout_ms,
+            streams=scan.streams,
         )
         # Local dispatch: a function this worker hosts, confirmed by the engine
         # for in-process calls, in the namespace it registered in. `enqueue`
@@ -3019,16 +3161,63 @@ class III:
         return call
 
     async def _invoke_remote_call(self, call: _Request) -> Any:
+        """A call through the engine (SDK loop). Each stream value in the payload gets
+        a pipe (or travels on as its ref); the pumps start once the call is sent. The
+        call resolves after the sinks it carried finished (R4), and the refs in its
+        result arrive as streams."""
         activation = {"observer_id": call.observer_id} if call.observer_id is not None else None
-        return await self._invoke_remote(
-            call.function_id,
-            call.payload,
-            call.action,
-            call.metadata,
-            call.namespace,
-            call.timeout_ms,
-            activation=activation,
-        )
+        # The call's timeout also bounds the wait for its sinks (R4), from the start of the call.
+        deadline = self._loop.time() + call.timeout_ms / 1000.0
+        invocation_id = str(uuid.uuid4())
+        plan: _streams.Outbound | None = None
+        payload = call.payload
+        if call.streams:
+            # A pipe that cannot be made fails the call before it is sent.
+            plan = _streams.plan_outbound(payload)
+            await plan.create_pipes(self._create_pipe, self._stream_binding)
+            payload = plan.value
+        try:
+            result = await self._invoke_remote(
+                call.function_id,
+                payload,
+                call.action,
+                call.metadata,
+                call.namespace,
+                call.timeout_ms,
+                activation=activation,
+                on_sent=plan.start if plan is not None else None,
+                invocation_id=invocation_id,
+            )
+        except BaseException as error:
+            if plan is not None:
+                await plan.cancel(_streams._reason(error))
+                failed = plan.sink_failure()
+                if failed is not None and not isinstance(error, asyncio.CancelledError):
+                    # The caller's own sink failed: the function's writes failed after it.
+                    raise StreamAbortedError(failed.reason, function_id=call.function_id) from _streams.cause_of(failed)
+            raise
+        if plan is not None and plan.has_sinks and not isinstance(call.action, CallActionVoid):
+            try:
+                finished = await plan.wait_sinks(result, max(0.0, deadline - self._loop.time()))
+                if not finished:
+                    timeout = InvocationError(
+                        code="TIMEOUT",
+                        message=f"invocation timed out after {call.timeout_ms}ms",
+                        function_id=call.function_id,
+                        invocation_id=invocation_id,
+                    )
+                    await plan.abort_sinks(timeout.message)
+                    raise timeout
+            except asyncio.CancelledError:
+                _streams._spawn(plan.cancel("the call was cancelled"))
+                raise
+            except StreamAbortedError as error:
+                raise StreamAbortedError(
+                    error.reason, close_code=error.close_code, function_id=call.function_id
+                ) from _streams.cause_of(error)
+        if call.action is not None:
+            return result
+        return self._materialize(result)
 
     async def _invoke_remote(
         self,
@@ -3039,8 +3228,12 @@ class III:
         namespace: str | None,
         timeout_ms: int | None,
         activation: dict[str, Any] | None = None,
+        on_sent: Callable[[], None] | None = None,
+        invocation_id: str | None = None,
     ) -> Any:
-        """The routed path (SDK loop): an ``InvokeFunction`` through the engine."""
+        """The routed path (SDK loop): an ``InvokeFunction`` through the engine.
+        ``on_sent`` runs once the message went out; ``invocation_id`` is the id to
+        send (a new one when ``None``)."""
         if self._fatal_error is not None:
             raise self._fatal_error
         timeout_ms = timeout_ms or self._options.invocation_timeout_ms
@@ -3066,10 +3259,12 @@ class III:
                     **observe_fields,
                 )
             )
+            if on_sent is not None:
+                on_sent()
             return None
 
         # Enqueue and default: send invocation_id, await response
-        invocation_id = str(uuid.uuid4())
+        invocation_id = invocation_id or str(uuid.uuid4())
         future: asyncio.Future[Any] = self._loop.create_future()
 
         self._pending[invocation_id] = _PendingInvocation(
@@ -3094,6 +3289,8 @@ class III:
                     **observe_fields,
                 )
             )
+            if on_sent is not None:
+                on_sent()
 
             try:
                 return await asyncio.wait_for(future, timeout=timeout_secs)
@@ -3121,10 +3318,14 @@ class III:
         handler gets copies, and its delivery a copy of the payload and the
         metadata as the caller passed them, taken here, at call start, when
         the call is delivered; a handler that returns its own copy unchanged
-        reports the value once too (``_local_delivery``). The delivery sees channel refs as the caller
-        passed them; the handler gets readers and writers. Raises what
+        reports the value once too (``_local_delivery``). The delivery sees stream refs as the caller
+        passed them; the handler gets streams. A stream value passes as
+        itself (a stream has one reader), without a pipe. Raises what
         copying the payload raises."""
         state = cast(FunctionObservers, call.state)
+        if call.streams:
+            # The rules the remote path's outbound walk applies (each stream passed once, ...).
+            _streams.check_local_streams(call.payload)
         parent = current_context()
         caller: dict[str, Any] = dict(self._observe_host.identity())
         if parent is not None:
@@ -3149,12 +3350,20 @@ class III:
         )
         if state.private:
             local.call_input, local.call_metadata = call.payload, call.metadata
-            local.input = self._resolve_channels(call.payload)
+            given = call.payload
         else:
             if local.delivers:
                 local.call_input, local.call_metadata = _clone_value(call.payload), _clone_value(call.metadata)
-            local.input = self._resolve_channels(_clone_value(call.payload))
+            given = _clone_value(call.payload)
+        if call.streams:
+            # The caller's InputStreams are the handler's now: sending one again fails, as after a
+            # call through the engine (whose pump takes the source).
+            given, local.sources = _streams.hand_off(given)
+        local.input = self._materialize(given)
         local.metadata = metadata
+        if call.streams or local.input is not call.payload:
+            local.tracked = _streams.collect_streams(local.input, [])
+            local.sinks = _streams.local_sinks(call.payload)
         return local
 
     def _local_delivery(
@@ -3253,7 +3462,10 @@ class III:
             with self._execute_span(call.function_id, local.input, None, None) as outcome:
                 output: Any = None
                 try:
-                    output = await handler(local.input, local.metadata)
+                    # Raw sources (async generators, files) in the result as InputStreams.
+                    output = _streams.hand_back(
+                        _streams.wrap_sources(await handler(local.input, local.metadata), _streams.StreamScan())
+                    )
                 except asyncio.CancelledError:
                     raise
                 except BaseException as error:
@@ -3264,6 +3476,7 @@ class III:
                 else:
                     ok, value = await delivery.run_async(local.hook)
                 self._count_local(call, local, ok)
+                self._guard_local(local, ok, value)
                 if not ok:
                     raise guard_exit(value)
                 outcome.result = value
@@ -3271,6 +3484,24 @@ class III:
             cause = original_error(error, (_TraceContextError,))
             raise self._local_answer_error(call, cause, handler_error) from cause
         return value
+
+    @staticmethod
+    def _guard_local(local: _LocalInvocation, ok: bool, value: Any) -> None:
+        """The guard of a local call's streams (running loop); the streams the caller gets back are its own.
+        A local call is never an observer activation (a call through an observer goes through the engine)."""
+        if not local.tracked:
+            return
+        handed_back = {id(stream) for stream in _streams.collect_streams(value, [])} if ok else set()
+        _streams.guard(
+            [stream for stream in local.tracked if id(stream) not in handed_back],
+            ok,
+            value if ok else None,
+            "" if ok else _streams._reason(original_error(value, (_TraceContextError,))),
+        )
+
+    @staticmethod
+    def _settle_reason(error: BaseException | None) -> str:
+        return "" if error is None else _streams._reason(original_error(error, (_TraceContextError,)))
 
     async def _invoke_local_async(self, call: _Request, local: _LocalInvocation | None = None) -> Any:
         """Runs the handler in-process on the calling loop (a sync handler on
@@ -3281,6 +3512,8 @@ class III:
         if local is None:
             local = self._local_invocation(call)
         void = isinstance(call.action, CallActionVoid)
+        # The call's timeout bounds the handler and then the wait for its sinks (R4).
+        deadline = asyncio.get_running_loop().time() + call.timeout_ms / 1000.0
         token = set_context(local.ctx)
         try:
             # The task copies this context: the handler (and the `execute`
@@ -3300,18 +3533,77 @@ class III:
             self._background.add(task)
             task.add_done_callback(self._background.discard)
             task.add_done_callback(logged)
+            if local.sinks:
+                sinks = local.sinks
+
+                def settle(t: asyncio.Future[Any]) -> None:
+                    error = None if t.cancelled() else t.exception()
+                    result = t.result() if not t.cancelled() and error is None else None
+                    _streams._spawn(
+                        _streams.settle_local_sinks(sinks, error is None, self._settle_reason(error), result)
+                    )
+
+                task.add_done_callback(settle)
             return None
 
         # Raced, not cancelled: like a remote handler, it runs to its end.
-        finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
+        loop = asyncio.get_running_loop()
+        try:
+            finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
+        except asyncio.CancelledError:
+            _streams.abort_sources(local.sources, "the call was cancelled", loop)
+            raise
         if not finished:
             self._background.add(task)
             task.add_done_callback(self._background_done)
-            raise self._local_timeout(call, local)
+            failure = self._local_timeout(call, local)
+            # What the handler did not read of its sources aborts, as a call's pipes do.
+            _streams.abort_sources(local.sources, failure.message, loop)
+            if local.sinks:
+                await _streams.settle_local_sinks(local.sinks, False, failure.message)
+            raise failure
         error = task.exception()
+        if error is not None:
+            _streams.abort_sources(local.sources, self._settle_reason(error), loop)
+        if local.sinks:
+            await self._settle_local_call_sinks(
+                call,
+                local,
+                error,
+                task.result() if error is None else None,
+                max(0.0, deadline - asyncio.get_running_loop().time()),
+            )
         if error is not None:
             raise error
         return self._local_result(call, task.result())
+
+    async def _settle_local_call_sinks(
+        self,
+        call: _Request,
+        local: _LocalInvocation,
+        error: BaseException | None,
+        result: Any = None,
+        timeout: float | None = None,
+    ) -> None:
+        """R4 for a local call: it resolves once its sinks finished, and rejects with
+        ``STREAM_ABORTED`` when one was aborted, or with ``TIMEOUT`` (the open sinks
+        aborted) when they did not finish within ``timeout`` seconds. Not for a sink
+        the result hands back (see :func:`iii.streams.settle_local_sinks`)."""
+        expired = self._local_timeout(call, local)
+        try:
+            finished = await _streams.settle_local_sinks(
+                local.sinks, error is None, self._settle_reason(error), result, timeout, expired.message
+            )
+        except StreamAbortedError as aborted:
+            if error is None:
+                raise StreamAbortedError(aborted.reason, function_id=call.function_id) from _streams.cause_of(aborted)
+            finished = True
+        failed = _streams.local_sink_failure(local.sinks)
+        if failed is not None:
+            # The caller's own sink failed: that is why the call failed, whatever the handler did.
+            raise StreamAbortedError(failed.reason, function_id=call.function_id) from _streams.cause_of(failed)
+        if not finished and error is None:
+            raise expired
 
     def _invoke_local_sync(self, call: _Request) -> Any:
         """``call()`` on the local path, from a thread: a sync handler and a
@@ -3326,6 +3618,8 @@ class III:
             )
         fn = cast(RemoteFunctionData, call.local)
         void = isinstance(call.action, CallActionVoid)
+        # The call's timeout bounds the handler and then the wait for its sinks (R4).
+        deadline = time.monotonic() + call.timeout_ms / 1000.0
         # The copies and snapshots are taken here, at call start, on the caller's thread.
         local = self._local_invocation(call)
         if fn.call_sync is None:
@@ -3348,7 +3642,9 @@ class III:
                 with self._execute_span(call.function_id, local.input, None, None) as outcome:
                     output: Any = None
                     try:
-                        output = sync_handler(local.input, local.metadata)
+                        output = _streams.hand_back(
+                            _streams.wrap_sources(sync_handler(local.input, local.metadata), _streams.StreamScan())
+                        )
                     except BaseException as error:
                         # SystemExit, KeyboardInterrupt, ...: still a failed local invocation
                         handler_error = error
@@ -3358,6 +3654,8 @@ class III:
                     else:
                         ok, value = delivery.run_sync(local.hook, on_sdk_loop)
                     self._count_local(call, local, ok)
+                    if local.tracked:
+                        self._loop.call_soon_threadsafe(self._guard_local, local, ok, value)
                     if not ok:
                         raise guard_exit(value)
                     outcome.result = value
@@ -3372,11 +3670,43 @@ class III:
         # A copy of the caller's context: what the handler sets stays in it.
         threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
         if void:
+            if local.sinks:
+                sinks = local.sinks
+
+                def settle(f: concurrent.futures.Future[Any]) -> None:
+                    error = f.exception()
+                    result = f.result() if error is None else None
+                    asyncio.run_coroutine_threadsafe(
+                        _streams.settle_local_sinks(sinks, error is None, self._settle_reason(error), result),
+                        self._loop,
+                    )
+
+                done.add_done_callback(settle)
             return None
         finished, _ = concurrent.futures.wait([done], timeout=call.timeout_ms / 1000.0)
         if not finished:
-            raise self._local_timeout(call, local)
+            failure = self._local_timeout(call, local)
+            # What the handler did not read of its sources aborts, as a call's pipes do.
+            _streams.abort_sources(local.sources, failure.message, self._loop)
+            if local.sinks:
+                asyncio.run_coroutine_threadsafe(
+                    _streams.settle_local_sinks(local.sinks, False, failure.message), self._loop
+                ).result()
+            raise failure
         error = done.exception()
+        if error is not None:
+            _streams.abort_sources(local.sources, self._settle_reason(error), self._loop)
+        if local.sinks:
+            asyncio.run_coroutine_threadsafe(
+                self._settle_local_call_sinks(
+                    call,
+                    local,
+                    error,
+                    done.result() if error is None else None,
+                    max(0.0, deadline - time.monotonic()),
+                ),
+                self._loop,
+            ).result()
         if error is not None:
             raise error
         return self._local_result(call, done.result())
@@ -3512,31 +3842,38 @@ class III:
     # Internal: backing methods for items in the `iii.helpers` submodule.
     # These are renamed with a leading underscore so they don't appear on the
     # public `IIIClient` Protocol; callers use `iii.helpers.<name>(iii, ...)`.
-    def _helpers_create_channel(self, buffer_size: int | None = None) -> Channel:
-        """Internal shim backing :func:`iii.helpers.create_channel`.
+    def pipe(self, buffer_size: int | None = None) -> Pipe:
+        """Create a pipe owned by this worker: ``.output`` to write, ``.input`` to read.
 
-        Public callers must use the free function from ``iii.helpers``.
+        The explicit form of what a call does for each stream value. Pass one
+        end in a call payload and use the other here; the worker that made the
+        pipe stays connected until both ends attached. Blocks the calling
+        thread; use :meth:`pipe_async` on an event loop.
+
+        Args:
+            buffer_size: Frames the engine buffers between the ends (its default when ``None``).
+
+        Examples:
+            >>> pipe = iii.pipe()
+            >>> iii.call({"function_id": "files::count", "payload": {"body": pipe.input}, "action": CallAction.Void()})
+            >>> asyncio.run(pipe.output.write(b"data"))
         """
-        return self._run_on_loop(self._helpers_create_channel_async(buffer_size))
+        return self._run_on_loop(self.pipe_async(buffer_size))
 
-    async def _helpers_create_channel_async(self, buffer_size: int | None = None) -> Channel:
-        """Internal shim backing :func:`iii.helpers.create_channel_async`.
+    async def pipe_async(self, buffer_size: int | None = None) -> Pipe:
+        """:meth:`pipe` on any event loop.
 
-        Public callers must use the free function from ``iii.helpers``.
+        Examples:
+            >>> pipe = await iii.pipe_async()
+            >>> _, result = await asyncio.gather(
+            ...     write_report(pipe.output),
+            ...     iii.call_async({"function_id": "files::process", "payload": {"body": pipe.input}}),
+            ... )
         """
-        result = await self.call_async(
-            {
-                "function_id": "engine::channels::create",
-                "payload": {"buffer_size": buffer_size},
-            }
-        )
-        writer_ref = StreamChannelRef(**result["writer"])
-        reader_ref = StreamChannelRef(**result["reader"])
-        return Channel(
-            writer=ChannelWriter(self._address, writer_ref, self._options.headers),
-            reader=ChannelReader(self._address, reader_ref, self._options.headers),
-            writer_ref=writer_ref,
-            reader_ref=reader_ref,
+        writer_ref, reader_ref = await self._on_sdk_loop(self._create_pipe(buffer_size))
+        return Pipe(
+            input=InputStream._from_ref(reader_ref, self._stream_binding),
+            output=OutputStream._from_ref(writer_ref, self._stream_binding),
         )
 
     def _get_worker_metadata(self) -> dict[str, Any]:

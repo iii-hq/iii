@@ -11,7 +11,7 @@ for _ in $(seq 1 30); do
   [[ "$import_out" == *"imported"* ]] && break
   sleep 1
 done
-check "csv imported over a channel" 'imported: 2, skipped: 0' "$import_out"
+check "csv imported from a stream" 'imported: 2, skipped: 0' "$import_out"
 rerun_out="$(cd "$PROJECT/channel-client" && node import-links.js 2>&1 | tail -3)"
 check "a second import skips the taken codes" 'imported: 0, skipped: 2' "$rerun_out"
 sleep 2

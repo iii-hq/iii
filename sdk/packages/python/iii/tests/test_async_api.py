@@ -2,7 +2,6 @@
 
 import inspect
 
-from iii import helpers
 from iii.iii import III
 
 
@@ -11,8 +10,8 @@ def test_call_async_and_its_alias_trigger_async_are_coroutine_functions():
     assert inspect.iscoroutinefunction(III.trigger_async)
 
 
-def test_create_channel_async_helper_is_coroutine_function():
-    assert inspect.iscoroutinefunction(helpers.create_channel_async)
+def test_pipe_async_is_coroutine_function():
+    assert inspect.iscoroutinefunction(III.pipe_async)
 
 
 def test_connect_async_is_coroutine_function():
@@ -29,6 +28,7 @@ def test_async_methods_have_docstrings():
     """All public async methods must have docstrings."""
     async_methods = [
         "call_async",
+        "pipe_async",
         "trigger_async",
         "connect_async",
         "shutdown_async",

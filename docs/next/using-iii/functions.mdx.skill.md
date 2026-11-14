@@ -190,8 +190,7 @@ Workers can provide their own `CallAction`s. Check each
 
 <Note>
   In Python, every blocking method has an awaitable twin (`call_async`, `shutdown_async`,
-  `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../reference/sdk-python).
+  `pipe_async`) for use inside `asyncio`. See the [Python SDK reference](../reference/sdk-python).
 </Note>
 
 ### Routing to a namespace
@@ -324,7 +323,7 @@ response schemas are in the
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `engine::functions::list`    | List every registered function with its `args_format`, `private`, `observable`, and observer count. Pass `{ include_internal: true }` to include engine internals. |
 | `engine::workers::list`      | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                                       |
-| `engine::channels::create`   | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.                  |
+| `engine::channels::create`   | Allocate a pipe and return its writer and reader refs. The SDK calls it for each [stream](../creating-workers/streaming) in a call, and for `iii.pipe()`.          |
 | `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect.      |
 | `engine::observers::list`    | List observers. Pass `{ function_id, namespace, worker }` to narrow the list. See [Inspect observers](./observers#inspect-observers).                              |
 | `engine::observers::get`     | Read one observer by `{ id }`.                                                                                                                                     |
@@ -361,7 +360,7 @@ behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.
 - **Stream** (deprecated): Real-time push to connected clients over WebSocket. See
   [iii-stream](https://workers.iii.dev/workers/iii-stream). Use
   [observable functions](../creating-workers/observable-functions) or
-  [channels](../creating-workers/channels) for new work.
+  [streams](../creating-workers/streaming) for new work.
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
   queue. Observe `queue::on-message` to consume a topic. See
   [queue](https://workers.iii.dev/workers/queue).

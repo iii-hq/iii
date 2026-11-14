@@ -2,87 +2,57 @@ package iii
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 )
 
-// This file implements iii streaming data channels, ported from
-// sdk/packages/node/iii/src/channels.ts and sdk/packages/rust/iii/src/channels.rs.
+// This file is the wire side of streams: the WebSocket one end of an engine pipe is read
+// or written through. The public stream types (InputStream, OutputStream in streams.go)
+// are built on it. The engine keeps the name "channels": a pipe is created with
+// engine::channels::create and carried over /ws/channels/<id> sockets.
 //
-// A channel is a pair of capability-scoped WebSockets, SEPARATE from the main worker
-// socket: one to write, one to read. CreateChannel asks the engine for a writer ref and
-// a reader ref (sharing a channel_id + access_key); either ref can be embedded as plain
-// JSON in a call payload so another worker opens the other end.
-//
-// Framing is the one load-bearing wire rule: discrete messages and streamed bytes share
-// the same socket and are told apart purely by WebSocket opcode. A TEXT frame is a
-// message (SendMessage / OnMessage); a BINARY frame is stream data (Write / ReadAll).
-// There is no envelope. End-of-stream is a Close frame propagated writer -> engine ->
+// Framing is the one load-bearing wire rule: messages and bytes share the socket and are
+// told apart by WebSocket opcode. A TEXT frame is a message (OutputStream.Send,
+// InputStream.Messages); a BINARY frame is bytes (OutputStream.Write, InputStream.Read).
+// There is no envelope. End of stream is a close frame relayed writer -> engine ->
 // reader. A writer close with code 1000 (or no code) is a completed stream, which the
 // reader sees as a close with no code (1005). A writer socket that ends any other way
-// (another code, or no close frame) is an abort: the engine closes the reader with 1011
-// and a reason, and the reader returns that as an error.
+// (code 1011 from Abort, another code, or no close frame) is an abort: the engine closes
+// the reader with 1011 and its own reason, and the reader returns STREAM_ABORTED.
 
-// channelFrameSize is the max bytes per binary frame. Matches FRAME_SIZE (64 KiB) in
-// the Node/Rust SDKs; the engine reassembles by concatenation so the boundary is not
-// semantic, but we keep 64 KiB for backpressure parity.
+// channelFrameSize is the most bytes one binary frame carries. Matches the 64 KiB
+// frames of the Node, Python and Rust SDKs; the engine reassembles by concatenation, so
+// the boundary is not semantic, but it keeps backpressure in step with them.
 const channelFrameSize = 64 * 1024
 
-// channelFlushDelay is the pause before a writer sends its Close frame, giving the TCP
-// stack time to flush buffered data frames. Mirrors the 10ms delay in both reference
-// SDKs (channels.ts:47-57, channels.rs:119-130).
+// channelFlushDelay is the pause before a writer sends its close frame, giving the TCP
+// stack time to flush buffered data frames: without it the close frame can reach the
+// engine before the data, which truncates the stream. Same 10ms as the other SDKs.
 const channelFlushDelay = 10 * time.Millisecond
 
-// Channel is a freshly created channel: a live writer/reader plus the refs for each end.
-// Pass WriterRef or ReaderRef to another worker (in a call payload) so it opens the
-// opposite end with [Client.OpenReader] / [Client.OpenWriter]. Created by
-// [Client.CreateChannel].
-type Channel struct {
-	Writer    *ChannelWriter
-	Reader    *ChannelReader
-	WriterRef StreamChannelRef
-	ReaderRef StreamChannelRef
-}
+// abortCloseCode is the close code an abort sends: the engine relays any code but 1000
+// to the reader as an abort.
+const abortCloseCode = websocket.StatusInternalError
 
-// CreateChannel asks the engine to allocate a streaming channel and returns both ends.
-// bufferSize bounds the engine's internal queue; nil uses the engine default.
-func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, error) {
-	payload, err := json.Marshal(struct {
-		BufferSize *int `json:"buffer_size"`
-	}{BufferSize: bufferSize})
-	if err != nil {
-		return nil, err
-	}
-	res, err := c.Call(ctx, CallRequest{FunctionID: FnCreateChannel, Payload: payload})
-	if err != nil {
-		return nil, err
-	}
-	var refs struct {
-		Writer StreamChannelRef `json:"writer"`
-		Reader StreamChannelRef `json:"reader"`
-	}
-	if err := json.Unmarshal(res, &refs); err != nil {
-		return nil, fmt.Errorf("iii: decoding channel refs: %w", err)
-	}
-	return &Channel{
-		Writer:    openWriter(c.Address(), refs.Writer, c.headers),
-		Reader:    openReader(c.Address(), refs.Reader, c.headers),
-		WriterRef: refs.Writer,
-		ReaderRef: refs.Reader,
-	}, nil
-}
+// maxCloseReason is the longest close reason a WebSocket close frame carries, in bytes.
+const maxCloseReason = 123
 
-// channelURL builds the channel WebSocket URL from the engine WS base, mirroring
-// buildChannelUrl (channels.ts:243, channels.rs:41): strip one trailing slash, append
-// /ws/channels/{id}, and add the percent-encoded access key plus the raw direction.
+// streamDialTimeout bounds the dial of a stream socket opened by an operation that
+// takes no context: io.Reader reads, Close and Abort.
+const streamDialTimeout = 30 * time.Second
+
+// channelURL builds the URL of one end of a pipe from the engine WS base, as every SDK
+// does: strip one trailing slash, append /ws/channels/{id}, and add the percent-encoded
+// access key plus the raw direction.
 func channelURL(engineWSBase, channelID, accessKey string, dir ChannelDirection) string {
 	// Keep a query already on the engine URL (e.g. ?token=...); the channel's own come after it.
 	base, query, _ := strings.Cut(engineWSBase, "?")
@@ -91,318 +61,424 @@ func channelURL(engineWSBase, channelID, accessKey string, dir ChannelDirection)
 		query += "&"
 	}
 	// Encode the key with the RFC-3986 unreserved set (space -> %20), matching the Rust
-	// encoder; url.QueryEscape would emit "+" for space. Access keys are UUIDs so this
-	// is belt-and-suspenders, but it keeps us byte-identical to the references.
+	// encoder; url.QueryEscape would emit "+" for space. Access keys are UUIDs, so this
+	// only keeps the URL byte-identical to the other SDKs.
 	key := strings.ReplaceAll(url.QueryEscape(accessKey), "+", "%20")
 	return fmt.Sprintf("%s/ws/channels/%s?%skey=%s&dir=%s", base, channelID, query, key, dir)
 }
 
-// ChannelWriter is the write end of a channel: a WebSocket opened lazily on first use.
-// SendMessage emits a text frame; Write emits 64 KiB-chunked binary frames. Close
-// finishes the stream. A ChannelWriter is safe for serial use by one goroutine; it is
-// not designed for concurrent writers (mirroring the reference SDKs).
-type ChannelWriter struct {
-	url     string
+// closeReason cuts reason to what a close frame carries, on a UTF-8 boundary.
+func closeReason(reason string) string {
+	if len(reason) <= maxCloseReason {
+		return reason
+	}
+	end := maxCloseReason
+	for end > 0 && !utf8.RuneStart(reason[end]) {
+		end--
+	}
+	return reason[:end]
+}
+
+// endpoint is where a stream's socket connects: the engine WS base and the handshake
+// headers of a client.
+type endpoint struct {
+	address string
 	headers http.Header
-
-	mu   sync.Mutex
-	conn *websocket.Conn
-
-	failed atomic.Bool // a send failed, so Close must not report the stream complete
 }
 
-// OpenWriter returns a writer for the write end described by ref, against the given
-// engine WS base (typically Client.Address()). The socket connects on first send and
-// authenticates with III_TOKEN, when set; channels from [Client.CreateChannel] also send
-// the client's [WithHeaders]. Prefer [Client.OpenWriter], which uses the client's
-// address and headers.
-func OpenWriter(engineWSBase string, ref StreamChannelRef) *ChannelWriter {
-	return openWriter(engineWSBase, ref, nil)
+// streamEndpoint is the endpoint of c: its address, its WithHeaders and the III_TOKEN
+// bearer.
+func (c *Client) streamEndpoint() *endpoint {
+	return &endpoint{address: c.Address(), headers: handshakeHeaders(c.headers)}
 }
 
-// OpenWriter returns a writer for the write end described by ref (typically received in
-// a call payload), against this client's engine address. Like the ends returned by
-// [Client.CreateChannel], its handshake sends the client's [WithHeaders] plus
-// "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no
-// Authorization header. The socket connects on first send.
-func (c *Client) OpenWriter(ref StreamChannelRef) *ChannelWriter {
-	return openWriter(c.Address(), ref, c.headers)
+// dialChannel opens the end of ref described by dir on ep.
+func dialChannel(ctx context.Context, ep *endpoint, ref StreamChannelRef, dir ChannelDirection) (*websocket.Conn, error) {
+	u := channelURL(ep.address, ref.ChannelID, ref.AccessKey, dir)
+	conn, _, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPHeader: ep.headers})
+	if err != nil {
+		return nil, err
+	}
+	// Frames from SDKs before 0.27 can be larger than the default 32 KiB limit.
+	conn.SetReadLimit(-1)
+	return conn, nil
 }
 
-func openWriter(engineWSBase string, ref StreamChannelRef, headers http.Header) *ChannelWriter {
-	return &ChannelWriter{
-		url:     channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelWrite),
-		headers: handshakeHeaders(headers),
+// FrameType tells the two kinds of frame a stream carries apart.
+type FrameType string
+
+const (
+	// FrameBinary is bytes: written with [OutputStream.Write], read by
+	// [InputStream.Read] and the other byte reads.
+	FrameBinary FrameType = "binary"
+	// FrameText is a message: sent with [OutputStream.Send], read by
+	// [InputStream.Messages].
+	FrameText FrameType = "text"
+)
+
+// StreamFrame is one frame of a stream, as [InputStream.Frames] yields it: bytes
+// (Type [FrameBinary]) or a message (Type [FrameText], Data holding the frame's text).
+type StreamFrame struct {
+	Type FrameType
+	Data []byte
+}
+
+// frameSource is where the frames of an input stream come from: the read end of a
+// pipe, or a local source. next returns io.EOF at the end; after an error it is not
+// called again. cancel releases the source (a socket, a reader that is an io.Closer); a
+// next in flight then ends, and next fails from then on with errSourceCancelled: a
+// source cancelled before its end never looks complete (to a pump that sends it on).
+type frameSource interface {
+	next(ctx context.Context) (StreamFrame, error)
+	cancel()
+}
+
+// errSourceCancelled is what a cancelled source's next returns.
+var errSourceCancelled = streamClosedError(cancelledMessage)
+
+// emptySource is a stream with no frames.
+type emptySource struct{}
+
+func (emptySource) next(context.Context) (StreamFrame, error) { return StreamFrame{}, io.EOF }
+func (emptySource) cancel()                                   {}
+
+// wsSource reads the read end of a pipe, dialled on the first next.
+type wsSource struct {
+	ep  *endpoint
+	ref StreamChannelRef
+
+	mu        sync.Mutex
+	conn      *websocket.Conn
+	cancelled bool
+}
+
+func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
+	s.mu.Lock()
+	if s.cancelled {
+		s.mu.Unlock()
+		return StreamFrame{}, errSourceCancelled
+	}
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		dialed, err := dialChannel(ctx, s.ep, s.ref, ChannelRead)
+		if err != nil {
+			if ctx.Err() != nil {
+				return StreamFrame{}, ctx.Err()
+			}
+			// A reader that cannot attach (the engine is gone, or the pipe was released:
+			// HTTP 404) never gets the stream: it is incomplete, not empty.
+			return StreamFrame{}, streamAbortedError("could not open the stream: " + err.Error())
+		}
+		s.mu.Lock()
+		if s.cancelled {
+			s.mu.Unlock()
+			go closeReader(dialed)
+			return StreamFrame{}, errSourceCancelled
+		}
+		s.conn = dialed
+		s.mu.Unlock()
+		conn = dialed
+	}
+	typ, data, err := conn.Read(ctx)
+	if err == nil {
+		if typ == websocket.MessageText {
+			return StreamFrame{Type: FrameText, Data: data}, nil
+		}
+		return StreamFrame{Type: FrameBinary, Data: data}, nil
+	}
+	s.mu.Lock()
+	cancelled := s.cancelled
+	s.mu.Unlock()
+	if cancelled {
+		return StreamFrame{}, errSourceCancelled
+	}
+	return StreamFrame{}, readError(ctx, err)
+}
+
+// readError is what a failed read of a pipe's read end means: a close with code 1000,
+// or with no code (1005, how the engine ends a clean stream), is the end; any other
+// close code, or the connection ending without one, is an abort. A read cut short by
+// its own context returns that context's error.
+func readError(ctx context.Context, err error) error {
+	switch status := websocket.CloseStatus(err); status {
+	case websocket.StatusNormalClosure, websocket.StatusNoStatusRcvd:
+		return io.EOF
+	case -1:
+	default:
+		var ce websocket.CloseError
+		if errors.As(err, &ce) && ce.Reason != "" {
+			return streamAbortedError(ce.Reason)
+		}
+		return streamAbortedError(fmt.Sprintf("channel closed with code %d", int(status)))
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return streamAbortedError("connection lost: " + err.Error())
+}
+
+func (s *wsSource) cancel() {
+	s.mu.Lock()
+	if s.cancelled {
+		s.mu.Unlock()
+		return
+	}
+	s.cancelled = true
+	conn := s.conn
+	s.mu.Unlock()
+	if conn != nil {
+		go closeReader(conn)
 	}
 }
 
-func (w *ChannelWriter) ensureConnected(ctx context.Context) (*websocket.Conn, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+// closeReader ends a read socket with a clean close, which tells the engine the reader
+// left (it then closes the writer). It runs on its own goroutine: the close handshake
+// can wait for the engine's reply.
+func closeReader(conn *websocket.Conn) {
+	_ = conn.Close(websocket.StatusNormalClosure, "channel_close")
+}
+
+// readerSource reads an io.Reader in frames of up to channelFrameSize bytes. A read
+// error aborts the stream with its message. The reader is closed, when it is an
+// io.Closer, once the stream ends, fails or is cancelled.
+type readerSource struct {
+	r io.Reader
+
+	mu     sync.Mutex
+	eof    bool
+	closed bool
+}
+
+func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
+	s.mu.Lock()
+	eof, closed := s.eof, s.closed
+	s.mu.Unlock()
+	switch {
+	case eof:
+		return StreamFrame{}, io.EOF
+	case closed:
+		return StreamFrame{}, errSourceCancelled
+	}
+	if err := ctx.Err(); err != nil {
+		return StreamFrame{}, err
+	}
+	buf := make([]byte, channelFrameSize)
+	for {
+		n, err := s.r.Read(buf)
+		s.mu.Lock()
+		cancelled := s.closed && !s.eof
+		s.mu.Unlock()
+		if cancelled {
+			// Cancelled while this Read was in flight: what it returns is not the end.
+			return StreamFrame{}, errSourceCancelled
+		}
+		if n > 0 {
+			if err == io.EOF {
+				s.mu.Lock()
+				s.eof = true
+				s.mu.Unlock()
+				s.cancel()
+			}
+			return StreamFrame{Type: FrameBinary, Data: buf[:n]}, nil
+		}
+		switch {
+		case err == io.EOF:
+			s.mu.Lock()
+			s.eof = true
+			s.mu.Unlock()
+			s.cancel()
+			return StreamFrame{}, io.EOF
+		case err != nil:
+			s.cancel()
+			return StreamFrame{}, streamAbortedError(err.Error())
+		}
+		// A Read of 0 bytes and no error: try again, as io.Reader allows.
+	}
+}
+
+func (s *readerSource) cancel() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.mu.Unlock()
+	if closer, ok := s.r.(io.Closer); ok {
+		_ = closer.Close()
+	}
+}
+
+// bytesSource is a stream of one buffer, in frames of up to channelFrameSize bytes.
+type bytesSource struct {
+	mu        sync.Mutex
+	rest      []byte
+	cancelled bool
+}
+
+func (s *bytesSource) next(context.Context) (StreamFrame, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancelled {
+		return StreamFrame{}, errSourceCancelled
+	}
+	if len(s.rest) == 0 {
+		return StreamFrame{}, io.EOF
+	}
+	n := min(len(s.rest), channelFrameSize)
+	chunk := s.rest[:n:n]
+	s.rest = s.rest[n:]
+	return StreamFrame{Type: FrameBinary, Data: chunk}, nil
+}
+
+func (s *bytesSource) cancel() {
+	s.mu.Lock()
+	if len(s.rest) > 0 {
+		s.cancelled = true
+	}
+	s.rest = nil
+	s.mu.Unlock()
+}
+
+// prependSource yields first, then the frames of rest.
+type prependSource struct {
+	mu    sync.Mutex
+	first *StreamFrame
+	rest  frameSource
+}
+
+func (s *prependSource) next(ctx context.Context) (StreamFrame, error) {
+	s.mu.Lock()
+	first := s.first
+	s.first = nil
+	s.mu.Unlock()
+	if first != nil {
+		return *first, nil
+	}
+	return s.rest.next(ctx)
+}
+
+func (s *prependSource) cancel() { s.rest.cancel() }
+
+// wsWriter is the write end of a pipe: dialled on first use, then frames until it is
+// closed or aborted. Its owner (outputInner) serializes the calls.
+type wsWriter struct {
+	ep  *endpoint
+	ref StreamChannelRef
+
+	conn  *websocket.Conn
+	ended bool
+}
+
+// socket returns the open socket, dialling it on first use.
+func (w *wsWriter) socket(ctx context.Context) (*websocket.Conn, error) {
+	if w.ended {
+		return nil, streamClosedError("the stream is closed: it was closed or aborted")
+	}
 	if w.conn != nil {
 		return w.conn, nil
 	}
-	conn, _, err := websocket.Dial(ctx, w.url, &websocket.DialOptions{HTTPHeader: w.headers})
+	conn, err := dialChannel(ctx, w.ep, w.ref, ChannelWrite)
 	if err != nil {
-		return nil, fmt.Errorf("iii: dialing channel writer: %w", err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, streamClosedError("could not open the stream: " + err.Error())
 	}
-	conn.SetReadLimit(-1)
+	// A writer reads nothing, but the engine's close frame (sent when the reader leaves)
+	// and its pings must be answered: CloseRead reads them, so a write after the reader
+	// left fails instead of filling the socket buffer.
+	conn.CloseRead(context.Background())
 	w.conn = conn
 	return conn, nil
 }
 
-// SendMessage sends a discrete text message (a TEXT frame) on the channel.
-func (w *ChannelWriter) SendMessage(ctx context.Context, msg string) error {
-	conn, err := w.ensureConnected(ctx)
-	if err != nil {
-		return err
-	}
-	if err := conn.Write(ctx, websocket.MessageText, []byte(msg)); err != nil {
-		w.failed.Store(true)
-		return err
-	}
-	return nil
-}
-
-// Write streams bytes as BINARY frames, chunked at channelFrameSize. It implements the
-// stream-data half of the channel; the reader receives the bytes via NextBinary/ReadAll.
-func (w *ChannelWriter) Write(ctx context.Context, data []byte) error {
-	conn, err := w.ensureConnected(ctx)
+// write sends data in binary frames of at most channelFrameSize bytes; it returns once
+// the socket took the last one.
+func (w *wsWriter) write(ctx context.Context, data []byte) error {
+	conn, err := w.socket(ctx)
 	if err != nil {
 		return err
 	}
 	for len(data) > 0 {
-		n := len(data)
-		if n > channelFrameSize {
-			n = channelFrameSize
-		}
+		n := min(len(data), channelFrameSize)
 		if err := conn.Write(ctx, websocket.MessageBinary, data[:n]); err != nil {
-			w.failed.Store(true)
-			return err
+			return w.writeFailed(ctx, conn, err)
 		}
 		data = data[n:]
 	}
 	return nil
 }
 
-// Close finishes the stream: it pauses briefly so buffered frames flush, then closes the
-// socket with code 1000, which the engine treats as a completed stream (the reader sees
-// EOF). After a failed Write or SendMessage the stream is incomplete, so Close ends the
-// socket without a close frame instead: the engine reads that as an abort and the reader
-// gets an error, as it does when the process exits before Close. Close is idempotent.
-func (w *ChannelWriter) Close() error {
-	w.mu.Lock()
-	conn := w.conn
-	w.conn = nil
-	w.mu.Unlock()
-	if conn == nil {
-		return nil
-	}
-	if w.failed.Load() {
-		return conn.CloseNow()
-	}
-	time.Sleep(channelFlushDelay)
-	// Code 1000 is what tells the engine the stream completed. The engine decides on receipt
-	// of the frame, so an error from the reply wait after it went out is still a clean end.
-	// shortcut: coder/websocket writes the close frame with a fixed 5 s timeout, so if the
-	// engine does not read this socket for that long (a slow or late reader on a
-	// backpressured stream) the frame is lost, the engine reads an abort and Close still
-	// returns nil; upgrade when coder/websocket lets the caller bound the close write.
-	return conn.Close(websocket.StatusNormalClosure, "stream_complete")
-}
-
-// ChannelReader is the read end of a channel: a WebSocket opened lazily on first use.
-// Binary frames are stream data (NextBinary / ReadAll); text frames are messages
-// delivered to OnMessage callbacks. The reader reads from a single goroutine internally,
-// so register OnMessage callbacks before the first NextBinary/ReadAll call.
-type ChannelReader struct {
-	url     string
-	headers http.Header
-
-	mu         sync.Mutex
-	conn       *websocket.Conn
-	onMessage  []func(string)
-	textBuffer []string // text frames seen while waiting on NextBinary, drained to callbacks
-
-	closed atomic.Bool // set by Close: reads end as end of stream and do not redial
-}
-
-// OpenReader returns a reader for the read end described by ref, against the given engine
-// WS base (typically Client.Address()). The socket connects on first read and
-// authenticates with III_TOKEN, when set; channels from [Client.CreateChannel] also send
-// the client's [WithHeaders]. Prefer [Client.OpenReader], which uses the client's
-// address and headers.
-func OpenReader(engineWSBase string, ref StreamChannelRef) *ChannelReader {
-	return openReader(engineWSBase, ref, nil)
-}
-
-// OpenReader returns a reader for the read end described by ref (typically received in
-// a call payload), against this client's engine address. Like the ends returned by
-// [Client.CreateChannel], its handshake sends the client's [WithHeaders] plus
-// "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no
-// Authorization header. The socket connects on first read.
-func (c *Client) OpenReader(ref StreamChannelRef) *ChannelReader {
-	return openReader(c.Address(), ref, c.headers)
-}
-
-func openReader(engineWSBase string, ref StreamChannelRef, headers http.Header) *ChannelReader {
-	return &ChannelReader{
-		url:     channelURL(engineWSBase, ref.ChannelID, ref.AccessKey, ChannelRead),
-		headers: handshakeHeaders(headers),
-	}
-}
-
-// OnMessage registers a callback for inbound text messages. Callbacks fire from the
-// goroutine driving NextBinary/ReadAll, in registration order.
-func (r *ChannelReader) OnMessage(cb func(string)) {
-	r.mu.Lock()
-	r.onMessage = append(r.onMessage, cb)
-	r.mu.Unlock()
-}
-
-func (r *ChannelReader) ensureConnected(ctx context.Context) (*websocket.Conn, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.conn != nil {
-		return r.conn, nil
-	}
-	if r.closed.Load() {
-		return nil, nil
-	}
-	conn, _, err := websocket.Dial(ctx, r.url, &websocket.DialOptions{HTTPHeader: r.headers})
+// sendText sends one text frame.
+func (w *wsWriter) sendText(ctx context.Context, text []byte) error {
+	conn, err := w.socket(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("iii: dialing channel reader: %w", err)
+		return err
 	}
-	conn.SetReadLimit(-1)
-	r.conn = conn
-	return conn, nil
+	if err := conn.Write(ctx, websocket.MessageText, text); err != nil {
+		return w.writeFailed(ctx, conn, err)
+	}
+	return nil
 }
 
-// NextBinary returns the next binary stream chunk. ok is false at end of stream (the
-// writer closed cleanly, or this reader was closed). If the writer aborted or the
-// connection dropped, err is non-nil; a close carries its code and reason
-// (websocket.CloseStatus, errors.As with websocket.CloseError). Text frames encountered
-// while waiting are dispatched to OnMessage callbacks and skipped, so a reader can
-// interleave messages and stream data.
-func (r *ChannelReader) NextBinary(ctx context.Context) (data []byte, ok bool, err error) {
-	conn, err := r.ensureConnected(ctx)
-	if conn == nil {
-		return nil, false, err // a nil err here means the reader was closed: end of stream
+// writeFailed ends the socket of a failed write and returns the write's error. The
+// socket is dropped without a close frame, which the engine relays to the reader as an
+// abort: what it read is not the whole stream. A context that ended mid-write returns
+// its error; any other failure means nobody reads what is sent now.
+func (w *wsWriter) writeFailed(ctx context.Context, conn *websocket.Conn, err error) error {
+	w.ended = true
+	w.conn = nil
+	_ = conn.CloseNow()
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
-	for {
-		typ, frame, readErr := conn.Read(ctx)
-		if readErr != nil {
-			// A read cut short by the caller's own Close is end of stream, not an error.
-			if r.closed.Load() {
-				return nil, false, nil
-			}
-			// Only 1000 or a close with no code (1005, the engine's clean end) is end of
-			// stream; any other code (1011 for an aborted writer) is an error.
-			switch websocket.CloseStatus(readErr) {
-			case websocket.StatusNormalClosure, websocket.StatusNoStatusRcvd:
-				return nil, false, nil
-			}
-			return nil, false, readErr
-		}
-		switch typ {
-		case websocket.MessageBinary:
-			return frame, true, nil
-		case websocket.MessageText:
-			r.dispatchText(string(frame))
-			// keep reading until a binary frame or close
-		}
+	if websocket.CloseStatus(err) != -1 {
+		return streamClosedError("the stream is closed: its reader left")
 	}
+	return streamClosedError("the stream's connection failed: " + err.Error())
 }
 
-// dispatchText delivers a text frame to all registered OnMessage callbacks.
-func (r *ChannelReader) dispatchText(msg string) {
-	r.mu.Lock()
-	cbs := make([]func(string), len(r.onMessage))
-	copy(cbs, r.onMessage)
-	r.mu.Unlock()
-	for _, cb := range cbs {
-		cb(msg)
-	}
+// close ends the stream cleanly: a close frame with code 1000, after a short pause so
+// the data frames flush first. A socket never dialled is dialled first, so the reader
+// sees an empty stream.
+func (w *wsWriter) close() error {
+	return w.finish(websocket.StatusNormalClosure, "stream_complete", channelFlushDelay)
 }
 
-// ReadAll consumes the channel until the writer closes, concatenating all binary chunks.
-// Text messages seen along the way are dispatched to OnMessage callbacks. On an error (an
-// aborted writer included) it returns the bytes read so far with the error.
-func (r *ChannelReader) ReadAll(ctx context.Context) ([]byte, error) {
-	var out []byte
-	for {
-		chunk, ok, err := r.NextBinary(ctx)
-		if err != nil {
-			return out, err
-		}
-		if !ok {
-			return out, nil
-		}
-		out = append(out, chunk...)
+// abort ends the stream with an error: a close frame with code 1011 and reason, which
+// the engine relays to the reader as an abort. A socket never dialled is dialled first,
+// so the reader always learns of it.
+func (w *wsWriter) abort(reason string) error {
+	if reason == "" {
+		reason = "aborted"
 	}
+	return w.finish(abortCloseCode, closeReason(reason), 0)
 }
 
-// Close closes the reader socket. A read it cuts short, and any read after it, ends as end
-// of stream, not an error. It is idempotent and safe to call after ReadAll.
-func (r *ChannelReader) Close() error {
-	r.mu.Lock()
-	r.closed.Store(true)
-	conn := r.conn
-	r.conn = nil
-	r.mu.Unlock()
-	if conn == nil {
+func (w *wsWriter) finish(code websocket.StatusCode, reason string, delay time.Duration) error {
+	if w.ended {
 		return nil
 	}
-	return conn.Close(websocket.StatusNormalClosure, "channel_close")
-}
-
-// ExtractChannelRefs recursively walks a JSON value and returns every StreamChannelRef
-// found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it
-// is an object with string channel_id, access_key, and direction fields. Mirrors
-// extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it
-// to find a ref another worker embedded in a call payload.
-func ExtractChannelRefs(data json.RawMessage) (map[string]StreamChannelRef, error) {
-	var v any
-	if err := json.Unmarshal(data, &v); err != nil {
-		return nil, err
+	ctx, cancel := context.WithTimeout(context.Background(), streamDialTimeout)
+	defer cancel()
+	conn, err := w.socket(ctx)
+	w.ended = true
+	w.conn = nil
+	if err != nil {
+		return err
 	}
-	out := map[string]StreamChannelRef{}
-	walkChannelRefs("", v, out)
-	return out, nil
-}
-
-func walkChannelRefs(path string, v any, out map[string]StreamChannelRef) {
-	switch node := v.(type) {
-	case map[string]any:
-		if ref, ok := asChannelRef(node); ok {
-			out[path] = ref
-			return // a ref is a leaf; don't descend into its own fields
-		}
-		for k, child := range node {
-			walkChannelRefs(joinPath(path, k), child, out)
-		}
-	case []any:
-		for i, child := range node {
-			walkChannelRefs(joinPath(path, fmt.Sprintf("%d", i)), child, out)
-		}
+	if delay > 0 {
+		time.Sleep(delay)
 	}
-}
-
-// asChannelRef reports whether node has the three string fields of a StreamChannelRef and
-// returns the parsed ref.
-func asChannelRef(node map[string]any) (StreamChannelRef, bool) {
-	id, ok1 := node["channel_id"].(string)
-	key, ok2 := node["access_key"].(string)
-	dir, ok3 := node["direction"].(string)
-	if !(ok1 && ok2 && ok3) {
-		return StreamChannelRef{}, false
-	}
-	return StreamChannelRef{ChannelID: id, AccessKey: key, Direction: ChannelDirection(dir)}, true
-}
-
-func joinPath(base, key string) string {
-	if base == "" {
-		return key
-	}
-	return base + "." + key
+	// The engine decides on receipt of the close frame, so an error from the wait for its
+	// reply, once the frame went out, still ends the stream as asked; and a socket the
+	// engine already closed (its reader left) has nobody to tell.
+	// shortcut: coder/websocket writes the close frame with a fixed 5 s timeout, so if the
+	// engine does not read this socket for that long (a slow reader on a backpressured
+	// stream) the frame is lost and the engine reads an abort; upgrade when coder/websocket
+	// lets the caller bound the close write.
+	_ = conn.Close(code, reason)
+	return nil
 }

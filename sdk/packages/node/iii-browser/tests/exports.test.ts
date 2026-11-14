@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CallAction, ChannelReader, ChannelWriter, registerWorker, TriggerAction } from '../src/index'
+import { CallAction, registerWorker, TriggerAction } from '../src/index'
 import type { UpdateAppend, UpdateOp } from '../src/stream'
 import { MockEngine } from './mock-websocket'
 
@@ -12,12 +12,24 @@ describe('Package Exports', () => {
     expect(CallAction.Enqueue({ queue: 'orders' })).toEqual({ type: 'enqueue', queue: 'orders' })
     expect(CallAction.Void()).toEqual({ type: 'void' })
     expect(TriggerAction).toBe(CallAction)
+  })
 
-    expect(ChannelReader).toBeDefined()
-    expect(typeof ChannelReader).toBe('function')
+  it('exports the stream types from the root, and no channel API', async () => {
+    const root = (await import('../src/index')) as Record<string, unknown>
+    expect(typeof root.InputStream).toBe('function')
+    expect(typeof root.OutputStream).toBe('function')
+    expect(typeof root.StreamAbortedError).toBe('function')
+    for (const removed of ['ChannelReader', 'ChannelWriter', 'Channel', 'createChannel']) {
+      expect(root[removed]).toBeUndefined()
+    }
+  })
 
-    expect(ChannelWriter).toBeDefined()
-    expect(typeof ChannelWriter).toBe('function')
+  it('has an iii-browser-sdk/protocol subpath and no channel subpath', async () => {
+    const pkg = (await import('../package.json', { with: { type: 'json' } })).default as {
+      exports: Record<string, unknown>
+    }
+    expect(pkg.exports['./channel']).toBeUndefined()
+    expect(pkg.exports['./protocol']).toBeDefined()
   })
 
   it('registerWorker returns an ISdk with call, its trigger alias and the observer hooks', async () => {

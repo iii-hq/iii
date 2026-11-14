@@ -20,12 +20,11 @@ from typing import (
 from iii_helpers.http import HttpInvocationConfig
 from pydantic import BaseModel, ConfigDict
 
-from . import _wire_json
 from .iii_constants import ConnectionStateCallback
 from .iii_types import CallRequest, RegisterFunctionMessage, StreamChannelRef
 
 if TYPE_CHECKING:
-    from .channels import ChannelReader, ChannelWriter, WritableStream
+    from .streams import InputStream, OutputStream, Pipe
 
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
@@ -80,8 +79,7 @@ class RemoteServiceFunctionData(BaseModel):
 class IIIClient(Protocol):
     """Protocol for III client implementations.
 
-    Helper free functions live in :mod:`iii.helpers`. See
-    :func:`iii.helpers.create_channel` and :func:`iii.helpers.create_stream`.
+    Helper free functions live in :mod:`iii.helpers`.
     """
 
     def register_function(
@@ -102,6 +100,10 @@ class IIIClient(Protocol):
             Use :meth:`call`.
         """
         ...
+
+    def pipe(self, buffer_size: int | None = None) -> Pipe: ...
+
+    async def pipe_async(self, buffer_size: int | None = None) -> Pipe: ...
 
     def observe(self, source: Any, target: Any, options: Any = None) -> Any: ...
 
@@ -127,18 +129,9 @@ class IIIClient(Protocol):
 
 
 @dataclass
-class Channel:
-    """A streaming channel pair for worker-to-worker data transfer."""
-
-    writer: ChannelWriter
-    reader: ChannelReader
-    writer_ref: StreamChannelRef
-    reader_ref: StreamChannelRef
-
-
-@dataclass
 class InternalHttpRequest:
-    """HTTP request with embedded channel references for streaming.
+    """HTTP request as the HTTP worker sends it: the body as a stream to read and the
+    response as a stream to write.
 
     <!-- docs:internal -->
     """
@@ -148,32 +141,39 @@ class InternalHttpRequest:
     body: Any
     headers: dict[str, str | list[str]]
     method: str
-    response: ChannelWriter
-    request_body: ChannelReader
+    response: OutputStream
+    request_body: InputStream
 
 
 class StreamResponse:
-    """Streaming response built on top of a ChannelWriter."""
+    """Streaming HTTP response written to the request's ``response`` :class:`~iii.OutputStream`.
 
-    def __init__(self, writer: ChannelWriter) -> None:
+    Set the status and headers before the first body byte. The HTTP worker
+    reads them as the control messages ``{"type": "set_status", ...}`` and
+    ``{"type": "set_headers", ...}``.
+    """
+
+    def __init__(self, writer: OutputStream) -> None:
         self._writer = writer
 
     async def status(self, status_code: int) -> None:
-        await self._writer.send_message_async(_wire_json.dumps({"type": "set_status", "status_code": status_code}))
+        await self._writer.send({"type": "set_status", "status_code": status_code})
 
     async def headers(self, headers: dict[str, str]) -> None:
-        await self._writer.send_message_async(_wire_json.dumps({"type": "set_headers", "headers": headers}))
+        await self._writer.send({"type": "set_headers", "headers": headers})
+
+    async def write(self, data: bytes | str) -> None:
+        """Body bytes (``str`` is sent as UTF-8)."""
+        await self._writer.write(data)
 
     @property
-    def stream(self) -> WritableStream:
-        return self._writer.stream
-
-    @property
-    def writer(self) -> ChannelWriter:
+    def writer(self) -> OutputStream:
+        """The response stream itself."""
         return self._writer
 
-    def close(self) -> None:
-        self._writer.close()
+    async def close(self) -> None:
+        """End the body. The handler that returns closes it too."""
+        await self._writer.close()
 
 
 @dataclass
@@ -185,7 +185,7 @@ class StreamRequest:
     body: Any
     headers: dict[str, str | list[str]]
     method: str
-    request_body: ChannelReader
+    request_body: InputStream
 
 
 class StreamChannelRefDict(TypedDict):

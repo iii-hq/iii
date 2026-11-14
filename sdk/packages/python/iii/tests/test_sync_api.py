@@ -10,7 +10,6 @@ import pytest
 
 import iii.iii as iii_module
 from iii import CallAction, InitOptions
-from iii.helpers import create_channel
 from iii.iii import III
 
 
@@ -154,7 +153,7 @@ def test_register_function_accepts_async_handler(monkeypatch: pytest.MonkeyPatch
 
 
 def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """call (and its alias trigger) and the helpers.create_channel free function should be sync."""
+    """call (and its alias trigger) and pipe should be sync."""
     _patch_ws(monkeypatch)
     client = III("ws://fake", InitOptions())
     time.sleep(0.05)
@@ -164,7 +163,8 @@ def test_public_methods_are_sync(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not inspect.iscoroutinefunction(client.call)
     assert not inspect.iscoroutinefunction(client.trigger)
     assert inspect.iscoroutinefunction(client.call_async)
-    assert not inspect.iscoroutinefunction(create_channel)
+    assert not inspect.iscoroutinefunction(client.pipe)
+    assert inspect.iscoroutinefunction(client.pipe_async)
 
     client.shutdown()
 

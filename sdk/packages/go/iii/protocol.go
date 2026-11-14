@@ -125,7 +125,7 @@ type HTTPInvocationRef struct {
 	Auth json.RawMessage `json:"auth,omitempty"`
 }
 
-// ChannelDirection is the end of a streaming channel a StreamChannelRef refers to.
+// ChannelDirection is the end of an engine pipe a StreamChannelRef refers to.
 // On the wire it is lowercase: "read" or "write".
 type ChannelDirection string
 
@@ -134,11 +134,12 @@ const (
 	ChannelWrite ChannelDirection = "write"
 )
 
-// StreamChannelRef is a capability handle to one end of a streaming data channel.
-// The engine's engine::channels::create returns a
-// writer ref and a reader ref that share a channel_id and access_key; a ref travels as
-// plain JSON inside a call payload or result, and the holder opens its own WebSocket
-// to the channel with it ([Client.OpenReader], [Client.OpenWriter]).
+// StreamChannelRef is the wire form of a stream: a capability handle to one end of an
+// engine pipe. The engine's engine::channels::create returns a writer ref and a reader
+// ref that share a channel_id; a ref travels as plain JSON inside a call payload or
+// result, and the holder opens its own WebSocket to the pipe with it. In Go code a
+// "read" ref is an [InputStream] and a "write" ref an [OutputStream]: unmarshal it into
+// one, and the SDK makes and opens the pipes.
 type StreamChannelRef struct {
 	ChannelID string           `json:"channel_id"`
 	AccessKey string           `json:"access_key"`

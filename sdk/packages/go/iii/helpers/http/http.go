@@ -5,30 +5,31 @@
 // It covers two kinds of functions:
 //
 //   - Functions that observe http::on-request (the target of an observer with route
-//     args). The http worker calls them with an [InternalRequest]: the parsed request plus two channel refs, request_body (the
-//     read end carrying the raw request body) and response (the write end for the
-//     status, the headers and the body). [Wrap] adapts a handler that takes a
-//     [StreamRequest] and a [StreamResponse] into an [iii.Handler], like the Node http()
-//     helper. Handlers that only need the parsed body can decode a [Request] and return
-//     a [Response] instead.
+//     args). The http worker calls them with an [InternalRequest]: the parsed request
+//     plus two streams, request_body (an [iii.InputStream] of the raw request body) and
+//     response (an [iii.OutputStream] for the status, the headers and the body). [Wrap]
+//     adapts a handler that takes a [StreamRequest] and a [StreamResponse] into an
+//     [iii.Handler], like the Node http() helper. Handlers that only need the parsed
+//     body can decode a [Request] and return a [Response] instead.
 //   - Functions the engine itself invokes over HTTP (Lambda, Cloudflare Workers and
 //     similar), described by an [InvocationConfig] and the [Method] constants.
 //
-// # Response channel protocol
+// # Response stream protocol
 //
-// On the response channel a TEXT frame is a control message, either
+// On the response stream a message is a control message, either
 // {"type":"set_status","status_code":201} or
-// {"type":"set_headers","headers":{"content-type":"text/plain"}}; BINARY frames carry
-// the body, and a clean close of the channel ends the response. The status and headers
-// are committed when the first body chunk (or the close) reaches the http worker. A
-// function that returns a non-null value without writing a body gets a buffered
-// response built from that value ({status_code, headers, body}) instead.
+// {"type":"set_headers","headers":{"content-type":"text/plain"}}; bytes are the body,
+// and closing the stream ends the response. The status and headers are committed when
+// the first body chunk (or the close) reaches the http worker. A function that returns a
+// non-null value without touching the response gets a buffered response built from that
+// value ({status_code, headers, body}) instead.
 //
-// A channel that ends any other way (its writer failed, or went away without a clean
-// close) is aborted: the engine closes the reader with an error, so the reader never
-// takes an incomplete body for a whole one. [StreamRequest.Read] returns that error for
-// an aborted request body, and [Wrap] aborts the response when a send fails or the
-// handler returns an error after body bytes were written.
+// The SDK ends the response when the handler returns, as it does every stream a handler
+// receives: a response the handler used (a status, headers or body sent) is closed when
+// it succeeded and aborted when it failed, so the http worker never takes a truncated
+// body for a whole one; an untouched response is closed only when the handler returned
+// nil, and left to the http worker otherwise. An aborted request body makes
+// [StreamRequest.Read] return an error with code [iii.CodeStreamAborted], never io.EOF.
 //
 // Import the package under an alias to keep net/http available:
 //
@@ -144,9 +145,9 @@ type Request[T any] struct {
 	Path string `json:"path,omitempty"`
 	// Method is the HTTP method of the request (for example GET or POST).
 	Method string `json:"method"`
-	// RequestBody is the channel carrying the raw request body; open it with
-	// [iii.Client.OpenReader]. nil when the invocation carried none.
-	RequestBody *iii.StreamChannelRef `json:"request_body,omitempty"`
+	// RequestBody is the raw request body: read it, or pass it on unread. nil when the
+	// invocation carried none.
+	RequestBody *iii.InputStream `json:"request_body,omitempty"`
 }
 
 // Response is a buffered HTTP response returned from the target of an http::on-request
@@ -164,10 +165,8 @@ type Response[T any] struct {
 }
 
 // InternalRequest is the payload the http worker sends to the target of an
-// http::on-request observer, Node InternalHttpRequest: the parsed request plus the two channel refs. The
-// Node SDK resolves the refs into a reader and a writer before it calls the handler; in
-// Go they stay refs, opened by [Wrap] or by hand with [iii.Client.OpenReader] and
-// [iii.Client.OpenWriter].
+// http::on-request observer, Node InternalHttpRequest: the parsed request plus its two
+// streams. [Wrap] decodes it; decode it by hand to use the streams directly.
 type InternalRequest struct {
 	// PathParams holds the path parameters extracted from the matched route.
 	PathParams map[string]string `json:"path_params"`
@@ -182,8 +181,8 @@ type InternalRequest struct {
 	Path string `json:"path,omitempty"`
 	// Method is the HTTP method of the request.
 	Method string `json:"method"`
-	// Response is the write end of the response channel.
-	Response iii.StreamChannelRef `json:"response"`
-	// RequestBody is the read end of the request body channel.
-	RequestBody iii.StreamChannelRef `json:"request_body"`
+	// Response is the response stream: control messages and the body.
+	Response *iii.OutputStream `json:"response"`
+	// RequestBody is the raw request body.
+	RequestBody *iii.InputStream `json:"request_body"`
 }

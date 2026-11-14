@@ -85,7 +85,7 @@ describe('JSON frame size', () => {
     const message = envelopeAtSize(LIMIT + delta)
     if (delta > 0) {
       expect(() => sdk.prepareJson(message)).toThrow(
-        `Serialized JSON envelope is ${LIMIT + delta} bytes; limit is ${LIMIT} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size`,
+        `Serialized JSON envelope is ${LIMIT + delta} bytes; limit is ${LIMIT} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size`,
       )
     } else expect(Buffer.byteLength(sdk.prepareJson(message))).toBe(LIMIT + delta)
   })
@@ -106,7 +106,7 @@ describe('JSON frame size', () => {
     expect(rejectedJson.length).toBeLessThan(LIMIT)
     expect(size).toBeGreaterThan(LIMIT)
     expect(() => sdk.prepareJson(rejected)).toThrow(
-      `Serialized JSON envelope is ${size} bytes; limit is ${LIMIT} bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size`,
+      `Serialized JSON envelope is ${size} bytes; limit is ${LIMIT} bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size`,
     )
   })
 
@@ -180,7 +180,7 @@ describe('JSON frame size', () => {
     expect(frame).not.toHaveProperty('result')
     expect(frame.error.code).toBe('payload_too_large')
     const match =
-      /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use channels for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/channels#payload-size$/.exec(
+      /^Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. Use streams for larger payloads: https:\/\/iii\.dev\/docs\/creating-workers\/streaming#payload-size$/.exec(
         frame.error.message,
       )
     expect(match, frame.error.message).not.toBeNull()

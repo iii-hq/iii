@@ -1,5 +1,6 @@
 """III message types."""
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, ClassVar, Literal
 
@@ -661,6 +662,51 @@ class UnregisterFunctionMessage(BaseModel):
 
     id: str
     message_type: MessageType = Field(default=MessageType.UNREGISTER_FUNCTION, alias="type")
+
+
+class ChannelDirection(str, Enum):
+    """Direction of a streaming channel reference.
+
+    Mirrors the Rust SDK's ``ChannelDirection`` enum. The string values
+    (``"read"`` / ``"write"``) match the wire format used by
+    :class:`StreamChannelRef.direction`.
+    """
+
+    READ = "read"
+    WRITE = "write"
+
+
+@dataclass
+class ChannelItem:
+    """A single frame transferred over a channel (what :meth:`iii.InputStream.frames` yields).
+
+    Mirrors the Rust SDK's ``ChannelItem`` enum. Exactly one of ``text`` or
+    ``binary`` is set; use :meth:`text_item` / :meth:`binary_item` to
+    construct instances.
+    """
+
+    text: str | None = None
+    binary: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if (self.text is None) == (self.binary is None):
+            raise ValueError("ChannelItem requires exactly one of `text` or `binary`")
+
+    @classmethod
+    def text_item(cls, value: str) -> "ChannelItem":
+        return cls(text=value, binary=None)
+
+    @classmethod
+    def binary_item(cls, value: bytes) -> "ChannelItem":
+        return cls(text=None, binary=value)
+
+    @property
+    def is_text(self) -> bool:
+        return self.text is not None
+
+    @property
+    def is_binary(self) -> bool:
+        return self.binary is not None
 
 
 class StreamChannelRef(BaseModel):

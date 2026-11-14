@@ -1,10 +1,36 @@
-import { ChannelReader, ChannelWriter } from './channels'
+import {
+  abortInput,
+  asStream,
+  causeOf,
+  detach,
+  errorText,
+  forwardableRef,
+  handOnRefusal,
+  handOver,
+  InputStream,
+  inputFromRef,
+  isLocalSink,
+  isTransferred,
+  markTransferred,
+  OutputStream,
+  outputDone,
+  outputEnded,
+  outputFromRef,
+  pumpStream,
+  releaseInput,
+  type StreamBinding,
+  StreamScope,
+  sinkFailureOf,
+  streamInfoOf,
+} from './call-streams'
+import { streamInUseError } from './channels'
 import {
   handlerErrorBody,
   InvocationError,
   InvocationTimeoutError,
   ObserveRejection,
   RegistrationRejectedError,
+  StreamAbortedError,
 } from './errors'
 import { compileFilter, FilterError } from './filter'
 import {
@@ -90,15 +116,26 @@ import {
 import { ObserverHandleImpl, toObserverState } from './observer-handle'
 import { Reporter, type ReporterLimits } from './reporter'
 import type { IStream } from './stream'
+import {
+  cloneKeepingStreams,
+  containsStreams,
+  containsStreamValues,
+  holdsWriteSide,
+  isObservedEnvelope,
+  mapStreams,
+  wireRef,
+} from './stream-walk'
 import type {
   FunctionRef,
   Invocation,
   ISdk,
+  Pipe,
+  PipeOptions,
   RegisterFunctionOptions,
   RemoteFunctionData,
   RemoteFunctionHandler,
 } from './types'
-import { isChannelRef, randomUUID } from './utils'
+import { randomUUID } from './utils'
 
 /** @internal */
 export type TelemetryOptions = {
@@ -110,10 +147,10 @@ export type TelemetryOptions = {
 // Browser WebSocket APIs expose no control over framing, so outbound JSON is limited to the 16 MiB single-frame size.
 const MAX_JSON_FRAME_BYTES = 16 * 1024 * 1024
 const JSON_ENCODER = new TextEncoder()
-const PAYLOAD_SIZE_DOCS = 'https://iii.dev/docs/creating-workers/channels#payload-size'
+const PAYLOAD_SIZE_DOCS = 'https://iii.dev/docs/creating-workers/streaming#payload-size'
 
 function payloadTooLargeMessage(size: number): string {
-  return `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use channels for larger payloads: ${PAYLOAD_SIZE_DOCS}`
+  return `Serialized JSON envelope is ${size} bytes; limit is ${MAX_JSON_FRAME_BYTES} bytes. Use streams for larger payloads: ${PAYLOAD_SIZE_DOCS}`
 }
 
 function createPayloadTooLargeError(size: number, functionId?: string): InvocationError {
@@ -269,6 +306,41 @@ function cloneValue<T>(value: T): T {
   }
   const text = JSON.stringify(value)
   return (text === undefined ? undefined : JSON.parse(text)) as T
+}
+
+/** The stream values of an outgoing value, replaced by refs, and the pumps that move their data. */
+type OutboundStreams = {
+  /** The value with refs in place of its streams. */
+  value: unknown
+  /** Starts the pumps; returns one promise per sink, settled when that sink finished. */
+  start(): Promise<void>[]
+  /** Stops the pumps (the call failed): the pipes' ends are aborted, the sinks with them. */
+  cancel(error: unknown): void
+  /** The sinks of this process the value carries, each fed through a pipe. */
+  sinks: OutputStream[]
+}
+
+/** `STREAM_IN_USE`: one payload carries the same stream twice; a stream has one reader. */
+function duplicateStream(): InvocationError {
+  return streamInUseError('the same stream appears twice in one payload: a stream has one reader')
+}
+
+/** `STREAM_IN_USE`: the stream already went to another function by its ref. */
+function alreadySent(): InvocationError {
+  return streamInUseError('a stream in the payload was already sent to another function')
+}
+
+/** A stream in a call's metadata: it has no pipe there, and would reach the handler as `{}`. The Rust SDK's error. */
+const STREAM_IN_METADATA = 'a stream cannot travel in metadata: put it in the payload'
+
+/** `STREAM_NOT_ALLOWED`: a queued call cannot carry a stream (R9). */
+function streamNotAllowed(function_id: string): InvocationError {
+  return new InvocationError({
+    code: 'STREAM_NOT_ALLOWED',
+    message:
+      'streams need a live call and cannot be queued: the job can run after the pipe expired, and a retry cannot read the stream again. Call the function without CallAction.Enqueue (CallAction.Void is allowed), or pass the data itself',
+    function_id,
+  })
 }
 
 const UNSUPPORTED_REASON = {
@@ -977,25 +1049,357 @@ class Sdk implements ISdk {
   }
 
   /**
-   * @internal Implementation backing the `createChannel` helper in the
-   * `iii-browser-sdk/helpers` submodule. Not part of the public `ISdk` surface.
+   * Creates a pipe: an {@link InputStream} and an {@link OutputStream} joined
+   * through the engine. What is written into `output` is read from `input`.
+   * Put either end in a call's payload (or a handler's result) for the other
+   * side to use: the end travels as its ref. This worker owns the pipe and
+   * must stay connected until the other side attached.
    *
-   * Creates a streaming channel pair for worker-to-worker data transfer.
-   * Returns a {@link Channel} with a local writer/reader and serializable refs
-   * that can be passed as fields in invocation data to other functions.
+   * Most code does not need it: a source or a sink placed in a payload gets
+   * its pipe from the SDK. Use it when the other end must exist before its
+   * source does, for a two-way session (two pipes), or for a pipe handed to a
+   * call made later.
+   *
+   * @param options - `bufferSize`: frames the engine holds for an end nobody reads yet.
+   *
+   * @example
+   * ```typescript
+   * const pipe = await iii.pipe()
+   * const result = iii.call({ function_id: 'files::process', payload: { body: pipe.input } })
+   * await file.stream().pipeTo(pipe.output.toWebStream())
+   * await result
+   * ```
    */
-  __helpers_create_channel = async (bufferSize?: number): Promise<import('./types').Channel> => {
-    const result = await this.call<{ buffer_size?: number }, { writer: StreamChannelRef; reader: StreamChannelRef }>({
-      function_id: 'engine::channels::create',
-      payload: { buffer_size: bufferSize },
-    })
+  pipe = async (options?: PipeOptions): Promise<Pipe> => {
+    const { writer, reader } = await this.createPipeRefs(options?.bufferSize)
+    return { input: inputFromRef(reader, this.streamBinding()), output: outputFromRef(writer, this.streamBinding()) }
+  }
 
-    return {
-      writer: new ChannelWriter(this.address, result.writer),
-      reader: new ChannelReader(this.address, result.reader),
-      writerRef: result.writer,
-      readerRef: result.reader,
+  /** The engine the streams of this worker connect to. */
+  private streamBinding(): StreamBinding {
+    return { wsBase: this.address }
+  }
+
+  /** `engine::channels::create`, sent as it is: the two refs of a new pipe this worker owns. */
+  private createPipeRefs(bufferSize?: number): Promise<{ writer: StreamChannelRef; reader: StreamChannelRef }> {
+    const function_id = 'engine::channels::create'
+    return this.invokeRemote(
+      { function_id, payload: bufferSize === undefined ? {} : { buffer_size: bufferSize } },
+      invocationNamespace(undefined, this.namespace, function_id),
+    )
+  }
+
+  /**
+   * Replaces the stream values of an outgoing `value` (a call's payload, a
+   * handler's result) with refs. An InputStream never read and an
+   * OutputStream never used travel as their own ref (R5). Every other source
+   * or sink gets a new pipe (created in parallel): the reader ref goes in place
+   * of a source and the writer ref in place of a sink, and `start()` runs the
+   * pumps. Refs already in `value` go as they are. Rejects when a pipe cannot
+   * be created, before anything was sent.
+   */
+  private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
+    type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
+    const slots = new Map<unknown, Slot>()
+    const slotOf = new Map<Slot, unknown>()
+    for (const [slot, stream] of this.streamValues(value)) {
+      const entry: Slot = { stream, ref: forwardableRef(stream) }
+      slots.set(slot, entry)
+      slotOf.set(entry, slot)
     }
+    const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
+    const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
+    const pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    const binding = this.streamBinding()
+    piped.forEach((entry, i) => {
+      const { reader, writer } = pipes[i]
+      // Once its pipe exists, an InputStream passed as one counts as sent (the pump reads it through another),
+      // and one a read began on is pumped from where that read is. A native source's wrapper is private already.
+      if (entry.stream instanceof InputStream && entry.stream === slotOf.get(entry))
+        entry.stream = handOver(entry.stream)
+      // A sink gets the writer ref and is fed from the reader end; a source gets the reader ref and feeds the writer end.
+      const sink = entry.stream instanceof OutputStream
+      entry.ref = wireRef(sink ? writer : reader)
+      entry.end = sink ? inputFromRef(reader, binding) : outputFromRef(writer, binding)
+      detach(entry.stream)
+    })
+    for (const entry of forwarded) markTransferred(entry.stream)
+    const replaced = mapStreams(value, (slot, kind) => (kind === 'ref' ? slot : slots.get(slot)?.ref))
+
+    const running: Array<{ pump: Promise<void>; stop: (error: unknown) => void; sink: boolean }> = []
+    return {
+      value: replaced,
+      sinks: piped
+        .map((entry) => entry.stream)
+        .filter((stream): stream is OutputStream => stream instanceof OutputStream),
+      start: () => {
+        for (const { stream, end } of piped) {
+          if (stream instanceof OutputStream) {
+            const input = end as InputStream
+            const pump = pumpStream(input, stream)
+            // Read once the call answered: a sink can fail before that.
+            pump.catch(() => undefined)
+            running.push({
+              sink: true,
+              pump,
+              stop: (error) => {
+                void stream.abort(errorText(error))
+                void releaseInput(input)
+              },
+            })
+          } else {
+            const output = end as OutputStream
+            const pump = pumpStream(stream, output)
+            pump.catch((error) => {
+              // A reader that left closes the writer end: not a failure of the source.
+              if ((error as { code?: string })?.code === 'STREAM_CLOSED') return
+              this.logWarn(`A stream source failed, and its reader got an abort: ${errorText(error)}`)
+            })
+            running.push({
+              sink: false,
+              pump,
+              stop: (error) => {
+                void output.abort(errorText(error))
+                void releaseInput(stream)
+              },
+            })
+          }
+        }
+        return running.filter((r) => r.sink).map((r) => r.pump)
+      },
+      cancel: (error) => {
+        for (const { stop } of running) stop(error)
+        // Not started: nothing reads the sources nor feeds the sinks; they are released here.
+        if (running.length === 0) {
+          for (const { stream } of piped) {
+            if (stream instanceof OutputStream) void stream.abort(errorText(error))
+            else void releaseInput(stream)
+          }
+        }
+      },
+    }
+  }
+
+  /**
+   * The stream values of an outgoing `value` (not its refs), each as an
+   * {@link InputStream} or {@link OutputStream}, keyed by the value it was.
+   * Every refusal happens here, before any stream leaves its guard or is
+   * adopted: the same stream twice, a stream already sent by its ref, an
+   * InputStream read to its end (R6). A refused call has claimed nothing.
+   */
+  private streamValues(value: unknown): Map<unknown, InputStream | OutputStream> {
+    const streams = new Map<unknown, InputStream | OutputStream>()
+    mapStreams(value, (slot, kind) => {
+      if (kind === 'ref') return slot
+      if (streams.has(slot)) throw duplicateStream()
+      const stream = asStream(slot)
+      if (isTransferred(stream)) throw alreadySent()
+      const refused = stream instanceof InputStream ? handOnRefusal(stream) : undefined
+      if (refused) throw refused
+      streams.set(slot, stream)
+      return slot
+    })
+    return streams
+  }
+
+  /**
+   * Turns the channel refs of a received `value` (a handler's input, a call's
+   * result) into an {@link InputStream} (a read ref) or an {@link OutputStream}
+   * (a write ref), bound to this worker, and gives them to `scope`. In an
+   * `Observed` envelope (`observed`), the refs under its `input` and `output`
+   * become a `StreamInfo` instead: a stream has one reader, the observed
+   * function.
+   */
+  private inbound(value: unknown, scope?: StreamScope, observed = false): unknown {
+    const binding = this.streamBinding()
+    const live = (slot: unknown, kind: string) => {
+      if (kind !== 'ref') return slot
+      const ref = wireRef(slot as StreamChannelRef)
+      const stream = ref.direction === 'read' ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
+      scope?.adopt(stream)
+      return stream
+    }
+    if (!observed) return mapStreams(value, live)
+    const envelope = value as Record<string, unknown>
+    let out: Record<string, unknown> | undefined
+    for (const [key, field] of Object.entries(envelope)) {
+      const mapped =
+        key === 'input' || key === 'output'
+          ? mapStreams(field, (slot, kind) => (kind === 'ref' ? streamInfoOf(slot as StreamChannelRef) : slot))
+          : mapStreams(field, live)
+      if (mapped !== field) {
+        out ??= { ...envelope }
+        out[key] = mapped
+      }
+    }
+    return out ?? envelope
+  }
+
+  /**
+   * For a call this worker runs in-process: every stream value of `value`
+   * becomes an {@link InputStream} or {@link OutputStream} (a ReadableStream is
+   * wrapped, an InputStream or
+   * OutputStream is handed over as the routed path sends it, a ref is opened), with no
+   * pipe. The streams join `scope` and are listed in `found`.
+   */
+  private localize(value: unknown, scope?: StreamScope, found?: Array<InputStream | OutputStream>): unknown {
+    const binding = this.streamBinding()
+    // The same refusals as the routed path (prepareOutbound), all of them before any stream is adopted.
+    const values = this.streamValues(value)
+    return mapStreams(value, (slot, kind) => {
+      let stream: InputStream | OutputStream
+      if (kind === 'ref') {
+        const ref = wireRef(slot as StreamChannelRef)
+        stream = ref.direction === 'read' ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
+      } else {
+        const given = values.get(slot) as InputStream | OutputStream
+        // An InputStream or OutputStream passed as one goes as the routed path sends it, and counts as sent.
+        // A native source or sink is wrapped already, in a stream nobody else holds.
+        stream = given === slot ? this.handOverLocally(given) : given
+      }
+      if (scope) scope.adopt(stream)
+      else detach(stream)
+      found?.push(stream)
+      return stream
+    })
+  }
+
+  /**
+   * What the function a call runs in-process gets for `s`, as the routed path
+   * would send it (R5): a stream with a ref, never read or used, is opened
+   * again from its ref; another InputStream is handed over ({@link handOver}).
+   * Either way `s` counts as sent, and sending or reading it again fails with
+   * `STREAM_IN_USE`. Any other OutputStream (a sink of this worker, one in use)
+   * goes as it is.
+   */
+  private handOverLocally(s: InputStream | OutputStream): InputStream | OutputStream {
+    const ref = forwardableRef(s)
+    if (ref) {
+      const binding = this.streamBinding()
+      const opened = s instanceof InputStream ? inputFromRef(ref, binding) : outputFromRef(ref, binding)
+      markTransferred(s)
+      return opened
+    }
+    return s instanceof InputStream ? handOver(s) : s
+  }
+
+  /**
+   * The routed path with streams: the payload's stream values become refs
+   * (pipes created first), the call goes out, the sources' pumps start, and the
+   * result's refs become streams. The call resolves once its sinks finished
+   * (R4): an aborted one rejects it with `STREAM_ABORTED`. A failed call stops
+   * the pumps and aborts its sinks; so does the call's timeout when it expires
+   * before the sinks finished (it rejects with `TIMEOUT`).
+   */
+  private async invokeRemoteStreams<TOutput>(
+    request: RemoteRequest,
+    namespace: string | undefined,
+    activation?: ActivationWire,
+  ): Promise<TOutput> {
+    if (!containsStreams(request.payload)) {
+      return this.inbound(await this.invokeRemote(request, namespace, activation)) as TOutput
+    }
+    const outbound = await this.prepareOutbound(request.payload)
+    // The call's timeout runs from here, as the invocation's own (invokeRemote starts it now).
+    const timeoutMs = request.timeoutMs ?? this.invocationTimeoutMs
+    const startedAt = performance.now()
+    const sent = this.invokeRemote<unknown>({ ...request, payload: outbound.value }, namespace, activation)
+    const sinks = outbound.start()
+    if (request.action?.type === 'void') {
+      for (const sink of sinks)
+        sink.catch((error) => this.logError(`Stream sink of ${request.function_id} failed`, error))
+    }
+    let result: unknown
+    try {
+      result = await sent
+    } catch (error) {
+      outbound.cancel(error)
+      // The caller's own sink failed: that is why the call failed (the function's writes failed after it).
+      throw this.failedSink(outbound.sinks, request.function_id) ?? error
+    }
+    // Fire-and-forget: the pumps run on, nobody waits for the sinks.
+    if (request.action?.type === 'void') return result as TOutput
+    const received = this.inbound(result)
+    // A result that hands the caller a write side (its own sink passed back, a pipe into it)
+    // can be what the sinks wait for: waiting here would never end. They run on.
+    if (holdsWriteSide(result)) {
+      for (const sink of sinks)
+        sink.catch((error) => this.logError(`Stream sink of ${request.function_id} failed`, error))
+      return received as TOutput
+    }
+    // The call's timeout bounds the wait for the sinks too: when it expires first, the pumps stop
+    // (the sinks are aborted, their reader ends cancelled) and the call rejects with TIMEOUT.
+    try {
+      await this.awaitSinks(sinks, request.function_id, timeoutMs, startedAt, (error) => {
+        outbound.cancel(error)
+        this.discardStreams(received)
+      })
+    } catch (error) {
+      throw this.failedSink(outbound.sinks, request.function_id) ?? error
+    }
+    return received as TOutput
+  }
+
+  /**
+   * Waits for a call's sinks (R4) until the call's deadline, `timeoutMs` after
+   * `startedAt` (a `performance.now()`). Rejects with the first sink failure,
+   * or, when the deadline passes first, runs `expired` and rejects with the
+   * call's `TIMEOUT` error.
+   */
+  private async awaitSinks(
+    sinks: Array<Promise<void>>,
+    function_id: string,
+    timeoutMs: number,
+    startedAt: number,
+    expired: (error: Error) => void,
+  ): Promise<void> {
+    if (sinks.length === 0) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), Math.max(0, startedAt + timeoutMs - performance.now()))
+    })
+    try {
+      const outcome = await Promise.race([Promise.allSettled(sinks), deadline])
+      if (outcome === 'timeout') {
+        const error = new InvocationTimeoutError(timeoutMs, function_id)
+        expired(error)
+        throw error
+      }
+      for (const settled of outcome) {
+        if (settled.status === 'rejected') throw this.sinkFailure(settled.reason, function_id)
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** The error a call rejects with when one of its sinks failed: an abort is `STREAM_ABORTED`. */
+  private sinkFailure(error: unknown, function_id: string): Error {
+    if (error instanceof StreamAbortedError) return new StreamAbortedError(error.reason, { function_id, cause: error })
+    return error instanceof Error ? error : new Error(errorText(error))
+  }
+
+  /**
+   * The error a call rejects with when a sink of this process it passed
+   * failed: `STREAM_ABORTED`, reason `the sink failed: …`, the sink's own
+   * error as its `cause`. It wins over the call's other errors: the handler's
+   * writes failed after it.
+   */
+  private failedSink(sinks: OutputStream[], function_id: string): StreamAbortedError | undefined {
+    for (const sink of sinks) {
+      const failure = sinkFailureOf(sink)
+      if (failure) return new StreamAbortedError(failure.reason, { function_id, cause: causeOf(failure) })
+    }
+    return undefined
+  }
+
+  /** Closes the sources of a result nobody receives (a fire-and-forget call, a result that failed to go out). */
+  private discardStreams(value: unknown): void {
+    if (!containsStreams(value)) return
+    mapStreams(value, (slot, kind) => {
+      if (kind === 'source' || kind === 'input') void releaseInput(asStream(slot) as InputStream)
+      return slot
+    })
   }
 
   /**
@@ -1023,7 +1427,7 @@ class Sdk implements ISdk {
    * @param request.observer - An observer of a function this worker hosts: its target is invoked.
    * @param request.payload - Payload to pass to the function.
    * @param request.action - Routing action. Omit for synchronous request/response.
-   * @param request.timeoutMs - Override the default invocation timeout.
+   * @param request.timeoutMs - Override the default invocation timeout. It also bounds the wait for the call's sinks.
    * @param request.metadata - Per-invocation metadata (any JSON value), delivered to the handler
    *   beside the payload. `null` is the same as no metadata: the handler receives `undefined`.
    * @param request.traceparent - W3C `traceparent` to continue; defaults to the current invocation's.
@@ -1065,6 +1469,13 @@ class Sdk implements ISdk {
    */
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
   call = async <TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput> => {
+    // A queued job can run after its pipes expired, and a retry cannot read a stream again (R9).
+    if (request.action?.type === 'enqueue' && containsStreams(request.payload)) {
+      throw streamNotAllowed(request.function_id ?? request.observer?.target ?? '')
+    }
+    // Refused before anything is sent or claimed: the payload's streams stay the caller's.
+    const callMetadata = (request as { metadata?: unknown }).metadata
+    if (callMetadata != null && containsStreamValues(callMetadata)) throw new Error(STREAM_IN_METADATA)
     if (request.observer !== undefined) {
       const { observer, payload, action, timeoutMs } = request
       // Its target's metadata is the observer's: refused before anything is
@@ -1072,9 +1483,11 @@ class Sdk implements ISdk {
       if ((request as { metadata?: unknown }).metadata != null) throw new Error(OBSERVER_CALL_METADATA)
       // The engine routes to the observer's stored target and is the one that
       // checks it (decision 13); no namespace travels.
-      return this.invokeRemote<TOutput>({ function_id: observer.target, payload, action, timeoutMs }, undefined, {
-        observer_id: observer.id,
-      })
+      return this.invokeRemoteStreams<TOutput>(
+        { function_id: observer.target, payload, action, timeoutMs },
+        undefined,
+        { observer_id: observer.id },
+      )
     }
     // `metadata: null` is no metadata, local or routed (decision 54).
     const req = request.metadata === null ? { ...request, metadata: undefined } : request
@@ -1105,7 +1518,7 @@ class Sdk implements ISdk {
         }
       }
     }
-    return this.invokeRemote<TOutput>(req, namespace)
+    return this.invokeRemoteStreams<TOutput>(req, namespace)
   }
 
   /**
@@ -1298,38 +1711,57 @@ class Sdk implements ISdk {
       delivering &&
       (hook !== undefined || this.functionHooks.get(function_id)?.match !== undefined || readsInput(snapshot))
     const byReference = fn.message.private === true
+    // Streams in the payload reach the handler as streams, in-process (no pipe):
+    // they join this invocation's guard, and the sinks among them hold the call
+    // until they finished (R4). Copies keep the stream objects.
+    const streamed = containsStreams(request.payload)
+    const scope = streamed ? new StreamScope() : undefined
+    const passed: Array<InputStream | OutputStream> = []
+    const copy = streamed ? (value: unknown) => cloneKeepingStreams(value, cloneValue) : cloneValue
     let input: unknown
     let metadata: unknown
     let callInput: unknown
     let callMetadata: unknown
     try {
+      const payload = streamed ? this.localize(request.payload, scope, passed) : request.payload
       if (byReference) {
         // Nobody else sees either value: neither is copied, and both are read-only.
-        callInput = request.payload
+        callInput = payload
         callMetadata = request.metadata
-        input = this.resolveChannelValue(request.payload)
+        input = payload
         metadata = request.metadata
       } else {
         // What the delivery sees is the payload and metadata as the caller passed
         // them when the call started, not what the handler or the caller made of
         // them since. Not copied when nothing is delivered.
         if (copiesInput) {
-          callInput = cloneValue(request.payload)
+          callInput = copy(payload)
           callMetadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
         }
-        input = this.resolveChannelValue(cloneValue(request.payload))
+        input = copy(payload)
         metadata = request.metadata === undefined ? undefined : cloneValue(request.metadata)
       }
     } catch (error) {
       return Promise.reject(error)
     }
+    const sinks = passed.filter((s): s is OutputStream => s instanceof OutputStream && isLocalSink(s))
+    // The sources the routed path would pipe (not a ref passed on unread): a call that ends early aborts them,
+    // so the handler's read fails with STREAM_ABORTED as it does across a pipe.
+    const sources = passed.filter((s): s is InputStream => s instanceof InputStream && forwardableRef(s) === undefined)
+    /** The call failed: sinks it passed that are still open are aborted with its error. */
+    const abortSinks = (error: unknown) => {
+      for (const sink of sinks) if (!outputEnded(sink)) void sink.abort(errorText(error))
+    }
 
     const startedAt = Date.now()
     const t0 = performance.now()
     let delivery: Delivery | undefined
-    const settle = (handled: HandlerOutcome): unknown => {
+    const settle = (settled: HandlerOutcome): unknown => {
       const duration = performance.now() - t0
-      this.reporter.recordLocal(function_id, handled.ok, duration)
+      this.reporter.recordLocal(function_id, settled.ok, duration)
+      // Streams in the result go to the caller as streams: they leave the handler's guard.
+      const handled: HandlerOutcome =
+        settled.ok && containsStreams(settled.value) ? { ok: true, value: this.localize(settled.value) } : settled
       if (!delivering) {
         if (handled.ok) return handled.value
         throw handled.error
@@ -1367,10 +1799,14 @@ class Sdk implements ISdk {
       )
       .then(
         (output) => {
+          // A plain call: an untouched OutputStream is closed on success; in-process,
+          // a source of this page nobody read is released too.
+          scope?.settle({ ok: true, value: output }, { local: true })
           untrack()
           return output
         },
         (error) => {
+          scope?.settle({ ok: false, error }, { local: true })
           untrack()
           // What the remote path rejects with: the error body, as the engine forwards it.
           throw delivery ? delivery.errorBody(error) : handlerErrorBody(error)
@@ -1378,30 +1814,63 @@ class Sdk implements ISdk {
       )
 
     if (request.action?.type === 'void') {
-      done.catch((error) => this.logError(`Error invoking function ${function_id}`, error))
+      done.catch((error) => {
+        abortSinks(error)
+        this.logError(`Error invoking function ${function_id}`, error)
+      })
       return Promise.resolve(undefined as TOutput)
     }
 
     return new Promise<TOutput>((resolve, reject) => {
+      // The streams of a result the caller will not get (the call timed out): released when it expired.
+      let unclaimed: unknown
+      let timedOut = false
       // The handler's outcome is handled before anything else can fail here,
       // so it is never left as an unhandled rejection.
       let timeout: ReturnType<typeof setTimeout> | undefined
       done.then(
-        (output) => {
-          if (timeout !== undefined) clearTimeout(timeout)
+        async (output) => {
           try {
-            resolve((byReference ? output : cloneValue(output)) as TOutput)
+            const withStreams = containsStreams(output)
+            const result = withStreams ? this.localize(output) : output
+            if (timedOut) {
+              this.discardStreams(result)
+              return
+            }
+            unclaimed = result
+            // As on the routed path: a result that hands the caller a write side ends the wait for the sinks.
+            const waited = withStreams && holdsWriteSide(result) ? [] : sinks
+            const outcomes = await Promise.allSettled(waited.map(outputDone))
+            // The caller's own sink failed: that is why the call failed, whatever the handler did.
+            const failed = this.failedSink(sinks, function_id)
+            if (failed) throw failed
+            for (const settled of outcomes) {
+              if (settled.status === 'rejected') throw this.sinkFailure(settled.reason, function_id)
+            }
+            if (timeout !== undefined) clearTimeout(timeout)
+            if (timedOut) return
+            if (byReference) resolve(result as TOutput)
+            else if (withStreams) resolve(cloneKeepingStreams(result, cloneValue) as TOutput)
+            else resolve(cloneValue(result) as TOutput)
           } catch (error) {
+            if (timeout !== undefined) clearTimeout(timeout)
             reject(error)
           }
         },
         (error) => {
           if (timeout !== undefined) clearTimeout(timeout)
-          reject(error)
+          abortSinks(error)
+          reject(this.failedSink(sinks, function_id) ?? error)
         },
       )
+      // Runs until the handler returned and the sinks finished (R4): the call's timeout bounds both.
       timeout = setTimeout(() => {
-        reject(new InvocationTimeoutError(effectiveTimeout, function_id))
+        timedOut = true
+        const error = new InvocationTimeoutError(effectiveTimeout, function_id)
+        abortSinks(error)
+        for (const source of sources) void abortInput(source, errorText(error))
+        this.discardStreams(unclaimed)
+        reject(this.failedSink(sinks, function_id) ?? error)
       }, effectiveTimeout)
     })
   }
@@ -1800,45 +2269,6 @@ class Sdk implements ISdk {
     this.invocations.delete(invocation_id)
   }
 
-  /**
-   * Replaces channel refs with readers / writers. Copy-on-write: a value
-   * without refs is returned as it is. Only arrays and plain objects are
-   * walked, so a locally dispatched payload keeps its `Date`s, `Map`s and
-   * class instances.
-   */
-  private resolveChannelValue(value: unknown): unknown {
-    if (isChannelRef(value)) {
-      return value.direction === 'read'
-        ? new ChannelReader(this.address, value)
-        : new ChannelWriter(this.address, value)
-    }
-    if (Array.isArray(value)) {
-      let out: unknown[] | undefined
-      for (let i = 0; i < value.length; i++) {
-        const resolved = this.resolveChannelValue(value[i])
-        if (resolved !== value[i]) {
-          out ??= value.slice()
-          out[i] = resolved
-        }
-      }
-      return out ?? value
-    }
-    if (value !== null && typeof value === 'object') {
-      const proto = Object.getPrototypeOf(value)
-      if (proto !== Object.prototype && proto !== null) return value
-      let out: Record<string, unknown> | undefined
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const resolved = this.resolveChannelValue(v)
-        if (resolved !== v) {
-          out ??= { ...(value as Record<string, unknown>) }
-          out[k] = resolved
-        }
-      }
-      return out ?? value
-    }
-    return value
-  }
-
   private async onInvokeFunction(
     invocation_id: string | undefined,
     function_id: string,
@@ -1882,7 +2312,12 @@ class Sdk implements ISdk {
       let delivery: Delivery | undefined
       // The answer's `matched` when the call needs no delivery.
       let matched: readonly string[] | undefined
-      const resolvedInput = this.resolveChannelValue(input)
+      // The refs of the input become streams this invocation's guard tracks; in
+      // an `Observed` envelope, those under `input` and `output` become StreamInfo.
+      const scope = new StreamScope()
+      // An observer activation (an HTTP route target) keeps an untouched OutputStream open for a non-null result.
+      const guard = { activation: observeFields.activation !== undefined }
+      const resolvedInput = this.inbound(input, scope, isObservedEnvelope(input, observeFields.activation))
       // Running until the call is delivered: what code after its `await`s falls back to (`callDepth`).
       const run = async (): Promise<unknown> => {
         const untrack = trackRunning(ctx, MAX_RUNNING_INVOCATION_MS)
@@ -1927,40 +2362,61 @@ class Sdk implements ISdk {
       // carry an id and are answered like any call.
       if (!invocation_id) {
         try {
-          await run()
+          const result = await run()
+          scope.settle({ ok: true, value: result }, guard)
+          this.discardStreams(result)
         } catch (error) {
+          scope.settle({ ok: false, error }, guard)
           console.error(`[iii] Error invoking function ${function_id}`, error)
         }
         return
       }
 
+      let outcome: HandlerOutcome
       try {
-        const result = await run()
-        this.sendMessage(
-          MessageType.InvocationResult,
-          buildInvocationResult({
-            invocation_id,
-            function_id,
-            result,
-            traceparent,
-            baggage,
-            matched: delivery ? delivery.matched : matched,
-            delivered: delivery?.delivered,
-          }) as Omit<IIIMessage, 'message_type'>,
-        )
+        outcome = { ok: true, value: await run() }
       } catch (error) {
+        outcome = { ok: false, error }
+      }
+      // Streams in the result travel as refs: their pipes first, their pumps once the answer is out.
+      let outbound: OutboundStreams | undefined
+      if (outcome.ok && containsStreams(outcome.value)) {
+        try {
+          outbound = await this.prepareOutbound(outcome.value)
+          outcome = { ok: true, value: outbound.value }
+        } catch (error) {
+          this.discardStreams(outcome.value)
+          outcome = { ok: false, error }
+        }
+      }
+      // The guard starts its closes and cancels before the answer goes out (R2, R3).
+      scope.settle(outcome, guard)
+      const answer = (o: HandlerOutcome) =>
         this.sendMessage(
           MessageType.InvocationResult,
           buildInvocationResult({
             invocation_id,
             function_id,
-            error: delivery ? delivery.errorBody(error) : handlerErrorBody(error),
+            ...(o.ok
+              ? { result: o.value }
+              : { error: delivery ? delivery.errorBody(o.error) : handlerErrorBody(o.error) }),
             traceparent,
             baggage,
             matched: delivery ? delivery.matched : matched,
             delivered: delivery?.delivered,
           }) as Omit<IIIMessage, 'message_type'>,
         )
+      try {
+        answer(outcome)
+      } catch (error) {
+        // The result could not go out (not serializable): its streams are dropped, and the caller gets the error.
+        outbound?.cancel(error)
+        if (!outcome.ok) throw error
+        answer({ ok: false, error })
+        return
+      }
+      for (const sink of outbound?.start() ?? []) {
+        sink.catch((error) => this.logError(`Stream sink returned by ${function_id} failed`, error))
       }
     } else {
       const errorCode = fn ? 'function_not_invokable' : 'function_not_found'
@@ -2234,7 +2690,6 @@ class Sdk implements ISdk {
     this.setConnectionState('failed')
     this.ws?.close()
   }
-
 }
 
 /**

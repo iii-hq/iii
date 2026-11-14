@@ -13,21 +13,15 @@
 //! other process. Only a `path://` container can opt in so far: a package's `scripts.run` is
 //! refused, so nothing sets [`PACKAGE_DIR_ENV`] yet.
 
-use std::{
-    collections::BTreeMap,
-    io::Write,
-    process::ExitStatus,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::BTreeMap, io::Write, process::ExitStatus, sync::Arc, time::Duration};
 
 use iii_sandbox_contract::{
-    self as contract, ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR,
-    FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
-    SandboxErrorCode, WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STOP,
-    WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
-    WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
-    WorkerStartResponse, WorkerStatus, WorkerStopRequest,
+    ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR, FEATURE_LEASE,
+    FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream, SandboxErrorCode,
+    WORKER_DESTROY, WORKER_LOGS, WORKER_PREPARE, WORKER_START, WORKER_STOP, WorkerDestroyRequest,
+    WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerPrepareRequest,
+    WorkerPrepareResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
+    WorkerStopRequest,
 };
 use iii_sdk::{IIIClient, InitOptions, WorkerIdentityMode, iii::WorkerMetadata, register_worker};
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
@@ -735,10 +729,11 @@ impl Logs {
             }
             None => {}
         }
-        let created =
-            tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
-                .await;
-        let Ok(Ok(channel)) = created else {
+        let created = tokio::time::timeout(CALL_TIMEOUT, client.pipe()).await;
+        let Ok(Ok(pipe)) = created else {
+            return;
+        };
+        let Ok(channel) = sandbox::writer_ref(&pipe.output) else {
             return;
         };
         let request = WorkerLogsRequest {
@@ -746,11 +741,7 @@ impl Logs {
             vm_id: vm.vm_id.clone(),
             cursor: self.cursor,
             follow: true,
-            channel: contract::StreamChannelRef {
-                channel_id: channel.writer_ref.channel_id,
-                access_key: channel.writer_ref.access_key,
-                direction: contract::ChannelDirection::Write,
-            },
+            channel,
             from_end: self.from_end,
         };
         let reply = sandbox::call::<WorkerLogsResponse>(
@@ -768,7 +759,7 @@ impl Logs {
                 self.from_end = false;
                 self.cursor = started.cursor;
             }
-            self.capture = Some(print_records(channel.reader, self.printer.clone()));
+            self.capture = Some(print_records(pipe.input, self.printer.clone()));
         }
     }
 
@@ -781,28 +772,26 @@ impl Logs {
     }
 }
 
-/// Prints every `LogRecord` frame on `reader` until the channel closes, then resolves to the
+/// Prints every `LogRecord` frame on `reader` until the stream ends, then resolves to the
 /// cursor of the last one.
-fn print_records(
-    reader: iii_sdk::channel::ChannelReader,
-    printer: Printer,
-) -> JoinHandle<Option<u64>> {
+fn print_records(reader: iii_sdk::InputStream, printer: Printer) -> JoinHandle<Option<u64>> {
+    use futures::StreamExt;
+    use iii_sdk::protocol::ChannelItem;
+
     tokio::spawn(async move {
-        let last = Arc::new(Mutex::new(None));
-        let seen = last.clone();
-        reader
-            .on_message(move |frame| {
-                let Ok(record) = serde_json::from_str::<LogRecord>(&frame) else {
-                    return;
-                };
-                (printer.0)(&record);
-                if let Ok(mut seen) = seen.lock() {
-                    *seen = Some(record.cursor);
-                }
-            })
-            .await;
-        while let Ok(Some(_)) = reader.next_binary().await {}
-        last.lock().ok().and_then(|last| *last)
+        let mut last = None;
+        let mut frames = std::pin::pin!(reader.frames());
+        while let Some(Ok(frame)) = frames.next().await {
+            let ChannelItem::Text(frame) = frame else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<LogRecord>(&frame) else {
+                continue;
+            };
+            (printer.0)(&record);
+            last = Some(record.cursor);
+        }
+        last
     })
 }
 
@@ -812,6 +801,7 @@ mod tests {
     use crate::sandbox::tests::{answered, fake_engine, refused};
     use iii_sandbox_contract::{ContractVersion, State};
     use serde_json::{Value, json};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn compose_vars() -> BTreeMap<String, String> {

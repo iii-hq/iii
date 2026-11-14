@@ -5,6 +5,121 @@ owner: "devrel"
 type: "reference"
 ---
 
+<Update label="0.27.0" description="Unreleased">
+  ## Streams in call payloads and results
+
+  Every SDK (TypeScript for Node and the browser, Python, Rust, and Go) replaces the Channels API
+  with call-native streams. A stream is a value of a call: put a file, a readable, or a generator in
+  a payload or a result, and the function on the other side receives an `InputStream` to read; put a
+  writable or a file to create there, and it receives an `OutputStream` to write. The engine, its
+  channel functions, and the wire are unchanged, except for the text of `payload_too_large` errors.
+  It is a breaking change for the workers whose SDK you upgrade; workers on 0.26 SDKs need no
+  change. See [Upgrading from 0.26.x](/next/upgrading/from-0-26-x).
+
+  - The SDK finds streams in what it sends, call payloads and handler results, creates one pipe per
+    stream with `engine::channels::create` (in parallel when there are several), puts the ref in its
+    place, and pumps the data with backpressure. Sources are Node `Readable`, Web `ReadableStream`,
+    `Blob`, async generators, and `InputStream.from(...)` in TypeScript; async generators, binary
+    files, and `InputStream.from_file()`, `from_iter()`, and `from_bytes()` in Python;
+    `InputStream::from_reader`, `from_stream`, and `from_bytes` in Rust; and
+    `iii.InputStreamFromReader` and `iii.InputStreamFromBytes` in Go. Sinks are Node `Writable`,
+    Web `WritableStream`, `OutputStream.to_file()` and `OutputStream.to()` in Python,
+    `OutputStream::to_writer` in Rust, and `iii.OutputStreamToWriter` in Go. The browser SDK takes
+    the Web types. Plain objects, strings, and buffers stay JSON.
+  - Refs become streams in handler input and, new, in call results, so a function can return a
+    stream. In Rust, `InputStream` and `OutputStream` implement `Serialize`, `Deserialize`, and
+    `JsonSchema`: declare them as fields of your input and output types, with no ref lookup or engine
+    address. In Go, `*iii.InputStream` and `*iii.OutputStream` fields unmarshal to streams the same
+    way.
+  - `InputStream` reads byte chunks, all of it (`bytes()`, `text()`, Python and Rust `read_all()`),
+    lines, JSON messages (`messages()`), or both in order (`frames()`), and bridges to native streams
+    (`toReadable()`, `toWebStream()`, Rust `AsyncRead`). `OutputStream` writes bytes (`write`),
+    sends JSON messages (`send`), and closes or aborts (`close`, `abort(reason)`), with native
+    bridges (`toWritable()`, `toWebStream()`, Python `async with`, Rust `AsyncWrite`). In Go, an
+    `InputStream` is an `io.Reader`, `Lines`, `Messages`, and `Frames` are iterators, and
+    `OutputStream.Writer(ctx)` returns an `io.Writer`.
+  - Lifecycle rules: a source that ends closes its stream, and one that fails aborts it. A received
+    `OutputStream` closes when the handler returns and aborts when it throws, unless the handler
+    calls `keepOpen()`. In a call through an observer, such as an HTTP route, an `OutputStream` the
+    handler never used closes only when the handler returns nothing, so a route that returns a
+    buffered response keeps it. A received `InputStream` the handler started and did not finish is
+    cancelled when it returns, and a read of a cancelled stream fails with `STREAM_CLOSED` instead
+    of ending. A call resolves after the sinks passed to it finish, within the call's
+    timeout, and fails with `STREAM_ABORTED` if one was aborted. Forwarding an unread `InputStream` sends its ref, so no
+    bytes pass through the forwarding worker.
+  - `abort(reason)` is one call in every SDK, and it opens the socket first when needed, so the
+    reader always learns of the failure. The reader gets `StreamAbortedError` (TypeScript, browser,
+    Python), `Error::StreamAborted` (Rust), or an `*iii.InvocationError` (Go), with the code
+    `STREAM_ABORTED`, after the data already sent. The browser SDK aborts with close code 4011,
+    since a browser cannot send 1011, and the engine treats it as an abort.
+  - A stream has one reader: a second read fails. In TypeScript (Node and browser) and Python,
+    `tee()` makes copies in the same process.
+  - Through the engine, an aborted stream's `reason` on the reader's side is the engine's
+    description of the close (`channel writer aborted: closed with code 1011`): the engine does not
+    relay the writer's own reason. Put the cause in the call's error.
+  - `CallAction.Enqueue` with a stream in its payload is refused before it is sent, with
+    `STREAM_NOT_ALLOWED`. `CallAction.Void` is allowed.
+  - Misuse has its own codes in every SDK: `STREAM_CLOSED` for a write after `close()` or
+    `abort()`, and `STREAM_IN_USE` for a second read, the same stream twice in one payload, or
+    passing on a stream already read to the end or already sent. Python raises them as
+    `StreamClosedError` and `StreamInUseError`, and Rust returns `Error::StreamClosed` and
+    `Error::StreamInUse`. In Rust, `Error::code()` gives the code of any error that has one, `TIMEOUT`
+    included. Go returns an `*iii.InvocationError` with `iii.CodeStreamClosed` or
+    `iii.CodeStreamInUse`.
+  - `iii.pipe()` (Python `pipe()` and `pipe_async()`, Go `client.Pipe(ctx)`) is the explicit form:
+    it returns an `input` and an `output` end for a stream handed out before its data exists or a
+    two-way session.
+  - An observer that captures the `input` or `output` of a call that carried a stream receives a
+    `StreamInfo` (`{ stream: true, direction, id }`) in that field instead of a live end, so it
+    cannot take the bytes from the function it observes.
+  - The HTTP worker's `request_body` and `response` are an `InputStream` and an `OutputStream`. The
+    status and the headers are messages (`response.send({ type: "set_status", status_code })`), and
+    the body is bytes (`response.write(chunk)`). The JSON the HTTP worker reads is unchanged.
+  - The `payload_too_large` error of the engine and of every SDK, Go and browser included, says `Use
+    streams for larger payloads` and links to
+    [Streaming / Payload size](/next/creating-workers/streaming#payload-size).
+
+  See [Streaming](/next/creating-workers/streaming) and
+  [Streaming architecture](/next/understanding-iii/streaming). The Channels pages moved there:
+  `/next/understanding-iii/channels` and `/next/creating-workers/channels` redirect to them.
+
+  ## Removed
+
+  - **TypeScript (`iii-sdk`):** `createChannel` from `iii-sdk/helpers`, the `iii-sdk/channel`
+    subpath, and `Channel`, `ChannelReader`, and `ChannelWriter`. `extractChannelRefs`,
+    `isChannelRef`, `StreamChannelRef`, `ChannelDirection`, and `ChannelItem` move from
+    `iii-sdk/helpers` to `iii-sdk/protocol`.
+  - **Python (`iii-sdk`):** `create_channel`, `create_channel_async`, `Channel`, `ChannelReader`,
+    and `ChannelWriter` from `iii` and `iii.helpers`, and the `iii.channel` module. The ref helpers
+    (`StreamChannelRef`, `is_channel_ref`, `extract_channel_refs`, `ChannelDirection`,
+    `ChannelItem`) move to `iii.protocol`.
+  - **Rust (`iii-sdk`):** `iii_sdk::helpers::create_channel`, and `Channel`, `ChannelReader`, and
+    `ChannelWriter` from `iii_sdk::channel`. `StreamChannelRef`, `ChannelDirection`, `ChannelItem`,
+    `extract_channel_refs`, and `is_channel_ref` are under `iii_sdk::protocol`. `Error` has two new
+    variants, `StreamAborted { reason }` and `StreamNotAllowed`, so an exhaustive `match` on it needs
+    new arms.
+  - **Go (`github.com/iii-hq/iii/sdk/packages/go/iii`):** `Client.CreateChannel`,
+    `Client.OpenReader`, `Client.OpenWriter`, the package functions `OpenReader` and `OpenWriter`,
+    `Channel`, `ChannelReader`, `ChannelWriter`, and `ExtractChannelRefs`. `StreamChannelRef` and
+    `ChannelDirection` stay in package `iii`.
+  - **Browser (`iii-browser-sdk`):** `createChannel` from `iii-browser-sdk/helpers`, and `Channel`,
+    `ChannelReader`, and `ChannelWriter`. `extractChannelRefs`, `isChannelRef`, `StreamChannelRef`,
+    `ChannelDirection`, and `ChannelItem` move to `iii-browser-sdk/protocol`.
+  - **HTTP response helpers:** the TypeScript `StreamResponse` methods `status()` and `headers()`
+    return a promise, and it gains `write()`. The Python `StreamResponse` wraps the `OutputStream`:
+    `status()`, `headers()`, `write()`, and `close()` are async, and `stream` is removed. In Go's
+    `helpers/http`, `Wrap` takes only the handler, `NewStreamResponse` takes an `*iii.OutputStream`,
+    the `RequestBody` and `Response` fields are streams, and `ErrResponseClosed` is removed: a write
+    after `Close` fails with `STREAM_CLOSED`.
+
+  <Callout type="warning">
+    A worker you move to a 0.27 SDK must replace its channel code in the same change: the old names
+    have no deprecated aliases. Workers on 0.26 SDKs keep working on the same engine, and refs cross
+    between old and new SDKs in both directions. See
+    [Upgrading from 0.26.x](/next/upgrading/from-0-26-x).
+  </Callout>
+</Update>
+
 <Update label="0.26.0" description="November 2026">
   ## Functions, observers, and four hooks
 

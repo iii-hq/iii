@@ -1,63 +1,58 @@
-//! Integration tests for data channel streaming between workers.
+//! Integration tests for data streaming between functions with call-native
+//! streams: an `InputStream` or `OutputStream` in a payload crosses an engine
+//! pipe (`Dispatch::Remote`).
 //!
-//! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
+//! Only the shared client lives in this binary, so the streams the test
+//! bodies receive bind to it lazily, with no `bind` call.
+//!
+//! Requires a running III engine. Set III_URL, or use the default.
 
 mod common;
 
-use std::sync::Arc;
-use std::time::Duration;
-
+use bytes::Bytes;
+use futures_util::{StreamExt, TryStreamExt};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
 
-use iii_sdk::CallRequest;
-use iii_sdk::{Error, RegisterFunction};
+use iii_sdk::protocol::{ChannelItem, STREAM_ABORTED};
+use iii_sdk::{CallRequest, Dispatch, Error, InputStream, OutputStream, Pipe, RegisterFunction};
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct Batch {
+    label: String,
+    reader: InputStream,
+}
 
 #[tokio::test]
 async fn stream_data_from_sender_to_processor() {
     let iii = common::shared_iii();
 
-    let iii_for_processor = iii.clone();
     iii.register_function(
         "test::data::processor::rs",
-        RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_processor.clone();
-            async move {
-                let label = input["label"].as_str().unwrap_or_default().to_string();
+        RegisterFunction::new_async(|batch: Batch| async move {
+            let raw = batch.reader.read_all().await?;
+            let records: Vec<Value> = serde_json::from_slice(&raw)?;
 
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| k == "reader" && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader channel ref");
+            let values: Vec<f64> = records
+                .iter()
+                .filter_map(|r| r["value"].as_f64())
+                .collect();
 
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-                let raw = reader.read_all().await.map_err(|e| Error::Handler(e.to_string()))?;
-                let records: Vec<Value> = serde_json::from_slice(&raw)
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+            let sum: f64 = values.iter().sum();
+            let count = values.len();
+            let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-                let values: Vec<f64> = records
-                    .iter()
-                    .filter_map(|r| r["value"].as_f64())
-                    .collect();
-
-                let sum: f64 = values.iter().sum();
-                let count = values.len();
-                let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-                Ok(json!({
-                    "label": label,
-                    "messages": [
-                        {"type": "stat", "key": "count", "value": count},
-                        {"type": "stat", "key": "sum", "value": sum},
-                        {"type": "stat", "key": "average", "value": if count > 0 { sum / count as f64 } else { 0.0 }},
-                        {"type": "stat", "key": "min", "value": min},
-                        {"type": "stat", "key": "max", "value": max},
-                    ],
-                }))
-            }
+            Ok::<_, Error>(json!({
+                "label": batch.label,
+                "messages": [
+                    {"type": "stat", "key": "count", "value": count},
+                    {"type": "stat", "key": "sum", "value": sum},
+                    {"type": "stat", "key": "average", "value": if count > 0 { sum / count as f64 } else { 0.0 }},
+                    {"type": "stat", "key": "min", "value": min},
+                    {"type": "stat", "key": "max", "value": max},
+                ],
+            }))
         }),
     );
 
@@ -67,38 +62,18 @@ async fn stream_data_from_sender_to_processor() {
         RegisterFunction::new_async(move |input: Value| {
             let iii = iii_for_sender.clone();
             async move {
-                let records = input["records"].clone();
-                let channel = iii_sdk::helpers::create_channel(&iii, None)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let payload =
-                    serde_json::to_vec(&records).map_err(|e| Error::Handler(e.to_string()))?;
-                channel
-                    .writer
-                    .write(&payload)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                channel
-                    .writer
-                    .close()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let result = iii
-                    .call(CallRequest {
-                        function_id: "test::data::processor::rs".to_string(),
-                        payload: json!({
+                let payload = serde_json::to_vec(&input["records"])?;
+                iii.call(
+                    CallRequest::new(
+                        "test::data::processor::rs",
+                        json!({
                             "label": "metrics-batch",
-                            "reader": channel.reader_ref,
+                            "reader": InputStream::from_bytes(payload),
                         }),
-                        action: None,
-                        timeout_ms: None,
-                    })
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                Ok(result)
+                    )
+                    .dispatch(Dispatch::Remote),
+                )
+                .await
             }
         }),
     );
@@ -114,12 +89,10 @@ async fn stream_data_from_sender_to_processor() {
     ]);
 
     let result = iii
-        .call(CallRequest {
-            function_id: "test::data::sender::rs".to_string(),
-            payload: json!({"records": records}),
-            action: None,
-            timeout_ms: None,
-        })
+        .call(CallRequest::new(
+            "test::data::sender::rs",
+            json!({"records": records}),
+        ))
         .await
         .expect("call failed");
 
@@ -147,93 +120,47 @@ async fn stream_data_from_sender_to_processor() {
     assert_eq!(stats["max"], 2048.0);
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+struct Duplex {
+    reader: InputStream,
+    writer: OutputStream,
+}
+
 #[tokio::test]
 async fn bidirectional_streaming() {
     let iii = common::shared_iii();
 
-    let iii_for_worker = iii.clone();
     iii.register_function(
         "test::stream::worker::rs",
-        RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_worker.clone();
-            async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k == "reader"
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader");
-
-                let writer_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k == "writer"
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer");
-
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
-
-                let mut chunks: Vec<Vec<u8>> = Vec::new();
-                let mut chunk_count = 0;
-
-                while let Some(chunk) = reader
-                    .next_binary()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?
-                {
-                    chunks.push(chunk);
-                    chunk_count += 1;
-                    writer
-                        .send_message(
-                            &serde_json::to_string(&json!({
-                                "type": "progress",
-                                "chunks_received": chunk_count,
-                            }))
-                            .unwrap(),
-                        )
-                        .await
-                        .map_err(|e| Error::Handler(e.to_string()))?;
-                }
-
-                let full_data: Vec<u8> = chunks.iter().flatten().copied().collect();
-                let text = String::from_utf8_lossy(&full_data);
-                let words: Vec<&str> = text.split_whitespace().collect();
-
+        RegisterFunction::new_async(|duplex: Duplex| async move {
+            let Duplex { mut reader, writer } = duplex;
+            let mut full_data = Vec::new();
+            let mut chunk_count = 0;
+            while let Some(chunk) = reader.next().await {
+                full_data.extend_from_slice(&chunk?);
+                chunk_count += 1;
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "complete",
-                            "word_count": words.len(),
-                            "byte_count": full_data.len(),
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let result_json = serde_json::to_vec(&json!({
-                    "words": &words[..5.min(words.len())],
-                    "total": words.len(),
-                }))
-                .map_err(|e| Error::Handler(e.to_string()))?;
-                writer
-                    .write(&result_json)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                writer
-                    .close()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                Ok(json!({"status": "done"}))
+                    .send(&json!({ "type": "progress", "chunks_received": chunk_count }))
+                    .await?;
             }
+
+            let text = String::from_utf8_lossy(&full_data);
+            let words: Vec<&str> = text.split_whitespace().collect();
+            writer
+                .send(&json!({
+                    "type": "complete",
+                    "word_count": words.len(),
+                    "byte_count": full_data.len(),
+                }))
+                .await?;
+            let result_json = serde_json::to_vec(&json!({
+                "words": &words[..5.min(words.len())],
+                "total": words.len(),
+            }))?;
+            writer.write(&result_json).await?;
+            writer.close().await?;
+
+            Ok::<_, Error>(json!({"status": "done"}))
         }),
     );
 
@@ -245,84 +172,43 @@ async fn bidirectional_streaming() {
             async move {
                 let text = input["text"].as_str().unwrap_or_default().to_string();
                 let chunk_size = input["chunkSize"].as_u64().unwrap_or(10) as usize;
+                let chunks: Vec<Result<Bytes, std::io::Error>> = text
+                    .as_bytes()
+                    .chunks(chunk_size)
+                    .map(|chunk| Ok(Bytes::copy_from_slice(chunk)))
+                    .collect();
 
-                let input_channel = iii_sdk::helpers::create_channel(&iii, None)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                let output_channel = iii_sdk::helpers::create_channel(&iii, None)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+                let Pipe {
+                    input: output_reader,
+                    output,
+                } = iii.pipe().await?;
+                let call = iii.call(
+                    CallRequest::new(
+                        "test::stream::worker::rs",
+                        json!({
+                            "reader": InputStream::from_stream(futures_util::stream::iter(chunks)),
+                            "writer": output,
+                        }),
+                    )
+                    .dispatch(Dispatch::Remote),
+                );
+                let frames = output_reader.frames().try_collect::<Vec<ChannelItem>>();
+                let (worker_result, frames) = tokio::try_join!(call, frames)?;
 
-                let messages: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
-                let msgs_clone = messages.clone();
-                output_channel
-                    .reader
-                    .on_message(move |msg| {
-                        if let Ok(parsed) = serde_json::from_str::<Value>(&msg) {
-                            let msgs = msgs_clone.clone();
-                            tokio::spawn(async move {
-                                msgs.lock().await.push(parsed);
-                            });
+                let mut messages = Vec::new();
+                let mut binary = Vec::new();
+                for frame in frames {
+                    match frame {
+                        ChannelItem::Text(text) => {
+                            messages.push(serde_json::from_str::<Value>(&text)?)
                         }
-                    })
-                    .await;
-
-                let text_bytes = text.as_bytes().to_vec();
-                let writer = input_channel.writer;
-                let write_handle = tokio::spawn(async move {
-                    let mut offset = 0;
-                    while offset < text_bytes.len() {
-                        let end = (offset + chunk_size).min(text_bytes.len());
-                        writer
-                            .write(&text_bytes[offset..end])
-                            .await
-                            .expect("channel write failed");
-                        offset = end;
+                        ChannelItem::Binary(data) => binary.extend(data),
                     }
-                    writer.close().await.expect("channel close failed");
-                });
+                }
+                let binary_result: Value = serde_json::from_slice(&binary)?;
 
-                let call_handle = {
-                    let iii = iii.clone();
-                    let reader_ref = input_channel.reader_ref.clone();
-                    let writer_ref = output_channel.writer_ref.clone();
-                    tokio::spawn(async move {
-                        iii.call(CallRequest {
-                            function_id: "test::stream::worker::rs".to_string(),
-                            payload: json!({
-                                "reader": reader_ref,
-                                "writer": writer_ref,
-                            }),
-                            action: None,
-                            timeout_ms: None,
-                        })
-                        .await
-                    })
-                };
-
-                let result_data = output_channel
-                    .reader
-                    .read_all()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                write_handle
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                let worker_result = call_handle
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let binary_result: Value = serde_json::from_slice(&result_data)
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                // Give a moment for async message callbacks to settle
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let collected_messages = messages.lock().await.clone();
-
-                Ok(json!({
-                    "messages": collected_messages,
+                Ok::<_, Error>(json!({
+                    "messages": messages,
                     "binaryResult": binary_result,
                     "workerResult": worker_result,
                 }))
@@ -335,15 +221,13 @@ async fn bidirectional_streaming() {
     let text = "The quick brown fox jumps over the lazy dog and then runs around the park";
 
     let result = iii
-        .call(CallRequest {
-            function_id: "test::stream::coordinator::rs".to_string(),
-            payload: json!({
+        .call(CallRequest::new(
+            "test::stream::coordinator::rs",
+            json!({
                 "text": text,
                 "chunkSize": 10,
             }),
-            action: None,
-            timeout_ms: None,
-        })
+        ))
         .await
         .expect("call failed");
 
@@ -369,25 +253,46 @@ async fn bidirectional_streaming() {
 }
 
 /// A writer dropped without `close()` (a crash, a cancelled task) cuts the
-/// stream: the reader gets the data sent before it, then an error, never a
-/// clean end.
+/// stream: the reader gets the data sent before it, then `STREAM_ABORTED`,
+/// never a clean end.
 #[tokio::test]
 async fn reader_fails_when_the_writer_drops_without_close() {
     let iii = common::shared_iii();
-    let channel = iii_sdk::helpers::create_channel(iii, None)
-        .await
-        .expect("create channel");
-    channel.writer.write(b"partial").await.expect("write");
-    drop(channel.writer);
+    let Pipe { input, output } = iii.pipe().await.expect("create pipe");
+    output.write(b"partial").await.expect("write");
+    drop(output);
 
+    let mut input = input;
     let mut read = Vec::new();
     let error = loop {
-        match channel.reader.next_binary().await {
-            Ok(Some(chunk)) => read.extend(chunk),
-            Ok(None) => panic!("a cut stream must not end cleanly"),
-            Err(error) => break error,
+        match input.next().await {
+            Some(Ok(chunk)) => read.extend_from_slice(&chunk),
+            None => panic!("a cut stream must not end cleanly"),
+            Some(Err(error)) => break error,
         }
     };
     assert_eq!(read, b"partial");
-    assert!(error.to_string().contains("1011"), "{error}");
+    assert_eq!(error.code(), Some(STREAM_ABORTED), "{error}");
+}
+
+/// A stream a function returns reaches a caller outside any handler, which
+/// reads it with no `bind`: it binds to the only client alive.
+#[tokio::test]
+async fn a_returned_stream_binds_lazily_to_the_only_client() {
+    let iii = common::shared_iii();
+    iii.register_function(
+        "test::stream::export::rs",
+        RegisterFunction::new_async(|_: Value| async move {
+            Ok::<_, Error>(json!({ "csv": InputStream::from_bytes(&b"a,b\n1,2\n"[..]) }))
+        }),
+    );
+    common::settle().await;
+
+    let result = iii
+        .call(CallRequest::new("test::stream::export::rs", json!({})).dispatch(Dispatch::Remote))
+        .await
+        .expect("call failed");
+    let csv: InputStream = serde_json::from_value(result["csv"].clone()).unwrap();
+    let lines: Vec<String> = csv.lines().try_collect().await.unwrap();
+    assert_eq!(lines, ["a,b", "1,2"]);
 }

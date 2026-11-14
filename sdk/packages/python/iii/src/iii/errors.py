@@ -33,6 +33,69 @@ class InvocationError(Exception):
         self.invocation_id = invocation_id
 
 
+class StreamClosedError(InvocationError, RuntimeError):
+    """A write or send on an :class:`~iii.OutputStream` that is closed or aborted
+    (``code`` is ``'STREAM_CLOSED'``); also passing such a stream to a call.
+
+    Also a :class:`RuntimeError`, as these errors were before they had a code.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__("STREAM_CLOSED", message)
+
+
+class StreamInUseError(InvocationError, RuntimeError):
+    """A stream used where it can no longer be (``code`` is ``'STREAM_IN_USE'``): a
+    second reader of an :class:`~iii.InputStream`, the same stream twice in one
+    payload, a stream passed on after it was read to the end or already sent to
+    another call, or a write to an :class:`~iii.OutputStream` passed on.
+
+    Also a :class:`RuntimeError`, as these errors were before they had a code.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__("STREAM_IN_USE", message)
+
+
+class StreamAbortedError(InvocationError):
+    """A stream ended in failure instead of a clean close (``code`` is ``'STREAM_ABORTED'``).
+
+    Raised by a read of an :class:`~iii.InputStream` whose writer aborted it
+    (its source failed, its handler raised, or its socket was lost), once the
+    data sent before the abort has been read. A call rejects with it when a
+    sink passed in its payload was aborted, even if the function succeeded.
+
+    Attributes:
+        reason: Why the stream was aborted, as the reader learned it. A 0.26
+            engine relays an abort as ``channel writer aborted: closed with
+            code <n>`` (or ``connection lost before close``), not the
+            writer's own reason.
+        close_code: The WebSocket close code the reader got (``1011`` for an
+            abort the engine relayed), or ``None`` for an abort raised in
+            this process.
+    """
+
+    def __init__(
+        self,
+        reason: str = "",
+        *,
+        close_code: int | None = None,
+        function_id: str | None = None,
+        invocation_id: str | None = None,
+    ) -> None:
+        detail = f"close {close_code}" if close_code is not None else ""
+        if reason:
+            detail = f"{detail}: {reason}" if detail else reason
+        super().__init__(
+            "STREAM_ABORTED",
+            f"stream aborted ({detail})" if detail else "stream aborted",
+            function_id=function_id,
+            invocation_id=invocation_id,
+        )
+        self.reason = reason
+        self.close_code = close_code
+
+
 class RegistrationRejectedError(Exception):
     """Raised when the engine rejects this worker's registration.
 

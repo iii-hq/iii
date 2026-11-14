@@ -15,6 +15,31 @@ pub const WORKER_NAMESPACE_CONFLICT: &str = "WORKER_NAMESPACE_CONFLICT";
 /// functions. Mirrors the engine constant of the same name.
 pub const FUNCTION_NAMESPACE_CONFLICT: &str = "FUNCTION_NAMESPACE_CONFLICT";
 
+/// The low-level stream wire: the ref a payload carries for one end of an
+/// engine pipe. Handlers and callers use [`InputStream`](crate::InputStream)
+/// and [`OutputStream`](crate::OutputStream), which deserialize from these
+/// refs and serialize to them.
+pub use crate::channels::{
+    ChannelDirection, ChannelItem, StreamChannelRef, extract_channel_refs, is_channel_ref,
+};
+
+/// Code of [`Error::StreamAborted`](crate::Error::StreamAborted): a stream
+/// ended with an abort, or a call's sink received one.
+pub const STREAM_ABORTED: &str = "STREAM_ABORTED";
+
+/// Code of [`Error::StreamNotAllowed`](crate::Error::StreamNotAllowed): a
+/// payload with a stream sent with [`CallAction::Enqueue`].
+pub const STREAM_NOT_ALLOWED: &str = "STREAM_NOT_ALLOWED";
+
+/// Code of [`Error::StreamClosed`](crate::Error::StreamClosed): a write or
+/// send on a stream already closed or aborted.
+pub const STREAM_CLOSED: &str = "STREAM_CLOSED";
+
+/// Code of [`Error::StreamInUse`](crate::Error::StreamInUse): a second
+/// reader, the same stream twice in one payload, or a stream sent on after it
+/// was read to the end or already sent.
+pub const STREAM_IN_USE: &str = "STREAM_IN_USE";
+
 /// Response header in which the engine lists optional transport capabilities
 /// on every worker-listener response, including the WebSocket upgrade, as
 /// comma-separated tokens. Workers ignore tokens they do not know.

@@ -2,7 +2,14 @@
 
 from iii_helpers.queue import EnqueueResult
 
-from .errors import InvocationError, ObserveRejection, RegistrationRejectedError
+from .errors import (
+    InvocationError,
+    ObserveRejection,
+    RegistrationRejectedError,
+    StreamAbortedError,
+    StreamClosedError,
+    StreamInUseError,
+)
 from .iii import CallAction, TriggerAction, register_worker
 from .iii_constants import (
     DEFAULT_ENGINE_URL,
@@ -41,6 +48,7 @@ from .observe_types import (
 )
 from .observer_handle import ObserverHandle
 from .stream import IStream
+from .streams import InputStream, OutputStream, Pipe, StreamInfo
 from .types import (
     IIIClient,
     StreamRequest,
@@ -52,6 +60,9 @@ __all__ = [
     "InvocationError",
     "ObserveRejection",
     "RegistrationRejectedError",
+    "StreamAbortedError",
+    "StreamClosedError",
+    "StreamInUseError",
     # Core
     "CallAction",
     "ConnectionStateCallback",
@@ -75,7 +86,12 @@ __all__ = [
     "IIIClient",
     "StreamRequest",
     "StreamResponse",
-    # Stream
+    # Streams
+    "InputStream",
+    "OutputStream",
+    "Pipe",
+    "StreamInfo",
+    # Stream (iii-stream, deprecated)
     "IStream",
     # Observe
     "AddedHook",
