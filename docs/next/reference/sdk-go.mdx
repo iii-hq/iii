@@ -41,7 +41,7 @@ func RegisterWorker(url string, opts ...Option) *Client
       WithDescription sets a one-line, human/LLM-readable summary of what this worker does. Surfaces in engine::workers::list / engine::workers::info.
     </ParamField>
     <ParamField body="WithHeaders" type="func(h http.Header) Option" required>
-      WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
+      WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of the stream sockets of this client (see `InputStream` and `OutputStream`). The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
     </ParamField>
     <ParamField body="WithInvocationTimeout" type="func(d time.Duration) Option" required>
       WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
@@ -274,7 +274,7 @@ default:
 
 Observe observes a function: when source.FunctionID runs, target runs, for every call that the function's worker delivers to the observer and that passes source.Filters. target is a function registered by some worker (until it is, the observer stays pending). source.Args go to the worker that hosts the function, which reads them in its hooks (a route, a table).
 
-It returns the handle immediately, even before the connection is up; the observer is replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS, INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and UNSUPPORTED against an engine without observe) show up as state error and fail `ObserverHandle.Ready`. An observeresult in state error is the engine's refusal of that observe and the handle's final answer: the engine holds no observer for it (it stores nothing for a refused observe, and disposes an observer it holds in error as it answers that observer's replay), the handle is not sent again on a later connection, and its Dispose sends nothing. An observer that turns error after its observe was answered (the host's rejection, OWNER_TIMEOUT) is held by the engine: the handle is replayed, and its Dispose unobserves it. The returned error is for a request that cannot be sent at all: a missing function or target, a blank namespace, args or filters that are not JSON, and an id a handle of this client holds. A handle holds its id until it is disposed (by `ObserverHandle.Dispose` or by the engine); an Observe of a held id sends nothing, leaves the holder alone and returns an \*ObserveRejectionError with code OBSERVER_ID_CONFLICT. Once the holder is disposed the id is free at once.
+It returns the handle immediately, even before the connection is up; the observer is replayed with the same id on every reconnect. Errors from the engine (INVALID_ARGS, INVALID_FILTER, FORBIDDEN, NOT_OBSERVABLE, SELF_TARGET, the host's rejection, and UNSUPPORTED against an engine without observe) show up as state error and fail `ObserverHandle.Ready`. An observeresult in state error is the engine's refusal of that observe and the handle's final answer: the engine holds no observer for it (it stores nothing for a refused observe, and disposes an observer it holds in error as it answers that observer's replay), the handle is not sent again on a later connection, and its Dispose sends nothing. An observer that turns error after its observe was answered (the host's rejection, OWNER_TIMEOUT) is held by the engine: the handle is replayed, and its Dispose unobserves it. The returned error is for a request that cannot be sent at all: a missing function or target, a blank namespace, args or filters that are not JSON, and an id a handle of this client holds. A handle holds its id until it is disposed (by `ObserverHandle.Dispose` or by the engine); an Observe of a held id sends nothing, leaves the holder alone and returns an \*ObserveRejectionError with code OBSERVER_ID_CONFLICT. Once the holder is disposed the id is free at once. An observer without MaxFires or ExpiresIn that the engine disposed while this worker was away past its grace period (OBSERVER_DISCONNECTED) is not reported disposed: the handle observes again, with the same id, as a new observer (pending, then the engine's answer).
 
 **Signature**
 
@@ -466,27 +466,6 @@ ConnectionState returns the current state of the connection to the engine. It mi
 ```go
 func (c *Client) ConnectionState() ConnectionState
 ```
-
----
-
-### Client.CreateChannel
-
-CreateChannel asks the engine to allocate a streaming channel and returns both ends. bufferSize bounds the engine's internal queue; nil uses the engine default.
-
-**Signature**
-
-```go
-func (c *Client) CreateChannel(ctx context.Context, bufferSize *int) (*Channel, error)
-```
-
-#### Parameters
-
-<ParamField body="ctx" type="context.Context" required>
-</ParamField>
-
-<ParamField body="bufferSize" type="*int" required>
-</ParamField>
-
 
 ---
 
@@ -845,61 +824,52 @@ func (c *Client) OnObserverRemovedFor(functionID string, hook RemovedHook) *Clie
 
 ---
 
-### Client.OpenReader
+### Client.Pipe
 
-OpenReader returns a reader for the read end described by ref (typically received in a call payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first read.
+Pipe creates a pipe on the engine and returns its two ends: put one in a call payload (or a handler result) and use the other here. This worker owns the pipe: it must stay connected until the other side attached to its end, or the engine drops it.
 
-**Signature**
-
-```go
-func (c *Client) OpenReader(ref StreamChannelRef) *ChannelReader
-```
-
-#### Parameters
-
-<ParamField body="ref" type="StreamChannelRef" required>
-
-  <Expandable title="`StreamChannelRef` fields">
-    <ParamField body="ChannelID" type="string" required>
-    </ParamField>
-    <ParamField body="AccessKey" type="string" required>
-    </ParamField>
-    <ParamField body="Direction" type="ChannelDirection" required>
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-
----
-
-### Client.OpenWriter
-
-OpenWriter returns a writer for the write end described by ref (typically received in a call payload), against this client's engine address. Like the ends returned by `Client.CreateChannel`, its handshake sends the client's `WithHeaders` plus "Authorization: Bearer $III_TOKEN" when that variable is set and the headers have no Authorization header. The socket connects on first send.
+Most code does not need it: a stream built with `InputStreamFromReader`, `InputStreamFromBytes` or `OutputStreamToWriter` gets its pipe from the SDK. Use a pipe for a stream handed out before its data exists, a stream given to a call made later, a two-way session (two pipes), or a reader that needs the messages too (a sink takes bytes only).
 
 **Signature**
 
 ```go
-func (c *Client) OpenWriter(ref StreamChannelRef) *ChannelWriter
+func (c *Client) Pipe(ctx context.Context) (*InputStream, *OutputStream, error)
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
-<ParamField body="ref" type="StreamChannelRef" required>
-
-  <Expandable title="`StreamChannelRef` fields">
-    <ParamField body="ChannelID" type="string" required>
-    </ParamField>
-    <ParamField body="AccessKey" type="string" required>
-    </ParamField>
-    <ParamField body="Direction" type="ChannelDirection" required>
-    </ParamField>
-  </Expandable>
+<ParamField body="ctx" type="context.Context" required>
 </ParamField>
 
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+input, output, err := worker.Pipe(ctx)
+if err != nil { return err }
+payload, _ := json.Marshal(map[string]any{"prompt": "Summarize report r-42", "tokens": output})
+done := make(chan error, 1)
+go func() {
+    _, err := worker.Call(ctx, iii.CallRequest{FunctionID: "llm::complete", Payload: payload})
+    done <- err
+}()
+for msg, err := range input.Messages(ctx) { ... }
+return <-done
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
 ### Client.RegisterHTTPFunction
+
+<Warning>
+  **Deprecated.** HTTP-invoked functions (iii-http-functions) will be removed in an upcoming release; behavior is unchanged for now. Register a handler that makes the HTTP call instead. Migration guide: [https://iii.dev/docs/upgrading/migrate-from-http-functions](https://iii.dev/docs/upgrading/migrate-from-http-functions).
+</Warning>
 
 RegisterHTTPFunction registers a function that has no handler in this process: the engine invokes it by sending an HTTP request as described by invocation, which travels as the registration's "invocation" field. invocation.URL is required; an empty Method means POST, as in the Node SDK. invocation.Auth, when set, must be valid JSON; build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`. Pass at most one `RegisterFunctionOptions` for the description, formats, metadata, args_format, private or observable; LocalDispatch does not apply, since there is nothing to run in-process. The engine delivers the function's calls itself, so a deliver hook does not run for it; the added and removed hooks do.
 
@@ -1137,24 +1107,6 @@ func EnqueueAction(queue string) *CallAction
 
 ---
 
-### ExtractChannelRefs
-
-ExtractChannelRefs recursively walks a JSON value and returns every StreamChannelRef found, keyed by its dotted path (e.g. "reader", "data.writer"). A node is a ref iff it is an object with string channel_id, access_key, and direction fields. Mirrors extract_channel_refs and is_channel_ref in the Rust SDK: the receiving worker uses it to find a ref another worker embedded in a call payload.
-
-**Signature**
-
-```go
-func ExtractChannelRefs(data json.RawMessage) (map[string]StreamChannelRef, error)
-```
-
-#### Parameters
-
-<ParamField body="data" type="json.RawMessage" required>
-</ParamField>
-
-
----
-
 ### HMACAuth
 
 HMACAuth returns the `HTTPInvocationRef`.Auth that has the engine sign each request with HMAC, using the secret held in the engine's environment variable secretKey: \{"type":"hmac","secret_key":secretKey\}. Same shape as the hmac variant of the Node SDK's HttpAuthConfig.
@@ -1205,6 +1157,57 @@ Nested types are written out where they appear. A type that contains itself (a t
 ```go
 func InferSchema[T any]() (json.RawMessage, error)
 ```
+
+---
+
+### InputStreamFromBytes
+
+InputStreamFromBytes returns a stream of data. The stream keeps data: do not change it until the stream was read or sent.
+
+**Signature**
+
+```go
+func InputStreamFromBytes(data []byte) *InputStream
+```
+
+#### Parameters
+
+<ParamField body="data" type="[]byte" required>
+</ParamField>
+
+
+---
+
+### InputStreamFromReader
+
+InputStreamFromReader returns a stream of what r yields, read in chunks of up to 64 KiB when the stream is read or sent. A read error aborts the stream with its message: the reader gets STREAM_ABORTED, not a short stream that looks complete. When r is an `io.Closer`, the stream closes it once it ends, fails or is cancelled (it owns r, as an http.Request owns its Body).
+
+**Signature**
+
+```go
+func InputStreamFromReader(r io.Reader) *InputStream
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="r" type="io.Reader" required>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```go
+f, err := os.Open("report.csv")
+if err != nil { ... }
+payload, _ := json.Marshal(map[string]any{"filename": "report.csv", "body": iii.InputStreamFromReader(f)})
+result, err := worker.Call(ctx, iii.CallRequest{FunctionID: "files::process", Payload: payload})
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -1582,7 +1585,7 @@ func New(url string, opts ...Option) *Client
       WithDescription sets a one-line, human/LLM-readable summary of what this worker does. Surfaces in engine::workers::list / engine::workers::info.
     </ParamField>
     <ParamField body="WithHeaders" type="func(h http.Header) Option" required>
-      WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
+      WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of the stream sockets of this client (see `InputStream` and `OutputStream`). The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
     </ParamField>
     <ParamField body="WithInvocationTimeout" type="func(d time.Duration) Option" required>
       WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default.
@@ -1632,63 +1635,41 @@ func ObserveRejection(code, message string) error
 
 ---
 
-### OpenReader
+### OutputStreamToWriter
 
-OpenReader returns a reader for the read end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first read and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenReader`, which uses the client's address and headers.
+OutputStreamToWriter returns a stream whose bytes go to w. Closing the stream flushes w (when it has a Flush() error method) and closes it (when it is an `io.Closer`); an abort closes w with the error when it has CloseWithError (an `*io.PipeWriter`) and otherwise leaves it as is, so a truncated stream is never finished as if whole: close it yourself, and remove a partly written file.
 
-**Signature**
+When w fails (its Write, Flush or Close returns an error), the stream aborts: nothing more is written to w, the function's next write fails with STREAM_CLOSED, and the call that passed the stream fails with STREAM_ABORTED, "the sink failed: &lt;w's error&gt;", wrapping w's error (errors.Is and errors.As reach it), whatever the function returned.
 
-```go
-func OpenReader(engineWSBase string, ref StreamChannelRef) *ChannelReader
-```
-
-#### Parameters
-
-<ParamField body="engineWSBase" type="string" required>
-</ParamField>
-
-<ParamField body="ref" type="StreamChannelRef" required>
-
-  <Expandable title="`StreamChannelRef` fields">
-    <ParamField body="ChannelID" type="string" required>
-    </ParamField>
-    <ParamField body="AccessKey" type="string" required>
-    </ParamField>
-    <ParamField body="Direction" type="ChannelDirection" required>
-    </ParamField>
-  </Expandable>
-</ParamField>
-
-
----
-
-### OpenWriter
-
-OpenWriter returns a writer for the write end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first send and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenWriter`, which uses the client's address and headers.
+A call does not wait behind a w.Write that blocks: at the call's timeout, or when its ctx ends, the call returns and the stream is aborted. A Write that never returns (and ignores CloseWithError) keeps the goroutine that called it until it returns.
 
 **Signature**
 
 ```go
-func OpenWriter(engineWSBase string, ref StreamChannelRef) *ChannelWriter
+func OutputStreamToWriter(w io.Writer) *OutputStream
 ```
 
-#### Parameters
+<Tabs>
+  <Tab title="Parameters">
 
-<ParamField body="engineWSBase" type="string" required>
+<ParamField body="w" type="io.Writer" required>
 </ParamField>
 
-<ParamField body="ref" type="StreamChannelRef" required>
 
-  <Expandable title="`StreamChannelRef` fields">
-    <ParamField body="ChannelID" type="string" required>
-    </ParamField>
-    <ParamField body="AccessKey" type="string" required>
-    </ParamField>
-    <ParamField body="Direction" type="ChannelDirection" required>
-    </ParamField>
-  </Expandable>
-</ParamField>
+  </Tab>
+  <Tab title="Example">
 
+```go
+f, err := os.Create("r-42.pdf")
+if err != nil { ... }
+payload, _ := json.Marshal(map[string]any{"report_id": "r-42", "out": iii.OutputStreamToWriter(f)})
+// Returns once the file holds the whole PDF.
+_, err = worker.Call(ctx, iii.CallRequest{FunctionID: "reports::render-pdf", Payload: payload})
+```
+
+
+  </Tab>
+</Tabs>
 
 ---
 
@@ -1823,7 +1804,7 @@ func WithDescription(description string) Option
 
 ### WithHeaders
 
-WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
+WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of the stream sockets of this client (see `InputStream` and `OutputStream`). The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header.
 
 **Signature**
 
@@ -2158,6 +2139,22 @@ Log function paths. Mirrors LogFunctions in the Node SDK. Call these with `VoidA
 | `LogError` | `"engine::log::error"` | - |
 | `LogDebug` | `"engine::log::debug"` | - |
 
+The codes of the stream errors: an `*InvocationError` with one of these Code values, returned by stream operations and by a call whose streams failed. Recover the code with errors.As:
+
+```go
+var ie *iii.InvocationError
+if errors.As(err, &ie) && ie.Code == iii.CodeStreamAborted {
+    // the writer aborted: the data read so far is incomplete
+}
+```
+
+| Name | Value | Description |
+| --- | --- | --- |
+| `CodeStreamAborted` | `"STREAM_ABORTED"` | CodeStreamAborted: the stream ended with an abort (its writer called `OutputStream.Abort`, failed, or went away before it closed), or could not be opened. The data read before it is not the whole stream. A call whose sink received an aborted stream fails with it too, even when the function succeeded. Through an engine pipe the Message is the engine's reason (channel writer aborted: closed with code 1011); in-process it is the writer's own. A call whose own sink failed (its Write, Flush or Close returned an error) fails with Message "the sink failed: &lt;its error&gt;", wrapping it (errors.Is and errors.As reach it), whatever the function returned. |
+| `CodeStreamNotAllowed` | `"STREAM_NOT_ALLOWED"` | CodeStreamNotAllowed: a payload holding a stream sent with `EnqueueAction`. A queued job can run after the pipe expired, and a retry cannot read the stream again. Nothing was sent. |
+| `CodeStreamClosed` | `"STREAM_CLOSED"` | CodeStreamClosed: a write or a send on a stream already closed or aborted, or after its reader left. |
+| `CodeStreamInUse` | `"STREAM_IN_USE"` | CodeStreamInUse: a stream already in use: a second read of an `InputStream`, the same stream twice in one payload, or a stream sent on after it was read to the end or already sent. |
+
 Features this SDK declares in its engine::workers::register payload. The engine advertises the first three in WorkerRegistered: observe.v2 includes observe.v1, and with it this worker runs the match and deliver hooks of the functions it hosts for their routed calls, whose observers' capture and filters the engine evaluates. FeatureLargeMessagesV1 is declared by the SDK only: it receives JSON messages up to 64 MiB, so the engine sends it messages of that size whatever version it reports.
 
 | Name | Value | Description |
@@ -2217,7 +2214,7 @@ Sentinel errors for the two failure modes that carry no payload. Compare with er
 
 Package iii is a Go SDK for the iii worker protocol.
 
-[`Activation`](#activation) · [`AddedHook`](#addedhook) · [`Args`](#args) · [`Call`](#call) · [`CallAction`](#callaction) · [`CallRequest`](#callrequest) · [`Caller`](#caller) · [`Capture`](#capture) · [`Channel`](#channel) · [`ChannelDirection`](#channeldirection) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`ConnectionState`](#connectionstate) · [`DecodedMessage`](#decodedmessage) · [`DeliverHook`](#deliverhook) · [`Dispatch`](#dispatch) · [`DroppedReports`](#droppedreports) · [`ErrorBody`](#errorbody) · [`Filters`](#filters) · [`FunctionOptions`](#functionoptions) · [`FunctionRef`](#functionref) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`HTTPInvocationRef`](#httpinvocationref) · [`Handler`](#handler) · [`Invocation`](#invocation) · [`InvocationError`](#invocationerror) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`InvokeFunctionMessage`](#invokefunctionmessage) · [`LocalFunctionStats`](#localfunctionstats) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MatchHook`](#matchhook) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`ObserveMessage`](#observemessage) · [`ObserveMessageSource`](#observemessagesource) · [`ObserveMessageTarget`](#observemessagetarget) · [`ObserveReason`](#observereason) · [`ObserveRejectionError`](#observerejectionerror) · [`ObserveResultMessage`](#observeresultmessage) · [`Observed`](#observed) · [`ObservedItem`](#observeditem) · [`Observer`](#observer) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserverHandle`](#observerhandle) · [`ObserverInfo`](#observerinfo) · [`ObserverOptions`](#observeroptions) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverState`](#observerstate) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`Op`](#op) · [`Option`](#option) · [`OtelConfig`](#otelconfig) · [`PingMessage`](#pingmessage) · [`PongMessage`](#pongmessage) · [`ReattachMessage`](#reattachmessage) · [`ReconnectConfig`](#reconnectconfig) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceMessage`](#registerservicemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`RemovedHook`](#removedhook) · [`Source`](#source) · [`StreamChannelRef`](#streamchannelref) · [`TelemetryOptions`](#telemetryoptions) · [`TypedHandler`](#typedhandler) · [`UnobserveMessage`](#unobservemessage) · [`UnregisterFunctionMessage`](#unregisterfunctionmessage) · [`WorkerRegisteredMessage`](#workerregisteredmessage)
+[`Activation`](#activation) · [`AddedHook`](#addedhook) · [`Args`](#args) · [`Call`](#call) · [`CallAction`](#callaction) · [`CallRequest`](#callrequest) · [`Caller`](#caller) · [`Capture`](#capture) · [`ChannelDirection`](#channeldirection) · [`ConnectionState`](#connectionstate) · [`DecodedMessage`](#decodedmessage) · [`DeliverHook`](#deliverhook) · [`Dispatch`](#dispatch) · [`DroppedReports`](#droppedreports) · [`ErrorBody`](#errorbody) · [`Filters`](#filters) · [`FrameType`](#frametype) · [`FunctionOptions`](#functionoptions) · [`FunctionRef`](#functionref) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`Handler`](#handler) · [`InputStream`](#inputstream) · [`Invocation`](#invocation) · [`InvocationError`](#invocationerror) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`InvokeFunctionMessage`](#invokefunctionmessage) · [`LocalFunctionStats`](#localfunctionstats) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MatchHook`](#matchhook) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`ObserveMessage`](#observemessage) · [`ObserveMessageSource`](#observemessagesource) · [`ObserveMessageTarget`](#observemessagetarget) · [`ObserveReason`](#observereason) · [`ObserveRejectionError`](#observerejectionerror) · [`ObserveResultMessage`](#observeresultmessage) · [`Observed`](#observed) · [`ObservedItem`](#observeditem) · [`Observer`](#observer) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserverHandle`](#observerhandle) · [`ObserverInfo`](#observerinfo) · [`ObserverOptions`](#observeroptions) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverState`](#observerstate) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`Op`](#op) · [`Option`](#option) · [`OtelConfig`](#otelconfig) · [`OutputStream`](#outputstream) · [`PingMessage`](#pingmessage) · [`PongMessage`](#pongmessage) · [`ReattachMessage`](#reattachmessage) · [`ReconnectConfig`](#reconnectconfig) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegisterServiceMessage`](#registerservicemessage) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`RemovedHook`](#removedhook) · [`Source`](#source) · [`StreamChannelRef`](#streamchannelref) · [`StreamFrame`](#streamframe) · [`StreamInfo`](#streaminfo) · [`TelemetryOptions`](#telemetryoptions) · [`TypedHandler`](#typedhandler) · [`UnobserveMessage`](#unobservemessage) · [`UnregisterFunctionMessage`](#unregisterfunctionmessage) · [`WorkerRegisteredMessage`](#workerregisteredmessage)
 
 #### Activation
 
@@ -2330,22 +2327,9 @@ type Capture string
 
 ---
 
-#### Channel
-
-Channel is a freshly created channel: a live writer/reader plus the refs for each end. Pass WriterRef or ReaderRef to another worker (in a call payload) so it opens the opposite end with `Client.OpenReader` / `Client.OpenWriter`. Created by `Client.CreateChannel`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `Writer` | *[`ChannelWriter`](#channelwriter) | No | - |
-| `Reader` | *[`ChannelReader`](#channelreader) | No | - |
-| `WriterRef` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-| `ReaderRef` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-
----
-
 #### ChannelDirection
 
-ChannelDirection is the end of a streaming channel a StreamChannelRef refers to. On the wire it is lowercase: "read" or "write".
+ChannelDirection is the end of an engine pipe a StreamChannelRef refers to. On the wire it is lowercase: "read" or "write".
 
 ```go
 type ChannelDirection string
@@ -2355,33 +2339,6 @@ type ChannelDirection string
 | --- | --- | --- | --- |
 | `ChannelRead` | `"read"` | Yes | - |
 | `ChannelWrite` | `"write"` | Yes | - |
-
----
-
-#### ChannelReader
-
-ChannelReader is the read end of a channel: a WebSocket opened lazily on first use. Binary frames are stream data (NextBinary / ReadAll); text frames are messages delivered to OnMessage callbacks. The reader reads from a single goroutine internally, so register OnMessage callbacks before the first NextBinary/ReadAll call.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `OpenReader` | func(engineWSBase string, ref [`StreamChannelRef`](#streamchannelref)) *[`ChannelReader`](#channelreader) | Yes | OpenReader returns a reader for the read end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first read and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenReader`, which uses the client's address and headers. |
-| `Close` | `func() error` | Yes | Close closes the reader socket. A read it cuts short, and any read after it, ends as end of stream, not an error. It is idempotent and safe to call after ReadAll. |
-| `NextBinary` | `func(ctx context.Context) (data []byte, ok bool, err error)` | Yes | NextBinary returns the next binary stream chunk. ok is false at end of stream (the writer closed cleanly, or this reader was closed). If the writer aborted or the connection dropped, err is non-nil; a close carries its code and reason (websocket.CloseStatus, errors.As with websocket.CloseError). Text frames encountered while waiting are dispatched to OnMessage callbacks and skipped, so a reader can interleave messages and stream data. |
-| `OnMessage` | `func(cb func(string))` | Yes | OnMessage registers a callback for inbound text messages. Callbacks fire from the goroutine driving NextBinary/ReadAll, in registration order. |
-| `ReadAll` | `func(ctx context.Context) ([]byte, error)` | Yes | ReadAll consumes the channel until the writer closes, concatenating all binary chunks. Text messages seen along the way are dispatched to OnMessage callbacks. On an error (an aborted writer included) it returns the bytes read so far with the error. |
-
----
-
-#### ChannelWriter
-
-ChannelWriter is the write end of a channel: a WebSocket opened lazily on first use. SendMessage emits a text frame; Write emits 64 KiB-chunked binary frames. Close finishes the stream. A ChannelWriter is safe for serial use by one goroutine; it is not designed for concurrent writers (mirroring the reference SDKs).
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `OpenWriter` | func(engineWSBase string, ref [`StreamChannelRef`](#streamchannelref)) *[`ChannelWriter`](#channelwriter) | Yes | OpenWriter returns a writer for the write end described by ref, against the given engine WS base (typically Client.Address()). The socket connects on first send and authenticates with III_TOKEN, when set; channels from `Client.CreateChannel` also send the client's `WithHeaders`. Prefer `Client.OpenWriter`, which uses the client's address and headers. |
-| `Close` | `func() error` | Yes | Close finishes the stream: it pauses briefly so buffered frames flush, then closes the socket with code 1000, which the engine treats as a completed stream (the reader sees EOF). After a failed Write or SendMessage the stream is incomplete, so Close ends the socket without a close frame instead: the engine reads that as an abort and the reader gets an error, as it does when the process exits before Close. Close is idempotent. |
-| `SendMessage` | `func(ctx context.Context, msg string) error` | Yes | SendMessage sends a discrete text message (a TEXT frame) on the channel. |
-| `Write` | `func(ctx context.Context, data []byte) error` | Yes | Write streams bytes as BINARY frames, chunked at channelFrameSize. It implements the stream-data half of the channel; the reader receives the bytes via NextBinary/ReadAll. |
 
 ---
 
@@ -2499,6 +2456,21 @@ type Filters map[string]any
 
 ---
 
+#### FrameType
+
+FrameType tells the two kinds of frame a stream carries apart.
+
+```go
+type FrameType string
+```
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `FrameBinary` | `"binary"` | Yes | FrameBinary is bytes: written with `OutputStream.Write`, read by `InputStream.Read` and the other byte reads. |
+| `FrameText` | `"text"` | Yes | FrameText is a message: sent with `OutputStream.Send`, read by `InputStream.Messages`. |
+
+---
+
 #### FunctionOptions
 
 FunctionOptions is another name for `RegisterFunctionOptions`, the one the cross-SDK specification uses.
@@ -2541,20 +2513,6 @@ FunctionRegisteredMessage is the RegisterFunction success ack, with the full cur
 
 ---
 
-#### HTTPInvocationRef
-
-HTTPInvocationRef describes an externally-hosted function the engine calls directly over HTTP: the Node SDK's HttpInvocationConfig. Register one with `Client.RegisterHTTPFunction`; it travels as the registration's "invocation" field. Auth is raw JSON because the engine's HttpAuthConfig is a tagged union: build it with `HMACAuth`, `BearerAuth` or `APIKeyAuth`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `URL` | `string` | Yes | URL is the endpoint the engine calls. Required. |
-| `Method` | `string` | No | Method is the HTTP method (GET, POST, PUT, PATCH or DELETE). RegisterHTTPFunction sends POST when it is empty. |
-| `TimeoutMs` | `*uint64` | No | TimeoutMs bounds each request, in milliseconds; nil uses the engine default. |
-| `Headers` | `map[string]string` | No | Headers are sent with every request. |
-| `Auth` | `json.RawMessage` | No | Auth is how the engine authenticates its requests; nil sends none. |
-
----
-
 #### Handler
 
 Handler is a registered function's implementation. data is the raw JSON the engine sent. The returned value is marshaled into the InvocationResult.result. Returning an error produces an InvocationResult.error; if the error is an \*InvocationError its code and stacktrace are preserved, otherwise it is reported with code "invocation_failed" (matching the Rust and Node SDKs).
@@ -2564,6 +2522,39 @@ Per-invocation metadata, when the call carries any, rides on ctx rather than the
 ```go
 type Handler func(ctx context.Context, data json.RawMessage) (any, error)
 ```
+
+---
+
+#### InputStream
+
+InputStream is the read side of a stream: the bytes (and messages) a function receives.
+
+An InputStream arrives as a field of a handler's input or of a call's result (a "read" ref unmarshals to it), or is built to be sent: `InputStreamFromReader`, `InputStreamFromBytes`, or the input end of `Client.Pipe`. Put it in a call payload or a handler result (as a \*InputStream field, or in a map) and the SDK streams it to the other side.
+
+Read it once, one way: as an `io.Reader` (Read), with `InputStream.ReadAll`, `InputStream.Text`, `InputStream.Lines`, `InputStream.Messages` (text frames) or `InputStream.Frames` (both kinds, in order). Byte reads skip messages. A second reader gets STREAM_IN_USE (`CodeStreamInUse`): Read is one reader across calls, and each of the other methods is a reader of its own. The socket opens on the first read. A stream read to the end returns io.EOF on further reads; one cancelled before its end (`InputStream.Cancel`, `InputStream.Close`, a break out of Lines, Messages or Frames, or the guard below) fails every later read, and a read in flight, with STREAM_CLOSED (`CodeStreamClosed`), never io.EOF.
+
+An abort (its writer failed or called `OutputStream.Abort`) ends a read with an `*InvocationError` of code `CodeStreamAborted`, after the data sent before it.
+
+In a handler, a stream the handler started reading and did not finish is cancelled when the handler returns (a goroutine still reading it gets STREAM_CLOSED: read it before returning); one never read is left alone. One sent on unread (in a call payload or the result) is forwarded: its ref goes, and no byte passes through this worker. One sent on after reading is pumped from where it is. A stream is sent once: sending it twice, or after it was read to the end, fails with STREAM_IN_USE.
+
+A received stream binds to the client that received it (in a handler's input or a call's result); one unmarshalled from JSON that no client received binds to the only `Client` not yet closed, or call `InputStream.Bind`. An InputStream is a handle: copies of it are the same stream. Its methods are safe for concurrent use, but reads are not meant to be shared.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `InputStreamFromBytes` | func(data []byte) *[`InputStream`](#inputstream) | Yes | InputStreamFromBytes returns a stream of data. The stream keeps data: do not change it until the stream was read or sent. |
+| `InputStreamFromReader` | func(r io.Reader) *[`InputStream`](#inputstream) | Yes | InputStreamFromReader returns a stream of what r yields, read in chunks of up to 64 KiB when the stream is read or sent. A read error aborts the stream with its message: the reader gets STREAM_ABORTED, not a short stream that looks complete. When r is an `io.Closer`, the stream closes it once it ends, fails or is cancelled (it owns r, as an http.Request owns its Body). |
+| `Bind` | func(c *Client) *[`InputStream`](#inputstream) | Yes | Bind binds a received stream to c: its socket opens on c's engine, with c's handshake headers. Needed only for a stream unmarshalled from JSON that no client received, while several clients are alive. It returns s. |
+| `Cancel` | `func()` | Yes | Cancel stops reading: the socket, if open, closes, and the engine then closes the writer, as it does when a reader leaves. A read in flight and every later read fail with STREAM_CLOSED (`CodeStreamClosed`): what was read is not the whole stream. A stream never read opens no socket; a local source is released (an io.Closer is closed). Cancel does nothing to a stream read to the end, which keeps returning io.EOF. |
+| `Close` | `func() error` | Yes | Close cancels the stream (see `InputStream.Cancel`) and returns nil, so an InputStream is an `io.ReadCloser`. After a Close before the end, reads fail with STREAM_CLOSED. |
+| `Frames` | func(ctx context.Context) iter.Seq2[[`StreamFrame`](#streamframe), error] | Yes | Frames yields every frame of the stream in order: bytes (`FrameBinary`) and messages (`FrameText`). After an error it yields it and stops. Breaking out of the loop cancels the stream. |
+| `JSONSchema` | `func() *jsonschema.Schema` | Yes | JSONSchema is the schema of a stream to read, for `RegisterFunctionTyped` and `InferSchema`: the ref object, marked with "x-iii-stream": "read". |
+| `Lines` | `func(ctx context.Context) iter.Seq2[string, error]` | Yes | Lines yields the stream's lines, without their "\n" (or "\r\n"); the last one may have no newline. After an error it yields ("", err) and stops. Breaking out of the loop cancels the stream. |
+| `MarshalJSON` | `func() ([]byte, error)` | Yes | MarshalJSON writes the stream as the ref that takes its place in a payload or a result: its own ref when it was received and not yet read (it is forwarded), else a placeholder the SDK replaces with the ref of a new pipe when the call or the answer is sent. Marshal a stream only to send it: a marshalled stream counts as sent. |
+| `Messages` | `func(ctx context.Context) iter.Seq2[json.RawMessage, error]` | Yes | Messages yields the stream's messages (its text frames), each as JSON. A text frame that is not JSON yields its text as a JSON string. Bytes are skipped. After an error it yields (nil, err) and stops. Breaking out of the loop cancels the stream. |
+| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the stream's bytes (its binary frames) and implements `io.Reader`. It returns io.EOF once the writer closed the stream and everything was read. An abort is an error, never io.EOF: the bytes read so far are incomplete. Read is one reader: calls of Read continue each other, and another read method fails after it. |
+| `ReadAll` | `func(ctx context.Context) ([]byte, error)` | Yes | ReadAll reads the whole stream (its binary frames) and returns its bytes. On an error, an abort included, it returns the bytes read so far with the error. ctx bounds the reads: when it ends, the stream is cancelled. |
+| `Text` | `func(ctx context.Context) (string, error)` | Yes | Text reads the whole stream as text (its bytes, as a string). |
+| `UnmarshalJSON` | `func(data []byte) error` | Yes | UnmarshalJSON reads a "read" ref as the stream it stands for: the one the invocation or the call result that received it tracks, the stream itself for a placeholder of this process, else a new stream of that ref. A "write" ref is an error: it is an `OutputStream`. |
 
 ---
 
@@ -2600,6 +2591,7 @@ if errors.As(err, &ie) && ie.Code == "FORBIDDEN" { ... }
 | `FunctionID` | `string` | No | FunctionID is the function whose invocation failed; empty if not known. |
 | `Stacktrace` | `string` | Yes | Stacktrace is the remote stack trace, when the engine provides one. |
 | `Error` | `func() string` | Yes | - |
+| `Unwrap` | `func() error` | Yes | Unwrap is the local error behind e, nil for an error from the engine: for a call whose sink failed (STREAM_ABORTED, "the sink failed: ..."), the sink's own error, so errors.Is and errors.As reach it. |
 
 ---
 
@@ -3072,7 +3064,7 @@ type Option func(*Client)
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `WithDescription` | func(description string) [`Option`](#option) | Yes | WithDescription sets a one-line, human/LLM-readable summary of what this worker does. Surfaces in engine::workers::list / engine::workers::info. |
-| `WithHeaders` | func(h http.Header) [`Option`](#option) | Yes | WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of channels created with `Client.CreateChannel`. The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header. |
+| `WithHeaders` | func(h http.Header) [`Option`](#option) | Yes | WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection and of the stream sockets of this client (see `InputStream` and `OutputStream`). The III_TOKEN environment variable, when set and not blank, adds "Authorization: Bearer &lt;token&gt;" unless h already carries an Authorization header. |
 | `WithInvocationTimeout` | func(d time.Duration) [`Option`](#option) | Yes | WithInvocationTimeout sets how long `Client.Call` waits for a result when `CallRequest`.Timeout is zero, in place of `DefaultInvocationTimeout`. It is the invocationTimeoutMs option of the Node SDK's registerWorker. A d of zero or less keeps the default. |
 | `WithMetricsReporting` | func(enabled bool) [`Option`](#option) | Yes | WithMetricsReporting turns the worker resource gauges on or off (Node enableMetricsReporting): the iii.worker.memory.\*, iii.worker.cpu.\*, iii.worker.event_loop.lag_ms and iii.worker.uptime_seconds metrics, tagged with worker.id and worker.name. The default is true. The gauges start when the engine acknowledges the worker and stop when the connection drops; they need telemetry and its metrics to be enabled (see `OtelConfig`). |
 | `WithName` | func(name string) [`Option`](#option) | Yes | WithName sets the worker name reported to the engine. A non-empty III_WORKER_NAME takes precedence. The default is "hostname:pid". |
@@ -3105,6 +3097,34 @@ OpenTelemetry globals: when telemetry starts, the client installs its tracer pro
 | `LogsBatchSize` | `int` | No | LogsBatchSize is the maximum number of log records per export. Zero reads OTEL_LOGS_BATCH_SIZE; the default is 1. |
 | `FetchInstrumentationEnabled` | `*bool` | No | FetchInstrumentationEnabled turns the HTTP client spans of observability.NewTransport and observability.NewHTTPClient on or off (the Go counterpart of Node's fetch instrumentation). Nil means true. |
 | `ReconnectionConfig` | *[`ReconnectConfig`](#reconnectconfig) | No | ReconnectionConfig is the reconnect schedule of the telemetry WebSocket. Nil means `DefaultReconnectConfig`; a non-nil value is used as given. |
+
+---
+
+#### OutputStream
+
+OutputStream is the write side of a stream: where a function writes bytes and messages.
+
+An OutputStream arrives as a field of a handler's input or of a call's result (a "write" ref unmarshals to it), or is built around a local sink with `OutputStreamToWriter`: put it in a call payload and the function writes into the sink. The call returns once the sink got the whole stream (and fails with STREAM_ABORTED if the writer aborted it), within the call's timeout. A call whose result holds a stream to write (the function returned a write end) returns without waiting: the caller writes it.
+
+`OutputStream.Write` sends bytes (in binary frames of up to 64 KiB) and `OutputStream.Send` a message (a JSON text frame); each returns once the frame was taken, so a loop of writes follows the reader's pace. End the stream with `OutputStream.Close`, or fail it with `OutputStream.Abort`: the reader then gets an error, not a short stream. A write after either fails with STREAM_CLOSED (`CodeStreamClosed`). `OutputStream.Writer` adapts it to an `io.Writer`. A byte sink made with OutputStreamToWriter takes the bytes only: messages are dropped.
+
+In a handler, the stream is ended when the handler returns: one it used (wrote, sent on, or took a Writer of) is closed when the handler succeeded and aborted when it failed. One it never used is closed when it succeeded and left as is when it failed; in a call through an observer (an HTTP route, say) it is closed only when the handler returned nil (JSON null) and left as is with any other result, as the HTTP worker reads an untouched response with a value as a buffered response. Call `OutputStream.KeepOpen` to keep writing after the handler returned, and then close or abort it yourself.
+
+A received stream binds to the client that received it; see `InputStream` for the rules and `OutputStream.Bind`. An OutputStream is a handle: copies of it are the same stream. Its methods are safe for concurrent use.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `OutputStreamToWriter` | func(w io.Writer) *[`OutputStream`](#outputstream) | Yes | OutputStreamToWriter returns a stream whose bytes go to w. Closing the stream flushes w (when it has a Flush() error method) and closes it (when it is an `io.Closer`); an abort closes w with the error when it has CloseWithError (an `*io.PipeWriter`) and otherwise leaves it as is, so a truncated stream is never finished as if whole: close it yourself, and remove a partly written file. |
+| `Abort` | `func(reason string) error` | Yes | Abort fails the stream with reason: the reader's read ends with STREAM_ABORTED (through an engine pipe the reason the reader sees is the engine's). A stream never written is opened first, so its reader always learns of it. Aborting a stream already ended, or being closed, does nothing. Abort does not wait behind a Write or a Send in flight (one blocked by a reader that does not read): that write returns STREAM_CLOSED, and the stream ends at once. |
+| `Bind` | func(c *Client) *[`OutputStream`](#outputstream) | Yes | Bind binds a received stream to c: its socket opens on c's engine, with c's handshake headers. Needed only for a stream unmarshalled from JSON that no client received, while several clients are alive. It returns s. |
+| `Close` | `func() error` | Yes | Close ends the stream: the reader reads to the end. A stream never written is opened and closed, so its reader sees an empty stream. Closing a stream already ended, or sent on, does nothing. It implements `io.Closer`. |
+| `JSONSchema` | `func() *jsonschema.Schema` | Yes | JSONSchema is the schema of a stream to write, for `RegisterFunctionTyped` and `InferSchema`: the ref object, marked with "x-iii-stream": "write". |
+| `KeepOpen` | func() *[`OutputStream`](#outputstream) | Yes | KeepOpen keeps the stream open after the handler that received it returns: it is then this code's to close or abort. It returns s. |
+| `MarshalJSON` | `func() ([]byte, error)` | Yes | MarshalJSON writes the stream as the ref that takes its place in a payload or a result: its own ref when it was received and not yet used (it is forwarded), else a placeholder the SDK replaces with the ref of a new pipe. Marshal a stream only to send it: a marshalled stream counts as sent. |
+| `Send` | `func(ctx context.Context, message any) error` | Yes | Send sends message as a JSON text frame. A json.RawMessage is sent as it is. |
+| `UnmarshalJSON` | `func(data []byte) error` | Yes | UnmarshalJSON reads a "write" ref as the stream it stands for (see `InputStream.UnmarshalJSON`). A "read" ref is an error: it is an `InputStream`. |
+| `Write` | `func(ctx context.Context, data []byte) error` | Yes | Write writes data, in binary frames of up to 64 KiB, and returns once the socket took them. ctx bounds the write: when it ends mid-write, the socket closes without a close frame and the reader gets an abort. |
+| `Writer` | `func(ctx context.Context) io.Writer` | Yes | Writer returns an `io.Writer` that writes to the stream with ctx. Taking it counts as using the stream. Close or abort the stream itself when done. |
 
 ---
 
@@ -3159,7 +3179,7 @@ Optional fields are omitted when unset, as the engine writes them (skip_serializ
 | `RequestFormat` | `json.RawMessage` | No | - |
 | `ResponseFormat` | `json.RawMessage` | No | - |
 | `Metadata` | `json.RawMessage` | No | - |
-| `Invocation` | *[`HTTPInvocationRef`](#httpinvocationref) | No | - |
+| `Invocation` | `*HTTPInvocationRef` | No | - |
 | `ArgsFormat` | `json.RawMessage` | No | ArgsFormat is the JSON Schema of the observers' args; the engine validates them (INVALID_ARGS). Absent: the function takes no args. |
 | `Private` | `bool` | No | Private: only the connection that hosts the function may call it (FORBIDDEN for anyone else); other workers may observe it. |
 | `Observable` | `*bool` | No | Observable false refuses every observer (NOT_OBSERVABLE); absent means true. |
@@ -3260,13 +3280,38 @@ Source is the left side of `Client.Observe`: what is observed.
 
 #### StreamChannelRef
 
-StreamChannelRef is a capability handle to one end of a streaming data channel. The engine's engine::channels::create returns a writer ref and a reader ref that share a channel_id and access_key; a ref travels as plain JSON inside a call payload or result, and the holder opens its own WebSocket to the channel with it (`Client.OpenReader`, `Client.OpenWriter`).
+StreamChannelRef is the wire form of a stream: a capability handle to one end of an engine pipe. The engine's engine::channels::create returns a writer ref and a reader ref that share a channel_id; a ref travels as plain JSON inside a call payload or result, and the holder opens its own WebSocket to the pipe with it. In Go code a "read" ref is an `InputStream` and a "write" ref an `OutputStream`: unmarshal it into one, and the SDK makes and opens the pipes.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ChannelID` | `string` | Yes | - |
 | `AccessKey` | `string` | Yes | - |
 | `Direction` | [`ChannelDirection`](#channeldirection) | Yes | - |
+
+---
+
+#### StreamFrame
+
+StreamFrame is one frame of a stream, as `InputStream.Frames` yields it: bytes (Type `FrameBinary`) or a message (Type `FrameText`, Data holding the frame's text).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Type` | [`FrameType`](#frametype) | Yes | - |
+| `Data` | `[]byte` | No | - |
+
+---
+
+#### StreamInfo
+
+StreamInfo is a stream an observed call carried, as its observers see it: that a stream was passed, which way, and its channel id. It holds no bytes, and no access key.
+
+An observer's target receives it in place of each stream ref under the Input and Output of an `Observed` payload. The engine still sends the ref (access key included) to the observer's worker: the SDK hides it, it does not keep it off the wire.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `Stream` | `bool` | Yes | Stream is always true: it marks the value as a stream. |
+| `Direction` | [`ChannelDirection`](#channeldirection) | Yes | Direction is "read" for a stream the function read, "write" for one it wrote. |
+| `ID` | `string` | Yes | ID is the channel id (a local stream's placeholder id for a call this worker dispatched in-process). |
 
 ---
 

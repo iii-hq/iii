@@ -36,7 +36,7 @@ register_worker(address: &str, options: InitOptions) -> IIIClient
       Custom worker metadata. Auto-detected if `None`. In managed identity mode, process-wide identity variables override matching fields.
     </ParamField>
     <ParamField body="headers" type="Option<HashMap<String, String>>">
-      Custom HTTP headers sent during the WebSocket handshake, on the main connection and on channels from `create_channel`. `Authorization: Bearer $III_TOKEN` is added unless you set `Authorization` here.
+      Custom HTTP headers sent during the WebSocket handshake, on the main connection and on the sockets of the streams bound to this client. `Authorization: Bearer $III_TOKEN` is added unless you set `Authorization` here.
     </ParamField>
     <ParamField body="otel" type="Option<iii_helpers::observability::OtelConfig>">
       OpenTelemetry configuration.
@@ -87,7 +87,7 @@ register_function(id: impl Into<String>, registration: RegisterFunction) -> Func
       Set the function description.
     </ParamField>
     <ParamField body="http" type="fn(config: HttpInvocationConfig) -> Self" required>
-      Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs.
+      **Deprecated.** HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions. Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs.
     </ParamField>
     <ParamField body="local_dispatch" type="fn(enabled: bool) -> Self" required>
       Whether calls to this function from this same worker may run in-process once the engine allows it. Default `true`.
@@ -945,6 +945,26 @@ on_observer_removed_for(function_id: &str, hook: impl RemovedHook) -> &Self
 
 ---
 
+### pipe
+
+Creates a pipe on the engine and returns both ends: send one in a
+call payload (or a handler result) and use the other here. This
+worker owns the pipe: it must stay connected until the other side
+attached, or the engine aborts it.
+
+Most code does not need it: an `InputStream`
+built with `from_reader`/`from_stream`/`from_bytes`, or an
+`OutputStream` built with `to_writer`, put in a
+payload gets its pipe from the SDK.
+
+**Signature**
+
+```rust
+async pipe() -> Result<Pipe, Error>
+```
+
+---
+
 ### set_namespace
 
 Override the worker's target namespace (call before connect). Applied by
@@ -1100,6 +1120,13 @@ handler's context in a task it spawns; `None` runs `fut` outside any
 invocation. The local-call nesting of the calling task is carried too, so
 recursing through spawned tasks stays bounded.
 
+With an invocation, the calling handler's client and its stream guard are
+carried as well: a stream deserialized in the task binds to that client,
+and the handler's return settles it like the handler's own streams (see
+`InputStream`). Call
+`OutputStream::keep_open` on one the
+task keeps writing after the handler returned.
+
 **Signature**
 
 ```rust
@@ -1165,7 +1192,7 @@ Configuration options passed to `register_worker`.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `metadata` | Option&lt;iii::[`WorkerMetadata`](#workermetadata)&gt; | No | Custom worker metadata. Auto-detected if `None`. In managed identity<br />mode, process-wide identity variables override matching fields. |
-| `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake, on the main<br />connection and on channels from `create_channel`. `Authorization: Bearer<br />$III_TOKEN` is added unless you set `Authorization` here. |
+| `headers` | `Option<HashMap<String, String>>` | No | Custom HTTP headers sent during the WebSocket handshake, on the main<br />connection and on the sockets of the streams bound to this client.<br />`Authorization: Bearer $III_TOKEN` is added unless you set<br />`Authorization` here. |
 | `otel` | `Option<iii_helpers::observability::OtelConfig>` | No | OpenTelemetry configuration. |
 | `namespace` | `Option<String>` | No | Namespace this worker belongs to. In managed mode, resolution order is<br />`namespace` > env `III_NAMESPACE` > `None`. In explicit mode, the<br />environment is not used.<br /><br />It scopes more than the registration. The worker and its functions<br />register here, and everything the worker does afterwards follows it: a<br />`IIIClient::call` resolves its target here and an<br />`IIIClient::observe` its source and target, unless they name<br />another namespace. |
 | `identity` | [`WorkerIdentityMode`](#workeridentitymode) | Yes | Selects whether process-wide managed identity variables can override<br />this connection's metadata. Auxiliary connections should use<br />`WorkerIdentityMode::Explicit`. |
@@ -1220,7 +1247,7 @@ the function is observed is set with hooks: see `hooks`.
 | `args_format` | `fn() -> Self` | Yes | The JSON Schema of the observers' `args`, generated from `T`. The engine validates every `observe` against it (`INVALID_ARGS`) before the added hooks run, and they read the args with `Observer::args`. `#[serde(deny_unknown_fields)]` on `T` rejects argument typos. A function without it takes no args. |
 | `args_format_value` | `fn(schema: Value) -> Self` | Yes | `args_format` from a JSON Schema value. |
 | `description` | `fn(desc: impl Into<String>) -> Self` | Yes | Set the function description. |
-| `http` | `fn(config: HttpInvocationConfig) -> Self` | Yes | Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs. |
+| `http` | `fn(config: HttpInvocationConfig) -> Self` | Yes | **Deprecated.** HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions. Create a registration for an **HTTP-invoked** function (Lambda, Cloudflare Workers, etc.). No local handler runs. |
 | `local_dispatch` | `fn(enabled: bool) -> Self` | Yes | Whether calls to this function from this same worker may run in-process once the engine allows it. Default `true`. |
 | `metadata` | `fn(meta: Value) -> Self` | Yes | Set function metadata. |
 | `new` | `fn(f: F) -> Self` | Yes | Create a registration for a **sync** typed function. |
@@ -1242,63 +1269,15 @@ Worker metadata reported to the engine (language, framework, project).
 | `project_name` | `Option<String>` | No | Name of the project this worker belongs to. |
 | `framework` | `Option<String>` | No | Framework name, if applicable. |
 
-### iii_sdk::channel
-
-[`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`StreamChannelRef`](#streamchannelref)
-
-#### Channel
-
-A streaming channel pair for worker-to-worker data transfer.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
-| `reader` | [`ChannelReader`](#channelreader) | Yes | - |
-| `writer_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-| `reader_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-
----
-
-#### ChannelReader
-
-WebSocket-backed reader for streaming binary data and text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
-| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | Authenticates with `III_TOKEN` as a bearer token when it is set. |
-| `next_binary` | async fn() -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;, [`Error`](#error)&gt; | Yes | Read the next binary chunk from the channel. Text messages are dispatched to registered callbacks. Returns `None` when the writer ended the stream cleanly (a close with no code or code 1000). Any other close code, or the connection ending without a close, is an `Err` carrying the code and reason: the data read so far is incomplete. Once a read failed, later reads fail too. After `close()`, reads (and one in flight) return `None`. |
-| `on_message` | `async fn(callback: F)` | Yes | Register a callback for text messages received on this channel. |
-| `read_all` | async fn() -&gt; Result&lt;Vec&lt;u8&gt;, [`Error`](#error)&gt; | Yes | Read the entire stream into a single `Vec<u8>`. |
-
----
-
-#### ChannelWriter
-
-WebSocket-backed writer for streaming binary data and text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | End the stream cleanly. Dropping a writer that has written, without calling `close()`, ends the socket with no close frame; the reader gets that as an error. |
-| `new` | fn(engine_ws_base: &str, channel_ref: &[`StreamChannelRef`](#streamchannelref)) -&gt; Self | Yes | Authenticates with `III_TOKEN` as a bearer token when it is set. |
-| `send_message` | async fn(msg: &str) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
-| `write` | async fn(data: &[u8]) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | - |
-
----
-
-#### StreamChannelRef
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `channel_id` | `String` | Yes | - |
-| `access_key` | `String` | Yes | - |
-| `direction` | [`ChannelDirection`](#channeldirection) | Yes | - |
-
 ### iii_sdk::channels
 
-[`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem)
+[`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem) · [`StreamChannelRef`](#streamchannelref)
 
 #### ChannelDirection
+
+Which end of a pipe a `StreamChannelRef` opens: `read` is received as an
+`InputStream`, `write` as an
+`OutputStream`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1309,10 +1288,27 @@ WebSocket-backed writer for streaming binary data and text messages.
 
 #### ChannelItem
 
+One frame of a stream: a text frame carries a message, a binary frame
+bytes.
+
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `Text` | `(String)` | Yes | - |
 | `Binary` | `(Vec<u8>)` | Yes | - |
+
+---
+
+#### StreamChannelRef
+
+One end of an engine pipe as a payload carries it:
+`{ channel_id, access_key, direction }`. The JSON is the same in every SDK
+and release, so new and old SDKs read each other's refs.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `channel_id` | `String` | Yes | - |
+| `access_key` | `String` | Yes | - |
+| `direction` | [`ChannelDirection`](#channeldirection) | Yes | - |
 
 ### iii_sdk::context
 
@@ -1377,7 +1373,12 @@ Errors returned by the III SDK.
 | `Handler` | `(String)` | Yes | - |
 | `Serde` | `(String)` | Yes | - |
 | `WebSocket` | `(String)` | Yes | - |
+| `StreamAborted` | `{ reason: String }` | Yes | A stream ended with an abort, code `STREAM_ABORTED`<br />(`protocol::STREAM_ABORTED`): its<br />writer called `OutputStream::abort`,<br />failed or went away before it closed. The data read before it is not<br />the whole stream. A call whose sink received an aborted stream fails<br />with it too, even when the function succeeded.<br /><br />Through an engine pipe the reason is the engine's (`channel writer<br />aborted: ...`); in-process it is the writer's own. |
+| `StreamNotAllowed` | `(String)` | Yes | A call that cannot carry a stream, code `STREAM_NOT_ALLOWED`<br />(`protocol::STREAM_NOT_ALLOWED`):<br />a payload holding a stream sent with<br />`CallAction::Enqueue`. Nothing was sent. |
+| `StreamClosed` | `(String)` | Yes | A write or send on a stream already closed or aborted, code<br />`STREAM_CLOSED`<br />(`protocol::STREAM_CLOSED`). |
+| `StreamInUse` | `(String)` | Yes | A stream already in use, code `STREAM_IN_USE`<br />(`protocol::STREAM_IN_USE`): a<br />second reader (a clone included), the same stream twice in one<br />payload, or a stream sent on after it was read to the end or already<br />sent. |
 | `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Fatal registration rejection: another live worker already holds this<br />worker name in the namespace, or the engine sent a rejection that<br />names no function with a code this SDK does not know. The SDK stops<br />and does not reconnect. A rejection that names a function<br />(`FUNCTION_NAMESPACE_CONFLICT`, `INVALID_ARGS_FORMAT`, `UNSUPPORTED`)<br />refuses only that function, is logged, and does not produce this<br />error. |
+| `code` | `fn() -> Option<&str>` | Yes | The wire code of this error, when it has one: the `code` of a remote failure or a registration rejection, `TIMEOUT` for `Error::Timeout`, and the stream codes: `STREAM_ABORTED`, `STREAM_NOT_ALLOWED`, `STREAM_CLOSED`, `STREAM_IN_USE`. |
 | `invocation_error` | fn() -&gt; Option&lt;[`InvocationError`](#invocationerror)&gt; | Yes | If this is a remote invocation failure (`Error::Remote`), return its structured form. Returns `None` for transport/serde/handler errors. |
 
 ---
@@ -2177,6 +2178,129 @@ Worker metadata for auto-registration
 | `telemetry` | Option&lt;[`TelemetryOptions`](#telemetryoptions)&gt; | No | - |
 | `isolation` | `Option<String>` | No | - |
 | `namespace` | `Option<String>` | No | Namespace this worker belongs to, and therefore the one its calls and<br />its observers resolve in unless they name another. Absent means<br />the engine applies its default namespace. Managed clients also use<br />`III_NAMESPACE` when no explicit namespace is present. |
+
+### iii_sdk::streams
+
+[`InputStream`](#inputstream) · [`OutputStream`](#outputstream) · [`Pipe`](#pipe) · [`StreamInfo`](#streaminfo)
+
+#### InputStream
+
+The read side of a stream: bytes (and messages) a function receives.
+
+An `InputStream` arrives as a field of a handler's input or of a call's
+result (a `read` ref deserializes to it), or is built to be sent:
+`from_reader`, `from_stream`,
+`from_bytes`. Put it in a call payload or a handler
+result and the SDK streams it to the other side.
+
+Read it once, one way: as a `Stream` of byte chunks, an `AsyncRead`,
+`read_all`, `text`,
+`lines`, `messages` (text frames, JSON
+decoded) or `frames` (both, in order). Byte reads skip
+text frames. A second reader gets `Error::StreamInUse`. The socket opens
+on the first read.
+
+An abort (its writer failed or called
+`OutputStream::abort`) ends a read with
+`Error::StreamAborted`, after the data sent before it.
+
+In a handler, a stream the handler started reading and did not finish is
+cancelled when the handler returns; one never read is left alone. One sent
+on unread (in a call payload or the result) is forwarded: its ref goes, no
+byte passes through this worker. One sent on after reading is pumped from
+where it is. A stream is sent once: sending it twice, or after it was read
+to the end, fails with `Error::StreamInUse`.
+
+A received stream binds to the client of the handler it was received in,
+or else to the only `IIIClient` alive; with several, call
+`bind`. A clone is a handle to the same stream, and another
+reader: only one of them can read it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bind` | `fn(iii: &IIIClient) -> &Self` | Yes | Binds a received stream to `iii`: its socket opens on that client's engine, with its handshake headers. Needed only outside a handler while several clients are alive. |
+| `cancel` | `async fn()` | Yes | Stops reading. The socket, if open, closes, and the engine then closes the writer, as it does when a reader leaves. A read in flight, and every later read, fails with `Error::StreamClosed`: what was read is not the whole stream. A stream read to its end stays ended. |
+| `frames` | fn() -&gt; impl Stream&lt;Item = Result&lt;[`ChannelItem`](#channelitem), [`Error`](#error)&gt;&gt; + Send + 'static | Yes | Every frame, in order: text frames (messages) and binary frames (bytes). |
+| `from_bytes` | `fn(bytes: impl Into<Bytes>) -> Self` | Yes | A stream of `bytes`. |
+| `from_reader` | `fn(reader: R) -> Self` | Yes | A stream of what `reader` yields, read in chunks of up to 64 KiB. A read error aborts the stream with its message. |
+| `from_stream` | `fn(stream: S) -> Self` | Yes | A stream of the chunks `stream` yields. An `Err` aborts the stream with its message: the reader gets `Error::StreamAborted`, not a short stream that looks complete. |
+| `lines` | fn() -&gt; impl Stream&lt;Item = Result&lt;String, [`Error`](#error)&gt;&gt; + Send + 'static | Yes | The stream's lines, without their `\n` (or `\r\n`); the last one may have no newline. Invalid UTF-8 becomes U+FFFD. |
+| `messages` | fn() -&gt; impl Stream&lt;Item = Result&lt;T, [`Error`](#error)&gt;&gt; + Send + 'static | Yes | The stream's messages: its text frames, each decoded as JSON into `T`. A frame that is not JSON is decoded from the raw string (so a `T` of `String` or `Value` takes it). Binary frames are skipped. |
+| `read_all` | async fn() -&gt; Result&lt;Vec&lt;u8&gt;, [`Error`](#error)&gt; | Yes | Reads the whole stream (its binary frames). |
+| `text` | async fn() -&gt; Result&lt;String, [`Error`](#error)&gt; | Yes | Reads the whole stream as UTF-8 text; invalid sequences become U+FFFD. |
+
+---
+
+#### OutputStream
+
+The write side of a stream: where a function writes bytes and messages.
+
+An `OutputStream` arrives as a field of a handler's input or of a call's
+result (a `write` ref deserializes to it), or is built around a local sink
+with `to_writer`: put it in a call payload and the
+function writes into the sink; the call resolves once the sink got the
+whole stream (and fails with `Error::StreamAborted` if the writer
+aborted it), within the call's timeout. A call whose result holds a stream
+to write (the function returned a sink) resolves without waiting: the
+caller writes it.
+
+`write` sends bytes (in binary frames of up to 64 KiB),
+`send` a message (a JSON text frame), and each resolves once
+the chunk was taken. End it with `close`, or fail it with
+`abort`: the reader then gets an error, not a short stream.
+A write after either fails with `Error::StreamClosed`. It is also an
+`AsyncWrite`. A byte sink made with `to_writer` takes the
+bytes only: messages are not written to it.
+
+In a handler, the stream is ended when the handler returns: one it used is
+closed when it succeeded and aborted when it failed. One it never used is
+closed when it succeeded and left as is when it failed; in an observer
+activation (an HTTP route target, say) it is closed only when the handler
+returned `null` (`()`) and left as is with any other result, as the HTTP
+worker reads an untouched response with a value as a buffered response.
+Call `keep_open` to keep writing after the handler
+returned. Dropped while used and not ended, it aborts.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `abort` | async fn(reason: impl Into&lt;String&gt;) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Fails the stream with `reason`: the reader's read ends with `Error::StreamAborted` (through an engine pipe the reason is the engine's). A stream never written is opened first, so its reader always learns of it. Aborting a stream already ended does nothing. |
+| `bind` | `fn(iii: &IIIClient) -> &Self` | Yes | Binds a received stream to `iii`: its socket opens on that client's engine, with its handshake headers. Needed only outside a handler while several clients are alive. |
+| `close` | async fn() -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Ends the stream: the reader reads to the end. A stream never written is opened and closed, so the reader sees an empty stream. Closing a stream already ended does nothing. |
+| `keep_open` | `fn() -> &Self` | Yes | Keeps the stream open after the handler that received it returns: it is then this code's to close or abort. |
+| `send` | async fn(message: &T) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Sends `message` as a JSON text frame. |
+| `send_text` | async fn(text: &str) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Sends `text` as a text frame, as is. |
+| `to_writer` | `fn(writer: W) -> Self` | Yes | A stream whose bytes go to `writer`: closing it flushes and shuts the writer down; an abort drops it as is. |
+| `write` | async fn(data: &[u8]) -&gt; Result&lt;(), [`Error`](#error)&gt; | Yes | Writes `data`, in binary frames of up to 64 KiB. Resolves once taken. |
+
+---
+
+#### Pipe
+
+The two ends of a pipe made with `IIIClient::pipe`: put one in a call
+payload and use the other here.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [`InputStream`](#inputstream) | Yes | The read end. |
+| `output` | [`OutputStream`](#outputstream) | Yes | The write end. |
+
+---
+
+#### StreamInfo
+
+A stream an observed call carried, as its observers see it: that a
+stream was passed, which way, and its channel id. It holds no bytes.
+
+An observer's target receives it in place of each stream ref under the
+`input` and `output` of an `Observed` envelope. The
+engine still sends the ref (access key included) to the observer's worker:
+the SDK hides it, it does not keep it off the wire.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | `bool` | Yes | Always `true`: marks the value as a stream. |
+| `direction` | [`ChannelDirection`](#channeldirection) | Yes | `read` for a stream the function read, `write` for one it wrote. |
+| `id` | `String` | Yes | The channel id (a local stream's placeholder id for a call this<br />worker dispatched in-process). |
 
 ### iii_sdk::structs
 

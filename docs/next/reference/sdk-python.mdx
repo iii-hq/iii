@@ -95,6 +95,9 @@ Register a function with the engine.
 
 Pass a handler for local execution, or an ``HttpInvocationConfig``
 for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+Passing an ``HttpInvocationConfig`` emits a `FutureWarning`:
+HTTP-invoked functions are deprecated (iii-http-functions). Register a
+handler that makes the HTTP call instead.
 
 Handlers can be synchronous or asynchronous.  Sync handlers are
 automatically wrapped with ``run_in_executor`` so they do not
@@ -333,7 +336,10 @@ in its ``on_observation_deliver``.
 Returns synchronously, also before the connection is up; the observer
 is replayed with the same id on every reconnect. The handle holds its
 id until its ``dispose()`` is called or the engine disposes it; the
-id is free again at once after that. Errors
+id is free again at once after that. An observer without
+``max_fires`` or ``expires_in_ms`` that the engine disposed because
+this worker was away past its grace period (``OBSERVER_DISCONNECTED``)
+is not: it is observed again, with the same id, and goes ``pending``. Errors
 (``INVALID_ARGS``, ``INVALID_FILTER``, ``FORBIDDEN``,
 ``NOT_OBSERVABLE``, the rejection of the source's worker,
 ``UNSUPPORTED`` against an engine without observe) show up as state
@@ -965,6 +971,78 @@ def stop(obs):
 
 ---
 
+### pipe
+
+Create a pipe owned by this worker: ``.output`` to write, ``.input`` to read.
+
+The explicit form of what a call does for each stream value. Pass one
+end in a call payload and use the other here; the worker that made the
+pipe stays connected until both ends attached. Blocks the calling
+thread; use `pipe_async` on an event loop.
+
+**Signature**
+
+```python
+pipe(buffer_size: int | None = None) -> Pipe
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="buffer_size" type="int | None">
+  Frames the engine buffers between the ends (its default when ``None``).
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```python
+pipe = iii.pipe()
+iii.call({"function_id": "files::count", "payload": {"body": pipe.input}, "action": CallAction.Void()})
+asyncio.run(pipe.output.write(b"data"))
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
+### pipe_async
+
+`pipe` on any event loop.
+
+**Signature**
+
+```python
+async (buffer_size: int | None = None) -> Pipe
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="buffer_size" type="int | None">
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```python
+pipe = await iii.pipe_async()
+_, result = await asyncio.gather(
+    write_report(pipe.output),
+    iii.call_async({"function_id": "files::process", "payload": {"body": pipe.input}}),
+)
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
 ### register_trigger
 
 Removed in 0.26.0: raises an error that points to `observe`.
@@ -1131,7 +1209,7 @@ unregister_trigger_type(_args: Any = (), _kwargs: Any = {}) -> NoReturn
 
 ### iii
 
-[`Call`](#call) · [`CallAction`](#callaction) · [`CallActionEnqueue`](#callactionenqueue) · [`CallActionVoid`](#callactionvoid) · [`Caller`](#caller) · [`EnqueueResult`](#enqueueresult) · [`InitOptions`](#initoptions) · [`InvocationContext`](#invocationcontext) · [`MatchKeys`](#matchkeys) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserveSource`](#observesource) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`TelemetryOptions`](#telemetryoptions)
+[`Call`](#call) · [`CallAction`](#callaction) · [`CallActionEnqueue`](#callactionenqueue) · [`CallActionVoid`](#callactionvoid) · [`Caller`](#caller) · [`EnqueueResult`](#enqueueresult) · [`InitOptions`](#initoptions) · [`InputStream`](#inputstream) · [`InvocationContext`](#invocationcontext) · [`MatchKeys`](#matchkeys) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserveSource`](#observesource) · [`OutputStream`](#outputstream) · [`Pipe`](#pipe) · [`StreamInfo`](#streaminfo) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`TelemetryOptions`](#telemetryoptions)
 
 #### Call
 
@@ -1229,6 +1307,38 @@ Configuration options passed to ``register_worker``.
 | `telemetry` | [`TelemetryOptions`](#telemetryoptions) \| None | No | Internal worker metadata reported to the engine. |
 | `worker_description` | `str \| None` | No | One-line, human/LLM-readable summary of what this worker does. Surfaces in ``engine::workers::list`` / ``engine::workers::info``. |
 | `worker_name` | `str \| None` | No | Display name for this worker. A non-empty ``III_WORKER_NAME`` overrides it. Defaults to ``hostname:pid``. |
+
+---
+
+#### InputStream
+
+A stream to read: bytes in binary frames, messages in text frames.
+
+Received in a handler's input or in a call's result wherever the sender put
+a stream (a ref with ``"direction": "read"``). Build one to send with
+`from_file`, `from_iter` or `from_bytes`; an open binary
+file and an async generator in a payload are streamed as well.
+
+A stream has one reader: a second iteration, `read_all`,
+`text`, `lines`, `messages` or `frames` raises
+`RuntimeError`; call `tee` before reading for two copies.
+A received stream opens its socket on the first read. When the writer
+aborts the stream, the read raises `StreamAbortedError` once
+the data sent before the abort has been read.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `cancel` | `async () -> None` | Yes | Stop reading: the writer learns the reader left. A read in progress, and every later read, raises `StreamClosedError`: what was read is not the whole stream. A stream read to its end stays ended, and one passed on to another call is that call's (a no-op here). |
+| `frames` | () -&gt; AsyncIterator[[`ChannelItem`](#channelitem)] | Yes | Every frame in order: `ChannelItem` with ``binary`` (bytes) or ``text`` (a message, as sent). |
+| `from_bytes` | (data: bytes \| bytearray \| memoryview \| str) -&gt; [`InputStream`](#inputstream) | Yes | A stream of ``data`` (``str`` is sent as UTF-8 bytes). |
+| `from_file` | (file: str \| IO[bytes], *, chunk_size: int = MAX_FRAME_SIZE) -&gt; [`InputStream`](#inputstream) | Yes | A stream of a file's bytes, read in ``chunk_size`` pieces off the event loop. |
+| `from_iter` | (iterable: Iterable[Chunk] \| AsyncIterable[Chunk]) -&gt; [`InputStream`](#inputstream) | Yes | A stream of what ``iterable`` yields: ``bytes`` (``str`` is sent as UTF-8 bytes). |
+| `id` | `str` | Yes | The channel id of a received stream; ``local:<hex>`` for one built in this process. |
+| `lines` | `(encoding: str = 'utf-8') -> AsyncIterator[str]` | Yes | The stream's text, one line at a time, without the line ending (``\n`` or ``\r\n``); a last line with no newline is yielded too. |
+| `messages` | `() -> AsyncIterator[Any]` | Yes | The messages (text frames), each parsed as JSON; a text frame that is not JSON is yielded as the string it is. Binary frames are skipped. |
+| `read_all` | `async () -> bytes` | Yes | Every byte of the stream, once it ended (text frames are skipped). |
+| `tee` | () -&gt; tuple[[`InputStream`](#inputstream), [`InputStream`](#inputstream)] | Yes | Two streams that each read every frame of this one (in-process copies). Call it before reading; this stream is then read through the copies. |
+| `text` | `async (encoding: str = 'utf-8', errors: str = 'strict') -> str` | Yes | The stream's bytes, decoded. |
 
 ---
 
@@ -1342,7 +1452,7 @@ may call the sync API.
 | `dispose` | `() -> None` | Yes | Removes the observer (``unobserve``). It is not replayed on reconnect. |
 | `dispose_async` | `async () -> None` | Yes | The async form of `dispose` (it does not wait for the engine). |
 | `id` | `Any` | No | The observer's id (stable across replays). |
-| `on_state_change` | `(listener: StateListener) -> Callable[[], None]` | Yes | Calls ``listener(state, reason)`` on every state change, in order, on the SDK's callback thread. Returns the unsubscribe function. |
+| `on_state_change` | `(listener: StateListener) -> Callable[[], None]` | Yes | Calls ``listener(state, reason)`` on every state change after it subscribes, in order, on the SDK's callback thread. Returns the unsubscribe function; a change still queued then is not delivered to it. |
 | `ready` | `(timeout: float \| None = None) -> None` | Yes | Blocks until the observer is ``active``. Use `ready_async` in async code. |
 | `ready_async` | `async () -> None` | Yes | Waits until the observer is ``active`` (on any event loop). |
 | `reason` | `ObserveReason \| None` | Yes | Why the observer is in its state (``error``, ``suspended``, ``disposed``). |
@@ -1378,6 +1488,65 @@ The left side of ``iii.observe``: what is observed.
 
 ---
 
+#### OutputStream
+
+A stream to write: `write` sends bytes, `send` sends a message.
+
+Received in a handler's input or in a call's result wherever the sender put
+a sink (a ref with ``"direction": "write"``). Build one to pass with
+`to_file` or `to`: the call resolves once what the function
+wrote reached it.
+
+In a handler, a received ``OutputStream`` that was written to is closed
+when the handler returns and aborted when it raises. One the handler never
+used is closed when it returns, unless the invocation is an observer
+activation (an HTTP route target, say) that returned a value other than
+``None``: then it is left untouched. Call `keep_open` to keep writing
+after the handler returns. ``async
+with out:`` closes it at the end of the block, or aborts it on an error.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `abort` | `async (reason: str \| BaseException \| None = None) -> None` | Yes | End the stream as failed: the reader gets `StreamAbortedError` instead of a stream that looks complete. A stream never written is opened first, so the reader always learns of the failure. Idempotent; a no-op once closed or passed on. |
+| `close` | `async () -> None` | Yes | End the stream: the reader sees a clean end. A stream never written is opened and closed (the reader sees an empty stream). Idempotent; a no-op once aborted or passed on. |
+| `id` | `str` | Yes | The channel id of a received stream; ``local:<hex>`` for one built in this process. |
+| `keep_open` | () -&gt; [`OutputStream`](#outputstream) | Yes | Keep the stream open after the handler that received it returns: the handler's code then closes or aborts it. |
+| `send` | `async (message: Any) -> None` | Yes | Send ``message`` as JSON in one text frame (a file or writer sink drops it). |
+| `to` | (writer: Any) -&gt; [`OutputStream`](#outputstream) | Yes | A sink that writes the stream's bytes to ``writer``: a binary file object, an ``asyncio.StreamWriter``, or anything with ``write(bytes)`` (sync or async). It is flushed or drained at the end and never closed: its owner closes it. Messages are not written. A writer that is not a file object (an ``asyncio`` writer, say) is used on the loop it was passed on. |
+| `to_file` | (path: str) -&gt; [`OutputStream`](#outputstream) | Yes | A sink that writes the stream's bytes to ``path`` (created or truncated on the first write; an empty stream leaves an empty file). Messages are not written. On an abort the file keeps what was written, and the call rejects. |
+| `write` | `async (data: bytes \| bytearray \| memoryview \| str) -> None` | Yes | Send bytes (``str`` is sent as UTF-8 bytes) in binary frames; returns once they were accepted (backpressure). |
+
+---
+
+#### Pipe
+
+Both ends of a pipe made with ``iii.pipe()``: pass ``input`` to the function
+that reads, write ``output`` here (or the other way round).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [`InputStream`](#inputstream) | Yes | - |
+| `output` | [`OutputStream`](#outputstream) | Yes | - |
+
+---
+
+#### StreamInfo
+
+What an observer sees where the observed call carried a stream: that a stream
+was passed, its direction and its channel id, and no bytes.
+
+An observer's target receives it in the ``input`` and ``output`` of the
+`Observed` payload iii delivers. The access key still travels on
+the wire (a 0.26 engine sends the ref); this SDK drops it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `direction` | `Literal['read', 'write']` | Yes | - |
+| `id` | `str` | Yes | - |
+| `stream` | `Literal[True]` | No | - |
+
+---
+
 #### StreamRequest
 
 Incoming streaming request received by a function that serves a streaming HTTP route.
@@ -1389,21 +1558,25 @@ Incoming streaming request received by a function that serves a streaming HTTP r
 | `method` | `str` | Yes | - |
 | `path_params` | `dict[str, str]` | Yes | - |
 | `query_params` | `dict[str, str \| list[str]]` | Yes | - |
-| `request_body` | [`ChannelReader`](#channelreader) | Yes | - |
+| `request_body` | [`InputStream`](#inputstream) | Yes | - |
 
 ---
 
 #### StreamResponse
 
-Streaming response built on top of a ChannelWriter.
+Streaming HTTP response written to the request's ``response`` `OutputStream`.
+
+Set the status and headers before the first body byte. The HTTP worker
+reads them as the control messages ``{"type": "set_status", ...}`` and
+``{"type": "set_headers", ...}``.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `close` | `() -> None` | Yes | - |
+| `close` | `async () -> None` | Yes | End the body. The handler that returns closes it too. |
 | `headers` | `async (headers: dict[str, str]) -> None` | Yes | - |
 | `status` | `async (status_code: int) -> None` | Yes | - |
-| `stream` | `WritableStream` | Yes | - |
-| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
+| `write` | `async (data: bytes \| str) -> None` | Yes | Body bytes (``str`` is sent as UTF-8). |
+| `writer` | [`OutputStream`](#outputstream) | Yes | The response stream itself. |
 
 ---
 
@@ -1416,61 +1589,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `framework` | `str \| None` | No | Framework name, if applicable. |
 | `language` | `str \| None` | No | Programming language of the worker. |
 | `project_name` | `str \| None` | No | Name of the project this worker belongs to. |
-
-### iii.channel
-
-[`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`StreamChannelRef`](#streamchannelref)
-
-#### Channel
-
-A streaming channel pair for worker-to-worker data transfer.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `reader` | [`ChannelReader`](#channelreader) | Yes | - |
-| `reader_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-| `writer` | [`ChannelWriter`](#channelwriter) | Yes | - |
-| `writer_ref` | [`StreamChannelRef`](#streamchannelref) | Yes | - |
-
----
-
-#### ChannelReader
-
-WebSocket-backed reader for streaming binary data and text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `close_async` | `async () -> None` | Yes | - |
-| `on_message` | `(callback: Callable[[str], Any]) -> None` | Yes | - |
-| `read_all` | `async () -> bytes` | Yes | Read the entire stream into a single bytes object. |
-| `stream` | `Any` | No | - |
-
----
-
-#### ChannelWriter
-
-WebSocket-backed writer for streaming binary data and text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `close` | `() -> None` | Yes | End the stream with a clean close frame. Queued from a running loop; a sync caller waits for it. |
-| `close_async` | `async () -> None` | Yes | - |
-| `send_message` | `(msg: str) -> None` | Yes | Text message. Queued from a running loop; a sync caller waits for it. |
-| `send_message_async` | `async (msg: str) -> None` | Yes | - |
-| `stream` | `Any` | No | - |
-| `write` | `async (data: bytes) -> None` | Yes | - |
-
----
-
-#### StreamChannelRef
-
-Reference to a streaming channel for worker-to-worker data transfer.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `access_key` | `str` | Yes | Secret key for authenticating channel access. |
-| `channel_id` | `str` | Yes | Unique channel identifier. |
-| `direction` | `Literal['read', 'write']` | Yes | Channel direction (``read`` or ``write``). |
 
 ### iii.engine
 
@@ -1507,7 +1625,7 @@ observe them with ``iii.observe(EngineSources.FUNCTIONS_CHANGED, target)``
 
 ### iii.errors
 
-[`InvocationError`](#invocationerror) · [`ObserveRejection`](#observerejection) · [`RegistrationRejectedError`](#registrationrejectederror)
+[`InvocationError`](#invocationerror) · [`ObserveRejection`](#observerejection) · [`RegistrationRejectedError`](#registrationrejectederror) · [`StreamAbortedError`](#streamabortederror) · [`StreamClosedError`](#streamclosederror) · [`StreamInUseError`](#streaminuseerror)
 
 #### InvocationError
 
@@ -1568,9 +1686,45 @@ reconnect. Inspect the attributes to identify the conflict.
 | `owner_worker_id` | `Any` | No | - |
 | `worker_name` | `Any` | No | - |
 
+---
+
+#### StreamAbortedError
+
+A stream ended in failure instead of a clean close (``code`` is ``'STREAM_ABORTED'``).
+
+Raised by a read of an `InputStream` whose writer aborted it
+(its source failed, its handler raised, or its socket was lost), once the
+data sent before the abort has been read. A call rejects with it when a
+sink passed in its payload was aborted, even if the function succeeded.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `close_code` | `Any` | No | The WebSocket close code the reader got (``1011`` for an abort the engine relayed), or ``None`` for an abort raised in this process. |
+| `reason` | `Any` | No | Why the stream was aborted, as the reader learned it. A 0.26 engine relays an abort as ``channel writer aborted: closed with code <n>`` (or ``connection lost before close``), not the writer's own reason. |
+
+---
+
+#### StreamClosedError
+
+A write or send on an `OutputStream` that is closed or aborted
+(``code`` is ``'STREAM_CLOSED'``); also passing such a stream to a call.
+
+Also a `RuntimeError`, as these errors were before they had a code.
+
+---
+
+#### StreamInUseError
+
+A stream used where it can no longer be (``code`` is ``'STREAM_IN_USE'``): a
+second reader of an `InputStream`, the same stream twice in one
+payload, a stream passed on after it was read to the end or already sent to
+another call, or a write to an `OutputStream` passed on.
+
+Also a `RuntimeError`, as these errors were before they had a code.
+
 ### iii.protocol
 
-[`CallRequest`](#callrequest) · [`MessageType`](#messagetype) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`SDK_FEATURES`](#sdk_features)
+[`CallRequest`](#callrequest) · [`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem) · [`MessageType`](#messagetype) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`SDK_FEATURES`](#sdk_features) · [`StreamChannelRef`](#streamchannelref) · [`StreamChannelRefDict`](#streamchannelrefdict)
 
 #### CallRequest
 
@@ -1590,6 +1744,40 @@ the worker that hosts the observed function may make it.
 | `observer` | `Any` | No | An `Observer` of a function this worker hosts: the call runs its target, with its policy and metadata sidecar. Takes no ``function_id``, ``namespace``, ``metadata`` or enqueue action. |
 | `payload` | `Any` | No | Input data passed to the function. |
 | `timeout_ms` | `int \| None` | No | Override the default invocation timeout, in milliseconds. |
+
+---
+
+#### ChannelDirection
+
+Direction of a streaming channel reference.
+
+Mirrors the Rust SDK's ``ChannelDirection`` enum. The string values
+(``"read"`` / ``"write"``) match the wire format used by
+`StreamChannelRef.direction`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `READ` | `Any` | No | - |
+| `WRITE` | `Any` | No | - |
+
+---
+
+#### ChannelItem
+
+A single frame transferred over a channel (what `iii.InputStream.frames` yields).
+
+Mirrors the Rust SDK's ``ChannelItem`` enum. Exactly one of ``text`` or
+``binary`` is set; use `text_item` / `binary_item` to
+construct instances.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `binary` | `bytes \| None` | No | - |
+| `binary_item` | (value: bytes) -&gt; [`ChannelItem`](#channelitem) | Yes | - |
+| `is_binary` | `bool` | Yes | - |
+| `is_text` | `bool` | Yes | - |
+| `text` | `str \| None` | No | - |
+| `text_item` | (value: str) -&gt; [`ChannelItem`](#channelitem) | Yes | - |
 
 ---
 
@@ -1672,6 +1860,33 @@ Input for registering a function, matches Node.js RegisterFunctionInput.
 ```python
 SDK_FEATURES = tuple[str, ...]
 ```
+
+---
+
+#### StreamChannelRef
+
+Reference to a streaming channel for worker-to-worker data transfer.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `str` | Yes | Secret key for authenticating channel access. |
+| `channel_id` | `str` | Yes | Unique channel identifier. |
+| `direction` | `Literal['read', 'write']` | Yes | Channel direction (``read`` or ``write``). |
+
+---
+
+#### StreamChannelRefDict
+
+Wire-shape of a `StreamChannelRef` as it appears in raw payloads.
+
+Used as the narrowed type for `is_channel_ref` so type checkers can
+validate ``value["channel_id"]`` style access after the guard passes.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `str` | Yes | - |
+| `channel_id` | `str` | Yes | - |
+| `direction` | `Literal['read', 'write']` | Yes | - |
 
 ### iii.runtime
 
