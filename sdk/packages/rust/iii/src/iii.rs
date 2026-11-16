@@ -1786,6 +1786,9 @@ impl RegisterFunction {
 
     /// Create a registration for an **HTTP-invoked** function (Lambda,
     /// Cloudflare Workers, etc.). No local handler runs.
+    #[deprecated(
+        note = "HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions"
+    )]
     pub fn http(config: HttpInvocationConfig) -> Self {
         let mut message = empty_message();
         message.invocation = Some(config);
@@ -2618,6 +2621,7 @@ impl IIIClient {
     ///
     /// HTTP-invoked function:
     /// ```rust,no_run
+    /// # #![allow(deprecated)]
     /// # use iii_sdk::{register_worker, InitOptions, RegisterFunction};
     /// # use iii_helpers::http::{HttpInvocationConfig, HttpMethod};
     /// # use std::collections::HashMap;
@@ -5031,6 +5035,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // RegisterFunction::http is deprecated (iii-http-functions).
     async fn register_function_with_http_config_stores_and_unregister_removes() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let config = HttpInvocationConfig {
@@ -5053,6 +5058,7 @@ mod tests {
 
     #[tokio::test]
     #[should_panic(expected = "id is required")]
+    #[allow(deprecated)] // RegisterFunction::http is deprecated (iii-http-functions).
     async fn register_function_rejects_empty_id() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let config = HttpInvocationConfig {
@@ -5100,6 +5106,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)] // RegisterFunction::http is deprecated (iii-http-functions).
     async fn register_function_http_variant_has_no_handler() {
         let iii = register_worker("ws://localhost:1234", InitOptions::default());
         let config = HttpInvocationConfig {

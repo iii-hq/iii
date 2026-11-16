@@ -5,7 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 //! Rate-limited deprecation warnings for engine entry points scheduled for
-//! removal (MOT-3619: iii-stream).
+//! removal (MOT-3619: iii-stream; iii-http-functions).
 //!
 //! A warning is keyed by `(entry_point, caller_key)` and logged at most once
 //! per [`WARN_INTERVAL`] per key, so a hot call path costs one map lookup.
@@ -31,6 +31,39 @@ use crate::worker_connections::WorkerConnectionRegistry;
 pub(crate) const STREAM_MIGRATION_GUIDE: &str =
     "https://iii.dev/docs/upgrading/migrate-from-streams";
 
+/// Migration guide linked from every iii-http-functions deprecation message.
+pub(crate) const HTTP_FUNCTIONS_MIGRATION_GUIDE: &str =
+    "https://iii.dev/docs/upgrading/migrate-from-http-functions";
+
+/// A deprecated engine feature: the name its warnings carry and the guide
+/// they link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Feature {
+    /// The `iii-stream` worker and its `stream::*` functions.
+    Stream,
+    /// The `iii-http-functions` worker: functions registered with an HTTP
+    /// invocation (`HttpInvocationConfig`) that the engine calls over HTTP.
+    HttpFunctions,
+}
+
+impl Feature {
+    /// The worker name the deprecation sentence names.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Stream => "iii-stream",
+            Self::HttpFunctions => "iii-http-functions",
+        }
+    }
+
+    /// The migration guide every warning for this feature links.
+    pub(crate) const fn guide(self) -> &'static str {
+        match self {
+            Self::Stream => STREAM_MIGRATION_GUIDE,
+            Self::HttpFunctions => HTTP_FUNCTIONS_MIGRATION_GUIDE,
+        }
+    }
+}
+
 /// Minimum time between two warnings for the same `(entry_point, caller)`.
 pub(crate) const WARN_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
@@ -46,14 +79,22 @@ pub(crate) const ENGINE_CALLER_KEY: &str = "engine";
 /// Placeholder logged for caller fields that do not apply or are unknown.
 const ABSENT: &str = "-";
 
+/// The standard deprecation sentence for `entry` (a function id or
+/// entry-point name) of `feature`.
+pub(crate) fn deprecation_message(feature: Feature, entry: &str) -> String {
+    format!(
+        "{entry} is deprecated ({}) and will be removed in an upcoming release. \
+         Behavior is unchanged for now. Migration guide: {}",
+        feature.name(),
+        feature.guide()
+    )
+}
+
 /// The standard iii-stream deprecation sentence for `entry` (a function id
 /// or entry-point name).
+#[cfg(test)]
 pub(crate) fn stream_deprecation_message(entry: &str) -> String {
-    format!(
-        "{entry} is deprecated (iii-stream) and will be removed in an upcoming release. \
-         Behavior is unchanged for now. Migration guide: \
-         {STREAM_MIGRATION_GUIDE}"
-    )
+    deprecation_message(Feature::Stream, entry)
 }
 
 /// Who reached a deprecated entry point.
@@ -146,11 +187,12 @@ impl RateLimiter {
 static LIMITER: LazyLock<RateLimiter> = LazyLock::new(|| RateLimiter::new(WARN_INTERVAL, MAX_KEYS));
 static WARNED_ONCE: LazyLock<DashSet<&'static str>> = LazyLock::new(DashSet::new);
 
-/// Log the iii-stream deprecation warning for `entry` reached by `caller`,
-/// at most once per [`WARN_INTERVAL`] per `(entry, caller)`. Worker details
-/// are looked up in `registry` only when the warning is actually logged.
-/// Returns true when it logged.
-pub(crate) fn warn_stream_deprecated(
+/// Log the `feature` deprecation warning for `entry` reached by `caller`, at
+/// most once per [`WARN_INTERVAL`] per `(entry, caller)`. Worker details are
+/// looked up in `registry` only when the warning is actually logged. Returns
+/// true when it logged.
+pub(crate) fn warn_deprecated(
+    feature: Feature,
     entry: &'static str,
     caller: Caller,
     registry: &WorkerConnectionRegistry,
@@ -158,19 +200,33 @@ pub(crate) fn warn_stream_deprecated(
     if !LIMITER.should_warn(entry, &caller.key(), Instant::now()) {
         return false;
     }
-    emit(entry, caller, Some(registry));
+    emit(feature, entry, caller, Some(registry));
     true
 }
 
-/// Log the iii-stream deprecation warning for an engine-local `entry` once per
+/// Log the `feature` deprecation warning for an engine-local `entry` once per
 /// process (worker startup, listener startup); a reload does not repeat it.
 /// Returns true when it logged.
-pub(crate) fn warn_stream_deprecated_once(entry: &'static str) -> bool {
+pub(crate) fn warn_deprecated_once(feature: Feature, entry: &'static str) -> bool {
     if !WARNED_ONCE.insert(entry) {
         return false;
     }
-    emit(entry, Caller::Engine, None);
+    emit(feature, entry, Caller::Engine, None);
     true
+}
+
+/// [`warn_deprecated`] for iii-stream.
+pub(crate) fn warn_stream_deprecated(
+    entry: &'static str,
+    caller: Caller,
+    registry: &WorkerConnectionRegistry,
+) -> bool {
+    warn_deprecated(Feature::Stream, entry, caller, registry)
+}
+
+/// [`warn_deprecated_once`] for iii-stream.
+pub(crate) fn warn_stream_deprecated_once(entry: &'static str) -> bool {
+    warn_deprecated_once(Feature::Stream, entry)
 }
 
 /// Every field a deprecation warning carries besides the guide and the
@@ -234,7 +290,12 @@ impl WarningFields {
     }
 }
 
-fn emit(entry: &'static str, caller: Caller, registry: Option<&WorkerConnectionRegistry>) {
+fn emit(
+    feature: Feature,
+    entry: &'static str,
+    caller: Caller,
+    registry: Option<&WorkerConnectionRegistry>,
+) {
     let fields = WarningFields::resolve(entry, caller, registry);
     tracing::warn!(
         target: "iii::deprecation",
@@ -244,9 +305,9 @@ fn emit(entry: &'static str, caller: Caller, registry: Option<&WorkerConnectionR
         caller_runtime = %fields.caller_runtime,
         caller_sdk_version = %fields.caller_sdk_version,
         caller_ip = %fields.caller_ip,
-        guide = %STREAM_MIGRATION_GUIDE,
+        guide = %feature.guide(),
         "{}",
-        stream_deprecation_message(entry)
+        deprecation_message(feature, entry)
     );
     #[cfg(test)]
     test_support::record(fields);
@@ -356,6 +417,16 @@ mod tests {
             "stream::set is deprecated (iii-stream) and will be removed in an upcoming release. \
              Behavior is unchanged for now. Migration guide: \
              https://iii.dev/docs/upgrading/migrate-from-streams"
+        );
+    }
+
+    #[test]
+    fn http_functions_message_names_its_worker_and_guide() {
+        assert_eq!(
+            deprecation_message(Feature::HttpFunctions, "HttpInvocationConfig"),
+            "HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an \
+             upcoming release. Behavior is unchanged for now. Migration guide: \
+             https://iii.dev/docs/upgrading/migrate-from-http-functions"
         );
     }
 
@@ -486,6 +557,31 @@ mod tests {
         let message = crate::missing_function_hints::migration_message("stream::set")
             .expect("stream::set needs an actionable hint");
         assert!(message.contains(&stream_deprecation_message("stream::set")));
+    }
+
+    #[test]
+    fn http_functions_warning_links_its_own_guide() {
+        let registry = WorkerConnectionRegistry::new();
+        let caller = Caller::Worker(Uuid::new_v4());
+
+        let _lock = test_support::GLOBAL_LIMITER_LOCK.blocking_lock();
+        let (_guard, logs) = test_support::capture();
+        assert!(warn_deprecated(
+            Feature::HttpFunctions,
+            "test-only http functions entry",
+            caller,
+            &registry
+        ));
+
+        let lines = logs.deprecation_lines();
+        assert_eq!(lines.len(), 1, "expected exactly one warning: {lines:?}");
+        let line = &lines[0];
+        assert!(
+            line.contains(&format!("guide={HTTP_FUNCTIONS_MIGRATION_GUIDE}")),
+            "{line}"
+        );
+        assert!(line.contains("(iii-http-functions)"), "{line}");
+        assert!(!line.contains("iii-stream"), "{line}");
     }
 
     #[test]

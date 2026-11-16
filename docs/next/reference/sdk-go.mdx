@@ -1198,6 +1198,8 @@ func Identity(_ context.Context, data json.RawMessage) (any, error)
 
 InferSchema reflects a JSON Schema for T, exposed for callers that want to build a registration manually or inspect the schema the typed API would send.
 
+Nested types are written out where they appear. A type that contains itself (a tree node with Children []Node, a struct with a pointer to its own type, two structs that point at each other) is described once under "$defs" and referenced with "$ref": "#/$defs/&lt;Name&gt;". An interface type, such as any, accepts any JSON value. A type with no JSON Schema, such as a chan or func field, is an error.
+
 **Signature**
 
 ```go

@@ -712,14 +712,18 @@ const INFO_RETRY: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 }
 const RECONNECT_GRACE: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 10 });
 /// `worker::destroy` removes a VM's whole state, rootfs included.
 const DESTROY_TIMEOUT: Duration = Duration::from_secs(60);
-/// `worker::status` cadence, and the pause between unanswered stops.
-const POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// How long after a log stream closed on a running VM (or would not open) it
+/// is asked for again, and the pause between unanswered stops.
+const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// A status call's budget, and what a stop call gets beyond its grace.
 const CALL_SLACK: Duration = Duration::from_secs(10);
 
 /// A VM container, supervised through its adapter's `worker::*` functions. A
-/// task polls `worker::status` every second into a watch, so `poll` never
-/// blocks; it ends at an exit, or when this handle drops.
+/// task keeps the VM's `worker::logs` stream open. The adapter closes it once
+/// the VM has exited and its log is drained, and it also ends when the adapter
+/// or the engine goes away. Only then does the task ask `worker::status`, so a
+/// running VM costs no call. The answer goes into a watch, so `poll` never
+/// blocks; the task ends at an exit, or when this handle drops.
 pub struct RemoteVm {
     pub record: VmRecord,
     client: IIIClient,
@@ -730,8 +734,9 @@ pub struct RemoteVm {
 }
 
 impl RemoteVm {
-    /// With `logs`, the poller also keeps the VM's `worker::logs` stream open
-    /// into it.
+    /// The VM's output goes to `logs`. Without it (a VM adopted from an
+    /// earlier daemon), the stream starts at the log's end and its records are
+    /// dropped: it is read only to learn when the VM ends.
     pub(crate) fn spawn(
         client: IIIClient,
         record: VmRecord,
@@ -739,50 +744,73 @@ impl RemoteVm {
         logs: Option<LogSink>,
     ) -> Self {
         let (sender, outcome) = watch::channel(Outcome::Running);
-        let (poller, vm, auth, sink) =
-            (client.clone(), record.clone(), token.clone(), logs.clone());
+        let (poller, vm, auth, kept) = (
+            client.clone(),
+            record.clone(),
+            token.clone(),
+            logs.is_some(),
+        );
+        let sink = logs.clone().unwrap_or_else(LogSink::discard);
         tokio::spawn(async move {
-            let (mut capture, mut cursor) = (None, None);
-            // A boot that fails at once can be `Exited` by the first tick, so
-            // its stream opens now; the adapter drains it before closing.
-            if let Some(sink) = &sink {
-                follow_logs(&poller, &vm, &auth, sink, &mut capture, &mut cursor).await;
-            }
+            let (mut capture, mut cursor, mut from_end) = (None, None, !kept);
+            let mut pause = Duration::ZERO;
             loop {
-                let tick = async {
-                    tokio::time::sleep(POLL_INTERVAL).await;
+                let pass = async {
+                    tokio::time::sleep(pause).await;
+                    follow_logs(
+                        &poller,
+                        &vm,
+                        &auth,
+                        &sink,
+                        &mut capture,
+                        &mut cursor,
+                        &mut from_end,
+                    )
+                    .await;
+                    stream_end(&mut capture, &mut cursor).await;
                     let mut reply = worker_status(&poller, &vm, &auth).await;
                     if let Some(live) = superseded_by(&reply, &vm) {
                         let _ = worker_stop(&poller, &live, &auth, DEFAULT_STOP_GRACE).await;
                         reply = worker_status(&poller, &vm, &auth).await;
                     }
-                    outcome_of(reply)
+                    let outcome = outcome_of(reply);
+                    // If the stream was down when the VM exited (a dropped
+                    // bus), the VM's last lines were missed, and its next boot
+                    // truncates them: they are read once more before the exit
+                    // is published.
+                    if kept && matches!(outcome, Outcome::Exited(_)) {
+                        follow_logs(
+                            &poller,
+                            &vm,
+                            &auth,
+                            &sink,
+                            &mut capture,
+                            &mut cursor,
+                            &mut from_end,
+                        )
+                        .await;
+                        if let Some(draining) = capture.take() {
+                            let _ = tokio::time::timeout(CALL_SLACK, draining).await;
+                        }
+                    }
+                    outcome
                 };
                 tokio::select! {
                     // Every receiver is gone, so the `RemoteVm` is.
                     () = sender.closed() => return,
-                    outcome = tick => {
+                    outcome = pass => {
                         let exited = matches!(outcome, Outcome::Exited(_));
-                        // A stream down at the exit (a dropped bus) would miss
-                        // the VM's last lines, which its next boot truncates:
-                        // they are read once more before the exit is published.
-                        if exited && let Some(sink) = &sink {
-                            follow_logs(&poller, &vm, &auth, sink, &mut capture, &mut cursor)
-                                .await;
-                            if let Some(draining) = capture.take() {
-                                let _ = tokio::time::timeout(CALL_SLACK, draining).await;
-                            }
-                        }
                         sender.send_replace(outcome);
                         if exited {
                             return;
                         }
-                        if let Some(sink) = &sink {
-                            follow_logs(&poller, &vm, &auth, sink, &mut capture, &mut cursor)
-                                .await;
-                        }
                     }
                 }
+                // The VM still runs. Its stream closed (an engine restart, a
+                // full log queue) or would not open, so it is asked for again
+                // after a pause: a stream that keeps closing at once cannot
+                // spin.
+                pause = RETRY_INTERVAL;
             }
         });
         Self {
@@ -798,7 +826,7 @@ impl RemoteVm {
         self.outcome.borrow().clone()
     }
 
-    /// Resolves at the first `Exited` the poller sees.
+    /// Resolves at the first `Exited` the supervising task publishes.
     pub async fn wait(&self) -> ExitStatus {
         let mut outcome = self.outcome.clone();
         let exited = outcome
@@ -863,7 +891,7 @@ impl RemoteVm {
             }
             let mut outcome = self.outcome.clone();
             tokio::select! {
-                () = tokio::time::sleep(POLL_INTERVAL) => {}
+                () = tokio::time::sleep(RETRY_INTERVAL) => {}
                 Ok(_) = outcome.wait_for(|outcome| matches!(outcome, Outcome::Exited(_))) => {}
             }
         }
@@ -874,10 +902,9 @@ impl RemoteVm {
     }
 }
 
-/// Keeps one `worker::logs` stream open into `sink`. A stream that closed
-/// while the VM runs (an engine restart, a dropped bus, a full log queue) is
-/// asked for again from the cursor it reached, kept in memory only; a failed
-/// call is retried on the next poll.
+/// Opens a `worker::logs` stream into `sink` from `cursor`, kept in memory
+/// only, or from the log's end while `from_end` holds. A failed call leaves
+/// `capture` empty, so the next pass asks again.
 async fn follow_logs(
     client: &IIIClient,
     vm: &VmRecord,
@@ -885,19 +912,8 @@ async fn follow_logs(
     sink: &LogSink,
     capture: &mut Option<JoinHandle<Option<u64>>>,
     cursor: &mut Option<u64>,
+    from_end: &mut bool,
 ) {
-    match capture.take() {
-        Some(live) if !live.is_finished() => {
-            *capture = Some(live);
-            return;
-        }
-        Some(done) => {
-            if let Ok(Some(last)) = done.await {
-                *cursor = Some(last);
-            }
-        }
-        None => {}
-    }
     let Ok(channel) = iii_sdk::helpers::create_channel(client, None).await else {
         return;
     };
@@ -911,7 +927,7 @@ async fn follow_logs(
             access_key: channel.writer_ref.access_key,
             direction: contract::ChannelDirection::Write,
         },
-        from_end: false,
+        from_end: *from_end,
     };
     let reply: std::result::Result<WorkerLogsResponse, _> = call(
         client,
@@ -922,9 +938,34 @@ async fn follow_logs(
         CALL_SLACK,
     )
     .await;
-    if reply.is_ok() {
+    if let Ok(started) = reply {
+        // Later streams go on from where this one started, not from a later
+        // end. An adapter before contract 1.2 ignores `from_end` and sends
+        // the whole log, which a discarding sink drops.
+        if std::mem::take(from_end) {
+            *cursor = started.cursor;
+        }
         *capture = Some(sink.capture_records(channel.reader));
     }
+}
+
+/// Waits for the log stream in `capture` to close, and keeps the cursor of
+/// its last record in `cursor`; returns at once, `false`, with no stream open.
+/// It is cancel-safe: dropped before the stream ends, it leaves the stream
+/// in `capture`.
+pub(crate) async fn stream_end(
+    capture: &mut Option<JoinHandle<Option<u64>>>,
+    cursor: &mut Option<u64>,
+) -> bool {
+    let Some(stream) = capture.as_mut() else {
+        return false;
+    };
+    let last = stream.await;
+    *capture = None;
+    if let Ok(Some(last)) = last {
+        *cursor = Some(last);
+    }
+    true
 }
 
 /// Fails the start of `container` unless the adapter speaks this engine's
@@ -1416,7 +1457,7 @@ pub(crate) fn is_vm(file: &ComposeFile, key: &str) -> bool {
 
 /// What a reopened project does with a recorded VM. With its owner gone, the
 /// adapter's lifeline took it; otherwise `worker::status` decides, and a reply
-/// that says nothing adopts it for the poller to settle.
+/// that says nothing adopts it for its supervising task to settle.
 pub(crate) fn vm_reconciliation(
     owner_alive: bool,
     status: std::result::Result<WorkerStatus, iii_sdk::Error>,
@@ -2870,7 +2911,8 @@ pub(crate) mod tests {
     /// that stays dead. Each answered or unanswered call but the SDK's own
     /// registration goes to the receiver as (function id, payload). A channel
     /// socket sends one line at cursor 12, none when the `worker::logs` before
-    /// it asked from there or from the end, then closes.
+    /// it asked from there or from the end, then closes; it stays open for as
+    /// long as `answer` replies `"hold"` to `channel::open`, a VM that runs.
     pub(crate) async fn fake_engine(
         answer: impl Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     ) -> (
@@ -2932,7 +2974,10 @@ pub(crate) mod tests {
                         if cursor.is_none_or(|cursor: u64| cursor < 12) {
                             socket.send(Message::Text(line.into())).await.unwrap();
                         }
-                        socket.close(None).await.unwrap();
+                        while answer("channel::open", &json!({})) == json!("hold") {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        let _ = socket.close(None).await;
                         return;
                     }
                     while let Some(Ok(frame)) = socket.next().await {
@@ -3022,7 +3067,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The stream opens before the first tick, which already reads `Exited`.
+    /// The stream opens first; its close has the VM asked about, and it has exited.
     #[tokio::test]
     async fn a_vm_that_exits_by_the_first_tick_keeps_its_output() {
         let (client, mut called) = fake_engine(|function, _| match function {
@@ -3054,6 +3099,64 @@ pub(crate) mod tests {
                 message: "no /dev/kvm".into()
             }]
         );
+    }
+
+    /// While its log stream is open a running VM is never asked about: the
+    /// stream's close is what has `worker::status` asked, once. An adopted VM,
+    /// with no sink, reads its stream from the log's end only for that.
+    #[tokio::test]
+    async fn a_vm_is_asked_about_only_when_its_log_stream_closes() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+
+        for kept in [true, false] {
+            let running = std::sync::Arc::new(AtomicBool::new(true));
+            let held = running.clone();
+            let (client, mut called) = fake_engine(move |function, _| match function {
+                "channel::open" if held.load(SeqCst) => serde_json::json!("hold"),
+                "sandbox-libkrun::worker::logs" => answered(serde_json::json!({})),
+                _ => answered(status(State::Exited, Some(0), None)),
+            })
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            let store = crate::logs::LogStore::open(dir.path().to_path_buf()).unwrap();
+            let sink = kept.then(|| store.sink("web"));
+            let vm = RemoteVm::spawn(client, vm_record(), "t".into(), sink);
+
+            // Past the first of the 1 s `worker::status` polls this replaces.
+            tokio::time::sleep(RETRY_INTERVAL * 3 / 2).await;
+            let mut running_calls = Vec::new();
+            while let Ok(call) = called.try_recv() {
+                running_calls.push(call);
+            }
+            let asked =
+                |calls: &[(String, serde_json::Value)], suffix: &str| -> Vec<serde_json::Value> {
+                    calls
+                        .iter()
+                        .filter(|(function, _)| function.ends_with(suffix))
+                        .map(|(_, payload)| payload.clone())
+                        .collect()
+                };
+            assert!(
+                asked(&running_calls, "::worker::status").is_empty(),
+                "{running_calls:?}"
+            );
+            let streams = asked(&running_calls, "::worker::logs");
+            assert_eq!(streams.len(), 1, "{running_calls:?}");
+            assert_eq!(streams[0]["from_end"] == true, !kept, "{streams:?}");
+            assert_eq!(vm.poll(), Outcome::Running);
+
+            running.store(false, SeqCst);
+            assert_eq!(vm.wait().await.code(), Some(0));
+            let mut exit_calls = Vec::new();
+            while let Ok(call) = called.try_recv() {
+                exit_calls.push(call);
+            }
+            assert_eq!(
+                asked(&exit_calls, "::worker::status").len(),
+                1,
+                "{exit_calls:?}"
+            );
+        }
     }
 
     /// A VM that exits while its log stream is down (a dropped bus) keeps its
@@ -3107,8 +3210,12 @@ pub(crate) mod tests {
         let calls = |c: &[(&str, u64)]| -> Vec<(String, Option<u64>)> {
             c.iter().map(|(f, i)| (f.to_string(), Some(*i))).collect()
         };
+        let asked: Vec<_> = drain(&mut called)
+            .into_iter()
+            .filter(|(function, _)| function == "worker::status" || function == "worker::stop")
+            .collect();
         assert_eq!(
-            drain(&mut called),
+            asked,
             calls(&[
                 ("worker::status", 1),
                 ("worker::stop", 2),
@@ -3742,7 +3849,7 @@ pub(crate) mod tests {
         assert_eq!(vm.stop(Duration::from_secs(1)).await.code(), None);
         let took = began.elapsed();
         assert!(
-            took >= STOP_RETRY && took < STOP_RETRY + POLL_INTERVAL * 2,
+            took >= STOP_RETRY && took < STOP_RETRY + RETRY_INTERVAL * 2,
             "{took:?}"
         );
     }

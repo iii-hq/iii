@@ -120,6 +120,16 @@ pub(crate) struct LogSink {
 }
 
 impl LogSink {
+    /// A sink that writes nowhere, for a VM log read only to learn when the
+    /// VM ends: its writer is gone, so every record is dropped.
+    pub(crate) fn discard() -> Self {
+        let (sender, _) = tokio::sync::mpsc::channel(1);
+        Self {
+            container: String::new(),
+            sender,
+        }
+    }
+
     /// One VM log record, cleaned and split as [`pump_stream`] cleans and
     /// splits a pipe. A `\n` inside it starts a new entry, so the guest cannot
     /// forge a record in the log file.

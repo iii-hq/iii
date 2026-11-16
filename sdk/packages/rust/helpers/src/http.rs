@@ -38,6 +38,8 @@ pub enum HttpAuthConfig {
 }
 
 /// Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
+///
+/// **Deprecated:** HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an upcoming release. Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpInvocationConfig {
     /// URL to invoke.

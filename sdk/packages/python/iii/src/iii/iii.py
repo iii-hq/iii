@@ -134,6 +134,11 @@ from .stream import IStream
 from .types import Channel, RemoteFunctionData, is_channel_ref
 
 RemoteFunctionHandler = Callable[[Any], Awaitable[Any]]
+
+_HTTP_INVOCATION_DEPRECATION = (
+    "HttpInvocationConfig is deprecated (iii-http-functions) and will be removed in an upcoming release. "
+    "Behavior is unchanged for now. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions"
+)
 TResult = TypeVar("TResult")
 AddedT = TypeVar("AddedT", bound=AddedHook)
 RemovedT = TypeVar("RemovedT", bound=RemovedHook)
@@ -2246,6 +2251,9 @@ class III:
 
         Pass a handler for local execution, or an ``HttpInvocationConfig``
         for HTTP-invoked functions (Lambda, Cloudflare Workers, etc.).
+        Passing an ``HttpInvocationConfig`` emits a :class:`FutureWarning`:
+        HTTP-invoked functions are deprecated (iii-http-functions). Register a
+        handler that makes the HTTP call instead.
 
         Handlers can be synchronous or asynchronous.  Sync handlers are
         automatically wrapped with ``run_in_executor`` so they do not
@@ -2392,6 +2400,7 @@ class III:
         needs_v2 = resolved_args_format is not None or private or not observable
 
         if isinstance(handler_or_invocation, HttpInvocationConfig):
+            warnings.warn(_HTTP_INVOCATION_DEPRECATION, FutureWarning, stacklevel=2)
             observe_state = FunctionObservers(
                 function_id, local_dispatch, False, self._observe_host, private=private
             )
