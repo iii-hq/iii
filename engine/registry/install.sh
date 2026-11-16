@@ -177,7 +177,10 @@ iii_emit_event_in_background() {
 # that fills `tmpdir`, because the harness setup calls it before its `exec`,
 # and with --skip-bin-download there is no download directory for it to name:
 # an unset `tmpdir` is a run with nothing to clean, not an error.
-cleanup() { rm -rf "${tmpdir:-}"; }
+cleanup() {
+  rm -rf "${tmpdir:-}"
+  if [ -n "${staged:-}" ]; then rm -f "$staged"; fi
+}
 
 # Test-mode hook: when this var is set, stop here so unit tests can source
 # the helper functions above without running the installer.
@@ -557,9 +560,19 @@ fi
 # can. An upgrade that fails here reports through the engine already installed.
 # An explicit TARGET may name another machine's build on purpose (a container
 # image, a mounted root filesystem), so that one is installed with a warning.
-chmod 755 "$bin_file" 2>/dev/null || true
-new_version=$("$bin_file" --version 2>/dev/null | awk '{print $NF}')
+#
+# It runs from a copy beside its destination, not from $tmpdir: a /tmp mounted
+# noexec runs nothing, and a rename in the same directory then puts it in place
+# at once. `--version` must succeed and print a version.
+staged="$bin_dir/.$BIN_NAME.$$.new"
+install_bin "$bin_file" "$staged" \
+  || err "install" "failed to write $staged"
+new_version=""
+if version_output=$("$staged" --version 2>/dev/null); then
+  new_version=$(printf '%s\n' "$version_output" | awk 'NF { v = $NF } END { print v }')
+fi
 if [ -z "$new_version" ] && [ -z "${TARGET:-}" ]; then
+  rm -f "$staged"
   if [ -n "$from_version" ]; then
     err "verify" "the downloaded $BIN_NAME v$release_version ($target) does not run on this system; $bin_dir/$BIN_NAME v$from_version is unchanged"
   fi
@@ -587,7 +600,7 @@ else
   iii_emit_event_in_background "install_started" "$payload"
 fi
 
-install_bin "$bin_file" "$bin_dir/$BIN_NAME" \
+mv -f "$staged" "$bin_dir/$BIN_NAME" \
   || err "install" "failed to install binary to $bin_dir/$BIN_NAME"
 
 installed_version=$("$bin_dir/$BIN_NAME" --version 2>/dev/null | awk '{print $NF}' || echo "")

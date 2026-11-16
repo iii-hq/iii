@@ -44,7 +44,7 @@ fake_iii() {
   cat > "$2" <<SH
 #!/bin/sh
 case "\$1" in
-  --version) echo "iii $1" ;;
+  --version) echo "\$0" >> "$ROOT/version-calls.log"; echo "iii $1" ;;
   --install-only-generate-ids) [ \$# -gt 1 ] && echo "$1 \$*" >> "$ROOT/events.log" ;;
 esac
 exit 0
@@ -53,9 +53,14 @@ SH
 }
 
 # An iii that cannot run on this machine, as a libc or architecture mismatch
-# looks from a shell: no output, a failing status.
+# looks from a shell: no output, a failing status. With BROKEN=noisy it prints
+# a version first and fails all the same.
 broken_iii() {
-  printf '#!/bin/sh\nexit 126\n' > "$1"
+  if [ "${BROKEN:-}" = noisy ]; then
+    printf '#!/bin/sh\necho "iii 0.27.0"\nexit 1\n' > "$1"
+  else
+    printf '#!/bin/sh\nexit 126\n' > "$1"
+  fi
   chmod +x "$1"
 }
 
@@ -233,12 +238,36 @@ helpers() {
   grep -q '^0.26.0 --install-only-generate-ids --install-event-type upgrade_failed .*"error_stage":"verify"' "$ROOT/events.log"
 }
 
+@test "a build whose --version fails is refused even when it prints a version" {
+  BROKEN=noisy publish 0.27.0 latest x86_64-unknown-linux-musl
+  mkdir -p "$BIN_DIR"
+  fake_iii 0.26.0 "$BIN_DIR/iii"
+  run_install latest
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"does not run on this system; $BIN_DIR/iii v0.26.0 is unchanged"* ]]
+  [ "$("$BIN_DIR/iii" --version)" = "iii 0.26.0" ]
+  [ -z "$(find "$BIN_DIR" -name '.iii.*')" ]
+}
+
+@test "the new build is checked beside its destination, never in the download directory" {
+  # A /tmp mounted noexec runs nothing, so the check must not run from there.
+  publish 0.27.0 latest x86_64-unknown-linux-musl
+  mkdir -p "$ROOT/tmp"
+  TMPDIR="$ROOT/tmp" run_install latest
+  [ "$status" -eq 0 ]
+  grep -q "^$BIN_DIR/\.iii\.[0-9]*\.new$" "$ROOT/version-calls.log"
+  ! grep -q "^$ROOT/tmp/" "$ROOT/version-calls.log"
+  [ "$("$BIN_DIR/iii" --version)" = "iii 0.27.0" ]
+  [ -z "$(find "$BIN_DIR" -name '.iii.*')" ]
+}
+
 @test "a build that does not run here is not installed" {
   BROKEN=1 publish 0.27.0 latest x86_64-unknown-linux-musl
   run_install latest
   [ "$status" -eq 1 ]
   [[ "$output" == *"error: the downloaded iii v0.27.0 (x86_64-unknown-linux-musl) does not run on this system; nothing was installed"* ]]
   [ ! -e "$BIN_DIR/iii" ]
+  [ -z "$(find "$BIN_DIR" -name '.iii.*')" ]
 }
 
 @test "an explicit TARGET installs another machine's build, with a warning" {
