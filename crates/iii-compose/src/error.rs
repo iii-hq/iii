@@ -139,10 +139,11 @@ pub enum ComposeError {
     )]
     RunNotAllowedForPackage { container: String },
 
-    /// A container key is also a directory name, under `.build/` and `.workers/` (spec 3.2).
+    /// A container key is also a directory name, under `.iii/build/` and `.iii/workers/` (spec
+    /// 3.2).
     #[error(
-        "container key '{container}' cannot name its directories under .build/ and .workers/: \
-         {reason}. Use a plain name such as 'api'"
+        "container key '{container}' cannot name its directories under .iii/build/ and \
+         .iii/workers/: {reason}. Use a plain name such as 'api'"
     )]
     InvalidContainerKey {
         container: String,

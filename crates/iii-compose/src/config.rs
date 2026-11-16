@@ -657,9 +657,9 @@ fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
     Ok(document)
 }
 
-/// A container key names directories, `.build/<key>` and `.workers/<key>` beside the compose
-/// file (spec 3.2), so it must be one plain directory name: not empty, no path separator, no
-/// leading `.` (which also rules out `.` and `..`), and no NUL.
+/// A container key names directories, `.iii/build/<key>` and `.iii/workers/<key>` beside the
+/// compose file (spec 3.2), so it must be one plain directory name: not empty, no path separator,
+/// no leading `.` (which also rules out `.` and `..`), and no NUL.
 fn check_container_key(key: &str) -> Result<()> {
     let reason = if key.trim().is_empty() {
         Some("it is empty")

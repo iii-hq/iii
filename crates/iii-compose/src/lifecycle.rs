@@ -945,7 +945,7 @@ async fn remove_one_scoped(
         }
         crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace).await;
     }
-    // Its build goes with it (spec 3.3); `.workers/` follows the lock.
+    // Its build goes with it (spec 3.3); `.iii/workers/` follows the lock.
     let build = crate::build_step::build_dir(&ctx.file.path, key);
     if let Err(error) = std::fs::remove_dir_all(&build)
         && error.kind() != std::io::ErrorKind::NotFound
@@ -1342,7 +1342,7 @@ async fn start_one_until_shutdown(
                     installed.default_config,
                 ),
                 // A bundle runs what the file says: `iii sandbox run` boots its VM, another
-                // command runs it on the host from `.workers/<container>/` (spec 7.5).
+                // command runs it on the host from `.iii/workers/<container>/` (spec 7.5).
                 crate::registry::Payload::Bundle(_) => {
                     let Some(run) = container.scripts.run.clone() else {
                         return Err(ComposeError::VmScriptsNotWritten {
@@ -1543,7 +1543,7 @@ async fn stop_one(
     {
         let start = StartSpec::Shell(script);
         // Where the container ran, as its start and `pre_run` had it: a bundle's
-        // `.workers/<container>/` included.
+        // `.iii/workers/<container>/` included.
         let working_dir = container_working_dir(ctx, key, container);
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
@@ -1649,7 +1649,7 @@ pub(crate) fn container_env(
 }
 
 /// Where container `key` runs: its `working_dir`, else its worker's directory, which for a bundle
-/// is `.workers/<container>/` once it is there (spec 7.5), else the compose file's.
+/// is `.iii/workers/<container>/` once it is there (spec 7.5), else the compose file's.
 pub(crate) fn container_working_dir(
     ctx: &LifecycleCtx<'_>,
     key: &str,
@@ -1696,8 +1696,8 @@ pub(crate) async fn build_one(
     Some(built.await)
 }
 
-/// Makes `.workers/` match the lock after a package install (spec 7.5, 11.2). A project that
-/// locks no package and has no `.workers/` has nothing to match.
+/// Makes `.iii/workers/` match the lock after a package install (spec 7.5, 11.2). A project that
+/// locks no package and has no `.iii/workers/` has nothing to match.
 pub(crate) async fn materialize_packages(
     compose_file: &std::path::Path,
     package_cache: &std::path::Path,
@@ -1705,7 +1705,8 @@ pub(crate) async fn materialize_packages(
 ) -> Result<()> {
     let compose_file = crate::spawn::canonical_compose_file(compose_file);
     let compose_dir = compose_file.parent().unwrap_or(std::path::Path::new("."));
-    if lock.packages().next().is_none() && !compose_dir.join(".workers").exists() {
+    let workers = crate::build_record::workers_root(compose_dir);
+    if lock.packages().next().is_none() && !workers.exists() {
         return Ok(());
     }
     crate::registry::materialize_project(compose_dir, package_cache, lock).await

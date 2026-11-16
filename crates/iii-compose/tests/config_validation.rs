@@ -980,7 +980,8 @@ containers:
     );
 }
 
-/// A container key names `.build/<key>` and `.workers/<key>`, so it is one plain directory name.
+/// A container key names `.iii/build/<key>` and `.iii/workers/<key>`, so it is one plain directory
+/// name.
 #[test]
 fn rejects_container_keys_that_are_not_plain_directory_names() {
     for key in [

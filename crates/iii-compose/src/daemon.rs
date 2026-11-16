@@ -1923,13 +1923,13 @@ impl Daemon {
         let (stopped, up) = project
             .reconcile_removals(current, &removal_order, operation_id)
             .await;
-        // Its `.workers/<container>/` goes with its lock entry once it is stopped and its VM
+        // Its `.iii/workers/<container>/` goes with its lock entry once it is stopped and its VM
         // destroyed (spec 3.3).
         if let Err(error) =
             crate::lifecycle::materialize_packages(path, &package_cache, &prepared).await
         {
             crate::report::daemon_line(
-                &format!("could not bring .workers/ in line with the lock: {error}"),
+                &format!("could not bring .iii/workers/ in line with the lock: {error}"),
                 true,
             );
         }
@@ -4789,7 +4789,7 @@ containers:
         let daemon = connected_daemon("rebuild-package", pid_engine(root).await).await;
         let project = crate::registry::TEST_REGISTRY
             .scope(server.uri(), async {
-                // As `compose::up` starts it: `.workers/` is filled before the first build.
+                // As `compose::up` starts it: `.iii/workers/` is filled before the first build.
                 let project = daemon.prepare_start_project(&path, false).await.unwrap();
                 let up = project.up(None, "first".into()).await;
                 assert_eq!(up.status, OpStatus::Ok, "{up:?}");
@@ -4890,7 +4890,7 @@ containers:
                 let (server, path, daemon, project) =
                     running_package_project(&root, &["web"]).await;
                 let before = pid_of(&root, "web");
-                let record = root.join(".build/web/build.json");
+                let record = root.join(".iii/build/web/build.json");
                 let first = std::fs::metadata(&record).unwrap().modified().unwrap();
                 let controller = crate::shutdown::ShutdownController::default();
                 let run = Box::pin(project.build(Some("web"), "build", &controller.signal()))
@@ -4993,7 +4993,7 @@ containers:
         }
     }
 
-    /// Spec 3.3: `compose::remove` takes the container's `.build/` and `.workers/` along.
+    /// Spec 3.3: `compose::remove` takes the container's `.iii/build/` and `.iii/workers/` along.
     #[cfg(unix)]
     #[tokio::test]
     async fn remove_takes_the_build_and_package_directories_of_the_container() {
@@ -5014,20 +5014,24 @@ containers:
             ),
         )
         .unwrap();
-        std::fs::create_dir_all(dir.path().join(".workers/web")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".iii/workers/web")).unwrap();
         // As `materialize_project` records what it copied: only a recorded container is
         // Compose's to prune.
         std::fs::write(
-            dir.path().join(".workers/.packages.json"),
+            dir.path().join(".iii/workers/.packages.json"),
             r#"{"schema":1,"containers":{"web":{"name":"web","version":"1.0.0","sha256":"sha256:00"}}}"#,
         )
         .unwrap();
-        std::fs::create_dir_all(dir.path().join(".workers/mine")).unwrap();
-        std::fs::create_dir_all(dir.path().join(".build/web")).unwrap();
-        std::fs::write(dir.path().join(".build/web/build.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.path().join(".iii/workers/mine")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".iii/build/web")).unwrap();
+        std::fs::write(dir.path().join(".iii/build/web/build.json"), "{}").unwrap();
+        // The rest of the project's `.iii/`, which the remove leaves alone.
+        std::fs::write(dir.path().join(".iii/project.ini"), "[project]\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".iii/compose/other")).unwrap();
+        std::fs::write(dir.path().join(".iii/compose/other/state.json"), "{}").unwrap();
         let daemon = connected_daemon("remove-directories", pid_engine(dir.path()).await).await;
 
-        // `.workers/` follows the lock once the rest of the project is up again.
+        // `.iii/workers/` follows the lock once the rest of the project is up again.
         let removed = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             daemon.remove(Some(&path), &["web".to_string()], "remove".into()),
@@ -5038,12 +5042,14 @@ containers:
         let removed = serde_json::to_value(removed).unwrap();
         assert_eq!(removed["status"], "ok", "{removed}");
 
-        assert!(!dir.path().join(".workers/web").exists());
-        assert!(!dir.path().join(".build/web").exists());
+        assert!(!dir.path().join(".iii/workers/web").exists());
+        assert!(!dir.path().join(".iii/build/web").exists());
         assert!(
-            dir.path().join(".workers/mine").exists(),
+            dir.path().join(".iii/workers/mine").exists(),
             "an unrecorded directory went"
         );
+        assert!(dir.path().join(".iii/project.ini").is_file());
+        assert!(dir.path().join(".iii/compose/other/state.json").is_file());
         assert!(!std::fs::read_to_string(&path).unwrap().contains("web"));
         daemon.shutdown().await;
     }
@@ -5332,7 +5338,7 @@ containers:
         assert!(!built.cancelled);
         assert_eq!(statuses(built.results), [("api".to_string(), Built)]);
         assert!(dir.path().join("api/out").exists());
-        assert!(dir.path().join(".build/api/build.json").exists());
+        assert!(dir.path().join(".iii/build/api/build.json").exists());
         let skipped = daemon
             .build(Some(&path), Some("skip"), "skip".into())
             .await
@@ -5532,7 +5538,7 @@ containers:
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 
-    /// A `--frozen` build fills `.workers/` from the lock it read: a lock that came to resolve
+    /// A `--frozen` build fills `.iii/workers/` from the lock it read: a lock that came to resolve
     /// another artifact while it downloaded is kept, and the build fails with `BUILD_PLAN_STALE`
     /// before it fills anything.
     #[tokio::test]
@@ -5570,7 +5576,7 @@ containers:
             .with_priority(1)
             .mount(&server)
             .await;
-        let workers = dir.path().join(".workers");
+        let workers = dir.path().join(".iii/workers");
         let before = std::fs::read_to_string(workers.join(".packages.json")).ok();
         assert!(before.is_some(), "the first build copied no package");
 

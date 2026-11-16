@@ -74,7 +74,7 @@ pub const PACKAGE_DIR_ENV: &str = "III_PACKAGE_DIR";
 pub const PACKAGE_NAME_ENV: &str = "III_PACKAGE_NAME";
 // The three build variables are set by Compose when it spawns a VM container (sandbox.rs) and
 // read by `iii sandbox`.
-/// The container's build directory, `<project>/.build/<container>`.
+/// The container's build directory, `<project>/.iii/build/<container>`.
 pub const BUILD_DIR_ENV: &str = "III_BUILD_DIR";
 /// The compose file's canonical path, the same as `III_COMPOSE_FILE`, for `iii sandbox build`.
 pub const BUILD_COMPOSE_FILE_ENV: &str = "III_BUILD_COMPOSE_FILE";
@@ -2054,7 +2054,7 @@ mod tests {
             (STATE_KEY_ENV, "9f2c1e"),
             (WORKER_NAME_ENV, "api"),
             (WORKER_DIR_ENV, "/work/api"),
-            (BUILD_DIR_ENV, "/work/.build/api"),
+            (BUILD_DIR_ENV, "/work/.iii/build/api"),
             (BUILD_COMPOSE_FILE_ENV, "/work/worker-compose.yaml"),
             (BUILD_TIMEOUT_ENV, "60000"),
             (
@@ -2086,7 +2086,7 @@ mod tests {
     fn booted() -> WorkerBuildRef {
         WorkerBuildRef {
             build_id: "sha256:7d41".into(),
-            build_dir: "/work/.build/api".into(),
+            build_dir: "/work/.iii/build/api".into(),
         }
     }
 
@@ -2782,10 +2782,10 @@ mod tests {
         let (ctx, build) = boot_plan(&compose_vars(), None, &records).unwrap();
         assert_eq!(ctx.worker_name, "api");
         assert_eq!(build.build_id, "sha256:7d41");
-        assert_eq!(build.build_dir, "/work/.build/api");
+        assert_eq!(build.build_dir, "/work/.iii/build/api");
         assert_eq!(
             *records.read_from.lock().unwrap(),
-            [PathBuf::from("/work/.build/api")]
+            [PathBuf::from("/work/.iii/build/api")]
         );
     }
 
@@ -2797,7 +2797,7 @@ mod tests {
             (BUILD_MISSING, RUNNER_FAILED)
         );
         assert!(
-            failure.message.contains("/work/.build/api")
+            failure.message.contains("/work/.iii/build/api")
                 && failure.message.contains("iii sandbox build api"),
             "{failure}"
         );
@@ -2848,7 +2848,7 @@ mod tests {
     #[test]
     fn the_build_reads_its_directory_compose_file_and_timeout_from_compose() {
         let bctx = build_context();
-        assert_eq!(bctx.build_dir, "/work/.build/api");
+        assert_eq!(bctx.build_dir, "/work/.iii/build/api");
         assert_eq!(
             bctx.compose_file,
             PathBuf::from("/work/worker-compose.yaml")
@@ -2873,10 +2873,10 @@ mod tests {
         // A bundle builds from its package directory.
         let mut bundle = compose_vars();
         bundle.remove(WORKER_DIR_ENV);
-        bundle.insert(PACKAGE_DIR_ENV.into(), "/work/.workers/api".into());
+        bundle.insert(PACKAGE_DIR_ENV.into(), "/work/.iii/workers/api".into());
         bundle.insert(PACKAGE_NAME_ENV.into(), "onboarding".into());
         let bctx = BuildContext::from_vars(&bundle).unwrap();
-        assert_eq!(bctx.worker_dir(), Path::new("/work/.workers/api"));
+        assert_eq!(bctx.worker_dir(), Path::new("/work/.iii/workers/api"));
     }
 
     #[test]
@@ -2996,7 +2996,7 @@ mod tests {
 
         let calls = calls(&mut called);
         let request = payload(&calls, "worker::build");
-        assert_eq!(request["output_dir"], "/work/.build/api");
+        assert_eq!(request["output_dir"], "/work/.iii/build/api");
         assert_eq!(request["state_key"], "9f2c1e");
         assert_eq!(request["auth"], "scoped");
         assert_eq!(request["worker_name"], "api");
@@ -3045,7 +3045,7 @@ mod tests {
         assert_eq!(record, expected);
         assert_eq!(
             *records.written.lock().unwrap(),
-            [(PathBuf::from("/work/.build/api"), expected)]
+            [(PathBuf::from("/work/.iii/build/api"), expected)]
         );
         // The inputs are read before the build; the record is written after its answer.
         assert_eq!(
@@ -3296,7 +3296,7 @@ mod tests {
         let bctx = BuildContext::from_vars(&plan.env).unwrap();
         let build_dir = Path::new(&bctx.build_dir);
         assert!(
-            build_dir.is_absolute() && build_dir.ends_with(".build/api"),
+            build_dir.is_absolute() && build_dir.ends_with(".iii/build/api"),
             "{}",
             bctx.build_dir
         );
@@ -3332,7 +3332,7 @@ mod tests {
             "containers:\n  sb: {worker: package://sandbox-libkrun, version: 1.0.0}\n  api: {worker: path://./api, start_after: [sb]}\n",
         )
         .unwrap();
-        let build_dir = dir.path().join(".build/api");
+        let build_dir = dir.path().join(".iii/build/api");
         std::fs::create_dir_all(&build_dir).unwrap();
         let mut vars = compose_vars();
         let path = |path: &Path| path.to_str().unwrap().to_string();
@@ -4059,7 +4059,7 @@ mod tests {
         let start = payload(&calls, "worker::start");
         assert_eq!(
             start["build"],
-            json!({"build_id": "sha256:7d41", "build_dir": "/work/.build/api"})
+            json!({"build_id": "sha256:7d41", "build_dir": "/work/.iii/build/api"})
         );
         assert_eq!(start["state_key"], "9f2c1e");
         assert_eq!(start["auth"], "scoped");
