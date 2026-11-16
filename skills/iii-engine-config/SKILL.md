@@ -29,10 +29,6 @@ engine:
     iii-worker-manager:
       host: 127.0.0.1
       port: 49134
-    iii-http-functions: {}
-    iii-stream:
-      host: 127.0.0.1
-      port: 3112
   sandbox:
     adapter: sandbox-libkrun
 containers: {}
@@ -55,8 +51,6 @@ Allowed engine worker base names are:
 
 - `configuration`
 - `iii-worker-manager`
-- `iii-http-functions` (deprecated)
-- `iii-stream` (deprecated)
 
 Use `#instance` for another instance of an allowed worker. `iii-engine-functions`,
 `iii-telemetry`, `iii-observability`, and the `iii-sandbox` router are injected automatically and

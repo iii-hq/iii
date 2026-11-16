@@ -123,9 +123,10 @@ polling", or "push live updates".
 
 ```typescript
 iii.registerFunction("todos::on-change", async ({ input: event }) => {
+  // ui::todos-changed is registered by a browser worker (iii-browser-sdk)
   await iii.call({
-    function_id: "stream::send",
-    payload: { stream_name: "todos-live", group_id: "default", data: event.new_value },
+    function_id: "ui::todos-changed",
+    payload: event.new_value,
     action: CallAction.Void(),
   });
 });
@@ -243,8 +244,8 @@ retries it, then moves it to the topic's DLQ.
 
 ## Boundaries
 
-- For built-in source args, function registration syntax, calls, channels, and HTTP-invoked
-  functions, use `iii-core-primitives`.
+- For built-in source args, function registration syntax, calls, and channels, use
+  `iii-core-primitives`.
 - For observer options, filters, and writing event sources, use `iii-observe`.
 - For engine ports, adapters, engine-owned workers, and RBAC (`rbac-proxy`), use `iii-engine-config`;
   queue retry and FIFO policy live with the queue worker's docs.

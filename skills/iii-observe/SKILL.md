@@ -594,8 +594,7 @@ Private functions in the `default` namespace whose handler returns the event, so
 `output` are both the event. Observe them with `capture: ['input']` to receive the event alone, as
 the payload's `input`.
 Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CHANGED`,
-`WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`,
-`STREAM_JOIN`, `STREAM_LEAVE`).
+`WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`).
 
 | Function | `input` |
 | --- | --- |
@@ -605,7 +604,6 @@ Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CH
 | `configuration::on-updated` | `{ type, event_type, id, name, ... }`, no value (read it with `configuration::get`) |
 | `observability::on-log` | one log record |
 | `observability::on-span` | `{ trace_ids: [...] }` per window (~300 ms) |
-| `stream::on-changed`, `stream::on-join`, `stream::on-leave` (`iii-stream`) | the stream event; filter on `input.stream_name`, `input.group_id` |
 
 ```typescript
 iii.observe({ function_id: "engine::on-workers-changed", capture: ["input"] }, "ops::on-worker");
@@ -614,7 +612,7 @@ iii.observe(
     filters: { "input.id": { $eq: "orders" }, "input.event_type": { $eq: "configuration:updated" } } },
   "orders::reload",
 );
-// a worker in another namespace names default for observability::* and stream::*
+// a worker in another namespace names default for observability::*
 iii.observe(
   { function_id: "observability::on-log", namespace: "default", capture: ["input"],
     filters: { "input.severity_text": { $eq: "ERROR" } } },
@@ -627,18 +625,6 @@ iii.observe(
 To move code written for 0.25 to 0.26, follow the upgrade guide:
 https://iii.dev/docs/upgrading/from-0-25-x.md.
 
-- `source.on` and `source.deliver` are deprecated, not refused. A 0.26 engine translates them to
-  the 0.25 behavior (`deliver: "output"` hands the target the bare output, `null` after a failure)
-  and logs one warning per registration. Only invalid values get `INVALID_ARGS`. Replace them:
-  `on: "error"` -> `capture: ["error", "caller"]` (or the failed-calls-with-input recipe above),
-  `on: "complete"` -> add `"error"`, `deliver: "input"`/`"output"` -> `capture: ["input"]`/
-  `["output"]` read from the payload. Support will be removed in a future release.
-- A worker without the `observe.capture` feature (0.25 SDK, 0.26 release candidate SDK) always gets
-  the 0.25 semantics on a 0.26 engine: outcomes from `on` (absent = success), whatever `capture`
-  names. Its hosted functions get the legacy `on` in their observer views.
-- A 0.26 SDK on an engine without `observe.capture` (0.25, 0.26 release candidate) sends the `on`
-  its `capture` implies, reads views without `fires_on` from `on`, and logs a one-time deprecation
-  warning. Upgrade the engine.
 - The `Observed` payload omits absent fields; 0.25 sent `"output": null` for a captured output a
   successful call did not report.
 

@@ -3,8 +3,7 @@ name: iii-core-primitives
 description: >-
   Use when registering iii functions, calling them (call with sync, void, or enqueue), observing
   functions and event sources, creating workers, inspecting the live worker registry, installing
-  registry workers, moving channel data, or adapting external HTTP functions across TypeScript,
-  Python, and Rust.
+  registry workers, or moving channel data across TypeScript, Python, and Rust.
 ---
 
 # Core Primitive: the Function
@@ -27,14 +26,11 @@ Use `::` in function IDs, leading slashes in HTTP `path` args, and `expression` 
 ## Function Registration
 
 Register local handlers when you control the implementation. To call an existing external
-endpoint, register a handler that makes the HTTP call. HTTP-invoked functions
-(`HttpInvocationConfig`, `iii-http-functions`) are deprecated and will be removed in an upcoming
-release.
+endpoint, register a handler that makes the HTTP call.
 
 | Shape | Use for |
 | --- | --- |
 | `registerFunction(id, handler, options?)` | Local worker code |
-| `registerFunction(id, HttpInvocationConfig, options?)` | Deprecated (iii-http-functions); use a handler that makes the HTTP call |
 | `observe(source, target, options?)` | Running `target` when `source` runs: another function, an HTTP route, a database change, a queue topic, an engine event (`iii-observe`) |
 | `call({ function_id, payload, action?, timeoutMs? })` | Calling any function by ID |
 
@@ -128,10 +124,9 @@ other non-critical side effects.
 Every worker registers in a namespace: the `namespace` init option, else `III_NAMESPACE`, else the
 engine's `default`. Compose sets `III_NAMESPACE` to its daemon's namespace for every worker it
 starts, so all workers in one `worker-compose.yaml` share a namespace and call each other by bare
-function id. Engine-owned functions (`engine::*`, `configuration::*`, `observability::*`,
-`stream::*`) live in `default`; `engine::*` and `configuration::*` resolve there implicitly, and
-`observability::*` and `stream::*` need `namespace: "default"` on the call or observer from a
-namespaced worker. Routing is strict and ids are never prefixed with a namespace. From the CLI,
+function id. Engine-owned functions (`engine::*`, `configuration::*`, `observability::*`) live in
+`default`; `engine::*` and `configuration::*` resolve there implicitly, and `observability::*`
+needs `namespace: "default"` on the call or observer from a namespaced worker. Routing is strict and ids are never prefixed with a namespace. From the CLI,
 `iii call -n <namespace> <function>` selects it. Details and per-language examples are in
 `iii-sdk-reference`.
 
@@ -242,18 +237,15 @@ iii.observe(
   (deliver each call itself and return what the caller gets). See `iii-observe`.
 - **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
   JSON payloads. Pass `readerRef` or `writerRef` through a function payload.
-- **HTTP-invoked functions** (deprecated, iii-http-functions): `HttpInvocationConfig` still works but
-  will be removed in an upcoming release. For legacy APIs, third-party endpoints, or immutable
-  services, register a handler that makes the HTTP call and keeps its secrets in the worker's
-  environment. Migration guide: https://iii.dev/docs/upgrading/migrate-from-http-functions
+- **External HTTP services**: for third-party endpoints or services you cannot change, register a
+  handler that makes the HTTP call and keeps its secrets in the worker's environment.
 - **Schemas**: Rust can derive request/response schemas with `schemars::JsonSchema`; Python can use
   type hints or Pydantic; Node can pass JSON Schema manually.
 
 ## When to Use
 
 - Use this skill for function registration, calling functions, invocation mode decisions, worker
-  creation, worker registry access, the built-in source functions and their args, channels, and
-  HTTP-invoked functions.
+  creation, worker registry access, the built-in source functions and their args, and channels.
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 
 ## Boundaries
