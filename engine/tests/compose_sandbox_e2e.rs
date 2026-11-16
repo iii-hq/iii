@@ -988,7 +988,7 @@ fn seed_builds(root: &std::path::Path, guests: &[&str]) {
                     "digest": null
                 },
                 "adapter": { "name": "sandbox-libkrun", "version": "0.5.0" },
-                "contract": { "major": 1, "minor": 3 }
+                "contract": { "major": 1, "minor": 4 }
             },
             "built_at": "2026-11-10T00:00:00Z"
         });

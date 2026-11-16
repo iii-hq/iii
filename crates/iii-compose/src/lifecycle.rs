@@ -1894,7 +1894,7 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 /// How binary package container `key` starts, once `program`, its executable, is installed: as
 /// it was published, unless the file says how. `iii sandbox run` boots its Linux build in a VM,
 /// another `scripts.run` runs on the host (spec 4.2). A container whose build is the Linux one of
-/// a VM, with no `scripts.run` written yet, fails with `VM_SCRIPTS_NOT_WRITTEN`: the host never
+/// a VM, with no `scripts.run` written yet, fails with `VM_SCRIPTS_MISSING`: the host never
 /// runs that build.
 fn binary_start(
     key: &str,

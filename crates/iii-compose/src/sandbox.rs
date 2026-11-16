@@ -3525,7 +3525,8 @@ pub(crate) mod tests {
         assert_eq!(env[sandbox_cli::PACKAGE_KIND_ENV], "binary");
         assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "tool");
         assert!(
-            env[sandbox_cli::PACKAGE_DIR_ENV].ends_with(".iii/workers/wrapped"),
+            Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV])
+                .ends_with(Path::new(".iii").join("workers").join("wrapped")),
             "{env:?}"
         );
         let mut env = BTreeMap::new();
