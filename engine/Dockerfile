@@ -1,4 +1,4 @@
-FROM busybox:1.36.1 AS data-dirs
+FROM busybox:1.38.0 AS data-dirs
 
 # /app/config holds the configuration store (one YAML per entry, default
 # `./config` with the template's WORKDIR /app). It must exist and be owned by
