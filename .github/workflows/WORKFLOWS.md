@@ -41,6 +41,7 @@ The workflows are organized into two categories:
         ▼
         ├─► sdk-node (pnpm) / _py / _rust-cargo / _go   (SDK packages)
         ├─► _rust-binary.yml                             (iii engine binary → iii-alpha prerelease)
+        ├─► _publish-engine-registry                     (iii executable + installer → `alpha` registry tag)
         └─► _publish-engine-workers / -skills            (builtin workers → `alpha` registry tag)
 ```
 
@@ -251,11 +252,12 @@ Publishes an alpha prerelease of every SDK (npm, pypi, crates, go), the engine b
 5. Publishes, all checking out that tag:
    - **SDK packages** — an inline `sdk-node` job (single `pnpm -r publish` over the three node packages) plus `_py.yml`, `_rust-cargo.yml`, `_go.yml`
    - **Engine binary** — `iii` via `_rust-binary.yml`, attached to a GitHub **prerelease** on the `iii-alpha/v*` tag
+   - **Engine on the registry** — `_publish-engine-registry.yml` publishes those binaries and `engine/registry/install.sh` as the executable `iii` under the **`alpha`** registry tag
    - **Builtin workers + skills** — `_publish-engine-workers.yml` / `_publish-worker-skills.yml` published to the workers registry under a dedicated **`alpha`** tag (never `next`/`latest`)
 
 **Isolation:** the `iii-alpha/v*` namespace does not match `release-iii.yml`'s `iii/v*` trigger, so the official pipeline never fires. Engine binaries land on a separate prerelease (own tag namespace); workers use the dedicated `alpha` registry tag — neither collides with the official `iii/v*` releases or the `next`/`latest` channels. **Docker and Homebrew are intentionally excluded.**
 
-**Engine install:** because the binaries live under `iii-alpha/v*`, install them with the `III_RELEASE_TAG` override on `install.sh`, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`. The worker-publish job uses the same override to pin the engine CLI.
+**Engine install:** from the registry, `curl -fsSL https://iii.dev/registry/install/iii/alpha.sh | sh` installs the newest alpha and `…/install/iii/0.19.2-alpha.1.sh` an exact one. The GitHub installer still takes the `III_RELEASE_TAG` override, e.g. `curl -fsSL https://iii.dev/install.sh | III_RELEASE_TAG=iii-alpha/v0.19.2-alpha.1 sh`; the worker-publish job uses it to pin the engine CLI.
 
 **Tag format:** `iii-alpha/v{version}` (e.g., `iii-alpha/v0.19.2-alpha.1`)
 
@@ -286,8 +288,9 @@ setup (parse tag metadata, Slack notification)
   │     ├─► sdk-rust ────────────► _rust-cargo.yml (after helpers-rust, observability-rust, filter-rust)
   │     └─► sdk-go ──────────────► _go.yml (pushes subdir-scoped module tag)
   │
+  ├─► publish-engine-registry ► _publish-engine-registry.yml (after engine-release)
   ├─► publish-builtin-workers ► _publish-engine-workers.yml
-  └─► publish-worker-skills ► _publish-worker-skills.yml
+  └─► publish-worker-skills ► _publish-worker-skills.yml (after both)
   │
   ├─► trigger-validations (dispatch downstream smoke/quickstart on success)
   │
@@ -419,6 +422,35 @@ Generates and publishes a Homebrew formula to the `iii-hq/homebrew-tap` reposito
 
 Only runs for stable (non-prerelease) versions.
 
+### `_publish-engine-registry.yml` — Publish iii to the Registry
+
+Publishes one iii version on the iii registry as the executable `iii`, so that
+
+```sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh   # or rc.sh, next.sh, alpha.sh, 0.27.0.sh
+```
+
+installs it. Called by `release-iii.yml` (registry tag = the release's `npm_tag`: `latest` for a stable release, else `rc`, `next`…) and `alpha-release.yml` (`alpha`), after `engine-release`; runs by hand (`workflow_dispatch`) for a release whose publish failed.
+
+1. Reads the version from the release tag (`iii/v0.27.0-rc.1` → `0.27.0-rc.1`); refuses a dry run, and a prerelease under `latest`
+2. Downloads the release's `iii-<target>.tar.gz` / `.zip` archives and checks each against its `.sha256`
+3. Installs `registry-cli` and runs `registry publish --install-script install.sh` in `engine/registry` (`iii.worker.yaml`: `deploy: executable`, `bin: iii`)
+4. Installs that version back from the registry API, and checks that it was served with `engine/registry/install.sh` (`X-Executable-Installer: custom`) and that `iii --version` matches
+
+The registry serves the published installer (`engine/registry/install.sh`) after a preamble that pins the version's archive URLs and SHA-256 digests (see the registry's `docs/EXECUTABLES.md`, "Custom installers"). It keeps what `engine/install.sh` does (telemetry, upgrade detection, `BIN_DIR`/`PREFIX`, `TARGET`, `III_USE_GLIBC`, PATH advice, the first-project prompt, `--skip-bin-download`, `--non-interactive`) without GitHub's API or `jq`, and checks the digest. `VERSION`, a positional version, `III_RELEASE_TAG`, `--rc` and `--next` still pick a version: the script runs the registry's script for it. Tests: `engine/tests/registry_install_sh.bats` (in `install-sh.yml`), against `engine/tests/fixtures/registry-preamble.sh`.
+
+A version is published once with its installer: a re-run finds it published and passes. The registry serves an installer only for a verified organization, so `WORKERS_REGISTRY_API_KEY` must belong to the verified organization that owns `iii`.
+
+The registry row `iii` is that executable. `engine/src/workers/engine_fn` (`iii-engine-functions`, registry name `iii`) is therefore left out of the `publish-builtin-workers` matrices (`validate_release_worker_matrix.py` checks it); its skills still go to `iii` through `_publish-worker-skills.yml`, after this workflow.
+
+| Input | Purpose |
+|-------|---------|
+| `release_tag` | GitHub release holding the binaries (`iii/v0.27.0`, `iii-alpha/v0.27.0-alpha.1`) |
+| `registry_tag` | Registry tag for the version (`latest`, `rc`, `next`, `alpha`) |
+| `ref` | Git ref whose `engine/registry` is published (default: the triggering ref; by hand, the release tag) |
+| `api_url` | Registry API base URL |
+| `registry_cli_version` | `registry-cli` to publish with (default `latest`; needs `--install-script`) |
+
 ### `_publish-engine-workers.yml` — Publish Builtin Engine Worker
 
 Collects a worker's live interface from a running III engine and POSTs to `POST /publish`. Called by `release-iii.yml` for each builtin engine worker. The interface is the worker's function rows (`engine::workers::info`, then `engine::functions::info`), read with `iii call`; each Registry row states `args_format`, `private` (an event source) and `observable`.
@@ -453,7 +485,7 @@ Publishes skill markdown for all workers with an `iii.worker.yaml` manifest and 
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
 | `SLACK_BOT_TOKEN` / `SLACK_CHANNEL_ID` | Slack release notifications |
 | `SLACK_WEBHOOK_URL` | Slack Docker notifications |
-| `WORKERS_REGISTRY_API_KEY` | Workers registry publish (`_publish-engine-workers`, `_publish-worker-skills`) |
+| `WORKERS_REGISTRY_API_KEY` | Workers registry publish (`_publish-engine-registry`, `_publish-engine-workers`, `_publish-worker-skills`); a key of the verified organization that owns `iii` |
 
 ---
 
