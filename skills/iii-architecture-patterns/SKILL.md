@@ -122,14 +122,9 @@ Observe `state::on-changed` when the requirement says "after create/update, do t
 polling", or "push live updates".
 
 ```typescript
-iii.registerFunction("todos::on-change", async ({ input: event }) => {
-  // ui::todos-changed is registered by a browser worker (iii-browser-sdk)
-  await iii.call({
-    function_id: "ui::todos-changed",
-    payload: event.new_value,
-    action: CallAction.Void(),
-  });
-});
+// Every function is observable: a browser worker (iii-browser-sdk) observes todos::on-change
+// to receive each change live.
+iii.registerFunction("todos::on-change", async ({ input: event }) => event.new_value);
 
 // each change in the "todos" state scope
 iii.observe(

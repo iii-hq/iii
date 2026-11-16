@@ -47,7 +47,7 @@ iii compose --namespace orders-daemon --up --file worker-compose.yaml
 `III_COMPOSE_STATE_DIR`, it uses `<state-root>/<project-slug>/<daemon-namespace>/`. Changing `engine:`
 requires restarting Compose. Do not combine a managed file with explicit `--engine`.
 
-Allowed engine worker base names are:
+Declare these engine workers by base name:
 
 - `configuration`
 - `iii-worker-manager`

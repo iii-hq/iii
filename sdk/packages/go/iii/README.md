@@ -167,31 +167,31 @@ the `args` its observers pass, and `Private: true` lets only this worker call
 it:
 
 ```go
-client.OnObserverAddedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
+client.OnObserverAddedFor("inventory::on-row-changed", func(ctx context.Context, obs *iii.Observer) error {
 	table, _ := obs.Args["table"].(string)
 	if !db.HasTable(table) {
 		return iii.ObserveRejection("UNKNOWN_TABLE", "no such table")
 	}
 	return changeFeed.Retain(table)
 })
-client.OnObserverRemovedFor("database::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
+client.OnObserverRemovedFor("inventory::on-row-changed", func(ctx context.Context, obs *iii.Observer) {
 	table, _ := obs.Args["table"].(string)
 	changeFeed.Release(table)
 })
 // each change reaches the observers of its table
-client.OnObservationMatchFor("database::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
+client.OnObservationMatchFor("inventory::on-row-changed", iii.MatchFunc(func(obs *iii.Observer, call *iii.Call) bool {
 	var change struct{ Table string `json:"table"` }
 	_ = json.Unmarshal(call.Input, &change)
 	return obs.Args["table"] == change.Table
 }))
 
-client.RegisterFunction("database::on-row-changed", iii.Identity, iii.FunctionOptions{
+client.RegisterFunction("inventory::on-row-changed", iii.Identity, iii.FunctionOptions{
 	ArgsFormat: json.RawMessage(`{"type":"object","required":["table"],"properties":{"table":{"type":"string"}}}`),
 	Private:    true,
 })
 
 // a consumer
-client.Observe(iii.Source{FunctionID: "database::on-row-changed", Args: iii.Args{"table": "orders"}}, "orders::project")
+client.Observe(iii.Source{FunctionID: "inventory::on-row-changed", Args: iii.Args{"table": "orders"}}, "orders::project")
 ```
 
 With many observers, match by keys instead: the SDK keeps an index, one

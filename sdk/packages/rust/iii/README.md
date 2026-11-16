@@ -232,7 +232,7 @@ use iii_sdk::{Call, CallRequest, Error, Match, ObserveRejection, Observer, Regis
 #[serde(deny_unknown_fields)]
 struct TableArgs { table: String }
 
-iii.on_observer_added_for("database::on-row-changed", |obs: Observer| async move {
+iii.on_observer_added_for("inventory::on-row-changed", |obs: Observer| async move {
     let TableArgs { table } = obs.args()?; // validated by the engine
     if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(ObserveRejection::new("INVALID_TABLE", table));
@@ -242,14 +242,14 @@ iii.on_observer_added_for("database::on-row-changed", |obs: Observer| async move
 // an observer of table X wants the changes of table X; by keys, iii keeps an
 // index, however many observers there are
 iii.on_observation_match_for(
-    "database::on-row-changed",
+    "inventory::on-row-changed",
     Match::keys(
         |obs| obs.args_value()["table"].as_str().into(),
         |call| call.input["table"].as_str().into(),
     ),
 );
 let on_row_changed = iii.register_function(
-    "database::on-row-changed",
+    "inventory::on-row-changed",
     RegisterFunction::new(|change: serde_json::Value| Ok::<_, Error>(change))
         .args_format::<TableArgs>()
         .private(),
@@ -258,7 +258,7 @@ let on_row_changed = iii.register_function(
 // a row change: skipped when nobody observes its table
 let call = Call { input: json!({ "table": "orders", "op": "insert", "row": { "id": 1 } }), ..Call::default() };
 if on_row_changed.is_observed_for(&call) {
-    iii.call(CallRequest::new("database::on-row-changed", call.input)).await?;
+    iii.call(CallRequest::new("inventory::on-row-changed", call.input)).await?;
 }
 ```
 

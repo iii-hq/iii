@@ -159,7 +159,7 @@ Rule of thumb: if a retry might succeed, throw; if it will fail the same way, re
 
 ## Observers — discover the function, don't hardcode it
 
-Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `database::on-row-changed`, `queue::on-message`, `stream::on-changed`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
+Every function is observable. An event source is a function its worker calls once per event (`http::on-request`, `database::on-row-changed`, `queue::on-message`); observing it is how you react to the event. There is no fixed catalogue — discover what is available rather than assuming:
 
 ```jsonc
 // engine::functions::list             → every function, event sources included.

@@ -129,23 +129,23 @@ before registering the function so they run for every observer.
 ```python
 from iii import Call, Observer, ObserveRejection
 
-@iii.on_observer_added("database::on-row-changed")
+@iii.on_observer_added("inventory::on-row-changed")
 def start(obs: Observer) -> None:
     if not db.has_table(obs.args["table"]):
         raise ObserveRejection("UNKNOWN_TABLE", "no such table")
     change_feed.retain(obs.args["table"])
 
-@iii.on_observer_removed("database::on-row-changed")
+@iii.on_observer_removed("inventory::on-row-changed")
 def stop(obs: Observer) -> None:
     change_feed.release(obs.args["table"])
 
 # an observer of table X gets the changes of table X
-@iii.on_observation_match("database::on-row-changed")
+@iii.on_observation_match("inventory::on-row-changed")
 def same_table(obs: Observer, call: Call) -> bool:
     return obs.args["table"] == call.input["table"]
 
 iii.register_function(
-    "database::on-row-changed",
+    "inventory::on-row-changed",
     lambda change: change,  # an event source returns the event it is called with
     args_format={"type": "object", "required": ["table"],
                  "properties": {"table": {"type": "string"}}},
@@ -153,7 +153,7 @@ iii.register_function(
 )
 
 # a row change is a call of the function
-iii.call({"function_id": "database::on-row-changed", "payload": {"table": "orders", "op": "insert", "row": {"id": 1}}})
+iii.call({"function_id": "inventory::on-row-changed", "payload": {"table": "orders", "op": "insert", "row": {"id": 1}}})
 ```
 
 `on_observation_match` takes a predicate `(obs, call) -> bool`, asked once per
