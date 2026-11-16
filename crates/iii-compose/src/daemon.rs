@@ -1833,11 +1833,15 @@ impl Daemon {
     /// The edited declaration is fully validated before the file or any
     /// process changes. Only the removed containers stop; normal idempotent
     /// `up` then starts anything else that was already missing.
+    ///
+    /// The VM of a removed VM container is destroyed, and keeps its data unless `prune` (spec
+    /// 8.2).
     pub async fn remove(
         &self,
         file: Option<&Path>,
         workers: &[String],
         operation_id: String,
+        prune: bool,
     ) -> Result<MutationOutcome> {
         if workers.is_empty() {
             return Err(ComposeError::InvalidWorkerSpec {
@@ -1934,7 +1938,7 @@ impl Daemon {
         persist_mutation(path, &text, &edited, &prepared)?;
 
         let (stopped, up) = project
-            .reconcile_removals(current, &removal_order, operation_id)
+            .reconcile_removals(current, &removal_order, operation_id, prune)
             .await;
         // Its `.iii/workers/<container>/` goes with its lock entry once it is stopped and its VM
         // destroyed (spec 3.3).
@@ -2870,7 +2874,9 @@ fn keep_declared_dependencies(
     wanted
 }
 
-/// Turns one registry answer into the declarations Compose can own.
+/// Turns one registry answer into graph candidates using the effective `reference`. The
+/// dependency planner keeps package identities separately and restores explicit roots' raw
+/// references only after release comparisons and retargeting, before persistence.
 ///
 /// Engine-kind dependencies are omitted because the engine already provides
 /// them. Existing local dependencies are kept as opaque boundaries because
@@ -3861,8 +3867,8 @@ containers:
             &compose,
             &roots,
             &crate::dependencies::Policy::Update { generated },
-            |key, _, _| async move { Ok::<_, ComposeError>(provider_chain_graph(&key)) },
-            |key, _, _| async move {
+            |key, _, _, _| async move { Ok::<_, ComposeError>(provider_chain_graph(&key)) },
+            |key, _, _, _| async move {
                 Err::<crate::registry::Node, _>(ComposeError::InvalidWorkerSpec {
                     spec: key,
                     reason: "this test has no registry".to_string(),
@@ -3918,7 +3924,7 @@ containers:
             &crate::dependencies::Policy::Update {
                 generated: BTreeSet::new(),
             },
-            |key, _, _| async move {
+            |key, _, _, _| async move {
                 assert_eq!(key, "api");
                 Ok(crate::registry::Graph {
                     nodes: vec![
@@ -3932,7 +3938,7 @@ containers:
                     ],
                 })
             },
-            |key, _, _| async move {
+            |key, _, _, _| async move {
                 assert!(matches!(key.as_str(), "shell" | "helper"));
                 // Existing declarations resolve to the same releases as the graph.
                 Ok(registry_node(&key, "1.0.0"))
@@ -5047,7 +5053,7 @@ containers:
         // `.iii/workers/` follows the lock once the rest of the project is up again.
         let removed = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            daemon.remove(Some(&path), &["web".to_string()], "remove".into()),
+            daemon.remove(Some(&path), &["web".to_string()], "remove".into(), false),
         )
         .await
         .expect("the remove did not finish")
@@ -5094,7 +5100,7 @@ containers:
                 let name = asked["worker"].as_str().unwrap();
                 let node = if name == "sandbox-libkrun" {
                     serde_json::json!({
-                        "name": name, "version": "0.4.0", "type": "binary",
+                        "name": name, "version": "0.5.0", "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": adapter_sha, "url": format!("{uri}/adapter"),
                         }},
@@ -5145,7 +5151,7 @@ containers:
         );
         assert!(
             text.contains(
-                "  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n"
+                "  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n"
             ),
             "{text}"
         );
@@ -5185,7 +5191,7 @@ containers:
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(
             bin.join("iii"),
-            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"image\":{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{\"declared\":null,\"reference\":\"python\",\"digest\":null},\"adapter\":{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"},\"contract\":{\"major\":1,\"minor\":3}},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
+            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"image\":{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{\"declared\":null,\"reference\":\"python\",\"digest\":null},\"adapter\":{\"name\":\"sandbox-libkrun\",\"version\":\"0.5.0\"},\"contract\":{\"major\":1,\"minor\":3}},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
         )
         .unwrap();
         std::fs::set_permissions(
@@ -5244,7 +5250,7 @@ containers:
             .await;
 
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("    version: \"0.4.0\"\n"), "{text}");
+        assert!(text.contains("    version: \"0.5.0\"\n"), "{text}");
         assert_eq!(pids(), 2, "the adapter was not restarted");
         assert_eq!(started(), 2, "app did not follow its adapter");
         daemon.shutdown().await;
@@ -5448,7 +5454,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.4.0"),
+            Some("0.5.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -5458,7 +5464,7 @@ containers:
         .unwrap();
         assert_eq!(
             lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str(),
-            Some("0.4.0"),
+            Some("0.5.0"),
             "{lock:?}"
         );
         let held = daemon.project(&path).await.unwrap().held_file().await;
@@ -5489,7 +5495,7 @@ containers:
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "graph": [{
                         "name": "sandbox-libkrun",
-                        "version": "0.4.0",
+                        "version": "0.5.0",
                         "type": "binary",
                         "binaries": { (crate::registry::host_targets()[0]): {
                             "sha256": digest,
@@ -5521,7 +5527,7 @@ containers:
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
         // Written in the explicit VM mode, as the build's own migration leaves it.
         let (_dir, path) = vm_project(
-            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
         );
         // Two private caches: the frozen build starts cold, so it downloads.
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -5563,7 +5569,7 @@ containers:
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
         let (dir, path) = vm_project(
-            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.4.0\"\n",
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
         );
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         TEST_PACKAGE_CACHE
@@ -5613,7 +5619,7 @@ containers:
     /// restarts the adapter this same removal stopped.
     #[test]
     fn a_vm_is_removed_before_the_adapter_it_boots_through() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.5.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -5636,7 +5642,7 @@ containers:
 
     #[test]
     fn update_all_leaves_the_generated_adapter_to_the_sandbox_step() {
-        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
+        let adapter = crate::edit::parse_worker("sandbox-libkrun@0.5.0").unwrap();
         let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
             "containers:\n  vm:\n    worker: path://./vm\n",
             &adapter,
@@ -5660,7 +5666,7 @@ containers:
     #[test]
     fn update_all_keeps_an_operator_adapter_within_the_contract_major() {
         let compose = ComposeFile::parse(
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.4'}\n  app: {worker: package://app, version: 1.0.0}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: '^0.5'}\n  app: {worker: package://app, version: 1.0.0}\n",
             Path::new("worker-compose.yaml"),
         )
         .unwrap();
@@ -5676,7 +5682,7 @@ containers:
             .collect();
         assert_eq!(
             versions,
-            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.4"))])
+            BTreeMap::from([("app", Some("latest")), ("sb", Some("^0.5"))])
         );
     }
 
@@ -5713,7 +5719,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.4.0"),
+            Some("0.5.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -5788,7 +5794,7 @@ containers:
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
             compose.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.4.0"),
+            Some("0.5.0"),
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
@@ -5876,7 +5882,7 @@ containers:
                         &path,
                         crate::registry::TEST_REGISTRY.scope(
                             uri.clone(),
-                            daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+                            daemon.remove(Some(&path), &["vm".to_string()], "remove".into(), false),
                         ),
                     )
                     .await;
@@ -5950,7 +5956,7 @@ containers:
             bound,
             registry.scope(
                 server.uri(),
-                daemon.remove(Some(&path), &["vm".to_string()], "remove".into()),
+                daemon.remove(Some(&path), &["vm".to_string()], "remove".into(), false),
             ),
         )
         .await;

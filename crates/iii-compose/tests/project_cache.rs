@@ -416,6 +416,7 @@ async fn add_and_remove_keep_a_comment_on_the_containers_line() {
             Some(&file),
             &["extra".to_string()],
             "remove-under-comment".to_string(),
+            false,
         ),
     )
     .await;
@@ -581,6 +582,7 @@ async fn remove_rejects_an_engine_change_before_editing_the_file() {
             Some(&file),
             &["api".to_string()],
             "remove-after-engine-change".to_string(),
+            false,
         )
         .await
         .expect_err("remove must reject the changed managed engine");
@@ -602,6 +604,7 @@ async fn remove_validates_the_edited_file_before_writing_it() {
             Some(&file),
             &["api".to_string()],
             "remove-only-container".to_string(),
+            false,
         )
         .await
         .expect_err("remove must reject an empty edited project");
@@ -624,6 +627,7 @@ async fn remove_validates_every_worker_before_writing_the_batch() {
             Some(&file),
             &["api".to_string(), "missing".to_string()],
             "remove-invalid-batch".to_string(),
+            false,
         )
         .await
         .expect_err("an unknown worker must reject the complete removal batch");

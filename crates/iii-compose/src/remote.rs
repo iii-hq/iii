@@ -76,6 +76,8 @@ pub struct ComposeRequest {
     pub workers: Option<Vec<WorkerInput>>,
     /// Caller-selected operation id used to bind mutation progress before submission.
     pub operation_id: Option<String>,
+    /// `compose::remove`: delete the data of each removed worker's VM too.
+    pub prune: Option<bool>,
     /// Last cursor returned for each selected worker.
     pub cursors: Option<BTreeMap<String, LogCursor>>,
     /// Number of recent lines returned when no cursor is supplied.
@@ -611,10 +613,11 @@ async fn dispatch(
             Ok(to_value(&accepted))
         }
         Operation::Remove => {
+            let prune = request.prune.unwrap_or(false);
             let workers = requested_specs(request.workers, request.worker)?;
             if workers.is_empty() {
                 return daemon
-                    .remove(file.as_deref(), &[], operation_id())
+                    .remove(file.as_deref(), &[], operation_id(), false)
                     .await
                     .map(|outcome| to_value(&outcome))
                     .map_err(|err| compose_error(&err));
@@ -636,7 +639,7 @@ async fn dispatch(
                     .emit(None, "removing", format!("removing {requested} workers"))
                     .await;
                 daemon_task
-                    .remove(file.as_deref(), &workers, task_operation_id)
+                    .remove(file.as_deref(), &workers, task_operation_id, prune)
                     .await
             };
             spawn_mutation(operation, mutation, REMOVE_DETAILS);
@@ -1144,6 +1147,21 @@ fn batch_worker_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// Remove also takes `prune`, for the data of the removed workers' VMs (spec 8.2).
+fn remove_worker_options_schema() -> Option<Value> {
+    let mut schema = batch_worker_options_schema()?;
+    schema.pointer_mut("/properties")?.as_object_mut()?.insert(
+        "prune".to_string(),
+        json!({
+            "description": "Also delete the data of each removed worker's VM. Without it the \
+                            adapter keeps the data, and a worker added again under the same \
+                            key boots with it.",
+            "type": ["boolean", "null"],
+        }),
+    );
+    Some(schema)
+}
+
 /// Update defaults to all packages, but explicit inputs must still be valid.
 fn update_worker_options_schema() -> Option<Value> {
     let mut schema = batch_worker_options_schema()?;
@@ -1329,7 +1347,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::remove",
-                batch_worker_options_schema(),
+                remove_worker_options_schema(),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
@@ -2037,6 +2055,32 @@ mod tests {
         ] {
             assert!(!validator.is_valid(&invalid), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn only_remove_publishes_prune_and_it_is_an_optional_boolean() {
+        let schema = remove_worker_options_schema().unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for payload in [
+            json!({"worker": "vm"}),
+            json!({"worker": "vm", "prune": false}),
+            json!({"workers": ["vm"], "prune": true}),
+        ] {
+            assert!(validator.is_valid(&payload), "{payload}");
+            let request: ComposeRequest = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(request.prune.unwrap_or(false), payload["prune"] == true);
+        }
+        assert!(!validator.is_valid(&json!({"worker": "vm", "prune": "true"})));
+        assert!(
+            add_worker_options_schema().unwrap()["properties"]
+                .get("prune")
+                .is_none()
+        );
+        assert!(
+            update_worker_options_schema().unwrap()["properties"]
+                .get("prune")
+                .is_none()
+        );
     }
 
     #[test]

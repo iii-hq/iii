@@ -32,11 +32,12 @@ use std::{
 
 use iii_sandbox_contract::{
     self as contract, ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR,
-    FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH, LogRecord, LogStream,
-    SandboxErrorCode, WORKER_BUILD, WORKER_DESTROY, WORKER_LOGS, WORKER_START, WORKER_STOP,
-    WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse, WorkerDestroyRequest,
-    WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse, WorkerSource, WorkerStartRequest,
-    WorkerStartResponse, WorkerStatus, WorkerStopRequest,
+    FEATURE_BINARY, FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END, FEATURE_PRUNE,
+    FEATURE_SCOPED_AUTH, LogRecord, LogStream, SandboxErrorCode, WORKER_BUILD, WORKER_DESTROY,
+    WORKER_LOGS, WORKER_START, WORKER_STOP, WorkerBuildRef, WorkerBuildRequest,
+    WorkerBuildResponse, WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest,
+    WorkerLogsResponse, WorkerSource, WorkerStartRequest, WorkerStartResponse, WorkerStatus,
+    WorkerStopRequest,
 };
 use iii_sdk::{
     Capture, IIIClient, InitOptions, ObserverHandle, RegisterFunction, Source, WorkerIdentityMode,
@@ -72,6 +73,9 @@ pub const WORKER_DIR_ENV: &str = "III_WORKER_DIR";
 pub const PACKAGE_DIR_ENV: &str = "III_PACKAGE_DIR";
 /// A registry bundle's manifest name, which for an alias is the package it stands for.
 pub const PACKAGE_NAME_ENV: &str = "III_PACKAGE_NAME";
+/// A package container's package kind, `bundle` or `binary`: a binary in a VM boots as
+/// `WorkerSource::Binary`.
+pub const PACKAGE_KIND_ENV: &str = "III_PACKAGE_KIND";
 // The three build variables are set by Compose when it spawns a VM container (sandbox.rs) and
 // read by `iii sandbox`.
 /// The container's build directory, `<project>/.iii/build/<container>`.
@@ -80,6 +84,9 @@ pub const BUILD_DIR_ENV: &str = "III_BUILD_DIR";
 pub const BUILD_COMPOSE_FILE_ENV: &str = "III_BUILD_COMPOSE_FILE";
 /// `scripts.build_timeout` in milliseconds, for `iii sandbox build`.
 pub const BUILD_TIMEOUT_ENV: &str = "III_BUILD_TIMEOUT_MS";
+/// The container's already-expanded image override from the Compose plan. Empty means no
+/// override: never expand the compose YAML again in the child's environment.
+pub const BUILD_BASE_IMAGE_ENV: &str = "III_BUILD_BASE_IMAGE";
 /// Comma-separated names of the variables that belong to the worker and reach the guest.
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills this command.
@@ -97,6 +104,10 @@ pub const BUILD_FAILED_LINE: &str = "iii sandbox: build failed: ";
 
 /// The adapter does not advertise `worker.build`, or another feature this command needs.
 pub const SANDBOX_BUILD_UNSUPPORTED: &str = "SANDBOX_BUILD_UNSUPPORTED";
+/// The adapter lacks `worker.binary`, and the container's package is a binary (spec 7.2).
+pub const SANDBOX_BINARY_UNSUPPORTED: &str = "SANDBOX_BINARY_UNSUPPORTED";
+/// The adapter lacks `worker.prune`, and the destroy keeps the data (spec 7.2).
+pub const SANDBOX_PRUNE_UNSUPPORTED: &str = "SANDBOX_PRUNE_UNSUPPORTED";
 /// `iii sandbox run` or `build` on Windows, where no adapter boots a VM.
 pub const SANDBOX_UNSUPPORTED_PLATFORM: &str = "SANDBOX_UNSUPPORTED_PLATFORM";
 /// `iii sandbox run` without a `build.json` that records an image in `III_BUILD_DIR`.
@@ -127,7 +138,7 @@ const PROJECT_TOKEN_ENV: &str = "III_SANDBOX_WORKER_TOKEN";
 
 /// Never forwarded into the guest, even when listed: this command's own inputs, the host's
 /// engine URL (the adapter gives the guest its own) and the project token.
-const NEVER_FORWARDED: [&str; 14] = [
+const NEVER_FORWARDED: [&str; 16] = [
     TOKEN_ENV,
     STATE_KEY_ENV,
     ADAPTER_ENV,
@@ -135,9 +146,11 @@ const NEVER_FORWARDED: [&str; 14] = [
     WORKER_DIR_ENV,
     PACKAGE_DIR_ENV,
     PACKAGE_NAME_ENV,
+    PACKAGE_KIND_ENV,
     BUILD_DIR_ENV,
     BUILD_COMPOSE_FILE_ENV,
     BUILD_TIMEOUT_ENV,
+    BUILD_BASE_IMAGE_ENV,
     WORKER_ENV_KEYS_ENV,
     STOP_TIMEOUT_ENV,
     URL_ENV,
@@ -212,14 +225,22 @@ pub enum SandboxCommand {
     /// ended on signal N, or 125 when `iii sandbox` itself failed (`BUILD_MISSING` without a
     /// build).
     Run(RunArgs),
-    /// Remove this container's VM state: the disk its worker writes its data to.
-    Destroy,
+    /// Remove this container's VM state, and keep the data its worker wrote, which a later run
+    /// of the container boots with. With `--prune`, remove the data too.
+    Destroy(DestroyArgs),
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct DestroyArgs {
+    /// Remove the VM's data too: its data disk, and the disks kept from 0.26.
+    #[arg(long)]
+    pub prune: bool,
 }
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct RunArgs {
     /// Command to start in the guest instead of the manifest's `scripts.start`. Only for a
-    /// `path://` worker: a registry bundle runs its own.
+    /// `path://` worker: a registry bundle or binary runs its own.
     #[arg(long, value_name = "COMMAND")]
     pub command: Option<String>,
 }
@@ -295,16 +316,27 @@ impl Context {
                 run_override: command,
             },
             (None, Some(dir)) => {
+                let binary = present(vars, PACKAGE_KIND_ENV) == Some("binary");
                 if command.is_some() {
-                    return Err(
-                        "--command applies to a path:// worker only: a registry bundle runs the \
-                         start command it was published with"
-                            .to_string(),
-                    );
+                    let runs = if binary {
+                        "a registry binary runs the executable it was published with"
+                    } else {
+                        "a registry bundle runs the start command it was published with"
+                    };
+                    return Err(format!(
+                        "--command applies to a path:// worker only: {runs}"
+                    ));
                 }
-                WorkerSource::Bundle {
-                    package: required(vars, PACKAGE_NAME_ENV)?,
-                    host_path: dir.to_string(),
+                let package = required(vars, PACKAGE_NAME_ENV)?;
+                if binary {
+                    let worker_name = required(vars, WORKER_NAME_ENV)?;
+                    crate::vm_binary::worker_source(&worker_name, &package, Path::new(dir))
+                        .map_err(|error| error.to_string())?
+                } else {
+                    WorkerSource::Bundle {
+                        package,
+                        host_path: dir.to_string(),
+                    }
                 }
             }
             (None, None) => {
@@ -349,6 +381,8 @@ pub(crate) struct BuildContext {
     compose_file: PathBuf,
     /// `III_BUILD_TIMEOUT_MS`: `scripts.build_timeout`.
     timeout: Duration,
+    /// The trusted image override, expanded by the daemon before container env overrides.
+    base_image: Option<String>,
 }
 
 impl BuildContext {
@@ -364,15 +398,16 @@ impl BuildContext {
             build_dir: required(vars, BUILD_DIR_ENV)?,
             compose_file: PathBuf::from(required(vars, BUILD_COMPOSE_FILE_ENV)?),
             timeout,
+            base_image: present(vars, BUILD_BASE_IMAGE_ENV).map(str::to_string),
         })
     }
 
     /// The worker's directory, where its manifest and dependency files are.
     fn worker_dir(&self) -> &Path {
         match &self.container.source {
-            WorkerSource::Local { host_path, .. } | WorkerSource::Bundle { host_path, .. } => {
-                Path::new(host_path)
-            }
+            WorkerSource::Local { host_path, .. }
+            | WorkerSource::Bundle { host_path, .. }
+            | WorkerSource::Binary { host_path, .. } => Path::new(host_path),
         }
     }
 }
@@ -577,7 +612,7 @@ pub async fn run(cli: SandboxCli) -> i32 {
             }
         },
         SandboxCommand::Run(args) => report(run_command(&vars, args.command, &BuildRecords).await),
-        SandboxCommand::Destroy => report(destroy_command(&vars).await),
+        SandboxCommand::Destroy(args) => report(destroy_command(&vars, args.prune).await),
     }
 }
 
@@ -732,34 +767,61 @@ fn built_image(
     }
 }
 
-async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, Failure> {
+/// `iii sandbox destroy [--prune]` (spec 8.2): removes the VM's runtime state and keeps its data,
+/// or, with `prune`, removes the data too, and says what it did. Keeping the data needs
+/// `worker.prune`: an adapter without it ignores `prune: false` and deletes everything, so it is
+/// refused before anything is sent (`SANDBOX_PRUNE_UNSUPPORTED`).
+async fn destroy_command(vars: &BTreeMap<String, String>, prune: bool) -> Result<i32, Failure> {
     let target = Target::from_vars(vars).map_err(env_failure)?;
     let client = connect(&target.engine_url);
+    let result = destroy_vm(&target, &client, prune).await;
+    client.shutdown_async().await;
+    let reply = result?;
+    match crate::sandbox::destroyed_line(&target.state_key, prune, &reply) {
+        Some(line) => println!("{line}"),
+        None => println!("no VM state for {}", target.state_key),
+    }
+    Ok(0)
+}
+
+/// [`destroy_command`]'s calls: `adapter::info` for a destroy that keeps the data, then
+/// `worker::destroy`.
+async fn destroy_vm(
+    target: &Target,
+    client: &IIIClient,
+    prune: bool,
+) -> Result<WorkerDestroyResponse, Failure> {
+    if !prune {
+        let info = adapter_info(target, client).await?;
+        if !info.supports(FEATURE_PRUNE) {
+            return Err(Failure::runner(
+                SANDBOX_PRUNE_UNSUPPORTED,
+                format!(
+                    "{} {} does not support {FEATURE_PRUNE}, so it would delete the VM's data \
+                     too; nothing was destroyed. Run iii sandbox destroy --prune to delete \
+                     everything, or update the adapter. {}",
+                    target.adapter,
+                    info.adapter_version,
+                    update_hint()
+                ),
+            ));
+        }
+    }
     let request = WorkerDestroyRequest {
         auth: target.token.clone(),
         state_key: target.state_key.clone(),
+        prune,
     };
-    let reply = sandbox::call::<WorkerDestroyResponse>(
-        &client,
+    sandbox::call::<WorkerDestroyResponse>(
+        client,
         &target.adapter,
         &target.adapter_namespace,
         WORKER_DESTROY,
         &request,
         Duration::from_secs(60),
     )
-    .await;
-    client.shutdown_async().await;
-    match reply {
-        Ok(WorkerDestroyResponse { destroyed: true }) => {
-            println!("removed the VM state of {}", target.state_key);
-            Ok(0)
-        }
-        Ok(WorkerDestroyResponse { destroyed: false }) => {
-            println!("no VM state for {}", target.state_key);
-            Ok(0)
-        }
-        Err(error) => Err(call_failure("worker::destroy", &error, &target)),
-    }
+    .await
+    .map_err(|error| call_failure("worker::destroy", &error, target))
 }
 
 fn connect(engine_url: &str) -> IIIClient {
@@ -898,7 +960,7 @@ pub(crate) async fn run_vm(
         (number, _) = shutdown.requested() => return Ok(signalled(number)),
         info = adapter_info(target, client) => info?,
     };
-    check_adapter(&info, &target.adapter)?;
+    check_adapter(&info, &target.adapter, &ctx.source)?;
 
     // The build is the guest's whole root: no `worker::prepare`, nothing installed at boot.
     let start = WorkerStartRequest {
@@ -996,9 +1058,10 @@ async fn adapter_info(target: &Target, client: &IIIClient) -> Result<AdapterInfo
     }
 }
 
-/// Refuses an adapter this command cannot drive: another contract major, or one without the
-/// contract 1.2 and 1.3 features a container's own VM depends on.
-fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), Failure> {
+/// Refuses an adapter this command cannot drive: another contract major, one without the
+/// contract 1.2 and 1.3 features a container's own VM depends on, or, for a binary package
+/// (`source`), one without `worker.binary` (contract 1.4).
+fn check_adapter(info: &AdapterInfo, adapter: &str, source: &WorkerSource) -> Result<(), Failure> {
     let version = &info.adapter_version;
     if info.contract.major != CONTRACT_MAJOR {
         return Err(Failure::runner(
@@ -1015,6 +1078,16 @@ fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), Failure> {
         .filter(|feature| !info.supports(feature))
         .collect();
     if missing.is_empty() {
+        if matches!(source, WorkerSource::Binary { .. }) && !info.supports(FEATURE_BINARY) {
+            return Err(Failure::runner(
+                SANDBOX_BINARY_UNSUPPORTED,
+                format!(
+                    "{adapter} {version} does not support {FEATURE_BINARY}, which a binary \
+                     package in a VM needs from sandbox contract 1.4. {}",
+                    update_hint()
+                ),
+            ));
+        }
         return Ok(());
     }
     // spec 6.1: an adapter offers a build only when it can boot one.
@@ -1028,12 +1101,17 @@ fn check_adapter(info: &AdapterInfo, adapter: &str) -> Result<(), Failure> {
         SANDBOX_BUILD_UNSUPPORTED,
         format!(
             "{adapter} {version} does not support {}, which this iii needs from sandbox contract \
-             1.3.{legacy} A package adapter moves to its newest release with: iii call \
-             compose::update worker=<its container key>@latest; if its version does not change, \
-             no release has them yet",
-            missing.join(", ")
+             1.4.{legacy} {}",
+            missing.join(", "),
+            update_hint()
         ),
     ))
+}
+
+/// How to move a package adapter to a release with the features this iii needs.
+fn update_hint() -> &'static str {
+    "A package adapter moves to its newest release with: iii call compose::update worker=<its \
+     container key>@latest; if its version does not change, no release has them yet"
 }
 
 /// A failed call to the adapter: its S-code and own words when it refused, else
@@ -1340,6 +1418,9 @@ fn print_records(
 /// What a build is made from, read before it starts: `build.json` records it with the image.
 struct BuildInputs {
     source: BuildSource,
+    /// The container's own `runtime.base_image`, sent as `WorkerBuildRequest.base_image`.
+    base_image: Option<String>,
+    /// The base image `build.json` records as declared: the container's, else the manifest's.
     declared_base_image: Option<String>,
     dependency_files: BTreeMap<String, String>,
 }
@@ -1367,8 +1448,33 @@ pub(crate) async fn build_vm(
         () = tokio::time::sleep_until(deadline) => return Err(Failure::timed_out(bctx.timeout)),
         info = adapter_info(target, client) => info?,
     };
-    check_adapter(&info, &target.adapter)?;
+    check_adapter(&info, &target.adapter, &ctx.source)?;
     let inputs = build_inputs(bctx, records)?;
+    // worker.binary announces the 1.4 image override for every source, not only Binary.
+    if inputs.base_image.is_some() && !info.supports(FEATURE_BINARY) {
+        return Err(Failure::runner(
+            SANDBOX_BINARY_UNSUPPORTED,
+            format!(
+                "{} {} does not support the container runtime.base_image override \
+                 (requires {FEATURE_BINARY} from sandbox contract 1.4). {}",
+                target.adapter,
+                info.adapter_version,
+                update_hint()
+            ),
+        ));
+    }
+    // A binary's executable is found, not declared: the build says which one the guest runs.
+    if let WorkerSource::Binary {
+        package,
+        host_path,
+        executable,
+    } = &ctx.source
+    {
+        say(
+            &to_stdout(printer.clone()),
+            format!("{package}: the guest runs {executable} from {host_path}"),
+        );
+    }
 
     let channel =
         tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
@@ -1387,6 +1493,7 @@ pub(crate) async fn build_vm(
             access_key: channel.writer_ref.access_key,
             direction: contract::ChannelDirection::Write,
         },
+        base_image: inputs.base_image.clone(),
     };
     // Read from before the call: the build lives as long as its output is read.
     let reader = Arc::new(channel.reader);
@@ -1441,11 +1548,18 @@ pub(crate) async fn build_vm(
 fn build_inputs(bctx: &BuildContext, records: &dyn Records) -> Result<BuildInputs, Failure> {
     let worker_dir = bctx.worker_dir();
     let failed = |error: ComposeError| Failure::compose(&error);
+    let source = records
+        .source(&bctx.compose_file, &bctx.container.worker_name)
+        .map_err(failed)?;
+    let base_image = bctx.base_image.clone();
+    let declared_base_image = match &base_image {
+        Some(image) => Some(image.clone()),
+        None => records.declared_base_image(worker_dir).map_err(failed)?,
+    };
     Ok(BuildInputs {
-        source: records
-            .source(&bctx.compose_file, &bctx.container.worker_name)
-            .map_err(failed)?,
-        declared_base_image: records.declared_base_image(worker_dir).map_err(failed)?,
+        source,
+        base_image,
+        declared_base_image,
         dependency_files: records.dependency_files(worker_dir).map_err(failed)?,
     })
 }
@@ -2173,6 +2287,14 @@ mod tests {
         source_reads: Mutex<usize>,
     }
 
+    /// A bundle source, for a check that does not depend on it.
+    fn bundle_source() -> WorkerSource {
+        WorkerSource::Bundle {
+            package: "onboarding".into(),
+            host_path: "/project/.iii/workers/onboarding".into(),
+        }
+    }
+
     impl FakeRecords {
         fn holding(record: BuildRecord) -> Self {
             Self {
@@ -2759,7 +2881,7 @@ mod tests {
     #[test]
     fn an_adapter_without_the_features_is_refused() {
         let mut adapter = info(&[]);
-        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        let failure = check_adapter(&adapter, "sandbox-libkrun", &bundle_source()).unwrap_err();
         assert_eq!(
             (failure.code.as_str(), failure.exit),
             (SANDBOX_BUILD_UNSUPPORTED, RUNNER_FAILED)
@@ -2769,7 +2891,7 @@ mod tests {
             error.contains(FEATURE_SCOPED_AUTH) && error.contains(FEATURE_BUILD),
             "{error}"
         );
-        assert!(error.contains("sandbox contract 1.3"), "{error}");
+        assert!(error.contains("sandbox contract 1.4"), "{error}");
         // The adapter's name is not its container key, and only a package can move.
         assert!(
             error.contains("A package adapter moves")
@@ -2780,14 +2902,14 @@ mod tests {
         // `latest` may be the version it runs: the advice does not promise a move.
         assert!(error.contains("no release has them yet"), "{error}");
         adapter.features = REQUIRED_FEATURES.iter().map(|f| f.to_string()).collect();
-        assert!(check_adapter(&adapter, "sandbox-libkrun").is_ok());
+        assert!(check_adapter(&adapter, "sandbox-libkrun", &bundle_source()).is_ok());
     }
 
     /// A contract 1.2 adapter, or sandbox-libkrun in legacy mode: everything but the build.
     #[test]
     fn an_adapter_without_worker_build_is_refused_and_told_why() {
         let adapter = info(&[FEATURE_SCOPED_AUTH, FEATURE_LEASE, FEATURE_LOGS_FROM_END]);
-        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        let failure = check_adapter(&adapter, "sandbox-libkrun", &bundle_source()).unwrap_err();
         assert_eq!(failure.code, SANDBOX_BUILD_UNSUPPORTED);
         assert!(
             failure.message.contains("does not support worker.build,")
@@ -2800,7 +2922,7 @@ mod tests {
     fn an_adapter_of_another_contract_major_is_refused() {
         let mut adapter = info(&REQUIRED_FEATURES);
         adapter.contract.major = CONTRACT_MAJOR + 1;
-        let failure = check_adapter(&adapter, "sandbox-libkrun").unwrap_err();
+        let failure = check_adapter(&adapter, "sandbox-libkrun", &bundle_source()).unwrap_err();
         assert_eq!(failure.code, SANDBOX_CONTRACT_UNSUPPORTED);
         assert_eq!(failure.exit, RUNNER_FAILED);
     }
@@ -2854,6 +2976,350 @@ mod tests {
         let failure = boot_plan(&vars, None, &FakeRecords::default()).unwrap_err();
         assert_eq!(failure.code, SANDBOX_ENV_INVALID);
         assert!(failure.message.contains(BUILD_DIR_ENV), "{failure}");
+    }
+
+    /// `iii sandbox destroy` sends `prune` only with `--prune`, and refuses to keep the data on
+    /// an adapter without `worker.prune` before it sends anything (spec 7.2, 8.2).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn destroy_sends_prune_only_with_the_flag_and_keeps_the_data_only_with_worker_prune() {
+        let with_prune: Vec<&'static str> = REQUIRED_FEATURES
+            .into_iter()
+            .chain([FEATURE_PRUNE])
+            .collect();
+        let without: Vec<&'static str> = REQUIRED_FEATURES.to_vec();
+        for (features, prune, sent) in [
+            (with_prune.clone(), false, Some(None)),
+            (with_prune, true, Some(Some(true))),
+            (without.clone(), true, Some(Some(true))),
+            (without, false, None),
+        ] {
+            let (url, mut called) = fake_engine_url(adapter(move |suffix, _| match suffix {
+                "adapter::info" => Some(answered(info(&features))),
+                "worker::destroy" => Some(answered(json!({
+                    "destroyed": true,
+                    "kept": ["/home/me/.iii/sandbox/workers/v/upper.ext4"]
+                }))),
+                _ => None,
+            }))
+            .await;
+            let mut vars = compose_vars();
+            vars.insert(URL_ENV.into(), url);
+            let result = destroy_command(&vars, prune).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let calls = calls(&mut called);
+            let destroys = payloads(&calls, "worker::destroy");
+            match sent {
+                Some(field) => {
+                    assert_eq!(result.unwrap(), 0);
+                    assert_eq!(destroys.len(), 1, "{calls:?}");
+                    assert_eq!(destroys[0].get("prune").and_then(Value::as_bool), field);
+                    // With `--prune` nothing needs asking first.
+                    assert_eq!(payloads(&calls, "adapter::info").is_empty(), prune);
+                }
+                None => {
+                    let failure = result.unwrap_err();
+                    assert_eq!(
+                        (failure.code.as_str(), failure.exit),
+                        (SANDBOX_PRUNE_UNSUPPORTED, RUNNER_FAILED)
+                    );
+                    assert!(failure.message.contains("--prune"), "{failure}");
+                    assert!(destroys.is_empty(), "{calls:?}");
+                }
+            }
+        }
+    }
+
+    /// Run this regression in subprocesses so each parse/build sees its real process env,
+    /// without mutating the parallel test runner's environment.
+    #[test]
+    fn planned_images_survive_container_env_overrides_and_missing_child_variables() {
+        const TEST: &str = "sandbox_cli::tests::planned_images_survive_container_env_overrides_and_missing_child_variables";
+        const PHASE: &str = "KAN292_IMAGE_PHASE";
+        const PLAN: &str = "KAN292_IMAGE_PLAN";
+        let phase = std::env::var(PHASE).ok();
+        if phase.is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(PHASE, "plan")
+                .env("RUNTIME_IMAGE", "debian:bookworm")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if phase.as_deref() == Some("plan") {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("worker.env"), "RUNTIME_IMAGE=alpine:3.20\n").unwrap();
+            sandbox::tests::manifest(dir.path(), "api", "scripts: {start: run}\n");
+            for declared_env in [
+                "    environment: {RUNTIME_IMAGE: 'alpine:3.20'}\n",
+                "    env_file: [worker.env]\n",
+                "",
+            ] {
+                let text = format!(
+                    "containers:\n  api:\n    worker: path://./api\n    runtime:\n      base_image: ${{RUNTIME_IMAGE}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n{declared_env}"
+                );
+                let path = dir.path().join("worker-compose.yaml");
+                std::fs::write(&path, &text).unwrap();
+                let file = crate::ComposeFile::parse(&text, &path).unwrap();
+                assert_eq!(
+                    file.containers["api"].base_image.as_deref(),
+                    Some("debian:bookworm")
+                );
+                let mut env = file.containers["api"].resolve_user_env("api").unwrap();
+                sandbox::layer_own_vm_env(&file, "api", "project", dir.path(), "orders", &mut env)
+                    .unwrap();
+                assert!(crate::spawn::is_reserved_env(BUILD_BASE_IMAGE_ENV));
+                assert!(!env[WORKER_ENV_KEYS_ENV].contains(BUILD_BASE_IMAGE_ENV));
+                env.insert(URL_ENV.into(), "ws://127.0.0.1:49134".into());
+                env.insert(WORKER_NAME_ENV.into(), "api".into());
+                if declared_env.is_empty() {
+                    env.remove("RUNTIME_IMAGE");
+                }
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env_remove("RUNTIME_IMAGE")
+                    .envs(&env)
+                    .env(PHASE, "build")
+                    .env(PLAN, serde_json::to_string(&env).unwrap());
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{declared_env}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        assert_eq!(phase.as_deref(), Some("build"));
+        let env: BTreeMap<String, String> =
+            serde_json::from_str(&std::env::var(PLAN).unwrap()).unwrap();
+        assert_ne!(
+            std::env::var("RUNTIME_IMAGE").ok().as_deref(),
+            Some("debian:bookworm")
+        );
+        let bctx = BuildContext::from_vars(&env).unwrap();
+        assert_eq!(bctx.base_image.as_deref(), Some("debian:bookworm"));
+        assert!(!bctx.container.env.contains_key(BUILD_BASE_IMAGE_ENV));
+        if let Some(value) = env.get("RUNTIME_IMAGE") {
+            assert_eq!(value, "alpine:3.20");
+            // The user's guest environment is not dropped to fix image selection.
+            assert_eq!(bctx.container.env["RUNTIME_IMAGE"], "alpine:3.20");
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let features: Vec<_> = REQUIRED_FEATURES
+                    .into_iter()
+                    .chain([FEATURE_BINARY])
+                    .collect();
+                let (client, mut called, _) = build_engine(
+                    adapter(move |suffix, _| match suffix {
+                        "adapter::info" => Some(answered(info(&features))),
+                        "worker::build" => Some(built()),
+                        _ => None,
+                    }),
+                    Vec::new(),
+                )
+                .await;
+                let record = build_vm(
+                    &bctx,
+                    &FakeRecords::default(),
+                    &client,
+                    &never(),
+                    captured().0,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    payload(&calls(&mut called), "worker::build")["base_image"],
+                    "debian:bookworm"
+                );
+                assert_eq!(
+                    record.image.unwrap().base_image.declared.as_deref(),
+                    Some("debian:bookworm")
+                );
+                client.shutdown_async().await;
+            });
+    }
+
+    #[tokio::test]
+    async fn image_overrides_require_worker_binary_for_local_and_bundle_sources() {
+        for source in [context().source, bundle_source()] {
+            for override_image in [None, Some("debian:bookworm")] {
+                for supports_override in [false, true] {
+                    let features: Vec<_> = REQUIRED_FEATURES
+                        .into_iter()
+                        .chain(supports_override.then_some(FEATURE_BINARY))
+                        .collect();
+                    let (client, mut called, _) = build_engine(
+                        adapter(move |suffix, _| match suffix {
+                            "adapter::info" => Some(answered(info(&features))),
+                            "worker::build" => Some(built()),
+                            _ => None,
+                        }),
+                        Vec::new(),
+                    )
+                    .await;
+                    let mut bctx = build_context();
+                    bctx.container.source = source.clone();
+                    bctx.base_image = override_image.map(str::to_string);
+                    let result = build_vm(
+                        &bctx,
+                        &FakeRecords::default(),
+                        &client,
+                        &never(),
+                        captured().0,
+                    )
+                    .await;
+                    let calls = calls(&mut called);
+                    if override_image.is_some() && !supports_override {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.code, SANDBOX_BINARY_UNSUPPORTED);
+                        assert!(
+                            error.message.contains("runtime.base_image override"),
+                            "{error}"
+                        );
+                        assert!(payloads(&calls, "worker::build").is_empty(), "{calls:?}");
+                        assert!(
+                            payloads(&calls, "engine::channels::create").is_empty(),
+                            "{calls:?}"
+                        );
+                    } else {
+                        let record = result.unwrap();
+                        assert_eq!(
+                            payload(&calls, "worker::build")["base_image"].as_str(),
+                            override_image
+                        );
+                        assert_eq!(
+                            record.image.unwrap().base_image.declared.as_deref(),
+                            override_image.or(Some("docker.io/iiidev/python"))
+                        );
+                    }
+                    client.shutdown_async().await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fake_destroy_with_only_kept_data_reports_the_retained_paths() {
+        let disk = "/remote/adapter-home/.iii/sandbox/workers/v/upper.ext4";
+        let features: Vec<_> = REQUIRED_FEATURES
+            .into_iter()
+            .chain([FEATURE_PRUNE])
+            .collect();
+        let (url, mut called) = fake_engine_url(adapter(move |suffix, _| match suffix {
+            "adapter::info" => Some(answered(info(&features))),
+            "worker::destroy" => Some(answered(json!({"destroyed": false, "kept": [disk]}))),
+            _ => None,
+        }))
+        .await;
+        let mut vars = compose_vars();
+        vars.insert(URL_ENV.into(), url);
+        let target = Target::from_vars(&vars).unwrap();
+        let client = connect(&target.engine_url);
+        let reply = destroy_vm(&target, &client, false).await.unwrap();
+        assert!(!reply.destroyed);
+        // This is the formatter used by both CLI and remove, not a guessed local HOME.
+        assert_eq!(
+            sandbox::destroyed_line(&target.state_key, false, &reply).unwrap(),
+            format!(
+                "no VM state for {}; its data stays in {disk}",
+                target.state_key
+            )
+        );
+        assert_eq!(payloads(&calls(&mut called), "worker::destroy").len(), 1);
+        client.shutdown_async().await;
+    }
+
+    /// A binary package in a VM boots as `WorkerSource::Binary` from its package directory,
+    /// builds from the container's own `runtime.base_image`, says which executable the guest
+    /// runs, needs `worker.binary`, and takes no `--command`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_binary_builds_from_its_base_image_and_says_which_executable_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let package_dir = dir.path().join("indexer");
+        std::fs::create_dir_all(package_dir.join("bin")).unwrap();
+        std::fs::write(package_dir.join("bin/indexer"), b"\x7fELF").unwrap();
+        std::fs::set_permissions(
+            package_dir.join("bin/indexer"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let host_path = package_dir.to_string_lossy().into_owned();
+        let mut vars = compose_vars();
+        vars.remove(WORKER_DIR_ENV);
+        vars.insert(PACKAGE_DIR_ENV.into(), host_path.clone());
+        vars.insert(PACKAGE_NAME_ENV.into(), "indexer".into());
+        vars.insert(PACKAGE_KIND_ENV.into(), "binary".into());
+        let refused = Context::from_vars(&vars, Some("./x".into())).unwrap_err();
+        assert!(refused.contains("a registry binary runs"), "{refused}");
+        vars.insert(
+            BUILD_BASE_IMAGE_ENV.into(),
+            "docker.io/library/alpine:3.20".into(),
+        );
+        let bctx = BuildContext::from_vars(&vars).unwrap();
+        let records = FakeRecords::default();
+
+        let (client, mut called, _) = build_engine(
+            adapter(|suffix, _| (suffix == "worker::build").then(built)),
+            Vec::new(),
+        )
+        .await;
+        let failure = build_vm(&bctx, &records, &client, &never(), captured().0)
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, SANDBOX_BINARY_UNSUPPORTED, "{failure}");
+        assert!(payloads(&calls(&mut called), "worker::build").is_empty());
+
+        let features: Vec<&'static str> = REQUIRED_FEATURES
+            .into_iter()
+            .chain([FEATURE_BINARY])
+            .collect();
+        let (client, mut called, _) = build_engine(
+            adapter(move |suffix, _| match suffix {
+                "adapter::info" => Some(answered(info(&features))),
+                "worker::build" => Some(built()),
+                _ => None,
+            }),
+            Vec::new(),
+        )
+        .await;
+        let (printer, printed) = captured();
+        let record = build_vm(&bctx, &records, &client, &never(), printer)
+            .await
+            .unwrap();
+        let calls = calls(&mut called);
+        let request = payload(&calls, "worker::build");
+        assert_eq!(
+            request["source"],
+            json!({
+                "kind": "binary",
+                "package": "indexer",
+                "host_path": host_path,
+                "executable": "bin/indexer"
+            })
+        );
+        assert_eq!(request["base_image"], "docker.io/library/alpine:3.20");
+        assert_eq!(
+            record.image.unwrap().base_image.declared.as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        let said = format!("stdout: indexer: the guest runs bin/indexer from {host_path}");
+        assert!(printed.lock().unwrap().contains(&said), "{printed:?}");
     }
 
     /// The command itself: without a build it exits 125 before it reaches the engine.

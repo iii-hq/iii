@@ -133,12 +133,6 @@ pub enum ComposeError {
         source_uri: String,
     },
 
-    #[error(
-        "container '{container}': 'scripts.run' and 'scripts.build' are not valid for a binary \
-         package, which runs as it was published"
-    )]
-    RunNotAllowedForPackage { container: String },
-
     /// A container key is also a directory name, under `.iii/build/` and `.iii/workers/` (spec
     /// 3.2).
     #[error(
@@ -159,12 +153,13 @@ pub enum ComposeError {
     )]
     VmScriptsMissing { containers: String },
 
-    /// A container 0.26 ran in a VM reached a start the file does not place anywhere yet: it was
-    /// read without the rewrite every `up` makes (spec 7.3).
+    /// A container that runs in a VM (0.26 ran it in one, or it sets `runtime.base_image`) reached
+    /// a start the file does not place anywhere yet: it was read without the rewrite every `up`
+    /// makes (spec 7.3).
     #[error(
-        "container '{container}': 0.26 ran it in a VM, and the file does not say so yet \
-         (scripts.build and scripts.run: iii sandbox ...). Run `iii compose --up`, or iii call \
-         compose::up, which rewrites it"
+        "container '{container}' runs in a VM (0.26 ran it in one, or it sets \
+         runtime.base_image), and the file does not say so yet (scripts.build and scripts.run: \
+         iii sandbox ...). Run `iii compose --up`, or iii call compose::up, which rewrites it"
     )]
     VmScriptsNotWritten { container: String },
 
@@ -179,6 +174,31 @@ pub enum ComposeError {
         version: String,
         range: String,
     },
+
+    #[error(
+        "container '{container}': runtime.base_image '{value}' is not an image reference, such as \
+         docker.io/library/alpine:3.20"
+    )]
+    InvalidBaseImage { container: String, value: String },
+
+    /// `runtime.base_image` is the image of the container's VM (spec 4.2).
+    #[error(
+        "container '{container}': runtime.base_image is the image of its VM, but scripts.{script} \
+         '{command}' keeps it on the host. Set scripts.build: iii sandbox build and scripts.run: \
+         iii sandbox run, or remove runtime.base_image"
+    )]
+    BaseImageWithoutVm {
+        container: String,
+        script: &'static str,
+        command: String,
+    },
+
+    /// A binary package names no image, so its container says which one its VM runs (spec 4.2).
+    #[error(
+        "container '{container}': scripts.run is iii sandbox run, but binary package '{package}' \
+         names no image for its VM. Set runtime.base_image, such as docker.io/library/alpine:3.20"
+    )]
+    SandboxBinaryWithoutBaseImage { container: String, package: String },
 
     #[error(
         "container '{container}': scripts.run is iii sandbox run, but it is neither a bundle package \
@@ -757,7 +777,9 @@ impl ComposeError {
             Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
-            Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
+            Self::InvalidBaseImage { .. } => "INVALID_BASE_IMAGE",
+            Self::BaseImageWithoutVm { .. } => "BASE_IMAGE_WITHOUT_VM",
+            Self::SandboxBinaryWithoutBaseImage { .. } => "SANDBOX_BINARY_WITHOUT_BASE_IMAGE",
             Self::InvalidContainerKey { .. } => "INVALID_CONTAINER_KEY",
             Self::VmScriptsMissing { .. } | Self::VmScriptsNotWritten { .. } => {
                 "VM_SCRIPTS_MISSING"

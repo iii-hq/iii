@@ -140,6 +140,9 @@ impl Source {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewContainer {
     pub key: String,
+    /// Declaration text for persistence, including unexpanded/escaped references on explicit
+    /// requests. Resolve package identity from the effective parsed container, never this text.
+    /// Generated declarations use canonical references instead.
     pub source: Source,
     /// Containers this one calls. Two workers may need the same one, so the
     /// shared worker is declared once and named here by both.
@@ -1033,7 +1036,10 @@ fn wanted_version(new: &NewContainer) -> Option<String> {
 }
 
 /// Build only the fields owned by this request, including resolved dependencies.
-fn declaration_fields(new: &NewContainer, existing: Option<&Mapping>) -> Result<Mapping> {
+pub(crate) fn declaration_fields(
+    new: &NewContainer,
+    existing: Option<&Mapping>,
+) -> Result<Mapping> {
     let mut fields = Mapping::new();
     let source = match &new.source {
         Source::Package { reference, .. } => format!("package://{reference}"),
@@ -1201,6 +1207,30 @@ mod tests {
             Outcome::Added(text) | Outcome::Replaced { text, .. } => text,
             Outcome::Unchanged => panic!("expected an edit"),
         }
+    }
+
+    /// `compose::add` writes `runtime.base_image` as given, and the file reads it back.
+    #[test]
+    fn configured_worker_round_trips_the_runtime_base_image() {
+        let worker = configured(serde_json::json!({
+            "worker": "package://tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20"},
+            "scripts": {"build": "iii sandbox build", "run": "iii sandbox run"}
+        }));
+        let out = changed("containers:\n  api:\n    worker: path://./api\n", &worker);
+        let file = crate::config::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            file.containers["tool"].base_image.as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        // A second add of the same declaration changes nothing.
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+
+        let invalid = serde_json::from_value::<WorkerInput>(serde_json::json!({
+            "worker": "package://tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20", "kind": "node"}
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]

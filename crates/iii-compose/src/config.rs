@@ -309,6 +309,9 @@ pub struct Container {
     pub config_name: Option<String>,
     pub config_override: Option<serde_yaml::Value>,
     pub scripts: Scripts,
+    /// `runtime.base_image`: the image the container's VM build starts from, over the worker
+    /// manifest's. A binary package names none, so one that runs in a VM needs it (spec 4.2).
+    pub base_image: Option<String>,
     /// Declared working directory, resolved against the compose file's
     /// directory. `None` means "the worker's own directory".
     pub working_dir: Option<PathBuf>,
@@ -681,6 +684,76 @@ fn check_container_key(key: &str) -> Result<()> {
     }
 }
 
+/// Plan one upsert before registry resolution. Only supplied fields are expanded: the existing
+/// container is already parsed, so expanding its values again would misread escaped references.
+/// Supplied maps replace whole fields, just as `edit::upsert_container` persists them.
+pub(crate) fn effective_container(
+    file: &ComposeFile,
+    new: &crate::edit::NewContainer,
+) -> Result<Container> {
+    use serde_yaml::Value;
+    let mut fields = serde_yaml::Mapping::new();
+    if let Some(old) = file.containers.get(&new.key) {
+        // These fields decide the package platform. Preserve omitted fields, including the
+        // entire scripts map, but never merge individual keys into a supplied scripts/runtime.
+        fields.insert(
+            Value::from("scripts"),
+            serde_yaml::to_value(serde_json::json!({
+                "build": old.scripts.build,
+                "build_timeout": format!("{}ms", old.scripts.build_timeout.as_millis()),
+                "run": old.scripts.run,
+                "pre_run": old.scripts.pre_run,
+                "pre_run_timeout": old.scripts.pre_run.as_ref().map(|_|
+                    format!("{}ms", old.scripts.pre_run_timeout.as_millis())),
+                "post_run": old.scripts.post_run,
+            }))
+            .map_err(|error| ComposeError::Yaml {
+                path: file.path.clone(),
+                message: error.to_string(),
+            })?,
+        );
+        if let Some(image) = &old.base_image {
+            fields.insert(
+                Value::from("runtime"),
+                serde_yaml::to_value(serde_json::json!({"base_image": image})).map_err(
+                    |error| ComposeError::Yaml {
+                        path: file.path.clone(),
+                        message: error.to_string(),
+                    },
+                )?,
+            );
+        }
+    }
+    let mut supplied = crate::edit::declaration_fields(new, None)?;
+    // Registry resolution supplies a missing selector later, but planning needs a valid package
+    // declaration now. This placeholder is not persisted or used as the registry selector.
+    if matches!(new.source, crate::edit::Source::Package { .. })
+        && !supplied.contains_key("version")
+    {
+        supplied.insert(Value::from("version"), Value::from("*"));
+    }
+    let mut supplied = Value::Mapping(supplied);
+    crate::interpolate::expand_tree(&mut supplied, &file.path, &|name| std::env::var(name).ok())?;
+    if let Value::Mapping(supplied) = supplied {
+        fields.extend(supplied);
+    }
+    let text = serde_yaml::to_string(&fields).map_err(|error| ComposeError::Yaml {
+        path: file.path.clone(),
+        message: error.to_string(),
+    })?;
+    let raw: RawContainer = serde_yaml::from_str(&text).map_err(|error| ComposeError::Yaml {
+        path: file.path.clone(),
+        message: error.to_string(),
+    })?;
+    validate_container(
+        &new.key,
+        &raw,
+        &file.base_dir,
+        file.startup_timeout,
+        file.required_default,
+    )
+}
+
 fn validate_container(
     key: &str,
     raw: &RawContainer,
@@ -753,6 +826,8 @@ fn validate_container(
         }
     };
 
+    let base_image = validate_base_image(key, raw.runtime.as_ref(), &scripts)?;
+
     // The reserved contract is the daemon's to set. Silently dropping a
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
@@ -792,6 +867,7 @@ fn validate_container(
         config_name,
         config_override: raw.config_override.clone(),
         scripts,
+        base_image,
         working_dir: raw
             .working_dir
             .as_ref()
@@ -806,6 +882,54 @@ fn validate_container(
         required: raw.required.unwrap_or(required_default),
         restart: validate_restart(key, &raw.restart)?,
     })
+}
+
+/// `runtime.base_image`, checked offline: an image reference, without the whitespace or control
+/// characters no reference has (the adapter checks the rest, `S001`), on a container that runs
+/// in a VM. A `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than
+/// `iii sandbox build` (`""` included), keeps it on the host, where the image would go unused;
+/// neither key yet is the explicit VM mode still to be written. Unlike the manifest's key, the
+/// container's never moves a worker to the host (spec 7.3).
+fn validate_base_image(
+    key: &str,
+    runtime: Option<&RawRuntime>,
+    scripts: &Scripts,
+) -> Result<Option<String>> {
+    let Some(image) = runtime.and_then(|runtime| runtime.base_image.as_ref()) else {
+        return Ok(None);
+    };
+    if image.is_empty() || image.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ComposeError::InvalidBaseImage {
+            container: key.to_string(),
+            value: image.clone(),
+        });
+    }
+    let on_host = [
+        (
+            "run",
+            scripts.run.as_ref(),
+            crate::sandbox::is_sandbox_run as fn(&str) -> bool,
+        ),
+        (
+            "build",
+            scripts.build.as_ref(),
+            crate::sandbox::is_sandbox_build,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(script, command, in_vm)| {
+        command
+            .filter(|command| !in_vm(command))
+            .map(|command| (script, command))
+    });
+    if let Some((script, command)) = on_host {
+        return Err(ComposeError::BaseImageWithoutVm {
+            container: key.to_string(),
+            script,
+            command: command.clone(),
+        });
+    }
+    Ok(Some(image.clone()))
 }
 
 fn validate_restart(key: &str, raw: &RawRestart) -> Result<RestartConfig> {
@@ -1278,6 +1402,9 @@ pub(crate) struct RawContainer {
     config_override: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawScripts>,
+    /// The container's VM: `base_image` only.
+    #[serde(default)]
+    runtime: Option<RawRuntime>,
     #[serde(default)]
     working_dir: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
@@ -1338,6 +1465,17 @@ where
     D: serde::Deserializer<'de>,
 {
     bool::deserialize(deserializer).map(Some)
+}
+
+/// A container's `runtime:`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawRuntime {
+    /// The image the container's VM build starts from, such as `docker.io/library/alpine:3.20`,
+    /// over the worker manifest's `runtime.base_image`. Required for a binary package that runs
+    /// in a VM, since the package names none.
+    #[serde(default)]
+    base_image: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1632,6 +1770,78 @@ containers:
         }
     }
 
+    /// `runtime.base_image` (spec 4.2): an image reference, on a container that runs in a VM.
+    #[test]
+    fn runtime_base_image_is_an_image_for_a_vm_container() {
+        let parse = |container: &str| {
+            ComposeFile::parse(
+                &format!("containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n{container}"),
+                "/tmp/worker-compose.yaml",
+            )
+            .map(|file| file.containers["tool"].base_image.clone())
+            .map_err(|error| error.code())
+        };
+        let image = Some("docker.io/library/alpine:3.20".to_string());
+        assert_eq!(parse(""), Ok(None));
+        assert_eq!(parse("    runtime: {}\n"), Ok(None));
+        assert_eq!(
+            parse("    runtime:\n      base_image: docker.io/library/alpine:3.20\n"),
+            Ok(image.clone())
+        );
+        assert_eq!(
+            parse(
+                "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
+                 build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            Ok(image)
+        );
+        for bad in ["''", "'alpine 3.20'", "\"alpine\\t\""] {
+            assert_eq!(
+                parse(&format!("    runtime:\n      base_image: {bad}\n")),
+                Err("INVALID_BASE_IMAGE"),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            parse(
+                "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
+                 run: ./tool\n"
+            ),
+            Err("BASE_IMAGE_WITHOUT_VM")
+        );
+        // A host scripts.build keeps the container on the host too, "" included, with or
+        // without scripts.run; the message names the script.
+        for (build, run) in [
+            ("npm ci", ""),
+            ("''", ""),
+            ("npm ci", "      run: iii sandbox run\n"),
+        ] {
+            let text = format!(
+                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+                 base_image: docker.io/library/alpine:3.20\n    scripts:\n      build: {build}\n{run}"
+            );
+            let error = ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap_err();
+            assert_eq!(error.code(), "BASE_IMAGE_WITHOUT_VM", "{build}");
+            assert!(error.to_string().contains("scripts.build"), "{error}");
+        }
+        assert_eq!(
+            parse("    runtime:\n      kind: node\n"),
+            Err("INVALID_COMPOSE_FILE")
+        );
+
+        let schema = worker_compose_schema_json();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let document: serde_json::Value = serde_yaml::from_str(
+            "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+             base_image: docker.io/library/alpine:3.20\n",
+        )
+        .unwrap();
+        assert!(validator.is_valid(&document));
+        let mut unknown = document.clone();
+        unknown["containers"]["tool"]["runtime"]["kind"] = "node".into();
+        assert!(!validator.is_valid(&unknown));
+    }
+
     #[test]
     fn worker_compose_schema_exposes_required_inheritance() {
         let schema = worker_compose_schema_json();
@@ -1742,6 +1952,7 @@ containers:
             config_name: None,
             config_override: None,
             scripts: Scripts::default(),
+            base_image: None,
             working_dir: None,
             environment: BTreeMap::new(),
             env_file,

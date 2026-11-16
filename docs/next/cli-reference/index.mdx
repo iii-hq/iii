@@ -223,11 +223,15 @@ iii sandbox build [OPTIONS] [CONTAINER]
 
 #### `iii sandbox destroy`
 
-Remove this container's VM state: the disk its worker writes its data to
+Remove this container's VM state, and keep the data its worker wrote, which a later run of the container boots with. With `--prune`, remove the data too
 
 ```text
-iii sandbox destroy
+iii sandbox destroy [OPTIONS]
 ```
+
+| Option | Description |
+| ------ | ----------- |
+| `--prune` | Remove the VM's data too: its data disk, and the disks kept from 0.26 |
 
 #### `iii sandbox run`
 
@@ -239,7 +243,7 @@ iii sandbox run [OPTIONS]
 
 | Option | Description |
 | ------ | ----------- |
-| `--command <COMMAND>` | Command to start in the guest instead of the manifest's `scripts.start`. Only for a `path://` worker: a registry bundle runs its own |
+| `--command <COMMAND>` | Command to start in the guest instead of the manifest's `scripts.start`. Only for a `path://` worker: a registry bundle or binary runs its own |
 
 ### `iii update`
 

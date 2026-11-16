@@ -866,16 +866,19 @@ async fn restart_one_scoped(
 /// dependents would discard healthy processes that the following idempotent
 /// `up` is expected to preserve. The old declaration remains available here so
 /// the removed container can still run its `post_run` hook.
+///
+/// A VM container's VM is destroyed: with `prune`, its data too (spec 8.2).
 pub async fn remove_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     report::in_project_scope(
         &ctx.file.path,
-        remove_one_scoped(ctx, children, records, key, operation_id),
+        remove_one_scoped(ctx, children, records, key, operation_id, prune),
     )
     .await
 }
@@ -886,6 +889,7 @@ async fn remove_one_scoped(
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -943,7 +947,7 @@ async fn remove_one_scoped(
             )
             .await;
         }
-        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace).await;
+        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace, prune).await;
     }
     // Its build goes with it (spec 3.3); `.iii/workers/` follows the lock.
     let build = crate::build_step::build_dir(&ctx.file.path, key);
@@ -1309,15 +1313,17 @@ async fn start_one_until_shutdown(
                     .await;
             }
             let installed = match &container.resolved_package {
-                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved(
+                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved_on(
                     key,
                     resolved,
+                    crate::vm_binary::platform(container),
                     ctx.package_cache,
                 ))?,
-                None => wait_or_interrupt!(crate::registry::install(
+                None => wait_or_interrupt!(crate::registry::install_on(
                     key,
                     reference,
                     range,
+                    crate::vm_binary::platform(container),
                     ctx.package_cache,
                 ))?,
             };
@@ -1335,10 +1341,7 @@ async fn start_one_until_shutdown(
             );
             match installed.payload {
                 crate::registry::Payload::Binary(program) => (
-                    StartSpec::Exec {
-                        program,
-                        args: Vec::new(),
-                    },
+                    binary_start(key, container, program)?,
                     installed.default_config,
                 ),
                 // A bundle runs what the file says: `iii sandbox run` boots its VM, another
@@ -1888,6 +1891,30 @@ pub(crate) fn failed_op(
 /// Grace used when the daemon itself is going down.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
+/// How binary package container `key` starts, once `program`, its executable, is installed: as
+/// it was published, unless the file says how. `iii sandbox run` boots its Linux build in a VM,
+/// another `scripts.run` runs on the host (spec 4.2). A container whose build is the Linux one of
+/// a VM, with no `scripts.run` written yet, fails with `VM_SCRIPTS_MISSING`: the host never
+/// runs that build.
+fn binary_start(
+    key: &str,
+    container: &crate::config::Container,
+    program: std::path::PathBuf,
+) -> std::result::Result<StartSpec, ComposeError> {
+    match container.scripts.run.clone() {
+        Some(run) => Ok(StartSpec::Shell(run)),
+        None if crate::vm_binary::declares_vm(container) => {
+            Err(ComposeError::VmScriptsNotWritten {
+                container: key.to_string(),
+            })
+        }
+        None => Ok(StartSpec::Exec {
+            program,
+            args: Vec::new(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1909,6 +1936,58 @@ containers:
 
     fn file() -> ComposeFile {
         ComposeFile::parse(PROJECT, "/srv/app/worker-compose.yaml").expect("fixture should parse")
+    }
+
+    /// A binary package starts its `scripts.run` when it has one; one whose build is a VM's and
+    /// that has none yet fails, and never runs that build on the host.
+    #[test]
+    fn a_binary_starts_its_scripts_and_never_runs_a_vm_build_on_the_host() {
+        let file = ComposeFile::parse(
+            r#"
+containers:
+  plain:
+    worker: package://tool
+    version: 1.0.0
+  wrapped:
+    worker: package://tool
+    version: 1.0.0
+    scripts:
+      run: ./tool --port 3000
+  in-vm:
+    worker: package://tool
+    version: 1.0.0
+    runtime:
+      base_image: docker.io/library/alpine:3.20
+    scripts:
+      build: iii sandbox build
+      run: iii sandbox run
+  vm-to-write:
+    worker: package://tool
+    version: 1.0.0
+    runtime:
+      base_image: docker.io/library/alpine:3.20
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+        let program = std::path::PathBuf::from("/cache/tool/tool");
+        let start = |key: &str| binary_start(key, &file.containers[key], program.clone());
+        assert!(matches!(
+            start("plain"),
+            Ok(StartSpec::Exec { ref program, ref args })
+                if program == std::path::Path::new("/cache/tool/tool") && args.is_empty()
+        ));
+        assert!(matches!(
+            start("wrapped"),
+            Ok(StartSpec::Shell(ref run)) if run == "./tool --port 3000"
+        ));
+        assert!(matches!(
+            start("in-vm"),
+            Ok(StartSpec::Shell(ref run)) if run == "iii sandbox run"
+        ));
+        let error = start("vm-to-write").unwrap_err();
+        assert!(matches!(error, ComposeError::VmScriptsNotWritten { .. }));
+        assert_eq!(error.code(), "VM_SCRIPTS_MISSING");
     }
 
     #[test]

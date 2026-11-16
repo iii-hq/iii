@@ -335,6 +335,8 @@ async fn assess(
         OtherKind,
         Changes(Vec<Change>),
     }
+    // Use the same parsed plan value passed to the build child, never its overridden env.
+    let base_image = container.base_image.clone();
     // Blocking: the dependency files are hashed, and a lock file can be large.
     let checked = tokio::task::spawn_blocking(move || -> Result<Recorded> {
         let Some(record) = record::read(&dir)? else {
@@ -343,7 +345,8 @@ async fn assess(
         if record.image.is_some() != vm {
             return Ok(Recorded::OtherKind);
         }
-        record::changes(&record, &file, &owned_key, &worker).map(Recorded::Changes)
+        record::changes(&record, &file, &owned_key, &worker, base_image.as_deref())
+            .map(Recorded::Changes)
     })
     .await;
     let changes = match checked {

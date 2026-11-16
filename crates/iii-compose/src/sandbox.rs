@@ -38,8 +38,8 @@ use crate::{
 };
 
 /// The adapter release range that implements contract major [`contract::CONTRACT_MAJOR`] with
-/// `worker.build` (spec 6.6), changed together with it.
-pub const ADAPTER_RANGE: &str = "^0.4";
+/// `worker.build`, `worker.binary` and `worker.prune` (spec 6.6, 6.7), changed together with it.
+pub const ADAPTER_RANGE: &str = "^0.5";
 
 /// The `scripts.run` that boots a container's VM.
 pub const SANDBOX_RUN: &str = "iii sandbox run";
@@ -67,6 +67,8 @@ pub fn is_sandbox_build(command: &str) -> bool {
 pub enum Need {
     /// A registry bundle container that runs in a VM, or that the migration will put in one.
     VmBundle(String),
+    /// A registry binary container that runs in a VM, or that the migration will put in one.
+    VmBinary(String),
     /// A `path://` container that runs in a VM, or that the migration will put in one.
     VmLocal(String),
     /// The file sets `engine.sandbox`, bound to its own namespace.
@@ -104,6 +106,7 @@ fn vm_needs(file: &ComposeFile) -> Vec<Need> {
         .iter()
         .filter(|(_, container)| runs_in_vm(container) || migration_due(file, container))
         .map(|(key, container)| match container.worker {
+            WorkerSource::Package { .. } if is_binary(container) => Need::VmBinary(key.clone()),
             WorkerSource::Package { .. } => Need::VmBundle(key.clone()),
             WorkerSource::Path { .. } => Need::VmLocal(key.clone()),
         })
@@ -132,30 +135,31 @@ pub(crate) fn is_bundle(container: &Container) -> bool {
 
 /// Whether `container` is a binary package. Only a lock-attached package is known to be one.
 fn is_binary(container: &Container) -> bool {
-    matches!(container.worker, WorkerSource::Package { .. })
-        && container
-            .resolved_package
-            .as_ref()
-            .is_some_and(|package| package.kind != "bundle")
+    crate::vm_binary::is_binary(container)
 }
 
-/// Whether `container` is a `path://` worker whose manifest sets `runtime.base_image`. A broken
-/// manifest is `validate_offline`'s to report.
+/// Whether `container` sets `runtime.base_image`, or is a `path://` worker whose manifest does.
+/// A broken manifest is `validate_offline`'s to report.
 fn has_base_image(container: &Container) -> bool {
-    container.worker_dir().is_some_and(|dir| {
-        read_manifest(dir)
-            .ok()
-            .flatten()
-            .is_some_and(|manifest| manifest.base_image.is_some())
-    })
+    container.base_image.is_some()
+        || container.worker_dir().is_some_and(|dir| {
+            read_manifest(dir)
+                .ok()
+                .flatten()
+                .is_some_and(|manifest| manifest.base_image.is_some())
+        })
 }
 
-/// Whether `container` is one that 0.26 ran in a VM and the file does not yet place anywhere
-/// (spec 7.3): a bundle without `scripts.run`, a `path://` with `runtime.base_image` and no
-/// `scripts.build`, or an `iii sandbox run` without `scripts.build` or the adapter in
-/// `start_after`. Keyed on `scripts` alone, so a rewritten container is never due again.
+/// Whether `container` runs in a VM and the file does not yet say how (spec 7.1, 7.3): a bundle
+/// without `scripts.run`; a container with `runtime.base_image`, its own or its `path://`
+/// manifest's, and no `scripts.build`, or its own and no `scripts.run`; or an
+/// `iii sandbox run` without `scripts.build` or the adapter in `start_after`. Keyed on
+/// `scripts` alone, so a rewritten container is never due again.
 pub(crate) fn migration_due(file: &ComposeFile, container: &Container) -> bool {
     if is_bundle(container) && container.scripts.run.is_none() {
+        return true;
+    }
+    if container.base_image.is_some() && container.scripts.run.is_none() {
         return true;
     }
     if container.scripts.build.is_none() && has_base_image(container) {
@@ -184,7 +188,7 @@ pub(crate) fn needed_by(needs: &[Need]) -> Vec<&str> {
     let keys: Vec<&str> = needs
         .iter()
         .filter_map(|need| match need {
-            Need::VmBundle(key) | Need::VmLocal(key) => Some(key.as_str()),
+            Need::VmBundle(key) | Need::VmBinary(key) | Need::VmLocal(key) => Some(key.as_str()),
             Need::Explicit => None,
         })
         .collect();
@@ -311,13 +315,12 @@ fn refuse_adapter_out_of_range(
 pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
     for (key, container) in &file.containers {
         let scripts = &container.scripts;
-        if is_binary(container) && (scripts.run.is_some() || scripts.build.is_some()) {
-            return Err(ComposeError::RunNotAllowedForPackage {
-                container: key.clone(),
-            });
-        }
+        // A binary's scripts run on the host like any other's; one in a VM needs its image.
+        crate::vm_binary::check(key, container)?;
         if !runs_in_vm(container) {
-            if scripts.build.as_deref().is_some_and(is_sandbox_build) {
+            if scripts.build.as_deref().is_some_and(is_sandbox_build)
+                && !(container.base_image.is_some() && scripts.run.is_none())
+            {
                 return Err(ComposeError::SandboxBuildWithoutRun {
                     container: key.clone(),
                 });
@@ -331,7 +334,7 @@ pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
         }
         let vm_worker = match container.worker {
             WorkerSource::Package { .. } => {
-                container.resolved_package.is_none() || is_bundle(container)
+                container.resolved_package.is_none() || is_bundle(container) || is_binary(container)
             }
             WorkerSource::Path { .. } => has_base_image(container),
         };
@@ -843,7 +846,7 @@ pub(crate) fn layer_adapter_env(
             .into_iter()
             .filter_map(|need| match need {
                 Need::VmLocal(vm) => file.containers[&vm].worker_dir(),
-                Need::VmBundle(_) | Need::Explicit => None,
+                Need::VmBundle(_) | Need::VmBinary(_) | Need::Explicit => None,
             })
             .collect();
         user_env.extend(adapter_env(token, &file.path, package_cache, &vm_dirs));
@@ -878,8 +881,25 @@ pub(crate) fn layer_package_env(
     let WorkerSource::Package { reference } = &container.worker else {
         return Ok(());
     };
-    if !is_bundle(container) && !runs_in_vm(container) {
+    // A package's scripts reach its directory: a host `scripts.run` of a binary runs the build
+    // copied there (spec 4.2, 7.5).
+    let scripts = &container.scripts;
+    let has_scripts = [
+        &scripts.build,
+        &scripts.pre_run,
+        &scripts.run,
+        &scripts.post_run,
+    ]
+    .into_iter()
+    .any(Option::is_some);
+    if !is_bundle(container) && !runs_in_vm(container) && !has_scripts {
         return Ok(());
+    }
+    if let Some(package) = &container.resolved_package {
+        user_env.insert(
+            sandbox_cli::PACKAGE_KIND_ENV.to_string(),
+            package.kind.clone(),
+        );
     }
     let name = match &container.resolved_package {
         Some(package) => package
@@ -909,9 +929,11 @@ fn host_only(name: &str) -> bool {
             || [
                 sandbox_cli::BUILD_DIR_ENV,
                 sandbox_cli::BUILD_TIMEOUT_ENV,
+                sandbox_cli::BUILD_BASE_IMAGE_ENV,
                 sandbox_cli::BUILD_COMPOSE_FILE_ENV,
                 sandbox_cli::PACKAGE_DIR_ENV,
                 sandbox_cli::PACKAGE_NAME_ENV,
+                sandbox_cli::PACKAGE_KIND_ENV,
             ]
             .contains(&name))
 }
@@ -1006,6 +1028,10 @@ pub(crate) fn layer_own_vm_env(
         (
             sandbox_cli::BUILD_DIR_ENV.to_string(),
             utf8_path(key, &crate::build_record::build_dir(compose_dir, key))?,
+        ),
+        (
+            sandbox_cli::BUILD_BASE_IMAGE_ENV.to_string(),
+            container.base_image.clone().unwrap_or_default(),
         ),
         (
             sandbox_cli::BUILD_TIMEOUT_ENV.to_string(),
@@ -1172,11 +1198,57 @@ fn reconnect_line(container: &str, function: &str, wait: Duration) -> String {
 /// adapter is still aborting refuses it too (S509): the caller stops the build first, and the
 /// destroy is asked again for [`BUILD_ABORT_GRACE`]. A failure only leaves the state behind, and
 /// says where.
-pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str, namespace: &str) {
+pub(crate) async fn destroy_vm(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    adapter: &str,
+    namespace: &str,
+    prune: bool,
+) {
     let state_key = state_key(ctx.state_dir, key);
+    let vm_id = vm_id(&state_key);
+    // An adapter without `worker.prune` ignores `prune: false` and deletes everything: a destroy
+    // that keeps the data asks it first, and leaves the VM alone rather than delete it (spec 7.2).
+    if !prune {
+        let info = start_call::<contract::AdapterInfo>(
+            ctx.engine,
+            key,
+            adapter,
+            namespace,
+            contract::ADAPTER_INFO_SUFFIX,
+            &contract::AdapterInfoRequest {},
+            DESTROY_TIMEOUT,
+            true,
+        )
+        .await;
+        let unsupported = match info {
+            Ok(info) if info.supports(contract::FEATURE_PRUNE) => None,
+            Ok(info) => Some(format!(
+                "{adapter} {} cannot keep its data (no {})",
+                info.adapter_version,
+                contract::FEATURE_PRUNE
+            )),
+            Err(error) => Some(format!(
+                "{adapter} did not say whether it keeps a VM's data: {}",
+                spawn_failed_message(&error)
+            )),
+        };
+        if let Some(reason) = unsupported {
+            crate::report::daemon_line(
+                &format!(
+                    "{key}: kept VM {vm_id}: {reason}; its state stays in \
+                     ~/.iii/sandbox/workers/{vm_id}, and a container added again as {key} boots \
+                     with it"
+                ),
+                true,
+            );
+            return;
+        }
+    }
     let request = WorkerDestroyRequest {
         auth: ctx.sandbox_token.to_string(),
         state_key: state_key.clone(),
+        prune,
     };
     // Registering: an adapter started for this call may not list it yet.
     let destroy = || {
@@ -1216,19 +1288,50 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
         }
         destroyed = destroy().await;
     }
-    if let Err(error) = destroyed {
-        let error = ComposeError::EngineCallFailed {
-            function: adapter_function_id(adapter, WORKER_DESTROY),
-            message: spawn_failed_message(&error),
-        };
-        let vm_id = vm_id(&state_key);
-        crate::report::daemon_line(
-            &format!(
-                "{key}: could not destroy VM {vm_id} through {adapter}: {error}; its state \
-                 stays in ~/.iii/sandbox/workers/{vm_id}"
-            ),
-            true,
-        );
+    match destroyed {
+        Ok(reply) => {
+            if let Some(mut line) = destroyed_line(&state_key, prune, &reply) {
+                // The data belongs to the container key (spec 8.2).
+                if !prune && !reply.kept.is_empty() {
+                    line.push_str(&format!("; a container added again as {key} boots with it"));
+                }
+                crate::report::daemon_line(&format!("{key}: {line}"), false);
+            }
+        }
+        Err(error) => {
+            let error = ComposeError::EngineCallFailed {
+                function: adapter_function_id(adapter, WORKER_DESTROY),
+                message: spawn_failed_message(&error),
+            };
+            crate::report::daemon_line(
+                &format!(
+                    "{key}: could not destroy VM {vm_id} through {adapter}: {error}; its state \
+                     stays in ~/.iii/sandbox/workers/{vm_id}"
+                ),
+                true,
+            );
+        }
+    }
+}
+
+/// What a destroy of the VM of `state_key` did, as `iii sandbox destroy` and `compose::remove`
+/// say it (spec 8.2): `None` when there was nothing to remove and nothing stayed.
+pub(crate) fn destroyed_line(
+    state_key: &str,
+    prune: bool,
+    reply: &WorkerDestroyResponse,
+) -> Option<String> {
+    let kept = reply.kept.join(", ");
+    match (reply.destroyed, prune, kept.is_empty()) {
+        (true, true, _) => Some(format!("removed the VM state and data of {state_key}")),
+        (true, false, false) => Some(format!(
+            "removed the VM state of {state_key}; kept its data in {kept}"
+        )),
+        (true, false, true) => Some(format!("removed the VM state of {state_key}")),
+        (false, _, false) => Some(format!(
+            "no VM state for {state_key}; its data stays in {kept}"
+        )),
+        (false, _, true) => None,
     }
 }
 
@@ -1671,7 +1774,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.4.0 for this
+    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.5.0 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1684,7 +1787,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "graph": [{
                     "name": "sandbox-libkrun",
-                    "version": "0.4.0",
+                    "version": "0.5.0",
                     "type": "binary",
                     "binaries": { (crate::registry::host_targets()[0]): {
                         "sha256": hex::encode(Sha256::digest(archive)),
@@ -1774,9 +1877,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// `text` with a generated `sandbox-libkrun` 0.4.0 appended.
+    /// `text` with a generated `sandbox-libkrun` 0.5.0 appended.
     fn with_generated_adapter(text: &str) -> String {
-        let request = edit::parse_worker("sandbox-libkrun@0.4.0").unwrap();
+        let request = edit::parse_worker("sandbox-libkrun@0.5.0").unwrap();
         let edit::Outcome::Added(text) = edit::upsert_container(text, &request).unwrap() else {
             panic!("the adapter is new");
         };
@@ -1794,13 +1897,13 @@ pub(crate) mod tests {
             request.source,
             edit::Source::Package {
                 reference: "api.workers.iii.dev/sandbox-libkrun".into(),
-                version: Some("0.4.0".into())
+                version: Some("0.5.0".into())
             }
         );
         let asked: serde_json::Value =
             serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
         assert_eq!(asked["version"], ADAPTER_RANGE);
-        assert_eq!(ADAPTER_RANGE, "^0.4");
+        assert_eq!(ADAPTER_RANGE, "^0.5");
         let edit::Outcome::Added(text) =
             edit::upsert_container("containers: {}\n", &request).unwrap()
         else {
@@ -1861,7 +1964,7 @@ pub(crate) mod tests {
             "{change:?}"
         );
         assert_eq!(prepared.resolved_version("tour"), Some("1.0.0"));
-        assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.4.0"));
+        assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.5.0"));
         let asked: Vec<String> = server
             .received_requests()
             .await
@@ -1977,7 +2080,7 @@ pub(crate) mod tests {
                     .unwrap();
                     assert_eq!(asked, 1, "the pass did not resolve the adapter alongside");
                     assert_eq!(adapter_requests(&server).await, 1);
-                    assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.4.0"));
+                    assert_eq!(prepared.resolved_version("sandbox-libkrun"), Some("0.5.0"));
                 }),
             )
             .await;
@@ -2588,6 +2691,7 @@ pub(crate) mod tests {
                 &mut records,
                 "vm",
                 "rm".into(),
+                true,
             )
             .await;
             assert_eq!(removed.status, crate::lifecycle::OpStatus::Ok);
@@ -2693,7 +2797,7 @@ pub(crate) mod tests {
                 legacy_vms: &Default::default(),
             };
 
-            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop").await;
+            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop", true).await;
 
             let mut calls = Vec::new();
             while let Ok((function, payload)) = called.try_recv() {
@@ -3018,12 +3122,12 @@ pub(crate) mod tests {
             migration.adapter,
             Some(AdapterChange::Upsert(ref request)) if request.key == "sandbox-libkrun"
         ));
-        assert_eq!(lock.resolved_version("sandbox-libkrun"), Some("0.4.0"));
+        assert_eq!(lock.resolved_version("sandbox-libkrun"), Some("0.5.0"));
         assert_eq!(
             file.containers["sandbox-libkrun"].version.as_deref(),
-            Some("0.4.0")
+            Some("0.5.0")
         );
-        assert!(edited.contains("version: \"0.4.0\""), "{edited}");
+        assert!(edited.contains("version: \"0.5.0\""), "{edited}");
         assert!(edit::is_generated_container(&edited, "sandbox-libkrun").unwrap());
         assert_eq!(file.containers["link"].start_after, ["sandbox-libkrun"]);
 
@@ -3115,7 +3219,7 @@ pub(crate) mod tests {
         );
         let current = parse(
             dir.path(),
-            &format!("{explicit}  sb: {{worker: package://sandbox-libkrun, version: 0.4.0}}\n"),
+            &format!("{explicit}  sb: {{worker: package://sandbox-libkrun, version: 0.5.0}}\n"),
         );
         require_declared_adapter(&current, "default").unwrap();
     }
@@ -3138,7 +3242,7 @@ pub(crate) mod tests {
             validate_scripts(&file).err().map(|error| error.code())
         };
         let vm = "start_after: [sb], scripts: {build: iii sandbox build, run: iii sandbox run}";
-        let sb = "  sb: {worker: package://sandbox-libkrun, version: 0.4.0}\n";
+        let sb = "  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n";
         // A container that runs `iii sandbox run`, and is not a binary package.
         let in_vm = |code: Option<&'static str>| {
             if cfg!(windows) {
@@ -3157,13 +3261,21 @@ pub(crate) mod tests {
                 format!("{sb}  host: {{worker: path://./host, {vm}}}\n"),
                 in_vm(Some("SANDBOX_RUN_NOT_A_VM_WORKER")),
             ),
+            // A binary in a VM names its image; on the host its scripts are its own (spec 4.2).
             (
                 format!("{sb}  bin: {{worker: package://bin, version: 1.0.0, {vm}}}\n"),
-                Some("RUN_NOT_ALLOWED_FOR_PACKAGE"),
+                Some("SANDBOX_BINARY_WITHOUT_BASE_IMAGE"),
             ),
             (
-                "  bin: {worker: package://bin, version: 1.0.0, scripts: {build: make}}\n".into(),
-                Some("RUN_NOT_ALLOWED_FOR_PACKAGE"),
+                format!(
+                    "{sb}  bin: {{worker: package://bin, version: 1.0.0, runtime: {{base_image: alpine}}, {vm}}}\n"
+                ),
+                in_vm(None),
+            ),
+            (
+                "  bin: {worker: package://bin, version: 1.0.0, scripts: {build: make, run: ./bin --serve}}\n"
+                    .into(),
+                None,
             ),
             (
                 "  vm: {worker: path://./vm, scripts: {build: iii sandbox build, run: node .}}\n"
@@ -3237,7 +3349,7 @@ pub(crate) mod tests {
                 legacy_vms: &Default::default(),
             };
             let began = tokio::time::Instant::now();
-            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop").await;
+            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop", true).await;
             let calls: Vec<String> = drain(&mut called)
                 .into_iter()
                 .map(|(call, _)| call)
@@ -3259,6 +3371,175 @@ pub(crate) mod tests {
         serde_json::json!({ "destroyed": true })
     }
 
+    /// `worker::destroy` carries `prune` only when asked, and a destroy that keeps the data asks
+    /// the adapter for `worker.prune` first: without it nothing is destroyed, since the adapter
+    /// would ignore `prune: false` and delete everything (spec 7.2, 8.2).
+    #[tokio::test]
+    async fn a_destroy_keeps_the_data_only_on_an_adapter_with_worker_prune() {
+        type Expected = &'static [(&'static str, Option<bool>)];
+        let cases: [(&[&str], bool, Expected); 4] = [
+            (
+                &[contract::FEATURE_PRUNE],
+                false,
+                &[("adapter::info", None), ("worker::destroy", None)],
+            ),
+            (
+                &[contract::FEATURE_PRUNE],
+                true,
+                &[("worker::destroy", Some(true))],
+            ),
+            (&[], true, &[("worker::destroy", Some(true))]),
+            (&[], false, &[("adapter::info", None)]),
+        ];
+        for (features, prune, expected) in cases {
+            let advertised: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+            let (url, mut called) = fake_engine_url(move |function, _| match function {
+                "sandbox-libkrun::adapter::info" => answered(contract::AdapterInfo {
+                    adapter: "sandbox-libkrun".into(),
+                    adapter_version: "0.5.0".into(),
+                    contract: contract::ContractVersion::CURRENT,
+                    features: advertised.clone(),
+                }),
+                "sandbox-libkrun::worker::destroy" => answered(serde_json::json!({
+                    "destroyed": true,
+                    "kept": ["/home/me/.iii/sandbox/workers/v/upper.ext4"]
+                })),
+                _ => not_found(),
+            })
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            manifest(dir.path(), "vm", VM_MANIFEST);
+            let file = parse(
+                dir.path(),
+                "containers:\n  vm: {worker: path://./vm, scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
+            );
+            let engine = EngineClient::connect(&url, "t", "shop");
+            while !engine.is_connected() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let (shutdown, post_runs, diagnostics) = Default::default();
+            let logs = crate::logs::LogStore::open(dir.path().join("logs")).unwrap();
+            let ctx = LifecycleCtx {
+                shutdown: &shutdown,
+                file: &file,
+                engine: &engine,
+                post_runs: &post_runs,
+                compose_namespace: "t",
+                project_namespace: "shop",
+                engine_url: &url,
+                package_cache: dir.path(),
+                logs: &logs,
+                state_dir: dir.path(),
+                sandbox_token: "t",
+                empty_env_diagnostics: &diagnostics,
+                legacy_vms: &Default::default(),
+            };
+            destroy_vm(&ctx, "vm", "sandbox-libkrun", "shop", prune).await;
+            let mut calls = Vec::new();
+            while let Ok((function, payload)) = called.try_recv() {
+                let suffix = function.trim_start_matches("sandbox-libkrun::").to_string();
+                calls.push((
+                    suffix,
+                    payload.get("prune").and_then(serde_json::Value::as_bool),
+                ));
+            }
+            let expected: Vec<(String, Option<bool>)> = expected
+                .iter()
+                .map(|(call, prune)| (call.to_string(), *prune))
+                .collect();
+            assert_eq!(calls, expected, "prune {prune}, features {features:?}");
+        }
+    }
+
+    #[test]
+    fn a_destroy_says_where_the_data_stayed() {
+        let reply = |destroyed: bool, kept: &[&str]| WorkerDestroyResponse {
+            destroyed,
+            kept: kept.iter().map(|path| path.to_string()).collect(),
+        };
+        let disk = "/home/me/.iii/sandbox/workers/v/upper.ext4";
+        assert_eq!(
+            destroyed_line("9f2c1e", false, &reply(true, &[disk])).as_deref(),
+            Some(format!("removed the VM state of 9f2c1e; kept its data in {disk}").as_str())
+        );
+        assert_eq!(
+            destroyed_line("9f2c1e", true, &reply(true, &[])).as_deref(),
+            Some("removed the VM state and data of 9f2c1e")
+        );
+        assert_eq!(
+            destroyed_line("9f2c1e", false, &reply(true, &[])).as_deref(),
+            Some("removed the VM state of 9f2c1e")
+        );
+        assert_eq!(
+            destroyed_line("9f2c1e", false, &reply(false, &[disk])).as_deref(),
+            Some(format!("no VM state for 9f2c1e; its data stays in {disk}").as_str())
+        );
+        assert_eq!(destroyed_line("9f2c1e", false, &reply(false, &[])), None);
+    }
+
+    /// A container with its own `runtime.base_image` and no `scripts.run` gets the explicit VM
+    /// mode written, a binary package among them, and a binary in a VM is a need of its own.
+    #[test]
+    fn a_base_image_without_scripts_is_due_and_a_vm_binary_is_its_own_need() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "host", "scripts: {start: run}\n");
+        let mut file = parse(
+            dir.path(),
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n  \
+             bin: {worker: package://bin, version: 1.0.0, runtime: {base_image: alpine}}\n  \
+             host: {worker: path://./host, runtime: {base_image: alpine}}\n  \
+             plain: {worker: package://plain, version: 1.0.0, scripts: {run: ./plain}}\n  \
+             done: {worker: package://done, version: 1.0.0, start_after: [sb], runtime: \
+             {base_image: alpine}, scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
+        );
+        for key in ["bin", "plain", "done"] {
+            file.containers.get_mut(key).unwrap().resolved_package =
+                Some(package(&format!("name: {key}, type: binary")));
+        }
+        assert_eq!(due_migrations(&file), ["bin", "host"]);
+        assert_eq!(
+            needs(&file, "default"),
+            vec![
+                Need::VmBinary("bin".into()),
+                Need::VmLocal("host".into()),
+                Need::VmBinary("done".into())
+            ]
+        );
+        if cfg!(unix) {
+            validate_scripts(&file).unwrap();
+        }
+    }
+
+    /// Every package container with scripts reaches its package directory, a binary's host
+    /// `scripts.run` included, and learns its package's kind; one without scripts on the host
+    /// gets none of it (spec 4.2, 7.5).
+    #[test]
+    fn a_package_with_scripts_gets_its_directory_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = parse(
+            dir.path(),
+            "containers:\n  wrapped: {worker: package://tool, version: 1.0.0, scripts: {run: ./tool --serve}}\n  \
+             plain: {worker: package://tool, version: 1.0.0}\n",
+        );
+        for key in ["wrapped", "plain"] {
+            file.containers.get_mut(key).unwrap().resolved_package =
+                Some(package("name: tool, type: binary"));
+        }
+        let mut env = BTreeMap::new();
+        layer_package_env(&file, "wrapped", &mut env).unwrap();
+        assert_eq!(env[sandbox_cli::PACKAGE_KIND_ENV], "binary");
+        assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "tool");
+        assert!(
+            Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV])
+                .ends_with(Path::new(".iii").join("workers").join("wrapped")),
+            "{env:?}"
+        );
+        let mut env = BTreeMap::new();
+        layer_package_env(&file, "plain", &mut env).unwrap();
+        assert!(env.is_empty(), "{env:?}");
+        assert!(host_only(sandbox_cli::PACKAGE_KIND_ENV));
+    }
+
     /// Spec 8.3 and 9.4: the guest gets the container's own variables, its user's own
     /// `III_SANDBOX_*` included, and the reserved contract, never the inputs of the commands.
     #[test]
@@ -3267,7 +3548,7 @@ pub(crate) mod tests {
         manifest(dir.path(), "api", VM_MANIFEST);
         let mut file = parse(
             dir.path(),
-            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.4.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    environment: {API_KEY: k, III_SANDBOX_MINE: mine}\n    scripts: {build: iii sandbox build, build_timeout: 90s, run: iii sandbox run}\n  app: {worker: package://app, version: 1.0.0, start_after: [sb], scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    environment: {API_KEY: k, III_SANDBOX_MINE: mine}\n    scripts: {build: iii sandbox build, build_timeout: 90s, run: iii sandbox run}\n  app: {worker: package://app, version: 1.0.0, start_after: [sb], scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
         );
         file.containers["app"].resolved_package = Some(package("name: app, type: bundle"));
         let compose_file = crate::spawn::canonical_compose_file(&file.path);

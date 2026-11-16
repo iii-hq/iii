@@ -240,7 +240,7 @@ fn cli_usage_command_path(cli: &Cli) -> String {
         Some(Commands::Sandbox(args)) => match &args.command {
             iii_compose::sandbox_cli::SandboxCommand::Build(_) => "sandbox build".to_string(),
             iii_compose::sandbox_cli::SandboxCommand::Run(_) => "sandbox run".to_string(),
-            iii_compose::sandbox_cli::SandboxCommand::Destroy => "sandbox destroy".to_string(),
+            iii_compose::sandbox_cli::SandboxCommand::Destroy(_) => "sandbox destroy".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),

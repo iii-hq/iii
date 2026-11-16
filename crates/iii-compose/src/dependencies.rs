@@ -11,7 +11,7 @@ use crate::{
     ComposeFile, WorkerSource,
     edit::{NewContainer, Source},
     error::{ComposeError, Result},
-    registry::{self, Node},
+    registry::{self, Node, Platform},
 };
 
 type Identity = (String, String);
@@ -22,6 +22,8 @@ struct Package {
     node: Node,
     /// A fresh resolution of a range cannot identify an already running version.
     exact_version: bool,
+    /// The platform of the build the container installs: a binary in a VM runs its Linux build.
+    platform: Platform,
 }
 
 impl Package {
@@ -31,6 +33,20 @@ impl Package {
             self.node.canonical_name().to_string(),
         )
     }
+
+    /// Whether `other` is the same release, compared on the builds both containers install.
+    fn same_release(&self, other: &Package) -> bool {
+        self.node
+            .same_release_on(&other.node, &[self.platform, other.platform])
+    }
+}
+
+/// The platform of the effective upsert: expand supplied fields as Compose does, preserving
+/// omitted fields from the already-expanded container. Raw request fields remain for persistence.
+#[cfg(test)]
+fn declaration_platform(declaration: &NewContainer, file: &ComposeFile) -> Result<Platform> {
+    crate::config::effective_container(file, declaration)
+        .map(|container| crate::vm_binary::platform(&container))
 }
 
 struct Candidate {
@@ -114,7 +130,7 @@ impl UpdateScope {
             reference: reference.clone(),
             version: selector.clone(),
         };
-        let unchanged = current.node.same_release(&resolved.node);
+        let unchanged = current.same_release(resolved);
         let selector = selector_text;
         if exact {
             if unchanged {
@@ -186,11 +202,11 @@ pub(crate) async fn plan(
         file,
         asked,
         policy,
-        |key, reference, range| async move {
-            registry::resolve_graph(&key, &reference, &range).await
+        |key, reference, range, platform| async move {
+            registry::resolve_graph_on(&key, &reference, &range, platform).await
         },
-        |key, reference, range| async move {
-            registry::resolve_node(&key, &reference, &range).await
+        |key, reference, range, platform| async move {
+            registry::resolve_node_on(&key, &reference, &range, platform).await
         },
     )
     .await
@@ -198,7 +214,8 @@ pub(crate) async fn plan(
 
 /// [`plan`] with injectable registry lookups, so the planning rules can be
 /// exercised without a registry. Both lookups take `(container, reference,
-/// range)`.
+/// range, platform)`: the platform of the build the container installs, so a binary in a VM
+/// resolves for its Linux build.
 pub(crate) async fn plan_with<G, GFut, N, NFut>(
     file: &ComposeFile,
     asked: &[NewContainer],
@@ -207,11 +224,20 @@ pub(crate) async fn plan_with<G, GFut, N, NFut>(
     resolve_node: N,
 ) -> Result<Plan>
 where
-    G: Fn(String, String, String) -> GFut,
+    G: Fn(String, String, String, Platform) -> GFut,
     GFut: std::future::Future<Output = Result<registry::Graph>>,
-    N: Fn(String, String, String) -> NFut,
+    N: Fn(String, String, String, Platform) -> NFut,
     NFut: std::future::Future<Output = Result<Node>>,
 {
+    // Validate/expand all roots before any registry request, not lazily beside concurrent
+    // lookups: an undefined reference must fail without contacting the registry at all.
+    let effective: BTreeMap<_, _> = asked
+        .iter()
+        .map(|request| {
+            crate::config::effective_container(file, request)
+                .map(|container| (request.key.clone(), container))
+        })
+        .collect::<Result<_>>()?;
     let paths: BTreeSet<String> = file
         .containers
         .iter()
@@ -226,20 +252,26 @@ where
         .collect();
     let resolve_graph = &resolve_graph;
     let resolve_node = &resolve_node;
+    let effective = &effective;
     let expansions = futures::stream::iter(asked.iter().cloned().map(|worker| {
         let paths = paths.clone();
         async move {
-            let Source::Package { reference, version } = &worker.source else {
+            let Source::Package { .. } = &worker.source else {
                 return Ok(vec![Candidate {
                     declaration: worker.clone(),
                     package: None,
                     root: true,
                 }]);
             };
+            let planned = &effective[&worker.key];
+            let WorkerSource::Package { reference } = &planned.worker else {
+                unreachable!("effective package declaration changed kind");
+            };
             let graph = resolve_graph(
                 worker.key.clone(),
                 reference.clone(),
-                version.clone().unwrap_or_else(|| "*".to_string()),
+                planned.version.clone().unwrap_or_else(|| "*".to_string()),
+                crate::vm_binary::platform(planned),
             )
             .await?;
             let nodes: BTreeMap<_, _> = graph
@@ -274,12 +306,26 @@ where
                     if root {
                         declaration.key = worker.key.clone();
                     }
+                    // The root's own fields were set aside for the expansion.
+                    let platform = if root {
+                        crate::vm_binary::platform(planned)
+                    } else if let Some(container) = effective.get(&declaration.key) {
+                        crate::vm_binary::platform(container)
+                    } else {
+                        // Generated graph nodes have no supplied scripts/runtime fields and
+                        // their source is already effective. Only inherit the existing
+                        // container's parsed platform; do not interpolate that source again.
+                        file.containers
+                            .get(&declaration.key)
+                            .map_or(Platform::Host, crate::vm_binary::platform)
+                    };
                     Ok(Candidate {
                         declaration,
                         package: Some(Package {
                             registry: registry.clone(),
                             node,
                             exact_version: true,
+                            platform,
                         }),
                         root,
                     })
@@ -322,15 +368,16 @@ where
                 container.version.clone().unwrap_or_else(|| "*".into()),
                 registry,
                 container.resolved_package.clone(),
+                crate::vm_binary::platform(container),
             ))
         })
         .collect();
     let existing = futures::stream::iter(existing_requests.into_iter().map(
-        |(key, reference, range, registry, locked)| async move {
+        |(key, reference, range, registry, locked, platform)| async move {
             let exact_version = locked.is_some();
             let node = match locked {
                 Some(locked) => Node::from(&locked),
-                None => resolve_node(key.clone(), reference, range.clone()).await?,
+                None => resolve_node(key.clone(), reference, range.clone(), platform).await?,
             };
             let exact_version = exact_version || range == node.version;
             Ok((
@@ -339,6 +386,7 @@ where
                     registry,
                     node,
                     exact_version,
+                    platform,
                 },
             ))
         },
@@ -461,9 +509,7 @@ fn plan_resolved(
         // The named declaration wins, so the copy must be the same package
         // at the same release; it only contributes its edges.
         match roots.get(key) {
-            Some(root)
-                if root.identity() == package.identity()
-                    && root.node.same_release(&package.node) => {}
+            Some(root) if root.identity() == package.identity() && root.same_release(package) => {}
             Some(root) if root.identity() == package.identity() => {
                 let versions = if root.node.version == package.node.version {
                     String::new()
@@ -488,11 +534,9 @@ fn plan_resolved(
 
     let mut selected = BTreeMap::new();
     for (identity, packages) in &automatic {
-        let release = &packages[0].node;
-        if packages
-            .iter()
-            .any(|package| !release.same_release(&package.node))
-        {
+        let first = packages[0];
+        let release = &first.node;
+        if packages.iter().any(|package| !first.same_release(package)) {
             return Err(conflict(
                 &identity.1,
                 &format!(
@@ -524,7 +568,7 @@ fn plan_resolved(
         let compatible: Vec<&str> = choices
             .into_iter()
             .flat_map(|choices| choices.iter())
-            .filter(|(_, package)| package.exact_version && release.same_release(&package.node))
+            .filter(|(_, package)| package.exact_version && first.same_release(package))
             .map(|(key, _)| *key)
             .collect();
         // An update moves a declared dependency to the release its graph
@@ -686,6 +730,22 @@ fn plan_resolved(
             )?;
         }
         if let Some(explicit) = explicit {
+            // Package identity, release comparisons and edge retargeting above use Package,
+            // whose registry/reference is effective. From here this is edit output: restore
+            // the operator's raw reference, not the expanded one expand_graph needed. Keep an
+            // explicit selector verbatim; an unpinned request takes the resolved exact version.
+            declaration.source = match (&explicit.source, &declaration.source) {
+                (
+                    Source::Package { reference, version },
+                    Source::Package {
+                        version: resolved, ..
+                    },
+                ) => Source::Package {
+                    reference: reference.clone(),
+                    version: version.clone().or_else(|| resolved.clone()),
+                },
+                _ => explicit.source.clone(),
+            };
             declaration.fields = explicit.fields.clone();
             declaration
                 .start_after
@@ -767,6 +827,7 @@ mod tests {
             package: Some(Package {
                 registry: registry::DEFAULT_REGISTRY.into(),
                 exact_version: true,
+                platform: Platform::Host,
                 node: Node {
                     name: name.into(),
                     alias_of: alias_of.map(str::to_string),
@@ -989,6 +1050,347 @@ mod tests {
             error
                 .to_string()
                 .contains("conflicts with the declared instances")
+        );
+    }
+
+    /// A declared binary that runs in a VM is compared on its Linux build: the same host build
+    /// with another Linux build is another release for it, and the same one for a host binary.
+    #[test]
+    fn a_binary_in_a_vm_is_compared_on_its_vm_build() {
+        let plan = |platform: Platform| {
+            let a = root("api", None, &["console"]);
+            let asked = vec![request(&a)];
+            let mut console = candidate("console", Some("shell"), &[]);
+            console.package.as_mut().unwrap().node.vm_artifact_digest = Some("c".repeat(64));
+            let mut package = candidate("shell", None, &[]).package.unwrap();
+            package.node.vm_artifact_digest = Some("d".repeat(64));
+            package.platform = platform;
+            let existing = BTreeMap::from([("shell".into(), package)]);
+            plan_resolved(
+                &asked,
+                vec![console, a],
+                &existing,
+                &existing.keys().cloned().collect(),
+                None,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        };
+        assert_eq!(plan(Platform::Host), Ok(()));
+        let error = plan(Platform::Vm).unwrap_err();
+        assert!(
+            error.contains("conflicts with the declared instances"),
+            "{error}"
+        );
+    }
+
+    /// Exercise the complete HTTP resolve -> identity/alias planning -> text upsert -> parse
+    /// path in a subprocess, without changing the parallel runner's environment.
+    #[test]
+    fn explicit_registry_references_remain_raw_after_resolution_and_upsert() {
+        const TEST: &str = "dependencies::tests::explicit_registry_references_remain_raw_after_resolution_and_upsert";
+        if std::env::var_os("KAN292_RAW_REFERENCE_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KAN292_RAW_REFERENCE_TEST", "1")
+                .env("KAN292_REGISTRY", "registry.example.test")
+                .env("KAN292_LITERAL", "must-not-be-expanded-twice")
+                .env("VM_RUN", "iii sandbox run")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let initial = "containers:\n  local: {worker: path://.}\n";
+            let file = ComposeFile::parse(initial, &path).unwrap();
+            for escaped in [false, true] {
+                for selector in [Some("next"), Some("^1.0"), None] {
+                    for copied_as_dependency in [false, true] {
+                        for reverse in [false, true] {
+                            let raw_reference = if escaped {
+                                "${KAN292_REGISTRY}/$${KAN292_LITERAL}/tool"
+                            } else {
+                                "${KAN292_REGISTRY}/tool"
+                            };
+                            let effective_reference = if escaped {
+                                "registry.example.test/${KAN292_LITERAL}/tool"
+                            } else {
+                                "registry.example.test/tool"
+                            };
+                            let wanted_worker = if escaped { "${KAN292_LITERAL}/tool" } else { "tool" };
+                            let request = |reference: &str, selector: Option<&str>| {
+                                let worker = match selector {
+                                    Some(selector) => format!("package://{reference}@{selector}"),
+                                    None => format!("package://{reference}"),
+                                };
+                                serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
+                                    "worker": worker,
+                                    "runtime": {"base_image": "alpine:3.20"},
+                                    "scripts": {"build": "iii sandbox build", "run": "${VM_RUN}"}
+                                })).unwrap().parse().unwrap()
+                            };
+                            let mut asked = vec![request(raw_reference, selector)];
+                            if copied_as_dependency {
+                                asked.push(request("${KAN292_REGISTRY}/app", Some("1.2.3")));
+                            }
+                            if reverse { asked.reverse(); }
+                            let server = MockServer::start().await;
+                            let binary = |name: &str, alias: Option<&str>| serde_json::json!({
+                                "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
+                                "binaries": {(registry::vm_targets()[0]): {
+                                    "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
+                                }}
+                            });
+                            let tool_graph = serde_json::json!({
+                                "graph": [binary("tool", None), binary("queue", None)],
+                                "edges": [{"from":"tool", "to":"queue"}]
+                            });
+                            Mock::given(matchers::method("POST"))
+                                .and(matchers::path("/resolve"))
+                                .and(matchers::body_partial_json(serde_json::json!({
+                                    "worker":wanted_worker, "version": selector.unwrap_or("*"),
+                                    "target":registry::vm_targets()[0]
+                                })))
+                                .respond_with(ResponseTemplate::new(200).set_body_json(tool_graph))
+                                .expect(1).mount(&server).await;
+                            if copied_as_dependency {
+                                Mock::given(matchers::method("POST"))
+                                    .and(matchers::path("/resolve"))
+                                    .and(matchers::body_partial_json(serde_json::json!({
+                                        "worker":"app", "version":"1.2.3", "target":registry::vm_targets()[0]
+                                    })))
+                                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                                        "graph": [binary("app", None), binary("tool", None),
+                                            binary("queue", None), binary("console", Some("shell")), binary("shell", None)],
+                                        "edges": [{"from":"app", "to":"tool"}, {"from":"app", "to":"console"},
+                                            {"from":"app", "to":"shell"}, {"from":"tool", "to":"queue"}]
+                                    })))
+                                    .expect(1).mount(&server).await;
+                            }
+                            let planned = registry::TEST_REGISTRY.scope(server.uri(), async {
+                                plan_with(&file, &asked, &Policy::Add,
+                                    |key, reference, range, platform| async move {
+                                        assert_eq!(platform, Platform::Vm);
+                                        assert_eq!(registry::split_reference(&reference).0, "https://registry.example.test");
+                                        assert_eq!(reference, if key == "tool" { effective_reference }
+                                            else { "registry.example.test/app" });
+                                        // Identity uses the effective registry; the task-local override
+                                        // routes this exact resolve request to the local HTTP endpoint.
+                                        let mut graph = registry::resolve_graph_on(&key, &reference, &range, platform).await?;
+                                        for node in &mut graph.nodes {
+                                            if node.name == "tool" {
+                                                // Host digests differ but the VM build is identical:
+                                                // matching the explicit root to its dependency copy
+                                                // only succeeds if both Package.platform values are Vm.
+                                                node.artifact_digest = Some(if key == "tool" { "b" } else { "c" }.repeat(64));
+                                            }
+                                        }
+                                        Ok(graph)
+                                    },
+                                    |_, _, _, _| async { panic!("no existing package lookups") },
+                                ).await.unwrap()
+                            }).await;
+                            server.verify().await;
+                            let root = container(&planned, "tool");
+                            assert_eq!(root.source, Source::Package {
+                                reference: raw_reference.into(),
+                                version: Some(selector.unwrap_or("1.2.3").into()),
+                            });
+                            assert_eq!(root.fields["scripts"]["run"].as_str(), Some("${VM_RUN}"));
+                            assert_eq!(planned.selected_versions["tool"], "1.2.3");
+                            assert_eq!(root.start_after, ["queue"]);
+                            assert_eq!(container(&planned, "queue").source, Source::Package {
+                                reference: "registry.example.test/queue".into(), version: Some("1.2.3".into())
+                            });
+                            if copied_as_dependency {
+                                assert_eq!(container(&planned, "app").start_after, ["shell", "tool"]);
+                                assert_eq!(planned.containers.iter().filter(|c| c.key == "tool").count(), 1);
+                                assert_eq!(container(&planned, "shell").source, Source::Package {
+                                    reference:"registry.example.test/shell".into(), version:Some("1.2.3".into())
+                                });
+                                assert!(planned.containers.iter().all(|c| c.key != "console"));
+                                assert!(planned.aliases.iter().any(|alias| alias.canonical == "shell"));
+                            }
+                            let mut text = initial.to_string();
+                            for declaration in &planned.containers {
+                                text = match crate::edit::upsert_container(&text, declaration).unwrap() {
+                                    crate::edit::Outcome::Added(text) | crate::edit::Outcome::Replaced {text, ..} => text,
+                                    crate::edit::Outcome::Unchanged => text,
+                                };
+                            }
+                            assert!(text.contains(&format!("package://{raw_reference}")), "{text}");
+                            assert!(text.contains("${VM_RUN}"), "{text}");
+                            let parsed = ComposeFile::parse(&text, &path).unwrap();
+                            assert_eq!(parsed.containers["tool"].worker, WorkerSource::Package {
+                                reference: effective_reference.into()
+                            });
+                            assert_eq!(parsed.containers["tool"].version.as_deref(), Some(selector.unwrap_or("1.2.3")));
+                            assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii sandbox run"));
+                            assert_eq!(crate::vm_binary::platform(&parsed.containers["tool"]), Platform::Vm);
+                            // A repeated upsert preserves the raw spelling and is a no-op.
+                            assert_eq!(crate::edit::upsert_container(&text, root).unwrap(), crate::edit::Outcome::Unchanged);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn interpolated_upserts_are_planned_before_any_registry_request() {
+        const TEST: &str =
+            "dependencies::tests::interpolated_upserts_are_planned_before_any_registry_request";
+        if std::env::var_os("KAN292_PLATFORM_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KAN292_PLATFORM_TEST", "1")
+                .env("VM_RUN", "iii sandbox run")
+                .env_remove("KAN292_UNDEFINED_RUN")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let file = ComposeFile::parse("containers:\n  local: {worker: path://.}\n", &path).unwrap();
+            let request = |run: &str| -> NewContainer {
+                serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
+                    "worker": "tool@1.0.0",
+                    "runtime": {"base_image": "alpine:3.20"},
+                    "scripts": {"build": "iii sandbox build", "run": run}
+                })).unwrap().parse().unwrap()
+            };
+            let server = MockServer::start().await;
+            // Only the Linux target is accepted, regardless of the test machine's native OS/libc.
+            Mock::given(matchers::method("POST"))
+                .and(matchers::path("/resolve"))
+                .and(matchers::body_partial_json(serde_json::json!({"target": registry::vm_targets()[0]})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{"name":"tool", "version":"1.0.0", "type":"binary",
+                        "binaries": {(registry::vm_targets()[0]): {
+                            "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
+                        }}}], "edges":[]
+                }))).expect(1).mount(&server).await;
+            registry::TEST_REGISTRY.scope(server.uri(), async {
+                let plan = plan(&file, &[request("${VM_RUN}")], &Policy::Add).await.unwrap();
+                assert_eq!(plan.containers[0].key, "tool");
+                // Persistence keeps the request, not the expanded shell text.
+                assert_eq!(plan.containers[0].fields["scripts"]["run"].as_str(), Some("${VM_RUN}"));
+                let before = server.received_requests().await.unwrap().len();
+                let error = plan_with(
+                    &file,
+                    &[request("${VM_RUN}"), request("${KAN292_UNDEFINED_RUN}")],
+                    &Policy::Add,
+                    |_, _, _, _| async { panic!("interpolation must fail before any resolution") },
+                    |_, _, _, _| async { panic!("interpolation must fail before any resolution") },
+                ).await.unwrap_err();
+                assert_eq!(error.code(), "UNDEFINED_VARIABLE");
+                assert_eq!(before, server.received_requests().await.unwrap().len());
+            }).await;
+            server.verify().await;
+            let existing = ComposeFile::parse(
+                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime: {base_image: 'alpine:3.20'}\n    scripts: {run: '${VM_RUN}', build: iii sandbox build}\n",
+                &path,
+            ).unwrap();
+            let omitted = crate::edit::parse_worker("tool@1.0.0").unwrap();
+            assert_eq!(declaration_platform(&omitted, &existing).unwrap(), Platform::Vm);
+            let cleared: crate::edit::WorkerInput = serde_json::from_value(serde_json::json!({
+                "worker":"tool@1.0.0", "runtime":{}, "scripts":{"run":"./tool"}
+            })).unwrap();
+            assert_eq!(declaration_platform(&cleared.parse().unwrap(), &existing).unwrap(), Platform::Host);
+        });
+    }
+
+    #[tokio::test]
+    async fn add_passes_the_vm_platform_to_the_registry_for_a_binary_container() {
+        let file = ComposeFile::parse(
+            "containers:
+  local:
+    worker: path://.
+",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let request: crate::edit::WorkerInput = serde_json::from_value(serde_json::json!({
+            "worker": "tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20"}
+        }))
+        .unwrap();
+        let asked = [request.parse().unwrap()];
+        let plan = plan_with(
+            &file,
+            &asked,
+            &Policy::Add,
+            |key, _, _, platform| async move {
+                assert_eq!(key, "tool");
+                assert_eq!(platform, Platform::Vm);
+                Ok(registry::Graph {
+                    nodes: vec![node("tool", "1.0.0")],
+                    edges: vec![],
+                })
+            },
+            |_, _, _, _| async { panic!("no existing registry containers") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.containers[0].key, "tool");
+    }
+
+    #[test]
+    fn the_platform_of_a_declaration_follows_its_own_scripts_and_runtime() {
+        let file = ComposeFile::parse(
+            "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+             base_image: docker.io/library/alpine:3.20\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let declared = |key: &str, fields: serde_json::Value| {
+            let mut declaration = crate::edit::parse_worker(&format!("package://{key}")).unwrap();
+            declaration.key = key.to_string();
+            declaration.fields =
+                serde_yaml::from_value(serde_yaml::to_value(fields).unwrap()).unwrap();
+            declaration_platform(&declaration, &file).unwrap()
+        };
+        // The container it replaces runs in a VM.
+        assert_eq!(declared("tool", serde_json::json!({})), Platform::Vm);
+        assert_eq!(
+            declared(
+                "tool",
+                serde_json::json!({"runtime": {}, "scripts": {"run": "./tool"}})
+            ),
+            Platform::Host
+        );
+        assert_eq!(declared("other", serde_json::json!({})), Platform::Host);
+        assert_eq!(
+            declared(
+                "other",
+                serde_json::json!({"runtime": {"base_image": "docker.io/library/alpine:3.20"}})
+            ),
+            Platform::Vm
+        );
+        assert_eq!(
+            declared(
+                "other",
+                serde_json::json!({"scripts": {"run": "iii sandbox run"}})
+            ),
+            Platform::Vm
         );
     }
 
@@ -1395,22 +1797,25 @@ mod tests {
             fields: Default::default(),
         }];
 
-        let plan = plan_with(
-            &file,
-            &asked,
-            &Policy::Update {
-                generated: BTreeSet::new(),
-            },
-            |_, _, _| async {
-                Ok::<_, ComposeError>(registry::Graph {
-                    nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
-                    edges: vec![("state".into(), "queue".into())],
-                })
-            },
-            |key, _, _| async move { Err::<Node, _>(conflict(&key, "this test has no registry")) },
-        )
-        .await
-        .unwrap();
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Update {
+                    generated: BTreeSet::new(),
+                },
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
+                        edges: vec![("state".into(), "queue".into())],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(keys(&plan), vec!["queue", "database"]);
         let database = container(&plan, "database");

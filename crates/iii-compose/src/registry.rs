@@ -293,6 +293,63 @@ pub(crate) fn runnable_target<T>(
     first_available(host_targets(), artifacts).unwrap_or(host_target())
 }
 
+/// Where a package container runs, and so which build of a binary package it installs (spec
+/// 7.5). A bundle has one archive whatever the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Platform {
+    /// The host: the first of [`host_targets`] the package has.
+    #[default]
+    Host,
+    /// A VM: the Linux build of the host's architecture, the first of [`vm_targets`] the package
+    /// has.
+    Vm,
+}
+
+impl Platform {
+    /// The triples whose builds this platform runs, preferred first.
+    pub fn targets(self) -> &'static [&'static str] {
+        match self {
+            Self::Host => host_targets(),
+            Self::Vm => vm_targets(),
+        }
+    }
+
+    /// The triple whose build this platform installs out of `artifacts`: the first of
+    /// [`Platform::targets`] it has, else the first of them (so the error names it).
+    pub fn target<T>(self, artifacts: &std::collections::BTreeMap<String, T>) -> &'static str {
+        let targets = self.targets();
+        first_available(targets, artifacts).unwrap_or(targets[0])
+    }
+}
+
+/// Every triple a VM on this host runs, preferred first: the static musl Linux build of the
+/// host's architecture, then the glibc one. The guest is Linux whatever the host is, and its
+/// base image decides the libc: a static build runs on any of them.
+pub fn vm_targets() -> &'static [&'static str] {
+    static TARGETS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+    TARGETS.get_or_init(|| linux_targets(std::env::consts::ARCH))
+}
+
+/// The Linux builds of `arch`, musl first.
+fn linux_targets(arch: &str) -> Vec<&'static str> {
+    let mut targets = vec![
+        target_triple(arch, "linux", true),
+        target_triple(arch, "linux", false),
+    ];
+    targets.dedup();
+    targets
+}
+
+/// The triple of the artifact `resolved` installs on `platform`. A bundle has one archive,
+/// recorded under the triple of the host that resolved it, whatever the platform.
+pub(crate) fn artifact_target(resolved: &ResolvedPackage, platform: Platform) -> &'static str {
+    if resolved.kind == "binary" {
+        platform.target(&resolved.artifacts)
+    } else {
+        runnable_target(&resolved.artifacts)
+    }
+}
+
 /// The build a host with `candidates` (see [`host_targets`]) runs out of
 /// `artifacts`, as its triple and lowercase digest: the first candidate it
 /// has, else the first candidate with no digest.
@@ -327,8 +384,27 @@ pub async fn install(
     version_range: &str,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let resolved = resolve_package(container, reference, version_range).await?;
-    install_resolved(container, &resolved, cache_root).await
+    install_on(
+        container,
+        reference,
+        version_range,
+        Platform::Host,
+        cache_root,
+    )
+    .await
+}
+
+/// [`install`] for a container that runs on `platform`: resolved for its targets, and its build
+/// installed (see [`resolve_package_on`] and [`install_resolved_on`]).
+pub async fn install_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
+    let resolved = resolve_package_on(container, reference, version_range, platform).await?;
+    install_resolved_on(container, &resolved, platform, cache_root).await
 }
 
 #[cfg(test)]
@@ -351,6 +427,18 @@ pub async fn resolve_package(
     reference: &str,
     version_range: &str,
 ) -> Result<ResolvedPackage> {
+    resolve_package_on(container, reference, version_range, Platform::Host).await
+}
+
+/// [`resolve_package`] for a container that runs on `platform`: the registry is asked for a
+/// build of [`Platform::targets`], so a binary package a VM runs needs a Linux build and no build
+/// of the host.
+pub async fn resolve_package_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+) -> Result<ResolvedPackage> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let endpoint = TEST_REGISTRY
@@ -358,7 +446,14 @@ pub async fn resolve_package(
         .unwrap_or_else(|_| registry.clone());
     #[cfg(not(test))]
     let endpoint = registry.clone();
-    let worker = resolve(container, &endpoint, &name, version_range, host_targets()).await?;
+    let worker = resolve(
+        container,
+        &endpoint,
+        &name,
+        version_range,
+        platform.targets(),
+    )
+    .await?;
     into_resolved_package(container, &registry, worker, host_target())
 }
 
@@ -431,7 +526,18 @@ pub async fn install_resolved(
     resolved: &ResolvedPackage,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let target = runnable_target(&resolved.artifacts);
+    install_resolved_on(container, resolved, Platform::Host, cache_root).await
+}
+
+/// [`install_resolved`] for a container that runs on `platform`: a binary package a VM runs
+/// installs its Linux build, which the host only copies into `.iii/workers/<container>/`.
+pub async fn install_resolved_on(
+    container: &str,
+    resolved: &ResolvedPackage,
+    platform: Platform,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
+    let target = artifact_target(resolved, platform);
     let cache_root = registry_cache_root(cache_root, resolved);
 
     let (payload, status) = match resolved.kind.as_str() {
@@ -514,9 +620,9 @@ pub(crate) struct ProjectPackage {
 }
 
 impl ProjectPackage {
-    /// The artifact `resolved` installs on this host.
-    fn locked(container: &str, resolved: &ResolvedPackage) -> Result<Self> {
-        let target = runnable_target(&resolved.artifacts);
+    /// The artifact `resolved` installs on `platform`.
+    fn locked(container: &str, resolved: &ResolvedPackage, platform: Platform) -> Result<Self> {
+        let target = artifact_target(resolved, platform);
         let artifact = artifact_for_target(container, resolved, target)?;
         let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
         Ok(Self {
@@ -591,6 +697,7 @@ pub(crate) async fn materialize_project_checked(
     let workers = crate::build_record::workers_root(compose_dir);
     let mut wanted = BTreeMap::new();
     for (container, resolved) in lock.packages() {
+        let platform = lock.platform(container);
         if !crate::build_record::is_directory_name(container) {
             return Err(ComposeError::Io {
                 path: workers.join(container),
@@ -602,7 +709,11 @@ pub(crate) async fn materialize_project_checked(
         }
         wanted.insert(
             container.to_string(),
-            (resolved, ProjectPackage::locked(container, resolved)?),
+            (
+                resolved,
+                platform,
+                ProjectPackage::locked(container, resolved, platform)?,
+            ),
         );
     }
     if wanted.is_empty() && std::fs::symlink_metadata(&workers).is_err() {
@@ -659,7 +770,7 @@ pub(crate) async fn materialize_project_checked(
         write_project_packages(&workers, &record)?;
     }
     let mut failure = None;
-    for (container, (resolved, package)) in &wanted {
+    for (container, (resolved, platform, package)) in &wanted {
         if record.containers.get(container) == Some(package) {
             continue;
         }
@@ -673,7 +784,9 @@ pub(crate) async fn materialize_project_checked(
         // On failure the previous directory is still in place, and so is its entry.
         let copied =
             match invalidated.and_then(|()| forget_host_build(compose_dir, container, package)) {
-                Ok(()) => copy_package(container, resolved, cache_root, &workers, &guard).await,
+                Ok(()) => {
+                    copy_package(container, resolved, *platform, cache_root, &workers, &guard).await
+                }
                 Err(error) => Err(error),
             };
         if let Err(error) = copied {
@@ -766,13 +879,14 @@ fn is_temporary_file(name: &str) -> bool {
 async fn copy_package(
     container: &str,
     resolved: &ResolvedPackage,
+    platform: Platform,
     cache_root: &Path,
     workers: &Path,
     guard: &std::sync::Arc<fslock::LockFile>,
 ) -> Result<()> {
     // Verifies the entry, and downloads it again when it is missing or damaged.
-    install_resolved(container, resolved, cache_root).await?;
-    let target = runnable_target(&resolved.artifacts);
+    install_resolved_on(container, resolved, platform, cache_root).await?;
+    let target = artifact_target(resolved, platform);
     let artifact = artifact_for_target(container, resolved, target)?;
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
     let source = cache_install_dir(
@@ -906,7 +1020,16 @@ fn write_project_packages(workers: &Path, record: &ProjectPackages) -> Result<()
 /// The version the registry hands back for `*`, so `compose::add` can pin what
 /// it just resolved rather than writing a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
-    let resolved = resolve_package(container, reference, "*").await?;
+    latest_version_on(container, reference, Platform::Host).await
+}
+
+/// [`latest_version`] for a container that runs on `platform`.
+pub async fn latest_version_on(
+    container: &str,
+    reference: &str,
+    platform: Platform,
+) -> Result<String> {
+    let resolved = resolve_package_on(container, reference, "*", platform).await?;
     Ok(resolved.version)
 }
 
@@ -921,6 +1044,8 @@ pub struct Node {
     pub kind: String,
     /// Digest for this host, or the bundle archive. Used to compare resolutions.
     pub artifact_digest: Option<String>,
+    /// Digest of the build a VM on this host installs ([`Platform::Vm`]), or the bundle archive.
+    pub vm_artifact_digest: Option<String>,
     pub default_config: Option<serde_json::Value>,
 }
 
@@ -929,31 +1054,49 @@ impl Node {
         self.alias_of.as_deref().unwrap_or(&self.name)
     }
 
-    pub(crate) fn same_release(&self, other: &Self) -> bool {
+    /// The digest of the build `platform` installs.
+    pub fn artifact_digest_on(&self, platform: Platform) -> Option<&str> {
+        match platform {
+            Platform::Host => self.artifact_digest.as_deref(),
+            Platform::Vm => self.vm_artifact_digest.as_deref(),
+        }
+    }
+
+    /// Whether `other` is the same release as this node for containers on each of `platforms`:
+    /// the same version, kind and default configuration, and the same build on every one of
+    /// them. A binary in a VM compares its Linux build, which a host build says nothing about.
+    pub(crate) fn same_release_on(&self, other: &Self, platforms: &[Platform]) -> bool {
         self.version == other.version
             && self.kind == other.kind
-            && self.artifact_digest == other.artifact_digest
             && self.default_config == other.default_config
+            && platforms.iter().all(|platform| {
+                self.artifact_digest_on(*platform) == other.artifact_digest_on(*platform)
+            })
     }
 }
 
 impl From<ResolvedWorker> for Node {
     fn from(worker: ResolvedWorker) -> Self {
-        let artifact_digest = if worker.kind == "bundle" {
-            worker.sha256.as_deref()
-        } else {
-            worker
-                .binaries
-                .get(runnable_target(&worker.binaries))
-                .map(|artifact| artifact.sha256.as_str())
-        }
-        .map(str::to_ascii_lowercase);
+        let digest_on = |platform: Platform| {
+            if worker.kind == "bundle" {
+                worker.sha256.as_deref()
+            } else {
+                worker
+                    .binaries
+                    .get(platform.target(&worker.binaries))
+                    .map(|artifact| artifact.sha256.as_str())
+            }
+            .map(str::to_ascii_lowercase)
+        };
+        let (artifact_digest, vm_artifact_digest) =
+            (digest_on(Platform::Host), digest_on(Platform::Vm));
         Self {
             name: worker.name,
             alias_of: worker.alias_of,
             version: worker.version,
             kind: worker.kind,
             artifact_digest,
+            vm_artifact_digest,
             default_config: worker.config.filter(|config| !config.is_null()),
         }
     }
@@ -961,15 +1104,19 @@ impl From<ResolvedWorker> for Node {
 
 impl From<&ResolvedPackage> for Node {
     fn from(package: &ResolvedPackage) -> Self {
+        let digest_on = |platform: Platform| {
+            package
+                .artifacts
+                .get(artifact_target(package, platform))
+                .map(|artifact| artifact.sha256.to_ascii_lowercase())
+        };
         Self {
             name: package.name.clone(),
             alias_of: package.alias_of.clone(),
             version: package.version.clone(),
             kind: package.kind.clone(),
-            artifact_digest: package
-                .artifacts
-                .get(runnable_target(&package.artifacts))
-                .map(|artifact| artifact.sha256.to_ascii_lowercase()),
+            artifact_digest: digest_on(Platform::Host),
+            vm_artifact_digest: digest_on(Platform::Vm),
             default_config: package
                 .default_config
                 .as_ref()
@@ -979,10 +1126,21 @@ impl From<&ResolvedPackage> for Node {
 }
 
 pub(crate) async fn resolve_node(container: &str, reference: &str, range: &str) -> Result<Node> {
+    resolve_node_on(container, reference, range, Platform::Host).await
+}
+
+/// [`resolve_node`] for a container that runs on `platform`: the registry is asked for a build of
+/// [`Platform::targets`].
+pub(crate) async fn resolve_node_on(
+    container: &str,
+    reference: &str,
+    range: &str,
+    platform: Platform,
+) -> Result<Node> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
-    resolve(container, &registry, &name, range, host_targets())
+    resolve(container, &registry, &name, range, platform.targets())
         .await
         .map(Node::from)
 }
@@ -1027,11 +1185,28 @@ pub(crate) async fn remembering<F: std::future::Future>(future: F) -> F::Output 
 /// each other. Asking again per dependency would be slower and could resolve a
 /// different set, because each answer is computed on its own.
 pub async fn resolve_graph(container: &str, reference: &str, version_range: &str) -> Result<Graph> {
+    resolve_graph_on(container, reference, version_range, Platform::Host).await
+}
+
+/// [`resolve_graph`] for a root container that runs on `platform`: a binary package a VM runs
+/// needs a Linux build, and no build of the host.
+pub async fn resolve_graph_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+) -> Result<Graph> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
-    let response =
-        resolve_response(container, &registry, &name, version_range, host_targets()).await?;
+    let response = resolve_response(
+        container,
+        &registry,
+        &name,
+        version_range,
+        platform.targets(),
+    )
+    .await?;
     Ok(Graph {
         nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
@@ -2756,6 +2931,81 @@ mod tests {
         assert_eq!(first_available(&candidates, &darwin_only), None);
     }
 
+    /// Every entry point used by add or a start without a lock asks for the VM build, falls
+    /// back from musl to gnu, and installs that artifact rather than a host build.
+    #[tokio::test]
+    async fn vm_resolution_entry_points_use_linux_targets_and_install_the_fallback() {
+        let server = MockServer::start().await;
+        let musl = vm_targets()[0];
+        let gnu = *vm_targets().last().unwrap();
+        let archive = package_archive("linux fixture");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let artifact = RegistryArtifact {
+            url: format!("{}/artifact", server.uri()),
+            sha256: digest.clone(),
+        };
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"target": musl}),
+            ))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": {"code": "unsupported_platform", "available": [gnu]}
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"target": gnu}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{"name": "tool", "version": "1.0.0", "type": "binary",
+                           "binaries": {(gnu): artifact}}],
+                "edges": []
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        TEST_REGISTRY
+            .scope(server.uri(), async {
+                assert_eq!(
+                    latest_version_on("tool", "tool", Platform::Vm)
+                        .await
+                        .unwrap(),
+                    "1.0.0"
+                );
+                let node = resolve_node_on("tool", "tool", "1.0.0", Platform::Vm)
+                    .await
+                    .unwrap();
+                assert_eq!(node.vm_artifact_digest.as_deref(), Some(digest.as_str()));
+                let graph = resolve_graph_on("tool", "tool", "1.0.0", Platform::Vm)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    graph.nodes[0].vm_artifact_digest.as_deref(),
+                    Some(digest.as_str())
+                );
+                let installed = install_on("tool", "tool", "1.0.0", Platform::Vm, cache.path())
+                    .await
+                    .unwrap();
+                let Payload::Binary(program) = installed.payload else {
+                    panic!("not a binary")
+                };
+                assert_eq!(std::fs::read_to_string(program).unwrap(), "linux fixture");
+            })
+            .await;
+        server.verify().await;
+    }
+
     #[test]
     fn only_an_unsupported_platform_listing_a_later_candidate_falls_back() {
         let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
@@ -3170,6 +3420,240 @@ mod tests {
 
     fn sha256_of(archive: &[u8]) -> String {
         format!("sha256:{}", hex::encode(Sha256::digest(archive)))
+    }
+
+    #[test]
+    fn a_vm_runs_the_linux_builds_of_the_host_architecture_musl_first() {
+        assert_eq!(
+            linux_targets("x86_64"),
+            ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"]
+        );
+        assert_eq!(
+            linux_targets("aarch64"),
+            ["aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"]
+        );
+        assert_eq!(linux_targets("riscv64"), ["unknown"]);
+        assert_eq!(vm_targets(), linux_targets(std::env::consts::ARCH));
+        assert_eq!(Platform::default(), Platform::Host);
+        assert_eq!(Platform::Host.targets(), host_targets());
+
+        let (musl, gnu) = (vm_targets()[0], *vm_targets().last().unwrap());
+        let artifacts = |targets: &[&str]| -> BTreeMap<String, ()> {
+            targets
+                .iter()
+                .map(|target| (target.to_string(), ()))
+                .collect()
+        };
+        assert_eq!(Platform::Vm.target(&artifacts(&[gnu, musl])), musl);
+        assert_eq!(Platform::Vm.target(&artifacts(&[gnu])), gnu);
+        // None at all: the first, so the error names it.
+        assert_eq!(
+            Platform::Vm.target(&artifacts(&["x86_64-apple-darwin"])),
+            musl
+        );
+    }
+
+    /// Without symlinks, a VM finds the executable the host runs: the same search, root first, in
+    /// name order, three directories down.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_takes_the_executable_the_host_takes_in_a_tree_without_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let trees: &[&[(&str, u32)]] = &[
+            &[("worker", 0o755), ("README.md", 0o644)],
+            &[("lib/data.txt", 0o644), ("bin/worker", 0o755)],
+            &[("bin/worker-migrate", 0o755), ("bin/worker", 0o755)],
+            &[("z-root", 0o755), ("a/b/c/deep", 0o755)],
+            &[("a/b/c/d/too-deep", 0o755), ("a/README", 0o644)],
+            &[("only-data.txt", 0o644)],
+        ];
+        for files in trees {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, mode) in *files {
+                let path = dir.path().join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, b"x").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(*mode)).unwrap();
+            }
+            let host = installed_binary(dir.path()).map(|path| {
+                path.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            assert_eq!(crate::vm_binary::executable(dir.path()), host, "{files:?}");
+        }
+    }
+
+    /// A node keeps the digest of the build each platform installs, so a release is compared on
+    /// the platform of the container that runs it.
+    #[test]
+    fn a_node_compares_the_build_of_each_platform() {
+        let (host, linux) = (host_targets()[0], vm_targets()[0]);
+        let package = |linux_digest: char| ResolvedPackage {
+            name: "tool".to_string(),
+            alias_of: None,
+            registry: DEFAULT_REGISTRY.to_string(),
+            version: "1.0.0".to_string(),
+            kind: "binary".to_string(),
+            artifacts: [(host, 'a'), (linux, linux_digest)]
+                .into_iter()
+                .map(|(target, digest)| {
+                    (
+                        target.to_string(),
+                        RegistryArtifact {
+                            sha256: digest.to_string().repeat(64),
+                            url: format!("https://example.com/{target}"),
+                        },
+                    )
+                })
+                .collect(),
+            default_config: None,
+        };
+        let (old, new) = (Node::from(&package('b')), Node::from(&package('c')));
+        if host == linux {
+            // One build serves both: nothing to tell apart.
+            return;
+        }
+        assert_eq!(
+            old.artifact_digest_on(Platform::Vm),
+            Some("b".repeat(64).as_str())
+        );
+        assert!(old.same_release_on(&new, &[Platform::Host]));
+        assert!(!old.same_release_on(&new, &[Platform::Vm]));
+        assert!(!old.same_release_on(&new, &[Platform::Host, Platform::Vm]));
+    }
+
+    #[test]
+    fn a_bundle_installs_its_one_archive_on_either_platform() {
+        let package = |kind: &str| ResolvedPackage {
+            name: "tool".to_string(),
+            alias_of: None,
+            registry: DEFAULT_REGISTRY.to_string(),
+            version: "1.0.0".to_string(),
+            kind: kind.to_string(),
+            artifacts: [host_target(), vm_targets()[0]]
+                .into_iter()
+                .map(|target| {
+                    (
+                        target.to_string(),
+                        RegistryArtifact {
+                            sha256: "a".repeat(64),
+                            url: format!("https://example.com/{target}"),
+                        },
+                    )
+                })
+                .collect(),
+            default_config: None,
+        };
+        let bundle = package("bundle");
+        assert_eq!(
+            artifact_target(&bundle, Platform::Vm),
+            runnable_target(&bundle.artifacts)
+        );
+        let binary = package("binary");
+        assert_eq!(artifact_target(&binary, Platform::Vm), vm_targets()[0]);
+        assert_eq!(
+            artifact_target(&binary, Platform::Host),
+            runnable_target(&binary.artifacts)
+        );
+    }
+
+    /// A binary package whose container runs in a VM gets its Linux build in
+    /// `.iii/workers/<container>/`, from the same lock entry a host container would take its host
+    /// build from, and `.packages.json` records that build.
+    #[tokio::test]
+    async fn materialize_copies_the_linux_build_of_a_binary_that_runs_in_a_vm() {
+        let (host, linux) = (host_target(), vm_targets()[0]);
+        if host == linux {
+            // A static Linux Compose runs the VM's build itself: nothing to tell apart.
+            return;
+        }
+        let project = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (host_build, linux_build) = (package_archive("host build"), package_archive("linux"));
+        let artifacts: BTreeMap<String, RegistryArtifact> =
+            [(host, &host_build), (linux, &linux_build)]
+                .into_iter()
+                .map(|(target, archive)| {
+                    (
+                        target.to_string(),
+                        RegistryArtifact {
+                            sha256: hex::encode(Sha256::digest(archive)),
+                            url: format!("http://127.0.0.1:9/{target}"),
+                        },
+                    )
+                })
+                .collect();
+        let mut containers = serde_json::Map::new();
+        let mut compose = String::from("containers:\n");
+        for (key, vm) in [("on-host", false), ("in-vm", true)] {
+            let resolved = ResolvedPackage {
+                name: "tool".to_string(),
+                alias_of: None,
+                registry: DEFAULT_REGISTRY.to_string(),
+                version: "1.0.0".to_string(),
+                kind: "binary".to_string(),
+                artifacts: artifacts.clone(),
+                default_config: None,
+            };
+            for (target, archive) in [(host, &host_build), (linux, &linux_build)] {
+                let digest = hex::encode(Sha256::digest(archive));
+                let install = cache_install_dir(cache.path(), &resolved, target, &digest);
+                if !install.exists() {
+                    let cancel = crate::shutdown::BlockingCancellation::default();
+                    extract_and_publish(archive.to_vec(), &install, &digest, &cancel).unwrap();
+                }
+            }
+            let worker = "package://api.workers.iii.dev/tool";
+            compose += &format!("  {key}:\n    worker: {worker}\n    version: '1.0.0'\n");
+            let mut entry =
+                serde_json::json!({ "worker": worker, "requested": "1.0.0", "resolved": resolved });
+            if vm {
+                compose += "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    \
+                            scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n";
+                entry["vm"] = true.into();
+            }
+            containers.insert(key.to_string(), entry);
+        }
+        let lock = serde_json::json!({ "version": 1, "containers": containers });
+        std::fs::write(project.path().join("worker-compose.yaml"), compose).unwrap();
+        std::fs::write(
+            project.path().join("worker-compose.lock"),
+            serde_yaml::to_string(&lock).unwrap(),
+        )
+        .unwrap();
+        let mut file =
+            crate::ComposeFile::load(project.path().join("worker-compose.yaml")).unwrap();
+        let lock = crate::lockfile::prepare_frozen(&mut file, cache.path())
+            .await
+            .unwrap();
+        assert_eq!(lock.platform("in-vm"), Platform::Vm);
+        assert_eq!(lock.platform("on-host"), Platform::Host);
+
+        materialize_project(project.path(), cache.path(), &lock)
+            .await
+            .unwrap();
+
+        let workers = project.path().join(".iii/workers");
+        let data =
+            |key: &str| std::fs::read_to_string(workers.join(key).join("lib/data.txt")).unwrap();
+        assert_eq!(data("on-host"), "host build");
+        assert_eq!(data("in-vm"), "linux");
+        let recorded = recorded(project.path());
+        assert_eq!(
+            recorded["containers"]["in-vm"]["sha256"],
+            sha256_of(&linux_build)
+        );
+        assert_eq!(
+            recorded["containers"]["on-host"]["sha256"],
+            sha256_of(&host_build)
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            crate::vm_binary::executable(&workers.join("in-vm")).as_deref(),
+            Some("worker")
+        );
     }
 
     #[tokio::test]
@@ -3711,6 +4195,7 @@ mod tests {
             &project.path().join("worker-compose.yaml"),
             "state",
             &project.path().join(".iii/workers/state"),
+            None,
         )
         .unwrap();
         assert_eq!(
