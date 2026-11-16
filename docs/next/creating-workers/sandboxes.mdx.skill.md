@@ -951,7 +951,10 @@ The kept data belongs to the VM's state key, which comes from Compose's state di
 container key. A container added again under the same key, with any package, boots on it, and files
 the old worker wrote where the new build also writes hide the image's. To discard it, use `--prune`
 or `compose::remove prune=true`, add the container again and remove it with `prune=true`, or delete
-the directory `iii sandbox destroy` printed while no VM of that container runs.
+the VM directory containing the printed paths while no VM of that container runs. For example,
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` names a file: delete its parent
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. These paths
+belong to the adapter, which may be on another host; do not infer them from the client's HOME.
 
 It acts on the VM that the [environment variables](#environment-variables) below name, which Compose
 sets for a VM container's scripts, like `iii sandbox run`. Run from a plain shell, without those
@@ -974,12 +977,13 @@ Compose hands `iii sandbox build` and `iii sandbox run` these variables:
 | `III_STOP_TIMEOUT_MS`    | How long Compose waits after its `SIGTERM` before it kills the command.               |
 | `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
+| `III_BUILD_BASE_IMAGE` | The already-expanded container image override, empty when absent; not re-expanded in the child. |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
 | `III_PACKAGE_DIR` | `<project>/.iii/workers/<container>`, for a package container. |
 | `III_PACKAGE_NAME` | The package's name, for a package container. |
 | `III_PACKAGE_KIND` | `bundle` or `binary`: a binary boots as `WorkerSource::Binary`. |
 
-`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`,
+`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_BASE_IMAGE`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`,
 `III_PACKAGE_NAME`, and `III_PACKAGE_KIND` never reach the guest and are not listed in `III_WORKER_ENV_KEYS`. The guest
 still sees the compose file's path through `III_COMPOSE_FILE`. The guest, and the VM that builds its
 image, get the container's `environment` and `env_file` variables and the reserved `III_*`

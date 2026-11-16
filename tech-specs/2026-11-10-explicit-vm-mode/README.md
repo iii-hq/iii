@@ -935,8 +935,11 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
   a destroy without prune kept. Files the old worker wrote where the new build also writes
   hide the image's (section 9.1). To discard the data: `compose::remove prune=true` in the
   first place; or add the container again and remove it with `prune=true`; or delete the
-  directory the destroy printed, `~/.iii/sandbox/workers/<vm_id>/`, while no VM of that key
-  runs. The line `compose::remove` logs for the kept data says so.
+  VM directory containing the printed paths, while no VM of that key runs. For example,
+  `/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` names a file: delete its parent
+  `/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. Use
+  the adapter's reported paths, not the client's HOME: the adapter may be on another host.
+  The line `compose::remove` logs for the kept data says so.
 - `build` and `run` of a binary package send `WorkerSource::Binary` and, for `build`,
   `base_image` (section 7.5), and need `worker.binary` (section 7.2).
 - `iii sandbox` is visible in `iii --help` again (it was hidden for 0.26 by #2506), and the CLI
@@ -948,6 +951,11 @@ Compose hands `iii sandbox build` and `iii sandbox run` the variables of section
 
 - `III_BUILD_DIR` = `<project>/.iii/build/<container>`;
 - `III_BUILD_TIMEOUT_MS` = `scripts.build_timeout`, for `iii sandbox build`;
+- `III_BUILD_BASE_IMAGE` = the container's already-expanded `runtime.base_image`, empty when
+  absent. The build child uses this plan input, never re-interpolates YAML against its own
+  `environment` or `env_file`, and records the same value; stale comparisons use that plan
+  value too. A local/bundle build without it falls back to the worker manifest as before;
+  with it, every source needs `worker.binary`, which announces the 1.4 override;
 - `III_BUILD_COMPOSE_FILE` = the same canonical path as `III_COMPOSE_FILE`, for
   `iii sandbox build` (`build_record::source` reads the declared `path://` there);
 - `III_PACKAGE_DIR` = `<project>/.iii/workers/<container>` and `III_PACKAGE_NAME`, set for a
@@ -957,11 +965,11 @@ Compose hands `iii sandbox build` and `iii sandbox run` the variables of section
   boots as `WorkerSource::Binary`.
 
 Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV`, `BUILD_TIMEOUT_ENV`,
-`BUILD_COMPOSE_FILE_ENV` and `PACKAGE_KIND_ENV` (new), `PACKAGE_DIR_ENV` and
+`BUILD_COMPOSE_FILE_ENV`, `BUILD_BASE_IMAGE_ENV` and `PACKAGE_KIND_ENV` (new), `PACKAGE_DIR_ENV` and
 `PACKAGE_NAME_ENV` (existing). `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`,
-`III_BUILD_COMPOSE_FILE` and `III_PACKAGE_KIND` join `NEVER_FORWARDED`, where the package pair
-already is. All six join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps these
-six out of `III_WORKER_ENV_KEYS`; the reserved names it includes
+`III_BUILD_COMPOSE_FILE`, `III_BUILD_BASE_IMAGE` and `III_PACKAGE_KIND` join `NEVER_FORWARDED`, where the package pair
+already is. All seven join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps these
+seven out of `III_WORKER_ENV_KEYS`; the reserved names it includes
 today stay. The compose file gets its own name to keep two contracts apart: `III_COMPOSE_FILE`
 belongs to every child and reaches the guest as one of those reserved names, while
 `III_BUILD_COMPOSE_FILE` is an input of `iii sandbox build`, like the other build variables. The

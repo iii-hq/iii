@@ -440,8 +440,11 @@ older one, Compose leaves the VM's state where it is and says so.
 The kept data belongs to the container key. A container added again under the same key, with any
 package, boots on that data disk, and files the old worker wrote where the new build also writes
 hide the image's. To discard the data, remove the container with `prune=true` in the first place,
-add it again and remove it with `prune=true`, or delete the directory the log names,
-`~/.iii/sandbox/workers/<vm_id>/`, while no VM of that container runs.
+add it again and remove it with `prune=true`, or delete the VM directory containing the printed
+paths while no VM of that container runs. For example, a kept path
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` is a file: delete its parent
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. Use the
+adapter's reported paths, not the client's HOME; the adapter may be on another host.
 
 | Field    | Description                                                   |
 | -------- | ------------------------------------------------------------- |
@@ -1065,13 +1068,14 @@ exception below; only start workers you trust with that environment.
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
 Compose hands `iii sandbox build` and `iii sandbox run` the sandbox variables listed in
-[Sandboxes](../creating-workers/sandboxes#environment-variables), plus these six, which are
+[Sandboxes](../creating-workers/sandboxes#environment-variables), plus these seven, which are
 reserved too:
 
 | Variable                 | Value                                                                                 |
 | ------------------------ | ------------------------------------------------------------------------------------- |
 | `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
+| `III_BUILD_BASE_IMAGE` | The already-expanded container image override, empty when absent; not re-expanded in the child. |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
 | `III_PACKAGE_DIR` | `<project>/.iii/workers/<container>`, for a package container. |
 | `III_PACKAGE_NAME` | The package's name, for a package container. |
@@ -1476,7 +1480,7 @@ relative to the compose file. A host build writes the same keys without `image`.
 - **Dependencies.** They come from the build. To add one, edit `package.json`, run
   `iii sandbox build <container>`, and restart the container.
 - **Environment.** The guest gets the container's `environment` and `env_file` variables and the
-  reserved `III_*` variables, except the six build and package variables of
+  reserved `III_*` variables, except the seven build and package variables of
   [The worker environment](#the-worker-environment). It never gets the host's environment. The
   build VM gets the same set.
 
