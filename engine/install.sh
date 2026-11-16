@@ -587,7 +587,11 @@ fi
 mkdir -p "$bin_dir"
 
 tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t iii-install)
-trap cleanup EXIT INT TERM
+# A bare `trap cleanup INT` would swallow Ctrl-C and carry on (e.g. leave the
+# final prompt waiting), so INT/TERM exit and let the EXIT trap clean up.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 main_tarball="$tmpdir/$asset_name"
 
@@ -776,9 +780,18 @@ if ! "$iii_bin" project init --learn-iii --help >/dev/null 2>&1; then
   echo "If you're new to iii, get started quickly here: $quickstart_url"
 elif [ "$non_interactive" = false ] && [ -t 2 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   echo ""
-  printf "Now let's setup your first iii project [Press Enter to Continue] " >/dev/tty
-  # Ctrl-C here stops the install with iii already in place; EOF does the same.
-  read -r _ </dev/tty || exit 0
+  printf "Would you like to setup your first iii project? [Y/n] " >/dev/tty
+  # EOF stops the install with iii already in place; Ctrl-C exits via the trap.
+  answer=""
+  read -r answer </dev/tty || exit 0
+  case "$answer" in
+    [nN]*)
+      echo ""
+      echo "No problem. When you're ready to try iii, run:"
+      echo "  $start_cmd"
+      exit 0
+      ;;
+  esac
   # stdin is the script itself under `curl ... | sh`, and `exec` would hand
   # that pipe to init, so give it the terminal instead. `exec` skips the
   # EXIT trap, so clean up first.
