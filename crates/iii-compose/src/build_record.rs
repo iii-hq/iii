@@ -93,7 +93,7 @@ pub struct BuildImage {
 /// The base image of a VM build; `declared` and `digest` serialize as `null` when unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildBaseImage {
-    /// The manifest's `runtime.base_image`; `None` when the adapter chose the image.
+    /// The container's `runtime.base_image`, else its manifest's; `None` when the adapter chose it.
     pub declared: Option<String>,
     /// The image the adapter reports it started from.
     pub reference: String,
@@ -284,8 +284,8 @@ pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
 /// Every difference of section 5.5 (`compose_file` as for [`source`]); empty when up to date.
 ///
 /// In order: the source, the dependency files (every name added, removed or changed, sorted),
-/// and, for a VM build, the declared base image. A host build records no image, so its base
-/// image is not compared.
+/// and, for a VM build, the declared base image, the container's own over its manifest's. A host
+/// build records no image, so its base image is not compared.
 pub fn changes(
     record: &BuildRecord,
     compose_file: &Path,
@@ -317,7 +317,7 @@ pub fn changes(
     }
 
     if let Some(image) = &record.image {
-        let declared = declared_base_image(worker_dir)?;
+        let declared = effective_base_image(compose_file, container, worker_dir)?;
         if declared != image.base_image.declared {
             changes.push(Change::BaseImage {
                 old: image.base_image.declared.clone(),
@@ -464,6 +464,19 @@ pub(crate) fn invalid_data(path: &Path, message: String) -> ComposeError {
 /// Only that value is read: the rest of the file may reference variables the caller's
 /// environment does not hold (`iii sandbox build` runs with one container's env).
 fn declared_worker(compose_file: &Path, container: &str) -> Result<String> {
+    let declaration = declaration(compose_file, container)?;
+    let worker = declaration
+        .get("worker")
+        .and_then(serde_yaml::Value::as_str)
+        .ok_or_else(|| ComposeError::Yaml {
+            path: compose_file.to_path_buf(),
+            message: format!("containers.{container}.worker must be a string"),
+        })?;
+    crate::interpolate::expand(worker, compose_file, &|name| std::env::var(name).ok())
+}
+
+/// Container `container` as `compose_file` declares it, unexpanded.
+fn declaration(compose_file: &Path, container: &str) -> Result<serde_yaml::Value> {
     let text = std::fs::read_to_string(compose_file).map_err(|source| ComposeError::Io {
         path: compose_file.to_path_buf(),
         source,
@@ -473,20 +486,46 @@ fn declared_worker(compose_file: &Path, container: &str) -> Result<String> {
             path: compose_file.to_path_buf(),
             message: error.to_string(),
         })?;
-    let declaration = document
+    document
         .get("containers")
         .and_then(|containers| containers.get(container))
+        .cloned()
         .ok_or_else(|| ComposeError::UnknownContainer {
             container: container.to_string(),
-        })?;
-    let worker = declaration
-        .get("worker")
-        .and_then(serde_yaml::Value::as_str)
-        .ok_or_else(|| ComposeError::Yaml {
-            path: compose_file.to_path_buf(),
-            message: format!("containers.{container}.worker must be a string"),
-        })?;
-    crate::interpolate::expand(worker, compose_file, &|name| std::env::var(name).ok())
+        })
+}
+
+/// Container `container`'s own `runtime.base_image` in `compose_file` (`${VAR}` expanded, as
+/// Compose reads it), which a VM build sends as `WorkerBuildRequest.base_image` over the
+/// manifest's (spec 7.5); `None` when it sets none.
+// Called by `iii sandbox build` (sandbox_cli.rs).
+pub fn container_base_image(compose_file: &Path, container: &str) -> Result<Option<String>> {
+    let declaration = declaration(compose_file, container)?;
+    let Some(image) = declaration
+        .get("runtime")
+        .and_then(|runtime| runtime.get("base_image"))
+        .filter(|image| !image.is_null())
+    else {
+        return Ok(None);
+    };
+    let image = image.as_str().ok_or_else(|| ComposeError::Yaml {
+        path: compose_file.to_path_buf(),
+        message: format!("containers.{container}.runtime.base_image must be a string"),
+    })?;
+    crate::interpolate::expand(image, compose_file, &|name| std::env::var(name).ok()).map(Some)
+}
+
+/// The base image a VM build of `container` declares: its own `runtime.base_image`, else its
+/// worker manifest's ([`declared_base_image`]).
+pub fn effective_base_image(
+    compose_file: &Path,
+    container: &str,
+    worker_dir: &Path,
+) -> Result<Option<String>> {
+    match container_base_image(compose_file, container)? {
+        Some(image) => Ok(Some(image)),
+        None => declared_base_image(worker_dir),
+    }
 }
 
 /// `sha256:<hex>` of the file at `path`.
@@ -993,6 +1032,53 @@ mod tests {
                 "package.json".to_string(),
                 "yarn.lock".to_string(),
             ])]
+        );
+    }
+
+    #[test]
+    fn a_container_image_overrides_the_manifest_and_changes_the_recorded_image() {
+        let (dir, file) = project();
+        let worker = dir.path().join("link");
+        let record = current_link_record(&file);
+        write_file(
+            &file,
+            "containers:
+  link:
+    worker: path://./link
+    runtime:
+      base_image: ${KAN292_IMAGE:-docker.io/library/alpine:3.20}
+",
+        );
+        assert_eq!(
+            effective_base_image(&file, "link", &worker)
+                .unwrap()
+                .as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        assert_eq!(
+            changes(&record, &file, "link", &worker).unwrap(),
+            [Change::BaseImage {
+                old: record.image.as_ref().unwrap().base_image.declared.clone(),
+                new: Some("docker.io/library/alpine:3.20".to_string()),
+            }]
+        );
+        let no_manifest = dir.path().join("binary");
+        assert_eq!(
+            effective_base_image(&file, "link", &no_manifest)
+                .unwrap()
+                .as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        write_file(
+            &file,
+            "containers:
+  link:
+    worker: path://./link
+",
+        );
+        assert_eq!(
+            effective_base_image(&file, "link", &worker).unwrap(),
+            declared_base_image(&worker).unwrap()
         );
     }
 

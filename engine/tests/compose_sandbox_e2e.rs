@@ -36,8 +36,9 @@ use nix::{
 use serde_json::{Value, json};
 
 /// Pinned so a new registry release cannot turn iii's CI red (D5): the first release with
-/// `worker.build`, which the explicit VM mode needs (spec 6.6).
-const SANDBOX_LIBKRUN: &str = "0.4.0";
+/// sandbox contract 1.4, whose `worker.build`, `worker.binary` and `worker.prune` the explicit VM
+/// mode needs (spec 6.6, 6.7).
+const SANDBOX_LIBKRUN: &str = "0.5.0";
 const ONBOARDING: &str = "0.1.20";
 
 const NAMESPACE: &str = "sbx-e2e";
@@ -177,7 +178,7 @@ struct Project {
 impl Project {
     /// `containers` is the operator's share of the `containers:` mapping, each
     /// entry indented two spaces. The adapter follows exactly as Compose writes
-    /// it, pre-declared because `up` would resolve `^0.4` against the live
+    /// it, pre-declared because `up` would resolve `^0.5` against the live
     /// registry, which a required check cannot depend on (D5). With
     /// [`LOCAL_ADAPTER`] (`III_E2E_SANDBOX_LIBKRUN`) set, it is a `path://`
     /// adapter running that binary instead.
@@ -205,6 +206,18 @@ impl Project {
         )
         .unwrap();
         project
+    }
+
+    /// [`Project::new`], with the adapter declared as the operator's, without the generated
+    /// marker: it outlives the last VM, so a container can be added again without resolving the
+    /// adapter anew (D5, D11).
+    fn with_own_adapter(containers: &str) -> Self {
+        if std::env::var_os(LOCAL_ADAPTER).is_some() {
+            return Self::new(containers);
+        }
+        Self::declaring(&format!(
+            "{containers}  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: {SANDBOX_LIBKRUN}\n"
+        ))
     }
 
     /// `containers` is the whole `containers:` mapping.
@@ -439,15 +452,15 @@ impl Project {
             .unwrap_or_default()
     }
 
-    /// Removes the project's only VM container. Its VM state goes, and so does
-    /// the generated adapter, because its last VM went (D11).
+    /// Removes the project's only VM container with `prune`. Its VM state and data go, and so
+    /// does the generated adapter, because its last VM went (D11).
     fn remove_last_vm(&self, key: &str) {
         // Proves HOME reached the adapter and this is the directory it uses.
         assert!(
             !self.vm_states().is_empty(),
             "the adapter kept no VM state under $HOME/.iii/sandbox/workers before rm"
         );
-        self.remove(key);
+        self.remove(key, true);
 
         let left = self.vm_states();
         assert!(left.is_empty(), "rm left VM state behind: {left:?}");
@@ -460,13 +473,23 @@ impl Project {
         );
     }
 
-    fn remove(&self, key: &str) {
-        let accepted = self.compose_call("compose::remove", json!({ "worker": key }), LONG);
+    /// `compose::remove`, with `prune` or without (spec 8.2).
+    fn remove(&self, key: &str, prune: bool) {
+        let accepted = self.compose_call(
+            "compose::remove",
+            json!({ "worker": key, "prune": prune }),
+            LONG,
+        );
+        self.finish("compose::remove", &accepted);
+    }
+
+    /// Waits for the operation `accepted` names, and requires it to succeed.
+    fn finish(&self, function: &str, accepted: &Value) {
         let operation_id = accepted["operation_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("compose::remove returned no operation: {accepted}"))
+            .unwrap_or_else(|| panic!("{function} returned no operation: {accepted}"))
             .to_owned();
-        let finished = wait_for(LONG, "compose::remove to finish", || {
+        let finished = wait_for(LONG, &format!("{function} to finish"), || {
             let operation = self.compose_call(
                 "compose::operation",
                 json!({ "operation_id": operation_id }),
@@ -703,6 +726,236 @@ fn a_local_base_image_worker_runs_and_syncs_its_source() {
     project.shutdown();
 }
 
+/// The base image of the binary package below: Node, which its `run` starts.
+const NODE_IMAGE: &str = "docker.io/iiidev/node:latest";
+/// The binary package below, as its lock entry names it.
+const BINARY_PACKAGE: &str = "iii-e2e-binary";
+
+/// A `binary` package whose "Linux build" is a shell `run` that starts a Node worker, which
+/// registers `iii-e2e-binary::hello`. Its manifest's `scripts.install` installs the SDK in the
+/// build, as a binary package's manifest may (contract 1.4).
+fn binary_package() -> Vec<u8> {
+    let files: [(&str, u32, &str); 4] = [
+        (
+            "iii.worker.yaml",
+            0o644,
+            "name: iii-e2e-binary\nscripts:\n  install: npm install\n",
+        ),
+        (
+            "package.json",
+            0o644,
+            r#"{"name": "iii-e2e-binary", "private": true, "type": "module", "dependencies": {"iii-sdk": "0.24.6"}}"#,
+        ),
+        (
+            "index.js",
+            0o644,
+            "import { registerWorker } from 'iii-sdk'\nconst iii = registerWorker()\niii.registerFunction('iii-e2e-binary::hello', async () => 'hello from a binary in a VM')\n",
+        ),
+        (
+            "run",
+            0o755,
+            "#!/bin/sh\ncd /workspace && exec node index.js\n",
+        ),
+    ];
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut archive = tar::Builder::new(encoder);
+    for (name, mode, body) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, name, body.as_bytes())
+            .unwrap();
+    }
+    archive.into_inner().unwrap().finish().unwrap()
+}
+
+/// Serves `body` to every request on a local port for the rest of the test process, and answers
+/// its URL: the artifact URL a lock entry downloads from.
+fn serve(body: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/{BINARY_PACKAGE}.tar.gz",
+        listener.local_addr().unwrap()
+    );
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0_u8; 8192];
+            let _ = stream.read(&mut request);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    url
+}
+
+/// Spec 4.2, 7.5: a registry binary whose container sets `runtime.base_image` runs its Linux
+/// build in a VM, and its lock entry says so (`vm: true`).
+///
+/// To pin the worker and its guest reply without depending on a published package, this one is
+/// made here (see [`binary_package`]): served from a local HTTP server and locked in
+/// `worker-compose.lock` as the registry would lock it, with a build for every Linux target, so
+/// the registry is never asked for it.
+#[test]
+#[ignore = "boots microVMs; run by compose-sandbox-e2e-linux"]
+#[serial_test::serial(sandbox_vm)]
+fn a_registry_binary_runs_its_linux_build_in_a_vm() {
+    use sha2::Digest;
+    let archive = binary_package();
+    let digest = hex::encode(sha2::Sha256::digest(&archive));
+    let url = serve(archive);
+    let worker = format!("package://api.workers.iii.dev/{BINARY_PACKAGE}");
+    let mut project = Project::new(&format!(
+        "  indexer:\n    worker: {worker}\n    version: 1.0.0\n    runtime:\n      base_image: {NODE_IMAGE}\n{EXPLICIT}"
+    ));
+    let artifacts: serde_json::Map<String, Value> = ["x86_64", "aarch64"]
+        .into_iter()
+        .flat_map(|arch| ["musl", "gnu"].map(|libc| format!("{arch}-unknown-linux-{libc}")))
+        .map(|target| (target, json!({ "sha256": digest, "url": url })))
+        .collect();
+    let lock = json!({
+        "version": 1,
+        "containers": {
+            "indexer": {
+                "worker": worker,
+                "requested": "1.0.0",
+                "vm": true,
+                "resolved": {
+                    "name": BINARY_PACKAGE,
+                    "version": "1.0.0",
+                    "type": "binary",
+                    "artifacts": artifacts,
+                },
+            },
+        },
+    });
+    let lock_path = project.dir.path().join("worker-compose.lock");
+    std::fs::write(&lock_path, serde_yaml::to_string(&lock).unwrap()).unwrap();
+
+    project.start();
+    project.wait_ready("sandbox-libkrun", FIRST_UP);
+    project.wait_ready("indexer", FIRST_UP);
+    project.assert_project_dirs("indexer", true);
+    let answer = wait_for(SHORT, "iii-e2e-binary::hello", || {
+        project
+            .call(Some(NAMESPACE), "iii-e2e-binary::hello", json!({}), SHORT)
+            .ok()
+    });
+    assert_eq!(answer, "hello from a binary in a VM");
+
+    let locked: Value =
+        serde_yaml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+    assert_eq!(locked["containers"]["indexer"]["vm"], true, "{locked}");
+    let root = project.dir.path();
+    assert!(root.join(".iii/workers/indexer/run").is_file());
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(root.join(".iii/build/indexer/build.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        record["image"]["base_image"]["declared"], NODE_IMAGE,
+        "{record}"
+    );
+    let logs = project.compose_call(
+        "compose::logs",
+        json!({ "container": "indexer", "tail": 500 }),
+        SHORT,
+    );
+    assert!(
+        logs.to_string().contains("the guest runs run from"),
+        "the build did not say which executable runs: {logs}"
+    );
+
+    project.remove_last_vm("indexer");
+    project.shutdown();
+}
+
+/// Spec 8.2: `compose::remove` keeps a VM's data disk, which the container added again under the
+/// same key boots on, and `prune=true` deletes it.
+#[test]
+#[ignore = "boots microVMs; run by compose-sandbox-e2e-linux"]
+#[serial_test::serial(sandbox_vm)]
+fn compose_remove_keeps_the_data_disk_unless_prune() {
+    let mut project = Project::with_own_adapter(&format!(
+        "  sandbox-vm-worker:\n    worker: path://./sandbox-vm-worker\n{EXPLICIT}"
+    ));
+    copy_fixture(&project.dir.path().join("sandbox-vm-worker"));
+    project.start();
+    project.wait_ready("sandbox-libkrun", FIRST_UP);
+    project.wait_ready("sandbox-vm-worker", FIRST_UP);
+    let kept = |project: &Project| {
+        project.call(Some(NAMESPACE), "sandbox-vm-worker::kept", json!({}), SHORT)
+    };
+    wait_for(SHORT, "sandbox-vm-worker::keep", || {
+        project
+            .call(
+                Some(NAMESPACE),
+                "sandbox-vm-worker::keep",
+                json!({ "text": "written before rm" }),
+                SHORT,
+            )
+            .ok()
+    });
+    assert_eq!(kept(&project).unwrap(), "written before rm");
+
+    // Without prune the runtime state goes and the data disk stays.
+    project.remove("sandbox-vm-worker", false);
+    let workers = project.home.path().join(".iii/sandbox/workers");
+    let disks: Vec<PathBuf> = project
+        .vm_states()
+        .into_iter()
+        .map(|state| workers.join(state))
+        .filter(|vm| vm.join("upper.ext4").is_file())
+        .collect();
+    assert_eq!(
+        disks.len(),
+        1,
+        "rm kept no data disk: {:?}",
+        project.vm_states()
+    );
+    assert!(
+        !disks[0].join("state.json").exists(),
+        "rm kept the runtime state in {}",
+        disks[0].display()
+    );
+    let log = std::fs::read_to_string(project.home.path().join("compose.log")).unwrap();
+    assert!(
+        log.contains("a container added again as sandbox-vm-worker boots with it"),
+        "rm did not say where the data stayed:\n{}",
+        project.compose_log_tail()
+    );
+
+    // Added again under the same key, it boots on that disk.
+    let accepted = project.compose_call(
+        "compose::add",
+        json!({ "workers": [{
+            "worker": "path://./sandbox-vm-worker",
+            "start_after": ["sandbox-libkrun"],
+            "scripts": { "build": "iii sandbox build", "run": "iii sandbox run" },
+        }] }),
+        LONG,
+    );
+    project.finish("compose::add", &accepted);
+    project.wait_ready("sandbox-vm-worker", FIRST_UP);
+    let again = wait_for(SHORT, "sandbox-vm-worker::kept", || kept(&project).ok());
+    assert_eq!(again, "written before rm");
+
+    // With prune, everything goes.
+    project.remove("sandbox-vm-worker", true);
+    let left = project.vm_states();
+    assert!(
+        left.is_empty(),
+        "rm with prune left VM state behind: {left:?}"
+    );
+    project.shutdown();
+}
+
 /// Set on the fake adapter's container; the fixtures do nothing without their
 /// variable, since `--ignored` runs them too.
 const FAKE_ADAPTER: &str = "FAKE_ADAPTER";
@@ -734,7 +987,7 @@ fn seed_builds(root: &std::path::Path, guests: &[&str]) {
                     "reference": "docker.io/iiidev/python:latest",
                     "digest": null
                 },
-                "adapter": { "name": "sandbox-libkrun", "version": "0.4.0" },
+                "adapter": { "name": "sandbox-libkrun", "version": "0.5.0" },
                 "contract": { "major": 1, "minor": 3 }
             },
             "built_at": "2026-11-10T00:00:00Z"
@@ -764,8 +1017,9 @@ fn fake_adapter() {
     };
 
     use iii_sandbox_contract::{
-        AdapterInfo, ContractVersion, FEATURE_BUILD, FEATURE_LEASE, FEATURE_LOGS_FROM_END,
-        FEATURE_SCOPED_AUTH, SandboxErrorCode, scoped_auth_matches,
+        AdapterInfo, ContractVersion, FEATURE_BINARY, FEATURE_BUILD, FEATURE_LEASE,
+        FEATURE_LOGS_FROM_END, FEATURE_PRUNE, FEATURE_SCOPED_AUTH, SandboxErrorCode,
+        scoped_auth_matches,
     };
     use iii_sdk::RegisterFunction;
 
@@ -890,13 +1144,15 @@ fn fake_adapter() {
             |_: Value, _: Option<Value>| -> Result<Value, iii_sdk::Error> {
                 Ok(serde_json::to_value(AdapterInfo {
                     adapter: "sandbox-libkrun".into(),
-                    adapter_version: "0.4.0".into(),
+                    adapter_version: "0.5.0".into(),
                     contract: ContractVersion::CURRENT,
                     features: [
                         FEATURE_SCOPED_AUTH,
                         FEATURE_LEASE,
                         FEATURE_LOGS_FROM_END,
                         FEATURE_BUILD,
+                        FEATURE_BINARY,
+                        FEATURE_PRUNE,
                     ]
                     .map(str::to_string)
                     .to_vec(),
@@ -1029,9 +1285,14 @@ fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
     );
 
     project.kill_command("app", "failed");
-    project.remove("app");
+    project.remove("app", true);
     let destroys = fake_adapter_calls(&root, "worker::destroy");
     assert_eq!(destroys.len(), 2, "{destroys:?}");
+    // Asked to prune, every destroy says so (spec 8.2).
+    assert!(
+        destroys.iter().all(|call| call["request"]["prune"] == true),
+        "{destroys:?}"
+    );
     let stops = fake_adapter_calls(&root, "worker::stop");
     assert_eq!(stops.len(), 1, "{stops:?}");
     assert_eq!(stops[0]["token"], "project");
@@ -1129,13 +1390,15 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     assert_eq!(stopped.len(), stops + 1, "{stopped:?}");
     assert_eq!(stopped[stops]["token"], "scoped");
 
-    // Removing the container still removes its VM state.
+    // Removing the container still removes its VM state, and keeps its data: the destroy sends
+    // no `prune`, once the adapter said it has `worker.prune` (spec 7.2, 8.2).
     project.up_again("app");
-    project.remove("app");
+    project.remove("app", false);
     let destroyed = calls("worker::destroy");
     assert_eq!(destroyed.len(), 1, "{destroyed:?}");
     assert_eq!(destroyed[0]["token"], "project");
     assert_eq!(destroyed[0]["request"]["state_key"], request["state_key"]);
+    assert_eq!(destroyed[0]["request"].get("prune"), None, "{destroyed:?}");
 
     project.shutdown();
 }

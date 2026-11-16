@@ -219,11 +219,11 @@ pub(crate) async fn plan(
         file,
         asked,
         policy,
-        |key, reference, range| async move {
-            registry::resolve_graph(&key, &reference, &range).await
+        |key, reference, range, platform| async move {
+            registry::resolve_graph_on(&key, &reference, &range, platform).await
         },
-        |key, reference, range| async move {
-            registry::resolve_node(&key, &reference, &range).await
+        |key, reference, range, platform| async move {
+            registry::resolve_node_on(&key, &reference, &range, platform).await
         },
     )
     .await
@@ -231,7 +231,8 @@ pub(crate) async fn plan(
 
 /// [`plan`] with injectable registry lookups, so the planning rules can be
 /// exercised without a registry. Both lookups take `(container, reference,
-/// range)`.
+/// range, platform)`: the platform of the build the container installs, so a binary in a VM
+/// resolves for its Linux build.
 pub(crate) async fn plan_with<G, GFut, N, NFut>(
     file: &ComposeFile,
     asked: &[NewContainer],
@@ -240,9 +241,9 @@ pub(crate) async fn plan_with<G, GFut, N, NFut>(
     resolve_node: N,
 ) -> Result<Plan>
 where
-    G: Fn(String, String, String) -> GFut,
+    G: Fn(String, String, String, Platform) -> GFut,
     GFut: std::future::Future<Output = Result<registry::Graph>>,
-    N: Fn(String, String, String) -> NFut,
+    N: Fn(String, String, String, Platform) -> NFut,
     NFut: std::future::Future<Output = Result<Node>>,
 {
     let paths: BTreeSet<String> = file
@@ -273,6 +274,7 @@ where
                 worker.key.clone(),
                 reference.clone(),
                 version.clone().unwrap_or_else(|| "*".to_string()),
+                declaration_platform(&worker, file),
             )
             .await?;
             let nodes: BTreeMap<_, _> = graph
@@ -368,7 +370,7 @@ where
             let exact_version = locked.is_some();
             let node = match locked {
                 Some(locked) => Node::from(&locked),
-                None => resolve_node(key.clone(), reference, range.clone()).await?,
+                None => resolve_node(key.clone(), reference, range.clone(), platform).await?,
             };
             let exact_version = exact_version || range == node.version;
             Ok((
@@ -1059,6 +1061,41 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn add_passes_the_vm_platform_to_the_registry_for_a_binary_container() {
+        let file = ComposeFile::parse(
+            "containers:
+  local:
+    worker: path://.
+",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let request: crate::edit::WorkerInput = serde_json::from_value(serde_json::json!({
+            "worker": "tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20"}
+        }))
+        .unwrap();
+        let asked = [request.parse().unwrap()];
+        let plan = plan_with(
+            &file,
+            &asked,
+            &Policy::Add,
+            |key, _, _, platform| async move {
+                assert_eq!(key, "tool");
+                assert_eq!(platform, Platform::Vm);
+                Ok(registry::Graph {
+                    nodes: vec![node("tool", "1.0.0")],
+                    edges: vec![],
+                })
+            },
+            |_, _, _, _| async { panic!("no existing registry containers") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.containers[0].key, "tool");
+    }
+
     #[test]
     fn the_platform_of_a_declaration_follows_its_own_scripts_and_runtime() {
         let file = ComposeFile::parse(
@@ -1500,22 +1537,25 @@ mod tests {
             fields: Default::default(),
         }];
 
-        let plan = plan_with(
-            &file,
-            &asked,
-            &Policy::Update {
-                generated: BTreeSet::new(),
-            },
-            |_, _, _| async {
-                Ok::<_, ComposeError>(registry::Graph {
-                    nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
-                    edges: vec![("state".into(), "queue".into())],
-                })
-            },
-            |key, _, _| async move { Err::<Node, _>(conflict(&key, "this test has no registry")) },
-        )
-        .await
-        .unwrap();
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Update {
+                    generated: BTreeSet::new(),
+                },
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
+                        edges: vec![("state".into(), "queue".into())],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(keys(&plan), vec!["queue", "database"]);
         let database = container(&plan, "database");

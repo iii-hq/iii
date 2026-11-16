@@ -866,16 +866,19 @@ async fn restart_one_scoped(
 /// dependents would discard healthy processes that the following idempotent
 /// `up` is expected to preserve. The old declaration remains available here so
 /// the removed container can still run its `post_run` hook.
+///
+/// A VM container's VM is destroyed: with `prune`, its data too (spec 8.2).
 pub async fn remove_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     report::in_project_scope(
         &ctx.file.path,
-        remove_one_scoped(ctx, children, records, key, operation_id),
+        remove_one_scoped(ctx, children, records, key, operation_id, prune),
     )
     .await
 }
@@ -886,6 +889,7 @@ async fn remove_one_scoped(
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -943,7 +947,7 @@ async fn remove_one_scoped(
             )
             .await;
         }
-        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace).await;
+        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace, prune).await;
     }
     // Its build goes with it (spec 3.3); `.iii/workers/` follows the lock.
     let build = crate::build_step::build_dir(&ctx.file.path, key);

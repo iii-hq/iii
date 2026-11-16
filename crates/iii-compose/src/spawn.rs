@@ -56,7 +56,7 @@ use crate::manifest::StartSpec;
 /// - `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR` and
 ///   `III_PACKAGE_NAME` are what `iii sandbox build` and `iii sandbox run` read (spec 8.3), and
 ///   what a bundle on the host is handed (spec 7.5): Compose sets them, never the file.
-pub const RESERVED_ENV: [&str; 14] = [
+pub const RESERVED_ENV: [&str; 15] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -71,6 +71,7 @@ pub const RESERVED_ENV: [&str; 14] = [
     crate::sandbox_cli::BUILD_COMPOSE_FILE_ENV,
     crate::sandbox_cli::PACKAGE_DIR_ENV,
     crate::sandbox_cli::PACKAGE_NAME_ENV,
+    crate::sandbox_cli::PACKAGE_KIND_ENV,
 ];
 
 /// The compose file as `III_COMPOSE_FILE` names it: canonical, else absolute, else as given.

@@ -80,8 +80,8 @@ pub fn base_image(container: &Container) -> Option<&str> {
 }
 
 /// The rule of spec 4.2 for container `key` when it is a binary package, which
-/// `sandbox::validate_scripts` applies in place of `RUN_NOT_ALLOWED_FOR_PACKAGE`: its scripts run
-/// on the host like any other's, and a VM needs `runtime.base_image`
+/// `sandbox::validate_scripts` applies: its scripts run on the host like any other's, and a VM
+/// needs `runtime.base_image`
 /// (`SANDBOX_BINARY_WITHOUT_BASE_IMAGE`). The checks every VM container gets (`scripts.build`,
 /// the platform) stay with `validate_scripts`. `container` must be lock-attached.
 pub fn check(key: &str, container: &Container) -> Result<()> {

@@ -1171,6 +1171,7 @@ impl Project {
         file: ComposeFile,
         removed: &[String],
         operation_id: String,
+        prune: bool,
     ) -> (Vec<OpResult>, OpResult) {
         let package_cache = self.package_cache();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
@@ -1214,6 +1215,7 @@ impl Project {
                         &mut state.containers,
                         worker,
                         format!("{operation_id}-remove-{index}"),
+                        prune,
                     )
                     .await,
                 );
@@ -2492,7 +2494,7 @@ mod adapter_restart_tests {
 
         let (stopped, up) = fixture
             .project
-            .reconcile_removals(fixture.file(), &["sb".into()], "remove".into())
+            .reconcile_removals(fixture.file(), &["sb".into()], "remove".into(), false)
             .await;
         fixture.supervise().await;
 
@@ -3145,6 +3147,67 @@ mod adapter_restart_tests {
         project.shutdown().await;
     }
 
+    /// `compose::remove` keeps a VM's data unless asked to prune it (spec 8.2): its destroy
+    /// carries `prune` only then, and keeping the data asks the adapter for `worker.prune` first.
+    #[tokio::test]
+    async fn remove_sends_prune_only_when_asked() {
+        for prune in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_small_project(dir.path(), EXPLICIT, &fake_iii());
+            let calls = Arc::new(std::sync::Mutex::new(Vec::<(String, Option<bool>)>::new()));
+            let called = calls.clone();
+            let project = open_small_project(
+                &path,
+                &format!("remove-prune-{}", uuid::Uuid::new_v4()),
+                move |function, payload| {
+                    let answer = match function {
+                        "sandbox-libkrun::adapter::info" => answered(json!({
+                            "adapter": "sandbox-libkrun",
+                            "adapter_version": "0.5.0",
+                            "contract": { "major": 1, "minor": 4 },
+                            "features": ["worker.prune"],
+                        })),
+                        "sandbox-libkrun::worker::destroy" => {
+                            answered(json!({ "destroyed": true }))
+                        }
+                        "sandbox-libkrun::worker::status" | "sandbox-libkrun::worker::stop" => {
+                            return Some(refused(SandboxErrorCode::S504, 0));
+                        }
+                        _ => return None,
+                    };
+                    let suffix = function.trim_start_matches("sandbox-libkrun::").to_string();
+                    let prune = payload.get("prune").and_then(serde_json::Value::as_bool);
+                    called.lock().unwrap().push((suffix, prune));
+                    Some(answer)
+                },
+            )
+            .await;
+            let up = project.up(None, "up".into()).await;
+            assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+            calls.lock().unwrap().clear();
+
+            let next = ComposeFile::parse(
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  sb: {worker: path://./sb}\n",
+                &path,
+            )
+            .unwrap();
+            let (removed, _) = project
+                .reconcile_removals(next, &["own".into()], "remove".into(), prune)
+                .await;
+            assert_eq!(removed[0].status, OpStatus::Ok, "{removed:?}");
+            let expected: Vec<(String, Option<bool>)> = if prune {
+                vec![("worker::destroy".into(), Some(true))]
+            } else {
+                vec![
+                    ("adapter::info".into(), None),
+                    ("worker::destroy".into(), None),
+                ]
+            };
+            assert_eq!(*calls.lock().unwrap(), expected, "prune {prune}");
+            project.shutdown().await;
+        }
+    }
+
     /// The adapter refuses to destroy the state of a build that runs (S509): `remove` stops the
     /// build first, then destroys, asking again while the adapter aborts it.
     #[tokio::test]
@@ -3201,7 +3264,7 @@ mod adapter_restart_tests {
         )
         .unwrap();
         let (removed, _) = project
-            .reconcile_removals(next, &["own".into()], "remove".into())
+            .reconcile_removals(next, &["own".into()], "remove".into(), true)
             .await;
 
         assert_eq!(removed[0].status, OpStatus::Ok, "{removed:?}");

@@ -1020,7 +1020,16 @@ fn write_project_packages(workers: &Path, record: &ProjectPackages) -> Result<()
 /// The version the registry hands back for `*`, so `compose::add` can pin what
 /// it just resolved rather than writing a range that drifts under the operator.
 pub async fn latest_version(container: &str, reference: &str) -> Result<String> {
-    let resolved = resolve_package(container, reference, "*").await?;
+    latest_version_on(container, reference, Platform::Host).await
+}
+
+/// [`latest_version`] for a container that runs on `platform`.
+pub async fn latest_version_on(
+    container: &str,
+    reference: &str,
+    platform: Platform,
+) -> Result<String> {
+    let resolved = resolve_package_on(container, reference, "*", platform).await?;
     Ok(resolved.version)
 }
 
@@ -1117,10 +1126,21 @@ impl From<&ResolvedPackage> for Node {
 }
 
 pub(crate) async fn resolve_node(container: &str, reference: &str, range: &str) -> Result<Node> {
+    resolve_node_on(container, reference, range, Platform::Host).await
+}
+
+/// [`resolve_node`] for a container that runs on `platform`: the registry is asked for a build of
+/// [`Platform::targets`].
+pub(crate) async fn resolve_node_on(
+    container: &str,
+    reference: &str,
+    range: &str,
+    platform: Platform,
+) -> Result<Node> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
-    resolve(container, &registry, &name, range, host_targets())
+    resolve(container, &registry, &name, range, platform.targets())
         .await
         .map(Node::from)
 }
@@ -1165,11 +1185,28 @@ pub(crate) async fn remembering<F: std::future::Future>(future: F) -> F::Output 
 /// each other. Asking again per dependency would be slower and could resolve a
 /// different set, because each answer is computed on its own.
 pub async fn resolve_graph(container: &str, reference: &str, version_range: &str) -> Result<Graph> {
+    resolve_graph_on(container, reference, version_range, Platform::Host).await
+}
+
+/// [`resolve_graph`] for a root container that runs on `platform`: a binary package a VM runs
+/// needs a Linux build, and no build of the host.
+pub async fn resolve_graph_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+) -> Result<Graph> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
-    let response =
-        resolve_response(container, &registry, &name, version_range, host_targets()).await?;
+    let response = resolve_response(
+        container,
+        &registry,
+        &name,
+        version_range,
+        platform.targets(),
+    )
+    .await?;
     Ok(Graph {
         nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
@@ -2892,6 +2929,81 @@ mod tests {
             Some("x86_64-unknown-linux-gnu")
         );
         assert_eq!(first_available(&candidates, &darwin_only), None);
+    }
+
+    /// Every entry point used by add or a start without a lock asks for the VM build, falls
+    /// back from musl to gnu, and installs that artifact rather than a host build.
+    #[tokio::test]
+    async fn vm_resolution_entry_points_use_linux_targets_and_install_the_fallback() {
+        let server = MockServer::start().await;
+        let musl = vm_targets()[0];
+        let gnu = *vm_targets().last().unwrap();
+        let archive = package_archive("linux fixture");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let artifact = RegistryArtifact {
+            url: format!("{}/artifact", server.uri()),
+            sha256: digest.clone(),
+        };
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"target": musl}),
+            ))
+            .respond_with(ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "error": {"code": "unsupported_platform", "available": [gnu]}
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"target": gnu}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{"name": "tool", "version": "1.0.0", "type": "binary",
+                           "binaries": {(gnu): artifact}}],
+                "edges": []
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+        TEST_REGISTRY
+            .scope(server.uri(), async {
+                assert_eq!(
+                    latest_version_on("tool", "tool", Platform::Vm)
+                        .await
+                        .unwrap(),
+                    "1.0.0"
+                );
+                let node = resolve_node_on("tool", "tool", "1.0.0", Platform::Vm)
+                    .await
+                    .unwrap();
+                assert_eq!(node.vm_artifact_digest.as_deref(), Some(digest.as_str()));
+                let graph = resolve_graph_on("tool", "tool", "1.0.0", Platform::Vm)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    graph.nodes[0].vm_artifact_digest.as_deref(),
+                    Some(digest.as_str())
+                );
+                let installed = install_on("tool", "tool", "1.0.0", Platform::Vm, cache.path())
+                    .await
+                    .unwrap();
+                let Payload::Binary(program) = installed.payload else {
+                    panic!("not a binary")
+                };
+                assert_eq!(std::fs::read_to_string(program).unwrap(), "linux fixture");
+            })
+            .await;
+        server.verify().await;
     }
 
     #[test]

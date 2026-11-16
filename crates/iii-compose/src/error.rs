@@ -133,12 +133,6 @@ pub enum ComposeError {
         source_uri: String,
     },
 
-    #[error(
-        "container '{container}': 'scripts.run' and 'scripts.build' are not valid for a binary \
-         package, which runs as it was published"
-    )]
-    RunNotAllowedForPackage { container: String },
-
     /// A container key is also a directory name, under `.iii/build/` and `.iii/workers/` (spec
     /// 3.2).
     #[error(
@@ -783,7 +777,6 @@ impl ComposeError {
             Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
-            Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
             Self::InvalidBaseImage { .. } => "INVALID_BASE_IMAGE",
             Self::BaseImageWithoutVm { .. } => "BASE_IMAGE_WITHOUT_VM",
             Self::SandboxBinaryWithoutBaseImage { .. } => "SANDBOX_BINARY_WITHOUT_BASE_IMAGE",

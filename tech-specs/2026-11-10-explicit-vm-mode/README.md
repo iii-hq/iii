@@ -261,7 +261,7 @@ A new key, beside `pre_run`, `run` and `post_run`:
 | `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build` | `SANDBOX_RUN_WITHOUT_BUILD` |
 | `iii sandbox run` on Windows | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
 | `scripts.*` on a `binary` package on the host | Allowed: `scripts.run` replaces the published executable, run in today's working directory; `RUN_NOT_ALLOWED_FOR_PACKAGE` is gone |
-| `--command <cmd>` on a bundle | refused by `iii sandbox run`, as today |
+| `--command <cmd>` on a bundle or a binary | refused by `iii sandbox run`: a registry package runs what it was published with |
 
 A project needs the adapter when a container's `scripts.run` starts with `iii sandbox run`, or
 when `engine.sandbox` names the project's own namespace (`Need::Explicit`, unchanged).
@@ -364,8 +364,8 @@ path, relative to the compose file). A host build writes the same keys without `
   worker directory: `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`,
   `bun.lockb`, `requirements.txt`, `pyproject.toml`, `uv.lock`, `poetry.lock`, `Cargo.toml`,
   `Cargo.lock`, `go.mod`, `go.sum`.
-- `image.base_image.declared` is the manifest's `runtime.base_image`, or `null` when the
-  adapter chose the image; `reference` and `digest` are what the adapter reports, `digest`
+- `image.base_image.declared` is the container's `runtime.base_image`, else the manifest's,
+  or `null` when the adapter chose the image; `reference` and `digest` are what the adapter reports, `digest`
   `null` when it does not know it.
 - **One writer per case.** For a VM build, `iii sandbox build` writes `build.json` after
   `worker::build` returned, which happens only after the adapter renamed the new image into
@@ -654,8 +654,7 @@ pub struct WorkerDestroyResponse {
   everything, and it refuses the `binary` tag. Compose reads the features from `adapter::info`
   and refuses an adapter without them only where the difference matters: a destroy without
   `prune` (`worker.prune`), so a destroy never silently deletes data, and a binary build or run
-  (`worker.binary`). A destroy with `prune` does the right thing on a 1.3 adapter too. Until
-  Compose adopts contract 1.4 (KAN-292), it sends `prune: true` on every destroy.
+  (`worker.binary`). A destroy with `prune` does the right thing on a 1.3 adapter too.
 - **Versions:** `iii-sandbox-contract` gets the fields, the features, the wire examples and
   `CONTRACT_MINOR = 4`; `sandbox-libkrun` mirrors them in `src/wire.rs` and `tests/fixtures`
   and advertises both features from 0.5.0 (0.4.1 and 0.4.2 shipped without them). Compose's
@@ -857,7 +856,9 @@ A binary package that runs in a VM (section 4.2) needs its Linux build, not the 
   directory as `host_path` and its executable, the first regular file with an execute bit, root
   first, in name order, at most three directories down, never a symlink
   (`vm_binary::executable`). `iii sandbox build` sends the container's `runtime.base_image` as
-  `WorkerBuildRequest.base_image`, which a binary source requires (section 6.7).
+  `WorkerBuildRequest.base_image`, which a binary source requires (section 6.7), and says
+  which executable the guest runs in the build output:
+  `<package>: the guest runs <executable> from <host_path>`.
 
 `iii compose build` runs outside the daemon's mutation lock. When the compose file or
 `worker-compose.lock` changed while it prepared (the daemon committed an update, say), it writes
@@ -950,13 +951,17 @@ Compose hands `iii sandbox build` and `iii sandbox run` the variables of section
 - `III_BUILD_COMPOSE_FILE` = the same canonical path as `III_COMPOSE_FILE`, for
   `iii sandbox build` (`build_record::source` reads the declared `path://` there);
 - `III_PACKAGE_DIR` = `<project>/.iii/workers/<container>` and `III_PACKAGE_NAME`, set for a
-  bundle for the first time, and for a binary package that runs in a VM.
+  bundle for the first time, and for every package container with scripts, a binary whose host
+  `scripts.run` runs the build copied there included;
+- `III_PACKAGE_KIND` = the package's kind, `bundle` or `binary`, with them: a binary in a VM
+  boots as `WorkerSource::Binary`.
 
-Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV`, `BUILD_TIMEOUT_ENV` and
-`BUILD_COMPOSE_FILE_ENV` (new), `PACKAGE_DIR_ENV` and `PACKAGE_NAME_ENV` (existing).
-`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS` and `III_BUILD_COMPOSE_FILE` join `NEVER_FORWARDED`,
-where the package pair already is. All five join `spawn::RESERVED_ENV`, and the filter in
-`layer_own_vm_env` keeps these five out of `III_WORKER_ENV_KEYS`; the reserved names it includes
+Constants in `sandbox_cli.rs`: `BUILD_DIR_ENV`, `BUILD_TIMEOUT_ENV`,
+`BUILD_COMPOSE_FILE_ENV` and `PACKAGE_KIND_ENV` (new), `PACKAGE_DIR_ENV` and
+`PACKAGE_NAME_ENV` (existing). `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`,
+`III_BUILD_COMPOSE_FILE` and `III_PACKAGE_KIND` join `NEVER_FORWARDED`, where the package pair
+already is. All six join `spawn::RESERVED_ENV`, and the filter in `layer_own_vm_env` keeps these
+six out of `III_WORKER_ENV_KEYS`; the reserved names it includes
 today stay. The compose file gets its own name to keep two contracts apart: `III_COMPOSE_FILE`
 belongs to every child and reaches the guest as one of those reserved names, while
 `III_BUILD_COMPOSE_FILE` is an input of `iii sandbox build`, like the other build variables. The
@@ -1063,8 +1068,11 @@ Logs:
 - adapter: `<c>: kept the pre-build data disk at <path>`
 - destroy (`iii sandbox destroy`, `compose::remove`): `removed the VM state of <key>; kept its
   data in <paths>`, `removed the VM state and data of <key>` with prune, `no VM state for <key>`
-  when there was nothing to remove, and `<c>: kept VM <vm_id>: the adapter cannot keep its data
-  (no worker.prune); its state stays in ~/.iii/sandbox/workers/<vm_id>` (section 7.2)
+  when there was nothing to remove. `compose::remove` prefixes them with `<c>: ` and, when data
+  stayed, ends with `; a container added again as <c> boots with it`; with an adapter without
+  `worker.prune` it logs `<c>: kept VM <vm_id>: <adapter> <version> cannot keep its data (no
+  worker.prune); its state stays in ~/.iii/sandbox/workers/<vm_id>, and a container added again
+  as <c> boots with it` (section 7.2)
 
 ## 11. Delivery
 

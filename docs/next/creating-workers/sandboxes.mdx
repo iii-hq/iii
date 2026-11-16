@@ -924,7 +924,7 @@ N, or `125` when `iii sandbox` itself failed. A `build.json` that does not match
 start with [S508](#S508), and the message asks for `iii sandbox build <container>`.
 
 `--command <cmd>` runs `<cmd>` inside the VM in place of the manifest's `scripts.start`. It is only
-for a `path://` worker: `iii sandbox run` refuses it on a bundle. Compose writes this form when it
+for a `path://` worker: `iii sandbox run` refuses it on a bundle or a binary. Compose writes this form when it
 rewrites a 0.26 `path://` worker whose `scripts.run` ran inside the VM:
 
 ```text
@@ -979,11 +979,12 @@ Compose hands `iii sandbox build` and `iii sandbox run` these variables:
 | `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
-| `III_PACKAGE_DIR`        | `<project>/.iii/workers/<container>`, for a bundle or a binary package in a VM.       |
-| `III_PACKAGE_NAME`       | The package's name, for a bundle or a binary package in a VM.                         |
+| `III_PACKAGE_DIR` | `<project>/.iii/workers/<container>`, for a package container. |
+| `III_PACKAGE_NAME` | The package's name, for a package container. |
+| `III_PACKAGE_KIND` | `bundle` or `binary`: a binary boots as `WorkerSource::Binary`. |
 
-`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`, and
-`III_PACKAGE_NAME` never reach the guest and are not listed in `III_WORKER_ENV_KEYS`. The guest
+`III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`,
+`III_PACKAGE_NAME`, and `III_PACKAGE_KIND` never reach the guest and are not listed in `III_WORKER_ENV_KEYS`. The guest
 still sees the compose file's path through `III_COMPOSE_FILE`. The guest, and the VM that builds its
 image, get the container's `environment` and `env_file` variables and the reserved `III_*`
 variables, never the host's environment.

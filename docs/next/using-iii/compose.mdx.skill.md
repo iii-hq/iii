@@ -1059,7 +1059,7 @@ exception below; only start workers you trust with that environment.
 Declaring a reserved variable in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
 
 Compose hands `iii sandbox build` and `iii sandbox run` the sandbox variables listed in
-[Sandboxes](../creating-workers/sandboxes#environment-variables), plus these five, which are
+[Sandboxes](../creating-workers/sandboxes#environment-variables), plus these six, which are
 reserved too:
 
 | Variable                 | Value                                                                                 |
@@ -1067,10 +1067,13 @@ reserved too:
 | `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
-| `III_PACKAGE_DIR`        | `<project>/.iii/workers/<container>`, for a bundle.                                   |
-| `III_PACKAGE_NAME`       | The bundle's manifest name, for a bundle.                                             |
+| `III_PACKAGE_DIR` | `<project>/.iii/workers/<container>`, for a package container. |
+| `III_PACKAGE_NAME` | The package's name, for a package container. |
+| `III_PACKAGE_KIND` | The package's kind, `bundle` or `binary`. |
 
-A bundle that runs on the host gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME` too.
+A bundle that runs on the host gets the three package variables too, and so does every package
+container with `scripts`: a host `scripts.run` of a binary package finds its build in
+`III_PACKAGE_DIR`.
 
 ### Expanding values from environment variables
 
@@ -1181,7 +1184,7 @@ containers:
 | `scripts.build: iii sandbox build` only together with `scripts.run: iii sandbox run`                                                        | `SANDBOX_BUILD_WITHOUT_RUN`                                                                 |
 | `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build`                                                        | `SANDBOX_RUN_WITHOUT_BUILD`                                                                 |
 | `iii sandbox run` on Windows                                                                                                                | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
-| `--command <cmd>` on a bundle                                                                                                               | Refused by `iii sandbox run`                                                                |
+| `--command <cmd>` on a bundle or a binary | Refused by `iii sandbox run` |
 
 A project needs the adapter when a container's `scripts.run` starts with `iii sandbox run`, or when
 `engine.sandbox` names the project's own namespace. Compose then adds the generated adapter
@@ -1422,8 +1425,8 @@ relative to the compose file. A host build writes the same keys without `image`.
   directory: `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`,
   `requirements.txt`, `pyproject.toml`, `uv.lock`, `poetry.lock`, `Cargo.toml`, `Cargo.lock`,
   `go.mod`, `go.sum`.
-- `image.base_image.declared` is the manifest's `runtime.base_image`, or `null` when the adapter
-  chose the image. `reference` and `digest` are what the adapter reports, and `digest` is `null`
+- `image.base_image.declared` is the container's `runtime.base_image`, else the manifest's, or
+  `null` when the adapter chose the image. `reference` and `digest` are what the adapter reports, and `digest` is `null`
   when it does not know it.
 - For a VM build, `iii sandbox build` writes `build.json` after the adapter renamed the new image
   into place. For a host build, Compose writes it after `scripts.build` exited 0.
@@ -1467,7 +1470,7 @@ relative to the compose file. A host build writes the same keys without `image`.
 - **Dependencies.** They come from the build. To add one, edit `package.json`, run
   `iii sandbox build <container>`, and restart the container.
 - **Environment.** The guest gets the container's `environment` and `env_file` variables and the
-  reserved `III_*` variables, except the five build and package variables of
+  reserved `III_*` variables, except the six build and package variables of
   [The worker environment](#the-worker-environment). It never gets the host's environment. The
   build VM gets the same set.
 
@@ -1540,9 +1543,10 @@ The sandbox adapter adds the S-codes [S507](../creating-workers/sandboxes#S507),
 | `<c>: scripts.run now runs inside the VM (iii sandbox run --command); to keep it on the host, set scripts.build ("" when there is nothing to build)` | Warning: the rewrite wrapped a `scripts.run` command.                                                |
 | `migration due: <c>, <c>; the next up rewrites them`                                                                                                 | Warning from `compose::validate`.                                                                    |
 | `<c>: kept the pre-build data disk at <path>`                                                                                                        | The adapter kept a 0.26 data disk. In the container's logs and the adapter's log.                    |
-| `removed the VM state of <key>; kept its data in <paths>`                                                                                            | A destroy without prune, from `iii sandbox destroy` or `compose::remove`.                            |
+| `removed the VM state of <key>; kept its data in <paths>` | A destroy without prune, from `iii sandbox destroy`. `compose::remove` prefixes it with `<c>: ` and adds `; a container added again as <c> boots with it`. |
+| `<package>: the guest runs <executable> from <dir>` | The executable chosen for a binary package, in its build output. |
 | `removed the VM state and data of <key>`                                                                                                             | A destroy with prune.                                                                                |
-| `<c>: kept VM <vm_id>: the adapter cannot keep its data (no worker.prune); its state stays in ~/.iii/sandbox/workers/<vm_id>`                        | `compose::remove` without prune, with an adapter older than contract 1.4.                            |
+| `<c>: kept VM <vm_id>: <adapter> <version> cannot keep its data (no worker.prune); its state stays in ~/.iii/sandbox/workers/<vm_id>, and a container added again as <c> boots with it` | `compose::remove` without prune, with an adapter lacking `worker.prune`. |
 
 ## Build registry packages
 
