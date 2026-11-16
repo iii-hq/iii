@@ -10,8 +10,9 @@
 //! container says so, as every VM container does: `scripts.run: iii sandbox run`, with the image
 //! in `runtime.base_image`, since a binary package names none. Which of the two it is decides
 //! which build the lock resolves and installs, so it has to be known before the lock is, from
-//! the compose declaration alone: [`declares_vm`] is that decision, and the rest of this module
-//! derives from it.
+//! the compose declaration alone: [`platform`] is the platform of the build a package installs,
+//! and the rest of this module derives from it. Which containers run in a VM at all, the
+//! containers 0.26 ran in one included, stays with `sandbox` (`runs_in_vm`, `migration_due`).
 
 use std::path::Path;
 
@@ -23,18 +24,29 @@ use crate::{
     registry::Platform,
 };
 
-/// Whether `container` runs in a VM, from its declaration alone: its `scripts.run` is `iii
-/// sandbox run`, or it has none and sets `runtime.base_image` (the explicit VM mode is still to
-/// be written into it, as for a `path://` whose manifest sets one). Known before the lock, so it
-/// holds for a package whose kind is not known yet.
+/// Whether the build `container`'s package installs is a VM's, from its declaration alone: its
+/// `scripts.run` is `iii sandbox run`, or it has none and sets `runtime.base_image` (the explicit
+/// VM mode is still to be written into it). Known before the lock, so it holds for a package
+/// whose kind is not known yet. Not every VM container: a 0.26 bundle with no `scripts.run`
+/// reads `false` here and is still rewritten into a VM, which a bundle's one archive does not
+/// mind.
 pub fn declares_vm(container: &Container) -> bool {
-    match container.scripts.run.as_deref() {
+    declares_vm_with(
+        container.scripts.run.as_deref(),
+        container.base_image.is_some(),
+    )
+}
+
+/// [`declares_vm`] for a declaration not parsed into a [`Container`] yet: its `scripts.run`,
+/// and whether it sets `runtime.base_image`.
+pub fn declares_vm_with(run: Option<&str>, base_image: bool) -> bool {
+    match run {
         Some(run) => crate::sandbox::is_sandbox_run(run),
-        None => container.base_image.is_some(),
+        None => base_image,
     }
 }
 
-/// The platform whose build `container`'s package installs: [`Platform::Vm`] when it
+/// The platform of the build `container`'s package installs: [`Platform::Vm`] when it
 /// [`declares_vm`], else [`Platform::Host`]. Only a binary package has a build per platform; a
 /// bundle's one archive is the same on both.
 pub fn platform(container: &Container) -> Platform {
@@ -291,6 +303,14 @@ containers:
         assert_eq!(executable(root).as_deref(), Some("a-dir/nested-tool"));
         write(&root.join("z-tool"), 0o755);
         assert_eq!(executable(root).as_deref(), Some("z-tool"));
+
+        // Two at the same level: the first in name order.
+        let pair = tempfile::tempdir().unwrap();
+        write(&pair.path().join("bin/worker-migrate"), 0o755);
+        write(&pair.path().join("bin/worker"), 0o755);
+        assert_eq!(executable(pair.path()).as_deref(), Some("bin/worker"));
+        write(&pair.path().join("bin/aaa-setup"), 0o755);
+        assert_eq!(executable(pair.path()).as_deref(), Some("bin/aaa-setup"));
 
         // Four directories down is too deep.
         let deep = tempfile::tempdir().unwrap();

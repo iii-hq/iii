@@ -11,7 +11,7 @@ use crate::{
     ComposeFile, WorkerSource,
     edit::{NewContainer, Source},
     error::{ComposeError, Result},
-    registry::{self, Node},
+    registry::{self, Node, Platform},
 };
 
 type Identity = (String, String);
@@ -22,6 +22,8 @@ struct Package {
     node: Node,
     /// A fresh resolution of a range cannot identify an already running version.
     exact_version: bool,
+    /// The platform of the build the container installs: a binary in a VM runs its Linux build.
+    platform: Platform,
 }
 
 impl Package {
@@ -30,6 +32,37 @@ impl Package {
             self.registry.clone(),
             self.node.canonical_name().to_string(),
         )
+    }
+
+    /// Whether `other` is the same release, compared on the builds both containers install.
+    fn same_release(&self, other: &Package) -> bool {
+        self.node
+            .same_release_on(&other.node, &[self.platform, other.platform])
+    }
+}
+
+/// The platform of the build `declaration`'s package installs, as
+/// [`crate::vm_binary::platform`] decides it: from its own `scripts.run` and
+/// `runtime.base_image` when it sets them, else from the container it replaces in `file`.
+fn declaration_platform(declaration: &NewContainer, file: &ComposeFile) -> Platform {
+    let existing = file.containers.get(&declaration.key);
+    let run = match declaration.fields.get("scripts") {
+        Some(scripts) => scripts
+            .get("run")
+            .and_then(serde_yaml::Value::as_str)
+            .map(str::to_string),
+        None => existing.and_then(|container| container.scripts.run.clone()),
+    };
+    let base_image = match declaration.fields.get("runtime") {
+        Some(runtime) => runtime
+            .get("base_image")
+            .is_some_and(|image| !image.is_null()),
+        None => existing.is_some_and(|container| container.base_image.is_some()),
+    };
+    if crate::vm_binary::declares_vm_with(run.as_deref(), base_image) {
+        Platform::Vm
+    } else {
+        Platform::Host
     }
 }
 
@@ -114,7 +147,7 @@ impl UpdateScope {
             reference: reference.clone(),
             version: selector.clone(),
         };
-        let unchanged = current.node.same_release(&resolved.node);
+        let unchanged = current.same_release(resolved);
         let selector = selector_text;
         if exact {
             if unchanged {
@@ -274,12 +307,16 @@ where
                     if root {
                         declaration.key = worker.key.clone();
                     }
+                    // The root's own fields were set aside for the expansion.
+                    let platform =
+                        declaration_platform(if root { &worker } else { &declaration }, file);
                     Ok(Candidate {
                         declaration,
                         package: Some(Package {
                             registry: registry.clone(),
                             node,
                             exact_version: true,
+                            platform,
                         }),
                         root,
                     })
@@ -322,11 +359,12 @@ where
                 container.version.clone().unwrap_or_else(|| "*".into()),
                 registry,
                 container.resolved_package.clone(),
+                crate::vm_binary::platform(container),
             ))
         })
         .collect();
     let existing = futures::stream::iter(existing_requests.into_iter().map(
-        |(key, reference, range, registry, locked)| async move {
+        |(key, reference, range, registry, locked, platform)| async move {
             let exact_version = locked.is_some();
             let node = match locked {
                 Some(locked) => Node::from(&locked),
@@ -339,6 +377,7 @@ where
                     registry,
                     node,
                     exact_version,
+                    platform,
                 },
             ))
         },
@@ -461,9 +500,7 @@ fn plan_resolved(
         // The named declaration wins, so the copy must be the same package
         // at the same release; it only contributes its edges.
         match roots.get(key) {
-            Some(root)
-                if root.identity() == package.identity()
-                    && root.node.same_release(&package.node) => {}
+            Some(root) if root.identity() == package.identity() && root.same_release(package) => {}
             Some(root) if root.identity() == package.identity() => {
                 let versions = if root.node.version == package.node.version {
                     String::new()
@@ -488,11 +525,9 @@ fn plan_resolved(
 
     let mut selected = BTreeMap::new();
     for (identity, packages) in &automatic {
-        let release = &packages[0].node;
-        if packages
-            .iter()
-            .any(|package| !release.same_release(&package.node))
-        {
+        let first = packages[0];
+        let release = &first.node;
+        if packages.iter().any(|package| !first.same_release(package)) {
             return Err(conflict(
                 &identity.1,
                 &format!(
@@ -524,7 +559,7 @@ fn plan_resolved(
         let compatible: Vec<&str> = choices
             .into_iter()
             .flat_map(|choices| choices.iter())
-            .filter(|(_, package)| package.exact_version && release.same_release(&package.node))
+            .filter(|(_, package)| package.exact_version && first.same_release(package))
             .map(|(key, _)| *key)
             .collect();
         // An update moves a declared dependency to the release its graph
@@ -767,6 +802,7 @@ mod tests {
             package: Some(Package {
                 registry: registry::DEFAULT_REGISTRY.into(),
                 exact_version: true,
+                platform: Platform::Host,
                 node: Node {
                     name: name.into(),
                     alias_of: alias_of.map(str::to_string),
@@ -989,6 +1025,75 @@ mod tests {
             error
                 .to_string()
                 .contains("conflicts with the declared instances")
+        );
+    }
+
+    /// A declared binary that runs in a VM is compared on its Linux build: the same host build
+    /// with another Linux build is another release for it, and the same one for a host binary.
+    #[test]
+    fn a_binary_in_a_vm_is_compared_on_its_vm_build() {
+        let plan = |platform: Platform| {
+            let a = root("api", None, &["console"]);
+            let asked = vec![request(&a)];
+            let mut console = candidate("console", Some("shell"), &[]);
+            console.package.as_mut().unwrap().node.vm_artifact_digest = Some("c".repeat(64));
+            let mut package = candidate("shell", None, &[]).package.unwrap();
+            package.node.vm_artifact_digest = Some("d".repeat(64));
+            package.platform = platform;
+            let existing = BTreeMap::from([("shell".into(), package)]);
+            plan_resolved(
+                &asked,
+                vec![console, a],
+                &existing,
+                &existing.keys().cloned().collect(),
+                None,
+            )
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+        };
+        assert_eq!(plan(Platform::Host), Ok(()));
+        let error = plan(Platform::Vm).unwrap_err();
+        assert!(
+            error.contains("conflicts with the declared instances"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_platform_of_a_declaration_follows_its_own_scripts_and_runtime() {
+        let file = ComposeFile::parse(
+            "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+             base_image: docker.io/library/alpine:3.20\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let declared = |key: &str, fields: serde_json::Value| {
+            let mut declaration = crate::edit::parse_worker(&format!("package://{key}")).unwrap();
+            declaration.key = key.to_string();
+            declaration.fields =
+                serde_yaml::from_value(serde_yaml::to_value(fields).unwrap()).unwrap();
+            declaration_platform(&declaration, &file)
+        };
+        // The container it replaces runs in a VM.
+        assert_eq!(declared("tool", serde_json::json!({})), Platform::Vm);
+        assert_eq!(
+            declared("tool", serde_json::json!({"scripts": {"run": "./tool"}})),
+            Platform::Host
+        );
+        assert_eq!(declared("other", serde_json::json!({})), Platform::Host);
+        assert_eq!(
+            declared(
+                "other",
+                serde_json::json!({"runtime": {"base_image": "docker.io/library/alpine:3.20"}})
+            ),
+            Platform::Vm
+        );
+        assert_eq!(
+            declared(
+                "other",
+                serde_json::json!({"scripts": {"run": "iii sandbox run"}})
+            ),
+            Platform::Vm
         );
     }
 

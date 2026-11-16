@@ -431,6 +431,12 @@ the data disk, and the disks of 0.26 VMs it kept. The log says where the data st
 `prune=true` to delete the data too. Keeping the data needs an adapter with `worker.prune`; with an
 older one, Compose leaves the VM's state where it is and says so.
 
+The kept data belongs to the container key. A container added again under the same key, with any
+package, boots on that data disk, and files the old worker wrote where the new build also writes
+hide the image's. To discard the data, remove the container with `prune=true` in the first place,
+add it again and remove it with `prune=true`, or delete the directory the log names,
+`~/.iii/sandbox/workers/<vm_id>/`, while no VM of that container runs.
+
 | Field    | Description                                                   |
 | -------- | ------------------------------------------------------------- |
 | `file`   | The project to edit.                                          |
@@ -1126,7 +1132,7 @@ containers:
   onboarding:
     worker: package://api.workers.iii.dev/onboarding
     version: "0.2.0"
-    start_after: [sandbox-libkrun, state]
+    start_after: [state, sandbox-libkrun]
     scripts:
       build: iii sandbox build
       run: iii sandbox run
@@ -1166,16 +1172,16 @@ containers:
 
 ### Which containers run in a VM
 
-| Rule                                                                                                                    | Error                                                                                       |
-| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `scripts.run: iii sandbox run` only on a `bundle` package, a `binary` package, or a `path://` with `runtime.base_image` | `SANDBOX_RUN_NOT_A_VM_WORKER`                                                               |
-| `scripts.run: iii sandbox run` on a `binary` package without `runtime.base_image` in its container                      | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE`                                                         |
-| `runtime.base_image` with a `scripts.run` other than `iii sandbox run`                                                  | `BASE_IMAGE_WITHOUT_VM`                                                                     |
-| `runtime.base_image` that is not an image reference                                                                     | `INVALID_BASE_IMAGE`                                                                        |
-| `scripts.build: iii sandbox build` only together with `scripts.run: iii sandbox run`                                    | `SANDBOX_BUILD_WITHOUT_RUN`                                                                 |
-| `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build`                                    | `SANDBOX_RUN_WITHOUT_BUILD`                                                                 |
-| `iii sandbox run` on Windows                                                                                            | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
-| `--command <cmd>` on a bundle                                                                                           | Refused by `iii sandbox run`                                                                |
+| Rule                                                                                                                                        | Error                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `scripts.run: iii sandbox run` only on a `bundle` package, a `binary` package, or a `path://` with `runtime.base_image`                     | `SANDBOX_RUN_NOT_A_VM_WORKER`                                                               |
+| `scripts.run: iii sandbox run` on a `binary` package without `runtime.base_image` in its container                                          | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE`                                                         |
+| `runtime.base_image` with a `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than `iii sandbox build` (`""` included) | `BASE_IMAGE_WITHOUT_VM`                                                                     |
+| `runtime.base_image` that is not an image reference                                                                                         | `INVALID_BASE_IMAGE`                                                                        |
+| `scripts.build: iii sandbox build` only together with `scripts.run: iii sandbox run`                                                        | `SANDBOX_BUILD_WITHOUT_RUN`                                                                 |
+| `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build`                                                        | `SANDBOX_RUN_WITHOUT_BUILD`                                                                 |
+| `iii sandbox run` on Windows                                                                                                                | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
+| `--command <cmd>` on a bundle                                                                                                               | Refused by `iii sandbox run`                                                                |
 
 A project needs the adapter when a container's `scripts.run` starts with `iii sandbox run`, or when
 `engine.sandbox` names the project's own namespace. Compose then adds the generated adapter
@@ -1187,11 +1193,11 @@ These rules apply after the rewrite of older files: a missing `scripts.build`, a
 `scripts.run` is rewritten, not refused. See
 [Rewriting files from older releases](#rewriting-files-from-older-releases).
 
-`compose::add`, and the rewrite, write the adapter's container key into `start_after`, beside the
-keys already there, sorted. Adding `onboarding`, which already starts after `state`, in a project
-whose adapter container is `sandbox-libkrun`, writes `start_after: [sandbox-libkrun, state]`. An
-adapter in a container named `vm-adapter` is written as `vm-adapter`: a container is named by its
-key, never by the package it runs.
+`compose::add`, and the rewrite, append the adapter's container key to `start_after`, after the keys
+already there, which keep their order and comments. Adding `onboarding`, which already starts after
+`state`, in a project whose adapter container is `sandbox-libkrun`, writes
+`start_after: [state, sandbox-libkrun]`. An adapter in a container named `vm-adapter` is written as
+`vm-adapter`: a container is named by its key, never by the package it runs.
 
 ### Keeping a worker on the host
 
@@ -1236,6 +1242,9 @@ iii call compose::add 'workers=[{"worker":"indexer","runtime":{"base_image":"doc
   first regular executable file in it, root first and in name order, with no arguments.
 - **Host scripts.** On the host, a binary package may set `scripts` like any worker. `scripts.run`
   replaces the published executable, in the worker's usual working directory.
+- **Not on the host.** Unlike the manifest's key, the container's `runtime.base_image` never keeps a
+  worker on the host: with a `scripts.run` other than `iii sandbox run`, or a `scripts.build` other
+  than `iii sandbox build` (`""` included), it fails with `BASE_IMAGE_WITHOUT_VM`.
 
 ### The project tree
 
@@ -1499,7 +1508,7 @@ writes, the sandbox adapter update, and what happens to the data of 0.26 VMs.
 | `SANDBOX_PRUNE_UNSUPPORTED`         | `iii sandbox destroy` without `--prune`, with an adapter that does not advertise `worker.prune`. Nothing is deleted.                                                               |
 | `SANDBOX_RUN_NOT_A_VM_WORKER`       | `iii sandbox run` on a container that is not a bundle, a binary, or a `path://` with `runtime.base_image`.                                                                         |
 | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` | `iii sandbox run` on a binary package whose container sets no `runtime.base_image`.                                                                                                |
-| `BASE_IMAGE_WITHOUT_VM`             | `runtime.base_image` on a container whose `scripts.run` runs it on the host.                                                                                                       |
+| `BASE_IMAGE_WITHOUT_VM`             | `runtime.base_image` on a container whose `scripts.run` or `scripts.build` keeps it on the host.                                                                                   |
 | `INVALID_BASE_IMAGE`                | `runtime.base_image` that is not an image reference.                                                                                                                               |
 | `SANDBOX_BUILD_WITHOUT_RUN`         | `iii sandbox build` without `iii sandbox run`.                                                                                                                                     |
 | `SANDBOX_RUN_WITHOUT_BUILD`         | `iii sandbox run` with another `scripts.build` command.                                                                                                                            |

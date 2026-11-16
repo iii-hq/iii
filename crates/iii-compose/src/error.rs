@@ -189,11 +189,15 @@ pub enum ComposeError {
 
     /// `runtime.base_image` is the image of the container's VM (spec 4.2).
     #[error(
-        "container '{container}': runtime.base_image is the image of its VM, but scripts.run \
-         '{run}' runs it on the host. Set scripts.run: iii sandbox run and scripts.build: iii \
-         sandbox build, or remove runtime.base_image"
+        "container '{container}': runtime.base_image is the image of its VM, but scripts.{script} \
+         '{command}' keeps it on the host. Set scripts.build: iii sandbox build and scripts.run: \
+         iii sandbox run, or remove runtime.base_image"
     )]
-    BaseImageWithoutVm { container: String, run: String },
+    BaseImageWithoutVm {
+        container: String,
+        script: &'static str,
+        command: String,
+    },
 
     /// A binary package names no image, so its container says which one its VM runs (spec 4.2).
     #[error(

@@ -816,8 +816,10 @@ fn validate_container(
 
 /// `runtime.base_image`, checked offline: an image reference, without the whitespace or control
 /// characters no reference has (the adapter checks the rest, `S001`), on a container that runs
-/// in a VM. A `scripts.run` other than `iii sandbox run` runs it on the host, where the image
-/// would go unused; no `scripts.run` yet is the explicit VM mode still to be written.
+/// in a VM. A `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than
+/// `iii sandbox build` (`""` included), keeps it on the host, where the image would go unused;
+/// neither key yet is the explicit VM mode still to be written. Unlike the manifest's key, the
+/// container's never moves a worker to the host (spec 7.3).
 fn validate_base_image(
     key: &str,
     runtime: Option<&RawRuntime>,
@@ -832,12 +834,29 @@ fn validate_base_image(
             value: image.clone(),
         });
     }
-    if let Some(run) = &scripts.run
-        && !crate::sandbox::is_sandbox_run(run)
-    {
+    let on_host = [
+        (
+            "run",
+            scripts.run.as_ref(),
+            crate::sandbox::is_sandbox_run as fn(&str) -> bool,
+        ),
+        (
+            "build",
+            scripts.build.as_ref(),
+            crate::sandbox::is_sandbox_build,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(script, command, in_vm)| {
+        command
+            .filter(|command| !in_vm(command))
+            .map(|command| (script, command))
+    });
+    if let Some((script, command)) = on_host {
         return Err(ComposeError::BaseImageWithoutVm {
             container: key.to_string(),
-            run: run.clone(),
+            script,
+            command: command.clone(),
         });
     }
     Ok(Some(image.clone()))
@@ -1720,6 +1739,21 @@ containers:
             ),
             Err("BASE_IMAGE_WITHOUT_VM")
         );
+        // A host scripts.build keeps the container on the host too, "" included, with or
+        // without scripts.run; the message names the script.
+        for (build, run) in [
+            ("npm ci", ""),
+            ("''", ""),
+            ("npm ci", "      run: iii sandbox run\n"),
+        ] {
+            let text = format!(
+                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+                 base_image: docker.io/library/alpine:3.20\n    scripts:\n      build: {build}\n{run}"
+            );
+            let error = ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap_err();
+            assert_eq!(error.code(), "BASE_IMAGE_WITHOUT_VM", "{build}");
+            assert!(error.to_string().contains("scripts.build"), "{error}");
+        }
         assert_eq!(
             parse("    runtime:\n      kind: node\n"),
             Err("INVALID_COMPOSE_FILE")

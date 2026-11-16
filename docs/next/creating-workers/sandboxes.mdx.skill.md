@@ -947,6 +947,12 @@ removed the VM state of 9f2c1e; kept its data in /home/you/.iii/sandbox/workers/
 adapter that advertises `worker.prune`; with an older one, `iii sandbox destroy` fails with
 `SANDBOX_PRUNE_UNSUPPORTED` and deletes nothing, while `--prune` works with any adapter.
 
+The kept data belongs to the VM's state key, which comes from Compose's state directory and the
+container key. A container added again under the same key, with any package, boots on it, and files
+the old worker wrote where the new build also writes hide the image's. To discard it, use `--prune`
+or `compose::remove prune=true`, add the container again and remove it with `prune=true`, or delete
+the directory `iii sandbox destroy` printed while no VM of that container runs.
+
 It acts on the VM that the [environment variables](#environment-variables) below name, which Compose
 sets for a VM container's scripts, like `iii sandbox run`. Run from a plain shell, without those
 variables, it fails with `SANDBOX_ENV_INVALID`. From outside Compose, `compose::remove` of the

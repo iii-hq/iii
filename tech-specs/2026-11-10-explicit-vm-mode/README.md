@@ -107,7 +107,7 @@ containers:
   onboarding:
     worker: package://api.workers.iii.dev/onboarding
     version: "0.2.0"
-    start_after: [sandbox-libkrun, state]
+    start_after: [state, sandbox-libkrun]
     scripts:
       build: iii sandbox build
       run: iii sandbox run
@@ -147,9 +147,11 @@ containers:
 
 `runtime.base_image`, a new container key, names the image a container's VM build starts from,
 over the `runtime.base_image` of the worker's `iii.worker.yaml`. It must be an image reference
-(`INVALID_BASE_IMAGE`) on a container that runs in a VM: one whose `scripts.run` is
-`iii sandbox run`, or that has no `scripts.run` yet (section 7.1); another `scripts.run` fails
-with `BASE_IMAGE_WITHOUT_VM`. A binary package names no image, so a binary runs in a VM only
+(`INVALID_BASE_IMAGE`) on a container that runs in a VM: its `scripts.run` is `iii sandbox run`
+and its `scripts.build` is `iii sandbox build`, or either is still to be written (section 7.1).
+A host `scripts.run`, or a `scripts.build` other than `iii sandbox build` (`""` included),
+fails with `BASE_IMAGE_WITHOUT_VM`: unlike the manifest's key, the container's never keeps a
+worker on the host (section 7.3). A binary package names no image, so a binary runs in a VM only
 with it.
 
 A `path://` whose manifest sets `runtime.base_image` runs on the host only when it declares
@@ -253,7 +255,7 @@ A new key, beside `pre_run`, `run` and `post_run`:
 | --- | --- |
 | `scripts.run: iii sandbox run` only on a `bundle` package, a `binary` package, or a `path://` with `runtime.base_image` (in its manifest or its container) | `SANDBOX_RUN_NOT_A_VM_WORKER` |
 | `scripts.run: iii sandbox run` on a `binary` package without the container's `runtime.base_image` | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` |
-| `runtime.base_image` with a `scripts.run` other than `iii sandbox run` | `BASE_IMAGE_WITHOUT_VM` |
+| The container's `runtime.base_image` with a `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than `iii sandbox build` (`""` included) | `BASE_IMAGE_WITHOUT_VM` |
 | `runtime.base_image` that is not an image reference (empty, or with whitespace) | `INVALID_BASE_IMAGE` |
 | `scripts.build: iii sandbox build` only together with `scripts.run: iii sandbox run` | `SANDBOX_BUILD_WITHOUT_RUN` |
 | `scripts.run: iii sandbox run` with a `scripts.build` other than `iii sandbox build` | `SANDBOX_RUN_WITHOUT_BUILD` |
@@ -269,9 +271,12 @@ adapter in `start_after`, a bundle without `scripts.run`, or a container with
 `runtime.base_image` and no `scripts.run` is rewritten, not refused.
 
 Which build of a binary package the lock resolves and installs depends on where it runs, so
-that is decided from the declaration alone, before the package kind is known
-(`vm_binary::declares_vm`, section 7.5): a container runs in a VM when its `scripts.run` is
-`iii sandbox run`, or when it has no `scripts.run` and sets `runtime.base_image`.
+the platform of that build is decided from the declaration alone, before the package kind is
+known (`vm_binary::platform`, section 7.5): a VM's when the container's `scripts.run` is
+`iii sandbox run`, or when it has no `scripts.run` and sets `runtime.base_image`; the host's
+otherwise. This decides a build, not which containers run in a VM: a 0.26 bundle without
+`scripts.run` reads as the host's here, has one archive for both, and is still rewritten into a
+VM (section 7.3).
 
 ## 5. Build
 
@@ -345,7 +350,7 @@ Three names build, one calling the next:
     "build_id": "sha256:7d41...",
     "base_image": { "declared": null, "reference": "docker.io/iiidev/node:latest", "digest": "sha256:b1e2..." },
     "adapter": { "name": "sandbox-libkrun", "version": "0.5.0" },
-    "contract": { "major": 1, "minor": 3 }
+    "contract": { "major": 1, "minor": 4 }
   },
   "built_at": "2026-11-10T14:03:22Z"
 }
@@ -666,16 +671,17 @@ Other keys the user set are kept. The in-memory edge (`wire`) is gone.
 The same holds for a container that sets `runtime.base_image` and has no `scripts.run`, a binary
 package or a `path://`: it asks for a VM, and gets these keys written.
 
-`start_after` names the adapter's container key, whatever it is, and keeps the keys already
-there, sorted. `iii call compose::add worker=onboarding` in a project whose adapter container
-is `sandbox-libkrun` and where `onboarding` already starts after `state` writes:
+`start_after` names the adapter's container key, whatever it is, appended after the keys
+already there, which keep their order (and, in a block list, their comments).
+`iii call compose::add worker=onboarding` in a project whose adapter container is
+`sandbox-libkrun` and where `onboarding` already starts after `state` writes:
 
 ```yaml
   # added by compose::add
   onboarding:
     worker: package://api.workers.iii.dev/onboarding
     version: "0.2.0"
-    start_after: [sandbox-libkrun, state]   # was [state]
+    start_after: [state, sandbox-libkrun]   # was [state]
     scripts:
       build: iii sandbox build
       run: iii sandbox run
@@ -734,10 +740,12 @@ marker of section 7.5 is only for a binary in a VM, which 0.26 never ran).
     the adapter in `start_after`: only those pieces are added;
   - a container with `runtime.base_image` and no `scripts.run` (section 7.1). 0.26 had no such
     key, so only a file written for 0.27 has one; the rewrite is the same.
-- **Moving to the host:** a `path://` with `runtime.base_image` stays on the host when it
-  declares its own `scripts.build` (its build command, or `""` when there is nothing to
-  build); a bundle, when its `scripts.run` is a host command. Both are edits of `scripts`, and
-  later runs leave them alone, with or without a lock.
+- **Moving to the host:** a `path://` whose manifest sets `runtime.base_image` stays on the
+  host when it declares its own `scripts.build` (its build command, or `""` when there is
+  nothing to build); a bundle, when its `scripts.run` is a host command. Both are edits of
+  `scripts`, and later runs leave them alone, with or without a lock. This holds for the
+  manifest's key only: a container's own `runtime.base_image` with a host `scripts.build` or
+  `scripts.run` is refused with `BASE_IMAGE_WITHOUT_VM` (section 4.2).
 - **Where it runs:** `compose::up` (and `iii compose --up`), `compose::add`,
   `compose::update`, `compose::restart`, `compose::build` and `iii compose build`. Read-only
   paths (`compose::validate`, `compose::ps`, `compose::status`, `iii compose logs`),
@@ -914,6 +922,13 @@ iii sandbox build [<container>] [--file <path>] [--namespace <ns>] [--engine <ur
   `compose::remove` does the same, with `prune=true`
   (`iii call compose::remove worker=<c> prune=true`) for the second, and logs the same lines.
   Without prune both need `worker.prune` (section 7.2).
+- **Kept data is reused.** A VM's `state_key` comes from the state directory and the container
+  key, so a container added again under the same key, with any package, boots on the data disk
+  a destroy without prune kept. Files the old worker wrote where the new build also writes
+  hide the image's (section 9.1). To discard the data: `compose::remove prune=true` in the
+  first place; or add the container again and remove it with `prune=true`; or delete the
+  directory the destroy printed, `~/.iii/sandbox/workers/<vm_id>/`, while no VM of that key
+  runs. The line `compose::remove` logs for the kept data says so.
 - `build` and `run` of a binary package send `WorkerSource::Binary` and, for `build`,
   `base_image` (section 7.5), and need `worker.binary` (section 7.2).
 - `iii sandbox` is visible in `iii --help` again (it was hidden for 0.26 by #2506), and the CLI
@@ -1002,7 +1017,7 @@ Compose and CLI codes:
 | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` | `iii sandbox run` on a binary package whose container sets no `runtime.base_image` |
 | `SANDBOX_BINARY_UNSUPPORTED` | `iii sandbox build` or `run` of a binary package with an adapter that does not advertise `worker.binary` |
 | `SANDBOX_PRUNE_UNSUPPORTED` | A destroy that keeps the data with an adapter that does not advertise `worker.prune` (section 7.2) |
-| `BASE_IMAGE_WITHOUT_VM` | `runtime.base_image` on a container whose `scripts.run` is not `iii sandbox run` |
+| `BASE_IMAGE_WITHOUT_VM` | A container's `runtime.base_image` with a `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than `iii sandbox build` |
 | `INVALID_BASE_IMAGE` | `runtime.base_image` that is not an image reference |
 | `SANDBOX_BUILD_WITHOUT_RUN` | `iii sandbox build` without `iii sandbox run` |
 | `SANDBOX_RUN_WITHOUT_BUILD` | `iii sandbox run` with another `scripts.build` command |
@@ -1200,7 +1215,7 @@ KAN-284 closes the phase with: `compose_sandbox_e2e` on real VMs; the Linkly tut
 | 13 | Contracts 1.3 and 1.4, additive, with `sandbox-libkrun` 0.5 as the minimum (0.4 implements 1.3 only) | 6.6, 6.7 |
 | 14 | `scripts` on packages: allowed for bundles and binaries; a binary runs in a VM with the container's `runtime.base_image` (decision 19) | 4.2 |
 | 15 | Prebuilt images are out of scope | 1 |
-| 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a file that uses none of the new keys (`scripts.build`, `scripts.run` on a bundle) still loads in 0.26 | 7.3 |
+| 16 | The rewrite is per container and idempotent, keyed on `scripts`. The lock gains one key, `vm`, only on the entry of a binary package in a VM, so a file that uses none of the new keys (`scripts.build`, `scripts.run` on a package, `runtime.base_image`) keeps a lock 0.26 loads, and still loads in 0.26 | 7.3, 7.5 |
 | 17 | A build lives as long as its caller reads its output; stopping the caller cancels it | 6.2, 7.4 |
 | 18 | A migrated VM project no longer loads in 0.26 (`scripts.build` is unknown there); going back means restoring the 0.26 file from git, as the upgrade guide says | 7.3, 11.1 |
 | 19 | Contract 1.4: a binary package runs in a VM from a build with an explicit `base_image`; `worker::destroy` keeps the data unless `prune`; Compose refuses an adapter without `worker.prune` for a destroy that keeps the data, and without `worker.binary` for a binary build or run | 6.7 |

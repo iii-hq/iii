@@ -371,8 +371,27 @@ pub async fn install(
     version_range: &str,
     cache_root: &Path,
 ) -> Result<InstalledPackage> {
-    let resolved = resolve_package(container, reference, version_range).await?;
-    install_resolved(container, &resolved, cache_root).await
+    install_on(
+        container,
+        reference,
+        version_range,
+        Platform::Host,
+        cache_root,
+    )
+    .await
+}
+
+/// [`install`] for a container that runs on `platform`: resolved for its targets, and its build
+/// installed (see [`resolve_package_on`] and [`install_resolved_on`]).
+pub async fn install_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+    cache_root: &Path,
+) -> Result<InstalledPackage> {
+    let resolved = resolve_package_on(container, reference, version_range, platform).await?;
+    install_resolved_on(container, &resolved, platform, cache_root).await
 }
 
 #[cfg(test)]
@@ -1003,6 +1022,8 @@ pub struct Node {
     pub kind: String,
     /// Digest for this host, or the bundle archive. Used to compare resolutions.
     pub artifact_digest: Option<String>,
+    /// Digest of the build a VM on this host installs ([`Platform::Vm`]), or the bundle archive.
+    pub vm_artifact_digest: Option<String>,
     pub default_config: Option<serde_json::Value>,
 }
 
@@ -1011,31 +1032,49 @@ impl Node {
         self.alias_of.as_deref().unwrap_or(&self.name)
     }
 
-    pub(crate) fn same_release(&self, other: &Self) -> bool {
+    /// The digest of the build `platform` installs.
+    pub fn artifact_digest_on(&self, platform: Platform) -> Option<&str> {
+        match platform {
+            Platform::Host => self.artifact_digest.as_deref(),
+            Platform::Vm => self.vm_artifact_digest.as_deref(),
+        }
+    }
+
+    /// Whether `other` is the same release as this node for containers on each of `platforms`:
+    /// the same version, kind and default configuration, and the same build on every one of
+    /// them. A binary in a VM compares its Linux build, which a host build says nothing about.
+    pub(crate) fn same_release_on(&self, other: &Self, platforms: &[Platform]) -> bool {
         self.version == other.version
             && self.kind == other.kind
-            && self.artifact_digest == other.artifact_digest
             && self.default_config == other.default_config
+            && platforms.iter().all(|platform| {
+                self.artifact_digest_on(*platform) == other.artifact_digest_on(*platform)
+            })
     }
 }
 
 impl From<ResolvedWorker> for Node {
     fn from(worker: ResolvedWorker) -> Self {
-        let artifact_digest = if worker.kind == "bundle" {
-            worker.sha256.as_deref()
-        } else {
-            worker
-                .binaries
-                .get(runnable_target(&worker.binaries))
-                .map(|artifact| artifact.sha256.as_str())
-        }
-        .map(str::to_ascii_lowercase);
+        let digest_on = |platform: Platform| {
+            if worker.kind == "bundle" {
+                worker.sha256.as_deref()
+            } else {
+                worker
+                    .binaries
+                    .get(platform.target(&worker.binaries))
+                    .map(|artifact| artifact.sha256.as_str())
+            }
+            .map(str::to_ascii_lowercase)
+        };
+        let (artifact_digest, vm_artifact_digest) =
+            (digest_on(Platform::Host), digest_on(Platform::Vm));
         Self {
             name: worker.name,
             alias_of: worker.alias_of,
             version: worker.version,
             kind: worker.kind,
             artifact_digest,
+            vm_artifact_digest,
             default_config: worker.config.filter(|config| !config.is_null()),
         }
     }
@@ -1043,15 +1082,19 @@ impl From<ResolvedWorker> for Node {
 
 impl From<&ResolvedPackage> for Node {
     fn from(package: &ResolvedPackage) -> Self {
+        let digest_on = |platform: Platform| {
+            package
+                .artifacts
+                .get(artifact_target(package, platform))
+                .map(|artifact| artifact.sha256.to_ascii_lowercase())
+        };
         Self {
             name: package.name.clone(),
             alias_of: package.alias_of.clone(),
             version: package.version.clone(),
             kind: package.kind.clone(),
-            artifact_digest: package
-                .artifacts
-                .get(runnable_target(&package.artifacts))
-                .map(|artifact| artifact.sha256.to_ascii_lowercase()),
+            artifact_digest: digest_on(Platform::Host),
+            vm_artifact_digest: digest_on(Platform::Vm),
             default_config: package
                 .default_config
                 .as_ref()
@@ -3129,6 +3172,77 @@ mod tests {
             Platform::Vm.target(&artifacts(&["x86_64-apple-darwin"])),
             musl
         );
+    }
+
+    /// Without symlinks, a VM finds the executable the host runs: the same search, root first, in
+    /// name order, three directories down.
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_takes_the_executable_the_host_takes_in_a_tree_without_symlinks() {
+        use std::os::unix::fs::PermissionsExt;
+        let trees: &[&[(&str, u32)]] = &[
+            &[("worker", 0o755), ("README.md", 0o644)],
+            &[("lib/data.txt", 0o644), ("bin/worker", 0o755)],
+            &[("bin/worker-migrate", 0o755), ("bin/worker", 0o755)],
+            &[("z-root", 0o755), ("a/b/c/deep", 0o755)],
+            &[("a/b/c/d/too-deep", 0o755), ("a/README", 0o644)],
+            &[("only-data.txt", 0o644)],
+        ];
+        for files in trees {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, mode) in *files {
+                let path = dir.path().join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, b"x").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(*mode)).unwrap();
+            }
+            let host = installed_binary(dir.path()).map(|path| {
+                path.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            assert_eq!(crate::vm_binary::executable(dir.path()), host, "{files:?}");
+        }
+    }
+
+    /// A node keeps the digest of the build each platform installs, so a release is compared on
+    /// the platform of the container that runs it.
+    #[test]
+    fn a_node_compares_the_build_of_each_platform() {
+        let (host, linux) = (host_targets()[0], vm_targets()[0]);
+        let package = |linux_digest: char| ResolvedPackage {
+            name: "tool".to_string(),
+            alias_of: None,
+            registry: DEFAULT_REGISTRY.to_string(),
+            version: "1.0.0".to_string(),
+            kind: "binary".to_string(),
+            artifacts: [(host, 'a'), (linux, linux_digest)]
+                .into_iter()
+                .map(|(target, digest)| {
+                    (
+                        target.to_string(),
+                        RegistryArtifact {
+                            sha256: digest.to_string().repeat(64),
+                            url: format!("https://example.com/{target}"),
+                        },
+                    )
+                })
+                .collect(),
+            default_config: None,
+        };
+        let (old, new) = (Node::from(&package('b')), Node::from(&package('c')));
+        if host == linux {
+            // One build serves both: nothing to tell apart.
+            return;
+        }
+        assert_eq!(
+            old.artifact_digest_on(Platform::Vm),
+            Some("b".repeat(64).as_str())
+        );
+        assert!(old.same_release_on(&new, &[Platform::Host]));
+        assert!(!old.same_release_on(&new, &[Platform::Vm]));
+        assert!(!old.same_release_on(&new, &[Platform::Host, Platform::Vm]));
     }
 
     #[test]
