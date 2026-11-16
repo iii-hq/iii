@@ -1033,7 +1033,10 @@ fn wanted_version(new: &NewContainer) -> Option<String> {
 }
 
 /// Build only the fields owned by this request, including resolved dependencies.
-fn declaration_fields(new: &NewContainer, existing: Option<&Mapping>) -> Result<Mapping> {
+pub(crate) fn declaration_fields(
+    new: &NewContainer,
+    existing: Option<&Mapping>,
+) -> Result<Mapping> {
     let mut fields = Mapping::new();
     let source = match &new.source {
         Source::Package { reference, .. } => format!("package://{reference}"),

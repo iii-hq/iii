@@ -929,6 +929,7 @@ fn host_only(name: &str) -> bool {
             || [
                 sandbox_cli::BUILD_DIR_ENV,
                 sandbox_cli::BUILD_TIMEOUT_ENV,
+                sandbox_cli::BUILD_BASE_IMAGE_ENV,
                 sandbox_cli::BUILD_COMPOSE_FILE_ENV,
                 sandbox_cli::PACKAGE_DIR_ENV,
                 sandbox_cli::PACKAGE_NAME_ENV,
@@ -1027,6 +1028,10 @@ pub(crate) fn layer_own_vm_env(
         (
             sandbox_cli::BUILD_DIR_ENV.to_string(),
             utf8_path(key, &crate::build_record::build_dir(compose_dir, key))?,
+        ),
+        (
+            sandbox_cli::BUILD_BASE_IMAGE_ENV.to_string(),
+            container.base_image.clone().unwrap_or_default(),
         ),
         (
             sandbox_cli::BUILD_TIMEOUT_ENV.to_string(),

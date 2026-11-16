@@ -4195,6 +4195,7 @@ mod tests {
             &project.path().join("worker-compose.yaml"),
             "state",
             &project.path().join(".iii/workers/state"),
+            None,
         )
         .unwrap();
         assert_eq!(

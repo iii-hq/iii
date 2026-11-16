@@ -285,12 +285,14 @@ pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
 ///
 /// In order: the source, the dependency files (every name added, removed or changed, sorted),
 /// and, for a VM build, the declared base image, the container's own over its manifest's. A host
-/// build records no image, so its base image is not compared.
+/// build records no image, so its base image is not compared. `base_image` is the already-expanded
+/// container override from the Compose plan, never re-read from YAML in a child process.
 pub fn changes(
     record: &BuildRecord,
     compose_file: &Path,
     container: &str,
     worker_dir: &Path,
+    base_image: Option<&str>,
 ) -> Result<Vec<Change>> {
     let mut changes = Vec::new();
 
@@ -317,7 +319,10 @@ pub fn changes(
     }
 
     if let Some(image) = &record.image {
-        let declared = effective_base_image(compose_file, container, worker_dir)?;
+        let declared = match base_image {
+            Some(image) => Some(image.to_string()),
+            None => declared_base_image(worker_dir)?,
+        };
         if declared != image.base_image.declared {
             changes.push(Change::BaseImage {
                 old: image.base_image.declared.clone(),
@@ -493,39 +498,6 @@ fn declaration(compose_file: &Path, container: &str) -> Result<serde_yaml::Value
         .ok_or_else(|| ComposeError::UnknownContainer {
             container: container.to_string(),
         })
-}
-
-/// Container `container`'s own `runtime.base_image` in `compose_file` (`${VAR}` expanded, as
-/// Compose reads it), which a VM build sends as `WorkerBuildRequest.base_image` over the
-/// manifest's (spec 7.5); `None` when it sets none.
-// Called by `iii sandbox build` (sandbox_cli.rs).
-pub fn container_base_image(compose_file: &Path, container: &str) -> Result<Option<String>> {
-    let declaration = declaration(compose_file, container)?;
-    let Some(image) = declaration
-        .get("runtime")
-        .and_then(|runtime| runtime.get("base_image"))
-        .filter(|image| !image.is_null())
-    else {
-        return Ok(None);
-    };
-    let image = image.as_str().ok_or_else(|| ComposeError::Yaml {
-        path: compose_file.to_path_buf(),
-        message: format!("containers.{container}.runtime.base_image must be a string"),
-    })?;
-    crate::interpolate::expand(image, compose_file, &|name| std::env::var(name).ok()).map(Some)
-}
-
-/// The base image a VM build of `container` declares: its own `runtime.base_image`, else its
-/// worker manifest's ([`declared_base_image`]).
-pub fn effective_base_image(
-    compose_file: &Path,
-    container: &str,
-    worker_dir: &Path,
-) -> Result<Option<String>> {
-    match container_base_image(compose_file, container)? {
-        Some(image) => Ok(Some(image)),
-        None => declared_base_image(worker_dir),
-    }
 }
 
 /// `sha256:<hex>` of the file at `path`.
@@ -971,17 +943,17 @@ mod tests {
         let (dir, file) = project();
         let worker = dir.path().join("link");
         let record = current_link_record(&file);
-        assert_eq!(changes(&record, &file, "link", &worker).unwrap(), []);
+        assert_eq!(changes(&record, &file, "link", &worker, None).unwrap(), []);
 
         // Code outside the dependency files is not a change.
         write_file(&worker.join("index.js"), "console.log(1)");
-        assert_eq!(changes(&record, &file, "link", &worker).unwrap(), []);
+        assert_eq!(changes(&record, &file, "link", &worker, None).unwrap(), []);
 
         let host = BuildRecord {
             image: None,
             ..record
         };
-        assert_eq!(changes(&host, &file, "link", &worker).unwrap(), []);
+        assert_eq!(changes(&host, &file, "link", &worker, None).unwrap(), []);
     }
 
     #[test]
@@ -993,11 +965,14 @@ mod tests {
             container: "onboarding".to_string(),
             ..vm_record(package_source("0.2.0", "sha256:8c3406"), None)
         };
-        assert_eq!(changes(&record, &file, "onboarding", &bundle).unwrap(), []);
+        assert_eq!(
+            changes(&record, &file, "onboarding", &bundle, None).unwrap(),
+            []
+        );
 
         record_package(dir.path(), "0.3.0", "sha256:aa11");
         assert_eq!(
-            changes(&record, &file, "onboarding", &bundle).unwrap(),
+            changes(&record, &file, "onboarding", &bundle, None).unwrap(),
             [Change::Source {
                 old: package_source("0.2.0", "sha256:8c3406"),
                 new: package_source("0.3.0", "sha256:aa11"),
@@ -1008,7 +983,7 @@ mod tests {
         let record = current_link_record(&file);
         write_file(&file, "containers:\n  link:\n    worker: path://link\n");
         assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, None).unwrap(),
             [Change::Source {
                 old: path_source("./link"),
                 new: path_source("link"),
@@ -1026,7 +1001,7 @@ mod tests {
         write_file(&worker.join("yarn.lock"), "");
         std::fs::remove_file(worker.join("package-lock.json")).unwrap();
         assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, None).unwrap(),
             [Change::Dependencies(vec![
                 "package-lock.json".to_string(),
                 "package.json".to_string(),
@@ -1036,49 +1011,22 @@ mod tests {
     }
 
     #[test]
-    fn a_container_image_overrides_the_manifest_and_changes_the_recorded_image() {
+    fn a_planned_container_image_overrides_the_manifest_in_stale_comparisons() {
         let (dir, file) = project();
         let worker = dir.path().join("link");
         let record = current_link_record(&file);
-        write_file(
-            &file,
-            "containers:
-  link:
-    worker: path://./link
-    runtime:
-      base_image: ${KAN292_IMAGE:-docker.io/library/alpine:3.20}
-",
-        );
+        let image = "debian:bookworm";
         assert_eq!(
-            effective_base_image(&file, "link", &worker)
-                .unwrap()
-                .as_deref(),
-            Some("docker.io/library/alpine:3.20")
-        );
-        assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, Some(image)).unwrap(),
             [Change::BaseImage {
                 old: record.image.as_ref().unwrap().base_image.declared.clone(),
-                new: Some("docker.io/library/alpine:3.20".to_string()),
+                new: Some(image.to_string()),
             }]
         );
-        let no_manifest = dir.path().join("binary");
-        assert_eq!(
-            effective_base_image(&file, "link", &no_manifest)
+        assert!(
+            changes(&record, &file, "link", &worker, None)
                 .unwrap()
-                .as_deref(),
-            Some("docker.io/library/alpine:3.20")
-        );
-        write_file(
-            &file,
-            "containers:
-  link:
-    worker: path://./link
-",
-        );
-        assert_eq!(
-            effective_base_image(&file, "link", &worker).unwrap(),
-            declared_base_image(&worker).unwrap()
+                .is_empty()
         );
     }
 
@@ -1093,7 +1041,7 @@ mod tests {
             "runtime:\n  base_image: docker.io/iiidev/python\n",
         );
         assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, None).unwrap(),
             [Change::BaseImage {
                 old: Some("docker.io/iiidev/node".to_string()),
                 new: Some("docker.io/iiidev/python".to_string()),
@@ -1101,7 +1049,7 @@ mod tests {
         );
         std::fs::remove_file(worker.join("iii.worker.yaml")).unwrap();
         assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, None).unwrap(),
             [Change::BaseImage {
                 old: Some("docker.io/iiidev/node".to_string()),
                 new: None,
@@ -1112,7 +1060,7 @@ mod tests {
             image: None,
             ..record
         };
-        assert_eq!(changes(&host, &file, "link", &worker).unwrap(), []);
+        assert_eq!(changes(&host, &file, "link", &worker, None).unwrap(), []);
     }
 
     #[test]
@@ -1128,7 +1076,7 @@ mod tests {
             "runtime:\n  base_image: docker.io/iiidev/python\n",
         );
         assert_eq!(
-            changes(&record, &file, "link", &worker).unwrap(),
+            changes(&record, &file, "link", &worker, None).unwrap(),
             [
                 Change::Source {
                     old: path_source("./link"),

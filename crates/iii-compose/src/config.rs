@@ -684,6 +684,76 @@ fn check_container_key(key: &str) -> Result<()> {
     }
 }
 
+/// Plan one upsert before registry resolution. Only supplied fields are expanded: the existing
+/// container is already parsed, so expanding its values again would misread escaped references.
+/// Supplied maps replace whole fields, just as `edit::upsert_container` persists them.
+pub(crate) fn effective_container(
+    file: &ComposeFile,
+    new: &crate::edit::NewContainer,
+) -> Result<Container> {
+    use serde_yaml::Value;
+    let mut fields = serde_yaml::Mapping::new();
+    if let Some(old) = file.containers.get(&new.key) {
+        // These fields decide the package platform. Preserve omitted fields, including the
+        // entire scripts map, but never merge individual keys into a supplied scripts/runtime.
+        fields.insert(
+            Value::from("scripts"),
+            serde_yaml::to_value(serde_json::json!({
+                "build": old.scripts.build,
+                "build_timeout": format!("{}ms", old.scripts.build_timeout.as_millis()),
+                "run": old.scripts.run,
+                "pre_run": old.scripts.pre_run,
+                "pre_run_timeout": old.scripts.pre_run.as_ref().map(|_|
+                    format!("{}ms", old.scripts.pre_run_timeout.as_millis())),
+                "post_run": old.scripts.post_run,
+            }))
+            .map_err(|error| ComposeError::Yaml {
+                path: file.path.clone(),
+                message: error.to_string(),
+            })?,
+        );
+        if let Some(image) = &old.base_image {
+            fields.insert(
+                Value::from("runtime"),
+                serde_yaml::to_value(serde_json::json!({"base_image": image})).map_err(
+                    |error| ComposeError::Yaml {
+                        path: file.path.clone(),
+                        message: error.to_string(),
+                    },
+                )?,
+            );
+        }
+    }
+    let mut supplied = crate::edit::declaration_fields(new, None)?;
+    // Registry resolution supplies a missing selector later, but planning needs a valid package
+    // declaration now. This placeholder is not persisted or used as the registry selector.
+    if matches!(new.source, crate::edit::Source::Package { .. })
+        && !supplied.contains_key("version")
+    {
+        supplied.insert(Value::from("version"), Value::from("*"));
+    }
+    let mut supplied = Value::Mapping(supplied);
+    crate::interpolate::expand_tree(&mut supplied, &file.path, &|name| std::env::var(name).ok())?;
+    if let Value::Mapping(supplied) = supplied {
+        fields.extend(supplied);
+    }
+    let text = serde_yaml::to_string(&fields).map_err(|error| ComposeError::Yaml {
+        path: file.path.clone(),
+        message: error.to_string(),
+    })?;
+    let raw: RawContainer = serde_yaml::from_str(&text).map_err(|error| ComposeError::Yaml {
+        path: file.path.clone(),
+        message: error.to_string(),
+    })?;
+    validate_container(
+        &new.key,
+        &raw,
+        &file.base_dir,
+        file.startup_timeout,
+        file.required_default,
+    )
+}
+
 fn validate_container(
     key: &str,
     raw: &RawContainer,

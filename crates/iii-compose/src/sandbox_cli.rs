@@ -84,6 +84,9 @@ pub const BUILD_DIR_ENV: &str = "III_BUILD_DIR";
 pub const BUILD_COMPOSE_FILE_ENV: &str = "III_BUILD_COMPOSE_FILE";
 /// `scripts.build_timeout` in milliseconds, for `iii sandbox build`.
 pub const BUILD_TIMEOUT_ENV: &str = "III_BUILD_TIMEOUT_MS";
+/// The container's already-expanded image override from the Compose plan. Empty means no
+/// override: never expand the compose YAML again in the child's environment.
+pub const BUILD_BASE_IMAGE_ENV: &str = "III_BUILD_BASE_IMAGE";
 /// Comma-separated names of the variables that belong to the worker and reach the guest.
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills this command.
@@ -135,7 +138,7 @@ const PROJECT_TOKEN_ENV: &str = "III_SANDBOX_WORKER_TOKEN";
 
 /// Never forwarded into the guest, even when listed: this command's own inputs, the host's
 /// engine URL (the adapter gives the guest its own) and the project token.
-const NEVER_FORWARDED: [&str; 15] = [
+const NEVER_FORWARDED: [&str; 16] = [
     TOKEN_ENV,
     STATE_KEY_ENV,
     ADAPTER_ENV,
@@ -147,6 +150,7 @@ const NEVER_FORWARDED: [&str; 15] = [
     BUILD_DIR_ENV,
     BUILD_COMPOSE_FILE_ENV,
     BUILD_TIMEOUT_ENV,
+    BUILD_BASE_IMAGE_ENV,
     WORKER_ENV_KEYS_ENV,
     STOP_TIMEOUT_ENV,
     URL_ENV,
@@ -377,6 +381,8 @@ pub(crate) struct BuildContext {
     compose_file: PathBuf,
     /// `III_BUILD_TIMEOUT_MS`: `scripts.build_timeout`.
     timeout: Duration,
+    /// The trusted image override, expanded by the daemon before container env overrides.
+    base_image: Option<String>,
 }
 
 impl BuildContext {
@@ -392,6 +398,7 @@ impl BuildContext {
             build_dir: required(vars, BUILD_DIR_ENV)?,
             compose_file: PathBuf::from(required(vars, BUILD_COMPOSE_FILE_ENV)?),
             timeout,
+            base_image: present(vars, BUILD_BASE_IMAGE_ENV).map(str::to_string),
         })
     }
 
@@ -559,12 +566,6 @@ pub(crate) trait Records: Send + Sync {
     fn source(&self, compose_file: &Path, container: &str) -> crate::error::Result<BuildSource>;
     /// [`build_record::declared_base_image`].
     fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>>;
-    /// [`build_record::container_base_image`].
-    fn container_base_image(
-        &self,
-        compose_file: &Path,
-        container: &str,
-    ) -> crate::error::Result<Option<String>>;
     /// [`build_record::dependency_files`].
     fn dependency_files(&self, worker_dir: &Path)
     -> crate::error::Result<BTreeMap<String, String>>;
@@ -588,14 +589,6 @@ impl Records for BuildRecords {
 
     fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>> {
         build_record::declared_base_image(worker_dir)
-    }
-
-    fn container_base_image(
-        &self,
-        compose_file: &Path,
-        container: &str,
-    ) -> crate::error::Result<Option<String>> {
-        build_record::container_base_image(compose_file, container)
     }
 
     fn dependency_files(
@@ -1457,6 +1450,19 @@ pub(crate) async fn build_vm(
     };
     check_adapter(&info, &target.adapter, &ctx.source)?;
     let inputs = build_inputs(bctx, records)?;
+    // worker.binary announces the 1.4 image override for every source, not only Binary.
+    if inputs.base_image.is_some() && !info.supports(FEATURE_BINARY) {
+        return Err(Failure::runner(
+            SANDBOX_BINARY_UNSUPPORTED,
+            format!(
+                "{} {} does not support the container runtime.base_image override \
+                 (requires {FEATURE_BINARY} from sandbox contract 1.4). {}",
+                target.adapter,
+                info.adapter_version,
+                update_hint()
+            ),
+        ));
+    }
     // A binary's executable is found, not declared: the build says which one the guest runs.
     if let WorkerSource::Binary {
         package,
@@ -1545,9 +1551,7 @@ fn build_inputs(bctx: &BuildContext, records: &dyn Records) -> Result<BuildInput
     let source = records
         .source(&bctx.compose_file, &bctx.container.worker_name)
         .map_err(failed)?;
-    let base_image = records
-        .container_base_image(&bctx.compose_file, &bctx.container.worker_name)
-        .map_err(failed)?;
+    let base_image = bctx.base_image.clone();
     let declared_base_image = match &base_image {
         Some(image) => Some(image.clone()),
         None => records.declared_base_image(worker_dir).map_err(failed)?,
@@ -2281,8 +2285,6 @@ mod tests {
         /// Every `source` after the first finds no package, as while its directory is replaced.
         missing_later: bool,
         source_reads: Mutex<usize>,
-        /// The container's own `runtime.base_image`.
-        container_image: Option<String>,
     }
 
     /// A bundle source, for a check that does not depend on it.
@@ -2351,10 +2353,6 @@ mod tests {
         fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>> {
             self.happened(format!("declared_base_image {}", worker_dir.display()));
             Ok(Some("docker.io/iiidev/python".into()))
-        }
-
-        fn container_base_image(&self, _: &Path, _: &str) -> crate::error::Result<Option<String>> {
-            Ok(self.container_image.clone())
         }
 
         fn dependency_files(
@@ -3032,6 +3030,219 @@ mod tests {
         }
     }
 
+    /// Run this regression in subprocesses so each parse/build sees its real process env,
+    /// without mutating the parallel test runner's environment.
+    #[test]
+    fn planned_images_survive_container_env_overrides_and_missing_child_variables() {
+        const TEST: &str = "sandbox_cli::tests::planned_images_survive_container_env_overrides_and_missing_child_variables";
+        const PHASE: &str = "KAN292_IMAGE_PHASE";
+        const PLAN: &str = "KAN292_IMAGE_PLAN";
+        let phase = std::env::var(PHASE).ok();
+        if phase.is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(PHASE, "plan")
+                .env("RUNTIME_IMAGE", "debian:bookworm")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if phase.as_deref() == Some("plan") {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("worker.env"), "RUNTIME_IMAGE=alpine:3.20\n").unwrap();
+            sandbox::tests::manifest(dir.path(), "api", "scripts: {start: run}\n");
+            for declared_env in [
+                "    environment: {RUNTIME_IMAGE: 'alpine:3.20'}\n",
+                "    env_file: [worker.env]\n",
+                "",
+            ] {
+                let text = format!(
+                    "containers:\n  api:\n    worker: path://./api\n    runtime:\n      base_image: ${{RUNTIME_IMAGE}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n{declared_env}"
+                );
+                let path = dir.path().join("worker-compose.yaml");
+                std::fs::write(&path, &text).unwrap();
+                let file = crate::ComposeFile::parse(&text, &path).unwrap();
+                assert_eq!(
+                    file.containers["api"].base_image.as_deref(),
+                    Some("debian:bookworm")
+                );
+                let mut env = file.containers["api"].resolve_user_env("api").unwrap();
+                sandbox::layer_own_vm_env(&file, "api", "project", dir.path(), "orders", &mut env)
+                    .unwrap();
+                assert!(crate::spawn::is_reserved_env(BUILD_BASE_IMAGE_ENV));
+                assert!(!env[WORKER_ENV_KEYS_ENV].contains(BUILD_BASE_IMAGE_ENV));
+                env.insert(URL_ENV.into(), "ws://127.0.0.1:49134".into());
+                env.insert(WORKER_NAME_ENV.into(), "api".into());
+                if declared_env.is_empty() {
+                    env.remove("RUNTIME_IMAGE");
+                }
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env_remove("RUNTIME_IMAGE")
+                    .envs(&env)
+                    .env(PHASE, "build")
+                    .env(PLAN, serde_json::to_string(&env).unwrap());
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{declared_env}: {}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+        assert_eq!(phase.as_deref(), Some("build"));
+        let env: BTreeMap<String, String> =
+            serde_json::from_str(&std::env::var(PLAN).unwrap()).unwrap();
+        assert_ne!(
+            std::env::var("RUNTIME_IMAGE").ok().as_deref(),
+            Some("debian:bookworm")
+        );
+        let bctx = BuildContext::from_vars(&env).unwrap();
+        assert_eq!(bctx.base_image.as_deref(), Some("debian:bookworm"));
+        assert!(!bctx.container.env.contains_key(BUILD_BASE_IMAGE_ENV));
+        if let Some(value) = env.get("RUNTIME_IMAGE") {
+            assert_eq!(value, "alpine:3.20");
+            // The user's guest environment is not dropped to fix image selection.
+            assert_eq!(bctx.container.env["RUNTIME_IMAGE"], "alpine:3.20");
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let features: Vec<_> = REQUIRED_FEATURES
+                    .into_iter()
+                    .chain([FEATURE_BINARY])
+                    .collect();
+                let (client, mut called, _) = build_engine(
+                    adapter(move |suffix, _| match suffix {
+                        "adapter::info" => Some(answered(info(&features))),
+                        "worker::build" => Some(built()),
+                        _ => None,
+                    }),
+                    Vec::new(),
+                )
+                .await;
+                let record = build_vm(
+                    &bctx,
+                    &FakeRecords::default(),
+                    &client,
+                    &never(),
+                    captured().0,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    payload(&calls(&mut called), "worker::build")["base_image"],
+                    "debian:bookworm"
+                );
+                assert_eq!(
+                    record.image.unwrap().base_image.declared.as_deref(),
+                    Some("debian:bookworm")
+                );
+                client.shutdown_async().await;
+            });
+    }
+
+    #[tokio::test]
+    async fn image_overrides_require_worker_binary_for_local_and_bundle_sources() {
+        for source in [context().source, bundle_source()] {
+            for override_image in [None, Some("debian:bookworm")] {
+                for supports_override in [false, true] {
+                    let features: Vec<_> = REQUIRED_FEATURES
+                        .into_iter()
+                        .chain(supports_override.then_some(FEATURE_BINARY))
+                        .collect();
+                    let (client, mut called, _) = build_engine(
+                        adapter(move |suffix, _| match suffix {
+                            "adapter::info" => Some(answered(info(&features))),
+                            "worker::build" => Some(built()),
+                            _ => None,
+                        }),
+                        Vec::new(),
+                    )
+                    .await;
+                    let mut bctx = build_context();
+                    bctx.container.source = source.clone();
+                    bctx.base_image = override_image.map(str::to_string);
+                    let result = build_vm(
+                        &bctx,
+                        &FakeRecords::default(),
+                        &client,
+                        &never(),
+                        captured().0,
+                    )
+                    .await;
+                    let calls = calls(&mut called);
+                    if override_image.is_some() && !supports_override {
+                        let error = result.unwrap_err();
+                        assert_eq!(error.code, SANDBOX_BINARY_UNSUPPORTED);
+                        assert!(
+                            error.message.contains("runtime.base_image override"),
+                            "{error}"
+                        );
+                        assert!(payloads(&calls, "worker::build").is_empty(), "{calls:?}");
+                        assert!(
+                            payloads(&calls, "engine::channels::create").is_empty(),
+                            "{calls:?}"
+                        );
+                    } else {
+                        let record = result.unwrap();
+                        assert_eq!(
+                            payload(&calls, "worker::build")["base_image"].as_str(),
+                            override_image
+                        );
+                        assert_eq!(
+                            record.image.unwrap().base_image.declared.as_deref(),
+                            override_image.or(Some("docker.io/iiidev/python"))
+                        );
+                    }
+                    client.shutdown_async().await;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fake_destroy_with_only_kept_data_reports_the_retained_paths() {
+        let disk = "/remote/adapter-home/.iii/sandbox/workers/v/upper.ext4";
+        let features: Vec<_> = REQUIRED_FEATURES
+            .into_iter()
+            .chain([FEATURE_PRUNE])
+            .collect();
+        let (url, mut called) = fake_engine_url(adapter(move |suffix, _| match suffix {
+            "adapter::info" => Some(answered(info(&features))),
+            "worker::destroy" => Some(answered(json!({"destroyed": false, "kept": [disk]}))),
+            _ => None,
+        }))
+        .await;
+        let mut vars = compose_vars();
+        vars.insert(URL_ENV.into(), url);
+        let target = Target::from_vars(&vars).unwrap();
+        let client = connect(&target.engine_url);
+        let reply = destroy_vm(&target, &client, false).await.unwrap();
+        assert!(!reply.destroyed);
+        // This is the formatter used by both CLI and remove, not a guessed local HOME.
+        assert_eq!(
+            sandbox::destroyed_line(&target.state_key, false, &reply).unwrap(),
+            format!(
+                "no VM state for {}; its data stays in {disk}",
+                target.state_key
+            )
+        );
+        assert_eq!(payloads(&calls(&mut called), "worker::destroy").len(), 1);
+        client.shutdown_async().await;
+    }
+
     /// A binary package in a VM boots as `WorkerSource::Binary` from its package directory,
     /// builds from the container's own `runtime.base_image`, says which executable the guest
     /// runs, needs `worker.binary`, and takes no `--command`.
@@ -3056,11 +3267,12 @@ mod tests {
         vars.insert(PACKAGE_KIND_ENV.into(), "binary".into());
         let refused = Context::from_vars(&vars, Some("./x".into())).unwrap_err();
         assert!(refused.contains("a registry binary runs"), "{refused}");
+        vars.insert(
+            BUILD_BASE_IMAGE_ENV.into(),
+            "docker.io/library/alpine:3.20".into(),
+        );
         let bctx = BuildContext::from_vars(&vars).unwrap();
-        let records = FakeRecords {
-            container_image: Some("docker.io/library/alpine:3.20".into()),
-            ..FakeRecords::default()
-        };
+        let records = FakeRecords::default();
 
         let (client, mut called, _) = build_engine(
             adapter(|suffix, _| (suffix == "worker::build").then(built)),

@@ -41,29 +41,11 @@ impl Package {
     }
 }
 
-/// The platform of the build `declaration`'s package installs, as
-/// [`crate::vm_binary::platform`] decides it: from its own `scripts.run` and
-/// `runtime.base_image` when it sets them, else from the container it replaces in `file`.
-fn declaration_platform(declaration: &NewContainer, file: &ComposeFile) -> Platform {
-    let existing = file.containers.get(&declaration.key);
-    let run = match declaration.fields.get("scripts") {
-        Some(scripts) => scripts
-            .get("run")
-            .and_then(serde_yaml::Value::as_str)
-            .map(str::to_string),
-        None => existing.and_then(|container| container.scripts.run.clone()),
-    };
-    let base_image = match declaration.fields.get("runtime") {
-        Some(runtime) => runtime
-            .get("base_image")
-            .is_some_and(|image| !image.is_null()),
-        None => existing.is_some_and(|container| container.base_image.is_some()),
-    };
-    if crate::vm_binary::declares_vm_with(run.as_deref(), base_image) {
-        Platform::Vm
-    } else {
-        Platform::Host
-    }
+/// The platform of the effective upsert: expand supplied fields as Compose does, preserving
+/// omitted fields from the already-expanded container. Raw request fields remain for persistence.
+fn declaration_platform(declaration: &NewContainer, file: &ComposeFile) -> Result<Platform> {
+    crate::config::effective_container(file, declaration)
+        .map(|container| crate::vm_binary::platform(&container))
 }
 
 struct Candidate {
@@ -246,6 +228,15 @@ where
     N: Fn(String, String, String, Platform) -> NFut,
     NFut: std::future::Future<Output = Result<Node>>,
 {
+    // Validate/expand all roots before any registry request, not lazily beside concurrent
+    // lookups: an undefined reference must fail without contacting the registry at all.
+    let effective: BTreeMap<_, _> = asked
+        .iter()
+        .map(|request| {
+            crate::config::effective_container(file, request)
+                .map(|container| (request.key.clone(), container))
+        })
+        .collect::<Result<_>>()?;
     let paths: BTreeSet<String> = file
         .containers
         .iter()
@@ -260,21 +251,26 @@ where
         .collect();
     let resolve_graph = &resolve_graph;
     let resolve_node = &resolve_node;
+    let effective = &effective;
     let expansions = futures::stream::iter(asked.iter().cloned().map(|worker| {
         let paths = paths.clone();
         async move {
-            let Source::Package { reference, version } = &worker.source else {
+            let Source::Package { .. } = &worker.source else {
                 return Ok(vec![Candidate {
                     declaration: worker.clone(),
                     package: None,
                     root: true,
                 }]);
             };
+            let planned = &effective[&worker.key];
+            let WorkerSource::Package { reference } = &planned.worker else {
+                unreachable!("effective package declaration changed kind");
+            };
             let graph = resolve_graph(
                 worker.key.clone(),
                 reference.clone(),
-                version.clone().unwrap_or_else(|| "*".to_string()),
-                declaration_platform(&worker, file),
+                planned.version.clone().unwrap_or_else(|| "*".to_string()),
+                crate::vm_binary::platform(planned),
             )
             .await?;
             let nodes: BTreeMap<_, _> = graph
@@ -310,8 +306,13 @@ where
                         declaration.key = worker.key.clone();
                     }
                     // The root's own fields were set aside for the expansion.
-                    let platform =
-                        declaration_platform(if root { &worker } else { &declaration }, file);
+                    let platform = if root {
+                        crate::vm_binary::platform(planned)
+                    } else if let Some(container) = effective.get(&declaration.key) {
+                        crate::vm_binary::platform(container)
+                    } else {
+                        declaration_platform(&declaration, file)?
+                    };
                     Ok(Candidate {
                         declaration,
                         package: Some(Package {
@@ -1061,6 +1062,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn interpolated_upserts_are_planned_before_any_registry_request() {
+        const TEST: &str =
+            "dependencies::tests::interpolated_upserts_are_planned_before_any_registry_request";
+        if std::env::var_os("KAN292_PLATFORM_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KAN292_PLATFORM_TEST", "1")
+                .env("VM_RUN", "iii sandbox run")
+                .env_remove("KAN292_UNDEFINED_RUN")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let file = ComposeFile::parse("containers:\n  local: {worker: path://.}\n", &path).unwrap();
+            let request = |run: &str| -> NewContainer {
+                serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
+                    "worker": "tool@1.0.0",
+                    "runtime": {"base_image": "alpine:3.20"},
+                    "scripts": {"build": "iii sandbox build", "run": run}
+                })).unwrap().parse().unwrap()
+            };
+            let server = MockServer::start().await;
+            // Only the Linux target is accepted, regardless of the test machine's native OS/libc.
+            Mock::given(matchers::method("POST"))
+                .and(matchers::path("/resolve"))
+                .and(matchers::body_partial_json(serde_json::json!({"target": registry::vm_targets()[0]})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{"name":"tool", "version":"1.0.0", "type":"binary",
+                        "binaries": {(registry::vm_targets()[0]): {
+                            "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
+                        }}}], "edges":[]
+                }))).expect(1).mount(&server).await;
+            registry::TEST_REGISTRY.scope(server.uri(), async {
+                let plan = plan(&file, &[request("${VM_RUN}")], &Policy::Add).await.unwrap();
+                assert_eq!(plan.containers[0].key, "tool");
+                // Persistence keeps the request, not the expanded shell text.
+                assert_eq!(plan.containers[0].fields["scripts"]["run"].as_str(), Some("${VM_RUN}"));
+                let before = server.received_requests().await.unwrap().len();
+                let error = plan_with(
+                    &file,
+                    &[request("${VM_RUN}"), request("${KAN292_UNDEFINED_RUN}")],
+                    &Policy::Add,
+                    |_, _, _, _| async { panic!("interpolation must fail before any resolution") },
+                    |_, _, _, _| async { panic!("interpolation must fail before any resolution") },
+                ).await.unwrap_err();
+                assert_eq!(error.code(), "UNDEFINED_VARIABLE");
+                assert_eq!(before, server.received_requests().await.unwrap().len());
+            }).await;
+            server.verify().await;
+            let existing = ComposeFile::parse(
+                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime: {base_image: 'alpine:3.20'}\n    scripts: {run: '${VM_RUN}', build: iii sandbox build}\n",
+                &path,
+            ).unwrap();
+            let omitted = crate::edit::parse_worker("tool@1.0.0").unwrap();
+            assert_eq!(declaration_platform(&omitted, &existing).unwrap(), Platform::Vm);
+            let cleared: crate::edit::WorkerInput = serde_json::from_value(serde_json::json!({
+                "worker":"tool@1.0.0", "runtime":{}, "scripts":{"run":"./tool"}
+            })).unwrap();
+            assert_eq!(declaration_platform(&cleared.parse().unwrap(), &existing).unwrap(), Platform::Host);
+        });
+    }
+
     #[tokio::test]
     async fn add_passes_the_vm_platform_to_the_registry_for_a_binary_container() {
         let file = ComposeFile::parse(
@@ -1109,12 +1183,15 @@ mod tests {
             declaration.key = key.to_string();
             declaration.fields =
                 serde_yaml::from_value(serde_yaml::to_value(fields).unwrap()).unwrap();
-            declaration_platform(&declaration, &file)
+            declaration_platform(&declaration, &file).unwrap()
         };
         // The container it replaces runs in a VM.
         assert_eq!(declared("tool", serde_json::json!({})), Platform::Vm);
         assert_eq!(
-            declared("tool", serde_json::json!({"scripts": {"run": "./tool"}})),
+            declared(
+                "tool",
+                serde_json::json!({"runtime": {}, "scripts": {"run": "./tool"}})
+            ),
             Platform::Host
         );
         assert_eq!(declared("other", serde_json::json!({})), Platform::Host);
