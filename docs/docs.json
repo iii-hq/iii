@@ -21,6 +21,54 @@
     {
       "source": "/next/how-to/use-trigger-conditions",
       "destination": "/next/reference/filters"
+    },
+    {
+      "source": "/tutorials/build-an-agent/:slug*",
+      "destination": "/tutorials/linkly/overview"
+    },
+    {
+      "source": "/tutorials/incremental-adoption/:slug*",
+      "destination": "/tutorials/linkly/overview"
+    },
+    {
+      "source": "/tutorials/reactive-crud/:slug*",
+      "destination": "/tutorials/linkly/overview"
+    },
+    {
+      "source": "/creating-workers/workers-registry",
+      "destination": "/using-iii/workers-registry"
+    },
+    {
+      "source": "/how-to/build-a-realtime-todo-app",
+      "destination": "/upgrading/migrate-from-streams"
+    },
+    {
+      "source": "/upgrading/from-0-19-x",
+      "destination": "/0-21-0/upgrading/from-0-19-x"
+    },
+    {
+      "source": "/next/tutorials/build-an-agent/:slug*",
+      "destination": "/next/tutorials/linkly/overview"
+    },
+    {
+      "source": "/next/tutorials/incremental-adoption/:slug*",
+      "destination": "/next/tutorials/linkly/overview"
+    },
+    {
+      "source": "/next/tutorials/reactive-crud/:slug*",
+      "destination": "/next/tutorials/linkly/overview"
+    },
+    {
+      "source": "/next/creating-workers/workers-registry",
+      "destination": "/next/using-iii/workers-registry"
+    },
+    {
+      "source": "/next/how-to/build-a-realtime-todo-app",
+      "destination": "/next/upgrading/migrate-from-streams"
+    },
+    {
+      "source": "/next/upgrading/from-0-19-x",
+      "destination": "/0-21-0/upgrading/from-0-19-x"
     }
   ],
   "theme": "mint",
@@ -138,6 +186,7 @@
                       "next/creating-workers/database",
                       "next/creating-workers/http",
                       "next/creating-workers/queues",
+                      "next/how-to/schedule-cron-task",
                       "next/creating-workers/observability",
                       "next/creating-workers/sandboxes",
                       "next/creating-workers/worker-manager"
@@ -147,7 +196,14 @@
                   "next/creating-workers/functions",
                   "next/creating-workers/observable-functions",
                   "next/creating-workers/worker-manifest",
-                  "next/creating-workers/channels"
+                  "next/creating-workers/channels",
+                  {
+                    "group": "Patterns",
+                    "pages": [
+                      "next/patterns/reactive-state-pattern",
+                      "next/patterns/adapter-pattern"
+                    ]
+                  }
                 ]
               },
               {
@@ -284,6 +340,7 @@
                       "creating-workers/database",
                       "creating-workers/http",
                       "creating-workers/queues",
+                      "how-to/schedule-cron-task",
                       "creating-workers/observability",
                       "creating-workers/sandboxes",
                       "creating-workers/worker-manager"
@@ -293,7 +350,14 @@
                   "creating-workers/functions",
                   "creating-workers/observable-functions",
                   "creating-workers/worker-manifest",
-                  "creating-workers/channels"
+                  "creating-workers/channels",
+                  {
+                    "group": "Patterns",
+                    "pages": [
+                      "patterns/reactive-state-pattern",
+                      "patterns/adapter-pattern"
+                    ]
+                  }
                 ]
               },
               {
