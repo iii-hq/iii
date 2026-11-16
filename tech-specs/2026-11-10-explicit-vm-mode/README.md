@@ -626,14 +626,21 @@ pub struct WorkerDestroyResponse {
   binary build without one gets `S001`; an implausible reference gets `S001` with any source.
 - **Destroy without `prune`:** what the guest wrote stays; the VM's runtime state, its logs
   and its binding to a build directory go, so that directory is free again (sections 6.2,
-  7.7). A later `worker::start` of the same `state_key` boots with the data. With `prune`,
-  everything goes, as in 1.3. In `sandbox-libkrun`, `~/.iii/sandbox/workers/<vm_id>/` keeps
-  the data disk (`upper.ext4`), the 0.26 copies (`upper.ext4.pre-build[.<n>]`,
-  `root.pre-build[.<n>]`, section 7.3) and the `build-mode` seal, and loses `state.json`, the
-  state-key file, `console.log*`, `root/`, scratch and the `build-dir` record. A VM that
-  never booted a build first has its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`)
-  moved to the pre-build names. A later start boots with the kept data disk; the pre-build
-  copies just stay.
+  7.7). A later `worker::start` with `build` of the same `state_key` boots on the kept data
+  disk. With `prune`, everything goes, as in 1.3.
+
+  In `sandbox-libkrun`, which advertises `worker.prune` only in its overlay mode, the VM's
+  directory `~/.iii/sandbox/workers/<vm_id>/` keeps the data disk (`upper.ext4`) and the
+  pre-build copies (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`, section 7.3), keeps or
+  writes the `build-mode` seal, and loses `state.json`, the state-key file, `console.log*`,
+  `root/`, scratch and the `build-dir` record; a VM with no data goes whole, seal included.
+  Every destroy without `prune` first moves the disk of a start without `build`
+  (`root/upper.ext4`, a 0.26 disk among them) or a legacy clone (`root/`) to the next free
+  pre-build name, so it never deletes what a guest wrote. A later `worker::start` with `build`
+  boots on the kept data disk; one without `build` begins with a new disk, and what the
+  previous one held stays under the pre-build names. Its legacy mode does not advertise
+  `worker.prune` but keeps the data the same way; a caller that wants it gone sends
+  `prune: true`.
 - **`WorkerDestroyResponse`:** `destroyed` is `true` when the destroy removed runtime state,
   or, with `prune`, anything, and `false` when there was nothing to remove. `kept` lists the
   absolute paths of the data that stayed, so a VM that held only data answers a destroy

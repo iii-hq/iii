@@ -309,17 +309,21 @@ pub struct WorkerDestroyRequest {
     /// Delete the VM's data too, as every destroy did before contract 1.4.
     ///
     /// Without it, what the guest wrote stays; the VM's runtime state, its logs and its binding
-    /// to a build directory go, so that directory is free again. A later `worker::start` of the
-    /// same `state_key` boots with the data the guest wrote. The reply's
+    /// to a build directory go, so that directory is free again. A later `worker::start` with
+    /// `build` of the same `state_key` boots on the kept data disk. The reply's
     /// [`WorkerDestroyResponse::kept`] lists what stayed.
     ///
-    /// In `sandbox-libkrun`, the VM's directory `~/.iii/sandbox/workers/<vm_id>/` keeps the data
-    /// disk (`upper.ext4`), the copies the 0.26 migration kept (`upper.ext4.pre-build[.<n>]`,
-    /// `root.pre-build[.<n>]`) and the `build-mode` seal, and loses `state.json`, the state-key
-    /// file, `console.log*`, `root/`, scratch and the `build-dir` record. A VM that never booted
-    /// a build first has its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`) moved to the
-    /// pre-build names. A later start boots with the kept data disk; the pre-build copies just
-    /// stay.
+    /// In `sandbox-libkrun`, which advertises `worker.prune` only in its overlay mode, the VM's
+    /// directory `~/.iii/sandbox/workers/<vm_id>/` keeps the data disk (`upper.ext4`) and the
+    /// pre-build copies (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`), keeps or writes the
+    /// `build-mode` seal, and loses `state.json`, the state-key file, `console.log*`, `root/`,
+    /// scratch and the `build-dir` record; a VM with no data goes whole, seal included. Every
+    /// destroy without `prune` first moves the disk of a start without `build` (`root/upper.ext4`,
+    /// a 0.26 disk among them) or a legacy clone (`root/`) to the next free pre-build name, so it
+    /// never deletes what a guest wrote. A later `worker::start` with `build` boots on the kept
+    /// data disk; one without `build` begins with a new disk, and what the previous one held stays
+    /// under the pre-build names. Its legacy mode does not advertise `worker.prune` but keeps the
+    /// data the same way; a caller that wants it gone sends `prune: true`.
     ///
     /// Sent only when `true`, like [`WorkerLogsRequest::from_end`]. An older adapter ignores it
     /// and deletes everything, so a caller that means to keep the data checks
