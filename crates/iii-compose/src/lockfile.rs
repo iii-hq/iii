@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{ComposeFile, WorkerSource},
     error::{ComposeError, Result},
-    registry::ResolvedPackage,
+    registry::{Platform, ResolvedPackage},
 };
 
 const LOCKFILE_VERSION: u8 = 1;
@@ -46,7 +46,40 @@ struct ComposeLock {
 struct LockedContainer {
     worker: String,
     requested: String,
+    /// A binary package whose container runs in a VM ([`crate::vm_binary::declares_vm`]): it
+    /// installs the Linux build of the host's architecture out of `resolved.artifacts`, which
+    /// holds every build the registry published, instead of the host's. The triple is chosen on
+    /// each host, as for a host build, so the lock stays the same on every machine. Absent
+    /// (`false`) for a host binary, whose entry is as before, and for every bundle, whose one
+    /// archive serves both.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    vm: bool,
     resolved: ResolvedPackage,
+}
+
+impl LockedContainer {
+    /// The platform whose build this entry installs.
+    fn platform(&self) -> Platform {
+        if self.vm {
+            Platform::Vm
+        } else {
+            Platform::Host
+        }
+    }
+
+    /// Whether this entry still answers a declaration of `worker` at `requested` on `platform`:
+    /// a binary package moved between the host and a VM is resolved again.
+    fn matches(&self, worker: &str, requested: &str, platform: Platform) -> bool {
+        self.worker == worker
+            && self.requested == requested
+            && self.vm == vm_entry(platform, &self.resolved)
+    }
+}
+
+/// Whether a package resolved as `resolved` for a container on `platform` installs its VM
+/// build: only a binary package has one.
+fn vm_entry(platform: Platform, resolved: &ResolvedPackage) -> bool {
+    platform == Platform::Vm && resolved.kind == "binary"
 }
 
 /// A complete lock candidate with optional artifact acquisition results.
@@ -130,6 +163,15 @@ impl PreparedLock {
         attach_entries(&self.lock, compose);
     }
 
+    /// The platform whose build container `key` installs: [`Platform::Vm`] for a binary package
+    /// that runs in a VM, else [`Platform::Host`].
+    pub fn platform(&self, key: &str) -> Platform {
+        self.lock
+            .containers
+            .get(key)
+            .map_or(Platform::Host, LockedContainer::platform)
+    }
+
     /// Every locked container with the package it resolved to, in key order.
     pub fn packages(&self) -> impl Iterator<Item = (&str, &ResolvedPackage)> {
         self.lock
@@ -157,17 +199,24 @@ impl PreparedLock {
             .lock
             .containers
             .iter()
-            .map(|(key, entry)| (key.clone(), entry.resolved.clone()))
+            .map(|(key, entry)| (key.clone(), entry.resolved.clone(), entry.platform()))
             .collect::<Vec<_>>();
         let cache_root = cache_root.to_path_buf();
-        let mut installs = futures::stream::iter(requests.into_iter().map(|(key, resolved)| {
-            let cache_root = cache_root.clone();
-            async move {
-                let result = crate::registry::install_resolved(&key, &resolved, &cache_root).await;
-                (key, result)
-            }
-        }))
-        .buffer_unordered(crate::parallelism::max_parallel_workers());
+        let mut installs =
+            futures::stream::iter(requests.into_iter().map(|(key, resolved, platform)| {
+                let cache_root = cache_root.clone();
+                async move {
+                    let result = crate::registry::install_resolved_on(
+                        &key,
+                        &resolved,
+                        platform,
+                        &cache_root,
+                    )
+                    .await;
+                    (key, result)
+                }
+            }))
+            .buffer_unordered(crate::parallelism::max_parallel_workers());
 
         while let Some((key, result)) = installs.next().await {
             self.install_statuses.insert(key, result?.status);
@@ -196,10 +245,11 @@ fn attach_entries(lock: &ComposeLock, compose: &mut ComposeFile) {
         };
         let requested = container.version.as_deref().unwrap_or("*");
         let worker = format!("package://{reference}");
+        let platform = crate::vm_binary::platform(container);
         if let Some(entry) = lock
             .containers
             .get(key)
-            .filter(|entry| entry.worker == worker && entry.requested == requested)
+            .filter(|entry| entry.matches(&worker, requested, platform))
         {
             container.resolved_package = Some(entry.resolved.clone());
         }
@@ -229,7 +279,7 @@ pub async fn prepare_frozen(compose: &mut ComposeFile, cache_root: &Path) -> Res
     let path = lock_path(&compose.path);
     let declarations = package_declarations(compose);
 
-    for (key, _, _) in &declarations {
+    for (key, _, _, _) in &declarations {
         if let (Some(container), Some(entry)) =
             (compose.containers.get_mut(key), lock.containers.get(key))
         {
@@ -259,7 +309,7 @@ fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
         load(&path)?.ok_or_else(|| ComposeError::FrozenLockMissing { path: path.clone() })?;
     let declarations = package_declarations(compose);
 
-    for (key, reference, requested) in &declarations {
+    for (key, reference, requested, platform) in &declarations {
         let worker = format!("package://{reference}");
         let Some(entry) = lock.containers.get(key) else {
             return Err(ComposeError::FrozenLockOutOfDate {
@@ -276,11 +326,23 @@ fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
                 ),
             });
         }
+        if !entry.matches(&worker, requested, *platform) {
+            let (now, locked) = match platform {
+                Platform::Vm => ("in a VM", "the host's build"),
+                Platform::Host => ("on the host", "the Linux build of a VM"),
+            };
+            return Err(ComposeError::FrozenLockOutOfDate {
+                path: path.clone(),
+                message: format!(
+                    "binary package container '{key}' runs {now} now, and its entry locks {locked}"
+                ),
+            });
+        }
     }
     if let Some(extra) = lock
         .containers
         .keys()
-        .find(|key| !declarations.iter().any(|(declared, _, _)| declared == *key))
+        .find(|key| !declarations.iter().any(|(declared, ..)| declared == *key))
     {
         return Err(ComposeError::FrozenLockOutOfDate {
             path,
@@ -306,9 +368,10 @@ pub(crate) fn concrete_versions(compose: &ComposeFile) -> Result<BTreeMap<String
             };
             let requested = container.version.as_deref().unwrap_or("*");
             let worker = format!("package://{reference}");
+            let platform = crate::vm_binary::platform(container);
             lock.containers
                 .get(key)
-                .filter(|entry| entry.worker == worker && entry.requested == requested)
+                .filter(|entry| entry.matches(&worker, requested, platform))
                 .map(|entry| (key.clone(), entry.resolved.version.clone()))
         })
         .collect())
@@ -341,8 +404,8 @@ pub(crate) async fn prepare_metadata_with_versions(
         compose,
         force,
         selected_versions,
-        |key, reference, range| async move {
-            crate::registry::resolve_package(&key, &reference, &range).await
+        |key, reference, range, platform| async move {
+            crate::registry::resolve_package_on(&key, &reference, &range, platform).await
         },
     )
     .await
@@ -363,7 +426,7 @@ pub(crate) async fn prepare_metadata_reusing(
         compose,
         force,
         selected_versions,
-        |key, reference, range| {
+        |key, reference, range, platform| {
             let reused = earlier
                 .lock
                 .containers
@@ -371,12 +434,16 @@ pub(crate) async fn prepare_metadata_reusing(
                 .filter(|entry| {
                     entry.worker == format!("package://{reference}")
                         && entry.resolved.version == range
+                        && entry.vm == vm_entry(platform, &entry.resolved)
                 })
                 .map(|entry| entry.resolved.clone());
             async move {
                 match reused {
                     Some(resolved) => Ok(resolved),
-                    None => crate::registry::resolve_package(&key, &reference, &range).await,
+                    None => {
+                        crate::registry::resolve_package_on(&key, &reference, &range, platform)
+                            .await
+                    }
                 }
             }
         },
@@ -391,7 +458,7 @@ async fn prepare_metadata_with_resolver<F, Fut>(
     resolve: F,
 ) -> Result<PreparedLock>
 where
-    F: Fn(String, String, String) -> Fut,
+    F: Fn(String, String, String, Platform) -> Fut,
     Fut: std::future::Future<Output = Result<ResolvedPackage>>,
 {
     let path = lock_path(&compose.path);
@@ -401,8 +468,8 @@ where
 
     let declarations = package_declarations(compose);
 
-    let mut resolutions =
-        futures::stream::iter(declarations.into_iter().map(|(key, reference, requested)| {
+    let mut resolutions = futures::stream::iter(declarations.into_iter().map(
+        |(key, reference, requested, platform)| {
             let previous = &previous;
             let resolve = &resolve;
             async move {
@@ -411,34 +478,34 @@ where
                     .as_ref()
                     .and_then(|lock| lock.containers.get(&key))
                     .filter(|entry| {
-                        !force.contains(&key)
-                            && entry.worker == worker
-                            && entry.requested == requested
+                        !force.contains(&key) && entry.matches(&worker, &requested, platform)
                     });
                 let entry = match reusable {
                     Some(entry) => entry.clone(),
                     None => {
                         let range = selected_versions.get(&key).unwrap_or(&requested).clone();
-                        let resolved = resolve(key.clone(), reference, range).await?;
+                        let resolved = resolve(key.clone(), reference, range, platform).await?;
                         LockedContainer {
                             worker,
                             requested,
+                            vm: vm_entry(platform, &resolved),
                             resolved,
                         }
                     }
                 };
                 Ok::<_, ComposeError>((key, entry))
             }
-        }))
-        // Overlap registry requests without changing which declared failure is reported first.
-        .buffered(crate::parallelism::max_parallel_workers());
+        },
+    ))
+    // Overlap registry requests without changing which declared failure is reported first.
+    .buffered(crate::parallelism::max_parallel_workers());
 
     while let Some(result) = resolutions.next().await {
         let (key, entry) = result?;
         if previous
             .as_ref()
             .and_then(|lock| lock.containers.get(&key))
-            .is_none_or(|old| runtime_package_changed(&old.resolved, &entry.resolved))
+            .is_none_or(|old| runtime_entry_changed(old, &entry))
         {
             package_changes.insert(key.clone());
         }
@@ -482,7 +549,8 @@ where
     })
 }
 
-fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String)> {
+/// Every `package://` container: its key, reference, selector, and the platform it runs on.
+fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String, Platform)> {
     compose
         .containers
         .iter()
@@ -491,13 +559,26 @@ fn package_declarations(compose: &ComposeFile) -> Vec<(String, String, String)> 
                 key.clone(),
                 reference.clone(),
                 container.version.clone().unwrap_or_else(|| "*".to_string()),
+                crate::vm_binary::platform(container),
             )),
             WorkerSource::Path { .. } => None,
         })
         .collect()
 }
 
+/// Whether the worker of `next` runs different content than that of `previous`: another
+/// platform, or another package or build on the same one.
+fn runtime_entry_changed(previous: &LockedContainer, next: &LockedContainer) -> bool {
+    previous.vm != next.vm
+        || runtime_package_changed_for(
+            next.platform().targets(),
+            &previous.resolved,
+            &next.resolved,
+        )
+}
+
 /// Compares the package fields that can change worker runtime behavior.
+#[cfg(test)]
 fn runtime_package_changed(previous: &ResolvedPackage, next: &ResolvedPackage) -> bool {
     runtime_package_changed_for(crate::registry::host_targets(), previous, next)
 }
@@ -600,6 +681,13 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
                 "container '{container}' has an unsafe resolved version"
             )));
         }
+        if entry.vm && entry.resolved.kind != "binary" {
+            return Err(invalid(format!(
+                "container '{container}' locks a VM build of a {} package; only a binary \
+                 package has one",
+                entry.resolved.kind
+            )));
+        }
         if !matches!(entry.resolved.kind.as_str(), "binary" | "bundle") {
             return Err(invalid(format!(
                 "container '{container}' has unsupported package type '{}'",
@@ -686,6 +774,7 @@ mod tests {
                 LockedContainer {
                     worker: "package://api.workers.iii.dev/state".to_string(),
                     requested: "next".to_string(),
+                    vm: false,
                     resolved: ResolvedPackage {
                         name: "state".to_string(),
                         alias_of: None,
@@ -897,6 +986,190 @@ mod tests {
         assert!(!runtime_package_changed_for(&[GNU], &both, &glibc_only));
     }
 
+    /// A compose file with a host binary, a binary in a VM and a bundle in a VM.
+    const PLACED: &str = "containers:\n  host:\n    worker: package://tool\n    version: 1.0.0\n  \
+                          vm:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+                          base_image: docker.io/library/alpine:3.20\n    scripts:\n      build: iii \
+                          sandbox build\n      run: iii sandbox run\n  bundle:\n    worker: \
+                          package://kit\n    version: 1.0.0\n    scripts:\n      build: iii sandbox \
+                          build\n      run: iii sandbox run\n";
+
+    /// What the registry resolves `key` to: a bundle for `bundle`, else a binary with a host
+    /// build and the two Linux builds of the host's architecture.
+    fn placed_package(key: &str) -> ResolvedPackage {
+        let mut package = lock().containers.remove("state").unwrap().resolved;
+        package.name = if key == "bundle" { "kit" } else { "tool" }.to_string();
+        package.registry = crate::registry::DEFAULT_REGISTRY.to_string();
+        if key == "bundle" {
+            package.kind = "bundle".to_string();
+            return package;
+        }
+        for (target, digest) in [
+            (crate::registry::vm_targets()[0], 'b'),
+            (*crate::registry::vm_targets().last().unwrap(), 'c'),
+        ] {
+            package
+                .artifacts
+                .entry(target.to_string())
+                .or_insert(RegistryArtifact {
+                    url: format!("https://example.com/{target}"),
+                    sha256: digest.to_string().repeat(64),
+                });
+        }
+        package
+    }
+
+    /// The lock records the VM build of a binary in a VM and nothing new for the rest: a host
+    /// binary and a bundle keep the entry they had.
+    #[tokio::test]
+    async fn a_binary_in_a_vm_locks_its_vm_build_and_the_rest_keep_their_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut compose =
+            ComposeFile::parse(PLACED, dir.path().join("worker-compose.yaml")).unwrap();
+        let calls = std::cell::RefCell::new(BTreeMap::new());
+        let prepared = prepare_metadata_with_resolver(
+            &mut compose,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |key, _, _, platform| {
+                calls.borrow_mut().insert(key.clone(), platform);
+                std::future::ready(Ok(placed_package(&key)))
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            calls.into_inner(),
+            BTreeMap::from([
+                ("bundle".to_string(), Platform::Vm),
+                ("host".to_string(), Platform::Host),
+                ("vm".to_string(), Platform::Vm),
+            ])
+        );
+        assert_eq!(prepared.platform("vm"), Platform::Vm);
+        assert_eq!(prepared.platform("host"), Platform::Host);
+        assert_eq!(prepared.platform("bundle"), Platform::Host);
+        let written = serde_yaml::to_value(&prepared.lock).unwrap();
+        let fields = |key: &str| {
+            written["containers"][key]
+                .as_mapping()
+                .unwrap()
+                .keys()
+                .map(|field| field.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fields("host"), ["worker", "requested", "resolved"]);
+        assert_eq!(fields("bundle"), ["worker", "requested", "resolved"]);
+        assert_eq!(fields("vm"), ["worker", "requested", "vm", "resolved"]);
+        assert_eq!(
+            written["containers"]["vm"]["vm"],
+            serde_yaml::Value::Bool(true)
+        );
+
+        prepared.write_if_changed().unwrap();
+        assert_eq!(load(prepared.path()).unwrap(), Some(prepared.lock.clone()));
+        // Read again, nothing is resolved anew and the lock stays as it is.
+        let resolved_again = std::cell::RefCell::new(Vec::new());
+        let again = prepare_metadata_with_resolver(
+            &mut compose,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |key, _, _, _| {
+                resolved_again.borrow_mut().push(key.clone());
+                std::future::ready(Ok(placed_package(&key)))
+            },
+        )
+        .await
+        .unwrap();
+        assert!(resolved_again.into_inner().is_empty());
+        assert!(!again.changed());
+        assert!(again.package_changes.is_empty());
+    }
+
+    /// A binary moved between the host and a VM is resolved again for its new platform; the old
+    /// entry is not attached meanwhile, and `--frozen` refuses it.
+    #[tokio::test]
+    async fn a_binary_moved_into_a_vm_is_resolved_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let host_file = PLACED.replace(
+            "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
+             build: iii sandbox build\n      run: iii sandbox run\n  bundle:",
+            "  bundle:",
+        );
+        assert_ne!(host_file, PLACED);
+        let mut on_host = ComposeFile::parse(&host_file, &path).unwrap();
+        prepare_metadata_with_resolver(
+            &mut on_host,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |key, _, _, _| std::future::ready(Ok(placed_package(&key))),
+        )
+        .await
+        .unwrap()
+        .write_if_changed()
+        .unwrap();
+        assert!(!load(&lock_path(&path)).unwrap().unwrap().containers["vm"].vm);
+
+        let mut in_vm = ComposeFile::parse(PLACED, &path).unwrap();
+        attach(&mut in_vm).unwrap();
+        assert!(in_vm.containers["vm"].resolved_package.is_none());
+        assert!(in_vm.containers["host"].resolved_package.is_some());
+        let error = preflight_frozen(&in_vm).unwrap_err();
+        assert_eq!(error.code(), "COMPOSE_LOCK_OUT_OF_DATE");
+        assert!(
+            error.to_string().contains("'vm' runs in a VM now"),
+            "{error}"
+        );
+
+        let calls = std::cell::RefCell::new(Vec::new());
+        let prepared = prepare_metadata_with_resolver(
+            &mut in_vm,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |key, _, _, platform| {
+                calls.borrow_mut().push((key.clone(), platform));
+                std::future::ready(Ok(placed_package(&key)))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.into_inner(), [("vm".to_string(), Platform::Vm)]);
+        assert!(prepared.lock.containers["vm"].vm);
+        assert_eq!(prepared.package_changes, BTreeSet::from(["vm".to_string()]));
+    }
+
+    #[test]
+    fn only_a_binary_package_locks_a_vm_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        let mut bundle = lock();
+        let entry = bundle.containers.get_mut("state").unwrap();
+        entry.resolved.kind = "bundle".to_string();
+        entry.vm = true;
+        std::fs::write(&path, serde_yaml::to_string(&bundle).unwrap()).unwrap();
+        let error = load(&path).unwrap_err();
+        assert_eq!(error.code(), "INVALID_COMPOSE_LOCK");
+        assert!(
+            error.to_string().contains("only a binary package"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_move_between_host_and_vm_changes_runtime_content() {
+        let host = lock().containers.remove("state").unwrap();
+        let vm = LockedContainer {
+            vm: true,
+            ..host.clone()
+        };
+        assert!(runtime_entry_changed(&host, &vm));
+        assert!(runtime_entry_changed(&vm, &host));
+        assert!(!runtime_entry_changed(&host, &host));
+        assert!(!runtime_entry_changed(&vm, &vm));
+    }
+
     #[tokio::test]
     async fn metadata_resolution_overlaps_requests_with_the_compose_limit() {
         use std::cell::Cell;
@@ -918,7 +1191,7 @@ mod tests {
         let versions = BTreeMap::new();
         let package = lock().containers.remove("state").unwrap().resolved;
         let prepare =
-            prepare_metadata_with_resolver(&mut compose, &force, &versions, |key, _, _| {
+            prepare_metadata_with_resolver(&mut compose, &force, &versions, |key, _, _, _| {
                 let started = &started;
                 let permits = &permits;
                 let mut package = package.clone();
@@ -978,7 +1251,7 @@ mod tests {
             &mut compose,
             &force,
             &versions,
-            |key, reference, range| {
+            |key, reference, range, _| {
                 calls.borrow_mut().push((key, reference, range));
                 std::future::ready(Ok(updated.clone()))
             },
@@ -1024,7 +1297,7 @@ mod tests {
             &mut compose,
             &BTreeSet::new(),
             &BTreeMap::new(),
-            |key, _, range| async move {
+            |key, _, range, _| async move {
                 if key == "first" {
                     tokio::task::yield_now().await;
                 }

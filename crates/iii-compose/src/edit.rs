@@ -1203,6 +1203,30 @@ mod tests {
         }
     }
 
+    /// `compose::add` writes `runtime.base_image` as given, and the file reads it back.
+    #[test]
+    fn configured_worker_round_trips_the_runtime_base_image() {
+        let worker = configured(serde_json::json!({
+            "worker": "package://tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20"},
+            "scripts": {"build": "iii sandbox build", "run": "iii sandbox run"}
+        }));
+        let out = changed("containers:\n  api:\n    worker: path://./api\n", &worker);
+        let file = crate::config::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            file.containers["tool"].base_image.as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        // A second add of the same declaration changes nothing.
+        assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+
+        let invalid = serde_json::from_value::<WorkerInput>(serde_json::json!({
+            "worker": "package://tool@1.0.0",
+            "runtime": {"base_image": "docker.io/library/alpine:3.20", "kind": "node"}
+        }));
+        assert!(invalid.is_err());
+    }
+
     #[test]
     fn configured_worker_round_trips_every_container_field() {
         let request = serde_json::json!({

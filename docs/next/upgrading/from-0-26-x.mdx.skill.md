@@ -26,21 +26,25 @@ In 0.26, Compose decided by itself that a worker ran in a microVM: a registry `b
 - **Compose rewrites 0.26 files on the next run.** Each container that 0.26 ran in a VM gets
   `scripts.build`, `scripts.run`, and the adapter in `start_after`. A migrated file no longer loads
   in 0.26.
-- **The sandbox adapter must be a 0.4 release (`^0.4`).** Compose updates the adapter container it
+- **The sandbox adapter must be a 0.5 release (`^0.5`).** Compose updates the adapter container it
   generated. One you declared yourself fails with `SANDBOX_ADAPTER_TOO_OLD` until you update it.
-- **No VM data is deleted.** The data disk a 0.26 VM wrote is kept as `upper.ext4.pre-build`.
+- **No VM data is deleted.** The data disk a 0.26 VM wrote is kept as `upper.ext4.pre-build`, and
+  removing a VM container keeps its data unless you ask for `prune`.
+- **Binary packages can run in a VM.** A container that sets `runtime.base_image` runs the package's
+  Linux build in a VM, and a binary package on the host may set `scripts`.
 
 ## Before you upgrade
 
 ### Compatibility
 
-| Project                            | New release                                                                                                                                                               | 0.26                                                                                                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| No VM worker, none of the new keys | Loads unchanged, unless a container key is not a plain directory name (`INVALID_CONTAINER_KEY`).                                                                          | Loads unchanged.                                                                                                     |
-| VM workers, not migrated yet       | Rewritten by the next `compose::up` (or `iii compose --up`), `compose::add`, `compose::update`, `compose::restart`, `compose::build`, or `iii compose build`, then loads. | Loads unchanged.                                                                                                     |
-| Migrated, or using a new key       | Loads.                                                                                                                                                                    | Refused: `scripts.build` is unknown in 0.26, and `scripts.run` on a bundle fails with `RUN_NOT_ALLOWED_FOR_PACKAGE`. |
+| Project                            | New release                                                                                                                                                               | 0.26                                                                                                                                 |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| No VM worker, none of the new keys | Loads unchanged, unless a container key is not a plain directory name (`INVALID_CONTAINER_KEY`).                                                                          | Loads unchanged.                                                                                                                     |
+| VM workers, not migrated yet       | Rewritten by the next `compose::up` (or `iii compose --up`), `compose::add`, `compose::update`, `compose::restart`, `compose::build`, or `iii compose build`, then loads. | Loads unchanged.                                                                                                                     |
+| Migrated, or using a new key       | Loads.                                                                                                                                                                    | Refused: `scripts.build` and `runtime` are unknown in 0.26, and `scripts.run` on a package fails with `RUN_NOT_ALLOWED_FOR_PACKAGE`. |
 
-The new keys are `scripts.build`, `scripts.build_timeout`, and `scripts.run` on a bundle.
+The new keys are `scripts.build`, `scripts.build_timeout`, `runtime.base_image`, and `scripts.run`
+on a package.
 
 In any project, with or without a VM worker, a container key is now also the name of its
 directories, `.iii/build/<key>/` and `.iii/workers/<key>/`. A key that is empty or blank, holds `/`
@@ -48,9 +52,9 @@ or `\`, starts with `.`, or holds a NUL, such as `.internal` or `a/b`, loaded in
 with `INVALID_CONTAINER_KEY`. Rename such keys before the first run of the new release, and the
 `start_after` entries that name them.
 
-- **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.4 release (`^0.4`), the releases with
-  `worker.build` (sandbox contract 1.3). A project whose only use of the adapter is ephemeral
-  sandboxes keeps its 0.3.x adapter.
+- **Sandbox adapter.** VM workers need a `sandbox-libkrun` 0.5 release (`^0.5`), the releases with
+  `worker.build`, `worker.binary`, and `worker.prune` (sandbox contract 1.4). A project whose only
+  use of the adapter is ephemeral sandboxes keeps its 0.3.x adapter.
 - **Docker.** Not required. The default adapter builds inside its own VM.
 - **Windows.** Unchanged: a bundle fails at install with `BUNDLE_NEEDS_A_VM`. `iii sandbox run`, and
   `iii sandbox build` inside Compose, fail with `SANDBOX_UNSUPPORTED_PLATFORM`.
@@ -73,11 +77,13 @@ git commit -m "Compose project before the explicit VM mode"
 | Compose boots the VM itself, with `worker::prepare` and then `worker::start`.                 | Compose starts `iii sandbox run` as a process. It boots the image the build left.                            |
 | `scripts.install` runs in the guest on first boot and persists on the VM's disk.              | `iii sandbox build` installs the dependencies into an image, `.iii/build/<container>/image.erofs`.           |
 | A bundle's `/workspace` is its directory in the global package cache, mounted read-write.     | A bundle's code is in the image. `.iii/workers/<container>/` is the build's input only.                      |
-| `scripts.run` on a package fails with `RUN_NOT_ALLOWED_FOR_PACKAGE`.                          | Allowed on a bundle. Still refused for a `binary` package.                                                   |
+| `scripts.run` on a package fails with `RUN_NOT_ALLOWED_FOR_PACKAGE`.                          | Allowed on any package. On a `binary` package it replaces the published executable.                          |
+| A `binary` package runs on the host only.                                                     | With `runtime.base_image`, it runs its Linux build in a VM.                                                  |
+| `compose::remove` and `iii sandbox destroy` delete the VM's data disk.                        | They keep the VM's data. `prune=true` and `iii sandbox destroy --prune` delete it.                           |
 | `scripts` takes `pre_run`, `pre_run_timeout`, `run`, and `post_run`.                          | `scripts` also takes `build` and `build_timeout`.                                                            |
 | Any container key.                                                                            | A plain directory name: not empty or blank, no `/` or `\`, no leading `.`, no NUL (`INVALID_CONTAINER_KEY`). |
 | The start order on the adapter is kept in memory.                                             | The adapter's container key is written in `start_after`.                                                     |
-| Compose keeps the adapter in `^0.3`.                                                          | Compose keeps the adapter in `^0.4`, sandbox contract 1.3.                                                   |
+| Compose keeps the adapter in `^0.3`.                                                          | Compose keeps the adapter in `^0.5`, sandbox contract 1.4.                                                   |
 | `iii sandbox` is hidden from `iii --help`.                                                    | `iii sandbox` is listed again, with `build`, `run`, and `destroy`.                                           |
 | A rebuild has no command.                                                                     | `iii sandbox build <container>` and `compose::build` rebuild.                                                |
 
@@ -97,7 +103,7 @@ directory per container that has a build). See
    host, edit its `scripts` as in [Keep a worker on the host](#keep-a-worker-on-the-host). The rules
    are in [How Compose rewrites a container](#how-compose-rewrites-a-container).
 5. If you declared the `sandbox-libkrun` container yourself (it has no `# added by compose::add`
-   comment), set its `version` to `"^0.4"`. Compose updates a generated adapter container itself.
+   comment), set its `version` to `"^0.5"`. Compose updates a generated adapter container itself.
    See [Update the sandbox adapter](#update-the-sandbox-adapter).
 6. Preview the rewrite. `iii compose build` needs no engine and no daemon, and boots no VM. It
    updates or adds the generated adapter container and the lock, rewrites the containers, and fills
@@ -246,7 +252,7 @@ with a `scripts.run` command, that command is the one inside `--command '...'`.
 naming the containers and asking for one `iii compose --up` without `--frozen`. That check comes
 first, even when the adapter is missing: the `up` it asks for adds the adapter too. Only then does
 `--frozen` refuse a missing adapter with `SANDBOX_ADAPTER_NOT_DECLARED`, or, in a project with a VM
-worker, an adapter outside `^0.4` with `SANDBOX_ADAPTER_TOO_OLD`.
+worker, an adapter outside `^0.5` with `SANDBOX_ADAPTER_TOO_OLD`.
 
 Run `iii compose build` or `iii compose --up` once without `--frozen` where you can commit the
 result. `iii compose build` makes the migration commit without starting the project, as in step 6 of
@@ -256,13 +262,13 @@ keep `--frozen` in CI.
 ## Update the sandbox adapter
 
 Compose still adds the generated adapter container (`# added by compose::add`) when a project needs
-one, as in 0.26, at the newest release in `^0.4`. Only the start order on it moves into the file, in
+one, as in 0.26, at the newest release in `^0.5`. Only the start order on it moves into the file, in
 `start_after`.
 
 Every 0.26 project pins `sandbox-libkrun` to a 0.3.x release, which lacks `worker.build`. In a
 project with a VM container, wherever the rewrite runs and before it:
 
-- a generated adapter container (`# added by compose::add`) outside `^0.4` is updated to the newest
+- a generated adapter container (`# added by compose::add`) outside `^0.5` is updated to the newest
   release in that range, with the lock;
 - an adapter container you declared yourself outside the range fails with `SANDBOX_ADAPTER_TOO_OLD`,
   naming the container, its range, and the command to run. Update it, or edit its `version`:
@@ -279,8 +285,10 @@ A project without a VM container, which only runs ephemeral sandboxes, keeps its
 
 `iii sandbox run` and `iii sandbox build` require `worker.build` and fail with
 `SANDBOX_BUILD_UNSUPPORTED` otherwise. `sandbox-libkrun` in legacy mode (`III_ROOTFS_MODE=legacy`,
-or a build without an embedded iii-init) does not advertise it. Another adapter needs contract 1.3,
-as described in [Sandboxes / VM workers](../creating-workers/sandboxes#vm-workers).
+or a build without an embedded iii-init) does not advertise it. A binary package in a VM also needs
+`worker.binary` (`SANDBOX_BINARY_UNSUPPORTED`), and a destroy that keeps the data needs
+`worker.prune` (`SANDBOX_PRUNE_UNSUPPORTED`). Another adapter needs contract 1.4, as described in
+[Sandboxes / VM workers](../creating-workers/sandboxes#vm-workers).
 
 ## Keep the data of migrated VMs
 
@@ -312,11 +320,13 @@ mounting it as root:
 sudo mount -o loop,ro <path> <dir>
 ```
 
-Nothing restores it automatically. `iii sandbox destroy` and `compose::remove` remove all of it, the
-pre-build disk included.
+Nothing restores it automatically. `iii sandbox destroy` and `compose::remove` keep it, with the
+VM's current data disk. `iii sandbox destroy --prune` and `compose::remove prune=true` remove all of
+it, the pre-build disk included.
 
 From then on, the VM's data disk is independent of the build: it keeps what the worker writes across
-restarts and rebuilds. Only `iii sandbox destroy` and `compose::remove` reset it.
+restarts, rebuilds, and a destroy without prune. Only `iii sandbox destroy --prune` and
+`compose::remove prune=true` reset it.
 
 ## Day-to-day changes
 
@@ -332,7 +342,7 @@ restarts and rebuilds. Only `iii sandbox destroy` and `compose::remove` reset it
   `.iii/build/`, so your own `.gitignore` needs no edit.
 - **Removing a container.** `compose::remove` stops a build of the container that is still running,
   deletes `.iii/build/<container>/` and `.iii/workers/<container>/`, and has the adapter destroy the
-  VM's data disk.
+  VM's runtime state. The VM's data stays, and the log says where. `prune=true` deletes it too.
 - **`iii compose build`.** It also updates or adds the generated adapter, runs the rewrite, and
   copies the packages into `.iii/workers/`. It does not run `scripts.build`.
 
@@ -353,26 +363,30 @@ See [Keep the data of migrated VMs](#keep-the-data-of-migrated-vms).
 
 ## Error codes
 
-| Code                           | When                                                                                                                                                                               |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VM_SCRIPTS_MISSING`           | `--frozen` on a file with containers to rewrite, or a start that reaches a container not rewritten yet.                                                                            |
-| `SANDBOX_ADAPTER_NOT_DECLARED` | `--frozen` on a project that needs the adapter and declares none.                                                                                                                  |
-| `SANDBOX_ADAPTER_TOO_OLD`      | The adapter is outside `^0.4` and Compose may not update it.                                                                                                                       |
-| `SANDBOX_BUILD_UNSUPPORTED`    | The adapter does not advertise `worker.build`.                                                                                                                                     |
-| `SANDBOX_RUN_NOT_A_VM_WORKER`  | `iii sandbox run` on a container that is not a bundle or a `path://` with `runtime.base_image`.                                                                                    |
-| `SANDBOX_BUILD_WITHOUT_RUN`    | `iii sandbox build` without `iii sandbox run`.                                                                                                                                     |
-| `SANDBOX_RUN_WITHOUT_BUILD`    | `iii sandbox run` with another `scripts.build` command.                                                                                                                            |
-| `SANDBOX_UNSUPPORTED_PLATFORM` | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows.                                                                                                              |
-| `SANDBOX_ENV_INVALID`          | `iii sandbox run` or `destroy` without the variables Compose hands a VM container (from a plain shell, for example), or `iii sandbox build` inside Compose with an incomplete set. |
-| `SANDBOX_INVALID_ARGUMENTS`    | `iii sandbox` arguments that do not fit where it runs, such as `--file` inside Compose.                                                                                            |
-| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter implements another major version of the sandbox contract.                                                                                                              |
-| `SANDBOX_FAILED`               | Any other failure of `iii sandbox` itself (exit 125).                                                                                                                              |
-| `BUILD_MISSING`                | `iii sandbox run` without `build.json`.                                                                                                                                            |
-| `BUILD_FAILED`                 | A first build or a package rebuild failed. Carries `{ code, message }`.                                                                                                            |
-| `BUILD_INPUT_CHANGED`          | A build whose source was replaced while it built. Nothing is recorded. Build again (exit 1 for `iii sandbox build`).                                                               |
-| `OPERATION_CANCELLED`          | A cancelled `compose::build`, add, or update, or a cancelled `iii sandbox build` (exit 130).                                                                                       |
-| `INVALID_CONTAINER_KEY`        | A container key that cannot name `.iii/build/<key>/` and `.iii/workers/<key>/`.                                                                                                    |
-| `RUN_NOT_ALLOWED_FOR_PACKAGE`  | Kept, for `binary` packages only.                                                                                                                                                  |
+| Code                                | When                                                                                                                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VM_SCRIPTS_MISSING`                | `--frozen` on a file with containers to rewrite, or a start that reaches a container not rewritten yet.                                                                            |
+| `SANDBOX_ADAPTER_NOT_DECLARED`      | `--frozen` on a project that needs the adapter and declares none.                                                                                                                  |
+| `SANDBOX_ADAPTER_TOO_OLD`           | The adapter is outside `^0.5` and Compose may not update it.                                                                                                                       |
+| `SANDBOX_BUILD_UNSUPPORTED`         | The adapter does not advertise `worker.build`.                                                                                                                                     |
+| `SANDBOX_BINARY_UNSUPPORTED`        | `iii sandbox build` or `run` of a binary package, with an adapter that does not advertise `worker.binary`.                                                                         |
+| `SANDBOX_PRUNE_UNSUPPORTED`         | `iii sandbox destroy` without `--prune`, with an adapter that does not advertise `worker.prune`. Nothing is deleted.                                                               |
+| `SANDBOX_RUN_NOT_A_VM_WORKER`       | `iii sandbox run` on a container that is not a bundle, a binary, or a `path://` with `runtime.base_image`.                                                                         |
+| `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` | `iii sandbox run` on a binary package whose container sets no `runtime.base_image`.                                                                                                |
+| `BASE_IMAGE_WITHOUT_VM`             | `runtime.base_image` on a container whose `scripts.run` runs it on the host.                                                                                                       |
+| `INVALID_BASE_IMAGE`                | `runtime.base_image` that is not an image reference.                                                                                                                               |
+| `SANDBOX_BUILD_WITHOUT_RUN`         | `iii sandbox build` without `iii sandbox run`.                                                                                                                                     |
+| `SANDBOX_RUN_WITHOUT_BUILD`         | `iii sandbox run` with another `scripts.build` command.                                                                                                                            |
+| `SANDBOX_UNSUPPORTED_PLATFORM`      | `iii sandbox run`, or `iii sandbox build` inside Compose, on Windows.                                                                                                              |
+| `SANDBOX_ENV_INVALID`               | `iii sandbox run` or `destroy` without the variables Compose hands a VM container (from a plain shell, for example), or `iii sandbox build` inside Compose with an incomplete set. |
+| `SANDBOX_INVALID_ARGUMENTS`         | `iii sandbox` arguments that do not fit where it runs, such as `--file` inside Compose.                                                                                            |
+| `SANDBOX_CONTRACT_UNSUPPORTED`      | The adapter implements another major version of the sandbox contract.                                                                                                              |
+| `SANDBOX_FAILED`                    | Any other failure of `iii sandbox` itself (exit 125).                                                                                                                              |
+| `BUILD_MISSING`                     | `iii sandbox run` without `build.json`.                                                                                                                                            |
+| `BUILD_FAILED`                      | A first build or a package rebuild failed. Carries `{ code, message }`.                                                                                                            |
+| `BUILD_INPUT_CHANGED`               | A build whose source was replaced while it built. Nothing is recorded. Build again (exit 1 for `iii sandbox build`).                                                               |
+| `OPERATION_CANCELLED`               | A cancelled `compose::build`, add, or update, or a cancelled `iii sandbox build` (exit 130).                                                                                       |
+| `INVALID_CONTAINER_KEY`             | A container key that cannot name `.iii/build/<key>/` and `.iii/workers/<key>/`.                                                                                                    |
 
 The sandbox adapter adds [S507](../creating-workers/sandboxes#S507),
 [S508](../creating-workers/sandboxes#S508), and [S509](../creating-workers/sandboxes#S509). Every
@@ -388,20 +402,20 @@ log line Compose writes for VM workers is in [Compose / Log lines](../using-iii/
 - [ ] Declare `scripts.build` (`""` when there is nothing to build) on each `path://` worker with
       `runtime.base_image` that must stay on the host, and a host `scripts.run` on each bundle that
       must stay on the host
-- [ ] Set the `version` of a `sandbox-libkrun` container you declared yourself to `"^0.4"`
+- [ ] Set the `version` of a `sandbox-libkrun` container you declared yourself to `"^0.5"`
 - [ ] Run `iii compose build`, review `git diff`, and move back to the host any container rewritten
       by mistake
 - [ ] Run `iii compose --up` once without `--frozen`, then review and commit the rewritten file and
       lock
 - [ ] Keep `--frozen` in CI only after that commit: a file still due fails with `VM_SCRIPTS_MISSING`
 - [ ] Find the `kept the pre-build data disk` log lines, and keep each pre-build disk while you need
-      it. `iii sandbox destroy` and `compose::remove` remove it together with the VM's current data
-      disk
+      it. `iii sandbox destroy --prune` and `compose::remove prune=true` remove it together with the
+      VM's current data disk
 - [ ] After a dependency change, run `iii sandbox build <container>` and restart the container
-- [ ] If you run another sandbox adapter, move it to contract 1.3
+- [ ] If you run another sandbox adapter, move it to contract 1.4
 
 <Note>
-  For the compose file side of VM workers, see [Compose / VM workers](../using-iii/compose#vm-workers).
-  For `iii sandbox build`, `run`, and `destroy`, and the adapter contract, see
-  [Sandboxes / VM workers](../creating-workers/sandboxes#vm-workers).
+  For the compose file side of VM workers, see [Compose / VM
+  workers](../using-iii/compose#vm-workers). For `iii sandbox build`, `run`, and `destroy`, and the
+  adapter contract, see [Sandboxes / VM workers](../creating-workers/sandboxes#vm-workers).
 </Note>

@@ -53,6 +53,7 @@ mod shutdown;
 pub mod spawn;
 pub mod state;
 pub mod telemetry;
+pub mod vm_binary;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};

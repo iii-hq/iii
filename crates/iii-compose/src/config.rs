@@ -309,6 +309,9 @@ pub struct Container {
     pub config_name: Option<String>,
     pub config_override: Option<serde_yaml::Value>,
     pub scripts: Scripts,
+    /// `runtime.base_image`: the image the container's VM build starts from, over the worker
+    /// manifest's. A binary package names none, so one that runs in a VM needs it (spec 4.2).
+    pub base_image: Option<String>,
     /// Declared working directory, resolved against the compose file's
     /// directory. `None` means "the worker's own directory".
     pub working_dir: Option<PathBuf>,
@@ -753,6 +756,8 @@ fn validate_container(
         }
     };
 
+    let base_image = validate_base_image(key, raw.runtime.as_ref(), &scripts)?;
+
     // The reserved contract is the daemon's to set. Silently dropping a
     // user-supplied III_URL would look like it took effect.
     let mut environment = BTreeMap::new();
@@ -792,6 +797,7 @@ fn validate_container(
         config_name,
         config_override: raw.config_override.clone(),
         scripts,
+        base_image,
         working_dir: raw
             .working_dir
             .as_ref()
@@ -806,6 +812,35 @@ fn validate_container(
         required: raw.required.unwrap_or(required_default),
         restart: validate_restart(key, &raw.restart)?,
     })
+}
+
+/// `runtime.base_image`, checked offline: an image reference, without the whitespace or control
+/// characters no reference has (the adapter checks the rest, `S001`), on a container that runs
+/// in a VM. A `scripts.run` other than `iii sandbox run` runs it on the host, where the image
+/// would go unused; no `scripts.run` yet is the explicit VM mode still to be written.
+fn validate_base_image(
+    key: &str,
+    runtime: Option<&RawRuntime>,
+    scripts: &Scripts,
+) -> Result<Option<String>> {
+    let Some(image) = runtime.and_then(|runtime| runtime.base_image.as_ref()) else {
+        return Ok(None);
+    };
+    if image.is_empty() || image.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ComposeError::InvalidBaseImage {
+            container: key.to_string(),
+            value: image.clone(),
+        });
+    }
+    if let Some(run) = &scripts.run
+        && !crate::sandbox::is_sandbox_run(run)
+    {
+        return Err(ComposeError::BaseImageWithoutVm {
+            container: key.to_string(),
+            run: run.clone(),
+        });
+    }
+    Ok(Some(image.clone()))
 }
 
 fn validate_restart(key: &str, raw: &RawRestart) -> Result<RestartConfig> {
@@ -1278,6 +1313,9 @@ pub(crate) struct RawContainer {
     config_override: Option<serde_yaml::Value>,
     #[serde(default)]
     scripts: Option<RawScripts>,
+    /// The container's VM: `base_image` only.
+    #[serde(default)]
+    runtime: Option<RawRuntime>,
     #[serde(default)]
     working_dir: Option<PathBuf>,
     #[serde(default, deserialize_with = "deserialize_unique_map")]
@@ -1338,6 +1376,17 @@ where
     D: serde::Deserializer<'de>,
 {
     bool::deserialize(deserializer).map(Some)
+}
+
+/// A container's `runtime:`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RawRuntime {
+    /// The image the container's VM build starts from, such as `docker.io/library/alpine:3.20`,
+    /// over the worker manifest's `runtime.base_image`. Required for a binary package that runs
+    /// in a VM, since the package names none.
+    #[serde(default)]
+    base_image: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1632,6 +1681,63 @@ containers:
         }
     }
 
+    /// `runtime.base_image` (spec 4.2): an image reference, on a container that runs in a VM.
+    #[test]
+    fn runtime_base_image_is_an_image_for_a_vm_container() {
+        let parse = |container: &str| {
+            ComposeFile::parse(
+                &format!("containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n{container}"),
+                "/tmp/worker-compose.yaml",
+            )
+            .map(|file| file.containers["tool"].base_image.clone())
+            .map_err(|error| error.code())
+        };
+        let image = Some("docker.io/library/alpine:3.20".to_string());
+        assert_eq!(parse(""), Ok(None));
+        assert_eq!(parse("    runtime: {}\n"), Ok(None));
+        assert_eq!(
+            parse("    runtime:\n      base_image: docker.io/library/alpine:3.20\n"),
+            Ok(image.clone())
+        );
+        assert_eq!(
+            parse(
+                "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
+                 build: iii sandbox build\n      run: iii sandbox run\n"
+            ),
+            Ok(image)
+        );
+        for bad in ["''", "'alpine 3.20'", "\"alpine\\t\""] {
+            assert_eq!(
+                parse(&format!("    runtime:\n      base_image: {bad}\n")),
+                Err("INVALID_BASE_IMAGE"),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            parse(
+                "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
+                 run: ./tool\n"
+            ),
+            Err("BASE_IMAGE_WITHOUT_VM")
+        );
+        assert_eq!(
+            parse("    runtime:\n      kind: node\n"),
+            Err("INVALID_COMPOSE_FILE")
+        );
+
+        let schema = worker_compose_schema_json();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let document: serde_json::Value = serde_yaml::from_str(
+            "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
+             base_image: docker.io/library/alpine:3.20\n",
+        )
+        .unwrap();
+        assert!(validator.is_valid(&document));
+        let mut unknown = document.clone();
+        unknown["containers"]["tool"]["runtime"]["kind"] = "node".into();
+        assert!(!validator.is_valid(&unknown));
+    }
+
     #[test]
     fn worker_compose_schema_exposes_required_inheritance() {
         let schema = worker_compose_schema_json();
@@ -1742,6 +1848,7 @@ containers:
             config_name: None,
             config_override: None,
             scripts: Scripts::default(),
+            base_image: None,
             working_dir: None,
             environment: BTreeMap::new(),
             env_file,

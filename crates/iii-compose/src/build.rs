@@ -213,10 +213,10 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     })
 }
 
-/// Whether the lock at `path` resolves the same containers to the same packages as
-/// `prepared`: what this build wrote, in the part `.iii/workers/` is made from. Compared
-/// parsed, so the check does not depend on re-reading the bytes it wrote; a lock that is
-/// missing or does not parse holds nothing.
+/// Whether the lock at `path` resolves the same containers to the same packages, for the same
+/// platforms, as `prepared`: what this build wrote, in the part `.iii/workers/` is made from.
+/// Compared parsed, so the check does not depend on re-reading the bytes it wrote; a lock that
+/// is missing or does not parse holds nothing.
 fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock) -> Result<bool> {
     let Some(bytes) = read_if_present(path)? else {
         return Ok(false);
@@ -239,11 +239,23 @@ fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock
         else {
             return Ok(false);
         };
-        on_disk.insert(key, resolved);
+        let vm = entry
+            .get("vm")
+            .and_then(serde_yaml::Value::as_bool)
+            .unwrap_or(false);
+        on_disk.insert(key, (resolved, vm));
     }
     let wrote: BTreeMap<_, _> = prepared
         .packages()
-        .map(|(key, resolved)| (key, resolved.clone()))
+        .map(|(key, resolved)| {
+            (
+                key,
+                (
+                    resolved.clone(),
+                    prepared.platform(key) == registry::Platform::Vm,
+                ),
+            )
+        })
         .collect();
     Ok(on_disk == wrote)
 }

@@ -1309,9 +1309,10 @@ async fn start_one_until_shutdown(
                     .await;
             }
             let installed = match &container.resolved_package {
-                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved(
+                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved_on(
                     key,
                     resolved,
+                    crate::vm_binary::platform(container),
                     ctx.package_cache,
                 ))?,
                 None => wait_or_interrupt!(crate::registry::install(
@@ -1334,10 +1335,22 @@ async fn start_one_until_shutdown(
                 &format!("starting {} {}", installed.name, installed.version),
             );
             match installed.payload {
+                // A binary runs as it was published, unless the file says how: `iii sandbox run`
+                // boots its Linux build in a VM, another command runs on the host (spec 4.2).
                 crate::registry::Payload::Binary(program) => (
-                    StartSpec::Exec {
-                        program,
-                        args: Vec::new(),
+                    match container.scripts.run.clone() {
+                        Some(run) => StartSpec::Shell(run),
+                        // Its build is the Linux one of a VM, which the host must not run.
+                        None if crate::vm_binary::declares_vm(container) => {
+                            return Err(ComposeError::VmScriptsNotWritten {
+                                container: key.to_string(),
+                            }
+                            .into());
+                        }
+                        None => StartSpec::Exec {
+                            program,
+                            args: Vec::new(),
+                        },
                     },
                     installed.default_config,
                 ),
