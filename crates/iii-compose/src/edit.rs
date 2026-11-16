@@ -140,6 +140,9 @@ impl Source {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewContainer {
     pub key: String,
+    /// Declaration text for persistence, including unexpanded/escaped references on explicit
+    /// requests. Resolve package identity from the effective parsed container, never this text.
+    /// Generated declarations use canonical references instead.
     pub source: Source,
     /// Containers this one calls. Two workers may need the same one, so the
     /// shared worker is declared once and named here by both.

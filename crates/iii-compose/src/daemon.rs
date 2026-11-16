@@ -2874,7 +2874,9 @@ fn keep_declared_dependencies(
     wanted
 }
 
-/// Turns one registry answer into the declarations Compose can own.
+/// Turns one registry answer into graph candidates using the effective `reference`. The
+/// dependency planner keeps package identities separately and restores explicit roots' raw
+/// references only after release comparisons and retargeting, before persistence.
 ///
 /// Engine-kind dependencies are omitted because the engine already provides
 /// them. Existing local dependencies are kept as opaque boundaries because

@@ -43,6 +43,7 @@ impl Package {
 
 /// The platform of the effective upsert: expand supplied fields as Compose does, preserving
 /// omitted fields from the already-expanded container. Raw request fields remain for persistence.
+#[cfg(test)]
 fn declaration_platform(declaration: &NewContainer, file: &ComposeFile) -> Result<Platform> {
     crate::config::effective_container(file, declaration)
         .map(|container| crate::vm_binary::platform(&container))
@@ -311,7 +312,12 @@ where
                     } else if let Some(container) = effective.get(&declaration.key) {
                         crate::vm_binary::platform(container)
                     } else {
-                        declaration_platform(&declaration, file)?
+                        // Generated graph nodes have no supplied scripts/runtime fields and
+                        // their source is already effective. Only inherit the existing
+                        // container's parsed platform; do not interpolate that source again.
+                        file.containers
+                            .get(&declaration.key)
+                            .map_or(Platform::Host, crate::vm_binary::platform)
                     };
                     Ok(Candidate {
                         declaration,
@@ -724,6 +730,22 @@ fn plan_resolved(
             )?;
         }
         if let Some(explicit) = explicit {
+            // Package identity, release comparisons and edge retargeting above use Package,
+            // whose registry/reference is effective. From here this is edit output: restore
+            // the operator's raw reference, not the expanded one expand_graph needed. Keep an
+            // explicit selector verbatim; an unpinned request takes the resolved exact version.
+            declaration.source = match (&explicit.source, &declaration.source) {
+                (
+                    Source::Package { reference, version },
+                    Source::Package {
+                        version: resolved, ..
+                    },
+                ) => Source::Package {
+                    reference: reference.clone(),
+                    version: version.clone().or_else(|| resolved.clone()),
+                },
+                _ => explicit.source.clone(),
+            };
             declaration.fields = explicit.fields.clone();
             declaration
                 .start_after
@@ -1060,6 +1082,167 @@ mod tests {
             error.contains("conflicts with the declared instances"),
             "{error}"
         );
+    }
+
+    /// Exercise the complete HTTP resolve -> identity/alias planning -> text upsert -> parse
+    /// path in a subprocess, without changing the parallel runner's environment.
+    #[test]
+    fn explicit_registry_references_remain_raw_after_resolution_and_upsert() {
+        const TEST: &str = "dependencies::tests::explicit_registry_references_remain_raw_after_resolution_and_upsert";
+        if std::env::var_os("KAN292_RAW_REFERENCE_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env("KAN292_RAW_REFERENCE_TEST", "1")
+                .env("KAN292_REGISTRY", "registry.example.test")
+                .env("KAN292_LITERAL", "must-not-be-expanded-twice")
+                .env("VM_RUN", "iii sandbox run")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let initial = "containers:\n  local: {worker: path://.}\n";
+            let file = ComposeFile::parse(initial, &path).unwrap();
+            for escaped in [false, true] {
+                for selector in [Some("next"), Some("^1.0"), None] {
+                    for copied_as_dependency in [false, true] {
+                        for reverse in [false, true] {
+                            let raw_reference = if escaped {
+                                "${KAN292_REGISTRY}/$${KAN292_LITERAL}/tool"
+                            } else {
+                                "${KAN292_REGISTRY}/tool"
+                            };
+                            let effective_reference = if escaped {
+                                "registry.example.test/${KAN292_LITERAL}/tool"
+                            } else {
+                                "registry.example.test/tool"
+                            };
+                            let wanted_worker = if escaped { "${KAN292_LITERAL}/tool" } else { "tool" };
+                            let request = |reference: &str, selector: Option<&str>| {
+                                let worker = match selector {
+                                    Some(selector) => format!("package://{reference}@{selector}"),
+                                    None => format!("package://{reference}"),
+                                };
+                                serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
+                                    "worker": worker,
+                                    "runtime": {"base_image": "alpine:3.20"},
+                                    "scripts": {"build": "iii sandbox build", "run": "${VM_RUN}"}
+                                })).unwrap().parse().unwrap()
+                            };
+                            let mut asked = vec![request(raw_reference, selector)];
+                            if copied_as_dependency {
+                                asked.push(request("${KAN292_REGISTRY}/app", Some("1.2.3")));
+                            }
+                            if reverse { asked.reverse(); }
+                            let server = MockServer::start().await;
+                            let binary = |name: &str, alias: Option<&str>| serde_json::json!({
+                                "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
+                                "binaries": {(registry::vm_targets()[0]): {
+                                    "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
+                                }}
+                            });
+                            let tool_graph = serde_json::json!({
+                                "graph": [binary("tool", None), binary("queue", None)],
+                                "edges": [{"from":"tool", "to":"queue"}]
+                            });
+                            Mock::given(matchers::method("POST"))
+                                .and(matchers::path("/resolve"))
+                                .and(matchers::body_partial_json(serde_json::json!({
+                                    "worker":wanted_worker, "version": selector.unwrap_or("*"),
+                                    "target":registry::vm_targets()[0]
+                                })))
+                                .respond_with(ResponseTemplate::new(200).set_body_json(tool_graph))
+                                .expect(1).mount(&server).await;
+                            if copied_as_dependency {
+                                Mock::given(matchers::method("POST"))
+                                    .and(matchers::path("/resolve"))
+                                    .and(matchers::body_partial_json(serde_json::json!({
+                                        "worker":"app", "version":"1.2.3", "target":registry::vm_targets()[0]
+                                    })))
+                                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                                        "graph": [binary("app", None), binary("tool", None),
+                                            binary("queue", None), binary("console", Some("shell")), binary("shell", None)],
+                                        "edges": [{"from":"app", "to":"tool"}, {"from":"app", "to":"console"},
+                                            {"from":"app", "to":"shell"}, {"from":"tool", "to":"queue"}]
+                                    })))
+                                    .expect(1).mount(&server).await;
+                            }
+                            let planned = registry::TEST_REGISTRY.scope(server.uri(), async {
+                                plan_with(&file, &asked, &Policy::Add,
+                                    |key, reference, range, platform| async move {
+                                        assert_eq!(platform, Platform::Vm);
+                                        assert_eq!(registry::split_reference(&reference).0, "https://registry.example.test");
+                                        assert_eq!(reference, if key == "tool" { effective_reference }
+                                            else { "registry.example.test/app" });
+                                        // Identity uses the effective registry; the task-local override
+                                        // routes this exact resolve request to the local HTTP endpoint.
+                                        let mut graph = registry::resolve_graph_on(&key, &reference, &range, platform).await?;
+                                        for node in &mut graph.nodes {
+                                            if node.name == "tool" {
+                                                // Host digests differ but the VM build is identical:
+                                                // matching the explicit root to its dependency copy
+                                                // only succeeds if both Package.platform values are Vm.
+                                                node.artifact_digest = Some(if key == "tool" { "b" } else { "c" }.repeat(64));
+                                            }
+                                        }
+                                        Ok(graph)
+                                    },
+                                    |_, _, _, _| async { panic!("no existing package lookups") },
+                                ).await.unwrap()
+                            }).await;
+                            server.verify().await;
+                            let root = container(&planned, "tool");
+                            assert_eq!(root.source, Source::Package {
+                                reference: raw_reference.into(),
+                                version: Some(selector.unwrap_or("1.2.3").into()),
+                            });
+                            assert_eq!(root.fields["scripts"]["run"].as_str(), Some("${VM_RUN}"));
+                            assert_eq!(planned.selected_versions["tool"], "1.2.3");
+                            assert_eq!(root.start_after, ["queue"]);
+                            assert_eq!(container(&planned, "queue").source, Source::Package {
+                                reference: "registry.example.test/queue".into(), version: Some("1.2.3".into())
+                            });
+                            if copied_as_dependency {
+                                assert_eq!(container(&planned, "app").start_after, ["shell", "tool"]);
+                                assert_eq!(planned.containers.iter().filter(|c| c.key == "tool").count(), 1);
+                                assert_eq!(container(&planned, "shell").source, Source::Package {
+                                    reference:"registry.example.test/shell".into(), version:Some("1.2.3".into())
+                                });
+                                assert!(planned.containers.iter().all(|c| c.key != "console"));
+                                assert!(planned.aliases.iter().any(|alias| alias.canonical == "shell"));
+                            }
+                            let mut text = initial.to_string();
+                            for declaration in &planned.containers {
+                                text = match crate::edit::upsert_container(&text, declaration).unwrap() {
+                                    crate::edit::Outcome::Added(text) | crate::edit::Outcome::Replaced {text, ..} => text,
+                                    crate::edit::Outcome::Unchanged => text,
+                                };
+                            }
+                            assert!(text.contains(&format!("package://{raw_reference}")), "{text}");
+                            assert!(text.contains("${VM_RUN}"), "{text}");
+                            let parsed = ComposeFile::parse(&text, &path).unwrap();
+                            assert_eq!(parsed.containers["tool"].worker, WorkerSource::Package {
+                                reference: effective_reference.into()
+                            });
+                            assert_eq!(parsed.containers["tool"].version.as_deref(), Some(selector.unwrap_or("1.2.3")));
+                            assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii sandbox run"));
+                            assert_eq!(crate::vm_binary::platform(&parsed.containers["tool"]), Platform::Vm);
+                            // A repeated upsert preserves the raw spelling and is a no-op.
+                            assert_eq!(crate::edit::upsert_container(&text, root).unwrap(), crate::edit::Outcome::Unchanged);
+                        }
+                    }
+                }
+            }
+        });
     }
 
     #[test]
