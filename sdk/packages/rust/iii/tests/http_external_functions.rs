@@ -2,6 +2,10 @@
 //!
 //! Requires a running III engine. Set III_URL or use ws://localhost:49134 default.
 
+// `RegisterFunction::http` is deprecated (iii-http-functions); these tests keep
+// covering it until it is removed.
+#![allow(deprecated)]
+
 mod common;
 
 use std::collections::HashMap;

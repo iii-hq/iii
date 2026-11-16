@@ -1,0 +1,17 @@
+// knip config for the unused-dependency check in CI (warning only, run by
+// .github/scripts/unused_deps.py through the ci.yml `unused-deps-node` job).
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    "website": {
+      // Roadmap decks load through roadmap/generated/spec-manifest.ts, which
+      // scripts/generate-roadmap-manifest.ts writes before every build and
+      // git ignores: knip cannot follow it, so each deck is an entry.
+      "entry": ["roadmap/*/src/App.tsx"]
+    },
+    "docs": {
+      // The docs formatter: editors run it with docs/.prettierrc, no script does.
+      "ignoreDependencies": ["prettier"]
+    }
+  }
+}

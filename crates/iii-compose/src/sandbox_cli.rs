@@ -163,8 +163,9 @@ const INFO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 })
 const START_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Every other call's budget.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
-/// `worker::status` cadence.
-const POLL_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
+/// How long after a log stream closed on a running VM (or would not open) it is asked for
+/// again, and the pause between unanswered stops.
+const RETRY_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
 /// `scripts.build_timeout`'s default, for an environment without `III_BUILD_TIMEOUT_MS`.
 const DEFAULT_BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How long a build's output may take to end once `worker::build` answered.
@@ -1085,11 +1086,13 @@ fn refusal(error: &iii_sdk::Error) -> Option<(String, String)> {
 
 enum Tick {
     Stop(Instant),
-    Polled(Outcome),
+    /// What `worker::status` said, and whether a log stream stayed open before it, which only a
+    /// live adapter does.
+    Polled(Outcome, bool),
 }
 
-/// Polls `vm` until it exits, printing its output, or stops it once `shutdown` resolves. The
-/// whole tick races the signal, so a slow or restarting engine never delays a stop.
+/// Follows `vm` until it exits, printing its output, or stops it once `shutdown` resolves. The
+/// whole pass races the signal, so a slow or restarting engine never delays a stop.
 async fn supervise(
     ctx: &Context,
     client: &IIIClient,
@@ -1099,17 +1102,25 @@ async fn supervise(
 ) -> Result<ExitStatus, Failure> {
     let token = &ctx.target.token;
     let mut unanswered_since: Option<Instant> = None;
+    let mut pause = Duration::ZERO;
     loop {
         let tick = tokio::select! {
             biased;
             (_, at) = shutdown.requested() => Tick::Stop(at),
-            outcome = poll(client, vm, token, logs) => Tick::Polled(outcome),
+            (outcome, followed) = poll(client, vm, token, logs, pause) => {
+                Tick::Polled(outcome, followed)
+            }
         };
+        pause = RETRY_INTERVAL;
+        // A stream the adapter kept open is an answer, so the wait for one starts over.
+        if matches!(tick, Tick::Polled(_, true)) {
+            unanswered_since = None;
+        }
         match tick {
             Tick::Stop(at) => {
                 return Ok(stop(client, vm, token, ctx.stop_deadline(at), logs).await);
             }
-            Tick::Polled(Outcome::Exited(status)) => {
+            Tick::Polled(Outcome::Exited(status), _) => {
                 // The VM is gone: its last lines are read, unless a stop request cuts that short.
                 tokio::select! {
                     biased;
@@ -1118,8 +1129,8 @@ async fn supervise(
                 }
                 return Ok(status);
             }
-            Tick::Polled(Outcome::Running) => unanswered_since = None,
-            Tick::Polled(Outcome::Unknown) => {
+            Tick::Polled(Outcome::Running, _) => unanswered_since = None,
+            Tick::Polled(Outcome::Unknown, _) => {
                 let since = *unanswered_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= LOST_AFTER {
                     return Err(Failure::runner(
@@ -1139,11 +1150,24 @@ async fn supervise(
     }
 }
 
-/// One tick: keeps the log stream open, waits a poll interval, then asks how the VM is.
-async fn poll(client: &IIIClient, vm: &VmRecord, token: &str, logs: &mut Logs) -> Outcome {
+/// One pass: after `pause`, keeps the log stream open and waits for it to close, then asks how
+/// the VM is. The adapter closes the stream once the VM has exited and its log is drained, and
+/// it also ends when the adapter or the engine goes away, so a running VM costs no call. With no
+/// stream open, it asks at once.
+async fn poll(
+    client: &IIIClient,
+    vm: &VmRecord,
+    token: &str,
+    logs: &mut Logs,
+    pause: Duration,
+) -> (Outcome, bool) {
+    tokio::time::sleep(pause).await;
     logs.follow(client, vm, token).await;
-    tokio::time::sleep(POLL_INTERVAL).await;
-    sandbox::outcome_of(sandbox::worker_status(client, vm, token).await)
+    let opened = Instant::now();
+    // One that closed at once says nothing about the adapter.
+    let followed = logs.closed().await && opened.elapsed() >= RETRY_INTERVAL;
+    let outcome = sandbox::outcome_of(sandbox::worker_status(client, vm, token).await);
+    (outcome, followed)
 }
 
 /// `worker::stop`, asked again until the adapter confirms the VM ended or `deadline` passes;
@@ -1188,7 +1212,7 @@ async fn stop(
             return status;
         }
         let left = deadline.saturating_duration_since(Instant::now());
-        tokio::time::sleep(POLL_INTERVAL.min(left)).await;
+        tokio::time::sleep(RETRY_INTERVAL.min(left)).await;
     }
 }
 
@@ -1268,6 +1292,21 @@ impl Logs {
                 self.printer.clone(),
             ));
         }
+    }
+
+    /// Waits for the open stream to close, and keeps the cursor of its last record in
+    /// [`Logs::cursor`]; returns at once, `false`, with no stream open. It is cancel-safe: dropped
+    /// before the stream ends, it leaves the stream in [`Logs::capture`].
+    async fn closed(&mut self) -> bool {
+        let Some(stream) = self.capture.as_mut() else {
+            return false;
+        };
+        let last = stream.await;
+        self.capture = None;
+        if let Ok(Some(last)) = last {
+            self.cursor = Some(last);
+        }
+        true
     }
 
     /// After the VM exited: reads what its stream still holds, so its last lines are printed.
@@ -4081,6 +4120,35 @@ mod tests {
             logs[1..].iter().all(|reopened| reopened["cursor"] == 12),
             "{logs:?}"
         );
+    }
+
+    /// While the log stream is open the running VM is never asked about: the stream's close is
+    /// what has `worker::status` asked, once.
+    #[tokio::test]
+    async fn a_running_vm_is_asked_about_only_when_its_log_stream_closes() {
+        let running = Arc::new(AtomicBool::new(true));
+        let held = running.clone();
+        let (client, mut called) = fake_engine(adapter(move |suffix, _| match suffix {
+            "channel::open" if held.load(Ordering::SeqCst) => Some(json!("hold")),
+            "worker::status" => Some(status(State::Exited, Some(0), None)),
+            _ => None,
+        }))
+        .await;
+        let (printer, _) = captured();
+        let (ctx, build, shutdown) = (context(), booted(), never());
+        let release = async {
+            // Ten of the RETRY_INTERVAL polls this replaces.
+            tokio::time::sleep(RETRY_INTERVAL * 10).await;
+            let before = calls(&mut called);
+            running.store(false, Ordering::SeqCst);
+            before
+        };
+        let (status, before) =
+            tokio::join!(run_vm(&ctx, &build, &client, &shutdown, printer), release);
+        assert_eq!(status.unwrap().code(), Some(0));
+        assert!(payloads(&before, "worker::status").is_empty(), "{before:?}");
+        assert_eq!(payloads(&before, "worker::logs").len(), 1, "{before:?}");
+        assert_eq!(payloads(&calls(&mut called), "worker::status").len(), 1);
     }
 
     #[tokio::test]

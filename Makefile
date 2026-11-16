@@ -9,6 +9,7 @@ STOP_SCRIPT         := bash scripts/stop-iii.sh
 III_URL             := ws://localhost:49199
 III_HTTP_URL        := http://localhost:3199
 PYTHON_SDK_DIR      := sdk/packages/python/iii
+GO_SDK_DIR          := sdk/packages/go/iii
 
 export III_TELEMETRY_ENABLED := false
 
@@ -16,12 +17,15 @@ export III_TELEMETRY_ENABLED := false
         engine-build engine-test coverage engine-fmt-check \
         engine-up engine-up-bridges engine-down \
         test-sdk-node test-sdk-python test-sdk-rust test-sdk-all \
-        lint-python lint-rust lint \
-        fmt-check fmt-check-rust fmt-check-all \
-        typecheck-node typecheck-python typecheck \
-        build-node build-sdk-node build \
+        test-sdk-browser test-sdk-browser-integration \
+        test-sdk-go test-sdk-go-integration \
+        lint-python lint-rust lint-go lint check-browser-observe \
+        fmt-check fmt-check-rust fmt-check-go fmt-check-all \
+        typecheck-node typecheck-python typecheck-browser typecheck \
+        build-node build-sdk-node build-sdk-browser build \
         fix fix-lint fix-fmt \
-        check ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust \
+        check ci-engine ci-sdk-node ci-sdk-browser ci-sdk-python ci-sdk-rust \
+        ci-sdk-go \
         ci-local cli-docs
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
@@ -83,7 +87,22 @@ test-sdk-python:
 
 test-sdk-rust:
 	III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
-		cargo test -p iii-sdk -p iii-helpers -p iii-observability --all-features
+		cargo test -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter --all-features
+
+test-sdk-browser:
+	pnpm --filter iii-browser-sdk test
+
+test-sdk-browser-integration:
+	III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
+		pnpm --filter iii-browser-sdk test:integration
+
+test-sdk-go:
+	cd $(GO_SDK_DIR) && go test -race ./...
+
+test-sdk-go-integration:
+	cd $(GO_SDK_DIR) && \
+		III_URL=$(III_URL) III_HTTP_URL=$(III_HTTP_URL) \
+		go test -tags integration ./tests/...
 
 test-sdk-all: test-sdk-node test-sdk-python test-sdk-rust
 
@@ -93,14 +112,23 @@ lint-python:
 	cd $(PYTHON_SDK_DIR) && uv run ruff check src
 
 lint-rust:
-	cargo clippy -p iii-sdk -p iii-helpers -p iii-observability --all-targets --all-features -- -D warnings
+	cargo clippy -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter --all-targets --all-features -- -D warnings
+
+lint-go:
+	cd $(GO_SDK_DIR) && go vet ./...
+
+check-browser-observe: ## Fail when the browser SDK's derived observe files drift from the Node SDK
+	python3 scripts/sync-browser-observe.py --check
 
 lint: lint-python lint-rust
 
 # ── Format Check ──────────────────────────────────────────────────────────────
 
 fmt-check-rust:
-	cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -- --check
+	cargo fmt -p iii-sdk -p iii-helpers -p iii-observability -p iii-filter -- --check
+
+fmt-check-go:
+	test -z "$$(gofmt -l $(GO_SDK_DIR))" || { gofmt -l $(GO_SDK_DIR); exit 1; }
 
 fmt-check-all: engine-fmt-check fmt-check-rust
 
@@ -112,12 +140,18 @@ typecheck-node:
 typecheck-python:
 	cd $(PYTHON_SDK_DIR) && uv run mypy src
 
+typecheck-browser:
+	pnpm --filter iii-browser-sdk exec tsc --noEmit
+
 typecheck: typecheck-node typecheck-python
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 build-sdk-node:
 	pnpm --filter iii-sdk build
+
+build-sdk-browser:
+	pnpm --filter iii-browser-sdk build
 
 build: ## Build everything: engine
 	cargo build --release -p iii
@@ -136,6 +170,11 @@ ci-sdk-node: engine-up-bridges
 	@trap '$(MAKE) engine-down' EXIT; \
 	$(MAKE) typecheck-node build-sdk-node test-sdk-node
 
+ci-sdk-browser: engine-up
+	@trap '$(MAKE) engine-down' EXIT; \
+	$(MAKE) check-browser-observe typecheck-browser build-sdk-browser \
+		test-sdk-browser test-sdk-browser-integration
+
 ci-sdk-python: engine-up
 	@trap '$(MAKE) engine-down' EXIT; \
 	$(MAKE) install-python lint-python typecheck-python test-sdk-python
@@ -143,6 +182,10 @@ ci-sdk-python: engine-up
 ci-sdk-rust: engine-up
 	@trap '$(MAKE) engine-down' EXIT; \
 	$(MAKE) fmt-check-rust lint-rust test-sdk-rust
+
+ci-sdk-go: engine-up
+	@trap '$(MAKE) engine-down' EXIT; \
+	$(MAKE) fmt-check-go lint-go test-sdk-go test-sdk-go-integration
 
 # ── Convenience ───────────────────────────────────────────────────────────────
 
@@ -160,4 +203,4 @@ fix-lint:
 
 check: lint fmt-check-all typecheck build-sdk-node
 
-ci-local: ci-engine ci-sdk-node ci-sdk-python ci-sdk-rust
+ci-local: ci-engine ci-sdk-node ci-sdk-browser ci-sdk-python ci-sdk-rust ci-sdk-go

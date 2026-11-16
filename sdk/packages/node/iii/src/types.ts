@@ -114,6 +114,11 @@ export interface IIIClient {
    * The handler's return value is what the function's observers observe; an
    * event source's handler returns the event it is called with.
    *
+   * HTTP-invoked functions ({@link HttpInvocationConfig}) are deprecated
+   * (iii-http-functions) and will be removed in an upcoming release: register
+   * a handler that makes the HTTP call instead. Migration guide:
+   * https://iii.dev/docs/upgrading/migrate-from-http-functions
+   *
    * Every call of the function, local or routed, runs the handler and then
    * goes to the observers that want it (`onObservationMatch`; by default all of
    * them): the function's `onObservationDeliver` hook delivers it, or iii does,

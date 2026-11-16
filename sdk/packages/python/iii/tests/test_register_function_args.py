@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+import warnings
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -419,5 +420,29 @@ def test_register_function_input_model_raises(monkeypatch: pytest.MonkeyPatch) -
 
     with pytest.raises(TypeError, match="function_id must be str"):
         client.register_function(_LegacyInput(id="demo.model_removed"), handler)
+
+    client.shutdown()
+
+
+def test_register_function_with_http_invocation_warns_deprecation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HttpInvocationConfig emits the iii-http-functions FutureWarning at the caller's line."""
+    _patch_ws(monkeypatch)
+    client = _make_client()
+
+    from iii_helpers.http import HttpInvocationConfig
+
+    with pytest.warns(FutureWarning, match=r"HttpInvocationConfig is deprecated \(iii-http-functions\)") as record:
+        client.register_function("demo.deprecated_http", HttpInvocationConfig(url="https://example.com/fn"))
+
+    assert len(record) == 1
+    assert record[0].filename == __file__
+    assert "https://iii.dev/docs/upgrading/migrate-from-http-functions" in str(record[0].message)
+
+    async def handler(data: Any) -> Any:
+        return data
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", FutureWarning)
+        client.register_function("demo.local_handler", handler)
 
     client.shutdown()

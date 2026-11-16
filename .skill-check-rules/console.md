@@ -6,8 +6,8 @@ Rules for documenting the iii Console — the web UI that connects to a running 
 
 The iii Console is the web UI of ADE, a standalone application published in the registry as `ade`.
 A project adds it like any worker (`iii call compose::add worker=ade`), and projects created by the
-installer or by `iii project init` include it. The `iii console` command prints a notice that points
-to it. Its documentation is in the iii docs (`using-iii/console.mdx`), not Worker Docs.
+installer or by `iii project init` include it. The `iii console` command was removed. Its
+documentation is in the iii docs (`using-iii/console.mdx`), not Worker Docs.
 
 ## Per-page content is console-owned
 

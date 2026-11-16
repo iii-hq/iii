@@ -10,7 +10,6 @@ name = "iii_compose"
 path = "src/lib.rs"
 
 [dependencies]
-async-trait = "0.1"
 chrono = "0.4"
 clap = { workspace = true }
 serde = { workspace = true }
@@ -35,7 +34,6 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 uuid = { workspace = true }
 schemars = "0.8"
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 # Containers with no dependency between them start together, which needs
 # awaiting a set of futures that borrow the lifecycle context. Spawning would
 # demand 'static; joining them in place does not.

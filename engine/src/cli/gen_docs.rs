@@ -17,8 +17,7 @@ use iii_clap_docs::{Delegated, PageMeta};
 /// The `cloud` subcommand is a passthrough stub here (a bare `Vec<String>`);
 /// its real command tree lives in the dispatched binary, which this page does
 /// not document. List it in the subcommands table without a link instead of
-/// rendering an empty `[ARGS]...` section. (The removed `console` command is
-/// a hidden notice-only stub, so it is not rendered at all.)
+/// rendering an empty `[ARGS]...` section.
 fn delegated() -> BTreeMap<String, Delegated> {
     let mut map = BTreeMap::new();
     map.insert(
