@@ -52,9 +52,17 @@ SH
   chmod +x "$2"
 }
 
+# An iii that cannot run on this machine, as a libc or architecture mismatch
+# looks from a shell: no output, a failing status.
+broken_iii() {
+  printf '#!/bin/sh\nexit 126\n' > "$1"
+  chmod +x "$1"
+}
+
 # publish VERSION REQUESTED TARGET...: builds VERSION's archive for each TARGET,
 # then serves the registry's script for REQUESTED (a tag or the version) at
 # $REGISTRY/install/iii/REQUESTED.sh, as GET /install/iii/REQUESTED.sh would.
+# With BROKEN set, the archives hold an iii that does not run.
 publish() {
   _version="$1"; _requested="$2"; shift 2
   _cdn="$ROOT/cdn/$_version"
@@ -63,7 +71,7 @@ publish() {
   for _target in "$@"; do
     _stage="$ROOT/stage/$_version/$_target"
     mkdir -p "$_stage"
-    fake_iii "$_version" "$_stage/iii"
+    if [ -n "${BROKEN:-}" ]; then broken_iii "$_stage/iii"; else fake_iii "$_version" "$_stage/iii"; fi
     tar -czf "$_cdn/iii-$_target.tar.gz" -C "$_stage" iii
     _sum=$(sha256sum "$_cdn/iii-$_target.tar.gz" | cut -d' ' -f1)
     _sums="$_sums -e s#@sha256:$_target@#$_sum#"
@@ -213,6 +221,35 @@ helpers() {
   [ "$("$BIN_DIR/iii" --version)" = "iii 0.27.0" ]
 }
 
+@test "a build that does not run here never replaces a working engine" {
+  BROKEN=1 publish 0.27.0 latest x86_64-unknown-linux-musl
+  mkdir -p "$BIN_DIR"
+  fake_iii 0.26.0 "$BIN_DIR/iii"
+  run_install latest
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"error: the downloaded iii v0.27.0 (x86_64-unknown-linux-musl) does not run on this system; $BIN_DIR/iii v0.26.0 is unchanged"* ]]
+  [[ "$output" != *"upgraded"* ]]
+  [ "$("$BIN_DIR/iii" --version)" = "iii 0.26.0" ]
+  grep -q '^0.26.0 --install-only-generate-ids --install-event-type upgrade_failed .*"error_stage":"verify"' "$ROOT/events.log"
+}
+
+@test "a build that does not run here is not installed" {
+  BROKEN=1 publish 0.27.0 latest x86_64-unknown-linux-musl
+  run_install latest
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"error: the downloaded iii v0.27.0 (x86_64-unknown-linux-musl) does not run on this system; nothing was installed"* ]]
+  [ ! -e "$BIN_DIR/iii" ]
+}
+
+@test "an explicit TARGET installs another machine's build, with a warning" {
+  BROKEN=1 publish 0.27.0 latest aarch64-unknown-linux-gnu
+  TARGET=aarch64-unknown-linux-gnu run_install latest
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"installed iii v0.27.0 to $BIN_DIR/iii"* ]]
+  [[ "$output" == *"warning: iii installed but 'iii --version' produced no output: the aarch64-unknown-linux-gnu build may not run on this system"* ]]
+  [ -x "$BIN_DIR/iii" ]
+}
+
 # ─────────────────────────────────────────────────────────────
 # Another version than the one pinned
 # ─────────────────────────────────────────────────────────────
@@ -299,4 +336,19 @@ helpers() {
   [[ "$output" != *"installing"* ]]
   [[ "$output" == *"iii project init --learn-iii"* ]]
   [ "$("$BIN_DIR/iii" --version)" = "iii 0.26.0" ]
+}
+
+@test "--skip-bin-download needs no build for this machine" {
+  # An iii built here, for a platform the registry has no build for.
+  publish 0.27.0 latest x86_64-unknown-linux-musl
+  mkdir -p "$BIN_DIR"
+  fake_iii 0.28.0-dev "$BIN_DIR/iii"
+  STUB_UNAME_M=riscv64 run_install latest --skip-bin-download
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"unsupported architecture"* ]]
+  [[ "$output" == *"iii project init --learn-iii"* ]]
+
+  STUB_UNAME_S=FreeBSD run_install latest --skip-bin-download
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"unsupported OS"* ]]
 }

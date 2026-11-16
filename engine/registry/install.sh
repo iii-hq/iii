@@ -372,7 +372,11 @@ fi
 uname_s=$(uname -s 2>/dev/null || echo unknown)
 uname_m=$(uname -m 2>/dev/null || echo unknown)
 
-if [ -n "${TARGET:-}" ]; then
+# --skip-bin-download downloads nothing, so it needs no target: it runs the
+# setup against the iii already here, whatever this machine's platform.
+if [ "$skip_bin_download" = true ]; then
+  target=""
+elif [ -n "${TARGET:-}" ]; then
   target="$TARGET"
 else
   case "$uname_m" in
@@ -545,6 +549,24 @@ if [ -z "${bin_file:-}" ] || [ ! -f "$bin_file" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Verify: the new binary runs here
+# ---------------------------------------------------------------------------
+
+# Asked before anything is replaced, so a build that cannot run on this machine
+# (a libc or architecture mismatch) never takes the place of an engine that
+# can. An upgrade that fails here reports through the engine already installed.
+# An explicit TARGET may name another machine's build on purpose (a container
+# image, a mounted root filesystem), so that one is installed with a warning.
+chmod 755 "$bin_file" 2>/dev/null || true
+new_version=$("$bin_file" --version 2>/dev/null | awk '{print $NF}')
+if [ -z "$new_version" ] && [ -z "${TARGET:-}" ]; then
+  if [ -n "$from_version" ]; then
+    err "verify" "the downloaded $BIN_NAME v$release_version ($target) does not run on this system; $bin_dir/$BIN_NAME v$from_version is unchanged"
+  fi
+  err "verify" "the downloaded $BIN_NAME v$release_version ($target) does not run on this system; nothing was installed (set TARGET=<triple> to pick another build: $III_REGISTRY_TARGETS)"
+fi
+
+# ---------------------------------------------------------------------------
 # Install: main binary
 # ---------------------------------------------------------------------------
 
@@ -599,8 +621,9 @@ fi
 # Post-install verification
 # ---------------------------------------------------------------------------
 
+# Only an explicit TARGET gets here with a binary that does not run here.
 if [ -z "$installed_version" ]; then
-  warn "$BIN_NAME installed but 'iii --version' produced no output — the binary may not run on this system (Gatekeeper? libc mismatch? try: $bin_dir/$BIN_NAME --version)"
+  warn "$BIN_NAME installed but 'iii --version' produced no output: the $target build may not run on this system (try: $bin_dir/$BIN_NAME --version)"
 fi
 fi
 
