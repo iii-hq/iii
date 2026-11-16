@@ -89,7 +89,7 @@ The same API is in every SDK. See [sdk/README.md](sdk/README.md).
 ## Install
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
 The installer asks to set up your first project. Press Enter, then open http://127.0.0.1:3113.

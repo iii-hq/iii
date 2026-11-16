@@ -89,7 +89,7 @@ console.log(order)
 ## 安装
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
 安装程序会询问是否设置你的第一个项目。按 Enter，然后打开 http://127.0.0.1:3113。

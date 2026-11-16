@@ -23,7 +23,7 @@ An agent that hits a task outside its current capabilities can install a worker 
 For **current install paths and prerequisites**, use **[iii.dev/docs/install.md](https://iii.dev/docs/install.md)**—the snippets below may lag the docs.
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh   # answer "y" at the prompt to let the installer scaffold and start the harness
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh   # answer "y" at the prompt to let the installer scaffold and start the harness
 iii project init my-app          # barebones project; add `-t harness` for the harness template
 cd my-app
 iii compose --up                 # start the engine, the Compose daemon, and the project's workers

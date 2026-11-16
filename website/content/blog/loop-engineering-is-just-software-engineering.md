@@ -201,7 +201,7 @@ not double-fire. One command: `iii worker add harness`.
 Install in a few commands and get started:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 touch config.yaml
 iii -c config.yaml
 

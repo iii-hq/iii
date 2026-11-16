@@ -47,7 +47,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
   <div><span class="rounded-full">One primitive: Function</span>
     <h1 id="hero-title"><span class="print block"><span class="block">More application.</span><span class="block">Less infrastructure.</span></span></h1>
     <p><span class="text-foreground">The convenience of a platform, without the lock-in.</span> Connect any functions into one live system.</p>
-    <div role="tablist"><button type="button">curl</button></div><p>Install the engine.</p><pre><code>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</code></pre>
+    <div role="tablist"><button type="button">curl</button></div><p>Install the engine.</p><pre><code>curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh</code></pre>
   </div>
   <div><p>Release notes and new workers, by email</p><form><input type="email"><button type="submit">Subscribe</button></form></div>
 </section>
@@ -55,7 +55,7 @@ const FIXTURE = `<!DOCTYPE html><html lang="en" class="dark"><head><title>iii</t
 <section id="demo" aria-labelledby="demo-title">${head("Live demo", "demo", "Watch iii execute.", "Follow one request through the code.")}<div><pre><code>iii.registerFunction()</code></pre><p>Trace · 12 spans</p></div></section>
 <section id="numbers" aria-labelledby="numbers-title"><header><p>Numbers</p><h2 id="numbers-title">Built to execute.</h2></header><dl><dt>p50</dt><dd>0.4 ms</dd></dl></section>
 <section id="faq" aria-labelledby="faq-title">${head("Questions", "faq", "Questions.", 'Something else? Ask in <a href="https://discord.gg/iiidev">Discord</a>.')}<div><button type="button">What is iii?</button></div></section>
-<section id="final-cta" aria-labelledby="final-cta-title"><div><h2 id="final-cta-title">Make anything callable.</h2><p>Start building your iii system.</p><div><button type="button">curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</button></div></div></section>
+<section id="final-cta" aria-labelledby="final-cta-title"><div><h2 id="final-cta-title">Make anything callable.</h2><p>Start building your iii system.</p><div><button type="button">curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh</button></div></div></section>
 </main>
 <footer class="border-t">
   <div><a href="#hero"><svg viewBox="0 0 1075.74 1075.74"></svg></a><p>A next-generation software system. One primitive: Functions you call and observe.</p><p>Pronounced "three eye"</p></div>
@@ -85,7 +85,7 @@ test("buildHomepageExtractFromHtml reads the hero as prose (headline lines joine
   )
   // Nothing from the decorative backdrop, the install card or the email row.
   assert.ok(!text.includes("decorative caption"))
-  assert.ok(!text.includes("install.iii.dev"))
+  assert.ok(!text.includes("iii.dev/registry/install"))
   assert.ok(!text.includes("Install the engine"))
   assert.ok(!text.includes("Release notes"))
   assert.ok(!text.includes("Subscribe"))
@@ -157,7 +157,7 @@ test("buildLlmsTxt is an understanding-first explainer (no spin-up instructions)
   assert.ok(!text.includes("## Guardrails"))
   assert.ok(!text.includes("## Install / start"))
   assert.ok(!text.includes("npx skills add iii-hq/iii/skills"))
-  assert.ok(!text.includes("install.iii.dev"))
+  assert.ok(!text.includes("iii.dev/registry/install"))
   assert.ok(text.includes("## Blog (knowledge base for coding agents)"))
   assert.ok(text.includes("https://iii.dev/blog/index.md"))
 })
@@ -188,7 +188,7 @@ test("the built dist/index.html still carries every hook the extractor needs", n
   assert.ok(text.includes("### Questions\n**What is iii?**"))
   assert.ok(text.includes("### Get started\n**Make anything callable.**"))
   assert.ok(text.includes("### Footer / links\nA next-generation software system."))
-  assert.ok(!text.includes("install.iii.dev"))
+  assert.ok(!text.includes("iii.dev/registry/install"))
   assert.ok(!text.includes("registerWorker"))
   assert.ok(!text.includes("```"))
   assert.ok(!text.includes("(opens in a new tab)"))
