@@ -206,8 +206,8 @@ ready stay as they are.
 | `container` | Starts that worker and the workers it depends on, and nothing else.                          |
 | `frozen`    | Requires a current `worker-compose.lock` and does not resolve package selectors when `true`. |
 
-A container whose `scripts.build` has no `.build/<container>/build.json` yet gets its first build
-before it runs. The operation reports the build as a `building` step of that container. See
+A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
+build before it runs. The operation reports the build as a `building` step of that container. See
 [The first build](#the-first-build).
 
 #### compose::up failures
@@ -404,7 +404,7 @@ Compose downloads the URL in the lock and verifies its SHA-256 digest. Compose a
 extracted cache contents before reuse. A changed cache entry is downloaded again from the locked
 URL.
 
-Each project also gets a copy of every locked package in `.workers/<container>/`. See
+Each project also gets a copy of every locked package in `.iii/workers/<container>/`. See
 [The project tree](#the-project-tree).
 
 Use `iii compose build --frozen` in CI to require the compose file and lock to match. Use
@@ -423,8 +423,8 @@ validated before a worker is removed. Compose then stops only that worker and ru
 
 Compose first stops a build of that container that is still running, from `compose::build` or a
 first build. Until the remove ends, a start or rebuild of that container gives up. Removing a
-container also deletes its `.build/<container>/` and `.workers/<container>/` directories. For a VM
-worker, Compose has the sandbox adapter destroy the VM's data disk.
+container also deletes its `.iii/build/<container>/` and `.iii/workers/<container>/` directories.
+For a VM worker, Compose has the sandbox adapter destroy the VM's data disk.
 
 | Field    | Description           |
 | -------- | --------------------- |
@@ -841,8 +841,9 @@ configuration, not only an address.
 ### Worker fields
 
 Each key under `containers` is the name the worker registers under. It also names the container's
-directories, `.build/<key>/` and `.workers/<key>/`, so it must be a plain directory name: a key that
-is empty, holds `/` or `\`, starts with `.`, or holds a NUL fails with `INVALID_CONTAINER_KEY`.
+directories, `.iii/build/<key>/` and `.iii/workers/<key>/`, so it must be a plain directory name: a
+key that is empty, holds `/` or `\`, starts with `.`, or holds a NUL fails with
+`INVALID_CONTAINER_KEY`.
 
 | Field             | Type           | Default              | Description                                                                                                |
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
@@ -1045,10 +1046,10 @@ reserved too:
 
 | Variable                 | Value                                                                                 |
 | ------------------------ | ------------------------------------------------------------------------------------- |
-| `III_BUILD_DIR`          | `<project>/.build/<container>`.                                                       |
+| `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                                                   |
 | `III_BUILD_TIMEOUT_MS`   | `scripts.build_timeout`, for `iii sandbox build`.                                     |
 | `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`, for `iii sandbox build`. |
-| `III_PACKAGE_DIR`        | `<project>/.workers/<container>`, for a bundle.                                       |
+| `III_PACKAGE_DIR`        | `<project>/.iii/workers/<container>`, for a bundle.                                   |
 | `III_PACKAGE_NAME`       | The bundle's manifest name, for a bundle.                                             |
 
 A bundle that runs on the host gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME` too.
@@ -1175,9 +1176,9 @@ Without `scripts.build`, Compose rewrites it into the VM. A `build:` key without
 absent.
 
 A bundle runs on the host when its `scripts.run` is a host command. It runs `scripts.build` and
-`scripts.run` in `.workers/<container>/`, and gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME`. Binary
-packages keep their working directory. Both moves are edits of `scripts`, and later runs leave them
-alone, with or without a lock.
+`scripts.run` in `.iii/workers/<container>/`, and gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME`.
+Binary packages keep their working directory. Both moves are edits of `scripts`, and later runs
+leave them alone, with or without a lock.
 
 ### The project tree
 
@@ -1185,40 +1186,47 @@ alone, with or without a lock.
 my-project/
 ├── worker-compose.yaml
 ├── worker-compose.lock
-├── .iii/                    # Compose state and the project token (hidden from VMs, as today)
-├── .workers/                # packages, one directory per container; like node_modules
-│   ├── .gitignore           # "*", written by Compose
-│   ├── .packages.json       # container -> { name, version, sha256 }
-│   ├── .lock                # held while Compose copies packages
-│   ├── onboarding/
-│   ├── sandbox-libkrun/
-│   └── state/
-├── .build/                  # one directory per container that has a build
-│   ├── .gitignore           # "*", written by Compose
-│   ├── onboarding/
-│   │   ├── image.erofs      # the image the run boots (VM containers)
-│   │   ├── image.id         # its build_id, written by the adapter
-│   │   └── build.json
-│   ├── link/
-│   └── api/
-│       └── build.json       # host builds record build.json without an image
+├── .iii/                    # hidden from VMs by name
+│   ├── project.ini          # the project's id, written by iii project init
+│   ├── compose/             # Compose state and the project token; III_COMPOSE_STATE_DIR moves it
+│   ├── workers/             # packages, one directory per container; like node_modules
+│   │   ├── .gitignore       # "*", written by Compose
+│   │   ├── .packages.json   # container -> { name, version, sha256 }
+│   │   ├── .lock            # held while Compose copies packages
+│   │   ├── onboarding/
+│   │   ├── sandbox-libkrun/
+│   │   └── state/
+│   └── build/               # one directory per container that has a build
+│       ├── .gitignore       # "*", written by Compose
+│       ├── onboarding/
+│       │   ├── image.erofs  # the image the run boots (VM containers)
+│       │   ├── image.id     # its build_id, written by the adapter
+│       │   └── build.json
+│       ├── link/
+│       └── api/
+│           └── build.json   # host builds record build.json without an image
 └── link/                    # a path:// worker, as today
 
 ~/.iii/cache/                # global: base images (docker.io/iiidev/node, .../python, ...)
-~/.iii/compose/packages/     # global: extracted packages, unchanged; the source of .workers/
+~/.iii/compose/packages/     # global: extracted packages, unchanged; the source of .iii/workers/
 ~/.iii/sandbox/workers/      # adapter-owned: each VM's persistent data disk
 ```
 
-- `.workers/` is rebuilt from `worker-compose.lock`, and `.build/` by a build. Both stay out of git
-  like `node_modules`. Compose writes a `.gitignore` containing `*` in each, so a migrated project
-  is covered without editing its own `.gitignore`.
-- `.workers/<container>/` is a copy of the extracted package from the global cache, which keeps its
-  own layout. `.workers/.packages.json` records which artifact each directory holds. It is stored
-  outside the package directories, so no guest can write it.
-- One copy runs at a time: the daemon and `iii compose build` both hold `.workers/.lock` while they
-  copy packages. A directory whose record matches the lock stays as it is, with what a host build
-  wrote into it. Compose removes only what it made: the directories of containers no longer locked,
-  the trees an earlier run replaced, and the temporary copies an interrupted run left.
+- `.iii/workers/` and `.iii/build/` are always in the `.iii/` beside the compose file, also when
+  `III_COMPOSE_STATE_DIR` moves Compose's state: the sandbox adapter reads only under the compose
+  file's directory and the package cache. Nothing of Compose's lands at the project root, and a VM
+  never sees either directory, `path://.` included.
+- `.iii/workers/` is rebuilt from `worker-compose.lock`, and `.iii/build/` by a build. Both stay out
+  of git like `node_modules`. Compose writes a `.gitignore` containing `*` in each, so a migrated
+  project is covered without editing its own `.gitignore`, which keeps the rest of `.iii/`, such as
+  `project.ini`.
+- `.iii/workers/<container>/` is a copy of the extracted package from the global cache, which keeps
+  its own layout. `.iii/workers/.packages.json` records which artifact each directory holds. It is
+  stored outside the package directories, so no guest can write it.
+- One copy runs at a time: the daemon and `iii compose build` both hold `.iii/workers/.lock` while
+  they copy packages. A directory whose record matches the lock stays as it is, with what a host
+  build wrote into it. Compose removes only what it made: the directories of containers no longer
+  locked, the trees an earlier run replaced, and the temporary copies an interrupted run left.
 - A directory is replaced through a copy made beside it. Its entry leaves `.packages.json` before
   the directory changes and comes back once the copy is in place, so an interrupted copy is made
   again by the next run.
@@ -1234,7 +1242,7 @@ my-project/
 - The image is one file, `image.erofs`, never a directory tree: a Linux tree on a case-insensitive
   filesystem (APFS) would be corrupted.
 
-```json .workers/.packages.json
+```json .iii/workers/.packages.json
 { "schema": 1, "containers": { "onboarding": { "name": "onboarding", "version": "0.2.0", "sha256": "sha256:8c3406..." } } }
 ```
 
@@ -1242,20 +1250,20 @@ my-project/
 
 1. `iii call compose::add worker=onboarding` resolves the package, writes the container with
    `start_after` and `scripts`, and reconciles.
-2. A container whose `scripts.build` has no `.build/<container>/build.json` yet gets its first
+2. A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
    build when it starts, then runs.
 3. `scripts.run` starts the worker. For a VM container, `iii sandbox run` boots
-   `.build/<container>/image.erofs`.
+   `.iii/build/<container>/image.erofs`.
 4. A restart, or an adapter restart, repeats `scripts.run` only.
 5. A rebuild is explicit (`iii sandbox build <container>`), followed by a restart of that
    container. `compose::update` of a package rebuilds it.
 6. `compose::remove` stops the container, has the adapter destroy the VM's data disk, and deletes
-   `.build/<container>/` and `.workers/<container>/`.
+   `.iii/build/<container>/` and `.iii/workers/<container>/`.
 
 ### The first build
 
 A container gets its first build when it starts, after its `start_after` containers are ready, if
-`scripts.build` is set and non-empty and `.build/<container>/build.json` is missing. This covers
+`scripts.build` is set and non-empty and `.iii/build/<container>/build.json` is missing. This covers
 `compose::add`, `up`, and a migrated container.
 
 A `build.json` of the other kind than `scripts.build` makes is rebuilt the same way: a host build
@@ -1321,7 +1329,7 @@ container then runs on its current build. A change of `source` is a package upda
 
 ### `build.json`
 
-```json .build/onboarding/build.json
+```json .iii/build/onboarding/build.json
 {
   "schema": 1,
   "container": "onboarding",
@@ -1369,12 +1377,14 @@ relative to the compose file. A host build writes the same keys without `image`.
 - **Root filesystem.** The guest's root is the build image, read-only, with the data disk on top. A
   file the worker modified inside a directory the build also writes, for example under
   `node_modules`, keeps the worker's copy after a rebuild. `iii sandbox destroy` clears it.
-- **Code.** A bundle's code is in the image. Its `.workers/<container>/` is the build's input only.
-  A `path://` worker's code keeps syncing live into `/workspace`. One list of names decides what a
-  run neither copies nor syncs, including for `path://.`: the adapter's ignore list plus `.iii`.
-  The list holds dependency, cache, build-output, VCS, and editor directories, such as
-  `node_modules`, `.venv`, `vendor`, `target`, `dist`, and `.git`, and Compose's `.build` and
-  `.workers`.
+- **Code.** A bundle's code is in the image. Its `.iii/workers/<container>/` is the build's input
+  only. A `path://` worker's code keeps syncing live into `/workspace`. One list of names decides
+  what a run neither copies nor syncs, including for `path://.`: the adapter's ignore list plus
+  `.iii`, which also keeps Compose's `.iii/build/` and `.iii/workers/` out. The list holds
+  dependency, cache, build-output, VCS, and editor directories, such as `node_modules`, `.venv`,
+  `vendor`, `target`, `dist`, and `.git`. `sandbox-libkrun` 0.4 also skips directories named
+  `.build` and `.workers`, at any depth, so a worker's own directory of either name stays on the
+  host.
   - `build`, `out`, `obj`, `coverage`, and `deps` match only a directory at the worker's root:
     projects also keep source under these names deeper down. Every other name, `target` and `dist`
     included, matches at any depth.
@@ -1438,7 +1448,7 @@ writes, the sandbox adapter update, and what happens to the data of 0.26 VMs.
 | `BUILD_FAILED`                 | A first build or a package rebuild failed. Carries `{ code, message }`.                                                                                                            |
 | `BUILD_INPUT_CHANGED`          | A build whose source was replaced while it built. Nothing is recorded. Build again (exit 1 for `iii sandbox build`).                                                               |
 | `OPERATION_CANCELLED`          | A cancelled `compose::build`, add, or update, or a cancelled `iii sandbox build` (exit 130).                                                                                       |
-| `INVALID_CONTAINER_KEY`        | A container key that cannot name `.build/<key>/` and `.workers/<key>/`.                                                                                                            |
+| `INVALID_CONTAINER_KEY`        | A container key that cannot name `.iii/build/<key>/` and `.iii/workers/<key>/`.                                                                                                    |
 | `RUN_NOT_ALLOWED_FOR_PACKAGE`  | Kept, for `binary` packages only.                                                                                                                                                  |
 
 The sandbox adapter adds the S-codes [S507](../creating-workers/sandboxes#S507),
@@ -1477,17 +1487,17 @@ hooks. Local `path://` workers and engine-managed workers need no registry downl
 
 Before it installs, `build` updates or adds the generated sandbox adapter and rewrites the
 containers that 0.26 ran in a VM, as `compose::up` does, then writes the file and the lock. It then
-copies each package into `.workers/<container>/`, from the lock, under `--frozen` too. Under
+copies each package into `.iii/workers/<container>/`, from the lock, under `--frozen` too. Under
 `--frozen` it edits nothing: a container to rewrite fails with `VM_SCRIPTS_MISSING`, then a missing
 adapter with `SANDBOX_ADAPTER_NOT_DECLARED`, then, in a project with a VM worker, an adapter outside
 `^0.4` with `SANDBOX_ADAPTER_TOO_OLD`. `build` does not run `scripts.build`: `iii sandbox build` and
 `compose::build` do.
 
 `build` runs outside the daemon's mutation lock. If the compose file or `worker-compose.lock`
-changed while it prepared, for example because the daemon committed an update, it writes nothing
-and fails with `BUILD_PLAN_STALE`. It checks again before it copies packages into `.workers/`. Run
-it again. The check is not atomic with the write, so a lock the daemon commits in between is
-still overwritten.
+changed while it prepared, for example because the daemon committed an update, it writes nothing and
+fails with `BUILD_PLAN_STALE`. It checks again before it copies packages into `.iii/workers/`. Run
+it again. The check is not atomic with the write, so a lock the daemon commits in between is still
+overwritten.
 
 ```bash
 iii compose build --file worker-compose.yaml
@@ -1543,9 +1553,9 @@ directory or follows a symbolic link. `<namespace>` is the daemon's namespace.
 
 VM workers keep their data disk outside this directory: the sandbox adapter stores it in
 `~/.iii/sandbox/workers/<vm_id>/`, and Compose has it deleted when you remove the container. Builds
-and package copies are at the project root, in `.build/` and `.workers/`. See
-[The project tree](#the-project-tree). Compose reads a 0.26 `state.json` that holds a `vm` record
-once: it stops that VM and drops the record.
+and package copies are in `.iii/build/` and `.iii/workers/` beside the compose file, even when
+`III_COMPOSE_STATE_DIR` moves this directory. See [The project tree](#the-project-tree). Compose
+reads a 0.26 `state.json` that holds a `vm` record once: it stops that VM and drops the record.
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces.
@@ -1557,6 +1567,10 @@ is then stored at `$III_COMPOSE_STATE_DIR/<project-slug>/<namespace>/`. The slug
 directory name with a hash of the canonical compose file path, keeping projects with the same
 directory name separate. With this override, two compose files in the same directory have separate
 state directories and can use the same namespace on separate engines.
+
+The override does not move `.iii/workers/` and `.iii/build/`: Compose still writes them beside the
+compose file when the project locks a package or a container has a non-empty `scripts.build`. A
+read-only project directory therefore works only without packages and builds.
 
 The package cache stays shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
 Add `**/.iii/compose/` to the repository's `.gitignore` to exclude generated state, including state

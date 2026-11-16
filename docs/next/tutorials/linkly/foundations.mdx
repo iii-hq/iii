@@ -80,9 +80,9 @@ For example `http` comes from a remote package, while `link` will be a path from
 directory to the local worker.
 
 `link` runs in a microVM, and its `scripts` say so. `iii sandbox build` builds the worker's image
-into `.build/link/` on its first start, and `iii sandbox run` boots that image. `sandbox-libkrun` is
-the adapter that does both, so `link` names it in `start_after`. After you change the worker's
-dependencies, rebuild it with `iii sandbox build link`, then restart it with
+into `.iii/build/link/` on its first start, and `iii sandbox run` boots that image.
+`sandbox-libkrun` is the adapter that does both, so `link` names it in `start_after`. After you
+change the worker's dependencies, rebuild it with `iii sandbox build link`, then restart it with
 `iii call compose::restart worker=link`. See
 [Compose / VM workers](../../using-iii/compose#vm-workers).
 
