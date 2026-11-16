@@ -168,6 +168,26 @@ commit them to config files.
 To keep the iii console useful while exporting to an external collector, use `exporter: both` for
 traces and `logs_exporter: both` for logs.
 
+### Credential redaction
+
+The engine redacts credentials in every span before it stores or exports it: worker spans when they
+arrive (so the SDK span forwarder only ships redacted spans), the engine's own spans before the OTLP
+exporter, and anything that lands in the in-memory store. Worker SDKs redact payloads too, but
+the engine applies its own rule to every span, including spans from older SDKs.
+
+- A span, event or link attribute with a sensitive key has its whole value replaced by
+  `[REDACTED]`.
+- In a captured payload (`iii.payload.json`), the value of every sensitive key, at any depth, becomes
+  `"[REDACTED]"`. The JSON text is rewritten in place, so key order and formatting are kept and a
+  truncated payload is still redacted. A payload the engine cannot read as JSON is replaced as a
+  whole.
+
+A key is sensitive when, lowercased and with every character that is not a letter or digit removed,
+it ends in `token` or contains `password`, `passwd`, `secret`, `credential`, `authorization`,
+`apikey`, `privatekey`, `bearer`, `cookie`, `signature`, `accesstoken`, `refreshtoken` or
+`authtoken`. So `Cookie`, `set-cookie`, `http.request.header.set-cookie`, `idToken`, `X-CSRF-Token`
+and `x-hub-signature-256` are redacted, while counts such as `max_tokens` or `token_count` are kept.
+
 ### Alert Rule Fields
 
 | Field              | Type        | Description                                                                                             |

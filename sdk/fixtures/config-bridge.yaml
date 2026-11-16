@@ -19,5 +19,5 @@ engine:
 containers:
   pubsub:
     worker: package://api.workers.iii.dev/pubsub
-    version: "0.21.2"
+    version: "0.22.1"
     config_name: pubsub

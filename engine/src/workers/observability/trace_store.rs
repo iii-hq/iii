@@ -3728,7 +3728,7 @@ mod tests {
                 .map(|part| {
                     let mut span =
                         test_span(&format!("cap-{index:04}-{part:02}"), "span", "cap-load");
-                    span.attributes = vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))];
+                    span.attributes = vec![("iii.payload.json".to_string(), "1".repeat(64 * 1024))];
                     span
                 })
                 .collect();
@@ -3774,7 +3774,7 @@ mod tests {
                 .map(|part| {
                     let mut span =
                         test_span(&format!("reuse-{index:04}-{part:02}"), "span", "reuse");
-                    span.attributes = vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))];
+                    span.attributes = vec![("iii.payload.json".to_string(), "1".repeat(64 * 1024))];
                     span
                 })
                 .collect();
@@ -3845,7 +3845,7 @@ mod tests {
             let spans = (0..63)
                 .map(|part| {
                     let mut span = test_span(&format!("kept-{index:04}-{part:02}"), "span", "kept");
-                    span.attributes = vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))];
+                    span.attributes = vec![("iii.payload.json".to_string(), "1".repeat(64 * 1024))];
                     span
                 })
                 .collect();
@@ -4091,7 +4091,7 @@ mod tests {
         root.events = vec![crate::workers::observability::otel::StoredSpanEvent {
             name: "invocation".to_string(),
             timestamp_unix_nano: 1_000_000_001,
-            attributes: vec![("iii.payload.json".to_string(), "x".repeat(64 * 1024))],
+            attributes: vec![("iii.payload.json".to_string(), "1".repeat(64 * 1024))],
         }];
         root.instrumentation_scope_name = Some("iii-sdk".to_string());
         root.flags = Some(1);
@@ -4637,7 +4637,7 @@ mod tests {
     }
 
     fn payload_attribute(len: usize) -> Vec<(String, String)> {
-        vec![("iii.payload.json".to_string(), "x".repeat(len))]
+        vec![("iii.payload.json".to_string(), "1".repeat(len))]
     }
 
     fn hot_cache(max_spans: usize, max_bytes: u64) -> Arc<InMemorySpanStorage> {

@@ -12,7 +12,6 @@ members = [
   "crates/iii-filter",
   "crates/iii-sandbox-contract",
   "crates/scaffolder-core",
-  "crates/motia-tools",
 ]
 
 [workspace.package]
@@ -43,7 +42,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 colored = "3"
 dirs = "6"
 url = "2"
-walkdir = "2"
 open = "5"
 cliclack = "0.3"
 console = "0.15"
@@ -53,6 +51,12 @@ ctrlc = "3"
 wiremock = "0.6"
 tempfile = "3"
 serial_test = "3"
+
+# cargo-shear (CI `unused-deps-rust` job, warning only).
+# No member depends on iii-observability, but .github/scripts/bump_manifests.py
+# rewrites its version pin above on every release and fails without the entry.
+[workspace.metadata.cargo-shear]
+ignored = ["iii-observability"]
 
 [profile.release]
 strip = true

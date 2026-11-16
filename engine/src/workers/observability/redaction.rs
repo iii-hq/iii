@@ -1,0 +1,667 @@
+// Copyright Motia LLC and/or licensed to Motia LLC under one or more
+// contributor license agreements. Licensed under the Elastic License 2.0;
+// you may not use this file except in compliance with the Elastic License 2.0.
+// This software is patent protected. We welcome discussions - reach out at team@iii.dev
+// See LICENSE and PATENTS files for details.
+
+//! Credential redaction for span data, applied by the engine to every span it
+//! stores or exports.
+//!
+//! Worker SDKs redact captured invocation payloads (`iii.payload.json`) before
+//! they export, but each SDK carries its own copy of the rule and a worker on
+//! an older SDK keeps an older rule. Every span crosses the engine (worker
+//! spans arrive over the telemetry connection and are stored and forwarded to
+//! the collector from there), so the engine applies the current rule to all
+//! of them.
+//!
+//! Both passes are idempotent:
+//! - an attribute whose key is sensitive has its whole value replaced;
+//! - in the JSON text of `iii.payload.json`, the value of every sensitive key
+//!   at any depth is replaced. The text is rewritten in place instead of
+//!   parsed and re-serialized, so key order and formatting survive and a
+//!   truncated payload is still redacted. A text that is not JSON is replaced
+//!   as a whole (fail closed).
+
+use std::borrow::Cow;
+
+/// What a redacted value becomes; the SDKs use the same placeholder.
+pub(crate) const REDACTED: &str = "[REDACTED]";
+
+/// [`REDACTED`] as a JSON string, the form it takes inside a payload.
+const REDACTED_JSON: &str = "\"[REDACTED]\"";
+
+/// Attribute the SDKs record a captured invocation payload under.
+pub(crate) const PAYLOAD_ATTRIBUTE_KEY: &str = "iii.payload.json";
+
+/// Marker every SDK appends to a payload it cut at `III_TRACE_PAYLOAD_MAX_BYTES`.
+const SDK_TRUNCATION_MARKER: &str = "...\"[TRUNCATED]\"";
+
+/// A key is sensitive when its normalized form contains one of these.
+const SENSITIVE_FRAGMENTS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "credential",
+    "authorization",
+    "apikey",
+    "privatekey",
+    "bearer",
+    "cookie",
+    "signature",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+];
+
+/// Bit per lowercase letter that starts a [`SENSITIVE_FRAGMENTS`] entry, so
+/// the search skips positions where no fragment can begin. Building it also
+/// checks at compile time that every fragment starts with one.
+const FRAGMENT_FIRST_LETTERS: u32 = {
+    let mut mask = 0u32;
+    let mut i = 0;
+    while i < SENSITIVE_FRAGMENTS.len() {
+        mask |= 1 << (SENSITIVE_FRAGMENTS[i].as_bytes()[0] - b'a');
+        i += 1;
+    }
+    mask
+};
+
+/// Longest normalized key kept on the stack; longer keys go to the heap.
+const STACK_KEY_BYTES: usize = 64;
+
+/// Whether the value under `key` must not leave the engine.
+///
+/// The key is lowercased and stripped of everything but ASCII letters and
+/// digits, so `Set-Cookie`, `set_cookie` and `http.request.header.set-cookie`
+/// match alike. It is sensitive when the result contains a
+/// [`SENSITIVE_FRAGMENTS`] entry or ends in `token` (`idToken`, `csrf_token`,
+/// `X-CSRF-Token`); counts such as `max_tokens` or `token_count` stay visible.
+///
+/// It runs for every attribute of every span and every key of every payload,
+/// so the key is normalized on the stack rather than allocated.
+pub(crate) fn is_sensitive_key(key: &str) -> bool {
+    let mut buf = [0u8; STACK_KEY_BYTES];
+    let mut len = 0;
+    for byte in key.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            if len == buf.len() {
+                let normalized: Vec<u8> = key
+                    .bytes()
+                    .filter(u8::is_ascii_alphanumeric)
+                    .map(|byte| byte.to_ascii_lowercase())
+                    .collect();
+                return is_sensitive_normalized(&normalized);
+            }
+            buf[len] = byte.to_ascii_lowercase();
+            len += 1;
+        }
+    }
+    is_sensitive_normalized(&buf[..len])
+}
+
+/// [`is_sensitive_key`] for a key already lowercased and stripped to ASCII
+/// letters and digits.
+fn is_sensitive_normalized(key: &[u8]) -> bool {
+    key.ends_with(b"token")
+        || (0..key.len()).any(|start| {
+            let first = key[start];
+            first.is_ascii_lowercase()
+                && FRAGMENT_FIRST_LETTERS & (1 << (first - b'a')) != 0
+                && SENSITIVE_FRAGMENTS
+                    .iter()
+                    .any(|fragment| key[start..].starts_with(fragment.as_bytes()))
+        })
+}
+
+/// Redacts one span, event or link attribute in place: the whole value when
+/// the key is sensitive, the sensitive values inside it when it is the
+/// captured payload.
+pub(crate) fn redact_attribute(key: &str, value: &mut String) {
+    if is_sensitive_key(key) {
+        if value != REDACTED {
+            // A fresh string: reusing the buffer would keep the allocation of
+            // the value it replaces.
+            *value = REDACTED.to_string();
+        }
+    } else if key == PAYLOAD_ATTRIBUTE_KEY
+        && let Some(redacted) = redact_payload_json(value)
+    {
+        *value = redacted;
+    }
+}
+
+/// Redacts a captured payload; `None` when nothing in it needs redacting.
+pub(crate) fn redact_payload_json(json: &str) -> Option<String> {
+    let (body, marker) = match json.strip_suffix(SDK_TRUNCATION_MARKER) {
+        Some(body) => (body, SDK_TRUNCATION_MARKER),
+        None => (json, ""),
+    };
+    let Some(ranges) = sensitive_values(body) else {
+        // The scanner lost the structure, so a sensitive key may hide in what
+        // it could not read: drop the payload rather than guess.
+        return Some(REDACTED_JSON.to_string());
+    };
+    if ranges.is_empty() {
+        return None;
+    }
+    // Exact size, so a short placeholder replacing a large value does not
+    // leave the stored payload holding an allocation sized for the original.
+    let removed: usize = ranges.iter().map(|(start, end)| end - start).sum();
+    let mut out = String::with_capacity(json.len() - removed + ranges.len() * REDACTED_JSON.len());
+    let mut copied = 0;
+    for (start, end) in ranges {
+        out.push_str(&body[copied..start]);
+        out.push_str(REDACTED_JSON);
+        copied = end;
+    }
+    out.push_str(&body[copied..]);
+    out.push_str(marker);
+    Some(out)
+}
+
+/// Byte ranges of the values under sensitive keys in `json`, in order, or
+/// `None` when the text is not JSON: a non-string key, a literal that is not
+/// one, or a value followed by anything but a delimiter. That last check
+/// keeps text from slipping past unread, such as `abc` in
+/// `{"authorization":Bearer abc}`. A text that just ends (a truncated
+/// payload) is fine: a value cut short runs to the end.
+///
+/// Every position the scanner stops at is an ASCII byte or the end of the
+/// text, so each range falls on char boundaries.
+fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
+    let bytes = json.as_bytes();
+    let mut ranges = Vec::new();
+    // Open containers, innermost last: `b'{'` or `b'['`.
+    let mut open: Vec<u8> = Vec::new();
+    // At the start of an object or after a comma in one: a key comes next.
+    let mut key_next = false;
+    // A value just ended: only a comma, a closing bracket or the end of the
+    // text may follow.
+    let mut value_done = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if matches!(byte, b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+            continue;
+        }
+        if value_done && !matches!(byte, b',' | b'}' | b']') {
+            return None;
+        }
+        match byte {
+            b',' => {
+                // Outside any container a comma joins two values: `1,2`.
+                let container = *open.last()?;
+                key_next = container == b'{';
+                value_done = false;
+                i += 1;
+            }
+            b'{' => {
+                open.push(b'{');
+                key_next = true;
+                i += 1;
+            }
+            b'[' => {
+                open.push(b'[');
+                key_next = false;
+                i += 1;
+            }
+            close @ (b'}' | b']') => {
+                let opener = if close == b'}' { b'{' } else { b'[' };
+                if open.pop() != Some(opener) {
+                    return None;
+                }
+                key_next = false;
+                value_done = true;
+                i += 1;
+            }
+            b'"' if key_next => {
+                key_next = false;
+                let key_start = i;
+                let key_end = string_end(bytes, i);
+                i = skip_whitespace(bytes, key_end);
+                if i == bytes.len() {
+                    // Cut short in or after the key: no value to redact.
+                    break;
+                }
+                if bytes[i] != b':' {
+                    return None;
+                }
+                // Text follows, so the key is complete: if its escapes do not
+                // decode it is not JSON, and the sensitive key may hide in them.
+                let sensitive = is_sensitive_key(&key_text(&json[key_start..key_end])?);
+                i = skip_whitespace(bytes, i + 1);
+                if sensitive {
+                    // Replaced whatever it is, so it need not be valid JSON.
+                    let end = value_end(bytes, i);
+                    if &json[i..end] != REDACTED_JSON {
+                        ranges.push((i, end));
+                    }
+                    i = end;
+                    value_done = true;
+                }
+            }
+            // An object key that is not a string (`{password: 1}`) is not JSON.
+            _ if key_next => return None,
+            b'"' => {
+                i = string_end(bytes, i);
+                value_done = true;
+            }
+            // A colon only ever follows a key, consumed above.
+            b':' => return None,
+            _ => {
+                let end = literal_end(bytes, i);
+                if !is_json_literal(&bytes[i..end], end == bytes.len()) {
+                    return None;
+                }
+                i = end;
+                value_done = true;
+            }
+        }
+    }
+    Some(ranges)
+}
+
+/// Whether `token` is a JSON literal: `true`, `false`, `null` or a number,
+/// plus the `NaN`, `Infinity` and `-Infinity` that Python's `json.dumps`
+/// writes for non-finite floats. A token that runs to the end of the text may
+/// have been cut short, so any prefix of one passes there.
+fn is_json_literal(token: &[u8], at_end: bool) -> bool {
+    const WORDS: [&[u8]; 6] = [
+        b"true",
+        b"false",
+        b"null",
+        b"NaN",
+        b"Infinity",
+        b"-Infinity",
+    ];
+    let word = WORDS.iter().any(|word| {
+        if at_end {
+            word.starts_with(token)
+        } else {
+            *word == token
+        }
+    });
+    word || number_prefix(token).is_some_and(|whole| whole || at_end)
+}
+
+/// Reads `token` as a JSON number: `Some(true)` for a whole number,
+/// `Some(false)` for a proper prefix of one (`-`, `1.`, `2e+`), `None` for
+/// anything else.
+fn number_prefix(token: &[u8]) -> Option<bool> {
+    let digits = |i: &mut usize| {
+        let start = *i;
+        while token.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        *i - start
+    };
+    let mut i = usize::from(token.first() == Some(&b'-'));
+    match token.get(i) {
+        None => return Some(false),
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            digits(&mut i);
+        }
+        Some(_) => return None,
+    }
+    if token.get(i) == Some(&b'.') {
+        i += 1;
+        if digits(&mut i) == 0 {
+            return (i == token.len()).then_some(false);
+        }
+    }
+    if matches!(token.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(token.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if digits(&mut i) == 0 {
+            return (i == token.len()).then_some(false);
+        }
+    }
+    (i == token.len()).then_some(true)
+}
+
+/// The text of a complete key without its quotes, with escapes decoded when
+/// it has any; `None` when they do not decode (`\q`, a lone surrogate).
+fn key_text(quoted: &str) -> Option<Cow<'_, str>> {
+    let inner = quoted.strip_prefix('"').unwrap_or(quoted);
+    let inner = inner.strip_suffix('"').unwrap_or(inner);
+    if inner.contains('\\') {
+        return serde_json::from_str::<String>(quoted).ok().map(Cow::Owned);
+    }
+    Some(Cow::Borrowed(inner))
+}
+
+/// End of the value starting at `start`: past its closing quote or bracket,
+/// at the delimiter after a literal, or the end of the text when cut short.
+fn value_end(bytes: &[u8], start: usize) -> usize {
+    match bytes.get(start) {
+        // No value: `{"cookie":}`, or the text ends right after the colon.
+        None | Some(b',' | b':' | b'}' | b']') => start,
+        Some(b'"') => string_end(bytes, start),
+        Some(b'{' | b'[') => {
+            let mut depth = 0usize;
+            let mut i = start;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'"' => {
+                        i = string_end(bytes, i);
+                        continue;
+                    }
+                    b'{' | b'[' => depth += 1,
+                    b'}' | b']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return i + 1;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            bytes.len()
+        }
+        Some(_) => literal_end(bytes, start),
+    }
+}
+
+/// Position past the string whose opening quote is at `start`.
+fn string_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+/// Position of the delimiter that ends the literal (number, `true`, ...) at
+/// `start`.
+fn literal_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len()
+        && !matches!(
+            bytes[i],
+            b',' | b':' | b'{' | b'}' | b'[' | b']' | b'"' | b' ' | b'\t' | b'\n' | b'\r'
+        )
+    {
+        i += 1;
+    }
+    i
+}
+
+fn skip_whitespace(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+        i += 1;
+    }
+    i
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cut(text: &str) -> String {
+        format!("{text}{SDK_TRUNCATION_MARKER}")
+    }
+
+    #[test]
+    fn keys_from_issue_2563_are_sensitive() {
+        for key in [
+            "cookie",
+            "Cookie",
+            "set-cookie",
+            "Set-Cookie",
+            "http.request.header.cookie",
+            "idToken",
+            "customToken",
+            "resetToken",
+            "x-hub-signature-256",
+            "X-Signature",
+        ] {
+            assert!(is_sensitive_key(key), "{key} must be redacted");
+        }
+    }
+
+    #[test]
+    fn keys_the_sdks_redact_stay_sensitive() {
+        for key in [
+            "password",
+            "api_key",
+            "apiKey",
+            "x-api-key",
+            "API-KEY",
+            "secret",
+            "client_secret",
+            "credentials",
+            "authorization",
+            "Proxy-Authorization",
+            "http.request.header.authorization",
+            "auth_token",
+            "access_token",
+            "accessToken",
+            "refresh_token",
+            "refresh_token_expires_at",
+            "bearer",
+            "private_key",
+            "token",
+            "csrf_token",
+            "X-CSRF-Token",
+        ] {
+            assert!(is_sensitive_key(key), "{key} must be redacted");
+        }
+    }
+
+    #[test]
+    fn token_counts_and_ordinary_keys_stay_visible() {
+        for key in [
+            "max_tokens",
+            "input_tokens",
+            "outputTokens",
+            "gen_ai.usage.input_tokens",
+            "token_count",
+            "tokenizer",
+            "name",
+            "session_id",
+            "function_id",
+            "key",
+            PAYLOAD_ATTRIBUTE_KEY,
+        ] {
+            assert!(!is_sensitive_key(key), "{key} must stay visible");
+        }
+    }
+
+    #[test]
+    fn fragments_are_normalized() {
+        for fragment in SENSITIVE_FRAGMENTS {
+            assert!(
+                fragment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()),
+                "{fragment} would never match a normalized key"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_longer_than_the_stack_buffer_are_checked_whole() {
+        let padding = "x".repeat(STACK_KEY_BYTES);
+        assert!(is_sensitive_key(&format!("{padding}_password")));
+        assert!(is_sensitive_key(&format!("{padding}-Session-Token")));
+        assert!(is_sensitive_key(&format!("Cookie_{padding}")));
+        assert!(!is_sensitive_key(&format!("{padding}_max_tokens")));
+        assert!(!is_sensitive_key(&padding));
+    }
+
+    #[test]
+    fn redacts_sensitive_values_at_any_depth() {
+        let payload = r#"{"headers":{"cookie":"sid=abc","set-cookie":["a=1","b=2"],"content-type":"application/json"},"body":{"user":{"idToken":"eyJhbGciOi","name":"Ana"}}}"#;
+        assert_eq!(
+            redact_payload_json(payload).as_deref(),
+            Some(
+                r#"{"headers":{"cookie":"[REDACTED]","set-cookie":"[REDACTED]","content-type":"application/json"},"body":{"user":{"idToken":"[REDACTED]","name":"Ana"}}}"#
+            ),
+        );
+    }
+
+    #[test]
+    fn replaces_structured_values_whole_and_keeps_formatting() {
+        let payload = "{ \"b\" : 1,\n  \"credentials\" : { \"user\": \"a\", \"pw\": [1, {\"x\": \"}\"}] },\n  \"items\": [ {\"token\": null}, {\"apiKey\": 42, \"note\": \"a\\\"b\"} ] }";
+        assert_eq!(
+            redact_payload_json(payload).as_deref(),
+            Some(
+                "{ \"b\" : 1,\n  \"credentials\" : \"[REDACTED]\",\n  \"items\": [ {\"token\": \"[REDACTED]\"}, {\"apiKey\": \"[REDACTED]\", \"note\": \"a\\\"b\"} ] }"
+            ),
+        );
+    }
+
+    #[test]
+    fn leaves_payloads_without_sensitive_keys_alone() {
+        for payload in [
+            r#"{"a":1,"nested":{"max_tokens":5,"list":[true,null,"cookie"]}}"#,
+            r#""a string""#,
+            "42",
+            "null",
+            "[]",
+            "{}",
+            "",
+            // What Python's json.dumps writes for non-finite floats.
+            r#"{"x":NaN,"y":-Infinity,"z":[Infinity,-0.5e-3,0,1E+9]}"#,
+            " { \"a\" : [ 1 , true ] } ",
+        ] {
+            assert_eq!(redact_payload_json(payload), None, "{payload}");
+        }
+    }
+
+    #[test]
+    fn redaction_is_idempotent() {
+        let once = redact_payload_json(r#"{"cookie":"a","b":{"secret":[1]}}"#).unwrap();
+        assert_eq!(
+            once,
+            r#"{"cookie":"[REDACTED]","b":{"secret":"[REDACTED]"}}"#
+        );
+        assert_eq!(redact_payload_json(&once), None);
+    }
+
+    #[test]
+    fn decodes_escaped_keys() {
+        assert_eq!(
+            redact_payload_json(r#"{"\u0063ookie":"sid=abc"}"#).as_deref(),
+            Some(r#"{"\u0063ookie":"[REDACTED]"}"#),
+        );
+    }
+
+    #[test]
+    fn keeps_multibyte_text_intact() {
+        assert_eq!(
+            redact_payload_json(r#"{"nome":"José ç 🙂","cookie":"ação"}"#).as_deref(),
+            Some(r#"{"nome":"José ç 🙂","cookie":"[REDACTED]"}"#),
+        );
+    }
+
+    #[test]
+    fn redacts_payloads_cut_short() {
+        let cases = [
+            // Cut by an SDK, which appends its marker.
+            (
+                cut(r#"{"user":"ana","cookie":"sid=abc"#),
+                Some(cut(r#"{"user":"ana","cookie":"[REDACTED]""#)),
+            ),
+            (
+                cut(r#"{"credentials":{"user":"a","pw"#),
+                Some(cut(r#"{"credentials":"[REDACTED]""#)),
+            ),
+            (cut(r#"{"a":1,"#), None),
+            // Cut without a marker.
+            (
+                r#"{"cookie":"sid=ab"#.to_string(),
+                Some(r#"{"cookie":"[REDACTED]""#.to_string()),
+            ),
+            (
+                r#"{"cookie":"#.to_string(),
+                Some(r#"{"cookie":"[REDACTED]""#.to_string()),
+            ),
+            (r#"{"cook"#.to_string(), None),
+            // A key cut inside an escape has no value to redact.
+            (r#"{"a":1,"\u00"#.to_string(), None),
+            (cut(r#"{"\u0063ookie"#), None),
+            // A literal cut short is still a literal.
+            (cut(r#"{"ok":tr"#), None),
+            (r#"{"n":-1.5e"#.to_string(), None),
+            (
+                cut(r#"{"cookie":tr"#),
+                Some(cut(r#"{"cookie":"[REDACTED]""#)),
+            ),
+        ];
+        for (payload, expected) in cases {
+            assert_eq!(redact_payload_json(&payload), expected, "{payload}");
+        }
+    }
+
+    #[test]
+    fn drops_payloads_it_cannot_follow() {
+        for payload in [
+            "{password: \"hunter2\"}",
+            r#"{"a":1]"#,
+            r#"{"a":1}}"#,
+            "key: value",
+            "xxxx",
+            // Text after a sensitive value would otherwise stay visible.
+            r#"{"authorization":Bearer abc}"#,
+            r#"{"cookie":"a" "b"}"#,
+            // Not JSON, so nothing tells a sensitive key apart.
+            "cookie=sid=abc",
+            "cookie=sid=abc; token=xyz",
+            r#"{"a":01}"#,
+            "[1 2]",
+            "1,2",
+            r#"{"a":1}{"cookie":"x"}"#,
+            // A complete key whose escapes do not decode.
+            r#"{"\u0063ookie\q":"sid=abc"}"#,
+            r#"{"a":{"\x":1}}"#,
+        ] {
+            assert_eq!(
+                redact_payload_json(payload).as_deref(),
+                Some(REDACTED_JSON),
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn redacted_values_do_not_keep_the_original_allocation() {
+        let payload = format!(r#"{{"cookie":"{}","a":1}}"#, "s".repeat(64 * 1024));
+        let redacted = redact_payload_json(&payload).unwrap();
+        assert_eq!(redacted, r#"{"cookie":"[REDACTED]","a":1}"#);
+        assert!(
+            redacted.capacity() < 1024,
+            "{} bytes kept",
+            redacted.capacity()
+        );
+
+        let mut header = "s".repeat(64 * 1024);
+        redact_attribute("cookie", &mut header);
+        assert_eq!(header, REDACTED);
+        assert!(header.capacity() < 1024, "{} bytes kept", header.capacity());
+    }
+
+    #[test]
+    fn redact_attribute_reads_only_the_payload_as_json() {
+        let mut header = "sid=abc".to_string();
+        redact_attribute("http.request.header.cookie", &mut header);
+        assert_eq!(header, REDACTED);
+
+        let mut payload = r#"{"resetToken":"t"}"#.to_string();
+        redact_attribute(PAYLOAD_ATTRIBUTE_KEY, &mut payload);
+        assert_eq!(payload, r#"{"resetToken":"[REDACTED]"}"#);
+
+        let mut note = r#"{"resetToken":"t"}"#.to_string();
+        redact_attribute("note", &mut note);
+        assert_eq!(note, r#"{"resetToken":"t"}"#);
+    }
+}

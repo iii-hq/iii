@@ -776,47 +776,60 @@ impl Daemon {
             crate::sandbox::require_declared_adapter(&compose, &namespace)?;
             prepared
         } else {
-            let mut prepared =
-                crate::lockfile::prepare_metadata(&mut compose, &BTreeSet::new()).await?;
-            let path = compose.path.clone();
-            if let Some(migration) =
-                crate::sandbox::migrate(&path, &mut edited, &mut compose, &namespace, &mut prepared)
-                    .await?
-            {
-                rewritten.extend(migration.containers);
-                if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter {
-                    rewritten.push(adapter.key.clone());
-                    updated_adapter = Some(adapter.key);
-                }
-            }
-            if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
-                crate::sandbox::apply_adapter_change(
+            // A first lock-less start learns only from this pass that a VM
+            // needs the adapter: resolving the adapter beside it saves the
+            // round trip that would follow it.
+            crate::registry::remembering(async {
+                let mut prepared =
+                    crate::sandbox::prepare_metadata_with_adapter_ahead(&mut compose, &namespace)
+                        .await?;
+                let path = compose.path.clone();
+                if let Some(migration) = crate::sandbox::migrate(
                     &path,
                     &mut edited,
                     &mut compose,
                     &namespace,
                     &mut prepared,
-                    &mut BTreeSet::new(),
-                    &mut BTreeMap::new(),
-                    false,
-                    false,
                 )
                 .await?
-            {
-                let needs = crate::sandbox::needs(&compose, &namespace);
-                crate::report::daemon_line(
-                    &format!(
-                        "{}: sandbox adapter for: {}",
-                        adapter.key,
-                        crate::sandbox::needed_by(&needs).join(", ")
-                    ),
-                    false,
-                );
-            }
-            // Resolved first, the adapter `migrate` or the change added included: everything
-            // downloads in one batch.
-            prepared.install(&package_cache).await?;
-            prepared
+                {
+                    rewritten.extend(migration.containers);
+                    if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter
+                    {
+                        rewritten.push(adapter.key.clone());
+                        updated_adapter = Some(adapter.key);
+                    }
+                }
+                if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) =
+                    crate::sandbox::apply_adapter_change(
+                        &path,
+                        &mut edited,
+                        &mut compose,
+                        &namespace,
+                        &mut prepared,
+                        &mut BTreeSet::new(),
+                        &mut BTreeMap::new(),
+                        false,
+                        false,
+                    )
+                    .await?
+                {
+                    let needs = crate::sandbox::needs(&compose, &namespace);
+                    crate::report::daemon_line(
+                        &format!(
+                            "{}: sandbox adapter for: {}",
+                            adapter.key,
+                            crate::sandbox::needed_by(&needs).join(", ")
+                        ),
+                        false,
+                    );
+                }
+                // Resolved first, the adapter `migrate` or the change added included: everything
+                // downloads in one batch.
+                prepared.install(&package_cache).await?;
+                Ok::<_, ComposeError>(prepared)
+            })
+            .await?
         };
         crate::sandbox::validate_scripts(&compose)?;
         crate::lifecycle::materialize_packages(file, &package_cache, &prepared).await?;

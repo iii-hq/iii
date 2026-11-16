@@ -381,11 +381,10 @@ pub fn spawn_project_event(
     }))
 }
 
-pub fn platform_for_product(product_name: &str) -> &'static str {
-    match product_name {
-        "motia" => "motia-tools",
-        _ => "iii-tools",
-    }
+/// Telemetry platform for a scaffolded product. iii is the only product the
+/// scaffolder ships, so every product reports as `iii-tools`.
+pub fn platform_for_product(_product_name: &str) -> &'static str {
+    "iii-tools"
 }
 
 /// Persist a project's identity to `.iii/project.ini`.

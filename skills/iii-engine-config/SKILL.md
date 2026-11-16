@@ -55,8 +55,8 @@ Allowed engine worker base names are:
 
 - `configuration`
 - `iii-worker-manager`
-- `iii-http-functions`
-- `iii-stream`
+- `iii-http-functions` (deprecated)
+- `iii-stream` (deprecated)
 
 Use `#instance` for another instance of an allowed worker. `iii-engine-functions`,
 `iii-telemetry`, `iii-observability`, and the `iii-sandbox` router are injected automatically and

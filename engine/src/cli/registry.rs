@@ -108,9 +108,9 @@ mod tests {
 
     #[test]
     fn test_console_no_longer_resolves() {
-        // The legacy iii-console was removed (MOT-3619): `iii console` is a
-        // notice-only stub, so it must never dispatch or download a binary,
-        // and `iii update` must no longer install iii-console.
+        // The legacy iii-console was removed (MOT-3619): `iii console` must
+        // never dispatch or download a binary, and `iii update` must no
+        // longer install iii-console.
         assert!(resolve_command("console").is_err());
         assert!(resolve_binary_for_update("console").is_err());
         assert!(resolve_binary_for_update("iii-console").is_err());

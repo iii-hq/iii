@@ -1681,7 +1681,6 @@ dependencies = [
  "futures-util",
  "glob",
  "hex",
- "http-body-util",
  "hyper",
  "hyper-util",
  "iana-time-zone",
@@ -1728,7 +1727,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.28.0",
  "tower",
- "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -1752,8 +1750,6 @@ dependencies = [
 name = "iii-compose"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
  "chrono",
  "clap",
  "colored",
@@ -2298,18 +2294,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "motia-tools"
-version = "0.26.1-rc.1"
-dependencies = [
- "anyhow",
- "clap",
- "console 0.15.11",
- "ctrlc",
- "scaffolder-core",
- "tokio",
 ]
 
 [[package]]
@@ -4236,7 +4220,6 @@ dependencies = [
  "http",
  "http-body",
  "pin-project-lite",
- "tokio",
  "tower",
  "tower-layer",
  "tower-service",

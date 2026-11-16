@@ -203,11 +203,18 @@ export function createSubscribe(
     return (await res.json()) as { unsubscribed?: boolean }
   }
 
-  /** Method and origin: both routes are posted to by iii.dev pages only. */
-  function refused(req: Request): Response | null {
+  /**
+   * Method and origin. A browser always sends `Origin` on a POST, so an `Origin` that is present
+   * must be an allowed one (`null` included): that blocks other pages from posting through a
+   * visitor's browser. `allowNoOrigin` lets a server-to-server caller in, such as ade's worker,
+   * which sends none; leaving it out is no stronger a check than a forged `Origin`, so the per-minute
+   * cap and the double opt-in stay the protection there.
+   */
+  function refused(req: Request, { allowNoOrigin = false } = {}): Response | null {
     if (req.method.toUpperCase() !== 'POST') return reply(405, { error: 'method_not_allowed' })
-    // Blocks other pages from posting through a visitor's browser.
-    if (allowedOrigins.size > 0 && !allowedOrigins.has(header(req, 'origin') ?? '')) {
+    const origin = header(req, 'origin')
+    if (origin === undefined && allowNoOrigin) return null
+    if (allowedOrigins.size > 0 && !allowedOrigins.has(origin ?? '')) {
       return reply(403, { error: 'forbidden' })
     }
     return null
@@ -215,7 +222,7 @@ export function createSubscribe(
 
   /** POST /api/subscribe `{ email, source? }`: email a confirmation link unless the address is subscribed. */
   async function subscribe(req: Request): Promise<Response> {
-    const no = refused(req)
+    const no = refused(req, { allowNoOrigin: true })
     if (no) return no
 
     const body = parseBody(req.body)
