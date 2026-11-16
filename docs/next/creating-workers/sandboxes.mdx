@@ -1056,8 +1056,9 @@ every adapter returns the rest.
 - <a id="S304"></a>**S304** (platform): OperationUnsupported: the adapter does not implement this
   operation
 - <a id="S400"></a>**S400** (config): resource limit exceeded (cpu/memory/concurrency cap)
-- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, or host_path outside the
-  allowed roots
+- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, host_path outside the
+  allowed roots, an invalid binary executable, or a binary source outside a build
+  (worker::prepare, worker::start without build)
 - <a id="S502"></a>**S502** (validation): StateBusy: a VM already holds this state key; fix carries
   the live vm_id and instance
 - <a id="S503"></a>**S503** (validation): InstanceMismatch: the request names a different instance

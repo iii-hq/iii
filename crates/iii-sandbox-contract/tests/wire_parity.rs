@@ -435,6 +435,33 @@ fn fields_added_in_1_4_read_as_absent_from_an_older_peer() {
     let destroy: WorkerDestroyRequest = from_value(destroy_1_3.clone()).unwrap();
     assert!(!destroy.prune);
     assert_eq!(&to_value(&destroy).unwrap(), destroy_1_3);
+
+    let destroyed_1_3 = &examples["WorkerDestroyResponse@1.3"];
+    let destroyed: WorkerDestroyResponse = from_value(destroyed_1_3.clone()).unwrap();
+    assert!(destroyed.kept.is_empty());
+    assert_eq!(&to_value(&destroyed).unwrap(), destroyed_1_3);
+}
+
+/// A destroy that kept data says where; a VM that held only data answers `destroyed: false`.
+#[test]
+fn worker_destroy_response_lists_what_stayed() {
+    let data_only = json!({
+        "destroyed": false,
+        "kept": ["/home/me/.iii/sandbox/workers/vm-1/upper.ext4"]
+    });
+    let reply: WorkerDestroyResponse = from_value(data_only.clone()).unwrap();
+    assert!(!reply.destroyed);
+    assert_eq!(
+        reply.kept,
+        ["/home/me/.iii/sandbox/workers/vm-1/upper.ext4"]
+    );
+    assert_eq!(to_value(&reply).unwrap(), data_only);
+
+    let pruned = WorkerDestroyResponse {
+        destroyed: true,
+        kept: vec![],
+    };
+    assert_eq!(to_value(pruned).unwrap(), json!({"destroyed": true}));
 }
 
 /// `prune` is sent only when set, like `from_end`, so a destroy that keeps the data has the 1.3

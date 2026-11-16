@@ -1116,6 +1116,8 @@ pub(crate) async fn destroy_vm(ctx: &LifecycleCtx<'_>, key: &str, adapter: &str,
     let request = WorkerDestroyRequest {
         auth: ctx.sandbox_token.to_string(),
         state_key: state_key.clone(),
+        // Everything goes, as before contract 1.4, until Compose checks `worker.prune`.
+        prune: true,
     };
     // Registering: an adapter started for this call may not list it yet.
     let destroy = || {

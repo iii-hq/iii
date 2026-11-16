@@ -369,9 +369,9 @@ impl BuildContext {
     /// The worker's directory, where its manifest and dependency files are.
     fn worker_dir(&self) -> &Path {
         match &self.container.source {
-            WorkerSource::Local { host_path, .. } | WorkerSource::Bundle { host_path, .. } => {
-                Path::new(host_path)
-            }
+            WorkerSource::Local { host_path, .. }
+            | WorkerSource::Bundle { host_path, .. }
+            | WorkerSource::Binary { host_path, .. } => Path::new(host_path),
         }
     }
 }
@@ -737,6 +737,8 @@ async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, Failure
     let request = WorkerDestroyRequest {
         auth: target.token.clone(),
         state_key: target.state_key.clone(),
+        // Everything goes, as before contract 1.4, until Compose checks `worker.prune`.
+        prune: true,
     };
     let reply = sandbox::call::<WorkerDestroyResponse>(
         &client,
@@ -749,11 +751,15 @@ async fn destroy_command(vars: &BTreeMap<String, String>) -> Result<i32, Failure
     .await;
     client.shutdown_async().await;
     match reply {
-        Ok(WorkerDestroyResponse { destroyed: true }) => {
+        Ok(WorkerDestroyResponse {
+            destroyed: true, ..
+        }) => {
             println!("removed the VM state of {}", target.state_key);
             Ok(0)
         }
-        Ok(WorkerDestroyResponse { destroyed: false }) => {
+        Ok(WorkerDestroyResponse {
+            destroyed: false, ..
+        }) => {
             println!("no VM state for {}", target.state_key);
             Ok(0)
         }
@@ -1348,6 +1354,7 @@ pub(crate) async fn build_vm(
             access_key: channel.writer_ref.access_key,
             direction: contract::ChannelDirection::Write,
         },
+        base_image: None,
     };
     // Read from before the call: the build lives as long as its output is read.
     let reader = Arc::new(channel.reader);

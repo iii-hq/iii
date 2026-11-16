@@ -27,7 +27,7 @@
     {"code": "S303", "type": "config", "retryable": false, "rust_variant": null, "summary": "NoAdapterConfigured: this engine has no sandbox adapter; set sandbox.adapter in its engine config"},
     {"code": "S304", "type": "platform", "retryable": false, "rust_variant": null, "summary": "OperationUnsupported: the adapter does not implement this operation"},
     {"code": "S400", "type": "config", "retryable": false, "rust_variant": "ResourceLimit", "summary": "resource limit exceeded (cpu/memory/concurrency cap)"},
-    {"code": "S501", "type": "validation", "retryable": false, "rust_variant": null, "summary": "SourceRejected: bad manifest, or host_path outside the allowed roots"},
+    {"code": "S501", "type": "validation", "retryable": false, "rust_variant": null, "summary": "SourceRejected: bad manifest, host_path outside the allowed roots, an invalid binary executable, or a binary source outside a build (worker::prepare, worker::start without build)"},
     {"code": "S502", "type": "validation", "retryable": false, "rust_variant": null, "summary": "StateBusy: a VM already holds this state key; fix carries the live vm_id and instance"},
     {"code": "S503", "type": "validation", "retryable": false, "rust_variant": null, "summary": "InstanceMismatch: the request names a different instance than the live VM; fix carries the live vm_id and instance"},
     {"code": "S504", "type": "validation", "retryable": false, "rust_variant": null, "summary": "VmNotFound: no VM with this vm_id"},

@@ -76,10 +76,11 @@ pub enum WorkerSource {
         /// The container's package directory, as for `Bundle`, where Compose put the binary's
         /// Linux build for the host's architecture. `worker::build` copies it into the image.
         /// It may hold an `iii.worker.yaml`; if it does, its name must equal `package`, it may
-        /// not set `scripts.setup`, and its `scripts.install` and `env` apply.
+        /// not set `scripts.setup`, and its `scripts.install` and `env` apply. A manifest that
+        /// breaks this gets `S501`.
         host_path: String,
         /// Path of the executable, relative to `host_path`: normal components only, inside
-        /// `host_path`, not a symlink, and a regular executable file.
+        /// `host_path`, not a symlink, and a regular executable file. Any other gets `S501`.
         executable: String,
     },
     /// Local sources always sync into the VM.
@@ -140,10 +141,10 @@ pub struct WorkerBuildRequest {
     pub logs: StreamChannelRef,
     /// The image reference the build starts from, instead of the manifest's
     /// `runtime.base_image`; `None` keeps the manifest's. Required with a
-    /// [`WorkerSource::Binary`], whose package names no base image: a binary build without it,
-    /// or with an implausible reference, gets `S001`. An older adapter ignores the field, so a
-    /// caller sends it only to one that announces [`FEATURE_BINARY`](crate::FEATURE_BINARY).
-    /// Since contract 1.4.
+    /// [`WorkerSource::Binary`], whose package names no base image: a binary build without it
+    /// gets `S001`, and so does an implausible reference with any source. An older adapter
+    /// ignores the field, so a caller sends it only to one that announces
+    /// [`FEATURE_BINARY`](crate::FEATURE_BINARY). Since contract 1.4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_image: Option<String>,
 }
@@ -307,14 +308,18 @@ pub struct WorkerDestroyRequest {
     pub state_key: String,
     /// Delete the VM's data too, as every destroy did before contract 1.4.
     ///
-    /// Without it the adapter keeps, in the VM's directory `~/.iii/sandbox/workers/<vm_id>/`,
-    /// the data disk (`upper.ext4`), the copies the 0.26 migration kept
-    /// (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`) and the `build-mode` seal. It
-    /// deletes the rest: `state.json`, the state-key file, `console.log*`, `root/`, scratch and
-    /// the `build-dir` record, so the VM's build directory is free again. A VM that never booted
+    /// Without it, what the guest wrote stays; the VM's runtime state, its logs and its binding
+    /// to a build directory go, so that directory is free again. A later `worker::start` of the
+    /// same `state_key` boots with the data the guest wrote. The reply's
+    /// [`WorkerDestroyResponse::kept`] lists what stayed.
+    ///
+    /// In `sandbox-libkrun`, the VM's directory `~/.iii/sandbox/workers/<vm_id>/` keeps the data
+    /// disk (`upper.ext4`), the copies the 0.26 migration kept (`upper.ext4.pre-build[.<n>]`,
+    /// `root.pre-build[.<n>]`) and the `build-mode` seal, and loses `state.json`, the state-key
+    /// file, `console.log*`, `root/`, scratch and the `build-dir` record. A VM that never booted
     /// a build first has its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`) moved to the
-    /// pre-build names. A later `worker::start` of the same `state_key` boots with the kept data
-    /// disk; the pre-build copies just stay.
+    /// pre-build names. A later start boots with the kept data disk; the pre-build copies just
+    /// stay.
     ///
     /// Sent only when `true`, like [`WorkerLogsRequest::from_end`]. An older adapter ignores it
     /// and deletes everything, so a caller that means to keep the data checks
@@ -326,7 +331,11 @@ pub struct WorkerDestroyRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyResponse {
     /// `true` when the destroy removed the VM's runtime state, or, with `prune`, anything;
-    /// `false` when there was nothing to remove, as for a directory that holds only data and
-    /// no `prune`.
+    /// `false` when there was nothing to remove. A VM that held only data answers `false` to a
+    /// destroy without `prune`, with [`WorkerDestroyResponse::kept`] listing that data.
     pub destroyed: bool,
+    /// Absolute host paths of the VM's data that stayed: empty with `prune`, or when the VM had
+    /// none. Since contract 1.4; an older adapter sends none, and keeps nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }

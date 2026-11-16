@@ -561,6 +561,13 @@ pub struct WorkerDestroyRequest {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prune: bool,
 }
+
+pub struct WorkerDestroyResponse {
+    pub destroyed: bool,
+    /// Absolute host paths of the VM's data that stayed. Since contract 1.4.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
+}
 ```
 
 - **Binary source:** `worker.binary` is advertised only together with `worker.build`. Only
@@ -569,28 +576,35 @@ pub struct WorkerDestroyRequest {
   normal components only, stays inside `host_path`, is not a symlink and names a regular
   executable file; the guest runs `/workspace/<executable>` with no arguments. `host_path` may
   hold an `iii.worker.yaml`; if it does, its name must equal `package`, it may not set
-  `scripts.setup`, and its `scripts.install` and `env` apply.
+  `scripts.setup`, and its `scripts.install` and `env` apply. An `executable` or a manifest
+  that breaks these rules gets `S501`.
 - **`base_image`:** `None` keeps the manifest's. A binary package names no base image, so a
-  binary build needs one; a build without it, or with an implausible reference, gets `S001`.
-- **Destroy without `prune`:** in the VM's directory, `~/.iii/sandbox/workers/<vm_id>/`, the
-  adapter keeps the data disk (`upper.ext4`), the 0.26 copies (`upper.ext4.pre-build[.<n>]`,
-  `root.pre-build[.<n>]`, section 7.3) and the `build-mode` seal. It deletes `state.json`, the
-  state-key file, `console.log*`, `root/`, scratch and the `build-dir` record, so the VM's
-  build directory is free again (sections 6.2, 7.7). A VM that never booted a build first has
-  its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`) moved to the pre-build names. A
-  later `worker::start` of the same `state_key` boots with the kept data disk; the pre-build
-  copies just stay. With `prune`, everything goes, as in 1.3.
-- **`WorkerDestroyResponse.destroyed`:** `true` when the destroy removed runtime state, or,
-  with `prune`, anything; `false` when there was nothing to remove, as for a directory that
-  holds only data and no `prune`.
+  binary build without one gets `S001`; an implausible reference gets `S001` with any source.
+- **Destroy without `prune`:** what the guest wrote stays; the VM's runtime state, its logs
+  and its binding to a build directory go, so that directory is free again (sections 6.2,
+  7.7). A later `worker::start` of the same `state_key` boots with the data. With `prune`,
+  everything goes, as in 1.3. In `sandbox-libkrun`, `~/.iii/sandbox/workers/<vm_id>/` keeps
+  the data disk (`upper.ext4`), the 0.26 copies (`upper.ext4.pre-build[.<n>]`,
+  `root.pre-build[.<n>]`, section 7.3) and the `build-mode` seal, and loses `state.json`, the
+  state-key file, `console.log*`, `root/`, scratch and the `build-dir` record. A VM that
+  never booted a build first has its 0.26 disk (`root/upper.ext4`) or legacy clone (`root/`)
+  moved to the pre-build names. A later start boots with the kept data disk; the pre-build
+  copies just stay.
+- **`WorkerDestroyResponse`:** `destroyed` is `true` when the destroy removed runtime state,
+  or, with `prune`, anything, and `false` when there was nothing to remove. `kept` lists the
+  absolute paths of the data that stayed, so a VM that held only data answers a destroy
+  without `prune` with `destroyed: false` and `kept` naming that data.
 - **Wire:** `prune` is sent only when `true`, like `WorkerLogsRequest.from_end`. A 1.3 request
-  has neither field and reads as `base_image: None`, `prune: false`. `wire_examples.json` pins
-  that shape under `WorkerBuildRequest@1.3` and `WorkerDestroyRequest@1.3`, which round-trip
-  as their types, so a peer that drops a `serde(default)` fails its fixture test.
+  has neither field and reads as `base_image: None`, `prune: false`, and a 1.3 reply has no
+  `kept`. `wire_examples.json` pins those shapes under `WorkerBuildRequest@1.3`,
+  `WorkerDestroyRequest@1.3` and `WorkerDestroyResponse@1.3`, which round-trip as their types,
+  so a peer that drops a `serde(default)` fails its fixture test.
 - **Older adapters:** a 1.3 adapter ignores `base_image` and `prune`, so every destroy deletes
-  everything, and it refuses the `binary` tag. Compose reads both features from
-  `adapter::info` before it calls and refuses an adapter without them, so a destroy never
-  silently deletes data.
+  everything, and it refuses the `binary` tag. Compose reads the features from `adapter::info`
+  and refuses an adapter without them only where the difference matters: a destroy without
+  `prune` (`worker.prune`), so a destroy never silently deletes data, and a binary build or run
+  (`worker.binary`). A destroy with `prune` does the right thing on a 1.3 adapter too. Until
+  Compose adopts contract 1.4 (KAN-292), it sends `prune: true` on every destroy.
 - **Versions:** `iii-sandbox-contract` gets the fields, the features, the wire examples and
   `CONTRACT_MINOR = 4`; `sandbox-libkrun` mirrors them in `src/wire.rs` and `tests/fixtures`
   and advertises both features from 0.5.0 (0.4.1 and 0.4.2 shipped without them). Compose's
@@ -1064,12 +1078,12 @@ KAN-284 closes the phase with: `compose_sandbox_e2e` on real VMs; the Linkly tut
 | 11 | The migration keeps the 0.26 data disk as `upper.ext4.pre-build` instead of deleting it | 7.3 |
 | 12 | Compose updates a generated adapter that is too old before migrating, only in projects with a VM container | 7.2 |
 | 13 | Contracts 1.3 and 1.4, additive, with `sandbox-libkrun` 0.5 as the minimum (0.4 implements 1.3 only) | 6.6, 6.7 |
-| 14 | `scripts` on packages: allowed for bundles, still refused for binaries | 4.2 |
+| 14 | `scripts` on packages: allowed for bundles, still refused for binaries; changes when Compose adopts contract 1.4 (KAN-292), which runs binaries in a VM (decision 19) | 4.2 |
 | 15 | Prebuilt images are out of scope | 1 |
 | 16 | The rewrite is per container and idempotent, keyed on `scripts`; the lock format does not change, so a file that uses none of the new keys (`scripts.build`, `scripts.run` on a bundle) still loads in 0.26 | 7.3 |
 | 17 | A build lives as long as its caller reads its output; stopping the caller cancels it | 6.2, 7.4 |
 | 18 | A migrated VM project no longer loads in 0.26 (`scripts.build` is unknown there); going back means restoring the 0.26 file from git, as the upgrade guide says | 7.3, 11.1 |
-| 19 | Contract 1.4: a binary package runs in a VM from a build with an explicit `base_image`; `worker::destroy` keeps the data unless `prune`; Compose refuses an adapter without `worker.binary` and `worker.prune` | 6.7 |
+| 19 | Contract 1.4: a binary package runs in a VM from a build with an explicit `base_image`; `worker::destroy` keeps the data unless `prune`; Compose refuses an adapter without `worker.prune` for a destroy that keeps the data, and without `worker.binary` for a binary build or run | 6.7 |
 
 ## 14. Open questions
 
