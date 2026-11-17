@@ -327,6 +327,11 @@ export class ChannelReader {
     this.closedLocally = true
     const ws = this.ws
     if (!ws) return
+    // A paused socket would not read the engine's close frame: the close would wait for ws's 30 s timeout.
+    if (this.paused) {
+      this.paused = false
+      ws.resume()
+    }
     if (ws.readyState === WebSocket.CONNECTING) {
       // A close during the handshake cancels it, so the engine would never see this end leave.
       await new Promise<void>((resolve) => {

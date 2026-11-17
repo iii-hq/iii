@@ -130,6 +130,21 @@ describe('stream transport over a real WebSocket', () => {
       }
     })
 
+    it('a cancel of a reader that paused its socket (its queue full) closes the socket at once', async () => {
+      const input = inputFromRef(ref('read'), { wsBase: url })
+      const it = input[Symbol.asyncIterator]()
+      const first = it.next()
+      const ws = await waitFor(() => peer)
+      // More than the reader queues before it pauses its socket (512 KiB), and nothing reads it.
+      for (let i = 0; i < 12; i++) ws.send(Buffer.alloc(64 * 1024, i), { binary: true })
+      await first
+      await new Promise((r) => setTimeout(r, 100))
+      await input.cancel()
+      // A paused socket reads no close frame: the close would wait for ws's 30 s close timeout.
+      const closed = await Promise.race([peerClosed, new Promise((r) => setTimeout(() => r('still open'), 3000))])
+      expect(closed).toMatchObject({ code: 1000 })
+    })
+
     it('throws in for-await after the data sent before the abort', async () => {
       const input = inputFromRef(ref('read'), { wsBase: url })
       const chunks: Buffer[] = []

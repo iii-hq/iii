@@ -181,7 +181,12 @@ export const http = (
       write: (chunk: Uint8Array | string) => quiet(response.write(chunk)),
       // Opened on first use: a response the handler never touches stays untouched.
       get stream() {
-        stream ??= response.toWritable()
+        if (!stream) {
+          stream = response.toWritable()
+          // As quiet(): a failed write (the client left) aborts the response and does not crash the process.
+          // A pipeline or a write callback still gets the error.
+          stream.on('error', () => undefined)
+        }
         return stream
       },
       close: () => quiet(response.close()),

@@ -49,17 +49,23 @@ export function mapStreams(value: unknown, fn: (slot: unknown, kind: StreamSlotK
   return out ?? value
 }
 
-/** Whether `value` holds a stream value or a channel ref. */
-export function containsStreams(value: unknown): boolean {
+/**
+ * Whether `value` holds a stream value or a channel ref. It runs on every
+ * local call's payload and result, so a value with a cycle (which a local call
+ * copies with `structuredClone`) is walked once per container.
+ */
+export function containsStreams(value: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
   if (value === null || typeof value !== 'object') return false
   if (isChannelRef(value) || streamKind(value)) return true
+  if (seen.has(value)) return false
+  seen.add(value)
   if (Array.isArray(value)) {
-    for (const item of value) if (containsStreams(item)) return true
+    for (const item of value) if (containsStreams(item, seen)) return true
     return false
   }
   if (!isPlainObject(value)) return false
   for (const key in value) {
-    if (containsStreams(value[key])) return true
+    if (containsStreams(value[key], seen)) return true
   }
   return false
 }

@@ -1218,7 +1218,8 @@ class Sdk implements IIIClient {
    * ref (R5). Every other source or sink gets a new pipe (created in parallel):
    * the reader ref goes in place of a source and the writer ref in place of a
    * sink, and `start()` runs the pumps. Refs already in `value` go as they are.
-   * Rejects when a pipe cannot be created, before anything was sent.
+   * Rejects when a pipe cannot be created, before anything was sent: the
+   * sources it took are then released and its sinks aborted.
    */
   private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
     type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
@@ -1231,21 +1232,34 @@ class Sdk implements IIIClient {
     }
     const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
     const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
-    const pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    // Taken before the pipes are awaited, so a call made meanwhile with the same stream is refused (STREAM_IN_USE).
+    // An InputStream passed as one counts as sent (the pump reads it through another), and one a read began on is
+    // pumped from where that read is. A native source's wrapper is private already.
+    for (const entry of piped) {
+      if (entry.stream instanceof InputStream && entry.stream === slotOf.get(entry))
+        entry.stream = handOver(entry.stream)
+      detach(entry.stream)
+    }
+    for (const entry of forwarded) markTransferred(entry.stream)
+    let pipes: Array<{ writer: StreamChannelRef; reader: StreamChannelRef }>
+    try {
+      pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    } catch (error) {
+      // Nothing was sent, and nothing else holds what this call took: its sources are released, its sinks aborted.
+      for (const { stream } of piped) {
+        if (stream instanceof OutputStream) void stream.abort(errorText(error))
+        else void releaseInput(stream)
+      }
+      throw error
+    }
     const binding = this.streamBinding()
     piped.forEach((entry, i) => {
       const { reader, writer } = pipes[i]
-      // Once its pipe exists, an InputStream passed as one counts as sent (the pump reads it through another),
-      // and one a read began on is pumped from where that read is. A native source's wrapper is private already.
-      if (entry.stream instanceof InputStream && entry.stream === slotOf.get(entry))
-        entry.stream = handOver(entry.stream)
       // A sink gets the writer ref and is fed from the reader end; a source gets the reader ref and feeds the writer end.
       const sink = entry.stream instanceof OutputStream
       entry.ref = wireRef(sink ? writer : reader)
       entry.end = sink ? inputFromRef(reader, binding) : outputFromRef(writer, binding)
-      detach(entry.stream)
     })
-    for (const entry of forwarded) markTransferred(entry.stream)
     const replaced = mapStreams(value, (slot, kind) => (kind === 'ref' ? slot : slots.get(slot)?.ref))
 
     const running: Array<{ pump: Promise<void>; stop: (error: unknown) => void; sink: boolean }> = []
@@ -1425,7 +1439,14 @@ class Sdk implements IIIClient {
     // The call's timeout runs from here, as the invocation's own (invokeRemote starts it now).
     const timeoutMs = request.timeoutMs ?? this.invocationTimeoutMs
     const startedAt = performance.now()
-    const sent = this.invokeRemote<unknown>({ ...request, payload: outbound.value }, namespace, activation)
+    let sent: Promise<unknown>
+    try {
+      sent = this.invokeRemote<unknown>({ ...request, payload: outbound.value }, namespace, activation)
+    } catch (error) {
+      // A fire-and-forget call is sent at once: one that cannot go out (too large) releases its streams.
+      outbound.cancel(error)
+      throw error
+    }
     const sinks = outbound.start()
     if (request.action?.type === 'void') {
       for (const sink of sinks)
@@ -1445,6 +1466,9 @@ class Sdk implements IIIClient {
     // A result that hands the caller a write side (its own sink passed back, a pipe into it)
     // can be what the sinks wait for: waiting here would never end. They run on.
     if (holdsWriteSide(result)) {
+      // Unless the caller's own sink failed already: as on the local path, that fails the call.
+      const failed = this.failedSink(outbound.sinks, request.function_id)
+      if (failed) throw failed
       for (const sink of sinks)
         sink.catch((error) => this.logError(`Stream sink of ${request.function_id} failed`, error))
       return received as TOutput
@@ -1463,10 +1487,10 @@ class Sdk implements IIIClient {
   }
 
   /**
-   * Waits for a call's sinks (R4) until the call's deadline, `timeoutMs` after
-   * `startedAt` (a `performance.now()`). Rejects with the first sink failure,
-   * or, when the deadline passes first, runs `expired` and rejects with the
-   * call's `TIMEOUT` error.
+   * Waits for every sink of a call (R4) until the call's deadline, `timeoutMs`
+   * after `startedAt` (a `performance.now()`), as the other SDKs do. Once all
+   * settled, rejects with the first failure among them; when the deadline
+   * passes first, runs `expired` and rejects with the call's `TIMEOUT` error.
    */
   private async awaitSinks(
     sinks: Array<Promise<void>>,
@@ -1927,6 +1951,8 @@ class Sdk implements IIIClient {
             else resolve(cloneValue(result) as TOutput)
           } catch (error) {
             clearTimeout(timeout)
+            // The caller will not get the result: its streams are released, as at the timeout.
+            this.discardStreams(unclaimed)
             reject(error)
           }
         },

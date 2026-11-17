@@ -1,4 +1,6 @@
 import { Readable, Writable } from 'node:stream'
+import v8 from 'node:v8'
+import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
   abortInput,
@@ -350,6 +352,24 @@ describe('a sink that fails (as the Python and Rust SDKs)', () => {
     await expect(outputDone(out)).rejects.toMatchObject({ reason: 'the sink failed: disk full', cause: diskFull })
   })
 
+  it('a Writable that errored after it took a write fails the stream at once, with no write after it', async () => {
+    const diskFull = new Error('disk full')
+    const sink = new Writable({
+      highWaterMark: 1 << 20,
+      write: (_c, _e, cb) => {
+        setTimeout(() => cb(diskFull), 5)
+      },
+    })
+    const out = OutputStream.to(sink)
+    await out.write('taken')
+    const done = await Promise.race([
+      outputDone(out).catch((e: unknown) => e),
+      new Promise((r) => setTimeout(() => r('still open'), 500)),
+    ])
+    expect(done).toBeInstanceOf(StreamAbortedError)
+    expect(done).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full', cause: diskFull })
+  })
+
   it('a close the sink fails is no close: STREAM_CLOSED, and the stream ends with "the sink failed"', async () => {
     const diskFull = new Error('disk full')
     const closers: Record<string, () => Writable | WritableStream<Uint8Array>> = {
@@ -568,6 +588,16 @@ describe('handOn (passing an InputStream on without its ref)', () => {
     expect(await rest.text()).toBe('ab')
   })
 
+  it('a stream a read began on counts as sent: the reader that began fails with STREAM_IN_USE, the rest goes whole', async () => {
+    const input = InputStream.from(['head;', 'a', 'b'])
+    const it = input[Symbol.asyncIterator]()
+    await it.next()
+    const rest = handOver(input)
+    expect(isTransferred(input)).toBe(true)
+    await expect(it.next()).rejects.toMatchObject({ code: 'STREAM_IN_USE' })
+    expect(await rest.text()).toBe('ab')
+  })
+
   it('passes everything of a stream claimed but not started yet', async () => {
     const input = InputStream.from(['a', 'b'])
     input.lines()
@@ -625,6 +655,15 @@ describe('the stream walk', () => {
     expect(containsStreams({ a: ref('read') })).toBe(true)
     expect(containsStreams(new Map([['a', InputStream.from('x')]]))).toBe(false)
     expect(containsStreams({ d: new Date(), n: 1 })).toBe(false)
+  })
+
+  it('containsStreams walks a value with a cycle (a local call copies one) once per container', () => {
+    const cyclic: Record<string, unknown> = { n: 1 }
+    cyclic.self = cyclic
+    cyclic.list = [cyclic]
+    expect(containsStreams(cyclic)).toBe(false)
+    cyclic.body = InputStream.from('x')
+    expect(containsStreams(cyclic)).toBe(true)
   })
 
   it('mapStreams copies on write and keeps what has no stream', () => {
@@ -884,6 +923,41 @@ describe('a cancelled InputStream fails its reads with STREAM_CLOSED, it does no
     await expect(readB).resolves.toBe('first;second')
   })
 
+  it('a read waiting on a source that never answers (a generator stuck in an await) fails at the cancel or the abort', async () => {
+    const stuck = () =>
+      InputStream.from(
+        (async function* () {
+          yield 'first'
+          await new Promise(() => undefined)
+        })(),
+      )
+    const outcome = (p: Promise<unknown>) =>
+      Promise.race([
+        p.then(
+          () => 'ended',
+          (e: unknown) => e,
+        ),
+        new Promise((r) => setTimeout(() => r('still waiting'), 500)),
+      ])
+    const ends: Record<string, [(s: InputStream) => unknown, object]> = {
+      'cancel()': [(s) => s.cancel(), cancelled],
+      abortInput: [
+        (s) => abortInput(s, 'the call timed out'),
+        { code: 'STREAM_ABORTED', reason: 'the call timed out' },
+      ],
+    }
+    for (const [name, [end, expected]] of Object.entries(ends)) {
+      const input = stuck()
+      const it = input[Symbol.asyncIterator]()
+      await it.next()
+      const reading = it.next()
+      reading.catch(() => undefined)
+      await new Promise((r) => setTimeout(r, 20))
+      void end(input)
+      expect(await outcome(reading), name).toMatchObject(expected)
+    }
+  })
+
   it('abortInput() fails a read in progress and later reads with STREAM_ABORTED', async () => {
     const input = stalled()
     const reading = input.bytes()
@@ -932,5 +1006,22 @@ describe('an abort does not wait for a write the sink holds', () => {
     await out.abort('stop')
     expect(performance.now() - started).toBeLessThan(100)
     await expect(held).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+  })
+})
+
+describe('a long stream', () => {
+  it('holds nothing per write once it settled: 200k writes do not grow the heap', async () => {
+    v8.setFlagsFromString('--expose-gc')
+    const gc = vm.runInNewContext('gc') as () => void
+    const out = OutputStream.to(new Writable({ highWaterMark: 1 << 30, write: (_c, _e, cb) => cb() }))
+    for (let i = 0; i < 1000; i++) await out.write('x')
+    gc()
+    const before = process.memoryUsage().heapUsed
+    for (let i = 0; i < 200_000; i++) await out.write('x')
+    gc()
+    const grown = process.memoryUsage().heapUsed - before
+    await out.close()
+    // A reaction kept per write would hold about 60 MB here.
+    expect(grown).toBeLessThan(16 * 1024 * 1024)
   })
 })

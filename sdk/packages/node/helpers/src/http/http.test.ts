@@ -86,6 +86,26 @@ describe('http()', () => {
     expect(streamed.sent).toEqual([{ write: 'piped' }, 'close'])
   })
 
+  it('a failed write of res.stream does not crash the process: the error reaches the stream, not an uncaught exception', async () => {
+    const lost = new Error('the client left')
+    const { response } = fakeResponse()
+    response.toWritable = () =>
+      new Writable({
+        write(_chunk, _encoding, callback) {
+          callback(lost)
+        },
+      })
+    let stream: NodeJS.WritableStream | undefined
+    await http(async (_req, res) => {
+      stream = res.stream
+      // Not awaited, nor piped: what a handler that ends the response and returns does.
+      res.stream.end('body')
+    })({ ...request, response })
+    const writable = stream as Writable
+    await new Promise((resolve) => writable.once('close', resolve))
+    expect(writable.errored).toBe(lost)
+  })
+
   it('passes the request without its response stream', async () => {
     const { response } = fakeResponse()
     let seen: Record<string, unknown> | undefined
