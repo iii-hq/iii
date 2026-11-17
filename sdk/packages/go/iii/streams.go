@@ -672,6 +672,12 @@ type InputStream struct {
 // r is an [io.Closer], the stream closes it once it ends, fails or is cancelled (it
 // owns r, as an http.Request owns its Body).
 //
+// Closing r is also how a cancel, or the end of the ctx of a read, stops a r.Read that
+// blocks. A blocked Read of an r that is not an io.Closer cannot be cut short: the read
+// of the stream in flight (a ReadAll whose ctx ended, or one at a Cancel), and the reads
+// after it, return only once that Read does. Pass an io.Closer (an *io.PipeReader, a
+// net.Conn) when r.Read can block.
+//
 //	f, err := os.Open("report.csv")
 //	if err != nil { ... }
 //	payload, _ := json.Marshal(map[string]any{"filename": "report.csv", "body": iii.InputStreamFromReader(f)})
@@ -768,7 +774,8 @@ func (s *InputStream) frames(ctx context.Context) iter.Seq2[StreamFrame, error] 
 
 // ReadAll reads the whole stream (its binary frames) and returns its bytes. On an
 // error, an abort included, it returns the bytes read so far with the error. ctx bounds
-// the reads: when it ends, the stream is cancelled.
+// the reads: when it ends, the stream is cancelled, and a read in flight returns, except
+// a blocked Read of a reader that is not an io.Closer ([InputStreamFromReader]).
 func (s *InputStream) ReadAll(ctx context.Context) ([]byte, error) {
 	var out []byte
 	for frame, err := range s.frames(ctx) {
@@ -873,8 +880,9 @@ func (s *InputStream) Frames(ctx context.Context) iter.Seq2[StreamFrame, error] 
 // writer, as it does when a reader leaves. A read in flight and every later read fail
 // with STREAM_CLOSED ([CodeStreamClosed]): what was read is not the whole stream. A
 // stream never read opens no socket; a local source is released (an io.Closer is
-// closed). Cancel does nothing to a stream read to the end, which keeps returning
-// io.EOF.
+// closed). Of a reader that is not an io.Closer, a blocked Read is not cut short: the
+// reads fail once it returns ([InputStreamFromReader]). Cancel does nothing to a stream
+// read to the end, which keeps returning io.EOF.
 func (s *InputStream) Cancel() {
 	if in, err := s.get(); err == nil {
 		in.cancel()

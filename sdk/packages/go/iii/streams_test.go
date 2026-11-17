@@ -1757,14 +1757,14 @@ func TestVoidResultSourcesAreReleased(t *testing.T) {
 			c := se.client()
 			pr, pw := io.Pipe()
 			t.Cleanup(func() { _ = pw.Close() })
-			src := &trackedReader{Reader: pr}
 			registerLocal(t, c, "res::void", func(ctx context.Context, data json.RawMessage) (any, error) {
-				return map[string]any{"body": InputStreamFromReader(src)}, nil
+				return map[string]any{"body": InputStreamFromReader(pr)}, nil
 			})
 			if _, err := c.Call(streamCtx(t), CallRequest{FunctionID: "res::void", Dispatch: d.dispatch, Action: VoidAction()}); err != nil {
 				t.Fatal(err)
 			}
-			waitUntil(t, "the source of a void call's result is released", src.closed.Load)
+			// Its reader is closed: a producer blocked on the pipe gets an error.
+			waitReleased(t, pw, "the source of a void call's result")
 		})
 	}
 }
@@ -2051,6 +2051,73 @@ func TestDeliverHookAnswerReleasesTheHandlersStreams(t *testing.T) {
 	}
 }
 
+// waitReleased waits until a write to pw fails because its reader was closed: the
+// stream that read it was released. A write a reader still takes is tried again.
+func waitReleased(t *testing.T, pw *io.PipeWriter, what string) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		wrote := make(chan error, 1)
+		go func() {
+			_, err := pw.Write([]byte("x"))
+			wrote <- err
+		}()
+		select {
+		case err := <-wrote:
+			if errors.Is(err, io.ErrClosedPipe) {
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s: write = %v, want io.ErrClosedPipe", what, err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		case <-deadline:
+			t.Fatalf("%s: never released (a write to it still blocks or is still read)", what)
+		}
+	}
+}
+
+// An in-process call that fails on its sinks after its handler returned a stream (the
+// sink wait timed out, or the sink aborted) drops the result with its streams: their
+// pumps stop and their sources are released.
+func TestLocalSinkFailureReleasesTheResultsStreams(t *testing.T) {
+	for _, abort := range []bool{false, true} {
+		name := "timeout"
+		if abort {
+			name = "abort"
+		}
+		t.Run(name, func(t *testing.T) {
+			se := newStreamEngine(t)
+			c := se.client()
+			pr, pw := io.Pipe()
+			t.Cleanup(func() { _ = pw.Close() })
+			registerLocal(t, c, "res::sink-fails", func(ctx context.Context, data json.RawMessage) (any, error) {
+				var args struct {
+					Dst *OutputStream `json:"dst"`
+				}
+				if err := json.Unmarshal(data, &args); err != nil {
+					return nil, err
+				}
+				args.Dst.KeepOpen()
+				if abort {
+					if err := args.Dst.Abort("disk full"); err != nil {
+						return nil, err
+					}
+				}
+				return map[string]any{"body": InputStreamFromReader(pr)}, nil
+			})
+			_, err := c.Call(streamCtx(t), CallRequest{FunctionID: "res::sink-fails", Timeout: 200 * time.Millisecond,
+				Payload: jsonOf(t, map[string]any{"dst": OutputStreamToWriter(newSink())})})
+			if abort {
+				wantCode(t, err, CodeStreamAborted)
+			} else if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("err = %v, want ErrTimeout", err)
+			}
+			waitReleased(t, pw, "the source of the result the failed call dropped")
+		})
+	}
+}
+
 // The result an in-process handler returns after its caller stopped waiting (the call
 // timed out) is dropped with its streams: their pumps stop and their sources are
 // released.
@@ -2059,13 +2126,12 @@ func TestLateLocalResultReleasesItsStreams(t *testing.T) {
 	c := se.client()
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { _ = pw.Close() })
-	src := &trackedReader{Reader: pr}
 	registerLocal(t, c, "res::late", func(ctx context.Context, data json.RawMessage) (any, error) {
 		time.Sleep(300 * time.Millisecond)
-		return map[string]any{"body": InputStreamFromReader(src)}, nil
+		return map[string]any{"body": InputStreamFromReader(pr)}, nil
 	})
 	if _, err := c.Call(streamCtx(t), CallRequest{FunctionID: "res::late", Timeout: 50 * time.Millisecond}); !errors.Is(err, ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
-	waitUntil(t, "the source of the late result is released", src.closed.Load)
+	waitReleased(t, pw, "the source of the late result")
 }

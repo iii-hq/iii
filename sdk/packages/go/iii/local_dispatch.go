@@ -162,6 +162,9 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	var result json.RawMessage
+	// sent are the pumps of the result's streams: a call that fails on its sinks drops
+	// the result, and stops them.
+	var sent *pumps
 	answered := false
 	select {
 	case out := <-done:
@@ -169,7 +172,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		if out.errBody != nil {
 			err = newInvocationError(out.errBody, functionID)
 		} else {
-			result = out.result
+			result, sent = out.result, out.sent
 		}
 	case <-timer.C:
 		err = ErrTimeout
@@ -192,8 +195,10 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		abortLocalSources(sources, err)
 	}
 	if result, err = settleLocalSinks(ctx, sinks, result, err, deadline); err != nil {
-		// Failed on its sinks (the handler succeeded): its sources are aborted too.
+		// Failed on its sinks (the handler succeeded): its sources are aborted too, and
+		// the streams of the result nobody gets stop.
 		abortLocalSources(sources, err)
+		sent.stop(abortReason(err))
 		return nil, err
 	}
 	c.trackResult(result)
