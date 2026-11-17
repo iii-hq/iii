@@ -1717,7 +1717,7 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
   that carried a stream, its target receives `{ stream: true, direction, id }` in that field (Go
   `iii.StreamInfo`). A 0.26 TypeScript, Python, or browser target got a live reader there, and a
   0.26 Go target got the ref; opening either raced the observed function for the bytes. See
-  [Observe a call that carries a stream](../using-iii/streaming#observe-a-call-that-carries-a-stream).
+  [Observe a stream](../using-iii/streaming#observe-a-stream).
 - **Rust streams bind lazily.** An `InputStream` or `OutputStream` decoded from JSON binds to the
   handler's worker inside a handler, and to the only client in the process elsewhere. A process with
   several clients calls `stream.bind(&worker)` before using a stream decoded outside a handler.

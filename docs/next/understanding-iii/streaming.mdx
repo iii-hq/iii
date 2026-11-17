@@ -158,18 +158,11 @@ A `StreamInfo` records that the call carried a stream. It gives no access to the
   example, a route that the HTTP worker calls receives a live `request_body` and a live `response`.
 </Note>
 
-## Old and new SDKs
-
-The 0.27 SDKs changed the API for streams. They did not change the wire protocol: a 0.26 engine
-serves 0.27 SDKs, and the ref JSON is the same in every SDK. So workers on 0.26 SDKs and workers on
-0.27 SDKs can exchange streams in one project.
-
-The SDK of the receiving worker sets the form in which a stream arrives:
-
-- On a 0.27 SDK, a ref from a 0.26 SDK arrives in a handler or in a call result as an `InputStream`
-  or an `OutputStream`.
-- On a 0.26 SDK, a stream from a 0.27 SDK arrives in a TypeScript, Python, or browser handler as a
-  `ChannelReader` or a `ChannelWriter`. It arrives in a Go or Rust handler as the ref JSON.
-
-For the API, see [Using iii / Streaming](../using-iii/streaming) for code that calls functions, and
-[Creating workers / Streaming](../creating-workers/streaming) for code that handles calls.
+<CardGroup cols={2}>
+  <Card title="Using iii / Streaming" href="../using-iii/streaming" icon="stream">
+    For using streams as a consumer.
+  </Card>
+  <Card title="Creating workers / Streaming" href="../creating-workers/streaming" icon="stream">
+    For creating streams as a producer.
+  </Card>
+</CardGroup>

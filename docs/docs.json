@@ -163,7 +163,6 @@
                   "next/using-iii/workers",
                   "next/using-iii/functions",
                   "next/using-iii/observers",
-                  "next/using-iii/streaming",
                   "next/using-iii/workers-registry",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
@@ -171,7 +170,8 @@
                   "next/using-iii/configuration",
                   "next/using-iii/console",
                   "next/using-iii/cli",
-                  "next/using-iii/deployment"
+                  "next/using-iii/deployment",
+                  "next/using-iii/streaming"
                 ]
               },
               {

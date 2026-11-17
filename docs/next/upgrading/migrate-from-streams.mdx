@@ -347,7 +347,7 @@ Rules for streams:
   the reader gets a `StreamAbortedError`, not a stream that looks complete. A producer that writes
   to an `OutputStream` it received gets the same rules: returning closes it, and throwing aborts it.
   When the reader leaves, the engine closes the writer. See
-  [Control the lifecycle](../creating-workers/streaming#control-the-lifecycle).
+  [Manage the Stream lifecycle](../creating-workers/streaming#manage-the-stream-lifecycle).
 - Bound the content: cap size or duration. An awaited `write` resolves at the reader's pace, so
   never queue a backlog of your own for a slow reader.
 - Streams need a live call: a call sent with `CallAction.Enqueue` cannot carry one.

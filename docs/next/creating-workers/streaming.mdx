@@ -12,7 +12,7 @@ sender makes over time.
 A stream that the handler receives is an `InputStream` to read or an `OutputStream` to write. A
 stream that the handler returns is a value in its result. When the handler returns or throws, the
 SDK closes, aborts, or cancels each stream that the handler received. See
-[Control the lifecycle](#control-the-lifecycle).
+[Manage the Stream lifecycle](#manage-the-stream-lifecycle).
 
 <Note>
   The examples use the stream API of the 0.27 SDKs. To call functions with streams, read streams,
@@ -112,7 +112,7 @@ A stream has one reader, so read each `InputStream` one time only. For the read 
 
 Finish each read before the handler returns. When the handler returns, the SDK cancels an
 `InputStream` that the handler started to read and did not finish. See
-[Control the lifecycle](#control-the-lifecycle).
+[Manage the Stream lifecycle](#manage-the-stream-lifecycle).
 
 ## Return a stream
 
@@ -629,7 +629,7 @@ the result.
 For the errors that a reader gets, see
 [Handle aborts and errors](../using-iii/streaming#handle-aborts-and-errors).
 
-## Control the lifecycle
+## Manage the Stream lifecycle
 
 When the handler returns or throws, the SDK ends the streams that the handler received. The table
 shows what the SDK does with each stream. Most handlers need no cleanup code.
@@ -864,7 +864,7 @@ In Go:
 - The package `github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http` wraps the streams of an HTTP
   route. `iiihttp.Wrap(fn)` calls `fn` with a `StreamRequest`, which is an `io.Reader` over
   `request_body`, and a `StreamResponse` with `Status`, `Headers`, and `Write`. The SDK closes or
-  aborts the response by the rules in [Control the lifecycle](#control-the-lifecycle).
+  aborts the response by the rules in [Manage the Stream lifecycle](#manage-the-stream-lifecycle).
 
 In the browser:
 
@@ -882,4 +882,4 @@ In the browser:
 - The URL of a stream's socket keeps the query string of the engine URL, such as `?token=`.
 
 Workers on different SDKs, and on 0.26 and 0.27 SDKs, can send streams to each other. See
-[Old and new SDKs](../understanding-iii/streaming#old-and-new-sdks).
+[Mixed fleets](../upgrading/from-0-26-x#mixed-fleets).
