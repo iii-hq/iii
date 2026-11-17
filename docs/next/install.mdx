@@ -38,13 +38,13 @@ Select **llm** to let the installer set up the harness for you, or select **no l
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-slot" data-qs="llm">
       {/* prettier-ignore */}
-      <div className="iii-qs-comment">{`# The installer prompts you to set up your first iii project. Press Enter.`}</div>
+      <div className="iii-qs-comment">{`# The installer asks whether to set up your first iii project. Press Enter or type y.`}</div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># Open your browser to http://127.0.0.1:3113</div>
     </div>
     <div className="iii-qs-slot" data-qs="none">
       {/* prettier-ignore */}
-      <div className="iii-qs-comment">{`# The installer prompts you to set up your first iii project. Press Ctrl+C.`}</div>
+      <div className="iii-qs-comment">{`# The installer asks whether to set up your first iii project. Type n.`}</div>
       <div className="iii-qs-gap" aria-hidden="true" />
       <div className="iii-qs-comment"># Create a project</div>
       <div className="iii-qs-cmd">
@@ -66,7 +66,7 @@ Select **llm** to let the installer set up the harness for you, or select **no l
   </div>
 </div>
 
-{/* llm-only: The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then prompts you to set up your first iii project. Press Enter and the installer scaffolds and starts the harness for you. Press Ctrl+C for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser. */}
+{/* llm-only: The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then asks whether to set up your first iii project (`[Y/n]`). Press Enter or type `y` and the installer scaffolds and starts the harness for you. Type `n` for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser. */}
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 
