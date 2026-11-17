@@ -1881,7 +1881,6 @@ pub(crate) mod tests {
                     &path,
                     &mut edited,
                     &mut current,
-                    "default",
                     &mut prepared,
                 )
                 .await
@@ -1976,7 +1975,7 @@ pub(crate) mod tests {
         let mut edited = text.to_string();
 
         let result =
-            crate::sandbox::migrate(&path, &mut edited, &mut file, "default", &mut prepared).await;
+            crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await;
 
         let rewrite = crate::edit::explicit_vm_mode(text, "link", "sb")
             .unwrap()
@@ -1991,7 +1990,7 @@ pub(crate) mod tests {
         assert!(edited.contains("    start_after: [\n      db,\n      sb,\n    ]\n"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut prepared)
+            migrate(&path, &mut edited, &mut file, &mut prepared)
                 .await
                 .unwrap(),
             None
