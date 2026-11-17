@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict
 
 from . import _wire_json
 from ._channels import MAX_FRAME_SIZE, ChannelReader, ChannelWriter
-from .errors import StreamAbortedError, StreamClosedError, StreamInUseError
+from .errors import InvocationError, StreamAbortedError, StreamClosedError, StreamInUseError
 from .iii_types import ChannelItem, StreamChannelRef
 
 log = logging.getLogger("iii.streams")
@@ -95,10 +95,12 @@ def sink_failure(error: BaseException) -> StreamAbortedError:
 
 
 def _abort_reason(error: BaseException) -> str:
-    """The reason the other sinks of a call abort with when ``error`` ended one of them:
-    a :class:`StreamAbortedError`'s own reason."""
+    """The reason the other streams of a call abort with when ``error`` failed it:
+    a :class:`StreamAbortedError`'s own reason, an :class:`InvocationError`'s message."""
     if isinstance(error, StreamAbortedError):
         return error.reason or error.message
+    if isinstance(error, InvocationError):
+        return error.message
     return _reason(error)
 
 
@@ -1521,6 +1523,19 @@ class Outbound:
                 need.container[need.key] = _wire_ref(ref)
         self.needs = []
 
+    async def abandon(self, reason: str) -> None:
+        """Its pipes could not be made for a value nobody gets back (a handler's
+        result): the streams that needed one end, the sources released (in the
+        background) and the sinks aborted with ``reason``."""
+        for need in self.needs:
+            if isinstance(need.stream, InputStream):
+                _spawn(need.stream._release(reason))
+        await asyncio.gather(
+            *(need.stream._fail(reason) for need in self.needs if isinstance(need.stream, OutputStream)),
+            return_exceptions=True,
+        )
+        self.needs = []
+
     def restore(self) -> None:
         """Nothing was sent: the streams are as they were."""
         for stream in self.marked:
@@ -1972,6 +1987,15 @@ def release_refs(value: Any, binding: _Binding) -> None:
     elif isinstance(value, list):
         for member in value:
             release_refs(member, binding)
+
+
+def release_inputs(value: Any) -> None:
+    """The ``InputStream`` values of ``value`` (a local call's result its caller does not
+    get) are cancelled in the background, on the running loop: their sources close, and
+    the writer of a received one learns the reader left."""
+    for stream in collect_streams(value, []):
+        if isinstance(stream, InputStream):
+            _spawn(stream.cancel())
 
 
 def check_local_streams(value: Any) -> None:

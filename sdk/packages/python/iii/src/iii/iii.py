@@ -1940,9 +1940,14 @@ class III:
         return StreamChannelRef(**result["writer"]), StreamChannelRef(**result["reader"])
 
     async def _plan_result(self, value: Any) -> _streams.Outbound:
-        """A handler result about to be sent: the streams in it get pipes (pumped once it is sent)."""
+        """A handler result about to be sent: the streams in it get pipes (pumped once it is sent).
+        When a pipe cannot be made, nobody gets the result's streams back: they are ended."""
         plan = _streams.plan_outbound(value)
-        await plan.create_pipes(self._create_pipe, self._stream_binding)
+        try:
+            await plan.create_pipes(self._create_pipe, self._stream_binding)
+        except Exception as error:
+            await plan.abandon(_streams._reason(error))
+            raise
         return plan
 
     async def _send_answer(self, answer: InvocationResultMessage, plan: _streams.Outbound | None) -> None:
@@ -3597,7 +3602,26 @@ class III:
         ``STREAM_ABORTED`` as soon as one was aborted (the open ones aborted with it),
         or with ``TIMEOUT`` (the open sinks aborted) when they did not finish within
         ``timeout`` seconds. Not for a sink the result hands back (see
-        :func:`iii.streams.settle_local_sinks`)."""
+        :func:`iii.streams.settle_local_sinks`). A call that fails on its sinks after
+        its handler returned aborts its sources, as when the handler fails, and
+        releases the sources of the ``result`` it drops."""
+        try:
+            await self._await_local_call_sinks(call, local, error, result, timeout)
+        except Exception as failure:
+            if error is None:
+                _streams.abort_sources(local.sources, _streams._abort_reason(failure), asyncio.get_running_loop())
+                _streams.release_inputs(result)
+            raise
+
+    async def _await_local_call_sinks(
+        self,
+        call: _Request,
+        local: _LocalInvocation,
+        error: BaseException | None,
+        result: Any,
+        timeout: float | None,
+    ) -> None:
+        """The wait of :meth:`_settle_local_call_sinks`: raises what the call fails with."""
         expired = self._local_timeout(call, local)
         try:
             finished = await _streams.settle_local_sinks(

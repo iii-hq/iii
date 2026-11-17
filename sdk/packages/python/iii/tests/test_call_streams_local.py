@@ -36,6 +36,23 @@ def _invokes(engine: FakeEngine, function_id: str) -> list[dict[str, Any]]:
     return [f for f in engine.frames_of("invokefunction") if f.get("function_id") == function_id]
 
 
+class _Rows:
+    """An endless async source that records when it is closed (``aclose``)."""
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def __aiter__(self) -> _Rows:
+        return self
+
+    async def __anext__(self) -> bytes:
+        await asyncio.sleep(0.01)
+        return b"row\n"
+
+    async def aclose(self) -> None:
+        self.closed.set()
+
+
 # ── local dispatch ─────────────────────────────────────────────────────────────
 
 
@@ -267,6 +284,38 @@ def test_a_pipe_that_cannot_be_made_rejects_the_call_before_it_is_sent(engine: F
     assert len(_invokes(engine, "engine::channels::create")) == 1 and not _invokes(engine, "files::remote")
     # Nothing was sent: the stream can still be used.
     assert not body._transferred and asyncio.run(body.read_all()) == b"data"
+
+
+def test_a_result_whose_pipe_cannot_be_made_releases_its_sources(engine: FakeEngine, connect: Any) -> None:
+    # Nobody gets a handler's result back when its pipes cannot be made: its sources are
+    # closed and its sinks aborted (a call payload's streams stay the caller's, above).
+    def refuse(frame: dict[str, Any]) -> list[dict[str, Any]] | None:
+        if frame.get("type") == "invokefunction" and frame.get("function_id") == "engine::channels::create":
+            return [
+                {
+                    "type": "invocationresult",
+                    "invocation_id": frame["invocation_id"],
+                    "function_id": "engine::channels::create",
+                    "error": {"code": "FORBIDDEN", "message": "no channels for you"},
+                }
+            ]
+        return None
+
+    engine.on_frame = refuse
+    client = connect(engine)
+    rows = _Rows()
+    sink = OutputStream.to(io.BytesIO())
+
+    async def export(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"rows": InputStream.from_iter(rows), "copy": sink}
+
+    client.register_function("reports::export-unpiped", export)
+    _confirm(client, engine, "reports::export-unpiped")
+    engine.deliver(invoke("reports::export-unpiped", {}, "inv-unpiped"))
+    [answer] = engine.wait_for(lambda: answers(engine, "inv-unpiped"), what="the answer")
+    assert "no channels for you" in answer["error"]["message"]
+    assert rows.closed.wait(5), "the source of the result was never closed"
+    assert sink._aborted is not None
 
 
 # ── refs a handler receives ─────────────────────────────────────────────────────────
@@ -895,3 +944,82 @@ def test_a_local_void_call_does_not_abort_a_sink_when_another_fails(engine: Fake
     )
     assert done.wait(5)
     assert b._aborted is None and target.getvalue() == b"still here"
+
+
+@pytest.mark.parametrize("sync_call", [False, True], ids=["call_async", "call"])
+@pytest.mark.parametrize("mode", ["abort", "fail", "keep"])
+def test_a_local_call_that_fails_on_its_sink_aborts_its_sources(
+    engine: FakeEngine, connect: Any, mode: str, sync_call: bool
+) -> None:
+    # As when the handler fails or times out: what it did not read of its sources aborts,
+    # whether the sink aborted, failed, or did not end before the call's deadline.
+    from iii import StreamClosedError
+
+    client = connect(engine)
+    held: list[InputStream] = []
+
+    class Broken:
+        async def write(self, data: bytes) -> None:
+            raise ConnectionError("disk full")
+
+    async def hold(payload: dict[str, Any]) -> None:
+        out: OutputStream = payload["out"].keep_open()
+        if mode == "abort":
+            await out.abort("disk full")
+        elif mode == "fail":
+            with pytest.raises(StreamClosedError):
+                await out.write(b"page")
+        held.append(payload["body"])  # unread: only the call can end it
+
+    client.register_function("sink::hold", hold)
+    _confirm(client, engine, "sink::hold")
+    out = OutputStream.to(Broken() if mode == "fail" else io.BytesIO())
+    request = {
+        "function_id": "sink::hold",
+        "payload": {"body": InputStream.from_bytes(b"unread"), "out": out},
+        "timeout_ms": 500,
+    }
+    with pytest.raises(InvocationError) as error:
+        if sync_call:
+            client.call(request)
+        else:
+            asyncio.run(client.call_async(request))
+    assert error.value.code == ("TIMEOUT" if mode == "keep" else "STREAM_ABORTED")
+    [body] = held
+    with pytest.raises(StreamAbortedError):
+        asyncio.run(body.read_all())
+
+
+@pytest.mark.parametrize("write_side", [False, True], ids=["result", "write-side-result"])
+def test_a_local_call_its_sink_failure_fails_releases_the_sources_of_the_result_it_drops(
+    engine: FakeEngine, connect: Any, write_side: bool
+) -> None:
+    from iii import StreamClosedError
+
+    client = connect(engine)
+    rows = _Rows()
+
+    class Broken:
+        async def write(self, data: bytes) -> None:
+            raise ConnectionError("disk full")
+
+    async def drop(payload: dict[str, Any]) -> dict[str, Any]:
+        with pytest.raises(StreamClosedError):
+            await payload["out"].write(b"page")
+        body = InputStream.from_iter(rows)
+        return {"out": payload["out"], "rows": body} if write_side else {"rows": body}
+
+    client.register_function("sink::drop", drop)
+    _confirm(client, engine, "sink::drop")
+
+    async def run() -> None:
+        call = client.call_async({"function_id": "sink::drop", "payload": {"out": OutputStream.to(Broken())}})
+        with pytest.raises(StreamAbortedError, match="the sink failed: disk full"):
+            await call
+        for _ in range(250):  # the source closes on this loop
+            if rows.closed.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    asyncio.run(run())
+    assert rows.closed.is_set(), "the source of the dropped result was never released"
