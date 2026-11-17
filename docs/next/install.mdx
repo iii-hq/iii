@@ -5,7 +5,7 @@ owner: "devrel"
 type: "how-to"
 ---
 
-{/* TODO (community feedback): Add a direct binary-download path alongside the curl|sh installer so users who do not want to verify a remote script with a bot, or are on Windows, have an alternative. Link to the GitHub Releases page for the engine and include PATH setup instructions per OS (especially Windows). */}
+{/* TODO (community feedback): Add a direct binary-download path alongside the installers so users who do not want to verify a remote script with a bot have an alternative. Link to the GitHub Releases page for the engine and include PATH setup instructions per OS. */}
 
 ## Start a project
 
@@ -145,6 +145,35 @@ curl -fsSL https://iii.dev/registry/install/iii/latest.sh | III_NON_INTERACTIVE=
 | `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
 | `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
 | `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                           |
+
+### Install on Windows
+
+In PowerShell (Windows PowerShell 5.1 or PowerShell 7), run:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
+The Windows installer checks the archive against the SHA-256 the registry recorded, installs
+`iii.exe` to `~\.local\bin`, and adds that folder to your user `Path`, so the terminal you run it in
+and every terminal you open later find `iii`. On a fresh install it prompts you to set up your first
+iii project, as the `sh` installer does.
+
+The end of the URL picks the version, as above: `rc.ps1`, `next.ps1`, `alpha.ps1` or `0.27.0.ps1`.
+`irm ... | iex` passes no arguments, so set the options as environment variables before you run it:
+
+```powershell
+$env:III_NON_INTERACTIVE = '1'; irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
+| Variable              | Effect                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `VERSION`             | Engine version or release tag to install, for example `0.27.0` or `rc`.             |
+| `BIN_DIR`             | Directory for `iii.exe`. Defaults to `$PREFIX\bin`, or `~\.local\bin`.              |
+| `PREFIX`              | Install prefix. Defaults to `~\.local`.                                             |
+| `TARGET`              | Target triple to install, for example `aarch64-pc-windows-msvc`.                    |
+| `III_NON_INTERACTIVE` | Any non-empty value installs only, and prints the setup command.                    |
+| `NO_MODIFY_PATH`      | Any non-empty value leaves your `Path` as it is, and prints the folder to add.      |
 
 ## Next Steps
 

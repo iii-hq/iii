@@ -19,6 +19,12 @@ The engine is the runtime at the center of an iii system, and the `iii` CLI. Wor
 curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
 Or run the Docker image:
 
 ```bash

@@ -92,12 +92,18 @@ The same API is in every SDK. See [sdk/README.md](sdk/README.md).
 curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
 The installer asks to set up your first project. Press Enter, then open http://127.0.0.1:3113.
 
 For CI, Docker builds, and scripts, install without the prompt:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --non-interactive
 ```
 
 The [install guide](https://iii.dev/docs/install) has all installer options.
