@@ -1159,4 +1159,97 @@ describe('regressions from the PR review', () => {
     expect(error).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
     expect((error as { cause?: unknown }).cause).toBe(diskFull)
   })
+
+  it('a sink that aborts or fails fails the call at once, not at its timeout, and the other sinks are aborted (routed and local)', async () => {
+    // Both sinks kept open: the handler aborts `a`, or writes into `a`, a sink that fails, and returns.
+    const twoSinks =
+      (end: 'abort' | 'fail') =>
+      async ({ a, b }: { a: OutputStream; b: OutputStream }) => {
+        a.keepOpen()
+        b.keepOpen()
+        if (end === 'abort') await a.abort('disk full')
+        else await a.write('x').catch(() => undefined)
+        return 'fine'
+      }
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('two-sinks-abort'), twoSinks('abort'))
+      host.registerFunction(fid('two-sinks-fail'), twoSinks('fail'))
+    })
+    caller.registerFunction(fid('local-two-sinks-abort'), twoSinks('abort'))
+    caller.registerFunction(fid('local-two-sinks-fail'), twoSinks('fail'))
+    await localDispatchReady(caller, fid('local-two-sinks-abort'))
+    await localDispatchReady(caller, fid('local-two-sinks-fail'))
+    for (const path of ['routed', 'local'] as const) {
+      for (const end of ['abort', 'fail'] as const) {
+        const label = `${path}, ${end}`
+        const function_id = fid(`${path === 'local' ? 'local-' : ''}two-sinks-${end}`)
+        const a =
+          end === 'abort'
+            ? collectorSink().sink
+            : new WritableStream<Uint8Array>({
+                write() {
+                  throw new Error('disk full')
+                },
+              })
+        const other = collectorSink()
+        const started = performance.now()
+        const error = await within(
+          caller.call({ function_id, payload: { a, b: other.sink }, timeoutMs: 3000 }),
+          8000,
+        ).catch((e: unknown) => e)
+        expect(error, label).toBeInstanceOf(StreamAbortedError)
+        expect(error, label).toMatchObject({ code: 'STREAM_ABORTED', function_id })
+        // An abort across the engine carries the engine's reason; a sink failure is this worker's.
+        if (end === 'fail') expect(error, label).toMatchObject({ reason: 'the sink failed: disk full' })
+        else if (path === 'local') expect(error, label).toMatchObject({ reason: 'disk full' })
+        expect(performance.now() - started, `${label}: the call waited for its timeout`).toBeLessThan(2000)
+        await waitFor(() => other.state() === 'aborted', `${label}: the other sink aborted`)
+      }
+    }
+  })
+
+  it('local: a call its sink failure fails releases the sources of the result it drops', async () => {
+    const solo = worker('streams-local-sink-drop')
+    const cancelled: boolean[] = []
+    solo.registerFunction(fid('local-sink-drop'), async ({ out, back }: { out: OutputStream; back: boolean }) => {
+      await out.write('x').catch(() => undefined)
+      const i = cancelled.push(false) - 1
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled[i] = true
+        },
+      })
+      return back ? { out, body } : { body }
+    })
+    await localDispatchReady(solo, fid('local-sink-drop'))
+    for (const back of [false, true]) {
+      const sink = new WritableStream<Uint8Array>({
+        write() {
+          throw new Error('disk full')
+        },
+      })
+      await expect(
+        within(solo.call({ function_id: fid('local-sink-drop'), payload: { out: sink, back } })),
+      ).rejects.toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
+      await waitFor(() => cancelled[cancelled.length - 1], `the dropped body cancelled (back: ${back})`)
+    }
+  })
+
+  it('the parent of a tee() cannot be passed on: STREAM_IN_USE, and its copies still read it whole (routed and local)', async () => {
+    const read = async ({ body }: { body: InputStream }) => body.text()
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('tee-parent'), read)
+    })
+    caller.registerFunction(fid('local-tee-parent'), read)
+    await localDispatchReady(caller, fid('local-tee-parent'))
+    for (const function_id of [fid('tee-parent'), fid('local-tee-parent')]) {
+      const body = InputStream.from(['a', 'b', 'c'])
+      const [first, second] = body.tee()
+      await expect(within(caller.call({ function_id, payload: { body } })), function_id).rejects.toMatchObject({
+        code: 'STREAM_IN_USE',
+        message: expect.stringMatching(/split with tee\(\)/),
+      })
+      expect(await within(Promise.all([first.text(), second.text()])), function_id).toEqual(['abc', 'abc'])
+    }
+  })
 })

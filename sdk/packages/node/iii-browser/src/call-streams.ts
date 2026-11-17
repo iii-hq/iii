@@ -65,6 +65,8 @@ type InputState = {
   failure?: unknown
   /** Sent to another function by its ref: this worker can no longer read it. */
   transferred: boolean
+  /** Split with {@link InputStream.tee}: its copies read it, so it cannot be passed on. */
+  teed?: boolean
   /** Fails the read waiting on the source: a cancel does not wait for a source that ignores it (an async generator). */
   interrupt?: (failure: unknown) => void
   id?: string
@@ -512,6 +514,7 @@ async function* textLines(st: InputState): AsyncGenerator<string, void, undefine
 const TEE_HIGH_WATER_FRAMES = 16
 
 function teeInput(st: InputState): [InputStream, InputStream] {
+  st.teed = true
   const queues: ChannelItem[][] = [[], []]
   const active = [true, true]
   let end: { error?: unknown } | undefined
@@ -1022,9 +1025,14 @@ export function handOver(s: InputStream): InputStream {
   return relay
 }
 
-/** Why {@link handOn} would refuse `s`, checked with no effect: a stream read to its end (R6). */
+/**
+ * Why {@link handOn} would refuse `s`, checked with no effect: a stream split
+ * with tee() (passed on, it would split its frames with its copies), or one
+ * read to its end (R6).
+ */
 export function handOnRefusal(s: InputStream): Error | undefined {
   const st = inputState(s)
+  if (st.teed) return streamInUseError('the InputStream was split with tee(): pass one of its copies instead')
   return st.claimed && st.finished ? oneReaderError() : undefined
 }
 
@@ -1034,7 +1042,7 @@ export function handOnRefusal(s: InputStream): Error | undefined {
  * and did not finish: a new InputStream over the rest, and `s` counts as sent
  * (it leaves its guard, and reading or sending it again fails with
  * `STREAM_IN_USE`). Read to its end: the one-reader error, as reading it again
- * would throw.
+ * would throw. Split with tee(): `STREAM_IN_USE` too.
  */
 export function handOn(s: InputStream): InputStream {
   const refused = handOnRefusal(s)

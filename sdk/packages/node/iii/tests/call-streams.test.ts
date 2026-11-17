@@ -7,6 +7,7 @@ import {
   asStream,
   forwardableRef,
   handOn,
+  handOnRefusal,
   handOver,
   InputStream,
   inputFromRef,
@@ -610,6 +611,17 @@ describe('handOn (passing an InputStream on without its ref)', () => {
     expect(() => handOn(input)).toThrow(
       expect.objectContaining({ code: 'STREAM_IN_USE', message: expect.stringMatching(/one reader/) }),
     )
+  })
+
+  it('refuses the parent of a tee(): its copies read it, and passing it on would split its frames with them', async () => {
+    const input = InputStream.from(['a', 'b', 'c'])
+    const [first, second] = input.tee()
+    const splitWithTee = expect.objectContaining({ code: 'STREAM_IN_USE', message: expect.stringMatching(/tee\(\)/) })
+    expect(handOnRefusal(input)).toEqual(splitWithTee)
+    expect(() => handOn(input)).toThrow(splitWithTee)
+    expect(() => handOver(input)).toThrow(splitWithTee)
+    expect(isTransferred(input)).toBe(false)
+    expect(await Promise.all([first.text(), second.text()])).toEqual(['abc', 'abc'])
   })
 })
 
