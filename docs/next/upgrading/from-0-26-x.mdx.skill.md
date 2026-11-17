@@ -54,6 +54,32 @@ its reader, on any SDK version, waits until the engine expires the pipe. This is
 0.27 writer opens the socket to close it, so its reader sees an empty stream at once. Upgrade the
 writing side to fix it.
 
+### Payload size with older SDKs and engines
+
+When a worker registers, the engine gives it one of two receive limits for JSON messages. For the
+limits, see [Streaming / Payload size](../creating-workers/streaming#payload-size). A worker on a
+Rust, Node, Python, or Go SDK from 0.25.0 declares the `large-messages.v1` protocol feature and gets
+the larger limit.
+
+These rules apply to older SDKs and to older engines:
+
+- **A worker on an older Rust, Node, Python, or Go SDK does not declare the feature.** The engine
+  then sets the limit from the SDK version that the worker reports. The worker gets the larger limit
+  when the version is 0.24.5 or later. It gets the smaller limit when the version is missing, when
+  the engine cannot read it, or when it is older than 0.24.5.
+- **The engine reads the version as semver or as PEP 440.** Examples of semver are `0.24.6` and
+  `0.25.0-rc.5`. Examples of PEP 440 are `0.25.0rc5` and `0.24.5.post1`. A pre-release of 0.24.5 is
+  older than 0.24.5.
+- **A Rust worker can report its own version.** SDKs 0.24.5 through 0.25.0-rc.5 do not declare
+  `large-messages.v1`. A Rust worker on one of these SDKs can set `WorkerMetadata.version` to its
+  own version. If that version is older than 0.24.5, the worker gets the smaller limit. Upgrade the
+  worker to SDK 0.25.0 or later.
+- **The engine accepts the large single frames that SDKs before 0.24.5 send.** The engine accepts a
+  message as one frame or as fragments.
+- **An engine from before the receive limit check does not check the limit of the target.** It sends
+  each message as one frame. A worker on an older SDK can then disconnect. Use an engine and SDKs
+  from the same release, or newer.
+
 ### Find what to change
 
 Search each worker for the removed APIs. A few hits, such as `sendMessage` on another library's

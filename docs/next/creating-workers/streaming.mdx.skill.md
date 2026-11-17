@@ -817,6 +817,9 @@ The engine sets the receive limit when the worker registers:
   that the worker reports. A worker that reports no version, or a version that the engine cannot
   read, gets **16 MiB**. Other features, such as `observe.v1`, do not change the limit.
 
+For the rules that apply to older SDKs and older engines, see
+[Payload size with older SDKs and engines](../upgrading/from-0-26-x#payload-size-with-older-sdks-and-engines).
+
 ### Messages over the limit
 
 - The Rust, Node, Python, and Go SDKs do not send a message over **64 MiB**. The SDK refuses the
