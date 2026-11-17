@@ -15,89 +15,40 @@ two functions can run in different processes and languages.
 <Note>
   The examples use the stream API of the 0.27 SDKs. To write the functions that receive and return
   streams, see [Creating workers / Streaming](../creating-workers/streaming). To move code from the
-  channel API, see [Upgrading from 0.26.x](../upgrading/from-0-26-x).
-</Note>
-
-## How a stream works
-
-A typical call is one JSON message. A message has a size limit, the sender must have all of the
-required data before it starts sending, and both the sender and the receiver must keep all of it in
-memory.
-
-Streams are different because they don't have size limits, don't need all of the data they're
-sending ahead of time, and neither the sender nor the receiver need to keep the full payload in
-memory. Instead when you create a stream the call will send a reference to the receiver and the
-receiver can use that reference to access the stream.
-
-| Term           | Meaning                                                                                      |
-| -------------- | -------------------------------------------------------------------------------------------- |
-| `InputStream`  | The end you read. A source in a payload or a result arrives as an `InputStream`.             |
-| `OutputStream` | The end you write. A sink in a payload or a result arrives as an `OutputStream`.             |
-| Pipe           | The connection in the engine that carries one stream from one writer to one reader.          |
-| Ref            | `{ channel_id, access_key, direction }`, the JSON value that replaces a stream in the call.  |
-| `StreamInfo`   | `{ stream: true, direction, id }`, the value an observer receives in place of a live stream. |
-
-A `read` ref becomes an `InputStream`, and a `write` ref becomes an `OutputStream`. A pipe carries
-data in one direction. For a two-way exchange, use two streams.
-
-This is the flow when a caller sends `report.csv` to `files::process`:
-
-```mermaid
-sequenceDiagram
-    participant C as Caller's SDK
-    participant E as Engine
-    participant H as Handler's SDK
-
-    C->>E: engine::channels::create
-    E-->>C: writer ref, reader ref
-    C->>E: call files::process, reader ref in body
-    E->>H: invoke files::process
-    Note over H: the ref becomes an InputStream
-    C->>E: pump the file into the writer end
-    E->>H: the handler reads body
-    C->>E: the file ends: clean close
-    E->>H: body ends
-    H-->>E: result
-    E-->>C: result
-```
-
-A source uses the pipe like this:
-
-1. The caller's SDK finds the file in the payload and creates a pipe for it.
-2. The SDK puts the reader ref in place of the file, sends the call with the reader ref.
-3. The handler's SDK turns the ref into an `InputStream` and reads from the pipe.
-
-A sink uses the pipe in the other direction:
-
-1. The caller's SDK sends the writer ref and creates a pipe for it.
-2. The SDK puts the writer ref in place of the file, sends the call with the writer ref.
-3. The handler's SDK turns the ref into an `OutputStream` and writes to the pipe.
-
-<Note>
-  The engine internally calls a pipe a channel. They are the same thing. It creates a pipe with `engine::channels::create` and carries
-  it over `/ws/channels/<id>` sockets, so traces and the engine protocol show `channels`.
+  channel API, see [Upgrading from 0.26.x](../upgrading/from-0-26-x). For how a stream works, see
+  [Understanding iii / Streaming](../understanding-iii/streaming).
 </Note>
 
 ## Send a stream in a call
 
-Put the stream in the payload. The SDK creates a pipe for it, sends a ref in its place, and writes
-the data into the pipe while the call runs. Strings, buffers, plain objects, and arrays stay JSON.
-The comment in each tab lists the values that SDK sends as streams.
+To send a stream, put it in the payload of the call. For the steps that the SDK and the engine do,
+see [How a stream works](../understanding-iii/streaming#how-a-stream-works).
+
+Each SDK sends only specific types of values as streams. The supported types are listed in the
+comments on each language tab. Strings, buffers, plain objects, and arrays will not be sent as
+streams by default. To send these types as streams first convert them with `InputStream.from()`.
 
 <Tabs>
   <Tab title="Node / TypeScript">
     ```typescript
     import { createReadStream } from "node:fs";
-    import { registerWorker } from "iii-sdk";
+    import { InputStream, registerWorker } from "iii-sdk";
 
     const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
 
     // Streams: an InputStream, a Node Readable, a Web ReadableStream, a Blob or File, or an async
-    // generator object. InputStream.from(...) wraps a Uint8Array, a string, or an iterable or async
-    // iterable of either.
+    // generator object.
     const result = await worker.call({
       function_id: "files::process",
       payload: { filename: "report.csv", body: createReadStream("report.csv") },
+    });
+
+    // The SDK sends other values as JSON. To send in-memory data as a stream, wrap it with
+    // InputStream.from(...): a Uint8Array, an ArrayBuffer, a string, or an iterable or async
+    // iterable of Uint8Array and strings.
+    const textResult = await worker.call({
+      function_id: "files::process",
+      payload: { filename: "totals.csv", body: InputStream.from("id,total\nr-42,120\n") },
     });
     ```
 
@@ -163,15 +114,36 @@ The comment in each tab lists the values that SDK sends as streams.
   </Tab>
 </Tabs>
 
-A call can carry any number of streams, in any field. The SDK creates their pipes in parallel before
-it sends the call. If it cannot create a pipe, the call fails and is not sent.
+A payload can contain more than one stream. The SDK finds streams in plain objects and arrays, at
+any depth. It creates one pipe for each stream, all at the same time, before it sends the call. If
+the SDK cannot create a pipe, the call fails and the SDK does not send it.
 
-The worker that sends a stream owns its pipe. Keep the worker connected until the other side has
-attached to its end. See [Pipe ownership](#pipe-ownership).
+Your worker owns the pipe of each stream that it sends. Keep the worker connected until the transfer
+has completed. For what the engine does when the owner disconnects, see
+[Pipe ownership](../understanding-iii/streaming#pipe-ownership).
+
+The SDK writes the data of a source into the pipe for you. You write the data yourself when you have
+an `OutputStream`: the `output` of [`worker.pipe()`](#create-a-pipe), or an `OutputStream` in the
+result of a call. These are the operations of an `OutputStream`:
+
+| To                  | Call                                                                      |
+| ------------------- | ------------------------------------------------------------------------- |
+| Write bytes         | `await out.write(chunk)`, a `Uint8Array` or a string as UTF-8 bytes       |
+| Send a JSON message | `await out.send(value)`                                                   |
+| Finish              | `await out.close()`                                                       |
+| Fail                | `await out.abort(reason)`                                                 |
+| Use a native API    | `out.toWritable()` for a Node `Writable`, `out.toWebStream()` for the Web |
+
+<Note>
+  The operation tables on this page show the TypeScript API. The SDK reference gives the same
+  operations for each SDK: [Node](../reference/sdk-node), [Python](../reference/sdk-python),
+  [Rust](../reference/sdk-rust), [Go](../reference/sdk-go), and [Browser](../reference/sdk-browser).
+</Note>
 
 ## Read a stream from a result
 
-A stream in a function's result arrives as an `InputStream` in the same field.
+A function can return a stream in its result. The result of `worker.call(...)` then contains an
+`InputStream` in the field where the function put the stream.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -254,9 +226,8 @@ A stream in a function's result arrives as an `InputStream` in the same field.
   </Tab>
 </Tabs>
 
-## Read and write a stream
-
-A stream has one reader. Read an `InputStream` once, in the form that fits the data:
+An `InputStream` from a result and the `input` of a [pipe](#create-a-pipe) have the same read
+operations. You can read an `InputStream` only once, so use the one operation that fits the data:
 
 | To                                | Call                                                                  |
 | --------------------------------- | --------------------------------------------------------------------- |
@@ -269,35 +240,20 @@ A stream has one reader. Read an `InputStream` once, in the form that fits the d
 | Make two copies                   | `s.tee()`, before the first read                                      |
 | Use a native API                  | `s.toReadable()` for a Node `Readable`, `s.toWebStream()` for the Web |
 
-Write an `OutputStream`:
+A stream can carry bytes and JSON messages. The operations that read bytes skip the messages, and
+`messages()` skips the bytes. To read both types in the order in which the writer sent them, use
+`frames()`. A frame is `{ type: "binary", value }` for bytes, or `{ type: "text", value }` for one
+message as a string.
 
-| To                  | Call                                                                      |
-| ------------------- | ------------------------------------------------------------------------- |
-| Write bytes         | `await out.write(chunk)`, a `Uint8Array` or a string as UTF-8 bytes       |
-| Send a JSON message | `await out.send(value)`                                                   |
-| Finish              | `await out.close()`                                                       |
-| Fail                | `await out.abort(reason)`                                                 |
-| Use a native API    | `out.toWritable()` for a Node `Writable`, `out.toWebStream()` for the Web |
-
-A pipe carries bytes in binary frames and messages in text frames. Byte reads skip messages, and
-`messages()` skips bytes. `frames()` yields both in the order they were sent: a frame is
-`{ type: "binary", value }` or `{ type: "text", value }`. A text frame that is not JSON reaches
-`messages()` as its raw string.
-
-`write` and `send` resolve when the chunk is accepted. A loop of awaited writes thus follows the
-reader's speed and does not buffer without limit. Each end opens its socket when it is first read or
-written.
-
-<Note>
-  The SDK reference gives the same operations for each SDK: [Node](../reference/sdk-node),
-  [Python](../reference/sdk-python), [Rust](../reference/sdk-rust), [Go](../reference/sdk-go), and
-  [Browser](../reference/sdk-browser).
-</Note>
+`messages()` parses each message as JSON. If a message is not valid JSON, `messages()` gives the
+message as a string. For the two types of data, see
+[Bytes and messages](../understanding-iii/streaming#bytes-and-messages).
 
 ### Read a stream more than once
 
-A second read of the same `InputStream` fails with `STREAM_IN_USE`. To read the data twice, call
-`tee()` before the first read. The two copies are in the same process.
+A second read of the same `InputStream` fails with `STREAM_IN_USE`. To use the data in two places,
+call `tee()` before the first read. `tee()` returns two copies of the stream, and each copy gives
+all the data. The two copies are in the same process.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -344,6 +300,10 @@ A second read of the same `InputStream` fails with `STREAM_IN_USE`. To read the 
   </Tab>
   <Tab title="Rust">
     ```rust
+    use futures::TryStreamExt;
+    use sha2::{Digest, Sha256};
+    use tokio::{fs::File, io::AsyncWriteExt};
+
     // There is no tee(): read the stream once, and use each chunk twice
     let mut hasher = Sha256::new();
     let mut file = File::create("report.csv").await?;
@@ -372,14 +332,19 @@ A second read of the same `InputStream` fails with `STREAM_IN_USE`. To read the 
   </Tab>
 </Tabs>
 
-The copies share a buffer of 16 frames. When one copy is 16 frames behind the other, the faster copy
-waits. If you read one copy to the end before you start the other, the read never finishes.
+Read the two copies at the same time. `tee()` keeps at most 16 frames for the copy that is behind.
+When one copy is 16 frames behind the other, the read of the faster copy waits. If you read one copy
+to the end before you start the other, the first read waits after 16 frames and does not finish.
+
+If you do not need one of the copies, call `cancel()` on it. The read of the other copy then does
+not wait.
 
 ## Receive data into a sink
 
-To receive the data into a destination you already have, such as a file, pass it as a sink. The
-function receives it as an `OutputStream`. The call resolves after the sink has received all the
-data.
+A sink is a destination that receives the data of a stream, for example a file that is open for
+writing. Put the sink in the payload. The function receives it as an `OutputStream` and writes to
+it, and the SDK copies the bytes into your destination. The call resolves after the sink has
+received all the data, so the data is complete when the call returns.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -448,42 +413,47 @@ data.
   </Tab>
 </Tabs>
 
-A sink receives bytes only, and drops the messages the function sends. To receive messages too, pass
-the output of a [pipe](#create-a-pipe) instead.
+A sink receives bytes only. If the function sends messages, the sink drops them. To receive
+messages, give the function the `output` of a pipe. See [Create a pipe](#create-a-pipe).
 
 ### Sink errors
 
-- If the stream into a sink aborts, the call fails with `STREAM_ABORTED`, also when the function
-  returned a result.
-- If the sink fails, for example on a full disk, the SDK stops the copy. The call fails with
-  `STREAM_ABORTED`, with the reason `the sink failed: ...` and the sink's error as its cause. The
-  function's next write fails with `STREAM_CLOSED`.
-- If the call fails, the SDK stops the copy and closes the sink with the error.
+A call with a sink can fail in three ways:
 
-In each case, the sink can hold part of the data. Remove a partly written file.
+- **The stream aborts.** The call fails with `STREAM_ABORTED`. The call fails also when the function
+  returned a result.
+- **The sink fails.** For example, the disk is full. The SDK stops the copy, and the call fails with
+  `STREAM_ABORTED`. The `reason` of the error starts with `the sink failed:`, and the `cause` of the
+  error is the error from the sink.
+- **The call fails.** The SDK stops the copy and closes the sink with the error.
+
+After each of these failures, the sink may contain a partial copy of the data.
 
 ### Sink timeout
 
-The call's `timeoutMs` includes the copy into its sinks, from the start of the call. If the timeout
-expires before a sink is complete, the SDK aborts the open sinks and the call fails with `TIMEOUT`.
-Set a longer timeout when a sink fills slowly, for example when the function writes after it
-returns.
+The `timeoutMs` of a call includes the time that its sinks take to receive the data. The time starts
+when the SDK sends the call. If the time expires before all the sinks are complete, the SDK aborts
+the sinks that are still open, and the call fails with `TIMEOUT`.
 
-A call whose result contains a stream for the caller to write to does not wait for its sinks. The
-sinks can depend on what the caller writes next.
+Set a longer `timeoutMs` when a sink fills slowly. For example, some functions continue to write
+after they return.
+
+A call does not wait for its sinks when its result contains an `OutputStream` for you to write to.
+The data that the sinks receive can depend on the data that you write, so the call resolves when the
+function returns.
 
 ## Create a pipe
 
-`worker.pipe()` returns a pipe with two ends, `input` and `output`. Put one end in a payload and use
-the other end yourself. Use a pipe when a stream value is not sufficient:
+When you put a stream or a sink in a payload, the SDK creates the pipe for you. `worker.pipe()` is
+how you can create a pipe manually. It returns the two ends of the pipe: you write to `output`, and
+you read the same data from `input`. Put one end in a payload, and use the other end in your code.
 
-- To give out a stream before its data exists.
-- To give a stream to a call that you make later.
-- To receive messages, which a sink drops.
-- For a two-way exchange, with two pipes.
+Use `worker.pipe()` in these cases:
 
-A sink holds the call until the stream ends. A pipe end does not: the call resolves when the
-function returns.
+- The function must receive a stream before you have its data.
+- You make the call that uses the stream at a later time.
+- You need the messages that the function sends. A sink keeps only the bytes and drops the messages.
+- You need a two-way exchange. Use two pipes, one for each direction.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -592,18 +562,28 @@ function returns.
   </Tab>
 </Tabs>
 
-`worker.pipe({ bufferSize })` sets the number of frames that the engine buffers between the two
-ends: 64 by default, 1024 at most. The worker that calls `pipe()` owns the pipe.
+The engine can hold a number of frames between the writer and the reader of a pipe. The default is
+64 frames. To change the number, call `worker.pipe({ bufferSize })`. The maximum is 1024 frames.
 
-If the function throws before it writes to the output, the output stays open, and a reader of the
-input waits until the engine drops that end. Watch the call as well as the stream: the call's error
-arrives first.
+Your worker owns each pipe that it creates with `pipe()`. See
+[Pipe ownership](../understanding-iii/streaming#pipe-ownership).
+
+A function can fail before it writes to the `output` that you gave it. The `output` then stays open,
+and your read of `input` waits until the engine drops the `output` connection. The error of the call
+arrives first, so monitor the call while you read. When the call fails, you can stop the read with
+`input.cancel()`. The read then fails with `STREAM_CLOSED`.
+
+<Note>
+  A pipe end is different from a sink. A call with a sink resolves after the stream ends. A call
+  with a pipe end resolves when the function returns.
+</Note>
 
 ## Handle aborts and errors
 
-A stream that ends with a clean close is complete. When a stream aborts, the reader receives the
-data sent before the abort, and then a `StreamAbortedError` with the code `STREAM_ABORTED`. A partly
-read stream thus never looks complete. Treat the error as an incomplete transfer.
+A read of a stream ends in one of two ways. If the read ends without an error, the stream closed
+cleanly and you have all the data. If the stream aborts, the read gives you the data that the writer
+sent before the abort, and then throws a `StreamAbortedError` with the code `STREAM_ABORTED`. When
+you get this error, the data is incomplete. Do not use it as the full stream.
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -665,55 +645,53 @@ read stream thus never looks complete. Treat the error as an incomplete transfer
   </Tab>
 </Tabs>
 
-The error's `reason` is the engine's text, for example
-`channel writer aborted: closed with code 1011`. The engine does not send the writer's reason. The
-cause of a failure arrives in the call's error or result.
+The `reason` of the error does not contain the root cause of the failure. The `reason` comes from
+the engine, for example `channel writer aborted: closed with code 1011`. To get the cause, read the
+error or the result of the call. For how the engine relays an abort, see
+[Close and abort](../understanding-iii/streaming#close-and-abort).
 
 ### Error codes
 
-The SDK throws an `InvocationError` with one of these codes:
+The SDK reports each stream error as an `InvocationError` with one of these codes:
 
-- `STREAM_ABORTED`: the stream aborted before its end.
-- `STREAM_CLOSED`: a write or a `send` after the stream closed, aborted, or lost its reader. Also a
-  read of an `InputStream` that was cancelled by `cancel()`, by an early exit from a read loop, or
-  because its handler returned.
-- `STREAM_IN_USE`: a second read of an `InputStream`, the same stream twice in one payload, or a
-  stream that was already read to the end or already sent.
-- `STREAM_NOT_ALLOWED`: a stream in a queued call. See [Queue a call](#queue-a-call).
+- `STREAM_ABORTED`: The stream aborted before its end.
+- `STREAM_CLOSED`: A `write` or a `send` came after the stream closed, aborted, or lost its reader.
+  A read also fails with this code when the `InputStream` was cancelled. A stream is cancelled by
+  `cancel()`, by an early exit from a read loop, or when the handler that received it returns.
+- `STREAM_IN_USE`: An `InputStream` was read a second time, the same stream is in one payload two
+  times, or the stream was already read to the end or already sent.
+- `STREAM_NOT_ALLOWED`: A queued call has a stream in its payload. See
+  [Queue a call](#queue-a-call).
 
 ## Queue a call
 
-A call sent with `CallAction.Enqueue` and a stream in its payload fails before it is sent, with the
-code `STREAM_NOT_ALLOWED`. A queued call can run after its pipe expired, and a retry cannot read a
-stream again. Store the data first, for example in object storage, and queue its key.
+A queued call cannot carry a stream. If the payload of a call with `CallAction.Enqueue` contains a
+stream, the SDK does not send the call, and the call fails with `STREAM_NOT_ALLOWED`. There are two
+reasons:
 
-`CallAction.Void` is allowed: the call runs live, and the SDK discards only its result.
+- The queue can run the call after the pipe of the stream expired.
+- When the queue runs a failed call again, the function cannot read the stream a second time.
 
-## Pipe ownership
+To queue work on such data, store the data first and put its key in the payload. For example, upload
+a file to object storage and queue the key of the object.
 
-A pipe belongs to the worker that created it: the worker that sent the source or the sink, or the
-worker that called `pipe()`. Forwarding a stream does not change its owner.
-
-When the owner disconnects, the engine releases the pipe:
-
-- The engine drops each end that no worker has attached. A later attach with that ref fails with
-  HTTP `404`.
-- A reader that waits for a writer that never attached gets an error, not the end of the stream.
-- A stream with both ends attached continues until it completes.
-
-The engine drops an end that no worker attaches after approximately five minutes.
-
-When the reader finishes or disconnects, the engine removes the pipe and any end that is not
-attached. It closes an attached writer immediately, also when the writer is idle.
+<Note>
+  `CallAction.Void` is different from `CallAction.Enqueue`. A call with `CallAction.Void` can carry
+  a stream. The function runs immediately, and the SDK does not wait for the result or for the sinks
+  of the call.
+</Note>
 
 ## Observe a call that carries a stream
 
-A stream has one reader, and the first socket that attaches takes its end. An observer that received
-the live stream could take the data before the observed function reads it.
+You can observe a function that receives or returns streams. The target of the observer does not
+receive the streams. In the `input` or `output` that the observer captures, the target receives a
+`StreamInfo` in place of each stream: `{ stream: true, direction, id }`. A `StreamInfo` shows that
+the call carried a stream, with the direction of the stream and the id of its pipe. It has no access
+key, so the target cannot read or write the stream.
 
-So when an observer captures the `input` or `output` of a call that carried a stream, the target
-receives a `StreamInfo` in that field: `{ stream: true, direction, id }`. It holds the pipe's id and
-no access key. The other fields arrive as usual, and filters operate as usual.
+The other fields arrive as usual, and filters operate as usual. For the reason that the target
+receives a `StreamInfo`, see
+[Streams and observers](../understanding-iii/streaming#streams-and-observers).
 
 <Tabs>
   <Tab title="Node / TypeScript">
@@ -801,22 +779,8 @@ no access key. The other fields arrive as usual, and filters operate as usual.
   </Tab>
 </Tabs>
 
-This rule applies to the `Observed` payload that the engine builds. A function that a worker calls
-through an observer receives live streams. For example, a route that the HTTP worker calls receives
-a live `request_body` and `response`.
-
 <Warning>
-  The observed payload on the wire still holds the ref with its access key. A target on an SDK
-  before 0.27 receives the ref. Do not open it: the first socket that attaches takes the stream from
-  the observed function.
+  The engine sends the ref of the stream, with its access key, and the SDK replaces it. A target on
+  an SDK before 0.27 receives the ref. Do not open it. A stream has one reader, and the first socket
+  that attaches takes the stream from the observed function.
 </Warning>
-
-## Old and new SDKs
-
-The wire protocol did not change: a 0.26 engine serves 0.27 SDKs, and the ref JSON is the same in
-every SDK. Workers on old and new SDKs operate together in one project:
-
-- A ref from a 0.26 SDK arrives in a 0.27 handler or call result as an `InputStream` or an
-  `OutputStream`.
-- A stream from a 0.27 SDK arrives in a 0.26 TypeScript, Python, or browser handler as a
-  `ChannelReader` or a `ChannelWriter`, and in a 0.26 Go or Rust handler as the ref JSON.

@@ -1761,7 +1761,8 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
 <Note>
   To call functions with streams, see [Using iii / Streaming](../using-iii/streaming). To write
   functions that receive and return streams, see [Creating workers /
-  Streaming](../creating-workers/streaming). For each SDK's API, see the SDK reference:
+  Streaming](../creating-workers/streaming). For how a stream works, see [Understanding iii /
+  Streaming](../understanding-iii/streaming). For each SDK's API, see the SDK reference:
   [Node](../reference/sdk-node), [Python](../reference/sdk-python), [Rust](../reference/sdk-rust),
   [Go](../reference/sdk-go), and [Browser](../reference/sdk-browser).
 </Note>

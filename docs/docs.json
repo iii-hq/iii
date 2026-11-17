@@ -24,11 +24,7 @@
     },
     {
       "source": "/next/understanding-iii/channels",
-      "destination": "/next/using-iii/streaming"
-    },
-    {
-      "source": "/next/understanding-iii/streaming",
-      "destination": "/next/using-iii/streaming"
+      "destination": "/next/understanding-iii/streaming"
     },
     {
       "source": "/next/creating-workers/channels",
@@ -185,7 +181,8 @@
                   "next/understanding-iii/index",
                   "next/understanding-iii/engine",
                   "next/understanding-iii/compose",
-                  "next/understanding-iii/namespaces"
+                  "next/understanding-iii/namespaces",
+                  "next/understanding-iii/streaming"
                 ]
               },
               {
