@@ -775,3 +775,43 @@ def test_a_local_call_whose_sink_failed_fails_with_the_sink_error(
     assert error.value.reason == "the sink failed: the disk went away"
     assert isinstance(error.value.__cause__, ConnectionError)
     assert [e.message for e in seen] == ["the stream is closed: the sink failed: the disk went away"]
+
+
+def test_a_cancelled_local_call_aborts_the_sinks_it_passed(engine: FakeEngine, connect: Any) -> None:
+    # As through the engine: the handler runs on, and its writes to the caller's sink fail.
+    from iii import StreamClosedError
+
+    client = connect(engine)
+    outcome: list[BaseException] = []
+
+    async def render(payload: dict[str, Any]) -> None:
+        try:
+            for page in range(100):
+                await payload["out"].write(f"page{page};")
+                await asyncio.sleep(0.02)
+        except BaseException as error:
+            outcome.append(error)
+            raise
+
+    client.register_function("reports::render-slow", render)
+    _confirm(client, engine, "reports::render-slow")
+    sink = OutputStream.to(io.BytesIO())
+
+    async def run() -> None:
+        call = asyncio.ensure_future(
+            client.call_async({"function_id": "reports::render-slow", "payload": {"out": sink}})
+        )
+        await asyncio.sleep(0.1)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        for _ in range(250):  # the handler runs on this loop
+            if outcome:
+                break
+            await asyncio.sleep(0.02)
+
+    asyncio.run(run())
+    assert sink._aborted == "the call was cancelled"
+    [error] = outcome
+    assert isinstance(error, StreamClosedError)
+    assert error.message == "this OutputStream was aborted (the call was cancelled)"

@@ -170,6 +170,9 @@ class _Workers:
 
 
 _WORKERS = _Workers()
+#: The SDK loop's default executor (host name lookups): threads of its own, so sync
+#: iterators blocked in ``next()`` on every ``_WORKERS`` thread never hold up a stream socket.
+_EXECUTOR_WORKERS = _Workers()
 
 
 async def _offload(fn: Callable[..., T], *args: Any) -> T:
@@ -225,7 +228,7 @@ class _SdkExecutor(concurrent.futures.ThreadPoolExecutor):
             except BaseException as error:
                 future.set_exception(error)
 
-        _WORKERS.submit(job)
+        _EXECUTOR_WORKERS.submit(job)
         return future
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
@@ -416,7 +419,7 @@ class _FileSource(_Source):
     async def close(self, *, open_first: bool = False) -> None:
         self._done = True
         if self._owned and self._file is not None and not self._file.closed:
-            self._file.close()
+            await _offload(self._file.close)
 
 
 #: Frames a tee branch may hold for its reader before the other branch waits for it.
@@ -570,6 +573,8 @@ class InputStream:
         self._failure: BaseException | None = None
         #: Passed on to another call (by ref, or through a pump).
         self._transferred = False
+        #: Split with tee(): read only through its copies.
+        self._teed = False
         #: The stream this one is a tee branch of.
         self._parent: InputStream | None = None
 
@@ -684,6 +689,14 @@ class InputStream:
             self._finished = True
         return frame
 
+    async def _read(self) -> Frame | None:
+        """:meth:`_next` for this stream's own reader (an iteration, ``read_all``, ...): once the
+        stream was passed on to another call, the rest is that call's (its pump, or the
+        stream it was handed off as, reads it through :meth:`_next`)."""
+        if self._transferred:
+            raise StreamInUseError("this InputStream was passed on to another call; it cannot be read here")
+        return await self._next()
+
     def _stop(self, error: Callable[[], BaseException]) -> bool:
         """Ends the stream for its reader with ``error`` (raised by every later
         read, and by one in flight now). ``False`` when it already ended."""
@@ -717,7 +730,7 @@ class InputStream:
         return self._binary()
 
     async def _binary(self) -> AsyncIterator[bytes]:
-        while (frame := await self._next()) is not None:
+        while (frame := await self._read()) is not None:
             if isinstance(frame, bytes):
                 yield frame
 
@@ -758,7 +771,7 @@ class InputStream:
         return self._messages()
 
     async def _messages(self) -> AsyncIterator[Any]:
-        while (frame := await self._next()) is not None:
+        while (frame := await self._read()) is not None:
             if isinstance(frame, str):
                 try:
                     yield json.loads(frame)
@@ -772,7 +785,7 @@ class InputStream:
         return self._frames()
 
     async def _frames(self) -> AsyncIterator[ChannelItem]:
-        while (frame := await self._next()) is not None:
+        while (frame := await self._read()) is not None:
             yield ChannelItem.binary_item(frame) if isinstance(frame, bytes) else ChannelItem.text_item(frame)
 
     def tee(self) -> tuple[InputStream, InputStream]:
@@ -785,6 +798,7 @@ class InputStream:
         one copy to the end before starting the other stalls. Cancel a copy you
         stop reading, so the other is not held back."""
         self._claim()
+        self._teed = True
         tee = _Tee(self)
         first, second = InputStream(_TeeBranch(tee, 0)), InputStream(_TeeBranch(tee, 1))
         first._parent = second._parent = self
@@ -879,7 +893,7 @@ class _FileSink(_Sink):
     async def abort(self, reason: str) -> None:
         # What was written stays; the call that carried the stream rejects.
         if self._file is not None and not self._file.closed:
-            self._file.close()
+            await _offload(self._file.close)
 
 
 class _WriterSink(_Sink):
@@ -1269,9 +1283,12 @@ def _reject_unstreamable(value: Any) -> None:
 
 def _check_forwardable_input(value: InputStream) -> None:
     """A stream read to the end has nothing left to pass on: the same error as reading it
-    again. A cancelled one raises what reading it raises (``STREAM_CLOSED``)."""
+    again. A cancelled one raises what reading it raises (``STREAM_CLOSED``). One split
+    with tee() is read through its copies: passing it on would split its frames with them."""
     if value._stopped is not None:
         raise value._stopped()
+    if value._teed:
+        raise StreamInUseError(f"{value!r} was split with tee(): pass one of its copies instead")
     if value._claimed and value._finished:
         raise StreamInUseError(
             f"{value!r} was already read to the end: a stream has one reader (call tee() before reading for two copies)"

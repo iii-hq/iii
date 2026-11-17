@@ -3551,7 +3551,10 @@ class III:
         try:
             finished, _ = await asyncio.wait({task}, timeout=call.timeout_ms / 1000.0)
         except asyncio.CancelledError:
+            # The handler runs on: what it did not read aborts, and its writes to the caller's sinks fail.
             _streams.abort_sources(local.sources, "the call was cancelled", loop)
+            if local.sinks:
+                await _streams.settle_local_sinks(local.sinks, False, "the call was cancelled")
             raise
         if not finished:
             self._background.add(task)
@@ -3856,7 +3859,10 @@ class III:
         Examples:
             >>> pipe = iii.pipe()
             >>> iii.call({"function_id": "files::count", "payload": {"body": pipe.input}, "action": CallAction.Void()})
-            >>> asyncio.run(pipe.output.write(b"data"))
+            >>> async def send() -> None:
+            ...     async with pipe.output as out:  # closed at the end: the reader sees the end
+            ...         await out.write(b"data")
+            >>> asyncio.run(send())
         """
         return self._run_on_loop(self.pipe_async(buffer_size))
 

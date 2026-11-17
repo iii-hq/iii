@@ -94,11 +94,18 @@ class ChannelWriter:
         self._lock = asyncio.Lock()
         self._abort_cause: BaseException | None = None
         self._aborted = False
+        #: The connect of a write (or a close), set once it finished: an abort that comes
+        #: meanwhile waits for that socket rather than open a second one (the engine streams
+        #: one writer socket per channel and closes any other).
+        self._opening: asyncio.Event | None = None
 
     def _abort(self, cause: BaseException) -> None:
         """A send that did not finish (an error, or a cancelled task): the stream is incomplete,
-        so drop the socket with no close frame and never close it cleanly."""
+        so drop the socket with no close frame and never close it cleanly. Once :meth:`abort`
+        ran, it ends the socket itself, with its close frame."""
         self._abort_cause = self._abort_cause or cause
+        if self._aborted:
+            return
         self._connected = False
         if self._ws is not None:
             self._ws.transport.abort()
@@ -113,15 +120,22 @@ class ChannelWriter:
             return self._ws
         if self._ws is not None:
             raise ConnectionError("channel writer closed")
-        self._ws = await websockets.connect(
-            self._url,
-            additional_headers=self._headers,
-            close_timeout=WRITER_CLOSE_TIMEOUT_S,
-            ping_interval=CHANNEL_PING_INTERVAL,
-        )
+        opening = self._opening = asyncio.Event()
+        try:
+            self._ws = await websockets.connect(
+                self._url,
+                additional_headers=self._headers,
+                close_timeout=WRITER_CLOSE_TIMEOUT_S,
+                ping_interval=CHANNEL_PING_INTERVAL,
+            )
+        finally:
+            opening.set()
         self._connected = True
         # A live loop keeps the socket open forever, so a writer dropped without close() must end it itself.
         weakref.finalize(self, _abort_transport, asyncio.get_running_loop(), self._ws.transport)
+        if self._aborted:
+            # abort() came while the socket opened: it ends the stream on this socket.
+            raise ConnectionError("channel writer aborted")
         return self._ws
 
     async def write(self, data: bytes) -> None:
@@ -173,12 +187,15 @@ class ChannelWriter:
     async def abort(self, reason: str) -> None:
         """End the stream as failed: a close frame with :data:`ABORT_CLOSE_CODE` and
         ``reason``. A writer that never opened its socket opens it first, so the
-        reader always learns of the failure. Does not wait for a write in flight."""
+        reader always learns of the failure. Does not wait for a write in flight,
+        only for the socket a first write is opening."""
         if self._aborted:
             return
         self._aborted = True
+        if self._opening is not None:
+            await self._opening.wait()
         ws = self._ws
-        if ws is None and self._abort_cause is None:
+        if ws is None:
             try:
                 ws = self._ws = await websockets.connect(
                     self._url,
@@ -216,11 +233,15 @@ class ChannelReader:
         async with self._lock:
             if self._ws is not None:
                 return self._ws
-            self._ws = await websockets.connect(
+            ws = self._ws = await websockets.connect(
                 self._url, additional_headers=self._headers, ping_interval=CHANNEL_PING_INTERVAL
             )
             self._connected = True
-            return self._ws
+        if self._closed_locally:
+            # close() came while the socket opened: close it now, so the writer learns the reader left.
+            self._connected = False
+            await ws.close()
+        return ws
 
     @property
     def opened(self) -> bool:

@@ -177,6 +177,29 @@ async def test_local_close_during_a_read_fails_the_read_with_stream_closed() -> 
         await asyncio.wait_for(cancelling, 5)
 
 
+async def _slow_handshake(connection: Any, request: Any) -> None:
+    await asyncio.sleep(0.2)
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_while_the_first_read_opens_the_socket_closes_it() -> None:
+    left = asyncio.Event()
+
+    async def handler(ws: Any) -> None:
+        await ws.wait_closed()  # a writer with nothing to send yet: it waits for the reader
+        left.set()
+
+    async with _serve(handler, process_request=_slow_handshake) as url:
+        stream = _input(url)
+        reading = asyncio.ensure_future(stream.read_all())
+        await asyncio.sleep(0.05)  # the read is opening the socket
+        await stream.cancel()
+        with pytest.raises(StreamClosedError, match="the stream was cancelled"):
+            await asyncio.wait_for(reading, 5)
+        # The socket that opened after the cancel is closed: the writer learns the reader left.
+        await asyncio.wait_for(left.wait(), 5)
+
+
 # ── the write end ───────────────────────────────────────────────────────────────
 
 
@@ -249,6 +272,35 @@ async def test_writer_abort_on_a_never_opened_writer_opens_it_first() -> None:
     sink = _Sink()
     async with _serve(sink) as url:
         await _writer(url).abort("source failed")
+        assert await sink.closed_with() == ABORT_CLOSE_CODE
+        assert await sink.reason() == "source failed"
+
+
+@pytest.mark.asyncio
+async def test_an_abort_while_the_first_write_opens_the_socket_ends_that_socket() -> None:
+    # The engine streams one writer socket per channel: a second one would leave the first open.
+    sink = _Sink()
+    async with _serve(sink, process_request=_slow_handshake) as url:
+        writer = _writer(url)
+        writing = asyncio.ensure_future(writer.write(b"data"))
+        await asyncio.sleep(0.05)  # the write is opening the socket
+        await writer.abort("source failed")
+        with pytest.raises(ConnectionError, match="channel writer aborted"):
+            await writing
+        assert await sink.closed_with() == ABORT_CLOSE_CODE
+        assert await sink.reason() == "source failed"
+        assert sink.connections == 1 and sink.frames == []
+
+
+@pytest.mark.asyncio
+async def test_an_abort_after_the_first_write_was_cancelled_while_opening_still_reaches_the_reader() -> None:
+    sink = _Sink()
+    async with _serve(sink, process_request=_slow_handshake) as url:
+        writer = _writer(url)
+        writing = asyncio.ensure_future(writer.write(b"data"))
+        await asyncio.sleep(0.05)
+        writing.cancel()  # its socket never opened: the abort opens one
+        await writer.abort("source failed")
         assert await sink.closed_with() == ABORT_CLOSE_CODE
         assert await sink.reason() == "source failed"
 
@@ -566,7 +618,7 @@ def test_streams_serialize_to_their_stream_info_for_filters_and_reports() -> Non
     from iii.reporter import encode_json
 
     body = InputStream.from_bytes(b"x")
-    out = OutputStream.to(open("/dev/null", "wb"))
+    out = OutputStream.to(io.BytesIO())
     value = {"body": body, "out": out}
     assert to_json_value(value) == {
         "body": {"stream": True, "direction": "read", "id": body.id},
@@ -631,6 +683,52 @@ async def test_cancelling_a_sync_iterable_while_its_next_runs_does_not_wait_for_
     with pytest.raises(StreamClosedError):
         await asyncio.wait_for(pending, 5)
     assert await asyncio.to_thread(closed.wait, 5), "the generator was closed once its next() returned"
+
+
+@pytest.mark.asyncio
+async def test_file_streams_close_their_files_off_the_event_loop(tmp_path: Any, monkeypatch: Any) -> None:
+    # A buffered writer flushes on close, and a close waits for a read or write in flight.
+    from iii import streams
+
+    closed_on: list[threading.Thread] = []
+
+    class Recorded(io.BytesIO):
+        def close(self) -> None:
+            closed_on.append(threading.current_thread())
+            super().close()
+
+    monkeypatch.setattr(streams, "_open_for_writing", lambda path: Recorded())
+    monkeypatch.setattr(streams, "_open_for_reading", lambda path: Recorded(b"x" * 8))
+    out = OutputStream.to_file(tmp_path / "out.bin")
+    await out.write(b"partial")
+    await out.abort("the source failed")
+    (tmp_path / "in.bin").write_bytes(b"")
+    source = InputStream.from_file(tmp_path / "in.bin", chunk_size=4)
+    chunks = source.__aiter__()
+    assert await chunks.__anext__() == b"xxxx"
+    await source.cancel()
+    assert len(closed_on) == 2 and threading.current_thread() not in closed_on
+
+
+def test_host_name_lookups_do_not_wait_for_blocked_stream_threads(monkeypatch: Any) -> None:
+    # Sync iterators blocked in next() on every stream thread must not stop a stream socket opening.
+    from iii import streams
+
+    busy = streams._Workers()
+    busy.MAX = 1
+    monkeypatch.setattr(streams, "_WORKERS", busy)
+    release = threading.Event()
+    busy.submit(lambda: release.wait(10))
+
+    async def lookup() -> Any:
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(streams._SdkExecutor())
+        return await asyncio.wait_for(loop.getaddrinfo("localhost", 80), 5)
+
+    try:
+        assert asyncio.run(lookup())
+    finally:
+        release.set()
 
 
 @pytest.mark.asyncio
@@ -755,6 +853,41 @@ async def test_a_stream_read_to_the_end_cannot_be_passed_on() -> None:
     plan = plan_outbound({"body": partial})
     assert plan.needs and partial._transferred
     plan.restore()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["local-call", "remote-call"])
+async def test_a_stream_passed_on_mid_read_is_not_read_here_any_more(via: str) -> None:
+    from iii import StreamInUseError
+    from iii.streams import hand_off, plan_outbound
+
+    body = InputStream.from_iter([b"a", b"b", b"c"])
+    chunks = body.__aiter__()
+    assert await chunks.__anext__() == b"a"
+    if via == "local-call":
+        payload, _ = hand_off({"body": body})
+    else:
+        plan_outbound({"body": body})
+    # The rest is the receiver's: the reader here takes no frame of it.
+    with pytest.raises(StreamInUseError, match="passed on to another call"):
+        await chunks.__anext__()
+    if via == "local-call":
+        assert await payload["body"].read_all() == b"bc"
+
+
+@pytest.mark.asyncio
+async def test_a_stream_split_with_tee_cannot_be_passed_on() -> None:
+    # Its copies read it: a call reading it too would take frames from them.
+    from iii import StreamInUseError
+    from iii.streams import check_local_streams, hand_back, plan_outbound
+
+    body = InputStream.from_iter([b"a", b"b"])
+    first, second = body.tee()
+    for check in (plan_outbound, check_local_streams, hand_back):
+        with pytest.raises(StreamInUseError, match="split with tee"):
+            check({"body": body})
+    assert not body._transferred
+    assert await asyncio.gather(first.read_all(), second.read_all()) == [b"ab", b"ab"]
 
 
 @pytest.mark.asyncio
