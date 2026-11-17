@@ -26,7 +26,7 @@ iii project init linkly --template linkly-agentic
 cd linkly
 ```
 
-The `harness` worker runs a coding agent inside the [console](../../using-iii/console). It reaches
+The `harness` worker runs a coding agent inside the [console](../../using-iii/ade). It reaches
 models through `llm-router`, which reads your provider key from `.env`.
 
 Anthropic and OpenAI ship enabled: put a key for one in `.env` before you start Compose. For any

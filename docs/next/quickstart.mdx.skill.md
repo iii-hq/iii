@@ -246,7 +246,7 @@ this project as the worked example.
 <Tip title="Inspect what's running">
   Open the iii console in ADE: run `iii call compose::add worker=ade` in a new terminal in the
   project folder, then open `http://127.0.0.1:3113`. It shows your workers, traces, and logs, and
-  lets you chat with agents. See the full [Console documentation](./using-iii/console) for details.
+  lets you chat with agents. See the full [ADE documentation](./using-iii/ade) for details.
 </Tip>
 
 {/* TODO: re-add the "Give your coding agent context" Tip with `npx skills add iii-hq/iii/skills` once the iii skills worker (owned by Sergio) ships. */}
