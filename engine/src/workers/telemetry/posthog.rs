@@ -158,9 +158,9 @@ fn posthog_batch_url(host: &str) -> String {
 }
 
 fn posthog_timestamp_millis(ms: i64) -> String {
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
-        .unwrap_or_else(chrono::Utc::now)
-        .to_rfc3339()
+    let timestamp =
+        jiff::Timestamp::from_millisecond(ms).unwrap_or_else(|_| jiff::Timestamp::now());
+    crate::timestamps::format_with_offset(timestamp)
 }
 
 /// Whether a property key belongs to PostHog or to this module rather than to
@@ -456,6 +456,24 @@ mod tests {
         event.event_type = "heartbeat".to_string();
         event.event_properties = serde_json::json!({ "uptime_secs": uptime_secs });
         unflagged(event)
+    }
+
+    #[test]
+    fn timestamp_posthog_preserves_explicit_offset_and_millisecond_precision() {
+        assert_eq!(posthog_timestamp_millis(0), "1970-01-01T00:00:00+00:00");
+        assert_eq!(
+            posthog_timestamp_millis(100),
+            "1970-01-01T00:00:00.100+00:00"
+        );
+        assert_eq!(
+            posthog_timestamp_millis(-100),
+            "1969-12-31T23:59:59.900+00:00"
+        );
+        for invalid in [i64::MIN, i64::MAX] {
+            let before = jiff::Timestamp::now();
+            let fallback: jiff::Timestamp = posthog_timestamp_millis(invalid).parse().unwrap();
+            assert!(fallback >= before && fallback <= jiff::Timestamp::now());
+        }
     }
 
     #[test]

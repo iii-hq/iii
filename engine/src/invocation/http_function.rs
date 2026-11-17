@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,10 +34,10 @@ pub struct HttpFunctionConfig {
     pub response_format: Option<Value>,
     #[serde(default)]
     pub metadata: Option<Value>,
-    #[serde(default)]
-    pub registered_at: Option<DateTime<Utc>>,
-    #[serde(default)]
-    pub updated_at: Option<DateTime<Utc>>,
+    #[serde(default, serialize_with = "crate::timestamps::optional::serialize")]
+    pub registered_at: Option<Timestamp>,
+    #[serde(default, serialize_with = "crate::timestamps::optional::serialize")]
+    pub updated_at: Option<Timestamp>,
 }
 
 fn default_method() -> HttpMethod {
@@ -48,6 +48,18 @@ fn default_method() -> HttpMethod {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn timestamp_http_metadata_preserves_legacy_json_and_null_defaults() {
+        let config: HttpFunctionConfig = serde_json::from_value(json!({
+            "function_path": "/fn", "url": "http://localhost:3000",
+            "registered_at": "2026-01-02T04:04:05.1+01:00"
+        }))
+        .unwrap();
+        let json = serde_json::to_value(config).unwrap();
+        assert_eq!(json["registered_at"], "2026-01-02T03:04:05.100Z");
+        assert!(json["updated_at"].is_null());
+    }
 
     #[test]
     fn deserialize_minimal_config_has_defaults() {

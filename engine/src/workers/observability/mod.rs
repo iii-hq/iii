@@ -3406,7 +3406,7 @@ impl ObservabilityWorker {
                 .into_iter()
                 .map(|m| serde_json::to_value(m).unwrap_or(Value::Null))
                 .collect(),
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: jiff::Timestamp::now().as_millisecond(),
             aggregated_metrics,
             query,
         })
@@ -3452,7 +3452,7 @@ impl ObservabilityWorker {
                         offset: input.offset,
                         limit: input.limit,
                     }),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    timestamp: jiff::Timestamp::now().as_millisecond(),
                 })
             }
             None => {
@@ -3468,7 +3468,7 @@ impl ObservabilityWorker {
                     logs: Vec::new(),
                     total: 0,
                     query: None,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    timestamp: jiff::Timestamp::now().as_millisecond(),
                 })
             }
         }
@@ -3555,7 +3555,7 @@ impl ObservabilityWorker {
             logs: SamplingLogsView {
                 sampling_ratio: logs_sampling_ratio,
             },
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: jiff::Timestamp::now().as_millisecond(),
         })
     }
 
@@ -3646,7 +3646,7 @@ impl ObservabilityWorker {
                 logs: logs_component,
                 spans: spans_component,
             },
-            timestamp: chrono::Utc::now().timestamp_millis(),
+            timestamp: jiff::Timestamp::now().as_millisecond(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         })
     }
@@ -3675,7 +3675,7 @@ impl ObservabilityWorker {
                 rules: Some(manager.get_rules()),
                 firing_count: firing.len(),
                 message: None,
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: jiff::Timestamp::now().as_millisecond(),
             })
         } else {
             FunctionResult::Success(AlertsListResult {
@@ -3683,7 +3683,7 @@ impl ObservabilityWorker {
                 rules: None,
                 firing_count: 0,
                 message: Some("Alert manager not initialized".to_string()),
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: jiff::Timestamp::now().as_millisecond(),
             })
         }
     }
@@ -3708,14 +3708,14 @@ impl ObservabilityWorker {
                         .collect(),
                 ),
                 message: None,
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: jiff::Timestamp::now().as_millisecond(),
             })
         } else {
             FunctionResult::Success(AlertsEvaluateResult {
                 evaluated: false,
                 triggered_alerts: None,
                 message: Some("Alert manager not initialized".to_string()),
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: jiff::Timestamp::now().as_millisecond(),
             })
         }
     }
@@ -3799,7 +3799,7 @@ impl ObservabilityWorker {
                     metric_name: input.metric_name,
                 }),
                 message: None,
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: jiff::Timestamp::now().as_millisecond(),
             })
         } else {
             // Rollup storage not initialized, fall back to on-the-fly aggregation
@@ -3830,7 +3830,7 @@ impl ObservabilityWorker {
                         metric_name: input.metric_name,
                     }),
                     message: None,
-                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    timestamp: jiff::Timestamp::now().as_millisecond(),
                 })
             } else {
                 FunctionResult::Success(RollupsListResult {
@@ -3840,7 +3840,7 @@ impl ObservabilityWorker {
                     source: None,
                     query: None,
                     message: Some("Metric storage not initialized".to_string()),
-                    timestamp: chrono::Utc::now().timestamp_millis(),
+                    timestamp: jiff::Timestamp::now().as_millisecond(),
                 })
             }
         }

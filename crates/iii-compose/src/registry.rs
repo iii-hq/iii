@@ -1310,12 +1310,29 @@ fn extract_and_publish(
     archive_sha256: &str,
     cancel: &crate::shutdown::BlockingCancellation,
 ) -> Result<()> {
+    cancel.check(install_dir)?;
+    // Validate the whole ZIP before even creating a staging directory: checking
+    // only each opened entry could write earlier entries before a later mismatch.
+    let mut zip_archive = if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        Some(
+            zip::ZipArchive::new(std::io::Cursor::new(&bytes))
+                .and_then(|mut archive| {
+                    archive.validate_header_consistency()?;
+                    Ok(archive)
+                })
+                .map_err(|source| ComposeError::Io {
+                    path: install_dir.to_path_buf(),
+                    source: source.into(),
+                })?,
+        )
+    } else {
+        None
+    };
     unpack_and_publish(
         |staging| {
-            if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+            if let Some(archive) = &mut zip_archive {
                 use zip::HasZipMetadata;
 
-                let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes))?;
                 for index in 0..archive.len() {
                     cancel.check(staging).map_err(std::io::Error::other)?;
                     let mut entry = archive.by_index(index)?;
@@ -1362,7 +1379,7 @@ fn extract_and_publish(
                 Ok(())
             } else {
                 tar::Archive::new(ArchiveReader {
-                    inner: flate2::read::GzDecoder::new(std::io::Cursor::new(bytes)),
+                    inner: flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes)),
                     cancel,
                     path: staging,
                 })
@@ -1711,6 +1728,103 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(artifact_requests(&server).await, 1);
+    }
+
+    #[test]
+    fn zip_valid_archive_preserves_contents_and_integrity_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        let cancel = crate::shutdown::BlockingCancellation::default();
+        let name = format!("package/worker{}", std::env::consts::EXE_SUFFIX);
+        extract_and_publish(
+            zip_archive(&name, b"worker contents"),
+            &install,
+            "digest",
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(install.join(name)).unwrap(),
+            b"worker contents"
+        );
+        assert!(cache_matches(&install, "digest", &cancel).unwrap());
+        assert!(!cache_matches(&install, "different digest", &cancel).unwrap());
+    }
+
+    #[test]
+    fn zip_header_mismatch_is_rejected_before_any_staging_writes() {
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for name in ["first.txt", "safe.txt"] {
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"contents").unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        let local = bytes
+            .windows(4)
+            .enumerate()
+            .filter(|(_, b)| *b == b"PK\x03\x04")
+            .nth(1)
+            .unwrap()
+            .0;
+        // An absent parent proves validation happened before staging creation,
+        // not just that a partially extracted staging directory was removed.
+        for offset in [30, 6, 8, 10, 14, 18, 22] {
+            let root = tempfile::tempdir().unwrap();
+            let install = root.path().join("absent/worker");
+            let mut malicious = bytes.clone();
+            if offset == 30 {
+                malicious[local + 30..local + 38].copy_from_slice(b"evil.txt");
+            } else {
+                malicious[local + offset] ^= 1;
+            }
+            let error = extract_and_publish(
+                malicious,
+                &install,
+                "digest",
+                &crate::shutdown::BlockingCancellation::default(),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("header inconsistency"),
+                "offset {offset}: {error}"
+            );
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn zip_corrupted_payload_is_not_published() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("install");
+        use std::io::Write;
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .start_file(
+                "worker",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(b"worker contents").unwrap();
+        let mut bytes = writer.finish().unwrap().into_inner();
+        let start = {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+            archive.by_index(0).unwrap().data_start().unwrap() as usize
+        };
+        bytes[start] ^= 1;
+        assert!(
+            extract_and_publish(
+                bytes,
+                &install,
+                "digest",
+                &crate::shutdown::BlockingCancellation::default()
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]
