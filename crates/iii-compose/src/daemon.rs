@@ -784,14 +784,8 @@ impl Daemon {
                     crate::sandbox::prepare_metadata_with_adapter_ahead(&mut compose, &namespace)
                         .await?;
                 let path = compose.path.clone();
-                if let Some(migration) = crate::sandbox::migrate(
-                    &path,
-                    &mut edited,
-                    &mut compose,
-                    &namespace,
-                    &mut prepared,
-                )
-                .await?
+                if let Some(migration) =
+                    crate::sandbox::migrate(&path, &mut edited, &mut compose, &mut prepared).await?
                 {
                     rewritten.extend(migration.containers);
                     if let Some(crate::sandbox::AdapterChange::Upsert(adapter)) = migration.adapter
@@ -1240,7 +1234,6 @@ impl Daemon {
                     path,
                     &mut edited,
                     &mut current,
-                    &namespace,
                     &mut prepared,
                     &added_keys,
                 ),
@@ -1646,7 +1639,7 @@ impl Daemon {
         let migration = self
             .prepare(
                 &operation_id,
-                crate::sandbox::migrate(path, &mut edited, &mut current, &namespace, &mut prepared),
+                crate::sandbox::migrate(path, &mut edited, &mut current, &mut prepared),
             )
             .await??;
         let adapter = self

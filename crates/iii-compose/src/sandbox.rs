@@ -4,10 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! The explicit VM mode: which containers run in a VM (`scripts.run: iii sandbox run`) and need
-//! the sandbox adapter, the generated container that installs it, the rewrite of the containers
-//! 0.26 ran in a VM (spec 7.3), and what Compose still asks the adapter about a VM that
-//! `iii sandbox run` boots: whether it runs, its stop and its destroy. Compose boots no VM itself.
+//! Explicit VM declarations, adapter provisioning and migration from 0.26 (spec 7.3).
+//! Compose queries, stops and destroys VMs; `iii sandbox run`, not Compose, boots them.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -520,18 +518,9 @@ pub(crate) async fn migrate(
     path: &Path,
     edited: &mut String,
     file: &mut ComposeFile,
-    project_namespace: &str,
     prepared: &mut PreparedLock,
 ) -> Result<Option<Migration>> {
-    rewrite_due(
-        path,
-        edited,
-        file,
-        project_namespace,
-        prepared,
-        &BTreeSet::new(),
-    )
-    .await
+    rewrite_due(path, edited, file, prepared, &BTreeSet::new()).await
 }
 
 /// [`migrate`], logging no rewrite of the containers in `quiet`: `compose::add` writes the
@@ -540,13 +529,11 @@ pub(crate) async fn rewrite_due(
     path: &Path,
     edited: &mut String,
     file: &mut ComposeFile,
-    project_namespace: &str,
     prepared: &mut PreparedLock,
     quiet: &BTreeSet<String>,
 ) -> Result<Option<Migration>> {
     // What runs in a VM decides, whatever namespace `engine.sandbox` binds: a project with only
     // ephemeral sandboxes keeps its adapter (spec 7.2).
-    let _ = project_namespace;
     if vm_needs(file).is_empty() {
         return Ok(None);
     }
@@ -1063,12 +1050,9 @@ fn vm_id(state_key: &str) -> String {
     hex::encode(Sha256::digest(state_key))[..32].to_string()
 }
 
-/// How long a registered adapter may take to register `adapter::info` (spec 7.4);
-/// short under test, below STOP_RETRY.
+/// How long a registered adapter may take to register `adapter::info`; short under test.
 const INFO_RETRY: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
-/// How long a VM start waits for a dropped engine connection to come back: an
-/// engine restart's few seconds plus the SDK's 2 s reconnect delay, so a dead
-/// engine fails the start near 0.25's ~17 s, not at PREPARE_TIMEOUT; short under test.
+/// How long an adapter call waits for the engine to reconnect; short under test.
 const RECONNECT_GRACE: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 10 });
 /// `worker::destroy` removes a VM's whole state, rootfs included.
 const DESTROY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1120,17 +1104,9 @@ pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> bool {
     true
 }
 
-/// [`call`] for a step of `container`'s start (or its destroy), which an engine
-/// restart must not fail: 0.25 prepared without the bus. A call whose connection drops, or that
-/// begins after a drop before the engine is back, is sent again once it is,
-/// unless the managed engine exited, all within `timeout`; an engine not back
-/// within [`RECONNECT_GRACE`] fails the step with the `NotConnected`, so the
-/// restart policy decides. Only the first connection, as at daemon start, gets
-/// the whole `timeout`. The adapter registers its functions after its worker
-/// name, and again on its own reconnect, so `function_not_found` is asked again
-/// for [`INFO_RETRY`] after a drop, or from the first call with `registering`.
-/// Each step is idempotent; a re-sent `worker::start` that meets the boot of
-/// the dropped one gets S502, which [`worker_start`] stops.
+/// [`call`] for `destroy_vm`: retry idempotent adapter calls after an engine reconnect,
+/// unless the managed engine exited. Reconnects get [`RECONNECT_GRACE`], while the first
+/// connection gets `timeout`. Missing functions get [`INFO_RETRY`] while registering.
 #[allow(clippy::too_many_arguments)]
 async fn start_call<T: serde::de::DeserializeOwned>(
     engine: &EngineClient,
@@ -2970,7 +2946,7 @@ pub(crate) mod tests {
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(due_migrations(&file), ["link", "dev", "opt"]);
 
-        let migration = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let migration = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap()
             .unwrap();
@@ -2984,7 +2960,7 @@ pub(crate) mod tests {
         );
         assert_eq!(due_migrations(&file), Vec::<String>::new());
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3000,7 +2976,7 @@ pub(crate) mod tests {
         std::fs::write(&path, PROJECT_MIGRATED).unwrap();
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3049,7 +3025,7 @@ pub(crate) mod tests {
         );
         let (mut edited, mut file, mut lock) = prepared(&path).await;
 
-        let migration = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let migration = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap()
             .unwrap();
@@ -3069,7 +3045,7 @@ pub(crate) mod tests {
         std::fs::write(&path, refused).unwrap();
         write_lock(&path, &[("onboarding", "onboarding", "0.2.0", "bundle")]);
         let (mut edited, mut file, mut lock) = prepared(&path).await;
-        let error = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let error = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap_err();
         assert_eq!(error.code(), "SANDBOX_RUN_WITHOUT_BUILD");
@@ -3111,7 +3087,7 @@ pub(crate) mod tests {
         let migration = crate::registry::TEST_REGISTRY
             .scope(
                 server.uri(),
-                migrate(&path, &mut edited, &mut file, "default", &mut lock),
+                migrate(&path, &mut edited, &mut file, &mut lock),
             )
             .await
             .unwrap()
@@ -3140,7 +3116,7 @@ pub(crate) mod tests {
         manifest(dir.path(), "plain", "scripts: {start: run}\n");
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3159,7 +3135,7 @@ pub(crate) mod tests {
         write_lock(&path, &[("sb", "sandbox-libkrun", "0.3.1", "binary")]);
         let (mut edited, mut file, mut lock) = prepared(&path).await;
 
-        let error = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let error = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap_err();
 

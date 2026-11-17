@@ -1092,6 +1092,24 @@ mod tests {
     }
 
     #[test]
+    fn directory_entry_filter_is_not_the_compose_key_validator() {
+        // Disk enumeration needs a component filter; config additionally rejects blank/NUL keys.
+        for key in [" ", "a\0b"] {
+            assert!(is_directory_name(key));
+            let yaml = format!(
+                "containers:\n  {}: {{worker: path://./worker}}\n",
+                serde_json::to_string(key).unwrap()
+            );
+            let error = crate::config::ComposeFile::parse(&yaml, "/project/worker-compose.yaml")
+                .unwrap_err();
+            assert!(
+                matches!(error, ComposeError::InvalidContainerKey { .. }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn only_a_plain_container_key_names_a_directory() {
         for key in ["state", "sandbox-libkrun", "a.b", "my_worker"] {
             assert!(is_directory_name(key), "{key}");

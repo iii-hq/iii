@@ -523,11 +523,16 @@ pub fn build_failure_line(code: &str, message: &str) -> String {
     format!("{BUILD_FAILED_LINE}{code}: {message}")
 }
 
-/// The code and message of a [`build_failure_line`]; `None` for any other line.
+/// The code and message of a [`build_failure_line`]; `None` for other lines or a blank code.
+/// Trims leading frame whitespace, code whitespace and trailing message whitespace; an empty
+/// message is valid, and embedded `: ` separators remain part of it.
 pub fn parse_build_failure(line: &str) -> Option<(&str, &str)> {
-    line.trim_end()
+    let (code, message) = line
+        .trim_start()
         .strip_prefix(BUILD_FAILED_LINE)?
-        .split_once(": ")
+        .split_once(": ")?;
+    let code = code.trim();
+    (!code.is_empty()).then_some((code, message.trim_end()))
 }
 
 fn signal_name(number: i32) -> String {
@@ -3411,6 +3416,27 @@ mod tests {
             parse_build_failure("iii sandbox: built api (sha256:7d41)"),
             None
         );
+    }
+
+    #[test]
+    fn build_failure_parser_preserves_codes_empty_messages_and_message_separators() {
+        for (code, message) in [
+            ("S507", "setup: failed"),
+            (TIMED_OUT, ""),
+            (BUILD_MISSING, "missing image"),
+        ] {
+            let line = build_failure_line(code, message);
+            assert_eq!(parse_build_failure(&line), Some((code, message)));
+        }
+        let padded = format!("  {BUILD_FAILED_LINE} S507 : setup  \r\n");
+        assert_eq!(parse_build_failure(&padded), Some(("S507", "setup")));
+        for invalid in [
+            format!("{BUILD_FAILED_LINE}: no code"),
+            format!("{BUILD_FAILED_LINE}  : no code"),
+            format!("{BUILD_FAILED_LINE}S507"),
+        ] {
+            assert_eq!(parse_build_failure(&invalid), None, "{invalid:?}");
+        }
     }
 
     #[test]

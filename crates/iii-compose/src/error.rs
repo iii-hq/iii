@@ -222,19 +222,6 @@ pub enum ComposeError {
     #[error("container '{container}': iii sandbox run and iii sandbox build need Linux or macOS")]
     SandboxUnsupportedPlatform { container: String },
 
-    #[error(
-        "sandbox adapter {adapter} {version} does not build images (feature worker.build): install \
-         a release that has it, or leave legacy mode (III_ROOTFS_MODE=legacy, or a build without an \
-         embedded iii-init), which cannot boot a build"
-    )]
-    SandboxBuildUnsupported { adapter: String, version: String },
-
-    #[error(
-        "container '{container}': no build at {path}. Run: iii sandbox build {container}",
-        path = path.display()
-    )]
-    BuildMissing { container: String, path: PathBuf },
-
     /// The rebuild an add or update ran for a container's new package failed (spec 5.3): the
     /// file and the lock already name the new version, and the container runs its old build.
     /// `code` and `message` are the build's own; `retry` says how to finish.
@@ -789,8 +776,6 @@ impl ComposeError {
             Self::SandboxBuildWithoutRun { .. } => "SANDBOX_BUILD_WITHOUT_RUN",
             Self::SandboxRunWithoutBuild { .. } => "SANDBOX_RUN_WITHOUT_BUILD",
             Self::SandboxUnsupportedPlatform { .. } => "SANDBOX_UNSUPPORTED_PLATFORM",
-            Self::SandboxBuildUnsupported { .. } => "SANDBOX_BUILD_UNSUPPORTED",
-            Self::BuildMissing { .. } => "BUILD_MISSING",
             Self::BuildFailed { .. } | Self::PackageRebuildFailed { .. } => "BUILD_FAILED",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",

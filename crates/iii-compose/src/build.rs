@@ -90,7 +90,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         let path = file.path.clone();
         // Spec 7.2 and 7.3 first, so the adapter check sees the rewritten
         // containers and re-resolves, or removes, the adapter `migrate` added.
-        crate::sandbox::migrate(&path, &mut edited, &mut file, &namespace, &mut prepared).await?;
+        crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await?;
         crate::sandbox::apply_adapter_change(
             &path,
             &mut edited,

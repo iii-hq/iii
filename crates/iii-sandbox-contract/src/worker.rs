@@ -105,20 +105,10 @@ pub struct WorkerPrepareRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerPrepareResponse {}
 
-/// Builds the image of one container's VM; long-running. Every call builds anew: there is no
-/// input-based skip, so a rebuild picks up a moved `:latest` base. The build pulls its base image
-/// itself; no `worker::prepare` comes first. Since contract 1.3
-/// ([`FEATURE_BUILD`](crate::FEATURE_BUILD)).
-///
-/// The adapter writes `image.erofs` and then `image.id` (the `build_id`) into `output_dir`, each
-/// as a temporary file renamed into place. It builds in a build VM of its own, so a VM running
-/// for the same `state_key` keeps the image it booted. One build per `state_key` runs at a time;
-/// a second one gets `S509`. A setup or install step that exits non-zero, or an image that
-/// cannot be written, fails with `S507`.
-///
-/// The build lives as long as its caller reads `logs`. When the channel closes or a write to it
-/// fails, the adapter stops the build VM, deletes the temporary image, keeps the previous
-/// `image.erofs` and `image.id`, and releases the `state_key`, so a retry does not get `S509`.
+/// Builds a fresh VM image, pulling its base, without a preceding prepare (contract 1.3).
+/// Publishes `image.erofs` then `image.id` atomically in `output_dir`; running VMs keep their image.
+/// One build per `state_key`: concurrent builds get `S509`; setup/install or write failures get `S507`.
+/// Closing or failing `logs` cancels the build, preserves the previous image and releases the key.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerBuildRequest {
     /// The project token or the VM's scoped token.
@@ -306,28 +296,10 @@ pub struct WorkerStopRequest {
 pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
-    /// Delete the VM's data too, as every destroy did before contract 1.4.
-    ///
-    /// Without it, what the guest wrote stays; the VM's runtime state, its logs and its binding
-    /// to a build directory go, so that directory is free again. A later `worker::start` with
-    /// `build` of the same `state_key` boots on the kept data disk. The reply's
-    /// [`WorkerDestroyResponse::kept`] lists what stayed.
-    ///
-    /// In `sandbox-libkrun`, which advertises `worker.prune` only in its overlay mode, the VM's
-    /// directory `~/.iii/sandbox/workers/<vm_id>/` keeps the data disk (`upper.ext4`) and the
-    /// pre-build copies (`upper.ext4.pre-build[.<n>]`, `root.pre-build[.<n>]`), keeps or writes the
-    /// `build-mode` seal, and loses `state.json`, the state-key file, `console.log*`, `root/`,
-    /// scratch and the `build-dir` record; a VM with no data goes whole, seal included. Every
-    /// destroy without `prune` first moves the disk of a start without `build` (`root/upper.ext4`,
-    /// a 0.26 disk among them) or a legacy clone (`root/`) to the next free pre-build name, so it
-    /// never deletes what a guest wrote. A later `worker::start` with `build` boots on the kept
-    /// data disk; one without `build` begins with a new disk, and what the previous one held stays
-    /// under the pre-build names. Its legacy mode does not advertise `worker.prune` but keeps the
-    /// data the same way; a caller that wants it gone sends `prune: true`.
-    ///
-    /// Sent only when `true`, like [`WorkerLogsRequest::from_end`]. An older adapter ignores it
-    /// and deletes everything, so a caller that means to keep the data checks
-    /// [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) first. Since contract 1.4.
+    /// Delete retained data as well as runtime state. Without `prune`, guest data stays;
+    /// [`WorkerDestroyResponse::kept`] lists it and a later build-backed start can reuse it.
+    /// Omitted when false. Before contract 1.4, adapters delete all data regardless;
+    /// check [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) before relying on preservation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub prune: bool,
 }

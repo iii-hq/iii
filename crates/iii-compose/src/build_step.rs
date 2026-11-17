@@ -304,9 +304,26 @@ pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -
 /// now: a rebuild for a new package left undone, which a retried add or update finishes. Logs
 /// nothing.
 pub(crate) async fn package_changed(compose_file: &Path, key: &str, container: &Container) -> bool {
+    let Some(command) = container.scripts.build_command() else {
+        return false;
+    };
+    let vm = is_sandbox_build(command);
+    let dir = build_dir(compose_file, key);
+    let file = crate::spawn::canonical_compose_file(compose_file);
+    let key = key.to_string();
+    // Keep record/source errors informational, as in `due`, without hashing dependencies.
     matches!(
-        assess(compose_file, key, container, false).await,
-        Some(Reason::PackageChanged { .. })
+        tokio::task::spawn_blocking(move || -> Result<bool> {
+            let Some(record) = record::read(&dir)? else {
+                return Ok(false);
+            };
+            if record.image.is_some() != vm {
+                return Ok(false);
+            }
+            Ok(record.source != record::source(&file, &key)?)
+        })
+        .await,
+        Ok(Ok(true))
     )
 }
 
@@ -636,11 +653,8 @@ fn exit_number(status: ExitStatus) -> i32 {
 /// The last line `iii sandbox build` prints on failure (spec 8.1):
 /// `iii sandbox: build failed: <code>: <message>`.
 fn cli_failure(line: &str) -> Option<(String, String)> {
-    let (code, message) = line
-        .trim()
-        .strip_prefix("iii sandbox: build failed: ")?
-        .split_once(": ")?;
-    (!code.is_empty()).then(|| (code.to_string(), message.to_string()))
+    crate::sandbox_cli::parse_build_failure(line)
+        .map(|(code, message)| (code.to_string(), message.to_string()))
 }
 
 /// What a build's output leaves for its failure: its last [`TAIL_LINES`], and the last line of each
@@ -1049,6 +1063,169 @@ mod tests {
         record::write(&dir, &built).unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
         assert_eq!(project.due().await, None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn package_changed_uses_only_source_and_preserves_the_build_kind_gate() {
+        for (scripts, image) in [
+            ("scripts: {build: 'true', run: x}", None),
+            (
+                "scripts: {build: iii sandbox build, run: iii sandbox run}",
+                Some(image()),
+            ),
+        ] {
+            let project = project(scripts);
+            let container = &project.file.containers["api"];
+            let dir = build_dir(&project.file.path, "api");
+            assert!(!package_changed(&project.file.path, "api", container).await);
+            let mut built = recorded("build", image);
+            record::write(&dir, &built).unwrap();
+            assert_eq!(project.due().await, None);
+            assert!(!package_changed(&project.file.path, "api", container).await);
+
+            built.source = BuildSource::Path {
+                dir: "./old".into(),
+            };
+            record::write(&dir, &built).unwrap();
+            assert!(matches!(
+                project.due().await,
+                Some(Reason::PackageChanged { .. })
+            ));
+            assert!(package_changed(&project.file.path, "api", container).await);
+
+            // Metadata on a symlink loop fails even as root: any dependency hash check fails.
+            let worker = project.dir.path().join("api");
+            std::os::unix::fs::symlink("package.json", worker.join("package.json")).unwrap();
+            assert!(record::dependency_files(&worker).is_err());
+            assert!(package_changed(&project.file.path, "api", container).await);
+            built.source = BuildSource::Path {
+                dir: "./api".into(),
+            };
+            record::write(&dir, &built).unwrap();
+            assert!(!package_changed(&project.file.path, "api", container).await);
+
+            built.source = BuildSource::Path {
+                dir: "./old".into(),
+            };
+            built.image = if built.image.is_some() {
+                None
+            } else {
+                Some(self::image())
+            };
+            record::write(&dir, &built).unwrap();
+            assert!(!package_changed(&project.file.path, "api", container).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn package_changed_compares_installed_package_facts_without_resolving_a_lock() {
+        use crate::registry::{ProjectPackage, ProjectPackages};
+
+        let project = project("scripts: {build: 'true', run: x}");
+        std::fs::write(
+            &project.file.path,
+            "containers:\n  api: {worker: package://api, version: next, scripts: {build: 'true', run: x}}\n",
+        ).unwrap();
+        let file = ComposeFile::load(&project.file.path).unwrap();
+        let container = &file.containers["api"];
+        let dir = build_dir(&file.path, "api");
+        let mut built = recorded("true", None);
+        built.source = BuildSource::Package {
+            name: "api".into(),
+            version: "1.0.0".into(),
+            sha256: "sha256:old".into(),
+        };
+        record::write(&dir, &built).unwrap();
+        assert_eq!(
+            record::source(&file.path, "api").unwrap_err().code(),
+            "PACKAGE_NOT_INSTALLED"
+        );
+        assert!(!package_changed(&file.path, "api", container).await);
+
+        let workers = record::workers_root(project.dir.path());
+        std::fs::create_dir_all(&workers).unwrap();
+        let packages_path = workers.join(".packages.json");
+        for (name, version, sha256, changed) in [
+            ("api", "1.0.0", "sha256:old", false),
+            ("other", "1.0.0", "sha256:old", true),
+            ("api", "1.1.0", "sha256:old", true),
+            ("api", "1.0.0", "sha256:new", true),
+        ] {
+            let packages = ProjectPackages {
+                containers: BTreeMap::from([(
+                    "api".into(),
+                    ProjectPackage {
+                        name: name.into(),
+                        version: version.into(),
+                        sha256: sha256.into(),
+                    },
+                )]),
+                ..Default::default()
+            };
+            let bytes = serde_json::to_vec(&packages).unwrap();
+            std::fs::write(&packages_path, &bytes).unwrap();
+            assert_eq!(package_changed(&file.path, "api", container).await, changed);
+            assert_eq!(
+                matches!(
+                    due(&file.path, "api", container).await,
+                    Some(Reason::PackageChanged { .. })
+                ),
+                changed
+            );
+            assert_eq!(std::fs::read(&packages_path).unwrap(), bytes);
+        }
+        std::fs::write(&packages_path, r#"{"schema":99,"containers":{}}"#).unwrap();
+        assert_eq!(
+            record::source(&file.path, "api").unwrap_err().code(),
+            "IO_ERROR"
+        );
+        assert!(!package_changed(&file.path, "api", container).await);
+        assert!(!crate::lockfile::lock_path(&file.path).exists());
+    }
+
+    #[tokio::test]
+    async fn package_changed_keeps_invalid_records_and_sources_informational() {
+        let project = project("scripts: {build: 'true', run: x}");
+        let container = &project.file.containers["api"];
+        let dir = build_dir(&project.file.path, "api");
+        std::fs::create_dir_all(&dir).unwrap();
+        for invalid in ["{", r#"{"schema":99}"#, r#"{"schema":1,"source":false}"#] {
+            std::fs::write(dir.join("build.json"), invalid).unwrap();
+            assert!(!package_changed(&project.file.path, "api", container).await);
+        }
+        record::write(&dir, &recorded("true", None)).unwrap();
+        std::fs::write(&project.file.path, "containers: [").unwrap();
+        assert!(!package_changed(&project.file.path, "api", container).await);
+        let mut no_build = container.clone();
+        no_build.scripts.build = None;
+        assert!(!package_changed(&project.file.path, "api", &no_build).await);
+    }
+
+    #[test]
+    fn cli_failure_uses_the_source_parser_for_valid_and_malformed_frames() {
+        let prefix = crate::sandbox_cli::BUILD_FAILED_LINE;
+        for (frame, expected) in [
+            (
+                format!("{prefix}S507: setup: exited with 1"),
+                Some(("S507", "setup: exited with 1")),
+            ),
+            (
+                format!("  {prefix}TIMED_OUT: late  \r\n"),
+                Some(("TIMED_OUT", "late")),
+            ),
+            (format!("{prefix}S507: "), Some(("S507", ""))),
+            (format!("{prefix}: no code"), None),
+            (format!("{prefix}  : no code"), None),
+            (format!("{prefix}S507"), None),
+            ("unrelated output".into(), None),
+        ] {
+            assert_eq!(crate::sandbox_cli::parse_build_failure(&frame), expected);
+            assert_eq!(
+                cli_failure(&frame),
+                expected.map(|(code, message)| (code.into(), message.into()))
+            );
+        }
     }
 
     /// Spec 5.4: a host build whose source changed while it ran (here its compose file, which
