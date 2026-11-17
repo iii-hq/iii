@@ -24,7 +24,11 @@
     },
     {
       "source": "/next/understanding-iii/channels",
-      "destination": "/next/understanding-iii/streaming"
+      "destination": "/next/using-iii/streaming"
+    },
+    {
+      "source": "/next/understanding-iii/streaming",
+      "destination": "/next/using-iii/streaming"
     },
     {
       "source": "/next/creating-workers/channels",
@@ -163,6 +167,7 @@
                   "next/using-iii/workers",
                   "next/using-iii/functions",
                   "next/using-iii/observers",
+                  "next/using-iii/streaming",
                   "next/using-iii/workers-registry",
                   "next/using-iii/namespaces",
                   "next/using-iii/engine",
@@ -180,8 +185,7 @@
                   "next/understanding-iii/index",
                   "next/understanding-iii/engine",
                   "next/understanding-iii/compose",
-                  "next/understanding-iii/namespaces",
-                  "next/understanding-iii/streaming"
+                  "next/understanding-iii/namespaces"
                 ]
               },
               {

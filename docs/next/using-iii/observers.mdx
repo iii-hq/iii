@@ -1215,10 +1215,10 @@ observer, the function, the size, and the limit, at most once a minute per obser
 
 To keep observed calls small, capture only what the target reads, for example `capture: ["input"]`.
 For payloads larger than these limits, pass a
-[stream](../creating-workers/streaming) in place of the data: only its ref counts toward the size.
+[stream](../using-iii/streaming) in place of the data: only its ref counts toward the size.
 The observers then do not get the data: a stream has one reader, the function you observe, so an
 observer's target receives a `StreamInfo` in that field (see [Observe a call that carries a
-stream](../creating-workers/streaming#observe-a-call-that-carries-a-stream)). When the target needs
+stream](../using-iii/streaming#observe-a-call-that-carries-a-stream)). When the target needs
 the data, store it, for example in object storage, and pass its key in the call.
 
 <Note title="TOO_LARGE and OVERFLOW">

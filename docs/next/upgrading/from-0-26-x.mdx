@@ -138,8 +138,8 @@ Then work through the sections below:
 | an abort on read: Node stream `'error'`, Python `ConnectionError`, Rust `Err`, Go `websocket.CloseError`                                                   | `StreamAbortedError` (TypeScript, browser, Python), `Error::StreamAborted` (Rust), `*iii.InvocationError` (Go), code `STREAM_ABORTED`             |
 
 The SDK also detects streams in what it sends and turns refs back into streams in what it receives,
-in handler input and, new in 0.27, in call results. See [Streaming](../creating-workers/streaming)
-for the full API.
+in handler input and, new in 0.27, in call results. See
+[Using iii / Streaming](../using-iii/streaming) for the full API.
 
 ## Send a stream
 
@@ -1695,8 +1695,8 @@ for await (const line of csv.lines()) render(line);
 There is no `toReadable()` or `toWritable()` in the browser: `toWebStream()` returns the Web stream
 of an `InputStream` or an `OutputStream`. `abort(reason)` closes the stream's socket with code 4011,
 because a browser can only send 1000 or a code from 3000 to 4999. The engine treats it as an abort,
-so a reader on any 0.27 SDK gets `STREAM_ABORTED`, with the reason `channel writer aborted: closed
-with code 4011`.
+so a reader on any 0.27 SDK gets `STREAM_ABORTED`, with the reason
+`channel writer aborted: closed with code 4011`.
 
 ## Behavior changes
 
@@ -1722,8 +1722,8 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
 - **Observers receive `StreamInfo`.** When an observer captures the `input` or `output` of a call
   that carried a stream, its target receives `{ stream: true, direction, id }` in that field (Go
   `iii.StreamInfo`). A 0.26 TypeScript, Python, or browser target got a live reader there, and a
-  0.26 Go target got the ref; opening either raced the observed function for the bytes. See [Observe
-  a call that carries a stream](../creating-workers/streaming#observe-a-call-that-carries-a-stream).
+  0.26 Go target got the ref; opening either raced the observed function for the bytes. See
+  [Observe a call that carries a stream](../using-iii/streaming#observe-a-call-that-carries-a-stream).
 - **Rust streams bind lazily.** An `InputStream` or `OutputStream` decoded from JSON binds to the
   handler's worker inside a handler, and to the only client in the process elsewhere. A process with
   several clients calls `stream.bind(&worker)` before using a stream decoded outside a handler.
@@ -1765,8 +1765,9 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
 - [ ] Update observer targets that read a captured stream field to expect a `StreamInfo`
 
 <Note>
-  For the stream API, see [Streaming](../creating-workers/streaming). For the model, see [Streaming
-  architecture](../understanding-iii/streaming). For each SDK's API, see the SDK reference:
+  To call functions with streams, see [Using iii / Streaming](../using-iii/streaming). To write
+  functions that receive and return streams, see [Creating workers /
+  Streaming](../creating-workers/streaming). For each SDK's API, see the SDK reference:
   [Node](../reference/sdk-node), [Python](../reference/sdk-python), [Rust](../reference/sdk-rust),
   [Go](../reference/sdk-go), and [Browser](../reference/sdk-browser).
 </Note>

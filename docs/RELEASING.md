@@ -48,7 +48,8 @@ release:
 | 0.26    | `/using-iii/triggers`           | `/using-iii/observers`                  |
 | 0.26    | `/creating-workers/triggers`    | `/creating-workers/observable-functions` |
 | 0.26    | `/how-to/use-trigger-conditions` | `/reference/filters`                    |
-| 0.27    | `/understanding-iii/channels`   | `/understanding-iii/streaming`          |
+| 0.27    | `/understanding-iii/channels`   | `/using-iii/streaming`                  |
+| 0.27    | `/understanding-iii/streaming`  | `/using-iii/streaming`                  |
 | 0.27    | `/creating-workers/channels`    | `/creating-workers/streaming`           |
 
 `docs/changelog/index.mdx` is never rotated, so its links to those root paths (for example

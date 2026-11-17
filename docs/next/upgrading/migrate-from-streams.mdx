@@ -88,7 +88,7 @@ Deprecated with `pubsub` (the registry worker `pubsub`, formerly `iii-pubsub`):
 Not deprecated, keep using them:
 
 - Function registration, observer hooks, and `observe` in every SDK.
-- [Streams](../creating-workers/streaming) (`InputStream`, `OutputStream`, `iii.pipe()`) and
+- [Streams](../using-iii/streaming) (`InputStream`, `OutputStream`, `iii.pipe()`) and
   `StreamChannelRef`.
 - `StreamRequest` and `StreamResponse` used for request/response streaming.
 - `UpdateOp`, `MergePath`, `UpdateOpError`, and the Rust `StreamSetResult`, `StreamUpdateResult` and
@@ -308,7 +308,7 @@ latest state instead of replaying every change, and large records never travel t
 ## Recipe 3: Continuous content for one operation
 
 Use this for content produced by one running operation and read by one reader: progress output,
-tokens, frames, a file. A [stream](../understanding-iii/streaming) has an explicit lifetime and
+tokens, frames, a file. A [stream](../using-iii/streaming) has an explicit lifetime and
 backpressure, and nothing is stored.
 
 The producer returns the content as a stream, and the reader reads it from the result:
@@ -347,7 +347,7 @@ Rules for streams:
   the reader gets a `StreamAbortedError`, not a stream that looks complete. A producer that writes
   to an `OutputStream` it received gets the same rules: returning closes it, and throwing aborts it.
   When the reader leaves, the engine closes the writer. See
-  [Lifecycle](../understanding-iii/streaming#lifecycle).
+  [Control the lifecycle](../creating-workers/streaming#control-the-lifecycle).
 - Bound the content: cap size or duration. An awaited `write` resolves at the reader's pace, so
   never queue a backlog of your own for a slow reader.
 - Streams need a live call: a call sent with `CallAction.Enqueue` cannot carry one.
