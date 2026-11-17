@@ -256,8 +256,8 @@ values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to p
 - **Abort:** the reader gets `StreamAbortedError` (TypeScript, browser, Python),
   `Error::StreamAborted` (Rust), or an `*iii.InvocationError` (Go, `iii.CodeStreamAborted`), code
   `STREAM_ABORTED`, after the data already sent. The browser aborts with close code 4011. The
-  `reason` is the engine's text, not the writer's. A call whose sink was aborted fails with
-  `STREAM_ABORTED`.
+  `reason` is the engine's text, not the writer's. A call whose sink was aborted fails at once with
+  `STREAM_ABORTED`, and its other sinks are aborted.
 - **Queues:** `CallAction.Enqueue` (Go `iii.EnqueueAction(queue)`) with a stream in the payload is
   refused with `STREAM_NOT_ALLOWED`; `CallAction.Void` is allowed.
 - **HTTP:** a route's `request_body` is an `InputStream` and `response` an `OutputStream`:
@@ -270,7 +270,8 @@ values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to p
   and `ChannelItem` live in `iii-sdk/protocol` and `iii-browser-sdk/protocol`. Python
   (`iii.protocol`) and Rust (`iii_sdk::protocol`) name the functions `extract_channel_refs` and
   `is_channel_ref`, next to the same `StreamChannelRef`, `ChannelDirection`, and `ChannelItem`. Go
-  keeps `iii.StreamChannelRef` and `iii.ChannelDirection`.
+  keeps `iii.StreamChannelRef` and `iii.ChannelDirection`. In Rust, `InputStream::from_ref(ref, &iii)`
+  opens a read ref found in a `serde_json::Value`, such as a call result.
 
 ```typescript
 import { createReadStream } from "node:fs";

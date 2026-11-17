@@ -350,7 +350,9 @@ SDK pumps the data after it answers.
 
 The worker that returns the stream owns its pipe: keep it connected until the caller has read the
 stream. In Rust, a stream decoded from a result binds to the only client in the process. With
-several clients in one process, call `stream.bind(&worker)` before reading. In Go, a stream
+several clients in one process, call `stream.bind(&worker)` before reading. A Rust caller that keeps
+the result as a `serde_json::Value` finds its read refs with `iii_sdk::protocol::extract_channel_refs`
+and opens each with `InputStream::from_ref(channel, &worker)`, which also binds it. In Go, a stream
 unmarshalled from a handler's input or from a call's result binds to that client. One unmarshalled
 from other JSON binds to the only client in the process; with several, call `stream.Bind(worker)`
 before using it.
@@ -500,8 +502,8 @@ These values are sinks:
 A sink receives bytes only: messages the function sends on its `OutputStream` (`send`) are dropped.
 Pass an `iii.pipe()` end instead when the caller needs the messages too.
 
-If the stream into a sink aborts, the call fails with `STREAM_ABORTED`, even when the function
-returned. If the sink itself fails, such as a write to a full disk, the SDK stops copying and the
+If the stream into a sink aborts, the call fails with `STREAM_ABORTED` at once, even when the
+function returned, and the SDK aborts the call's other open sinks. If the sink itself fails, such as a write to a full disk, the SDK stops copying and the
 call fails with `STREAM_ABORTED` too, with the reason `the sink failed: ...` and the sink's error as
 its cause; the function's next write to the stream fails with `STREAM_CLOSED`. If the call fails,
 the SDK stops copying and closes the sink with the error. In every case, the sink may hold part of
@@ -517,7 +519,8 @@ A call whose result hands a stream to write back to the caller (an `OutputStream
 the result) resolves without waiting for its sinks, since they may depend on what the caller writes
 next. A call sent with `CallAction.Void` (Go `iii.VoidAction()`) does not wait for its sinks either.
 In both cases the call has resolved before its sinks finish, so a sink that fails or aborts later
-cannot fail it.
+cannot fail it. A sink that has already failed when the function returns still fails a call whose
+result holds a stream to write.
 
 ## Forward a stream
 
@@ -1058,7 +1061,8 @@ digest, _ = await asyncio.gather(sha256(for_hash), store.put(key, for_store))
 
 Read the two copies at the same time, as above. The copies share a small buffer (16 frames): when
 one falls that far behind the other, the faster one waits, so reading one copy to the end before
-starting the other never finishes.
+starting the other never finishes. To pass the data on in a call, pass one of the copies: the
+stream you split is refused with `STREAM_IN_USE`.
 
 ### Queue a call
 

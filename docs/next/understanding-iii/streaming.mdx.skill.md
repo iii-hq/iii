@@ -129,11 +129,13 @@ The SDKs apply the same rules, so the common path needs no cleanup code:
   read still running at that moment, or started later, fails with `STREAM_CLOSED`, so a partly read
   stream never looks complete. A stream the handler never read is left alone.
 - **A call resolves after the sinks passed to it have finished.** If the stream into a sink aborts,
-  or the sink itself fails, the call fails with `STREAM_ABORTED`, even when the function succeeded.
+  or the sink itself fails, the call fails with `STREAM_ABORTED` at once, even when the function
+  succeeded, and the SDK aborts the call's other open sinks.
   The call's timeout covers this wait: when it expires first, the SDK aborts the open sinks and the
   call fails with `TIMEOUT`. A call whose result hands a stream to write back to the caller does not
   wait for its sinks, since they may depend on what the caller writes next, and neither does a call
-  sent with `CallAction.Void`. Such a call cannot report a sink that fails after it resolved.
+  sent with `CallAction.Void`. Such a call cannot report a sink that fails after it resolved, but a
+  sink that has already failed when the function returns still fails it.
 - **Forwarding an unread `InputStream` sends its ref.** No bytes pass through the forwarding worker.
   Once it has been read from, forwarding pumps the rest.
 - **A stream has one reader.** Reading an `InputStream` a second time fails. In TypeScript (Node and

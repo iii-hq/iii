@@ -29,8 +29,8 @@ type: "reference"
   - Refs become streams in handler input and, new, in call results, so a function can return a
     stream. In Rust, `InputStream` and `OutputStream` implement `Serialize`, `Deserialize`, and
     `JsonSchema`: declare them as fields of your input and output types, with no ref lookup or engine
-    address. In Go, `*iii.InputStream` and `*iii.OutputStream` fields unmarshal to streams the same
-    way.
+    address. `InputStream::from_ref(channel, &iii)` opens a read ref found in a `serde_json::Value`.
+    In Go, `*iii.InputStream` and `*iii.OutputStream` fields unmarshal to streams the same way.
   - `InputStream` reads byte chunks, all of it (`bytes()`, `text()`, Python and Rust `read_all()`),
     lines, JSON messages (`messages()`), or both in order (`frames()`), and bridges to native streams
     (`toReadable()`, `toWebStream()`, Rust `AsyncRead`). `OutputStream` writes bytes (`write`),
@@ -44,9 +44,9 @@ type: "reference"
     handler never used closes only when the handler returns nothing, so a route that returns a
     buffered response keeps it. A received `InputStream` the handler started and did not finish is
     cancelled when it returns, and a read of a cancelled stream fails with `STREAM_CLOSED` instead
-    of ending. A call resolves after the sinks passed to it finish, within the call's
-    timeout, and fails with `STREAM_ABORTED` if one was aborted. Forwarding an unread `InputStream` sends its ref, so no
-    bytes pass through the forwarding worker.
+    of ending. A call resolves after the sinks passed to it finish, within the call's timeout. If
+    one is aborted, the call fails at once with `STREAM_ABORTED` and the SDK aborts the others.
+    Forwarding an unread `InputStream` sends its ref, so no bytes pass through the forwarding worker.
   - `abort(reason)` is one call in every SDK, and it opens the socket first when needed, so the
     reader always learns of the failure. The reader gets `StreamAbortedError` (TypeScript, browser,
     Python), `Error::StreamAborted` (Rust), or an `*iii.InvocationError` (Go), with the code
