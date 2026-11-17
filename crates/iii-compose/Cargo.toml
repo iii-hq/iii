@@ -10,7 +10,7 @@ name = "iii_compose"
 path = "src/lib.rs"
 
 [dependencies]
-chrono = "0.4"
+jiff = "0.2.43"
 clap = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
@@ -30,7 +30,7 @@ reqwest = { workspace = true }
 url = { workspace = true }
 flate2 = "1"
 tar = "0.4"
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 uuid = { workspace = true }
 schemars = "0.8"
 thiserror = { workspace = true }

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-You are working in the iii monorepo — a backend unification engine with three primitives: **Worker**, **Function**, **Observer**. The engine is Rust. SDKs exist for TypeScript (Node and browser), Python, Rust, and Go. All communicate over WebSocket.
+You are working in the iii monorepo — a backend unification engine built on one primitive, the **Function**, and two operators: **call** and **observe**. Workers host functions. The engine is Rust. SDKs exist for TypeScript (Node and browser), Python, Rust, and Go. All communicate over WebSocket.
 
 ## Commands
 

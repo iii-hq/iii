@@ -2,12 +2,31 @@
 
 Cross-cutting authoring and content rules for iii.
 
-## Order: workers, functions, observers
+## One primitive: the Function
 
-iii's three primitives are **workers, functions, and observers**: workers host work, functions do
-it, and observers make it reactive (`observe(a, b)`: when function `a` runs, function `b` runs).
-Whenever two or more of these primitives appear together in prose, lists, headings, examples, or
-diagrams, preserve their relative order:
+iii has one primitive, the **Function**, and two operators: you **call** a function, or you
+**observe** it (`observe(a, b)`: when function `a` runs, function `b` runs). Workers host functions.
+A worker is not a second primitive, and an observer (the binding that `observe` makes) is not a
+third.
+
+- Name the Function as the primitive. Describe workers as what hosts functions, and observers as
+  what `observe` makes.
+- Do not present workers, functions, and observers (or triggers) as "three primitives", "four
+  pieces", or a set of equal concepts. This applies to titles, headings, descriptions, and taglines.
+- When a page must name the parts together, use "Functions: call and observe" or "Workers host
+  Functions".
+
+Examples:
+
+- ✅ "one primitive, the Function: call it or observe it"
+- ✅ "Workers host Functions"
+- ❌ "three primitives: Worker, Function, Observer"
+- ❌ "Workers. Functions. Observers."
+
+### Order: workers, functions, observers
+
+Whenever two or more of workers, functions, and observers appear together in prose, lists,
+headings, examples, or diagrams, preserve their relative order:
 
 - workers before functions
 - workers before observers
@@ -23,12 +42,13 @@ Examples:
 
 Scope:
 
-- A single primitive on its own has no ordering question.
+- A single term on its own has no ordering question.
 - Applies in any presentation: running prose, bulleted lists, table column order, section headings,
   diagram element order, code examples that introduce more than one primitive.
 - Triggers are removed in 0.26: a trigger type is an observable function and a trigger is an
   observer. A page that names triggers to describe 0.25, or the move from them (an upgrading guide,
-  the changelog), is correct; do not flag it on ordering or naming grounds.
+  the changelog), is correct; do not flag it on ordering or naming grounds. The same applies to
+  archived versioned pages (`docs/<version>/`) that describe the model of their own release.
 
 ## No "steps"
 

@@ -19,6 +19,7 @@ pub mod observer;
 pub mod protocol;
 pub mod services;
 pub mod telemetry;
+pub mod timestamps;
 pub(crate) mod update_ops;
 pub mod worker_connections;
 
@@ -43,3 +44,19 @@ pub mod workers {
 pub use workers::config::EngineBuilder;
 
 // todo: create a prelude module for commonly used traits and types
+
+// Exercise the actual CLI state and Windows ZIP reader without linking the
+// product binary (these modules otherwise belong only to main.rs).
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "only the focused CLI modules are included in library tests"
+)]
+mod cli {
+    mod download;
+    mod error;
+    mod github;
+    mod platform;
+    mod registry;
+    mod state;
+}

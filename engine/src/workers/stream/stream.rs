@@ -20,10 +20,10 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use chrono::Utc;
 use colored::Colorize;
 use function_macros::{function, service};
 use iii_helpers::stream::{StreamDeleteResult, StreamSetResult, StreamUpdateResult};
+use jiff::Timestamp;
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use tokio::{net::TcpListener, task::AbortHandle};
@@ -905,7 +905,7 @@ impl StreamWorker {
                 let message = StreamWrapperMessage {
                     event_type: "stream".to_string(),
                     id: Some(item_id.clone()),
-                    timestamp: Utc::now().timestamp_millis(),
+                    timestamp: Timestamp::now().as_millisecond(),
                     stream_name: stream_name.clone(),
                     group_id: group_id.clone(),
                     event,
@@ -1055,7 +1055,7 @@ impl StreamWorker {
                     let message = StreamWrapperMessage {
                         event_type: "stream".to_string(),
                         id: Some(item_id.clone()),
-                        timestamp: Utc::now().timestamp_millis(),
+                        timestamp: Timestamp::now().as_millisecond(),
                         stream_name: stream_name.clone(),
                         group_id: group_id.clone(),
                         event: StreamOutboundMessage::Delete { data: old_value },
@@ -1234,7 +1234,7 @@ impl StreamWorker {
         self.warn_deprecated_call("stream::send", input.caller_worker_id.as_deref());
         let message = StreamWrapperMessage {
             event_type: "stream".to_string(),
-            timestamp: Utc::now().timestamp_millis(),
+            timestamp: Timestamp::now().as_millisecond(),
             stream_name: input.stream_name.clone(),
             group_id: input.group_id.clone(),
             id: input.id.clone(),
@@ -1336,7 +1336,7 @@ impl StreamWorker {
                 let message = StreamWrapperMessage {
                     event_type: "stream".to_string(),
                     id: Some(item_id.clone()),
-                    timestamp: Utc::now().timestamp_millis(),
+                    timestamp: Timestamp::now().as_millisecond(),
                     stream_name: stream_name.clone(),
                     group_id: group_id.clone(),
                     event,

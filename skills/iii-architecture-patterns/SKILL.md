@@ -122,13 +122,9 @@ Observe `state::on-changed` when the requirement says "after create/update, do t
 polling", or "push live updates".
 
 ```typescript
-iii.registerFunction("todos::on-change", async ({ input: event }) => {
-  await iii.call({
-    function_id: "stream::send",
-    payload: { stream_name: "todos-live", group_id: "default", data: event.new_value },
-    action: CallAction.Void(),
-  });
-});
+// Every function is observable: a browser worker (iii-browser-sdk) observes todos::on-change
+// to receive each change live.
+iii.registerFunction("todos::on-change", async ({ input: event }) => event.new_value);
 
 // each change in the "todos" state scope
 iii.observe(
@@ -243,8 +239,8 @@ retries it, then moves it to the topic's DLQ.
 
 ## Boundaries
 
-- For built-in source args, function registration syntax, calls, streams, and HTTP-invoked
-  functions, use `iii-core-primitives`.
+- For built-in source args, function registration syntax, calls, and streams, use
+  `iii-core-primitives`.
 - For observer options, filters, and writing event sources, use `iii-observe`.
 - For engine ports, adapters, engine-owned workers, and RBAC (`rbac-proxy`), use `iii-engine-config`;
   queue retry and FIFO policy live with the queue worker's docs.

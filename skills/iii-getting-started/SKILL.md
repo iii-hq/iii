@@ -9,9 +9,8 @@ description: >-
 # Getting Started with iii
 
 iii replaces your API framework, task queue, cron scheduler, pub/sub, state store, and observability
-pipeline with a single engine and three primitives: **Worker**, **Function**, **Observer**. Workers
-host functions, any worker runs a function with `call`, and `iii.observe(a, b)` means "when `a`
-runs, `b` runs".
+pipeline with a single engine and one primitive, the **Function**. Workers host functions, any
+worker runs a function with `call`, and `iii.observe(a, b)` means "when `a` runs, `b` runs".
 
 ## Step 1: Install the Engine
 
@@ -189,7 +188,8 @@ Get all iii skills for your AI coding agent:
 npx skills add iii-hq/iii/skills
 ```
 
-Skills teach your agent the top-level iii model: workers, functions, observers, registry access,
+Skills teach your agent the top-level iii model: functions (call and observe), the workers that
+host them, registry access,
 SDKs, engine configuration, architecture patterns, and error handling. Worker-backed capabilities
 live with the worker docs and registry entries.
 
@@ -223,21 +223,21 @@ After getting your first worker running:
 
 ## Key Resources
 
-- [Quickstart Guide](https://iii.dev/docs/quickstart)
-- [SDK Reference: Node.js](https://iii.dev/docs/reference/sdk-node)
-- [SDK Reference: Python](https://iii.dev/docs/reference/sdk-python)
-- [SDK Reference: Rust](https://iii.dev/docs/reference/sdk-rust)
-- [Compose](https://iii.dev/docs/using-iii/compose)
-- [Configuration](https://iii.dev/docs/using-iii/configuration)
-- [Console](https://iii.dev/docs/using-iii/console)
-- [Observers](https://iii.dev/docs/using-iii/observers)
-- [Upgrading from 0.25.x](https://iii.dev/docs/upgrading/from-0-25-x)
+- [Quickstart Guide](https://iii.dev/docs/quickstart.md)
+- [SDK Reference: Node.js](https://iii.dev/docs/reference/sdk-node.md)
+- [SDK Reference: Python](https://iii.dev/docs/reference/sdk-python.md)
+- [SDK Reference: Rust](https://iii.dev/docs/reference/sdk-rust.md)
+- [Compose](https://iii.dev/docs/using-iii/compose.md)
+- [Configuration](https://iii.dev/docs/using-iii/configuration.md)
+- [Console](https://iii.dev/docs/using-iii/console.md)
+- [Observers](https://iii.dev/docs/using-iii/observers.md)
+- [Upgrading from 0.25.x](https://iii.dev/docs/upgrading/from-0-25-x.md)
 - Every docs page is also available as Markdown by adding a `.md` suffix to its URL.
 
 ## Pattern Boundaries
 
 - For function registration and calls, worker creation, worker registry access, built-in source
-  functions, invocation modes, streams, and HTTP-invoked functions, prefer `iii-core-primitives`
+  functions, invocation modes, and streams, prefer `iii-core-primitives`
 - For observers, filters, engine events, event sources, and upgrading 0.25 code, prefer
   `iii-observe`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`

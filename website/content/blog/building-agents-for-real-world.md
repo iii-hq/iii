@@ -17,9 +17,11 @@ I've spent the last year reviewing this pattern across teams. The diagnosis ever
 
 The teams shipping reliable agents have moved validation, isolation, and observability out of "things the engineer remembers to do" and into properties of the runtime. The discipline is real, and it is reproducible because the architecture absorbs it. The teams forgetting are working in abstractions that make the bad shape easier to write than the right one.
 
-The unit shrank. Agent is too coarse to be the unit of execution in a production backend, the same way "page" was too coarse for production frontend before component-level state. The unit that survives concurrency, observability, and version drift is narrower. Three primitives close the vocabulary: Worker is a narrowly focused set of capabilities, Function is the unit of execution, Observer runs one function when another runs. The Engine sits between them as a protocol bus, unopinionated about language or runtime, holding the websocket connections, handling discovery, routing calls between workers.
+> _This post was updated to match iii’s current, optimized execution model._
 
-This is the architecture we're building at iii. The argument below is what the primitives buy you, with the production failure modes they remove.
+The unit shrank. Agent is too coarse to be the unit of execution in a production backend, the same way "page" was too coarse for production frontend before component-level state. The unit that survives concurrency, observability, and version drift is narrower. One primitive closes the vocabulary: the Function is the unit of execution, and observing a function runs another function when it runs. Workers host functions as narrowly focused sets of capabilities. The Engine sits between them as a protocol bus, unopinionated about language or runtime, holding the websocket connections, handling discovery, routing calls between workers.
+
+This is the architecture we're building at iii. The argument below is what the primitive buys you, with the production failure modes they remove.
 
 ## Workers are narrow on purpose
 
@@ -91,7 +93,7 @@ The four failure patterns at the top of this post are the agent-runtime equivale
 
 ## Closing
 
-The model is the easy part. The runtime around the model is where reliability lives, and the runtime is best expressed as an architecture rather than a checklist. Worker, Function, Observer is the smallest closed vocabulary I've found that absorbs the production discipline into the primitive. Workers as narrowly focused sets of capabilities, typed functions as the unit of execution, observers as the way one function's run starts another, state served by a memory worker like any other. The bugs that show up at month six stop being possible at the layer where teams currently make them.
+The model is the easy part. The runtime around the model is where reliability lives, and the runtime is best expressed as an architecture rather than a checklist. One primitive, the Function, called and observed, is the smallest closed vocabulary I've found that absorbs the production discipline into the primitive. Typed functions as the unit of execution, observers as the way one function's run starts another, workers as narrowly focused sets of capabilities that host them, state served by a memory worker like any other. The bugs that show up at month six stop being possible at the layer where teams currently make them.
 
 iii.dev. Engine, registry, and SDKs are open.
 

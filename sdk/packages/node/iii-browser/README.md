@@ -1,6 +1,6 @@
 # iii-browser-sdk
 
-Browser SDK for the [iii engine](https://github.com/iii-hq/iii) — WebSocket-based, no Node.js dependencies, no OpenTelemetry.
+Browser SDK for the [iii engine](https://iii.dev) — WebSocket-based, no Node.js dependencies, no OpenTelemetry.
 
 [![npm](https://img.shields.io/npm/v/iii-browser-sdk)](https://www.npmjs.com/package/iii-browser-sdk)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](../../../LICENSE)

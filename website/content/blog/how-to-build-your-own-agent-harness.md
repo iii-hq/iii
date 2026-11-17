@@ -142,7 +142,9 @@ When the harness is composed of workers on the same bus, thin vs thick is just a
 
 A thick harness is all thirteen workers plus `context-compaction` plus a custom policy worker plus a custom approval-gate plus a Slack-integrated approval surface plus the budget worker enforcing per-workspace caps. Useful for an agent running customer workflows where every tool call needs to be auditable and every model spend has to roll up to a finance dashboard.
 
-The architectural distance between thin and thick isn't a rewrite. It's a config change. Same primitives, same wire protocol, same trace shape, same observability story. The slider moves by adding and removing workers from your `config.yaml`. Everything else holds.
+> _This post was updated to match iii’s current, optimized execution model._
+
+The architectural distance between thin and thick isn't a rewrite. It's a config change. Same primitive, same wire protocol, same trace shape, same observability story. The slider moves by adding and removing workers from your `config.yaml`. Everything else holds.
 
 It applies inside a single worker too. The turn-orchestrator just shipped a refactor that collapsed its FSM from eleven states to seven, deleted the per-call `turn::approval_resume::<sid>/<cid>` mechanism in favour of one reactive observer of scope `approvals` that runs `turn::on_approval`, and inlined `tearing_down` into a `finishSession()` port. Every other worker in the stack (approval-gate, session, llm-budget, providers, models-catalog, auth-credentials, hook-fanout, context-compaction) stayed unchanged. The `approval::resolve` wire shape didn't move. The contracts held. That's the property the composition gives you: a major internal rewrite of one worker is a self-contained change because every neighbour talks to it through bus-level function ids.
 
