@@ -18,6 +18,7 @@ import {
   outputFromRef,
   pumpStream,
   releaseInput,
+  releaseUnsent,
   type StreamBinding,
   StreamScope,
   sinkFailureOf,
@@ -1096,7 +1097,8 @@ class Sdk implements ISdk {
    * or sink gets a new pipe (created in parallel): the reader ref goes in place
    * of a source and the writer ref in place of a sink, and `start()` runs the
    * pumps. Refs already in `value` go as they are. Rejects when a pipe cannot
-   * be created, before anything was sent.
+   * be created, before anything was sent: the sources it took and the ends it
+   * would forward are then released, and its sinks aborted.
    */
   private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
     type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
@@ -1109,7 +1111,32 @@ class Sdk implements ISdk {
     }
     const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
     const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
-    const pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    let pipes: Array<{ writer: StreamChannelRef; reader: StreamChannelRef }>
+    try {
+      pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    } catch (error) {
+      // Nothing was sent: what this call took ends as it does on the Node SDK, sent and released (its sources
+      // and the ends it would forward) or aborted (its sinks). Not a stream a call started meanwhile has sent:
+      // that call holds it now.
+      const reason = errorText(error)
+      for (const entry of slots.values()) {
+        const { stream } = entry
+        if (isTransferred(stream)) continue
+        if (entry.ref !== undefined) {
+          markTransferred(stream)
+          void releaseUnsent(stream, reason)
+        } else if (stream instanceof OutputStream) {
+          detach(stream)
+          void stream.abort(reason)
+        } else {
+          // An InputStream passed as one counts as sent; a native source's wrapper is private.
+          if (stream === slotOf.get(entry)) markTransferred(stream)
+          else detach(stream)
+          void releaseInput(stream)
+        }
+      }
+      throw error
+    }
     // Checked again after the wait, and claimed below with no other wait: a call that started meanwhile with
     // the same stream may have sent it, and the second call is refused rather than sending it too.
     for (const entry of slots.values()) if (isTransferred(entry.stream)) throw alreadySent()

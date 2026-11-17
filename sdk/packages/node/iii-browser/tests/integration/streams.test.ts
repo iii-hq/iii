@@ -1235,6 +1235,70 @@ describe('regressions from the PR review', () => {
     }
   })
 
+  it('a call whose pipe cannot be created releases what it took: its source is cancelled, its sink aborted', async () => {
+    const solo = worker('streams-no-pipe')
+    ;(solo as unknown as { createPipeRefs: () => Promise<never> }).createPipeRefs = () =>
+      Promise.reject(new Error('no pipe today'))
+    let cancelled = false
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true
+      },
+    })
+    const { sink, state } = collectorSink()
+    await expect(solo.call({ function_id: fid('nobody'), payload: { source, sink } })).rejects.toThrow('no pipe today')
+    await waitFor(() => cancelled, 'the source cancelled')
+    await waitFor(() => state() === 'aborted', 'the sink aborted')
+  })
+
+  it('a call whose pipe cannot be created releases the received ends it would forward too: their writer and reader learn of it', async () => {
+    const extras: boolean[] = []
+    const { host, caller } = await pair((host) => {
+      host.registerFunction(fid('forward-no-pipe'), async (input: { body?: InputStream; out?: OutputStream }) => {
+        // `body` or `out` would go on as its ref; the native source needs a pipe, which cannot be created.
+        const i = extras.push(false) - 1
+        const extra = new ReadableStream<Uint8Array>({
+          cancel() {
+            extras[i] = true
+          },
+        })
+        const error = await host
+          .call({ function_id: fid('nobody'), payload: { ...input, extra } })
+          .catch((e: unknown) => e)
+        return (error as Error).message
+      })
+    })
+    ;(host as unknown as { createPipeRefs: () => Promise<never> }).createPipeRefs = () =>
+      Promise.reject(new Error('no pipe today'))
+
+    // A forwarded InputStream is cancelled: the caller's source into it closes.
+    let closed = false
+    async function* endless() {
+      try {
+        for (;;) yield new Uint8Array(64 * 1024)
+      } finally {
+        closed = true
+      }
+    }
+    await expect(
+      within(caller.call({ function_id: fid('forward-no-pipe'), payload: { body: endless() } })),
+    ).resolves.toBe('no pipe today')
+    await waitFor(() => closed, 'the source of the forwarded body closed')
+    await waitFor(() => extras[0], 'the native source cancelled (body)')
+
+    // A forwarded OutputStream is aborted: the caller's call fails with it at once, not at its timeout.
+    const { sink, state } = collectorSink()
+    const started = performance.now()
+    const error = await within(
+      caller.call({ function_id: fid('forward-no-pipe'), payload: { out: sink }, timeoutMs: 3000 }),
+      8000,
+    ).catch((e: unknown) => e)
+    expect(error).toMatchObject({ code: 'STREAM_ABORTED' })
+    expect(performance.now() - started).toBeLessThan(2000)
+    await waitFor(() => state() === 'aborted', 'the sink aborted')
+    await waitFor(() => extras[1], 'the native source cancelled (out)')
+  })
+
   it('the parent of a tee() cannot be passed on: STREAM_IN_USE, and its copies still read it whole (routed and local)', async () => {
     const read = async ({ body }: { body: InputStream }) => body.text()
     const { caller } = await pair((host) => {

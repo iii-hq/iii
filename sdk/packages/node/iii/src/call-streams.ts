@@ -739,27 +739,7 @@ export class OutputStream {
     const st = outputState(this)
     if (st.transferred) return Promise.resolve()
     if (st.end) return st.end
-    const text = reason === undefined ? 'aborted' : errorText(reason)
-    st.ended = 'aborted'
-    const error = new StreamAbortedError(text)
-    // A write the sink holds (backpressure), and those queued behind it, fail now with STREAM_CLOSED.
-    const held = st.held.size > 0
-    st.failure ??= streamClosedError('the stream was aborted')
-    for (const cut of st.held) cut(streamClosedError('the stream was aborted while the write waited'))
-    st.held.clear()
-    // Not queued behind writes in flight: an abort cuts the stream now.
-    const aborted = sinkOf(st)
-      .abort(text)
-      .finally(() => st.settleDone(error))
-    if (held) {
-      // Nor does it wait for a sink that still holds a write: a WritableStream's own abort waits for it.
-      aborted.catch(noop)
-      st.settleDone(error)
-      st.end = Promise.resolve()
-    } else {
-      st.end = handled(aborted)
-    }
-    return st.end
+    return abortOutput(st, reason === undefined ? 'aborted' : errorText(reason))
   }
 
   /**
@@ -803,6 +783,29 @@ export class OutputStream {
   toJSON(): StreamInfo {
     return { stream: true, direction: 'write', id: streamId(outputState(this)) }
   }
+}
+
+function abortOutput(st: OutputState, text: string): Promise<void> {
+  st.ended = 'aborted'
+  const error = new StreamAbortedError(text)
+  // A write the sink holds (backpressure), and those queued behind it, fail now with STREAM_CLOSED.
+  const held = st.held.size > 0
+  st.failure ??= streamClosedError('the stream was aborted')
+  for (const cut of st.held) cut(streamClosedError('the stream was aborted while the write waited'))
+  st.held.clear()
+  // Not queued behind writes in flight: an abort cuts the stream now.
+  const aborted = sinkOf(st)
+    .abort(text)
+    .finally(() => st.settleDone(error))
+  if (held) {
+    // Nor does it wait for a sink that still holds a write: a WritableStream's own abort waits for it.
+    aborted.catch(noop)
+    st.settleDone(error)
+    st.end = Promise.resolve()
+  } else {
+    st.end = handled(aborted)
+  }
+  return st.end
 }
 
 function refusal(st: OutputState): Error | undefined {
@@ -1046,6 +1049,19 @@ export function inputStarted(s: InputStream): boolean {
 /** Cancels `s` without opening a socket that never opened. */
 export function releaseInput(s: InputStream, failure?: Error): Promise<void> {
   return handled(cancelInput(inputState(s), false, failure))
+}
+
+/**
+ * Ends `s`, an end a call took to send as its ref and never sent (its pipes
+ * could not be created): nothing else will. An InputStream is cancelled, and
+ * one that never opened attaches first, so its writer learns the reader left;
+ * an OutputStream is aborted with `reason`, opened first so its reader learns
+ * of it.
+ */
+export function releaseUnsent(s: InputStream | OutputStream, reason: string): Promise<void> {
+  if (s instanceof InputStream) return handled(cancelInput(inputState(s), true))
+  const st = outputState(s)
+  return st.end ?? abortOutput(st, reason)
 }
 
 /**

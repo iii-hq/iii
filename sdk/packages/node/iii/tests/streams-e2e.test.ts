@@ -1030,6 +1030,51 @@ describe('ownership and release on the call path (regressions from the review)',
     await waitFor(() => sink.destroyed, 'the sink aborted')
   })
 
+  it('a call whose pipe cannot be created releases the received ends it would forward too: their writer and reader learn of it', async () => {
+    const extras: Readable[] = []
+    const { host, caller } = await pair((host) => {
+      host.registerFunction(fid('forward-no-pipe'), async (input: { body?: InputStream; out?: OutputStream }) => {
+        // `body` or `out` would go on as its ref; the native source needs a pipe, which cannot be created.
+        const extra = Readable.from(['never sent'])
+        extras.push(extra)
+        const error = await host
+          .call({ function_id: fid('nobody'), payload: { ...input, extra } })
+          .catch((e: unknown) => e)
+        return (error as Error).message
+      })
+    })
+    ;(host as unknown as { createPipeRefs: () => Promise<never> }).createPipeRefs = () =>
+      Promise.reject(new Error('no pipe today'))
+
+    // A forwarded InputStream is cancelled: the caller's source into it closes.
+    let closed = false
+    async function* endless() {
+      try {
+        for (;;) yield Buffer.alloc(64 * 1024, 1)
+      } finally {
+        closed = true
+      }
+    }
+    await expect(
+      within(caller.call({ function_id: fid('forward-no-pipe'), payload: { body: endless() } })),
+    ).resolves.toBe('no pipe today')
+    await waitFor(() => closed, 'the source of the forwarded body closed')
+    await waitFor(() => extras[0]?.destroyed, 'the native source closed (body)')
+
+    // A forwarded OutputStream is aborted: the caller's call fails with it at once, not at its timeout.
+    const { sink, finished } = collectorSink()
+    const started = performance.now()
+    const error = await within(
+      caller.call({ function_id: fid('forward-no-pipe'), payload: { out: sink }, timeoutMs: 3000 }),
+      8000,
+    ).catch((e: unknown) => e)
+    expect(error).toMatchObject({ code: 'STREAM_ABORTED' })
+    expect(performance.now() - started).toBeLessThan(2000)
+    await waitFor(() => sink.destroyed, 'the sink aborted')
+    expect(finished()).toBe(false)
+    await waitFor(() => extras[1]?.destroyed, 'the native source closed (out)')
+  })
+
   it('a fire-and-forget call that cannot go out releases its source', async () => {
     const solo = worker('streams-void-unsent')
     const source = Readable.from(['never sent'])

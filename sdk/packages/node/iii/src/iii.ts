@@ -22,6 +22,7 @@ import {
   outputFromRef,
   pumpStream,
   releaseInput,
+  releaseUnsent,
   type StreamBinding,
   StreamScope,
   sinkFailureOf,
@@ -1219,7 +1220,8 @@ class Sdk implements IIIClient {
    * the reader ref goes in place of a source and the writer ref in place of a
    * sink, and `start()` runs the pumps. Refs already in `value` go as they are.
    * Rejects when a pipe cannot be created, before anything was sent: the
-   * sources it took are then released and its sinks aborted.
+   * sources it took and the ends it would forward are then released, and its
+   * sinks aborted.
    */
   private async prepareOutbound(value: unknown): Promise<OutboundStreams> {
     type Slot = { stream: InputStream | OutputStream; ref?: StreamChannelRef; end?: InputStream | OutputStream }
@@ -1245,11 +1247,13 @@ class Sdk implements IIIClient {
     try {
       pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
     } catch (error) {
-      // Nothing was sent, and nothing else holds what this call took: its sources are released, its sinks aborted.
+      // Nothing was sent, and nothing else holds what this call took: its sources are released, its sinks
+      // aborted, and so are the ends it would have forwarded (marked sent above, nobody else ends them).
       for (const { stream } of piped) {
         if (stream instanceof OutputStream) void stream.abort(errorText(error))
         else void releaseInput(stream)
       }
+      for (const { stream } of forwarded) void releaseUnsent(stream, errorText(error))
       throw error
     }
     const binding = this.streamBinding()

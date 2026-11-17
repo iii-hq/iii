@@ -998,6 +998,19 @@ export function releaseInput(s: InputStream, failure?: Error): Promise<void> {
 }
 
 /**
+ * Ends `s`, an end a call took to send as its ref and never sent (its pipes
+ * could not be created): nothing else will. An InputStream is cancelled, and
+ * one that never opened attaches first, so its writer learns the reader left;
+ * an OutputStream is aborted with `reason`, opened first so its reader learns
+ * of it.
+ */
+export function releaseUnsent(s: InputStream | OutputStream, reason: string): Promise<void> {
+  if (s instanceof InputStream) return handled(cancelInput(inputState(s), true))
+  const st = outputState(s)
+  return st.end ?? abortOutput(st, reason)
+}
+
+/**
  * Fails `s` for its reader, as an aborted writer does across a pipe: every
  * later read, and a read in progress, throws a {@link StreamAbortedError}
  * with `reason`. Releases its source.
