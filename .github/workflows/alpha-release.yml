@@ -281,7 +281,9 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # Engine pipeline (isolated): binaries -> GitHub prerelease on the
-  # iii-alpha/v* tag, builtin workers -> dedicated `alpha` registry tag.
+  # iii-alpha/v* tag, then the engine (`iii`) and the builtin workers ->
+  # dedicated `alpha` registry tag (curl -fsSL
+  # https://iii.dev/registry/install/iii/alpha.sh | sh installs it).
   # Nothing here touches the official iii/v* releases or the rc/latest
   # worker channels. Docker and homebrew are intentionally out.
   # ──────────────────────────────────────────────────────────────
@@ -377,7 +379,8 @@ jobs:
           - { worker: iii-observability, worker_dir: engine/src/workers/observability }
           - { worker: configuration, worker_dir: engine/src/workers/configuration }
           - { worker: iii-sandbox, worker_dir: engine/src/workers/sandbox }
-          - { worker: iii-engine-functions, worker_dir: engine/src/workers/engine_fn }
+          # Not iii-engine-functions: its registry name `iii` is the engine
+          # executable, published by publish-engine-registry.
     uses: ./.github/workflows/_publish-engine-workers.yml
     with:
       worker: ${{ matrix.worker }}
@@ -391,9 +394,23 @@ jobs:
     secrets:
       WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
 
+  publish-engine-registry:
+    name: Publish iii to the registry (alpha)
+    needs: [prepare, create-alpha-release, engine-release]
+    if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
+    uses: ./.github/workflows/_publish-engine-registry.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+      # The version-bumped commit: its engine/registry is what ships.
+      ref: ${{ needs.prepare.outputs.tag }}
+      registry_tag: alpha
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+
   publish-worker-skills:
     name: Publish worker skills (alpha)
-    needs: [prepare, publish-builtin-workers]
+    # `iii`'s skills go to the version publish-engine-registry published.
+    needs: [prepare, publish-builtin-workers, publish-engine-registry]
     if: ${{ !failure() && !cancelled() && needs.prepare.outputs.dry_run != 'true' }}
     uses: ./.github/workflows/_publish-worker-skills.yml
     with:

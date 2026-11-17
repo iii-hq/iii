@@ -7,6 +7,9 @@ on:
       - 'engine/install.sh'
       - 'engine/tests/install_sh_unit.bats'
       - 'engine/tests/install_sh_integration.sh'
+      - 'engine/registry/**'
+      - 'engine/tests/registry_install_sh.bats'
+      - 'engine/tests/fixtures/registry-preamble.sh'
       - '.github/workflows/install-sh.yml'
   pull_request:
     branches: [main]
@@ -14,6 +17,9 @@ on:
       - 'engine/install.sh'
       - 'engine/tests/install_sh_unit.bats'
       - 'engine/tests/install_sh_integration.sh'
+      - 'engine/registry/**'
+      - 'engine/tests/registry_install_sh.bats'
+      - 'engine/tests/fixtures/registry-preamble.sh'
       - '.github/workflows/install-sh.yml'
   workflow_dispatch:
 
@@ -34,6 +40,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run shellcheck on install.sh
         run: shellcheck -s sh engine/install.sh
+      # As the registry serves it: its preamble, a blank line, the body.
+      - name: Run shellcheck on the registry installer
+        run: |
+          { cat engine/tests/fixtures/registry-preamble.sh; printf '\n'; cat engine/registry/install.sh; } \
+            > "$RUNNER_TEMP/registry-install.sh"
+          shellcheck -s sh "$RUNNER_TEMP/registry-install.sh"
 
   unit-tests:
     name: Unit tests (bats)
@@ -46,6 +58,8 @@ jobs:
         env:
           RUN_NETWORK_TESTS: "1"
         run: bats engine/tests/install_sh_unit.bats
+      - name: Run bats tests of the registry installer
+        run: bats engine/tests/registry_install_sh.bats
 
   integration:
     name: Integration (${{ matrix.name }})
@@ -81,10 +95,13 @@ jobs:
       image: alpine:3.20
     steps:
       - name: Install dependencies
-        run: apk add --no-cache bash curl jq tar git
+        run: apk add --no-cache bash bats curl jq tar git
       - uses: actions/checkout@v4
       - name: Run integration tests in alpine
         env:
           CI: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: sh engine/tests/install_sh_integration.sh
+      # busybox sh, tr, sha256sum and tar.
+      - name: Run bats tests of the registry installer in alpine
+        run: bats engine/tests/registry_install_sh.bats

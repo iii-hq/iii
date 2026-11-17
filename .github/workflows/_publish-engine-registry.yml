@@ -1,0 +1,209 @@
+name: Publish iii to the registry
+
+# Publishes one iii version on the iii registry as the executable `iii`: the
+# archives of its GitHub release (iii-<target>.tar.gz / .zip, each checked
+# against the release's .sha256) with engine/registry/install.sh as its
+# installer, under a registry tag (latest for a stable release, else rc, next,
+# alpha...). Then installs that version back from the registry. Once
+# published, a version installs with
+#
+#   curl -fsSL https://iii.dev/registry/install/iii/<tag or version>.sh | sh
+#
+# A re-run is safe: the registry CLI finds the version already published with
+# the same archives and installer, and says so. A published version never
+# changes, so a broken installer is fixed by releasing a new version.
+#
+# The registry serves an installer only for a verified organization, so
+# WORKERS_REGISTRY_API_KEY must be a key of the verified organization that
+# owns `iii` on the registry.
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: 'GitHub release holding the binaries: iii/v0.27.0, iii/v0.27.0-rc.1, iii-alpha/v0.27.0-alpha.1'
+        required: true
+        type: string
+      registry_tag:
+        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha...'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref whose engine/registry (installer, manifest, README) is published. Default: the triggering ref.'
+        required: false
+        type: string
+        default: ''
+      api_url:
+        description: 'Registry API base URL'
+        required: false
+        type: string
+        default: 'https://api.workers.iii.dev'
+      registry_cli_version:
+        description: 'registry-cli version or tag to publish with'
+        required: false
+        type: string
+        default: 'latest'
+    secrets:
+      WORKERS_REGISTRY_API_KEY:
+        description: 'API key of the verified organization that owns iii on the registry'
+        required: false
+  # By hand, for a release whose publish failed or that predates this workflow.
+  # Pick `ref: main` for a release whose tree has no engine/registry.
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'GitHub release holding the binaries: iii/v0.27.0, iii/v0.27.0-rc.1, iii-alpha/v0.27.0-alpha.1'
+        required: true
+        type: string
+      registry_tag:
+        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha...'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref whose engine/registry (installer, manifest, README) is published. Default: the release tag.'
+        required: false
+        type: string
+        default: ''
+      api_url:
+        description: 'Registry API base URL'
+        required: false
+        type: string
+        default: 'https://api.workers.iii.dev'
+      registry_cli_version:
+        description: 'registry-cli version or tag to publish with'
+        required: false
+        type: string
+        default: 'latest'
+
+jobs:
+  publish:
+    name: iii ${{ inputs.release_tag }} → registry (${{ inputs.registry_tag }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: publish-engine-registry-${{ inputs.release_tag }}
+      cancel-in-progress: false
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      REGISTRY_TAG: ${{ inputs.registry_tag }}
+      API_URL: ${{ inputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || (github.event_name == 'workflow_dispatch' && inputs.release_tag || '') }}
+
+      - name: Read the version
+        id: meta
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG##*/v}"
+          if [[ "$version" == "$RELEASE_TAG" || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::cannot read a version from the release tag '$RELEASE_TAG' (expected iii/v<x.y.z> or iii-alpha/v<x.y.z-alpha.n>)"
+            exit 1
+          fi
+          if [[ "$version" == *-dry-run.* ]]; then
+            echo "::error::$version is a dry run: nothing is published"
+            exit 1
+          fi
+          # `latest` is the stable lane: semver ranges resolve it.
+          if [[ "$REGISTRY_TAG" == latest && "$version" == *-* ]]; then
+            echo "::error::$version is a prerelease: publish it under rc, next or alpha, not latest"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::publishing iii $version from $RELEASE_TAG under the registry tag $REGISTRY_TAG"
+
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          mkdir -p "$release" dist
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir "$release" \
+            --pattern 'iii-*.tar.gz' --pattern 'iii-*.zip' --pattern 'iii-*.sha256'
+          # The engine's archives only, iii-<target>.<ext>: releases up to 0.25
+          # also carry iii-worker-* and iii-init-*.
+          shopt -s nullglob
+          for archive in "$release"/iii-*.tar.gz "$release"/iii-*.zip; do
+            name=$(basename "$archive")
+            [[ "$name" =~ ^iii-(x86_64|aarch64|armv7|i686)-[a-z0-9_]+(-[a-z0-9_]+){1,2}\.(tar\.gz|zip)$ ]] || continue
+            stem="${name%.tar.gz}"
+            stem="${stem%.zip}"
+            if [[ ! -f "$release/$stem.sha256" ]]; then
+              echo "::error::$RELEASE_TAG has $name but no $stem.sha256"
+              exit 1
+            fi
+            expected=$(cut -d' ' -f1 "$release/$stem.sha256")
+            actual=$(sha256sum "$archive" | cut -d' ' -f1)
+            if [[ "$expected" != "$actual" ]]; then
+              echo "::error::$name does not match $stem.sha256 ($actual, expected $expected)"
+              exit 1
+            fi
+            cp "$archive" dist/
+          done
+          if [[ -z "$(ls -A dist)" ]]; then
+            echo "::error::$RELEASE_TAG has no iii-<target> archives"
+            exit 1
+          fi
+          ls -l dist
+
+      - name: Install the registry CLI
+        env:
+          CLI_VERSION: ${{ inputs.registry_cli_version }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://iii.dev/registry/install/registry-cli/${CLI_VERSION}.sh" | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/registry" --version
+          if ! "$HOME/.local/bin/registry" publish --help | grep -q -- '--install-script'; then
+            echo "::error::registry-cli $CLI_VERSION cannot publish an installer (--install-script): use a newer one"
+            exit 1
+          fi
+
+      - name: Publish
+        working-directory: engine/registry
+        env:
+          REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$REGISTRY_API_KEY" ]]; then
+            echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
+            exit 1
+          fi
+          registry publish \
+            --artifacts "$GITHUB_WORKSPACE/dist" \
+            --version "$VERSION" \
+            --tag "$REGISTRY_TAG" \
+            --install-script install.sh \
+            --registry "$API_URL"
+
+      # What `curl -fsSL https://iii.dev/registry/install/iii/<version>.sh | sh`
+      # runs, from the API the site forwards to.
+      - name: Install it back from the registry
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          III_TELEMETRY_ENABLED: 'false'
+        run: |
+          set -euo pipefail
+          script="$RUNNER_TEMP/install-iii.sh"
+          headers="$RUNNER_TEMP/install-iii.headers"
+          curl -fsSL --retry 3 -D "$headers" "$API_URL/install/iii?version=$VERSION&ci=true" -o "$script"
+          header() { tr -d '\r' < "$headers" | awk -v name="$1" -F': ' 'tolower($1) == name { print $2 }' | tail -n 1; }
+          if [[ "$(header x-executable-version)" != "$VERSION" ]]; then
+            echo "::error::the registry served $(header x-executable-version) for $VERSION"
+            exit 1
+          fi
+          if [[ "$(header x-executable-installer)" != custom ]]; then
+            echo "::error::the registry served its generic installer, not engine/registry/install.sh: is the organization that owns iii verified?"
+            exit 1
+          fi
+          BIN_DIR="$RUNNER_TEMP/iii-bin" sh "$script" --non-interactive
+          installed=$("$RUNNER_TEMP/iii-bin/iii" --version | awk '{print $NF}')
+          if [[ "$installed" != "$VERSION" ]]; then
+            echo "::error::installed iii $installed, expected $VERSION"
+            exit 1
+          fi
+          echo "::notice::iii $VERSION installs from the registry: curl -fsSL https://iii.dev/registry/install/iii/$REGISTRY_TAG.sh | sh"
