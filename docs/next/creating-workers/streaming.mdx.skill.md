@@ -45,9 +45,11 @@ A stream has one reader, so read each `InputStream` one time only. For the read 
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+
     from iii import InputStream, register_worker
 
-    worker = register_worker("ws://localhost:49134")
+    worker = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
 
 
     async def process(payload: dict) -> dict:
@@ -573,7 +575,9 @@ A stream aborts in these cases:
 The reader does not receive the `reason`. The engine sends its own text in place of it: see
 [Close and abort](../understanding-iii/streaming#close-and-abort). Only a call that the SDK runs in
 the same process keeps the reason. To tell the caller the cause, fail the call or put the cause in
-the result.
+the result. The result reaches a caller that reads the stream through a pipe. A caller that passed
+a sink does not get it: the abort fails that call with `STREAM_ABORTED`, also when the function
+returns a result. See [Sink errors](../using-iii/streaming#sink-errors).
 
 <Tabs>
   <Tab title="Node / TypeScript">

@@ -1253,7 +1253,7 @@ string, so messages from a writer on a 0.26 SDK that sent plain text still arriv
     req.progress.send(&Progress { percent: 50 }).await?;
 
     // Reader
-    let mut messages = Box::pin(progress.messages::<Progress>()); // try_next() needs a pinned stream
+    let mut messages = progress.messages::<Progress>();
     while let Some(progress) = messages.try_next().await? {
         update(progress);
     }
@@ -1599,7 +1599,7 @@ uses in the payload, where 0.26 code put a ref.
     ```rust
     let pipe = worker.pipe().await?;
     let payload = json!({ "prompt": prompt, "tokens": pipe.output });
-    let mut messages = Box::pin(pipe.input.messages::<Token>());
+    let mut messages = pipe.input.messages::<Token>();
     ```
 
   </Tab>

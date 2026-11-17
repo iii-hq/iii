@@ -55,9 +55,11 @@ streams by default. To send these types as streams first convert them with `Inpu
   </Tab>
   <Tab title="Python">
     ```python
+    import os
+
     from iii import InputStream, register_worker
 
-    worker = register_worker("ws://localhost:49134")
+    worker = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
 
 
     # Streams: an InputStream, an async generator object, or a binary file object opened for reading.
@@ -177,7 +179,6 @@ A function can return a stream in its result. The result of `worker.call(...)` t
 
     #[derive(Deserialize)]
     struct Export {
-        report_id: String,
         csv: InputStream,
     }
 
@@ -191,7 +192,7 @@ A function can return a stream in its result. The result of `worker.call(...)` t
     // To keep the result as a serde_json::Value, find its read refs with
     // iii_sdk::protocol::extract_channel_refs and open each with
     // InputStream::from_ref(channel, &worker), which also binds it.
-    let mut lines = Box::pin(export.csv.lines()); // try_next() needs a pinned stream
+    let mut lines = export.csv.lines();
     while let Some(line) = lines.try_next().await? {
         println!("{line}");
     }
@@ -536,7 +537,7 @@ Use `worker.pipe()` in these cases:
         json!({ "prompt": "Summarize report r-42", "tokens": pipe.output }),
     ));
     let read = async {
-        let mut messages = Box::pin(pipe.input.messages::<Token>());
+        let mut messages = pipe.input.messages::<Token>();
         while let Some(Token { token }) = messages.try_next().await? {
             print!("{token}");
         }
