@@ -1890,14 +1890,10 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
                 let after_update = prepared.resolved_version("db").map(str::to_string);
-                let migration = crate::sandbox::migrate(
-                    &path,
-                    &mut edited,
-                    &mut current,
-                    &mut prepared,
-                )
-                .await
-                .unwrap();
+                let migration =
+                    crate::sandbox::migrate(&path, &mut edited, &mut current, &mut prepared)
+                        .await
+                        .unwrap();
                 assert_eq!(
                     apply_adapter_change(
                         &path,
@@ -1987,8 +1983,7 @@ pub(crate) mod tests {
             .unwrap();
         let mut edited = text.to_string();
 
-        let result =
-            crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await;
+        let result = crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await;
 
         let rewrite = crate::edit::explicit_vm_mode(text, "link", "sb")
             .unwrap()

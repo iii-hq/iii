@@ -36,7 +36,7 @@ use crate::{
 /// How many of the build's last output lines a failure carries (spec 4.1).
 const TAIL_LINES: usize = 20;
 /// What every build line starts with in the container's logs.
-const PREFIX: &str = "[build] ";
+pub(crate) const BUILD_LOG_PREFIX: &str = "[build] ";
 /// What a VM build gets beyond `build_timeout`, so `iii sandbox build`, which enforces it, reports
 /// its own `TIMED_OUT` first.
 const VM_TIMEOUT_SLACK: Duration = Duration::from_secs(30);
@@ -684,7 +684,8 @@ async fn capture(
         let line = String::from_utf8_lossy(&buffer)
             .trim_end_matches(['\n', '\r'])
             .to_string();
-        logs.write_line(stream, &format!("{PREFIX}{line}")).await;
+        logs.write_line(stream, &format!("{BUILD_LOG_PREFIX}{line}"))
+            .await;
         let mut tail = tail
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

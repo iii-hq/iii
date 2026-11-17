@@ -183,11 +183,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// again, and the pause between unanswered stops.
 const RETRY_INTERVAL: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 1000 });
 /// `scripts.build_timeout`'s default, for an environment without `III_BUILD_TIMEOUT_MS`.
-const DEFAULT_BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// How long a build's output may take to end once `worker::build` answered.
 const DRAIN_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 10 });
 /// The `scripts.build` of a VM container, as `build.json` records it.
-const BUILD_COMMAND: &str = "iii sandbox build";
 /// The image's file in the build directory.
 const IMAGE_FILE: &str = "image.erofs";
 /// How long the progress observer may take to become active; without it, the operation is
@@ -200,7 +198,6 @@ const DISPOSE_WAIT: Duration = Duration::from_millis(if cfg!(test) { 500 } else 
 /// How long a cancelled `compose::build` may take to end before this command stops waiting.
 const CANCEL_WAIT: Duration = Duration::from_secs(if cfg!(test) { 2 } else { 30 });
 /// How Compose marks a container's build output in its logs (spec 4.1).
-const BUILD_LOG_PREFIX: &str = "[build] ";
 /// How long `worker::status` may go unanswered before this command gives the VM up: the
 /// adapter's reattach grace, after which its lease has stopped a VM no client follows.
 const LOST_AFTER: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 45 });
@@ -401,7 +398,7 @@ impl BuildContext {
             Some(ms) => Duration::from_millis(ms.parse().map_err(|_| {
                 format!("{BUILD_TIMEOUT_ENV} must be a number of milliseconds, not {ms:?}")
             })?),
-            None => DEFAULT_BUILD_TIMEOUT,
+            None => crate::config::DEFAULT_BUILD_TIMEOUT,
         };
         Ok(Self {
             container: Context::from_vars(vars, None)?,
@@ -1745,7 +1742,7 @@ fn build_record_of(
         schema: build_record::SCHEMA,
         container: bctx.container.worker_name.clone(),
         source: inputs.source,
-        command: BUILD_COMMAND.to_string(),
+        command: crate::sandbox::SANDBOX_BUILD.to_string(),
         dependency_files: inputs.dependency_files,
         image: Some(BuildImage {
             file: IMAGE_FILE.to_string(),
@@ -2274,7 +2271,10 @@ fn print_build_lines(
     for batch in outcome.containers {
         read += batch.entries.len();
         for entry in &batch.entries {
-            if entry.message.starts_with(BUILD_LOG_PREFIX) {
+            if entry
+                .message
+                .starts_with(crate::build_step::BUILD_LOG_PREFIX)
+            {
                 (printer.0)(&LogRecord {
                     stream: LogStream::Stdout,
                     line: format!("[{}] {}", batch.container, entry.message),

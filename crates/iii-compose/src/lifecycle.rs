@@ -276,36 +276,7 @@ impl From<ComposeError> for StartFailure {
 
 /// One supervised container: a local process group. A VM container is one too: the
 /// `iii sandbox run` that boots its VM (spec 7.6).
-pub enum Child {
-    Process(Supervised),
-}
-
-impl Child {
-    pub fn poll(&self) -> Outcome {
-        match self {
-            Self::Process(process) => process.poll(),
-        }
-    }
-
-    pub async fn wait(&self) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.wait().await,
-        }
-    }
-
-    pub async fn stop(&self, grace: Duration) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.stop(grace).await,
-        }
-    }
-
-    /// Inherited from an earlier daemon rather than started here.
-    pub fn is_adopted(&self) -> bool {
-        match self {
-            Self::Process(process) => process.is_adopted(),
-        }
-    }
-}
+pub type Child = Supervised;
 
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Child>;
@@ -1503,7 +1474,6 @@ async fn start_one_until_shutdown(
     // Capture before waiting on readiness: whatever the child prints while starting is exactly
     // what an operator needs when it does not.
     ctx.logs.capture(key, output.stdout, output.stderr);
-    let child = Child::Process(child);
     report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation

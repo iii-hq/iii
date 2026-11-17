@@ -945,7 +945,7 @@ impl Project {
                                 &format!("{key} survived (pid {pid}), adopted"),
                                 Tone::Plain,
                             );
-                            inner.children.insert(key.clone(), Child::Process(child));
+                            inner.children.insert(key.clone(), child);
                         }
                         // `reconcile` verified the identity a moment ago, so this
                         // means the process exited in between. Record it as gone
@@ -2125,9 +2125,7 @@ mod reconnect_shutdown_tests {
                 "worker".into(),
                 crate::state::ChildRecord::from_supervised(&child, ChildStatus::Ready),
             );
-            inner
-                .children
-                .insert("worker".into(), Child::Process(child));
+            inner.children.insert("worker".into(), child);
             project.store.save(&inner.state).unwrap();
         }
         let mut reconnect = Box::pin(project.reconcile_after_reconnect());
