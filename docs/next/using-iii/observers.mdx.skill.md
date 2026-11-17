@@ -1213,9 +1213,9 @@ To keep observed calls small, capture only what the target reads, for example `c
 For payloads larger than these limits, pass a
 [stream](../using-iii/streaming) in place of the data: only its ref counts toward the size.
 The observers then do not get the data: a stream has one reader, the function you observe, so an
-observer's target receives a `StreamInfo` in that field (see [Observe a call that carries a
-stream](../using-iii/streaming#observe-a-call-that-carries-a-stream)). When the target needs
-the data, store it, for example in object storage, and pass its key in the call.
+observer's target receives a `StreamInfo` in that field (see
+[Observe a stream](../using-iii/streaming#observe-a-stream)). When the target needs the data, store
+it, for example in object storage, and pass its key in the call.
 
 <Note title="TOO_LARGE and OVERFLOW">
   `OVERFLOW` is a different drop: the queues were full when the call arrived. A call of the same

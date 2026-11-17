@@ -93,6 +93,10 @@ the writer.
 as fast as the engine reads it. So a loop that awaits each `write` runs at the speed of the reader,
 and the data does not collect in memory without limit.
 
+A reader in a browser is the exception. A page cannot pause its socket, so the frames that the page
+has not read stay in its memory, and the writer does not slow down. See
+[Go and the browser SDK](../creating-workers/streaming#go-and-the-browser-sdk).
+
 ## Close and abort
 
 A stream ends in one of two ways:

@@ -757,8 +757,10 @@ returns or throws. Your code must close or abort the stream when the work ends.
 
     iii.RegisterFunctionTyped(worker, "jobs::start", func(ctx context.Context, req startJob) (map[string]bool, error) {
     	req.Log.KeepOpen() // this handler answers now and keeps writing
+    	// ctx is cancelled when the worker's engine connection drops, which would cut the job short
+    	jobCtx := context.WithoutCancel(ctx)
     	go func() {
-    		if err := runJob(ctx, req.JobID, req.Log); err != nil {
+    		if err := runJob(jobCtx, req.JobID, req.Log); err != nil {
     			_ = req.Log.Abort(err.Error())
     			return
     		}

@@ -188,7 +188,10 @@ A function can return a stream in its result. The result of `worker.call(...)` t
     )?;
     // A decoded stream binds to the only client in the process.
     // With several clients in one process, call export.csv.bind(&worker) before reading.
-    let mut lines = export.csv.lines();
+    // To keep the result as a serde_json::Value, find its read refs with
+    // iii_sdk::protocol::extract_channel_refs and open each with
+    // InputStream::from_ref(channel, &worker), which also binds it.
+    let mut lines = Box::pin(export.csv.lines()); // try_next() needs a pinned stream
     while let Some(line) = lines.try_next().await? {
         println!("{line}");
     }
@@ -339,6 +342,9 @@ to the end before you start the other, the first read waits after 16 frames and 
 If you do not need one of the copies, call `cancel()` on it. The read of the other copy then does
 not wait.
 
+To send the data in another call, put one of the copies in the payload. The SDK refuses the stream
+that you split with `tee()`, and the call fails with `STREAM_IN_USE`.
+
 ## Receive data into a sink
 
 A sink is a destination that receives the data of a stream, for example a file that is open for
@@ -420,12 +426,14 @@ messages, give the function the `output` of a pipe. See [Create a pipe](#create-
 
 A call with a sink can fail in three ways:
 
-- **The stream aborts.** The call fails with `STREAM_ABORTED`. The call fails also when the function
-  returned a result.
-- **The sink fails.** For example, the disk is full. The SDK stops the copy, and the call fails with
-  `STREAM_ABORTED`. The `reason` of the error starts with `the sink failed:`, and the `cause` of the
-  error is the error from the sink.
+- **The stream aborts.** The call fails immediately with `STREAM_ABORTED`. The call fails also when
+  the function returned a result.
+- **The sink fails.** For example, the disk is full. The SDK stops the copy, and the call fails
+  immediately with `STREAM_ABORTED`. The `reason` of the error starts with `the sink failed:`, and
+  the `cause` of the error is the error from the sink.
 - **The call fails.** The SDK stops the copy and closes the sink with the error.
+
+When a stream aborts or a sink fails, the SDK also aborts the other open sinks of the call.
 
 After each of these failures, the sink may contain a partial copy of the data.
 
@@ -440,7 +448,11 @@ after they return.
 
 A call does not wait for its sinks when its result contains an `OutputStream` for you to write to.
 The data that the sinks receive can depend on the data that you write, so the call resolves when the
-function returns.
+function returns. A call with `CallAction.Void` does not wait for its sinks either.
+
+In these two cases, a sink that aborts or fails after the call resolved cannot fail the call. A sink
+that has already failed when the function returns still fails a call whose result contains an
+`OutputStream`.
 
 ## Create a pipe
 
@@ -464,10 +476,13 @@ Use `worker.pipe()` in these cases:
       function_id: "llm::complete",
       payload: { prompt: "Summarize report r-42", tokens: output },
     });
-    // `done` can reject while the loop runs: mark it handled now; `await done` below still throws.
-    done.catch(() => {});
-    for await (const { token } of input.messages<{ token: string }>()) process.stdout.write(token);
-    await done;
+    // A handler that fails before it writes leaves `output` open: stop reading when the call fails.
+    done.catch(() => input.cancel());
+    try {
+      for await (const { token } of input.messages<{ token: string }>()) process.stdout.write(token);
+    } finally {
+      await done; // when the call failed, this throws its error instead of the read's
+    }
     ```
 
   </Tab>
@@ -477,17 +492,28 @@ Use `worker.pipe()` in these cases:
 
     # Give the function the output, and read the messages from the input
     pipe = await worker.pipe_async()
-    call = asyncio.create_task(
-        worker.call_async(
-            {
-                "function_id": "llm::complete",
-                "payload": {"prompt": "Summarize report r-42", "tokens": pipe.output},
-            }
-        )
-    )
-    async for message in pipe.input.messages():
-        print(message["token"], end="", flush=True)
-    await call
+
+
+    async def complete() -> None:
+        try:
+            await worker.call_async(
+                {
+                    "function_id": "llm::complete",
+                    "payload": {"prompt": "Summarize report r-42", "tokens": pipe.output},
+                }
+            )
+        except Exception:
+            # A handler that fails before it writes leaves the output open: stop reading.
+            await pipe.input.cancel()
+            raise
+
+
+    call = asyncio.create_task(complete())
+    try:
+        async for message in pipe.input.messages():
+            print(message["token"], end="", flush=True)
+    finally:
+        await call  # when the call failed, this raises its error instead of the read's
     ```
 
   </Tab>
@@ -510,7 +536,7 @@ Use `worker.pipe()` in these cases:
         json!({ "prompt": "Summarize report r-42", "tokens": pipe.output }),
     ));
     let read = async {
-        let mut messages = pipe.input.messages::<Token>();
+        let mut messages = Box::pin(pipe.input.messages::<Token>());
         while let Some(Token { token }) = messages.try_next().await? {
             print!("{token}");
         }
