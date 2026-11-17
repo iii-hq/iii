@@ -3,6 +3,14 @@
   "name": "iii",
   "redirects": [
     {
+      "source": "/next/using-iii/console",
+      "destination": "/next/using-iii/ade"
+    },
+    {
+      "source": "/using-iii/console",
+      "destination": "/using-iii/ade"
+    },
+    {
       "source": "/next/api-reference/:slug*",
       "destination": "/next/reference/:slug*"
     },
@@ -160,7 +168,7 @@
                   "next/using-iii/engine",
                   "next/using-iii/compose",
                   "next/using-iii/configuration",
-                  "next/using-iii/console",
+                  "next/using-iii/ade",
                   "next/using-iii/cli",
                   "next/using-iii/deployment"
                 ]
@@ -314,7 +322,7 @@
                   "using-iii/engine",
                   "using-iii/compose",
                   "using-iii/configuration",
-                  "using-iii/console",
+                  "using-iii/ade",
                   "using-iii/cli",
                   "using-iii/deployment"
                 ]

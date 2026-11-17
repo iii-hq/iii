@@ -232,7 +232,7 @@ retries the write.
 The engine prints each line in its own output, labeled with the worker's OpenTelemetry service name
 (set it with `OTEL_SERVICE_NAME`), unless the observability worker sets
 `logs_console_output: false`. It also stores each line: `iii call engine::logs::list` returns it,
-and the [console](../using-iii/console) shows it next to the trace it was logged in.
+and the [console](../using-iii/ade) shows it next to the trace it was logged in.
 
 Under `iii compose --up`, the engine's output goes to `engine.log` in the compose state directory,
 `.iii/compose/<namespace>/` by default (see [Compose logs](../using-iii/compose#compose-logs)).
