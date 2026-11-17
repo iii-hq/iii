@@ -204,7 +204,8 @@ The handler writes an `OutputStream`:
 
 A string passed to `write` is sent as its UTF-8 bytes. `write` and `send` resolve when the chunk is
 accepted (Go's `Write` and `Send` return then), so a loop of awaited writes follows the reader's
-pace. Each end connects when it is first read or written.
+pace, unless the reader is in a browser (see [Go and the browser SDK](#go-and-the-browser-sdk)).
+Each end connects when it is first read or written.
 
 ## Return a stream from a function
 
@@ -296,7 +297,7 @@ SDK pumps the data after it answers.
             .call(CallRequest::new("reports::export", json!({ "report_id": "r-42" })))
             .await?,
     )?;
-    let mut lines = export.csv.lines();
+    let mut lines = Box::pin(export.csv.lines()); // try_next() needs a pinned stream
     while let Some(line) = lines.try_next().await? {
         render(&line);
     }
@@ -514,7 +515,9 @@ Set a longer timeout for a call whose sink takes long to fill, such as a handler
 
 A call whose result hands a stream to write back to the caller (an `OutputStream` or a write end in
 the result) resolves without waiting for its sinks, since they may depend on what the caller writes
-next.
+next. A call sent with `CallAction.Void` (Go `iii.VoidAction()`) does not wait for its sinks either.
+In both cases the call has resolved before its sinks finish, so a sink that fails or aborts later
+cannot fail it.
 
 ## Forward a stream
 
@@ -1017,8 +1020,10 @@ or abort the stream yourself.
 
     iii.RegisterFunctionTyped(worker, "jobs::start", func(ctx context.Context, req startJob) (map[string]bool, error) {
     	req.Log.KeepOpen() // this handler answers now and keeps writing
+    	// ctx is cancelled when the worker's engine connection drops, which would cut the job short
+    	jobCtx := context.WithoutCancel(ctx)
     	go func() {
-    		if err := runJob(ctx, req.JobID, req.Log); err != nil {
+    		if err := runJob(jobCtx, req.JobID, req.Log); err != nil {
     			_ = req.Log.Abort(err.Error())
     			return
     		}
@@ -1093,10 +1098,13 @@ ends.
       function_id: "llm::complete",
       payload: { prompt: "Summarize report r-42", tokens: output },
     });
-    // `done` can reject while the loop runs: mark it handled now; `await done` below still throws.
-    done.catch(() => {});
-    for await (const { token } of input.messages<{ token: string }>()) process.stdout.write(token);
-    await done;
+    // A handler that fails before it writes leaves `output` open: stop reading when the call fails.
+    done.catch(() => input.cancel());
+    try {
+      for await (const { token } of input.messages<{ token: string }>()) process.stdout.write(token);
+    } finally {
+      await done; // when the call failed, this throws its error instead of the read's
+    }
     ```
 
   </Tab>
@@ -1118,17 +1126,28 @@ ends.
 
     # Caller: hand over the output, read the input
     pipe = await worker.pipe_async()
-    call = asyncio.create_task(
-        worker.call_async(
-            {
-                "function_id": "llm::complete",
-                "payload": {"prompt": "Summarize report r-42", "tokens": pipe.output},
-            }
-        )
-    )
-    async for message in pipe.input.messages():
-        print(message["token"], end="", flush=True)
-    await call
+
+
+    async def complete() -> None:
+        try:
+            await worker.call_async(
+                {
+                    "function_id": "llm::complete",
+                    "payload": {"prompt": "Summarize report r-42", "tokens": pipe.output},
+                }
+            )
+        except Exception:
+            # A handler that fails before it writes leaves the output open: stop reading.
+            await pipe.input.cancel()
+            raise
+
+
+    call = asyncio.create_task(complete())
+    try:
+        async for message in pipe.input.messages():
+            print(message["token"], end="", flush=True)
+    finally:
+        await call  # when the call failed, this raises its error instead of the read's
     ```
 
   </Tab>
@@ -1170,7 +1189,7 @@ ends.
         json!({ "prompt": "Summarize report r-42", "tokens": pipe.output }),
     ));
     let read = async {
-        let mut messages = pipe.input.messages::<Token>();
+        let mut messages = Box::pin(pipe.input.messages::<Token>());
         while let Some(Token { token }) = messages.try_next().await? {
             print!("{token}");
         }
@@ -1246,8 +1265,9 @@ ends as `(*iii.InputStream, *iii.OutputStream, error)` and uses the engine's def
 pipe that no worker attaches is dropped after about five minutes.
 
 A handler that throws before it writes to the pipe's output leaves it alone, so a reader of the
-input keeps waiting until that end is dropped. Watch the call as well as the stream: the call's
-error arrives first, in `done` above.
+input keeps waiting until that end is dropped. Watch the call as well as the stream, as the examples
+above do: when the call fails, they stop reading (`cancel()` in TypeScript and Python, the read's
+context in Go, `try_join!` in Rust) and return the call's error.
 
 ## Observe a call that carries a stream
 

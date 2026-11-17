@@ -917,6 +917,10 @@ the sink has received everything.
   </Tab>
 </Tabs>
 
+A sink takes bytes only: messages the handler sends on the `OutputStream` are dropped, and the call
+still succeeds. If the caller also read the channel's messages (`onMessage`), pass the output of a
+[pipe](#createchannel-to-iiipipe) instead and read its input.
+
 ## HTTP `request_body` and `response`
 
 The HTTP worker still passes a route's request body and response as refs in `request_body` and
@@ -1229,7 +1233,7 @@ string, so messages from a writer on a 0.26 SDK that sent plain text still arriv
     req.progress.send(&Progress { percent: 50 }).await?;
 
     // Reader
-    let mut messages = progress.messages::<Progress>();
+    let mut messages = Box::pin(progress.messages::<Progress>()); // try_next() needs a pinned stream
     while let Some(progress) = messages.try_next().await? {
         update(progress);
     }
@@ -1511,9 +1515,13 @@ uses in the payload, where 0.26 code put a ref.
       function_id: "llm::complete",
       payload: { prompt, tokens: output },
     });
-    done.catch(() => {});
-    for await (const { token } of input.messages<{ token: string }>()) print(token);
-    await done;
+    // A handler that fails before it writes leaves `output` open: stop reading when the call fails.
+    done.catch(() => input.cancel());
+    try {
+      for await (const { token } of input.messages<{ token: string }>()) print(token);
+    } finally {
+      await done; // when the call failed, this throws its error instead of the read's
+    }
     ```
 
   </Tab>
@@ -1530,10 +1538,29 @@ uses in the payload, where 0.26 code put a ref.
     **After (0.27)**
 
     ```python
+    import asyncio
+
     pipe = await worker.pipe_async()  # worker.pipe() outside asyncio
-    payload = {"prompt": prompt, "tokens": pipe.output}
-    async for message in pipe.input.messages():
-        print(message["token"], end="")
+
+
+    async def complete() -> None:
+        try:
+            await worker.call_async(
+                {"function_id": "llm::complete", "payload": {"prompt": prompt, "tokens": pipe.output}}
+            )
+        except Exception:
+            # A handler that fails before it writes leaves the output open: stop reading.
+            await pipe.input.cancel()
+            raise
+
+
+    # Start the call before reading: nothing writes the output until the handler runs
+    call = asyncio.create_task(complete())
+    try:
+        async for message in pipe.input.messages():
+            print(message["token"], end="")
+    finally:
+        await call  # when the call failed, this raises its error instead of the read's
     ```
 
   </Tab>
@@ -1552,7 +1579,7 @@ uses in the payload, where 0.26 code put a ref.
     ```rust
     let pipe = worker.pipe().await?;
     let payload = json!({ "prompt": prompt, "tokens": pipe.output });
-    let mut messages = pipe.input.messages::<Token>();
+    let mut messages = Box::pin(pipe.input.messages::<Token>());
     ```
 
   </Tab>

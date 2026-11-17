@@ -109,7 +109,7 @@ async for line in result["csv"].lines():
 # Sink: the handler writes an OutputStream; the call resolves once the bytes are in the file
 async def render(payload):
     out = payload["out"]
-    await out.send({"type": "progress", "pct": 50})  # a JSON message frame
+    await out.send({"type": "progress", "pct": 50})  # a message: a file sink drops it
     await out.write(pdf_bytes)
 
 await iii.call_async({"function_id": "reports::render", "payload": {"out": OutputStream.to_file("r.pdf")}})
@@ -134,8 +134,9 @@ copy read, and past that the faster reader waits for the slower one, so do not
 read one copy to the end before starting the other.
 `OutputStream`: `write(bytes | str)`, `send(json_value)`, `close()`,
 `abort(reason)`, `keep_open()`, and `async with` (closes, or aborts on an
-exception). A write after `close()` or `abort()` raises `StreamClosedError`
-(code `STREAM_CLOSED`). Both errors are also `RuntimeError`s.
+exception). A write after `close()` or `abort()`, or after the reader left,
+raises `StreamClosedError` (code `STREAM_CLOSED`), and so does a read of an
+`InputStream` that was cancelled. Both errors are also `RuntimeError`s.
 
 - A stream the handler did not read is passed on as is when it calls another
   function with it: no bytes go through this worker.
@@ -149,7 +150,9 @@ exception). A write after `close()` or `abort()` raises `StreamClosedError`
   `out.keep_open()` keeps an output open after the handler returns.
 - A call resolves once the sinks it carried finished, unless its result hands
   back a stream to write (its own sink, say): the caller writes that after the
-  call returns, so the sinks then finish in the background.
+  call returns, so the sinks then finish in the background. A
+  `CallAction.Void()` call does not wait for its sinks either. A sink takes
+  bytes only: what the handler sends with `send()` is dropped.
 - An aborted stream raises `StreamAbortedError` (code `STREAM_ABORTED`) in its
   reader; a call whose sink was aborted rejects with it.
 - `CallAction.Void()` carries streams; `CallAction.Enqueue(...)` rejects them
@@ -157,15 +160,23 @@ exception). A write after `close()` or `abort()` raises `StreamClosedError`
 - An observer of a streamed call sees each stream as a `StreamInfo`
   (`stream`, `direction`, `id`) in its `input` and `output`.
 
-Stream methods are coroutines and work from any event loop. From sync code,
-run them with `asyncio.run(...)`:
+The stream methods that read or write (`read_all()`, `text()`, `cancel()`,
+`write()`, `send()`, `close()`, `abort()`) are coroutines and work from any event
+loop. From sync code, run them with `asyncio.run(...)`. `lines()`, `messages()`
+and `frames()` return async iterators, not coroutines: consume one inside a
+coroutine, and call it there too, since the call claims the stream's one reader.
+`tee()` and `keep_open()` are plain methods.
 
 ```python
 def count_sync(payload):
     return len(asyncio.run(payload["body"].read_all()))
 
 result = iii.call({"function_id": "reports::export", "payload": {"report_id": "r-1"}})
-csv = asyncio.run(result["csv"].read_all())
+
+async def csv_lines(csv):
+    return [line async for line in csv.lines()]
+
+lines = asyncio.run(csv_lines(result["csv"]))
 ```
 
 `iii.call()` blocks its thread. From a thread whose event loop is running, it

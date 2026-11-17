@@ -132,7 +132,8 @@ The SDKs apply the same rules, so the common path needs no cleanup code:
   or the sink itself fails, the call fails with `STREAM_ABORTED`, even when the function succeeded.
   The call's timeout covers this wait: when it expires first, the SDK aborts the open sinks and the
   call fails with `TIMEOUT`. A call whose result hands a stream to write back to the caller does not
-  wait for its sinks, since they may depend on what the caller writes next.
+  wait for its sinks, since they may depend on what the caller writes next, and neither does a call
+  sent with `CallAction.Void`. Such a call cannot report a sink that fails after it resolved.
 - **Forwarding an unread `InputStream` sends its ref.** No bytes pass through the forwarding worker.
   Once it has been read from, forwarding pumps the rest.
 - **A stream has one reader.** Reading an `InputStream` a second time fails. In TypeScript (Node and
@@ -144,7 +145,10 @@ The SDKs apply the same rules, so the common path needs no cleanup code:
 
 Streams connect lazily. Creating a pipe allocates its refs, and each end opens its socket when it is
 first read or written. `write` and `send` resolve when the chunk is accepted, so a loop of awaited
-writes never buffers without bound, and a slow reader slows the writer instead.
+writes never buffers without bound, and a slow reader slows the writer instead. A reader in the
+browser is the exception: a page cannot pause its socket, so the frames it has not read yet wait in
+its memory, and the writer is not slowed. See [Go and the browser
+SDK](../creating-workers/streaming#go-and-the-browser-sdk).
 
 ### Abort
 

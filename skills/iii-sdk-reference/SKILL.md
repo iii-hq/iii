@@ -231,7 +231,11 @@ values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to p
 - **Sink:** pass a Node `Writable` / Web `WritableStream`, Python `OutputStream.to_file(path)` /
   `OutputStream.to(writer)`, Rust `OutputStream::to_writer(w)`, or Go
   `iii.OutputStreamToWriter(io.Writer)`. The handler gets an `OutputStream`, and the call resolves
-  once the sink has everything.
+  once the sink has everything. A sink takes bytes only: messages the handler sends with `send` are
+  dropped and the call still succeeds, so `write` what the sink must receive, or pass a pipe end
+  when the caller needs the messages. Two kinds of call do not wait for their sinks, so a sink that
+  fails after they resolved cannot fail them: a `CallAction.Void` call (Go `iii.VoidAction()`), and
+  a call whose result holds a stream to write back (an `OutputStream` or a pipe's write end).
 - **Forward:** pass a received, unread `InputStream` on in another call: only its ref travels.
 - **Read:** iterate for byte chunks; `bytes()` / `text()` (Python and Rust `read_all()`, `text()`);
   `lines()`; `messages()` for JSON text frames; `frames()` for both in order; `cancel()`; `tee()`
@@ -263,8 +267,10 @@ values of a call. There is no `createChannel` (Go `CreateChannel`), no refs to p
 - **Observers:** a captured `input` or `output` field that carried a stream arrives as
   `StreamInfo` (`{ stream: true, direction, id }`), not a live end.
 - **Low-level refs:** `extractChannelRefs`, `isChannelRef`, `StreamChannelRef`, `ChannelDirection`,
-  and `ChannelItem` live in `iii-sdk/protocol`, `iii-browser-sdk/protocol`, `iii.protocol`, and
-  `iii_sdk::protocol`. Go keeps `iii.StreamChannelRef` and `iii.ChannelDirection`.
+  and `ChannelItem` live in `iii-sdk/protocol` and `iii-browser-sdk/protocol`. Python
+  (`iii.protocol`) and Rust (`iii_sdk::protocol`) name the functions `extract_channel_refs` and
+  `is_channel_ref`, next to the same `StreamChannelRef`, `ChannelDirection`, and `ChannelItem`. Go
+  keeps `iii.StreamChannelRef` and `iii.ChannelDirection`.
 
 ```typescript
 import { createReadStream } from "node:fs";
@@ -338,7 +344,11 @@ _, err = client.Call(ctx, iii.CallRequest{FunctionID: "files::process", Payload:
 ```
 
 Refs are the same JSON in every SDK, so streams cross between SDKs and between 0.26 and 0.27
-workers in both directions.
+workers in both directions. What arrives still depends on the receiver's SDK: a 0.26 caller gets a
+stream in a call result as the ref JSON, not a reader, and a 0.26 Go or Rust handler gets the ref
+JSON in its payload. So a function that moves from filling a writer it was passed to returning a
+stream changes its contract: upgrade its callers in the same change. See the mixed-fleet table in
+https://iii.dev/docs/upgrading/from-0-26-x#mixed-fleets.
 
 ## Namespaces
 

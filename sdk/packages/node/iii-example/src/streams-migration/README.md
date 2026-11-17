@@ -21,7 +21,7 @@ A notification is not a database or a durable event log. If consumers need histo
 | iii-stream `send` (ephemeral event) | `iii.call({ function_id: '<worker>::on-changed', payload: event })`: iii delivers it to the observers whose args and filters match. iii-stream `send` already skips the KV write but still depends on iii-stream and has a different event envelope, so switching `set` to `send` is not a migration |
 | Observing `stream::on-changed` with filters on `{ stream_name, group_id }` | `iii.observe({ function_id: '<worker>::on-changed', args: { ...validated by args_format } }, target)` |
 | Groups, `stream:join` / `stream:leave`, the Streams `auth_function` | A required tenant/scope key in the observer's args that `args_format` requires and `onObservationMatch` files observers under; who may observe is enforced with worker-manager RBAC. A transport change alone does not reproduce these policies |
-| Browser or Streams WebSocket subscription | The Browser SDK observes the same sources (it is a worker too); long content goes over a stream |
+| Browser or Streams WebSocket subscription | The Browser SDK observes the same sources (it is a worker too); long content goes over a call-native stream, such as a pipe from `iii.pipe()` (`iii-browser-sdk` has the same stream API), as in `channel.ts` |
 
 ## What each recipe demonstrates
 
