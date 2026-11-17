@@ -56,7 +56,7 @@ use crate::manifest::StartSpec;
 /// - `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR` and
 ///   `III_PACKAGE_NAME` are what `iii sandbox build` and `iii sandbox run` read (spec 8.3), and
 ///   what a bundle on the host is handed (spec 7.5): Compose sets them, never the file.
-pub const RESERVED_ENV: [&str; 16] = [
+pub const RESERVED_ENV: [&str; 17] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -69,6 +69,7 @@ pub const RESERVED_ENV: [&str; 16] = [
     crate::sandbox_cli::BUILD_DIR_ENV,
     crate::sandbox_cli::BUILD_TIMEOUT_ENV,
     crate::sandbox_cli::BUILD_BASE_IMAGE_ENV,
+    crate::sandbox_cli::BUILD_WORKER_ENV,
     crate::sandbox_cli::BUILD_COMPOSE_FILE_ENV,
     crate::sandbox_cli::PACKAGE_DIR_ENV,
     crate::sandbox_cli::PACKAGE_NAME_ENV,
@@ -145,7 +146,7 @@ pub struct SpawnPlan {
 ///
 /// Its own small parse rather than a shared one: `iii-compose` does not depend
 /// on the engine crate that owns telemetry, and this is four lines of INI.
-const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
+pub(crate) const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
 
 /// Identify the project-scoped telemetry key using the host's naming rules.
 pub(crate) fn is_host_user_id(name: &str) -> bool {
@@ -772,5 +773,106 @@ mod tests {
         assert!(!inherited.contains_key(HOST_USER_ID_ENV));
         #[cfg(unix)]
         assert!(!inherited.contains_key("NON_UTF8"));
+    }
+    #[test]
+    fn f06_the_vm_guest_gets_the_project_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "api",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        std::fs::create_dir_all(dir.path().join(".iii")).unwrap();
+        std::fs::write(
+            dir.path().join(".iii/project.ini"),
+            "[project]\ndevice_id=dev-123\n",
+        )
+        .unwrap();
+        let compose_path = |dir: &Path, text: &str| {
+            let path = dir.join("worker-compose.yaml");
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  sb: {worker: path://./sb}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n",
+        );
+        let file = crate::ComposeFile::load(&path).unwrap();
+        let mut user_env = file.containers["api"].resolve_user_env("api").unwrap();
+        crate::sandbox::layer_own_vm_env(
+            &file,
+            "api",
+            "token",
+            &dir.path().join("state"),
+            "default",
+            &mut user_env,
+        )
+        .unwrap();
+        let start = crate::manifest::StartSpec::Shell("iii sandbox run".into());
+        let worker_dir = dir.path().join("api");
+        let ctx = crate::spawn::SpawnCtx {
+            engine_url: "ws://127.0.0.1:1",
+            namespace: "default",
+            compose_namespace: "default",
+            compose_file: &path,
+            container_key: "api",
+            start: &start,
+            config_name: None,
+            working_dir: &worker_dir,
+            user_env: &user_env,
+        };
+
+        // 0.26: the guest's environment.
+        let old_guest = crate::spawn::guest_env(&ctx);
+        assert_eq!(
+            old_guest.get("III_HOST_USER_ID").map(String::as_str),
+            Some("dev-123")
+        );
+
+        // Now: `iii sandbox run` has the id, and hands the guest only the listed keys.
+        let host_env = spawn_plan_with_env(
+            &ctx,
+            env_of(&[
+                ("HOST_SECRET", "must-not-leak"),
+                ("III_HOST_USER_ID", "wrong-project"),
+            ]),
+        )
+        .env;
+        assert_eq!(
+            host_env.get("III_HOST_USER_ID").map(String::as_str),
+            Some("dev-123")
+        );
+        let guest = crate::sandbox_cli::Context::from_vars(&host_env, None).unwrap();
+        assert_eq!(
+            guest
+                .worker_environment()
+                .get("III_HOST_USER_ID")
+                .map(String::as_str),
+            Some("dev-123")
+        );
+        assert!(!guest.worker_environment().contains_key("HOST_SECRET"));
+        let mut explicit = user_env.clone();
+        explicit.insert("III_HOST_USER_ID".into(), "explicit-device".into());
+        let mut override_ctx = ctx.clone();
+        override_ctx.user_env = &explicit;
+        let override_plan = spawn_plan(&override_ctx);
+        assert_eq!(
+            crate::sandbox_cli::Context::from_vars(&override_plan.env, None)
+                .unwrap()
+                .worker_environment()["III_HOST_USER_ID"],
+            "explicit-device"
+        );
+        let forwarded: Vec<&str> = host_env[crate::sandbox_cli::WORKER_ENV_KEYS_ENV]
+            .split(',')
+            .collect();
+        assert!(
+            forwarded.contains(&"III_HOST_USER_ID"),
+            "III_WORKER_ENV_KEYS = {forwarded:?}"
+        );
     }
 }

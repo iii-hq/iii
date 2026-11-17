@@ -397,6 +397,15 @@ pub(crate) fn sandbox_run_command(command: &str) -> String {
     )
 }
 
+/// Decodes only the canonical single-argument wrapper migration writes, not shell syntax.
+pub(crate) fn sandbox_guest_command(command: &str) -> Option<String> {
+    let quoted = command
+        .strip_prefix("iii sandbox run --command '")?
+        .strip_suffix('\'')?;
+    let decoded = quoted.replace("'\\''", "'");
+    (sandbox_run_command(&decoded) == command).then_some(decoded)
+}
+
 /// Writes the explicit VM mode of container `key` (spec 7.1): `adapter` in `start_after`,
 /// `scripts.build: iii sandbox build` when it has no `scripts.build`, and `scripts.run: iii
 /// sandbox run` when it has none, or `iii sandbox run --command` around a command of its own.
@@ -2477,5 +2486,78 @@ containers:
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert!(rewrite.text.contains("    scripts:\n"), "{}", rewrite.text);
         assert!(!rewrite.text.contains("#1\"}"), "{}", rewrite.text);
+    }
+
+    /// Expand in the daemon, then cross the host shell with one opaque guest argument.
+    #[cfg(unix)]
+    #[test]
+    fn f10_wrapped_command_survives_the_expansion() {
+        let path = std::path::Path::new("worker-compose.yaml");
+        let commands = [
+            r#"node app.js --name "${APP_NAME:-shop}""#,
+            "printf '%s\\n' \"${APP_NAME}\" '${OTHER}' $${DEFERRED} $$HOME",
+            "printf '%s' \"${APP_NAME}\" \\\n  \"${OTHER}\"\n# guest comment: café 🦀",
+            r#"printf '%s' "${APP_NAME}" \\"${OTHER}""#,
+        ];
+        let values = [
+            "Bob's shop",
+            "x'; echo INJECTED-ON-HOST; '",
+            "double\"quote \\\\ café 🦀\nline",
+            "$(echo INJECTED-ON-HOST) `echo INJECTED-ON-HOST` $HOME ${OTHER}",
+        ];
+        for command in commands {
+            let mut scripts = Mapping::new();
+            scripts.insert(Value::from("run"), Value::from(command));
+            let text = format!(
+                "containers:\n  dev:\n    worker: path://./dev\n{}",
+                render_field("scripts", &Value::Mapping(scripts), "    ").unwrap()
+            );
+            let rewrite = explicit_vm_mode(&text, "dev", "sb").unwrap().unwrap();
+            // The declaration, not expanded secrets, is what migration persists.
+            let raw: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+            assert!(
+                raw["containers"]["dev"]["scripts"]["run"]
+                    .as_str()
+                    .unwrap()
+                    .contains("${APP_NAME")
+            );
+            assert_eq!(explicit_vm_mode(&rewrite.text, "dev", "sb").unwrap(), None);
+            for value in values {
+                let lookup = |name: &str| match name {
+                    "APP_NAME" => Some(value.to_string()),
+                    "OTHER" => Some("second ' \" \\ $${literal}".into()),
+                    _ => None,
+                };
+                let expected = crate::interpolate::expand(command, path, &lookup).unwrap();
+                let mut expanded: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+                crate::interpolate::expand_tree(&mut expanded, path, &lookup).unwrap();
+                let run = expanded["containers"]["dev"]["scripts"]["run"]
+                    .as_str()
+                    .unwrap();
+                // A function stub only records argv. It never invokes an installed iii binary.
+                let output = std::process::Command::new("sh")
+                    .args([
+                        "-c",
+                        &format!("iii() {{ printf '%s\\000' \"$@\"; }}; {run}"),
+                    ])
+                    .output()
+                    .unwrap();
+                let expected = [
+                    b"sandbox\0run\0--command\0".as_slice(),
+                    expected.as_bytes(),
+                    b"\0",
+                ]
+                .concat();
+                assert!(
+                    output.status.success(),
+                    "{run}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    output.stdout, expected,
+                    "guest argument changed or host executed an injection: {run}"
+                );
+            }
+        }
     }
 }

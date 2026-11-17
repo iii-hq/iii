@@ -87,6 +87,8 @@ pub const BUILD_TIMEOUT_ENV: &str = "III_BUILD_TIMEOUT_MS";
 /// The container's already-expanded image override from the Compose plan. Empty means no
 /// override: never expand the compose YAML again in the child's environment.
 pub const BUILD_BASE_IMAGE_ENV: &str = "III_BUILD_BASE_IMAGE";
+/// The daemon's resolved worker URI, never re-expanded in the container's environment.
+pub(crate) const BUILD_WORKER_ENV: &str = "III_BUILD_WORKER";
 /// Comma-separated names of the variables that belong to the worker and reach the guest.
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills this command.
@@ -138,7 +140,7 @@ const PROJECT_TOKEN_ENV: &str = "III_SANDBOX_WORKER_TOKEN";
 
 /// Never forwarded into the guest, even when listed: this command's own inputs, the host's
 /// engine URL (the adapter gives the guest its own) and the project token.
-const NEVER_FORWARDED: [&str; 16] = [
+const NEVER_FORWARDED: [&str; 17] = [
     TOKEN_ENV,
     STATE_KEY_ENV,
     ADAPTER_ENV,
@@ -151,6 +153,7 @@ const NEVER_FORWARDED: [&str; 16] = [
     BUILD_COMPOSE_FILE_ENV,
     BUILD_TIMEOUT_ENV,
     BUILD_BASE_IMAGE_ENV,
+    BUILD_WORKER_ENV,
     WORKER_ENV_KEYS_ENV,
     STOP_TIMEOUT_ENV,
     URL_ENV,
@@ -302,6 +305,11 @@ pub(crate) struct Context {
 }
 
 impl Context {
+    #[cfg(test)]
+    pub(crate) fn worker_environment(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
     pub(crate) fn from_vars(
         vars: &BTreeMap<String, String>,
         command: Option<String>,
@@ -383,6 +391,8 @@ pub(crate) struct BuildContext {
     timeout: Duration,
     /// The trusted image override, expanded by the daemon before container env overrides.
     base_image: Option<String>,
+    /// Resolved in the daemon, before the container overlays its own environment.
+    worker: Option<build_record::PlannedWorker>,
 }
 
 impl BuildContext {
@@ -399,6 +409,12 @@ impl BuildContext {
             compose_file: PathBuf::from(required(vars, BUILD_COMPOSE_FILE_ENV)?),
             timeout,
             base_image: present(vars, BUILD_BASE_IMAGE_ENV).map(str::to_string),
+            worker: present(vars, BUILD_WORKER_ENV)
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|error| {
+                    format!("{BUILD_WORKER_ENV} must be a planned worker JSON object: {error}")
+                })?,
         })
     }
 
@@ -461,6 +477,9 @@ impl Failure {
 
     /// Compose's own error, from `build.json` or the project's discovery: exit 125.
     fn compose(error: &ComposeError) -> Self {
+        if let ComposeError::BuildFailed { code, message, .. } = error {
+            return Self::build(code, message);
+        }
         Self::runner(error.code(), error.to_string())
     }
 
@@ -569,6 +588,15 @@ pub(crate) trait Records: Send + Sync {
     fn write(&self, build_dir: &Path, record: &BuildRecord) -> crate::error::Result<()>;
     /// [`build_record::source`].
     fn source(&self, compose_file: &Path, container: &str) -> crate::error::Result<BuildSource>;
+    /// Uses the trusted planned worker when available; test records may model source changes.
+    fn planned_source(
+        &self,
+        compose_file: &Path,
+        container: &str,
+        _worker: Option<&build_record::PlannedWorker>,
+    ) -> crate::error::Result<BuildSource> {
+        self.source(compose_file, container)
+    }
     /// [`build_record::declared_base_image`].
     fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>>;
     /// [`build_record::dependency_files`].
@@ -590,6 +618,18 @@ impl Records for BuildRecords {
 
     fn source(&self, compose_file: &Path, container: &str) -> crate::error::Result<BuildSource> {
         build_record::source(compose_file, container)
+    }
+
+    fn planned_source(
+        &self,
+        compose_file: &Path,
+        container: &str,
+        worker: Option<&build_record::PlannedWorker>,
+    ) -> crate::error::Result<BuildSource> {
+        match worker {
+            Some(worker) => build_record::source_with_plan(compose_file, container, worker),
+            None => self.source(compose_file, container),
+        }
     }
 
     fn declared_base_image(&self, worker_dir: &Path) -> crate::error::Result<Option<String>> {
@@ -1180,9 +1220,28 @@ async fn supervise(
     let token = &ctx.target.token;
     let mut unanswered_since: Option<Instant> = None;
     let mut pause = Duration::ZERO;
+    // Keep the exact stop function's owner only for this uninterrupted connection. The SDK
+    // remains disconnected for its 2s reconnect delay; the 50ms watcher cannot reuse a name
+    // across reconnects. This evidence is private to this run, never persisted in VmRecord.
+    let disconnected = stop_connection_lost(client);
+    tokio::pin!(disconnected);
+    let mut same_connection = true;
+    let mut owner = tokio::select! {
+        biased;
+        () = &mut disconnected => { same_connection = false; None }
+        (_, at) = shutdown.requested() => {
+            return Ok(stop(client, vm, token, ctx.stop_deadline(at), logs, None).await);
+        }
+        owner = stop_function_owner(client, vm, Instant::now() + RETRY_INTERVAL) => owner.ok().flatten(),
+    };
     loop {
         let tick = tokio::select! {
             biased;
+            () = &mut disconnected, if same_connection => {
+                owner = None;
+                same_connection = false;
+                continue;
+            }
             (_, at) = shutdown.requested() => Tick::Stop(at),
             (outcome, followed) = poll(client, vm, token, logs, pause) => {
                 Tick::Polled(outcome, followed)
@@ -1195,7 +1254,15 @@ async fn supervise(
         }
         match tick {
             Tick::Stop(at) => {
-                return Ok(stop(client, vm, token, ctx.stop_deadline(at), logs).await);
+                return Ok(stop(
+                    client,
+                    vm,
+                    token,
+                    ctx.stop_deadline(at),
+                    logs,
+                    owner.as_deref(),
+                )
+                .await);
             }
             Tick::Polled(Outcome::Exited(status), _) => {
                 // The VM is gone: its last lines are read, unless a stop request cuts that short.
@@ -1256,6 +1323,7 @@ async fn stop(
     token: &str,
     deadline: Instant,
     logs: &mut Logs,
+    cached_owner: Option<&str>,
 ) -> ExitStatus {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -1267,6 +1335,9 @@ async fn stop(
             );
             return sandbox::vm_exit(None, None);
         }
+        if client.get_connection_state() != iii_sdk::runtime::IIIConnectionState::Connected {
+            return sandbox::vm_exit(None, None);
+        }
         let request = WorkerStopRequest {
             auth: token.to_string(),
             vm_id: vm.vm_id.clone(),
@@ -1274,15 +1345,17 @@ async fn stop(
             // The rest of what is left is for the reply.
             grace_ms: (left * 8 / 9).as_millis() as u64,
         };
-        let reply = sandbox::call::<WorkerStatus>(
-            client,
-            &vm.adapter,
-            &vm.namespace,
-            WORKER_STOP,
-            &request,
-            left,
-        )
-        .await;
+        let reply = tokio::select! {
+            reply = sandbox::call::<WorkerStatus>(client, &vm.adapter, &vm.namespace, WORKER_STOP, &request, left) => reply,
+            () = stop_connection_lost(client) => Err(iii_sdk::Error::NotConnected),
+        };
+        if stop_transport_gone(client, vm, &reply, deadline, cached_owner).await {
+            eprintln!(
+                "iii sandbox: {} is no longer connected; its lease stops VM {} instance {} once this command is gone",
+                vm.adapter, vm.vm_id, vm.instance
+            );
+            return sandbox::vm_exit(None, None);
+        }
         if let Outcome::Exited(status) = sandbox::outcome_of(reply) {
             let left = deadline.saturating_duration_since(Instant::now());
             let _ = tokio::time::timeout(left, logs.finish(client, vm, token)).await;
@@ -1290,6 +1363,94 @@ async fn stop(
         }
         let left = deadline.saturating_duration_since(Instant::now());
         tokio::time::sleep(RETRY_INTERVAL.min(left)).await;
+    }
+}
+
+/// A missing stop function can be a live adapter registering, not an adapter that died.
+/// Only the engine's owner status (or a lost connection) makes transport failure terminal.
+async fn stop_transport_gone(
+    client: &IIIClient,
+    vm: &VmRecord,
+    reply: &Result<WorkerStatus, iii_sdk::Error>,
+    deadline: Instant,
+    cached_owner: Option<&str>,
+) -> bool {
+    if matches!(reply, Err(iii_sdk::Error::NotConnected)) {
+        return true;
+    }
+    if !matches!(reply, Err(iii_sdk::Error::Remote { code, .. }) if code == "function_not_found") {
+        return false;
+    }
+    let owner = match stop_function_owner(client, vm, deadline).await {
+        Ok(owner) => owner,
+        // Only the exact stop function's earlier metadata may bridge unregister/re-register.
+        // An arbitrary function with the same prefix can belong to a different worker.
+        Err(iii_sdk::Error::Remote { code, .. }) if code == "NOT_FOUND" => {
+            cached_owner.map(str::to_string)
+        }
+        Err(iii_sdk::Error::NotConnected) => return true,
+        _ => return false,
+    };
+    let Some(owner) = owner else {
+        return false;
+    };
+    let request = iii_sdk::CallRequest::new(
+        "engine::workers::info",
+        serde_json::json!({
+            "name": owner, "namespace": vm.namespace,
+        }),
+    );
+    match stop_engine_call(client, request, deadline).await {
+        Ok(value) => {
+            value["worker"]["name"].as_str() == Some(owner.as_str())
+                && value["worker"]["namespace"].as_str() == Some(vm.namespace.as_str())
+                && value["worker"]["status"].as_str() == Some("disconnected")
+        }
+        Err(iii_sdk::Error::Remote { code, .. }) => code == "NOT_FOUND",
+        Err(iii_sdk::Error::NotConnected) => true,
+        _ => false,
+    }
+}
+
+/// Only well-formed metadata for this exact function and namespace proves an owner.
+async fn stop_function_owner(
+    client: &IIIClient,
+    vm: &VmRecord,
+    deadline: Instant,
+) -> Result<Option<String>, iii_sdk::Error> {
+    let function = contract::adapter_function_id(&vm.adapter, WORKER_STOP);
+    let request = iii_sdk::CallRequest::new(
+        "engine::functions::info",
+        serde_json::json!({
+            "function_id": function, "namespace": vm.namespace,
+        }),
+    );
+    let info = stop_engine_call(client, request, deadline).await?;
+    Ok((info["function_id"].as_str() == Some(function.as_str())
+        && info["namespace"].as_str() == Some(vm.namespace.as_str()))
+    .then(|| {
+        info["worker_name"]
+            .as_str()
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string)
+    })
+    .flatten())
+}
+
+async fn stop_engine_call(
+    client: &IIIClient,
+    request: iii_sdk::CallRequest,
+    deadline: Instant,
+) -> Result<serde_json::Value, iii_sdk::Error> {
+    tokio::select! {
+        reply = tokio::time::timeout_at(deadline, client.call(request)) => reply.unwrap_or(Err(iii_sdk::Error::Timeout)),
+        () = stop_connection_lost(client) => Err(iii_sdk::Error::NotConnected),
+    }
+}
+
+async fn stop_connection_lost(client: &IIIClient) {
+    while client.get_connection_state() == iii_sdk::runtime::IIIConnectionState::Connected {
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -1536,7 +1697,7 @@ pub(crate) async fn build_vm(
     // Read again: the image must be recorded with the package it was built from, and an
     // `iii compose build` in another process may have replaced it meanwhile (spec 5.4). The
     // adapter already put the image in place; only `build.json` is not written.
-    let now = records.source(&bctx.compose_file, &ctx.worker_name);
+    let now = records.planned_source(&bctx.compose_file, &ctx.worker_name, bctx.worker.as_ref());
     if let Some(message) = crate::build_step::input_changed(&ctx.worker_name, &inputs.source, now)
         .map_err(|error| Failure::compose(&error))?
     {
@@ -1554,7 +1715,11 @@ fn build_inputs(bctx: &BuildContext, records: &dyn Records) -> Result<BuildInput
     let worker_dir = bctx.worker_dir();
     let failed = |error: ComposeError| Failure::compose(&error);
     let source = records
-        .source(&bctx.compose_file, &bctx.container.worker_name)
+        .planned_source(
+            &bctx.compose_file,
+            &bctx.container.worker_name,
+            bctx.worker.as_ref(),
+        )
         .map_err(failed)?;
     let base_image = bctx.base_image.clone();
     let declared_base_image = match &base_image {
@@ -2563,6 +2728,7 @@ mod tests {
                                     .to_string();
                                 if function.starts_with("engine::workers::")
                                     && function != "engine::workers::list"
+                                    && function != "engine::workers::info"
                                 {
                                     continue;
                                 }
@@ -2576,6 +2742,9 @@ mod tests {
                                 let _ = calls.send((function.clone(), message["data"].clone()));
                                 if reply == json!(true) {
                                     continue;
+                                }
+                                if reply.is_null() {
+                                    return;
                                 }
                                 if function.ends_with("::worker::build") {
                                     let mut connected = reader.subscribe();
@@ -4838,5 +5007,545 @@ mod tests {
                     .ends_with("rebuild it with `iii sandbox build api`"),
             "{failure}"
         );
+    }
+    #[tokio::test]
+    async fn f04_a_stop_with_the_adapter_gone_does_not_wait_out_the_stop_timeout() {
+        let gone = Arc::new(AtomicBool::new(false));
+        let flag = gone.clone();
+        let (client, mut called) = stop_engine(adapter(move |function, _| {
+            if function == "engine::functions::info" && !flag.load(Ordering::SeqCst) {
+                return Some(answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "orders", "worker_name": "actual-owner"})));
+            }
+            if matches!(function, "engine::functions::info" | "engine::workers::info") {
+                return Some(json!({"error": {"code": "NOT_FOUND", "message": "gone"}}));
+            }
+            flag.load(Ordering::SeqCst)
+                .then(|| json!({"error": {"code": "function_not_found", "message": "gone"}}))
+        })).await;
+        let (sender, shutdown) = Shutdown::manual();
+        let (printer, _) = captured();
+        let ctx = context_stopping_within("2000");
+        let build = booted();
+        let trigger = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            gone.store(true, Ordering::SeqCst);
+            let at = Instant::now();
+            sender.send_replace(Some((15, at)));
+            at
+        };
+        let (status, signalled) =
+            tokio::join!(run_vm(&ctx, &build, &client, &shutdown, printer), trigger);
+        let took = signalled.elapsed();
+        let stops = payloads(&calls(&mut called), "worker::stop").len();
+        assert!(
+            took < Duration::from_millis(500),
+            "with stop_timeout 2s, the stop of a VM whose adapter is gone took {took:?} \
+         ({stops} worker::stop calls); status {status:?}"
+        );
+    }
+
+    /// Real subprocess environments keep this regression independent of parallel tests.
+    #[test]
+    fn f05_the_child_and_the_daemon_agree_on_the_source() {
+        const TEST: &str = "sandbox_cli::tests::f05_the_child_and_the_daemon_agree_on_the_source";
+        const PHASE: &str = "F05_SOURCE_PHASE";
+        const VAR: &str = "REPRO_F05_APP_DIR";
+        if std::env::var(PHASE).ok().as_deref() == Some("child") {
+            let vars = process_vars();
+            let bctx = BuildContext::from_vars(&vars).unwrap();
+            let inputs = build_inputs(&bctx, &BuildRecords).unwrap();
+            assert_eq!(
+                inputs.source,
+                BuildSource::Path {
+                    dir: "./app".into()
+                }
+            );
+            let record = build_record_of(
+                &bctx,
+                &info(&REQUIRED_FEATURES),
+                inputs,
+                serde_json::from_value(built()["result"].clone()).unwrap(),
+            );
+            build_record::write(Path::new(&bctx.build_dir), &record).unwrap();
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["app", "srv"] {
+            sandbox::tests::manifest(
+                dir.path(),
+                name,
+                "runtime: {base_image: python}\nscripts: {start: run}\n",
+            );
+        }
+        let path = dir.path().join("worker-compose.yaml");
+        let text = format!(
+            "containers:\n  api:\n    worker: path://${{{VAR}:-./app}}\n    environment: {{{VAR}: ./srv}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n"
+        );
+        std::fs::write(&path, &text).unwrap();
+        let file = crate::ComposeFile::load(&path).unwrap();
+        assert!(
+            file.containers["api"]
+                .worker_dir()
+                .unwrap()
+                .ends_with("app")
+        );
+        let mut env = file.containers["api"].resolve_user_env("api").unwrap();
+        sandbox::layer_own_vm_env(&file, "api", "project", dir.path(), "default", &mut env)
+            .unwrap();
+        let start = crate::manifest::StartSpec::Shell("iii sandbox build".into());
+        let plan = crate::spawn::spawn_plan(&crate::spawn::SpawnCtx {
+            engine_url: "ws://127.0.0.1:1",
+            namespace: "default",
+            compose_namespace: "default",
+            compose_file: &path,
+            container_key: "api",
+            start: &start,
+            config_name: None,
+            working_dir: file.containers["api"].worker_dir().unwrap(),
+            user_env: &env,
+        });
+        assert_eq!(plan.env[VAR], "./srv");
+        assert!(
+            !plan.env[WORKER_ENV_KEYS_ENV]
+                .split(',')
+                .any(|name| name == BUILD_WORKER_ENV)
+        );
+        assert_eq!(
+            Context::from_vars(&plan.env, None).unwrap().env[VAR],
+            "./srv"
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .envs(&plan.env)
+            .env(PHASE, "child")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record = build_record::read(Path::new(&plan.env[BUILD_DIR_ENV]))
+            .unwrap()
+            .unwrap();
+        assert!(
+            build_record::changes(
+                &record,
+                &path,
+                "api",
+                file.containers["api"].worker_dir().unwrap(),
+                None
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+    }
+
+    /// Missing protocol and a still-connected function owner must retain the retry path.
+    #[tokio::test]
+    async fn f04_stop_retries_transient_protocol_errors_from_a_live_owner() {
+        for first in [
+            json!({"error": {"code": "function_not_found", "message": "registering"}}),
+            answered(json!({"state": "not-a-protocol-state"})),
+            json!({"error": {"code": "invocation_failed", "message": "transient"}}),
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let seen = attempts.clone();
+            let (client, mut called) = stop_engine(adapter(move |suffix, _| match suffix {
+                "engine::functions::info" => Some(answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "orders", "worker_name": "real-owner"}))),
+                "engine::workers::info" => Some(answered(json!({"worker":
+                    {"name": "real-owner", "namespace": "orders", "status": "connected"}
+                }))),
+                "worker::stop" if seen.fetch_add(1, Ordering::SeqCst) == 0 => Some(first.clone()),
+                _ => None,
+            }))
+            .await;
+            let (printer, _) = captured();
+            let status = run_vm(
+                &context(),
+                &booted(),
+                &client,
+                &signal_after(Duration::from_millis(300), 15),
+                printer,
+            )
+            .await
+            .unwrap();
+            assert_eq!(exit_code(status), exit_code_on_signal(15));
+            assert_eq!(payloads(&calls(&mut called), "worker::stop").len(), 2);
+            client.shutdown_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn f04_stop_uses_the_actual_function_owner_status_and_namespace() {
+        for (namespace, state) in [
+            ("orders", "disconnected"),
+            ("different-project", "connected"),
+        ] {
+            let (client, mut called) = stop_engine(adapter(move |suffix, _| match suffix {
+                "worker::stop" => {
+                    Some(json!({"error": {"code": "function_not_found", "message": "gone"}}))
+                }
+                "engine::functions::info" => Some(answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "orders", "worker_name": "actual-owner"}))),
+                "engine::workers::info" => Some(if namespace == "orders" {
+                    answered(json!({"worker": {"name": "actual-owner", "namespace": namespace, "status": state}}))
+                } else {
+                    json!({"error": {"code": "NOT_FOUND", "message": "Worker is not connected in the requested namespace."}})
+                }),
+                _ => None,
+            }))
+            .await;
+            let (printer, _) = captured();
+            let begun = Instant::now();
+            let _ = run_vm(
+                &context(),
+                &booted(),
+                &client,
+                &signal_after(Duration::from_millis(300), 15),
+                printer,
+            )
+            .await
+            .unwrap();
+            assert!(begun.elapsed() < Duration::from_millis(800));
+            assert_eq!(payloads(&calls(&mut called), "worker::stop").len(), 1);
+            client.shutdown_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn f04_stop_ends_when_the_engine_connection_drops() {
+        let (client, mut called) = stop_engine(adapter(|suffix, _| {
+            (suffix == "worker::stop").then_some(Value::Null)
+        }))
+        .await;
+        let (printer, _) = captured();
+        let begun = Instant::now();
+        let _ = run_vm(
+            &context(),
+            &booted(),
+            &client,
+            &signal_after(Duration::from_millis(300), 15),
+            printer,
+        )
+        .await
+        .unwrap();
+        assert!(begun.elapsed() < Duration::from_millis(800));
+        assert_eq!(payloads(&calls(&mut called), "worker::stop").len(), 1);
+        client.shutdown_async().await;
+    }
+
+    #[test]
+    fn f05_planned_source_is_reserved_validated_and_never_forwarded() {
+        assert!(crate::spawn::is_reserved_env(BUILD_WORKER_ENV));
+        let mut vars = compose_vars();
+        vars.insert(
+            BUILD_WORKER_ENV.into(),
+            r#"{"worker":"path://./api","declaration_sha256":null}"#.into(),
+        );
+        vars.insert(
+            WORKER_ENV_KEYS_ENV.into(),
+            format!("{},API_KEY", NEVER_FORWARDED.join(",")),
+        );
+        let bctx = BuildContext::from_vars(&vars).unwrap();
+        assert_eq!(
+            bctx.container.env,
+            BTreeMap::from([("API_KEY".into(), "k".into())])
+        );
+        vars.insert(
+            BUILD_WORKER_ENV.into(),
+            "not json; echo INJECTED-ON-HOST".into(),
+        );
+        assert!(
+            BuildContext::from_vars(&vars)
+                .unwrap_err()
+                .contains(BUILD_WORKER_ENV)
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        assert!(crate::ComposeFile::parse(&format!("containers:\n  api:\n    worker: path://./api\n    environment: {{{BUILD_WORKER_ENV}: forged}}\n"), path).is_err());
+    }
+    async fn stop_engine(
+        answer: impl Fn(&str, &Value) -> Value + Send + Sync + 'static,
+    ) -> (
+        IIIClient,
+        tokio::sync::mpsc::UnboundedReceiver<(String, Value)>,
+    ) {
+        let (client, calls, _) = build_engine(answer, Vec::new()).await;
+        (client, calls)
+    }
+    #[test]
+    fn f05_planned_source_handles_quotes_and_substitutions_as_data_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  api: {worker: 'path://${APP_DIR:-./app}'}\n",
+        )
+        .unwrap();
+        let worker = "path://./Bob's shop/\"quoted\"/$(echo INJECTED-ON-HOST)/café\nline";
+        let encoded = build_record::plan_worker(&path, "api", worker.into()).unwrap();
+        let mut vars = compose_vars();
+        vars.insert(BUILD_WORKER_ENV.into(), encoded);
+        vars.insert(BUILD_COMPOSE_FILE_ENV.into(), path.to_str().unwrap().into());
+        vars.insert(WORKER_DIR_ENV.into(), dir.path().to_str().unwrap().into());
+        let context = BuildContext::from_vars(&vars).unwrap();
+        let inputs = build_inputs(&context, &BuildRecords).unwrap();
+        assert_eq!(
+            inputs.source,
+            BuildSource::Path {
+                dir: worker.strip_prefix("path://").unwrap().into()
+            }
+        );
+        assert!(!context.container.env.contains_key(BUILD_WORKER_ENV));
+    }
+    /// Function prefixes are routing identifiers, never proof of their worker's identity.
+    #[tokio::test]
+    async fn f04_unregistered_stop_keeps_its_actual_owner_and_graceful_drain() {
+        for namespace in ["default", "orders"] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let seen = attempts.clone();
+            let metadata_reads = Arc::new(AtomicUsize::new(0));
+            let reads = metadata_reads.clone();
+            let (client, mut called, _) = build_engine(adapter(move |suffix, payload| match suffix {
+                "engine::functions::info" => {
+                    assert_eq!(payload["namespace"], namespace);
+                    assert_eq!(payload["function_id"], "sandbox-libkrun::worker::stop");
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Some(if seen.load(Ordering::SeqCst) == 0 {
+                        answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": namespace, "worker_name": "actual-owner"}))
+                    } else {
+                        json!({"error": {"code": "NOT_FOUND", "message": "temporarily unregistered"}})
+                    })
+                }
+                "engine::workers::info" => {
+                    assert_eq!(payload["namespace"], namespace);
+                    Some(if payload["name"] == "actual-owner" {
+                        answered(json!({"worker": {"name": "actual-owner", "namespace": namespace, "status": "connected"}}))
+                    } else {
+                        json!({"error": {"code": "NOT_FOUND", "message": "no worker has that prefix"}})
+                    })
+                }
+                "worker::stop" if seen.fetch_add(1, Ordering::SeqCst) == 0 => Some(json!({"error": {"code": "function_not_found", "message": "temporarily unregistered"}})),
+                "worker::stop" => Some(status(State::Stopped, Some(23), None)),
+                _ => None,
+            }), vec![Frame::Text(log_line("stdout", "graceful-final-marker", 42))]).await;
+            let mut ctx = context();
+            ctx.target.adapter_namespace = namespace.into();
+            let (printer, lines) = captured();
+            let status = run_vm(
+                &ctx,
+                &booted(),
+                &client,
+                &signal_after(Duration::from_millis(300), 15),
+                printer,
+            )
+            .await
+            .unwrap();
+            let calls = calls(&mut called);
+            assert_eq!(
+                exit_code(status),
+                23,
+                "must await graceful stop, not a lease fallback: {calls:?}"
+            );
+            assert!(
+                metadata_reads.load(Ordering::SeqCst) >= 2,
+                "must know the owner before unregister and recheck afterward"
+            );
+            assert_eq!(payloads(&calls, "worker::stop").len(), 2);
+            let stopped = calls
+                .iter()
+                .rposition(|(name, _)| name == "worker::stop")
+                .unwrap();
+            assert!(
+                calls[stopped + 1..]
+                    .iter()
+                    .any(|(name, _)| name == "worker::logs"),
+                "confirmation must drain the guest logs"
+            );
+            assert!(
+                lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|line| line.contains("graceful-final-marker"))
+            );
+            client.shutdown_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn f04_unknown_stop_owner_never_uses_the_function_prefix_as_absence_proof() {
+        for namespace in ["default", "orders"] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let seen = attempts.clone();
+            let (client, mut called) = stop_engine(adapter(move |suffix, _| match suffix {
+                "engine::functions::info" | "engine::workers::info" => {
+                    Some(json!({"error": {"code": "NOT_FOUND", "message": "unknown"}}))
+                }
+                "worker::stop" if seen.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    Some(json!({"error": {"code": "function_not_found", "message": "registering"}}))
+                }
+                _ => None,
+            }))
+            .await;
+            let mut ctx = context();
+            ctx.target.adapter_namespace = namespace.into();
+            let status = run_vm(
+                &ctx,
+                &booted(),
+                &client,
+                &signal_after(Duration::from_millis(300), 15),
+                captured().0,
+            )
+            .await
+            .unwrap();
+            let calls = calls(&mut called);
+            assert_eq!(
+                exit_code(status),
+                exit_code_on_signal(15),
+                "unknown owner must not abandon stop: {calls:?}"
+            );
+            assert_eq!(payloads(&calls, "worker::stop").len(), 2);
+            assert!(
+                payloads(&calls, "engine::workers::info").is_empty(),
+                "no actual owner is known"
+            );
+            client.shutdown_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn f04_metadata_errors_never_prove_the_stop_owner_gone_or_extend_the_deadline() {
+        for metadata in [
+            json!({"error": {"code": "FORBIDDEN", "message": "not visible"}}),
+            answered(json!({"worker_name": "not-enough-fields"})),
+            answered(
+                json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "wrong-namespace", "worker_name": "actual-owner"}),
+            ),
+            answered(
+                json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "orders", "worker_name": ""}),
+            ),
+            json!(true),
+        ] {
+            let (client, mut called) = stop_engine(adapter(move |suffix, _| match suffix {
+                "engine::functions::info" => Some(metadata.clone()),
+                "engine::workers::info" => {
+                    Some(json!({"error": {"code": "NOT_FOUND", "message": "must not be asked"}}))
+                }
+                "worker::stop" => {
+                    Some(json!({"error": {"code": "function_not_found", "message": "registering"}}))
+                }
+                _ => None,
+            }))
+            .await;
+            let (sender, shutdown) = Shutdown::manual();
+            let trigger = async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                let at = Instant::now();
+                sender.send_replace(Some((15, at)));
+                at
+            };
+            let ctx = context_stopping_within("500");
+            let build = booted();
+            let (status, signalled) = tokio::join!(
+                run_vm(&ctx, &build, &client, &shutdown, captured().0),
+                trigger
+            );
+            let elapsed = signalled.elapsed();
+            assert_eq!(exit_code(status.unwrap()), exit_code_on_signal(9));
+            assert!(
+                (Duration::from_millis(420)..Duration::from_millis(750)).contains(&elapsed),
+                "unknown owner must honor original shared deadline: {elapsed:?}"
+            );
+            assert!(payloads(&calls(&mut called), "engine::workers::info").is_empty());
+            client.shutdown_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn f04_cached_stop_owner_is_discarded_after_an_engine_reconnect() {
+        let metadata = Arc::new(AtomicUsize::new(0));
+        let reads = metadata.clone();
+        let stops = Arc::new(AtomicUsize::new(0));
+        let seen = stops.clone();
+        let statuses = Arc::new(AtomicUsize::new(0));
+        let polls = statuses.clone();
+        let (sender, shutdown) = Shutdown::manual();
+        let (client, mut called) = stop_engine(adapter(move |suffix, _| match suffix {
+            "engine::functions::info" if reads.fetch_add(1, Ordering::SeqCst) == 0 => Some(answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": "orders", "worker_name": "old-connection-owner"}))),
+            "engine::functions::info" | "engine::workers::info" => Some(json!({"error": {"code": "NOT_FOUND", "message": "not on this connection"}})),
+            "worker::status" if polls.fetch_add(1, Ordering::SeqCst) == 0 => Some(Value::Null),
+            "worker::status" => {
+                sender.send_replace(Some((15, Instant::now())));
+                Some(status(State::Running, None, None))
+            }
+            "worker::stop" if seen.fetch_add(1, Ordering::SeqCst) == 0 => Some(json!({"error": {"code": "function_not_found", "message": "new owner registering"}})),
+            _ => None,
+        })).await;
+        let status = tokio::time::timeout(
+            Duration::from_secs(7),
+            run_vm(&context(), &booted(), &client, &shutdown, captured().0),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let calls = calls(&mut called);
+        assert_eq!(
+            exit_code(status),
+            exit_code_on_signal(15),
+            "stale owner must not prove the current owner gone: {calls:?}"
+        );
+        assert_eq!(payloads(&calls, "worker::stop").len(), 2);
+        assert!(payloads(&calls, "engine::workers::info").is_empty());
+        client.shutdown_async().await;
+    }
+
+    #[tokio::test]
+    async fn f04_cached_actual_owner_absent_or_disconnected_stops_promptly() {
+        for namespace in ["default", "orders"] {
+            for disconnected in [false, true] {
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let seen = attempts.clone();
+                let (client, mut called) = stop_engine(adapter(move |suffix, payload| match suffix {
+                    "engine::functions::info" => Some(if seen.load(Ordering::SeqCst) == 0 {
+                        answered(json!({"function_id": "sandbox-libkrun::worker::stop", "namespace": namespace, "worker_name": "actual-owner"}))
+                    } else {
+                        json!({"error": {"code": "NOT_FOUND", "message": "unregistered"}})
+                    }),
+                    "engine::workers::info" => {
+                        assert_eq!(payload["name"], "actual-owner");
+                        assert_eq!(payload["namespace"], namespace);
+                        Some(if disconnected {
+                            answered(json!({"worker": {"name": "actual-owner", "namespace": namespace, "status": "disconnected"}}))
+                        } else {
+                            json!({"error": {"code": "NOT_FOUND", "message": "owner gone"}})
+                        })
+                    }
+                    "worker::stop" => {
+                        seen.fetch_add(1, Ordering::SeqCst);
+                        Some(json!({"error": {"code": "function_not_found", "message": "gone"}}))
+                    }
+                    _ => None,
+                })).await;
+                let mut ctx = context_stopping_within("2000");
+                ctx.target.adapter_namespace = namespace.into();
+                let begun = Instant::now();
+                let status = run_vm(
+                    &ctx,
+                    &booted(),
+                    &client,
+                    &signal_after(Duration::from_millis(300), 15),
+                    captured().0,
+                )
+                .await
+                .unwrap();
+                assert!(begun.elapsed() < Duration::from_millis(800));
+                assert_eq!(exit_code(status), exit_code_on_signal(9));
+                assert_eq!(payloads(&calls(&mut called), "worker::stop").len(), 1);
+                client.shutdown_async().await;
+            }
+        }
     }
 }

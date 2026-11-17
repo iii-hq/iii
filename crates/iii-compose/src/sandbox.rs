@@ -917,6 +917,7 @@ fn host_only(name: &str) -> bool {
                 sandbox_cli::BUILD_DIR_ENV,
                 sandbox_cli::BUILD_TIMEOUT_ENV,
                 sandbox_cli::BUILD_BASE_IMAGE_ENV,
+                sandbox_cli::BUILD_WORKER_ENV,
                 sandbox_cli::BUILD_COMPOSE_FILE_ENV,
                 sandbox_cli::PACKAGE_DIR_ENV,
                 sandbox_cli::PACKAGE_NAME_ENV,
@@ -962,6 +963,7 @@ pub(crate) fn layer_own_vm_env(
         .keys()
         .map(String::as_str)
         .chain(crate::spawn::RESERVED_ENV)
+        .chain([crate::spawn::HOST_USER_ID_ENV])
         .filter(|name| !host_only(name))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -1019,6 +1021,17 @@ pub(crate) fn layer_own_vm_env(
         (
             sandbox_cli::BUILD_BASE_IMAGE_ENV.to_string(),
             container.base_image.clone().unwrap_or_default(),
+        ),
+        (
+            sandbox_cli::BUILD_WORKER_ENV.to_string(),
+            crate::build_record::plan_worker(
+                &compose_file,
+                key,
+                match &container.worker {
+                    WorkerSource::Path { declared, .. } => declared.clone(),
+                    WorkerSource::Package { reference } => format!("package://{reference}"),
+                },
+            )?,
         ),
         (
             sandbox_cli::BUILD_TIMEOUT_ENV.to_string(),
