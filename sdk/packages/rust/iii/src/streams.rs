@@ -2680,10 +2680,10 @@ pub(crate) fn hand_off_sources(payload: &mut Value) -> Vec<Arc<InputInner>> {
     sources
 }
 
-/// An in-process call that failed or timed out: the sources it passed that
-/// its handler has not read to the end (or cancelled) are aborted with
-/// `reason`, so a read of one fails with `STREAM_ABORTED`, as the pipe of a
-/// call through the engine aborts.
+/// An in-process call that failed (its handler or its sinks) or timed out:
+/// the sources it passed that its handler has not read to the end (or
+/// cancelled) are aborted with `reason`, so a read of one fails with
+/// `STREAM_ABORTED`, as the pipe of a call through the engine aborts.
 pub(crate) fn abort_sources(sources: &[Arc<InputInner>], reason: &str) {
     for source in sources {
         source.abort(reason);

@@ -712,7 +712,13 @@ impl IIIClient {
         if let Err(error) = &result {
             crate::streams::abort_sources(&sources, &error.to_string());
         }
-        crate::streams::settle_local_sinks(sinks, result, deadline).await
+        let result = crate::streams::settle_local_sinks(sinks, result, deadline).await;
+        // Failed on its sinks (the handler succeeded): its sources are
+        // aborted too. Those already aborted stay as they are.
+        if let Err(error) = &result {
+            crate::streams::abort_sources(&sources, &error.to_string());
+        }
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -2081,3 +2081,77 @@ async fn a_read_ref_found_in_a_result_opens_with_from_ref() {
     }
     iii.shutdown_async().await;
 }
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct HoldBoth {
+    mode: String,
+    body: InputStream,
+    out: OutputStream,
+}
+
+/// An in-process call whose handler succeeded fails on its sink (aborted,
+/// failed, or still open at the call's timeout): the source it passed is
+/// aborted too, as when the handler fails or times out, so a later read of
+/// it fails with `STREAM_ABORTED`.
+#[tokio::test]
+async fn an_in_process_call_that_fails_on_its_sink_aborts_its_sources() {
+    let id = uid();
+    let iii = client(&format!("local-sink-fails-{id}")).await;
+    let function_id = format!("st{id}::hold");
+    let held: Arc<Mutex<Vec<(InputStream, OutputStream)>>> = Arc::default();
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async({
+            let held = held.clone();
+            move |req: HoldBoth| {
+                let held = held.clone();
+                async move {
+                    req.out.keep_open();
+                    match req.mode.as_str() {
+                        "abort" => req.out.abort("disk full").await?,
+                        "fail" => {
+                            for _ in 0..2 {
+                                let _ = req.out.write(b"x").await;
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Kept alive, unread: only the call can end them.
+                    held.lock().unwrap().push((req.body, req.out));
+                    Ok::<_, Error>(())
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    for (mode, code) in [
+        ("abort", STREAM_ABORTED),
+        ("fail", STREAM_ABORTED),
+        ("keep", "TIMEOUT"),
+    ] {
+        let out = if mode == "fail" {
+            OutputStream::to_writer(Broken(0))
+        } else {
+            OutputStream::to_writer(Recorder::default())
+        };
+        let error = iii
+            .call(
+                via(
+                    true,
+                    &function_id,
+                    json!({ "mode": mode, "body": InputStream::from_bytes(&b"unread"[..]), "out": out }),
+                )
+                .timeout(Duration::from_millis(500)),
+            )
+            .await
+            .expect_err("the call succeeded with a sink that did not end well");
+        assert_eq!(error.code(), Some(code), "{mode}: {error:?}");
+        let (body, _out) = held.lock().unwrap().pop().expect("the handler ran");
+        let read = body
+            .read_all()
+            .await
+            .expect_err("the source of a call that failed on its sink ended cleanly");
+        assert_eq!(read.code(), Some(STREAM_ABORTED), "{mode}: {read:?}");
+    }
+    iii.shutdown_async().await;
+}
