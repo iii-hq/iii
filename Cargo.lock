@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "iii"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1800,7 +1800,7 @@ dependencies = [
 
 [[package]]
 name = "iii-filter"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "criterion",
  "serde",
@@ -1809,7 +1809,7 @@ dependencies = [
 
 [[package]]
 name = "iii-helpers"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "futures-util",
  "opentelemetry",
@@ -1830,14 +1830,14 @@ dependencies = [
 
 [[package]]
 name = "iii-observability"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "iii-helpers",
 ]
 
 [[package]]
 name = "iii-sandbox-contract"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "hex",
  "hmac",
@@ -1850,7 +1850,7 @@ dependencies = [
 
 [[package]]
 name = "iii-sdk"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "scaffolder-core"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 dependencies = [
  "anyhow",
  "cliclack",
