@@ -10,9 +10,9 @@ use axum::{
     extract::ws::WebSocket,
     http::{HeaderMap, Uri},
 };
-use chrono::Utc;
 use dashmap::DashMap;
 use futures_util::{FutureExt, SinkExt, StreamExt};
+use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot::error::RecvError};
@@ -2435,7 +2435,7 @@ impl Engine {
                         request_format: req.clone(),
                         response_format: res.clone(),
                         metadata: reg_metadata.clone(),
-                        registered_at: Some(Utc::now()),
+                        registered_at: Some(Timestamp::now()),
                         updated_at: None,
                     };
 
@@ -4048,7 +4048,7 @@ mod tests {
             name: "iii-state".to_string(),
             description: None,
             worker_type: "iii-state".to_string(),
-            connected_at: chrono::Utc::now(),
+            connected_at: jiff::Timestamp::now(),
             function_ids: vec!["state::get".to_string()],
             internal: false,
         });

@@ -142,7 +142,7 @@ pub fn print_advisory_warnings(matched: &[MatchedAdvisory]) {
 mod tests {
     use super::*;
     use crate::cli::state::BinaryState;
-    use chrono::Utc;
+    use jiff::Timestamp;
     use std::collections::HashMap;
 
     fn make_state(binary: &str, version: &str) -> AppState {
@@ -151,7 +151,7 @@ mod tests {
             binary.to_string(),
             BinaryState {
                 version: Version::parse(version).unwrap(),
-                installed_at: Utc::now(),
+                installed_at: Timestamp::now(),
                 asset_name: "test.tar.gz".to_string(),
             },
         );

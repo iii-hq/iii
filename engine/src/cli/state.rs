@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
@@ -21,8 +21,8 @@ pub struct AppState {
     pub binaries: HashMap<String, BinaryState>,
 
     /// Timestamp of last update check
-    #[serde(default)]
-    pub last_update_check: Option<DateTime<Utc>>,
+    #[serde(default, serialize_with = "iii::timestamps::optional::serialize")]
+    pub last_update_check: Option<Timestamp>,
 
     /// Hours between update checks (default: 24)
     #[serde(default = "default_interval")]
@@ -36,7 +36,8 @@ pub struct BinaryState {
     pub version: Version,
 
     /// When this version was installed
-    pub installed_at: DateTime<Utc>,
+    #[serde(serialize_with = "iii::timestamps::serialize")]
+    pub installed_at: Timestamp,
 
     /// The asset name that was downloaded
     pub asset_name: String,
@@ -112,8 +113,8 @@ impl AppState {
         match self.last_update_check {
             None => true,
             Some(last) => {
-                let elapsed = Utc::now() - last;
-                elapsed.num_hours() >= self.update_check_interval_hours as i64
+                let elapsed = Timestamp::now().duration_since(last);
+                elapsed.as_hours() >= self.update_check_interval_hours as i64
             }
         }
     }
@@ -124,7 +125,7 @@ impl AppState {
             binary_name.to_string(),
             BinaryState {
                 version,
-                installed_at: Utc::now(),
+                installed_at: Timestamp::now(),
                 asset_name,
             },
         );
@@ -137,7 +138,7 @@ impl AppState {
 
     /// Mark the update check as completed.
     pub fn mark_update_checked(&mut self) {
-        self.last_update_check = Some(Utc::now());
+        self.last_update_check = Some(Timestamp::now());
     }
 }
 
@@ -145,6 +146,43 @@ impl AppState {
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn timestamp_state_loads_legacy_offsets_and_preserves_utc_json() {
+        let state: AppState = serde_json::from_value(serde_json::json!({
+            "binaries": {"iii": {"version": "1.2.3", "installed_at": "2026-01-02T04:04:05.12+01:00", "asset_name": "iii.zip"}},
+            "last_update_check": "2026-01-02T03:04:05.1234Z"
+        })).unwrap();
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            json["binaries"]["iii"]["installed_at"],
+            "2026-01-02T03:04:05.120Z"
+        );
+        assert_eq!(json["last_update_check"], "2026-01-02T03:04:05.123400Z");
+        assert!(state.is_update_check_due());
+        assert!(serde_json::to_value(AppState::default()).unwrap()["last_update_check"].is_null());
+    }
+
+    #[test]
+    fn timestamp_update_check_keeps_elapsed_hour_semantics() {
+        let mut state = AppState {
+            last_update_check: Some(Timestamp::now()),
+            ..AppState::default()
+        };
+        assert!(!state.is_update_check_due());
+        state.last_update_check = Some(
+            Timestamp::now()
+                .checked_sub(jiff::SignedDuration::from_hours(25))
+                .unwrap(),
+        );
+        assert!(state.is_update_check_due());
+        state.last_update_check = Some(
+            Timestamp::now()
+                .checked_add(jiff::SignedDuration::from_hours(25))
+                .unwrap(),
+        );
+        assert!(!state.is_update_check_due());
+    }
 
     #[test]
     fn test_default_state() {

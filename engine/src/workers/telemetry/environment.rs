@@ -185,7 +185,7 @@ pub fn claim_heartbeat(interval_secs: u64) -> bool {
         return true;
     };
 
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     // Clamp rather than cast: an interval past `i64::MAX` wraps negative, which
     // would invert the comparison below and suppress nothing.
     let min_gap =
@@ -1236,7 +1236,7 @@ state:
 
     /// Backdates the stamp by `age_secs` so a test does not have to wait.
     fn backdate_stamp(age_secs: i64) {
-        let stamp = chrono::Utc::now().timestamp() - age_secs;
+        let stamp = jiff::Timestamp::now().as_second() - age_secs;
         write_atomic(&heartbeat_stamp_path().unwrap(), &stamp.to_string());
     }
 
@@ -1333,7 +1333,7 @@ state:
     #[serial]
     fn test_claim_heartbeat_tolerates_whitespace_in_the_stamp() {
         let _dir = project_root_fixture();
-        let stamp = chrono::Utc::now().timestamp();
+        let stamp = jiff::Timestamp::now().as_second();
         write_atomic(&heartbeat_stamp_path().unwrap(), &format!("{stamp}\n"));
         assert!(
             !claim_heartbeat(SIX_HOURS),
