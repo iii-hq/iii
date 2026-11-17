@@ -616,23 +616,208 @@ pub struct Daemon {
     builds: Mutex<BTreeMap<PathBuf, Arc<BuildGate>>>,
 }
 
-/// The `compose::build` operations running on one project.
+/// Admission and cancellation for builds, including callers queued for mutation.
+#[derive(Default)]
 struct BuildGate {
-    operations: std::sync::Mutex<BTreeSet<String>>,
-    /// Held shared by each build while it runs; `down` takes it whole to wait them out.
-    running: tokio::sync::RwLock<()>,
-    /// `true` while a `down` stops them, whether or not an operation was registered for them.
-    cancel: tokio::sync::watch::Sender<bool>,
+    state: std::sync::Mutex<BuildGateState>,
 }
 
-impl Default for BuildGate {
-    fn default() -> Self {
-        Self {
-            operations: std::sync::Mutex::default(),
-            running: tokio::sync::RwLock::default(),
-            cancel: tokio::sync::watch::channel(false).0,
+#[derive(Default)]
+struct BuildGateState {
+    operations: BTreeMap<String, BuildOperation>,
+    stopping: BTreeMap<String, Option<BTreeSet<String>>>,
+}
+
+struct BuildOperation {
+    scope: BTreeSet<String>,
+    cancel: crate::shutdown::ShutdownController,
+    ended: tokio::sync::watch::Receiver<bool>,
+}
+
+fn overlaps(scope: &BTreeSet<String>, stopped: Option<&BTreeSet<String>>) -> bool {
+    stopped.is_none_or(|stopped| !scope.is_disjoint(stopped))
+}
+
+struct RegisteredBuild {
+    gate: Arc<BuildGate>,
+    id: String,
+    ended: tokio::sync::watch::Sender<bool>,
+}
+
+impl RegisteredBuild {
+    fn set_scope(&self, scope: BTreeSet<String>) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stopping = state
+            .stopping
+            .values()
+            .any(|stopped| overlaps(&scope, stopped.as_ref()));
+        if let Some(operation) = state.operations.get_mut(&self.id) {
+            operation.scope = scope;
+            if stopping {
+                operation.cancel.cancel();
+            }
         }
     }
+}
+
+impl Drop for RegisteredBuild {
+    fn drop(&mut self) {
+        self.gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .remove(&self.id);
+        self.ended.send_replace(true);
+    }
+}
+
+/// Keeps admission closed through teardown, not just until the old builds drain.
+struct StoppingBuilds {
+    gate: Arc<BuildGate>,
+    id: String,
+}
+
+impl Drop for StoppingBuilds {
+    fn drop(&mut self) {
+        self.gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stopping
+            .remove(&self.id);
+    }
+}
+
+impl BuildGate {
+    fn register(
+        self: &Arc<Self>,
+        id: &str,
+        scope: BTreeSet<String>,
+    ) -> (RegisteredBuild, crate::shutdown::ShutdownSignal) {
+        let cancel = crate::shutdown::ShutdownController::default();
+        let signal = cancel.signal();
+        let (ended, ends) = tokio::sync::watch::channel(false);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state
+            .stopping
+            .values()
+            .any(|stopped| overlaps(&scope, stopped.as_ref()))
+        {
+            cancel.cancel();
+        }
+        state.operations.insert(
+            id.to_string(),
+            BuildOperation {
+                scope,
+                cancel,
+                ended: ends,
+            },
+        );
+        (
+            RegisteredBuild {
+                gate: Arc::clone(self),
+                id: id.to_string(),
+                ended,
+            },
+            signal,
+        )
+    }
+
+    async fn stop(self: &Arc<Self>, scope: Option<BTreeSet<String>>) -> StoppingBuilds {
+        let id = uuid::Uuid::new_v4().to_string();
+        let waiting: Vec<_> = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let waiting = state
+                .operations
+                .values()
+                .filter(|op| overlaps(&op.scope, scope.as_ref()))
+                .map(|op| {
+                    op.cancel.cancel();
+                    op.ended.clone()
+                })
+                .collect();
+            state.stopping.insert(id.clone(), scope);
+            waiting
+        };
+        let guard = StoppingBuilds {
+            gate: Arc::clone(self),
+            id,
+        };
+        // Never await a lifecycle while holding the gate's state or its mutation lock.
+        for mut ended in waiting {
+            let _ = ended.wait_for(|ended| *ended).await;
+        }
+        guard
+    }
+}
+
+/// The build's actual targets and the dependencies it may start, including a migrated adapter.
+fn build_scope(file: &ComposeFile, worker: Option<&str>) -> Result<BTreeSet<String>> {
+    if let Some(key) = worker
+        && !file.containers.contains_key(key)
+    {
+        return Err(ComposeError::UnknownContainer {
+            container: key.to_string(),
+        });
+    }
+    let targets = file.containers.iter().filter(|(key, container)| {
+        worker.map_or_else(
+            || container.scripts.build.is_some() || crate::sandbox::migration_due(file, container),
+            |worker| key.as_str() == worker,
+        )
+    });
+    let mut scope = BTreeSet::new();
+    for (key, container) in targets {
+        scope.extend(crate::dag::dependency_closure(file, key));
+        if (crate::sandbox::migration_due(file, container)
+            || container
+                .scripts
+                .build_command()
+                .is_some_and(crate::sandbox::is_sandbox_build))
+            && let Some(adapter) =
+                crate::sandbox::adapter_key(file, crate::sandbox::adapter_name(file))?
+        {
+            scope.extend(crate::dag::dependency_closure(file, &adapter));
+        }
+    }
+    // Preparation migrates the project, even when the caller selected a host-only target.
+    if file
+        .containers
+        .values()
+        .any(|container| crate::sandbox::migration_due(file, container))
+        && let Some(adapter) =
+            crate::sandbox::adapter_key(file, crate::sandbox::adapter_name(file))?
+    {
+        scope.extend(crate::dag::dependency_closure(file, &adapter));
+    }
+    Ok(scope)
+}
+
+fn down_scope(file: &ComposeFile, target: Option<&str>) -> Result<Option<BTreeSet<String>>> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    if !file.containers.contains_key(target) {
+        return Err(ComposeError::UnknownContainer {
+            container: target.to_string(),
+        });
+    }
+    let mut affected: BTreeSet<_> = crate::dag::transitive_dependents(file, target)
+        .into_iter()
+        .collect();
+    affected.insert(target.to_string());
+    Ok(Some(affected))
 }
 
 impl Daemon {
@@ -744,20 +929,55 @@ impl Daemon {
     /// The caller holds this compose file's mutation lock through this call.
     /// Keep the candidate in memory until loading and metadata-lock acquisition
     /// finish, so cancellation cannot persist a partially prepared startup.
-    async fn prepare_start_project(&self, file: &Path, frozen: bool) -> Result<Arc<Project>> {
-        // Boxed: inline, this future overflows a debug build's stack.
-        crate::report::in_project_scope(
-            file,
-            Box::pin(self.prepare_start_project_scoped(file, frozen)),
-        )
-        .await
+    async fn prepare_start_project(
+        &self,
+        file: &Path,
+        frozen: bool,
+        shutdown: &crate::shutdown::ShutdownSignal,
+    ) -> Result<Arc<Project>> {
+        // Only metadata, acquisition and commit are safe to drop. A replacement owns children.
+        let (project, updated_adapter) = shutdown
+            .run(crate::report::in_project_scope(
+                file,
+                Box::pin(self.prepare_start_project_scoped(file, frozen)),
+            ))
+            .await
+            .ok_or_else(|| ComposeError::OperationCancelled {
+                operation_id: "prepare-start".to_string(),
+            })??;
+        if let Some(adapter) = updated_adapter
+            && project.is_running(&adapter).await
+        {
+            let restarted = Box::pin(project.restart_one_until_shutdown(
+                &adapter,
+                format!("{adapter}-update"),
+                shutdown.clone(),
+            ))
+            .await;
+            if shutdown.requested() {
+                return Err(ComposeError::OperationCancelled {
+                    operation_id: "prepare-start".to_string(),
+                });
+            }
+            if restarted.status == OpStatus::Failed {
+                let detail = restarted
+                    .primary_error
+                    .as_ref()
+                    .map_or_else(String::new, |error| format!(": {}", error.message));
+                crate::report::daemon_line(
+                    &format!("{adapter}: did not restart on its new release{detail}"),
+                    true,
+                );
+            }
+        }
+        Ok(project)
     }
 
     async fn prepare_start_project_scoped(
         &self,
         file: &Path,
         frozen: bool,
-    ) -> Result<Arc<Project>> {
+    ) -> Result<(Arc<Project>, Option<String>)> {
         let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
             path: file.to_path_buf(),
             source,
@@ -834,25 +1054,7 @@ impl Daemon {
         project
             .commit_prepared_packages(&compose, &prepared, &rewritten)
             .await?;
-        // A running adapter the update replaced still lacks `worker.build`: it restarts on the new
-        // release, and the VM containers it runs follow it (spec 7.2).
-        if let Some(adapter) = updated_adapter
-            && project.is_running(&adapter).await
-        {
-            let restarted =
-                Box::pin(project.restart_one(&adapter, format!("{adapter}-update"))).await;
-            if restarted.status == OpStatus::Failed {
-                let detail = restarted
-                    .primary_error
-                    .as_ref()
-                    .map_or_else(String::new, |error| format!(": {}", error.message));
-                crate::report::daemon_line(
-                    &format!("{adapter}: did not restart on its new release{detail}"),
-                    true,
-                );
-            }
-        }
-        Ok(project)
+        Ok((project, updated_adapter))
     }
 
     /// The project `file` declares, loading it if this is the first time.
@@ -1016,9 +1218,10 @@ impl Daemon {
             return Ok(None);
         };
         // Drop only preparation; lifecycle startup must roll back owned children.
-        let Some(project) = shutdown.run(self.prepare_start_project(file, frozen)).await else {
+        let project = self.prepare_start_project(file, frozen, &shutdown).await;
+        if shutdown.requested() {
             return Ok(None);
-        };
+        }
         let project = project?;
         if shutdown.requested() {
             return Ok(None);
@@ -1859,13 +2062,6 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
 
         let path = path.as_path();
-        // A build of a removed container would hold the mutation lock until it ends, and keep
-        // its VM from being destroyed (S509): it stops first. Until the remove ends, a start or
-        // rebuild of it that takes its build slot gives up.
-        let mut _stopping = Vec::with_capacity(workers.len());
-        for worker in &workers {
-            _stopping.push(crate::build_step::stop(path, worker).await);
-        }
         let _mutation = self
             .prepare(&operation_id, self.lock_mutation(path))
             .await?;
@@ -1920,6 +2116,17 @@ impl Daemon {
         // Stopped after the VMs that went before it.
         if let Some(crate::sandbox::AdapterChange::Remove(key)) = adapter {
             removal_order.push(key);
+        }
+
+        // All names, dependency edits, metadata and adapter changes validated under mutation.
+        // Builds release mutation before scripts, so stopping their slots cannot deadlock here.
+        let gate = self.build_gate(path).await;
+        let _builds_stopping = gate
+            .stop(Some(removal_order.iter().cloned().collect()))
+            .await;
+        let mut _stopping = Vec::with_capacity(removal_order.len());
+        for worker in &removal_order {
+            _stopping.push(crate::build_step::stop(path, worker).await);
         }
 
         // Read before anything is removed: a remove that removed answers no error of its own.
@@ -1988,8 +2195,8 @@ impl Daemon {
                 .prepare(&operation_id, self.lock_mutation(path))
                 .await?;
             let project = self
-                .prepare(&operation_id, self.prepare_start_project(path, false))
-                .await??;
+                .prepare_start_project(path, false, &self.cancellation(&operation_id))
+                .await?;
             let result = project.restart_one(key, operation_id).await;
             return Ok(MutationOutcome::from_operations(
                 result.status,
@@ -2029,20 +2236,18 @@ impl Daemon {
         container: Option<&str>,
         operation_id: &str,
     ) -> Result<(OpResult, OpResult)> {
-        let down = self
-            .down(Some(path), container, format!("{operation_id}-down"))
-            .await?;
+        let gate = self.build_gate(path).await;
+        let _stopping = gate.stop(None).await;
+        let project = self.project(path).await?;
+        let down = project
+            .down(container, format!("{operation_id}-down"))
+            .await;
         self.forget(path).await;
         // Once down has completed, operation cancellation must not strand the
         // project. Finish its replacement, but still honor process shutdown.
         let project = self
-            .shutdown
-            .signal()
-            .run(self.prepare_start_project(path, false))
-            .await
-            .ok_or_else(|| ComposeError::OperationCancelled {
-                operation_id: operation_id.to_string(),
-            })??;
+            .prepare_start_project(path, false, &self.shutdown.signal())
+            .await?;
         let up = project.up(container, format!("{operation_id}-up")).await;
         Ok((down, up))
     }
@@ -2261,6 +2466,51 @@ impl Daemon {
         Arc::clone(self.builds.lock().await.entry(key).or_default())
     }
 
+    async fn prospective_build_scope(
+        &self,
+        path: &Path,
+        compose: &ComposeFile,
+        worker: Option<&str>,
+    ) -> Result<BTreeSet<String>> {
+        let loaded = match self.loaded_project(path).await {
+            Some(project) => match project.build_plan(worker).await {
+                Ok(plan) => Some(plan),
+                Err(ComposeError::UnknownContainer { .. }) => None,
+                Err(error) => return Err(error),
+            },
+            None => None,
+        };
+        let mut scope = match build_scope(compose, worker) {
+            Ok(scope) => scope,
+            Err(ComposeError::UnknownContainer { .. }) if loaded.is_some() => BTreeSet::new(),
+            Err(error) => return Err(error),
+        };
+        if let Some(plan) = loaded {
+            scope.extend(plan.scope());
+        }
+        Ok(scope)
+    }
+
+    async fn teardown_scope(
+        &self,
+        path: &Path,
+        target: Option<&str>,
+    ) -> Result<Option<BTreeSet<String>>> {
+        let Some(target) = target else {
+            return Ok(None);
+        };
+        if let Some(project) = self.loaded_project(path).await {
+            match project.down_scope(target).await {
+                Ok(scope) => return Ok(Some(scope)),
+                // Preparation may be introducing this target to the retained project.
+                Err(ComposeError::UnknownContainer { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let file = ComposeFile::load(path)?;
+        down_scope(&file, Some(target))
+    }
+
     /// The containers `compose::build` would build: `worker`, or each that declares a
     /// `scripts.build` or that the explicit VM mode will give one (spec 7.4). Read-only, for the
     /// `requested` of its accepted answer.
@@ -2291,8 +2541,8 @@ impl Daemon {
             .collect())
     }
 
-    /// `compose::build` (spec 7.4): under the project's mutation lock, rewrites what the explicit
-    /// VM mode needs (spec 7.3), loads the project and runs the builds, restarting nothing.
+    /// `compose::build` (spec 7.4): prepares the explicit VM mode (spec 7.3) under mutation,
+    /// then runs scripts outside that lock, restarting no built container.
     /// `compose::cancel` of `operation_id`, or a `down`, stops them.
     pub async fn build(
         &self,
@@ -2304,37 +2554,49 @@ impl Daemon {
         let path = path.as_path();
         self.validate_engine_policy_file(path)?;
         let gate = self.build_gate(path).await;
-        gate.operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(operation_id.clone());
-        let cancel =
-            self.cancellation(&operation_id)
-                .or(crate::shutdown::ShutdownSignal::from_receiver(
-                    gate.cancel.subscribe(),
-                ));
+        let mut compose = ComposeFile::load(path)?;
+        crate::lockfile::attach(&mut compose)?;
+        let (registered, signal) = gate.register(
+            &operation_id,
+            self.prospective_build_scope(path, &compose, worker).await?,
+        );
+        let cancel = self.cancellation(&operation_id).or(signal);
         let cancelled = || ComposeError::OperationCancelled {
             operation_id: operation_id.clone(),
         };
-        let result = async {
-            let _running = gate.running.read().await;
+        // Admission covers queued callers as well as active preparation and scripts.
+        let (project, plan) = {
             let _mutation = cancel
                 .run(self.lock_mutation(path))
                 .await
                 .ok_or_else(cancelled)?;
-            let project = cancel
-                .run(self.prepare_start_project(path, false))
+            let mut current = ComposeFile::load(path)?;
+            crate::lockfile::attach(&mut current)?;
+            registered.set_scope(self.prospective_build_scope(path, &current, worker).await?);
+            if cancel.requested() {
+                return Err(cancelled());
+            }
+            let project = self
+                .prepare_start_project(path, false, &cancel)
                 .await
-                .ok_or_else(cancelled)??;
-            crate::report::in_project_scope(path, project.build(worker, &operation_id, &cancel))
-                .await
-        }
-        .await;
-        gate.operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&operation_id);
-        result
+                .map_err(|error| {
+                    if cancel.requested() {
+                        cancelled()
+                    } else {
+                        error
+                    }
+                })?;
+            // Freeze execution and cancellation scope from the same retained declaration.
+            let plan = project.build_plan(worker).await?;
+            registered.set_scope(plan.scope());
+            if cancel.requested() {
+                return Err(cancelled());
+            }
+            (project, plan)
+        };
+        // A long-running script must not prevent validation of remove or unrelated down.
+        crate::report::in_project_scope(path, project.build_prepared(plan, &operation_id, &cancel))
+            .await
     }
 
     /// Takes a project down. A `compose::build` running on it is cancelled first (spec 7.4).
@@ -2346,23 +2608,18 @@ impl Daemon {
     ) -> Result<OpResult> {
         let path = self.resolve_file(file).await?;
         let path = path.as_path();
-        self.validate_engine_policy_file(path)?;
         let gate = self.build_gate(path).await;
-        let building: Vec<String> = gate
-            .operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .cloned()
-            .collect();
-        gate.cancel.send_replace(true);
-        for build in &building {
-            self.operations.cancel(build).await;
-        }
-        drop(gate.running.write().await);
-        gate.cancel.send_replace(false);
+        // Known resources must stop even if the operator's current YAML or lock is invalid.
+        // Close admission before waiting for mutation: preparation may own a new adapter.
+        let _stopping = gate.stop(self.teardown_scope(path, container).await?).await;
+        let _mutation = self.lock_mutation(path).await;
+        // Re-read only the retained graph: a mutation ahead of down may have replaced it.
+        let _current_stopping = gate.stop(self.teardown_scope(path, container).await?).await;
         crate::report::mutation_begin(path);
-        let project = self.project(path).await?;
+        let project = match self.loaded_project(path).await {
+            Some(project) => project,
+            None => self.project(path).await?,
+        };
         Ok(project.down(container, operation_id).await)
     }
 
@@ -3422,7 +3679,10 @@ mod tests {
         // A subsequent attempt must still commit the prepared lock and load
         // the project once the contended lock is available again.
         let _mutation = daemon.lock_mutation(&path).await;
-        daemon.prepare_start_project(&path, false).await.unwrap();
+        daemon
+            .prepare_start_project(&path, false, &daemon.shutdown.signal())
+            .await
+            .unwrap();
         let lock: serde_yaml::Value =
             serde_yaml::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
         assert!(lock["containers"].as_mapping().unwrap().is_empty());
@@ -4802,7 +5062,10 @@ containers:
         let project = crate::registry::TEST_REGISTRY
             .scope(server.uri(), async {
                 // As `compose::up` starts it: `.iii/workers/` is filled before the first build.
-                let project = daemon.prepare_start_project(&path, false).await.unwrap();
+                let project = daemon
+                    .prepare_start_project(&path, false, &daemon.shutdown.signal())
+                    .await
+                    .unwrap();
                 let up = project.up(None, "first".into()).await;
                 assert_eq!(up.status, OpStatus::Ok, "{up:?}");
                 project
@@ -6316,5 +6579,941 @@ mod declared_dependency_tests {
             selected_versions.get("state").map(String::as_str),
             Some("0.22.9")
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+pub(crate) mod findings_lifecycle_tests {
+    use crate::sandbox::tests::{adapter_registry, manifest};
+    use std::path::{Path, PathBuf};
+    const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
+    fn compose_path(dir: &Path, text: &str) -> PathBuf {
+        let path = dir.join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+
+    struct DaemonCleanup(Option<std::sync::Arc<crate::daemon::Daemon>>);
+    impl Drop for DaemonCleanup {
+        fn drop(&mut self) {
+            let Some(daemon) = self.0.take() else {
+                return;
+            };
+            std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        daemon.shutdown().await;
+                    });
+            })
+            .join()
+            .unwrap();
+        }
+    }
+
+    // Only PID files written by this fixture are eligible for cleanup. Production owns reaping.
+    pub(crate) struct ProcessCleanup(pub(crate) Vec<PathBuf>);
+    impl Drop for ProcessCleanup {
+        fn drop(&mut self) {
+            let owned: Vec<_> = self
+                .0
+                .iter()
+                .flat_map(|path| {
+                    std::fs::read_to_string(path)
+                        .unwrap_or_default()
+                        .lines()
+                        .filter_map(|line| line.trim().parse::<u32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .map(|pid| (pid, crate::process::birth_identity(pid)))
+                .collect();
+            for (pid, birth) in &owned {
+                if crate::process::unix::is_same_process(*pid, birth)
+                    && nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(*pid as i32)))
+                        .is_ok_and(|group| group.as_raw() == *pid as i32)
+                {
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(*pid as i32),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                }
+            }
+            // The supervised spawn's waiter must reap, even on a RED assertion/panic.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while owned
+                .iter()
+                .any(|(pid, birth)| crate::process::unix::is_same_process(*pid, birth))
+            {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            for (pid, birth) in owned {
+                let reaped = !crate::process::unix::is_same_process(pid, &birth);
+                eprintln!("fixture-owned pid {pid}: reaped={reaped}");
+                if !std::thread::panicking() {
+                    assert!(reaped, "fixture process {pid} was not reaped");
+                }
+            }
+        }
+    }
+    /// A daemon with no engine, serving a long host build of `api` and an idle `web`.
+    /// Returns once `api`'s build runs, with the task that awaits it.
+    async fn daemon_with_a_running_build(
+        dir: &Path,
+    ) -> (
+        std::sync::Arc<crate::daemon::Daemon>,
+        PathBuf,
+        tokio::task::JoinHandle<crate::error::Result<crate::lifecycle::BuildRun>>,
+    ) {
+        daemon_with_a_running_build_on(dir, "ws://127.0.0.1:1/ws".into()).await
+    }
+
+    async fn daemon_with_a_running_build_on(
+        dir: &Path,
+        engine_url: String,
+    ) -> (
+        std::sync::Arc<crate::daemon::Daemon>,
+        PathBuf,
+        tokio::task::JoinHandle<crate::error::Result<crate::lifecycle::BuildRun>>,
+    ) {
+        daemon_with_a_running_build_declared(dir, engine_url, false).await
+    }
+
+    async fn daemon_with_a_running_build_declared(
+        dir: &Path,
+        engine_url: String,
+        dependency: bool,
+    ) -> (
+        std::sync::Arc<crate::daemon::Daemon>,
+        PathBuf,
+        tokio::task::JoinHandle<crate::error::Result<crate::lifecycle::BuildRun>>,
+    ) {
+        manifest(dir, "api", "scripts: {start: run}\n");
+        manifest(dir, "web", "scripts: {start: run}\n");
+        let marker = dir.join("build-started");
+        let path = compose_path(
+            dir,
+            &format!(
+                "containers:\n  api:\n    worker: path://./api\n    scripts: {{build: 'echo $$$$ > {}; exec sleep 60', run: echo ready}}\n  web:\n    worker: path://./web\n    scripts: {{run: echo ready}}\n",
+                marker.display()
+            ),
+        );
+        if dependency {
+            let text = std::fs::read_to_string(&path).unwrap().replace(
+                "worker: path://./api",
+                "worker: path://./api\n    start_after: [web]",
+            );
+            std::fs::write(&path, text).unwrap();
+        }
+        let daemon = crate::daemon::Daemon::start(
+            engine_url,
+            format!("repro-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let build = tokio::spawn({
+            let daemon = std::sync::Arc::clone(&daemon);
+            let path = path.clone();
+            async move {
+                daemon
+                    .build(Some(&path), Some("api"), "build-op".into())
+                    .await
+            }
+        });
+        let mut setup_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the build never started"
+            );
+            assert!(
+                !build.is_finished(),
+                "the build ended early: {:?}",
+                build.await
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        setup_cleanup.0.take();
+        (daemon, path, build)
+    }
+
+    /// What became of the build: `None` while it still runs.
+    async fn build_outcome(
+        build: &mut tokio::task::JoinHandle<crate::error::Result<crate::lifecycle::BuildRun>>,
+    ) -> Option<String> {
+        match tokio::time::timeout(std::time::Duration::from_secs(2), build).await {
+            Err(_) => None,
+            Ok(joined) => Some(format!("{:?}", joined.unwrap())),
+        }
+    }
+
+    /// Finding 7: a remove that fails validation must not stop the build of a worker it names.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f07_a_refused_remove_leaves_the_build_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, mut build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+
+        let removed = daemon
+            .remove(
+                Some(&path),
+                &["api".to_string(), "typo".to_string()],
+                "remove-op".into(),
+                false,
+            )
+            .await;
+        let code = removed.as_ref().err().map(crate::error::ComposeError::code);
+        let outcome = build_outcome(&mut build).await;
+
+        let _ = daemon.down(Some(&path), None, "cleanup".into()).await;
+        daemon.shutdown().await;
+        assert_eq!(code, Some("UNKNOWN_CONTAINER"));
+        assert!(
+            outcome.is_none(),
+            "remove failed with {code:?}, but the build of api had ended: {}",
+            outcome.unwrap()
+        );
+    }
+
+    /// Finding 8: `compose::down worker=web` must not cancel the build of `api`.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f08_down_of_one_container_leaves_other_builds_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, mut build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+
+        let down = daemon
+            .down(Some(&path), Some("web"), "down-op".into())
+            .await;
+        let outcome = build_outcome(&mut build).await;
+
+        let _ = daemon.down(Some(&path), None, "cleanup".into()).await;
+        if outcome.is_none() {
+            let ended = tokio::time::timeout(std::time::Duration::from_secs(5), build)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert!(
+                ended.cancelled,
+                "whole-project down must still cancel every build"
+            );
+        }
+        daemon.shutdown().await;
+        assert!(down.is_ok(), "{down:?}");
+        assert!(
+            outcome.is_none(),
+            "down of web ended the build of api: {}",
+            outcome.unwrap()
+        );
+    }
+
+    /// A tar.gz holding `files`: name, mode, body.
+    fn tar_gz(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, mode, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *body).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Finding 2: `compose::build` updates a running generated 0.3.x adapter (spec 7.2) and restarts
+    /// it during preparation. Cancellation must drain the replacement waiting for registration.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f02_a_cancelled_build_leaves_no_untracked_adapter() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let pids = |version: &str| dir.path().join(format!("adapter-{version}.pids"));
+        let _cleanup = ProcessCleanup(vec![pids("0.3.1"), pids("0.5.0")]);
+        let live = |file: &Path| -> Vec<u32> {
+            std::fs::read_to_string(file)
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|pid| pid.trim().parse().ok())
+                .filter(|pid| crate::process::is_running(*pid))
+                .collect()
+        };
+        // An adapter release: it notes its pid, then waits.
+        let release = |version: &str| {
+            tar_gz(&[(
+                "worker",
+                0o755,
+                format!(
+                    "#!/bin/sh\necho $$ >> {}\nexec sleep 60\n",
+                    pids(version).display()
+                )
+                .as_bytes(),
+            )])
+        };
+        let (old, new) = (release("0.3.1"), release("0.5.0"));
+        let server = adapter_registry(&new).await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact-031"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(old.clone()))
+            .mount(&server)
+            .await;
+
+        // A 0.26 project: the generated adapter at 0.3.1, locked, and nothing in a VM yet.
+        manifest(dir.path(), "link", VM_MANIFEST);
+        let request = crate::edit::parse_worker("sandbox-libkrun@0.3.1").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "namespace: shop\nstartup_timeout: 20s\nstop_timeout: 1s\ncontainers: {}\n",
+            &request,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let path = compose_path(dir.path(), &text);
+        std::fs::write(
+        crate::lockfile::lock_path(&path),
+        format!(
+            "version: 1\ncontainers:\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    requested: \"0.3.1\"\n    resolved:\n      name: sandbox-libkrun\n      version: 0.3.1\n      type: binary\n      artifacts:\n        {target}:\n          url: {uri}/artifact-031\n          sha256: \"{sha}\"\n",
+            target = crate::registry::host_targets()[0],
+            uri = server.uri(),
+            sha = hex::encode(sha2::Sha256::digest(&old)),
+        ),
+    )
+    .unwrap();
+
+        // The engine sees the 0.3.1 adapter; the 0.5.0 one never registers in time.
+        let old_pids = pids("0.3.1");
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let workers: Vec<serde_json::Value> = (!live(&old_pids).is_empty())
+                    .then(|| serde_json::json!({ "name": "sandbox-libkrun", "namespace": "shop" }))
+                    .into_iter()
+                    .collect();
+                answered(serde_json::json!({ "workers": workers }))
+            }
+            "engine::functions::list" => answered(serde_json::json!({ "functions": [] })),
+            "configuration::get" => {
+                serde_json::json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(serde_json::json!({ "action": "missing" })),
+            _ => not_found(),
+        })
+        .await;
+        let daemon = crate::daemon::Daemon::start(
+            url,
+            format!("repro-f02-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        async fn scoped<T>(
+            cache: PathBuf,
+            registry: String,
+            work: impl std::future::Future<Output = T>,
+        ) -> T {
+            crate::state::TEST_PACKAGE_CACHE
+                .scope(cache, crate::registry::TEST_REGISTRY.scope(registry, work))
+                .await
+        }
+
+        let up = scoped(
+            cache.path().to_path_buf(),
+            server.uri(),
+            daemon.up(Some(&path), None, "up".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(up.status, crate::lifecycle::OpStatus::Ok, "{up:?}");
+        assert_eq!(live(&pids("0.3.1")).len(), 1, "the 0.3.1 adapter runs");
+
+        // A VM container appears: the next preparation migrates and updates the adapter.
+        std::fs::write(&path, format!("{text}  link:\n    worker: path://./link\n")).unwrap();
+        let build = tokio::spawn({
+            let (daemon, path, cache, registry) = (
+                std::sync::Arc::clone(&daemon),
+                path.clone(),
+                cache.path().to_path_buf(),
+                server.uri(),
+            );
+            async move {
+                scoped(
+                    cache,
+                    registry,
+                    daemon.build(Some(&path), Some("link"), "build-op".into()),
+                )
+                .await
+            }
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while live(&pids("0.5.0")).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the 0.5.0 adapter never started"
+            );
+            assert!(
+                !build.is_finished(),
+                "the build ended early: {:?}",
+                build.await
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // `compose::down worker=link` cancels the build (spec 7.4) while the adapter starts.
+        let down = daemon
+            .down(Some(&path), Some("link"), "down-op".into())
+            .await;
+        let built = tokio::time::timeout(std::time::Duration::from_secs(10), build)
+            .await
+            .expect("the build ended")
+            .unwrap();
+        let project = daemon.status(Some(&path)).await.unwrap();
+        let adapter = project
+            .status()
+            .await
+            .into_iter()
+            .find(|status| status.container == "sandbox-libkrun")
+            .unwrap();
+        let after_cancel = live(&pids("0.5.0"));
+        // A whole-project down stops what the project knows of.
+        let _ = daemon.down(Some(&path), None, "down-all".into()).await;
+        let after_down = live(&pids("0.5.0"));
+        daemon.shutdown().await;
+
+        assert!(down.is_ok(), "{down:?}");
+        assert!(
+            after_cancel.is_empty() && after_down.is_empty(),
+            "the build ended with {built:?}\nthe project shows the adapter as {:?} (pid {:?})\n0.5.0 \
+         adapter processes alive after the cancel: {after_cancel:?}, and still alive after a \
+         whole-project down: {after_down:?}",
+            adapter.state,
+            adapter.pid,
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f07_invalid_dependency_graph_leaves_the_build_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, mut build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let text = std::fs::read_to_string(&path).unwrap().replace(
+            "worker: path://./web",
+            "worker: path://./web\n    start_after: [typo]",
+        );
+        std::fs::write(&path, &text).unwrap();
+        let removed = daemon
+            .remove(Some(&path), &["api".into()], "bad-graph".into(), false)
+            .await;
+        let outcome = build_outcome(&mut build).await;
+        // Restore only this fixture so teardown can load the declaration again.
+        std::fs::write(&path, text.replace("    start_after: [typo]\n", "")).unwrap();
+        assert_eq!(removed.unwrap_err().code(), "UNKNOWN_DEPENDENCY");
+        assert!(
+            outcome.is_none(),
+            "invalid graph stopped build: {outcome:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_down_of_the_building_container_cancels_and_drains_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let down = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            daemon.down(Some(&path), Some("api"), "down-api".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let outcome = build.await.unwrap().unwrap();
+        assert_eq!(down.status, crate::lifecycle::OpStatus::Ok);
+        assert!(outcome.cancelled, "{outcome:?}");
+        let pid: u32 = std::fs::read_to_string(dir.path().join("build-started"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            !crate::process::is_running(pid),
+            "down returned before the build was reaped"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_down_of_a_dependency_cancels_affected_builds_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, build) =
+            daemon_with_a_running_build_declared(dir.path(), "ws://127.0.0.1:1/ws".into(), true)
+                .await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            daemon.down(Some(&path), Some("web"), "down-dependency".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(build.await.unwrap().unwrap().cancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_queued_builds_are_cancelled_by_scope_and_the_gate_lives_through_down() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", "scripts: {start: run}\n");
+        manifest(dir.path(), "web", "scripts: {start: run}\n");
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  api: {worker: path://./api, scripts: {build: echo built, run: echo ready}}\n  web: {worker: path://./web, scripts: {build: echo built, run: echo ready}}\n",
+        );
+        let daemon = crate::daemon::Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let mutation = daemon.lock_mutation(&path).await;
+        let mut api = Box::pin(daemon.build(Some(&path), Some("api"), "queued-api".into()));
+        let mut web = Box::pin(daemon.build(Some(&path), Some("web"), "queued-web".into()));
+        assert!(futures::poll!(api.as_mut()).is_pending());
+        assert!(futures::poll!(web.as_mut()).is_pending());
+        let mut down = Box::pin(daemon.down(Some(&path), Some("api"), "down".into()));
+        assert!(futures::poll!(down.as_mut()).is_pending());
+        assert_eq!(api.await.unwrap_err().code(), "OPERATION_CANCELLED");
+        assert!(
+            futures::poll!(web.as_mut()).is_pending(),
+            "unrelated queued build cancelled"
+        );
+        assert!(futures::poll!(down.as_mut()).is_pending());
+        // Admission stays closed while down is waiting for mutation.
+        assert_eq!(
+            daemon
+                .build(Some(&path), Some("api"), "late-api".into())
+                .await
+                .unwrap_err()
+                .code(),
+            "OPERATION_CANCELLED"
+        );
+        drop(mutation);
+        let (web, down) = tokio::join!(web, down);
+        assert!(!web.unwrap().cancelled);
+        assert_eq!(down.unwrap().status, crate::lifecycle::OpStatus::Ok);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f07_a_valid_remove_drains_builds_without_deadlocking() {
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+        let (url, _) = fake_engine_url(|function, _| match function {
+            "engine::workers::list" => answered(serde_json::json!({"workers": []})),
+            "engine::functions::list" => answered(serde_json::json!({"functions": []})),
+            "configuration::get" => {
+                serde_json::json!({"error": {"code": "NOT_FOUND", "message": "none"}})
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({"source_priority_archive_revision": 1}))
+            }
+            "configuration::migrate" => answered(serde_json::json!({"action": "missing"})),
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, build) = daemon_with_a_running_build_on(dir.path(), url).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        // The survivor's echo exits before registering; its failure is unrelated to removal.
+        let removed = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            daemon.remove(Some(&path), &["api".into()], "remove".into(), false),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(removed.changed);
+        assert!(build.await.unwrap().unwrap().cancelled);
+        let current = crate::ComposeFile::load(&path).unwrap();
+        assert!(!current.containers.contains_key("api"));
+        assert!(current.containers.contains_key("web"));
+        assert!(
+            !crate::build_step::slot(&path, "api").await.stopping(),
+            "remove leaked its stopping guard"
+        );
+    }
+
+    #[tokio::test]
+    async fn f08_build_scope_includes_migrating_adapter_and_its_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "vm", VM_MANIFEST);
+        manifest(dir.path(), "host", "scripts: {start: run}\n");
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  host: {worker: path://./host}\n  sb: {worker: package://sandbox-libkrun, version: 0.3.1, start_after: [host]}\n  vm: {worker: path://./vm}\n",
+        );
+        let file = crate::ComposeFile::load(&path).unwrap();
+        assert_eq!(
+            super::build_scope(&file, Some("vm")).unwrap(),
+            std::collections::BTreeSet::from(["host".into(), "sb".into(), "vm".into()])
+        );
+    }
+
+    async fn assert_down_uses_loaded_build_plan(remove_build_declaration: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("build-started");
+        let _cleanup = ProcessCleanup(vec![marker.clone()]);
+        for key in ["api", "web"] {
+            manifest(dir.path(), key, "scripts: {start: run}\n");
+        }
+        let original = format!(
+            "containers:\n  api:\n    worker: path://./api\n    start_after: [web]\n    scripts:\n      build: 'echo $$$$ > {}; exec sleep 60'\n      run: echo ready\n  web: {{worker: path://./web, scripts: {{run: echo ready}}}}\n",
+            marker.display()
+        );
+        let path = compose_path(dir.path(), &original);
+        let daemon = crate::daemon::Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        daemon.project(&path).await.unwrap();
+        let edited = if remove_build_declaration {
+            original
+                .lines()
+                .filter(|line| !line.contains("      build:"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        } else {
+            original.replace("    start_after: [web]\n", "")
+        };
+        std::fs::write(&path, edited).unwrap();
+        let mut build = tokio::spawn({
+            let daemon = std::sync::Arc::clone(&daemon);
+            let path = path.clone();
+            async move {
+                daemon
+                    .build(
+                        Some(&path),
+                        if remove_build_declaration {
+                            None
+                        } else {
+                            Some("api")
+                        },
+                        "stale-build".into(),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !marker.exists() {
+                assert!(!build.is_finished(), "loaded build did not run");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let target = if remove_build_declaration {
+            "api"
+        } else {
+            "web"
+        };
+        let down = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            daemon.down(Some(&path), Some(target), "stale-down".into()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let reaped = !crate::process::is_running(pid);
+        // The gate drains ownership before Tokio publishes JoinHandle completion.
+        let completed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut build).await;
+        let ended = completed.is_ok();
+        daemon
+            .down(Some(&path), None, "cleanup".into())
+            .await
+            .unwrap();
+        let outcome = match completed {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(_) => build.await.unwrap().unwrap(),
+        };
+        assert_eq!(down.status, crate::lifecycle::OpStatus::Ok);
+        assert!(
+            ended && reaped,
+            "selective down missed loaded plan: remove_build_declaration={remove_build_declaration}, ended={ended}, reaped={reaped}"
+        );
+        assert!(outcome.cancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r1_down_uses_loaded_dependencies_after_disk_edit() {
+        assert_down_uses_loaded_build_plan(false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r1_down_cancels_loaded_targets_removed_from_disk_build_scripts() {
+        assert_down_uses_loaded_build_plan(true).await;
+    }
+
+    async fn assert_down_ignores_invalid_disk(kind: &str, target: Option<&str>) {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("build-started");
+        let _cleanup = ProcessCleanup(vec![marker.clone()]);
+        let (daemon, path, mut build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let original = std::fs::read_to_string(&path).unwrap();
+        let lock = crate::lockfile::lock_path(&path);
+        let original_lock = std::fs::read(&lock).unwrap();
+        match kind {
+            "graph" => std::fs::write(
+                &path,
+                original.replace(
+                    "worker: path://./api",
+                    "worker: path://./api\n    start_after: [typo]",
+                ),
+            )
+            .unwrap(),
+            "yaml" => std::fs::write(&path, "containers: [broken\n").unwrap(),
+            "lock" => std::fs::write(&lock, "containers: [broken\n").unwrap(),
+            _ => unreachable!(),
+        }
+        let down = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            daemon.down(Some(&path), target, "invalid-disk-down".into()),
+        )
+        .await
+        .unwrap();
+        let pid: u32 = std::fs::read_to_string(&marker)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let reaped = !crate::process::is_running(pid);
+        // The gate drains ownership before Tokio publishes JoinHandle completion.
+        let completed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut build).await;
+        let ended = completed.is_ok();
+        // RED cleanup must work without relying on the broken path under test.
+        std::fs::write(&path, original).unwrap();
+        std::fs::write(&lock, original_lock).unwrap();
+        daemon
+            .down(Some(&path), None, "cleanup".into())
+            .await
+            .unwrap();
+        let outcome = match completed {
+            Ok(result) => result.unwrap().unwrap(),
+            Err(_) => build.await.unwrap().unwrap(),
+        };
+        assert!(down.is_ok(), "loaded down refused {kind}: {down:?}");
+        assert!(
+            ended && reaped,
+            "loaded down did not drain on invalid {kind}: ended={ended}, reaped={reaped}"
+        );
+        assert!(outcome.cancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r2_whole_down_ignores_invalid_disk_dependency_graph() {
+        assert_down_ignores_invalid_disk("graph", None).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r2_whole_down_ignores_invalid_disk_yaml() {
+        assert_down_ignores_invalid_disk("yaml", None).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r2_whole_down_ignores_malformed_disk_lock() {
+        assert_down_ignores_invalid_disk("lock", None).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r2_selective_down_ignores_invalid_disk_yaml() {
+        assert_down_ignores_invalid_disk("yaml", Some("api")).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r2_disk_edit_while_down_waits_for_mutation_cannot_abort_teardown() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cleanup = ProcessCleanup(vec![dir.path().join("build-started")]);
+        let (daemon, path, build) = daemon_with_a_running_build(dir.path()).await;
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let mutation = daemon.lock_mutation(&path).await;
+        let mut down = Box::pin(daemon.down(Some(&path), None, "waiting-down".into()));
+        assert!(futures::poll!(down.as_mut()).is_pending());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), build)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .cancelled
+        );
+        assert!(futures::poll!(down.as_mut()).is_pending());
+        std::fs::write(&path, "containers: [broken\n").unwrap();
+        drop(mutation);
+        let down = tokio::time::timeout(std::time::Duration::from_secs(5), down)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(down.status, crate::lifecycle::OpStatus::Ok);
+        assert!(
+            down.containers
+                .iter()
+                .all(|result| result.state == crate::state::ChildStatus::Stopped)
+        );
+    }
+
+    #[tokio::test]
+    async fn f08_r1_widening_a_registered_scope_observes_an_active_stop() {
+        let gate = std::sync::Arc::new(super::BuildGate::default());
+        let (registered, cancel) =
+            gate.register("widen", std::collections::BTreeSet::from(["api".into()]));
+        let _stopping = gate
+            .stop(Some(std::collections::BTreeSet::from(["web".into()])))
+            .await;
+        assert!(!cancel.requested());
+        registered.set_scope(std::collections::BTreeSet::from([
+            "api".into(),
+            "web".into(),
+        ]));
+        assert!(
+            cancel.requested(),
+            "plan widening must latch cancellation before execution"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r1_build_executes_the_registered_snapshot_after_reconciliation() {
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+        let (url, _) = fake_engine_url(|function, _| match function {
+            "engine::workers::list" => answered(serde_json::json!({"workers": []})),
+            "engine::functions::list" => answered(serde_json::json!({"functions": []})),
+            "configuration::get" => {
+                serde_json::json!({"error": {"code": "NOT_FOUND", "message": "none"}})
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({"source_priority_archive_revision": 1}))
+            }
+            "configuration::migrate" => answered(serde_json::json!({"action": "missing"})),
+            _ => not_found(),
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        for key in ["api", "web"] {
+            manifest(dir.path(), key, "scripts: {start: run}\n");
+        }
+        let old_marker = dir.path().join("old-plan");
+        let new_marker = dir.path().join("new-plan");
+        let original = format!(
+            "containers:\n  api:\n    worker: path://./api\n    start_after: [web]\n    scripts: {{build: 'echo old > {}', run: echo ready}}\n  web: {{worker: path://./web, scripts: {{run: echo ready}}}}\n",
+            old_marker.display()
+        );
+        let path = compose_path(dir.path(), &original);
+        let daemon = crate::daemon::Daemon::start(
+            url,
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let project = daemon.project(&path).await.unwrap();
+        let (plan, registered, signal) = {
+            let _mutation = daemon.lock_mutation(&path).await;
+            let plan = project.build_plan(Some("api")).await.unwrap();
+            let gate = daemon.build_gate(&path).await;
+            let (registered, signal) = gate.register("snapshot", plan.scope());
+            (plan, registered, signal)
+        };
+        {
+            // Reconcile through the same mutation boundary production uses, not a private field write.
+            let _mutation = daemon.lock_mutation(&path).await;
+            let edited = original.replace("    start_after: [web]\n", "").replace(
+                &format!("echo old > {}", old_marker.display()),
+                &format!("echo new > {}", new_marker.display()),
+            );
+            std::fs::write(&path, &edited).unwrap();
+            let file = crate::ComposeFile::load(&path).unwrap();
+            project
+                .reconcile_file(file, &[], "new-declaration".into())
+                .await;
+        }
+        assert_eq!(
+            plan.scope(),
+            std::collections::BTreeSet::from(["api".into(), "web".into()])
+        );
+        assert_eq!(
+            project.build_plan(Some("api")).await.unwrap().scope(),
+            std::collections::BTreeSet::from(["api".into()])
+        );
+        // Reconciliation ran the new build as part of starting the new declaration.
+        // Reset only its marker so the next assertions isolate the old registered execution.
+        assert!(new_marker.exists());
+        std::fs::remove_file(&new_marker).unwrap();
+        assert!(!old_marker.exists());
+        let built = project
+            .build_prepared(plan, "snapshot", &signal)
+            .await
+            .unwrap();
+        drop(registered);
+        assert!(!built.cancelled);
+        assert!(
+            old_marker.exists(),
+            "execution silently took a newer Project snapshot"
+        );
+        assert!(
+            !new_marker.exists(),
+            "execution used the newer build command"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn f08_r1_failed_preparation_releases_the_operation_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", "scripts: {start: run}\n");
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  api: {worker: path://./api, scripts: {build: echo built, run: echo ready}}\n",
+        );
+        let daemon = crate::daemon::Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            uuid::Uuid::new_v4().to_string(),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        let _daemon_cleanup = DaemonCleanup(Some(std::sync::Arc::clone(&daemon)));
+        let mutation = daemon.lock_mutation(&path).await;
+        let mut build = Box::pin(daemon.build(Some(&path), Some("api"), "failed-prepare".into()));
+        assert!(futures::poll!(build.as_mut()).is_pending());
+        let gate = daemon.build_gate(&path).await;
+        assert_eq!(gate.state.lock().unwrap().operations.len(), 1);
+        // A legal operator file save invalidates only preparation, after admission.
+        std::fs::write(&path, "containers: [broken\n").unwrap();
+        drop(mutation);
+        assert!(build.await.is_err());
+        assert!(gate.state.lock().unwrap().operations.is_empty());
+        let _stopping = gate.stop(None).await;
     }
 }
