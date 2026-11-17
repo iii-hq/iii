@@ -648,17 +648,14 @@ async fn the_guard_cancels_a_partly_read_input_and_leaves_an_unread_one() {
     written.unwrap();
     assert_eq!(out.unwrap(), json!({ "first": 1000 }));
     // The reader left: the engine closes the writer's socket, so writes stop
-    // being taken.
-    let deadline = Instant::now() + WAIT;
-    let failed = loop {
-        if pipe.output.write(&[2u8; 64 * 1024]).await.is_err() {
-            break true;
-        }
-        if Instant::now() > deadline {
-            break false;
-        }
-    };
-    assert!(failed, "the partly read input was not cancelled");
+    // being taken. The deadline bounds the whole loop, a write blocked on a
+    // full pipe included: one that fails only once the task above drops the
+    // stream is not the guard's doing.
+    let failed = tokio::time::timeout(WAIT, async {
+        while pipe.output.write(&[2u8; 64 * 1024]).await.is_ok() {}
+    })
+    .await;
+    assert!(failed.is_ok(), "the partly read input was not cancelled");
 
     let pipe = iii.pipe().await.unwrap();
     let wire = serde_json::to_value(&pipe.input).unwrap();
@@ -941,11 +938,19 @@ async fn an_observer_sees_stream_info_not_the_stream() {
     }
 }
 
-/// The URL of a channel end, as a 0.26 SDK builds it.
+/// The URL of a channel end, as a 0.26 SDK builds it: a query on the engine
+/// URL (`?token=...`) comes before the channel's own.
 fn raw_url(end: &Value) -> String {
+    let engine = engine_ws_url();
+    let (base, query) = engine.split_once('?').unwrap_or((&engine, ""));
+    let query = if query.is_empty() {
+        String::new()
+    } else {
+        format!("{query}&")
+    };
     format!(
-        "{}/ws/channels/{}?key={}&dir={}",
-        engine_ws_url().trim_end_matches('/'),
+        "{}/ws/channels/{}?{query}key={}&dir={}",
+        base.trim_end_matches('/'),
         end["channel_id"].as_str().unwrap(),
         end["access_key"].as_str().unwrap(),
         end["direction"].as_str().unwrap()
@@ -1377,6 +1382,50 @@ async fn an_untyped_handler_passes_a_raw_ref_on() {
     iii.shutdown_async().await;
 }
 
+/// A received ref a handler passes on as raw JSON in a call refused before
+/// anything is sent (a blank namespace) stays the handler's: its guard closes
+/// it when the handler succeeds, so the caller's sink ends instead of waiting
+/// for the call's timeout.
+#[tokio::test]
+async fn a_raw_ref_in_a_refused_call_stays_the_handlers() {
+    let id = uid();
+    let iii = client(&format!("refused-raw-{id}")).await;
+    let forward = format!("st{id}::forward");
+    let function = iii.register_function(
+        &forward,
+        RegisterFunction::new_async({
+            let iii = iii.clone();
+            move |input: Value| {
+                let iii = iii.clone();
+                async move {
+                    let refused = iii
+                        .call(
+                            CallRequest::new("st::anything", json!({ "out": input["out"] }))
+                                .namespace(" "),
+                        )
+                        .await;
+                    Ok::<_, Error>(json!({ "refused": refused.is_err() }))
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    let sink = Recorder::default();
+    let out = iii
+        .call(
+            remote(
+                &forward,
+                json!({ "out": OutputStream::to_writer(sink.clone()) }),
+            )
+            .timeout(Duration::from_secs(3)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out["refused"], true);
+    assert!(sink.closed(), "the caller's sink was not closed");
+    iii.shutdown_async().await;
+}
+
 /// A handler that read part of its input and sends the rest in-process to
 /// another function, plain or void: the receiver reads the rest, even after
 /// the sender returned (the sender's guard leaves it to the receiver).
@@ -1676,6 +1725,72 @@ async fn an_in_process_call_that_times_out_aborts_the_sources_it_passed() {
     let read = outcome.lock().unwrap().take().unwrap();
     let error = read.expect_err("the source of a call that timed out ended cleanly");
     assert_eq!(error.code(), Some(STREAM_ABORTED), "{error:?}");
+    iii.shutdown_async().await;
+}
+
+/// An in-process call that times out aborts its sources even once its
+/// handler passed them on, in-process or through the engine: the function
+/// that reads them gets `STREAM_ABORTED`, as along routed calls.
+#[tokio::test]
+async fn an_in_process_call_that_times_out_aborts_the_sources_its_handler_passed_on() {
+    #[derive(Deserialize, schemars::JsonSchema)]
+    struct Relay {
+        local: bool,
+        body: InputStream,
+    }
+
+    let id = uid();
+    let iii = client(&format!("local-timeout-relay-{id}")).await;
+    let (relay, reader) = (format!("st{id}::relay"), format!("st{id}::reader"));
+    let outcome: Arc<Mutex<Option<Result<usize, Error>>>> = Arc::default();
+    let reader_fn = iii.register_function(
+        &reader,
+        RegisterFunction::new_async({
+            let outcome = outcome.clone();
+            move |upload: Upload| {
+                let outcome = outcome.clone();
+                async move {
+                    let read = upload.body.read_all().await.map(|bytes| bytes.len());
+                    *outcome.lock().unwrap() = Some(read);
+                    Ok::<_, Error>(Value::Null)
+                }
+            }
+        }),
+    );
+    let relay_fn = iii.register_function(
+        &relay,
+        RegisterFunction::new_async({
+            let iii = iii.clone();
+            let reader = reader.clone();
+            move |input: Relay| {
+                let iii = iii.clone();
+                let reader = reader.clone();
+                async move {
+                    let payload = json!({ "name": "relayed", "body": input.body });
+                    iii.call(via(input.local, &reader, payload).timeout(Duration::from_secs(30)))
+                        .await
+                }
+            }
+        }),
+    );
+    ready(&reader_fn).await;
+    ready(&relay_fn).await;
+    for local in [true, false] {
+        outcome.lock().unwrap().take();
+        let body = paced(20, 1, Duration::from_millis(100));
+        let error = iii
+            .call(
+                via(true, &relay, json!({ "local": local, "body": body }))
+                    .timeout(Duration::from_millis(500)),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Timeout), "{local}: {error:?}");
+        until("the reader's read", || outcome.lock().unwrap().is_some()).await;
+        let read = outcome.lock().unwrap().take().unwrap();
+        let error = read.expect_err("a source of a call that timed out ended cleanly");
+        assert_eq!(error.code(), Some(STREAM_ABORTED), "{local}: {error:?}");
+    }
     iii.shutdown_async().await;
 }
 

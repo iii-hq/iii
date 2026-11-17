@@ -30,7 +30,7 @@ use std::{
     fmt, io,
     pin::Pin,
     sync::{
-        Arc, LazyLock, Mutex, OnceLock,
+        Arc, LazyLock, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -273,6 +273,9 @@ struct ReadState {
     /// The invocation guard that settles it (0 for none, `SENT` while a
     /// placeholder carries it to an in-process receiver).
     holder: u64,
+    /// What took the rest of it (an in-process receiver, or the reader of a
+    /// pump), while that is alive: an abort of this one reaches it.
+    next: Weak<InputInner>,
 }
 
 pub(crate) struct InputInner {
@@ -296,6 +299,7 @@ impl InputInner {
                 waker: None,
                 failure_seen: false,
                 holder: 0,
+                next: Weak::new(),
             }),
             token: OnceLock::new(),
         }
@@ -320,7 +324,34 @@ impl InputInner {
 
     /// The next frame for `reader`. A second reader gets an error (R6).
     fn poll_frame(&self, cx: &mut Context<'_>, reader: u64) -> Poll<Option<Result<Frame, Error>>> {
+        self.poll_frame_upto(cx, reader, usize::MAX)
+    }
+
+    /// The next frame for `reader`, a binary one cut to `limit` bytes: the
+    /// rest is kept for the next read under the same lock, so a hand-off
+    /// cannot take the stream between the two and lose it.
+    fn poll_frame_upto(
+        &self,
+        cx: &mut Context<'_>,
+        reader: u64,
+        limit: usize,
+    ) -> Poll<Option<Result<Frame, Error>>> {
         let mut st = self.state.lock_or_recover();
+        match self.poll_locked(&mut st, cx, reader) {
+            Poll::Ready(Some(Ok(Frame::Binary(mut data)))) if data.len() > limit => {
+                st.leftover = Some(data.split_off(limit));
+                Poll::Ready(Some(Ok(Frame::Binary(data))))
+            }
+            polled => polled,
+        }
+    }
+
+    fn poll_locked(
+        &self,
+        st: &mut ReadState,
+        cx: &mut Context<'_>,
+        reader: u64,
+    ) -> Poll<Option<Result<Frame, Error>>> {
         // A cancel is never the end of the stream: what was read is not all
         // of it, so every read from then on fails.
         if let ReadStatus::Cancelled(reason) = &st.status {
@@ -384,10 +415,6 @@ impl InputInner {
         }
     }
 
-    fn put_back(&self, rest: Bytes) {
-        self.state.lock_or_recover().leftover = Some(rest);
-    }
-
     /// Stops reading: the socket, if open, is dropped, and a read in flight
     /// fails, as every later one does, with `reason`. A stream never read
     /// opens no socket. A stream that already ended stays as it is.
@@ -397,11 +424,21 @@ impl InputInner {
 
     /// Fails the stream for its reader with an abort: the source a call
     /// passed in-process, when the call ended before its handler read it all
-    /// (as the pipe of a call through the engine aborts).
+    /// (as the pipe of a call through the engine aborts). One its handler
+    /// passed on aborts what took the rest of it, as each pipe along routed
+    /// calls would.
     fn abort(&self, reason: &str) {
-        self.stop(ReadStatus::Failed(Error::StreamAborted {
-            reason: reason.to_string(),
-        }));
+        let failed = || {
+            ReadStatus::Failed(Error::StreamAborted {
+                reason: reason.to_string(),
+            })
+        };
+        self.stop(failed());
+        let mut next = self.state.lock_or_recover().next.upgrade();
+        while let Some(inner) = next {
+            inner.stop(failed());
+            next = inner.state.lock_or_recover().next.upgrade();
+        }
     }
 
     fn stop(&self, status: ReadStatus) {
@@ -433,23 +470,32 @@ impl InputInner {
             if !matches!(st.status, ReadStatus::Unread | ReadStatus::Reading) {
                 return None;
             }
-            let moved = InputInner::new(self.channel.clone(), st.frames.take());
-            {
-                let mut next = moved.state.lock_or_recover();
-                next.status = st.status.clone();
-                next.leftover = st.leftover.take();
-                // Its receiver's guard takes it once the handler holds it.
-                next.holder = SENT;
-            }
-            *moved.bound.lock_or_recover() = self.bound.lock_or_recover().clone();
-            st.status = ReadStatus::Piped;
-            st.reader = SENT;
+            let moved = self.move_rest(&mut st);
+            // Its receiver's guard takes it once the handler holds it.
+            moved.state.lock_or_recover().holder = SENT;
             (moved, st.waker.take())
         };
         if let Some(waker) = waker {
             waker.wake();
         }
-        Some(Arc::new(moved))
+        Some(moved)
+    }
+
+    /// Moves what is left of the stream (`st` is its state) to a new inner,
+    /// which an abort of this one reaches; this one counts as sent.
+    fn move_rest(&self, st: &mut ReadState) -> Arc<InputInner> {
+        let moved = InputInner::new(self.channel.clone(), st.frames.take());
+        {
+            let mut next = moved.state.lock_or_recover();
+            next.status = st.status.clone();
+            next.leftover = st.leftover.take();
+        }
+        *moved.bound.lock_or_recover() = self.bound.lock_or_recover().clone();
+        let moved = Arc::new(moved);
+        st.status = ReadStatus::Piped;
+        st.reader = SENT;
+        st.next = Arc::downgrade(&moved);
+        moved
     }
 
     /// R3: cancels a stream the handler started reading and did not finish.
@@ -491,39 +537,34 @@ impl InputInner {
         }
     }
 
-    /// The rest of the stream, for a pump that sends it on (R5).
+    /// The rest of the stream, for a pump that sends it on (R5). The pump
+    /// reads it through an inner of its own, so an abort of this one (the
+    /// in-process call that passed it failed) reaches the pump.
     fn take_source(&self) -> Result<FrameStream, Error> {
-        let (source, waker) = {
+        let (moved, waker) = {
             let mut st = self.state.lock_or_recover();
-            let source = match &st.status {
-                ReadStatus::Unread | ReadStatus::Reading => {
-                    let frames = match st.frames.take() {
-                        Some(frames) => frames,
-                        None => self.open_frames()?,
-                    };
-                    match st.leftover.take() {
-                        Some(rest) => Box::pin(
-                            futures_util::stream::once(async move { Ok(Frame::Binary(rest)) })
-                                .chain(frames),
-                        ) as FrameStream,
-                        None => frames,
-                    }
-                }
+            match &st.status {
+                ReadStatus::Unread | ReadStatus::Reading => {}
                 ReadStatus::Ended => return Err(read_to_the_end()),
                 ReadStatus::Failed(error) => return Err(error.clone()),
                 ReadStatus::Cancelled(reason) => {
                     return Err(Error::StreamClosed((*reason).to_string()));
                 }
                 ReadStatus::Forwarded | ReadStatus::Piped => return Err(already_sent()),
-            };
-            st.status = ReadStatus::Piped;
-            st.reader = SENT;
-            (source, st.waker.take())
+            }
+            if st.frames.is_none() {
+                st.frames = Some(self.open_frames()?);
+            }
+            (self.move_rest(&mut st), st.waker.take())
         };
         if let Some(waker) = waker {
             waker.wake();
         }
-        Ok(source)
+        Ok(Box::pin(Frames {
+            inner: moved,
+            reader: next_id(),
+            done: false,
+        }))
     }
 
     /// Why sending it fails, checked before anything is sent: read to the
@@ -888,16 +929,12 @@ impl AsyncRead for InputStream {
             return Poll::Ready(Ok(()));
         }
         loop {
-            match self.inner.poll_frame(cx, self.reader) {
+            match self.inner.poll_frame_upto(cx, self.reader, buf.remaining()) {
                 Poll::Ready(Some(Ok(Frame::Binary(data)))) => {
                     if data.is_empty() {
                         continue;
                     }
-                    let n = data.len().min(buf.remaining());
-                    buf.put_slice(&data[..n]);
-                    if n < data.len() {
-                        self.inner.put_back(data.slice(n..));
-                    }
+                    buf.put_slice(&data);
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Ready(Some(Ok(Frame::Text(_)))) => continue,
@@ -2754,6 +2791,52 @@ mod tests {
         let mut rest = Vec::new();
         input.read_to_end(&mut rest).await.unwrap();
         assert_eq!(rest, b"efgh");
+    }
+
+    /// A hand-off while an `AsyncRead` cuts a frame to its buffer loses no
+    /// byte: what the reader got and what the receiver reads are the whole
+    /// stream, in order.
+    #[tokio::test]
+    async fn a_hand_off_racing_a_short_read_loses_no_byte() {
+        const FRAMES: usize = 2000;
+        let whole = b"abcdef".repeat(FRAMES);
+        for _ in 0..200 {
+            let mut input = InputStream::from_stream(futures_util::stream::iter(
+                (0..FRAMES).map(|_| Ok::<_, io::Error>(Bytes::from_static(b"abcdef"))),
+            ));
+            let inner = input.inner.clone();
+            let started = Arc::new(AtomicBool::new(false));
+            let reader = std::thread::spawn({
+                let started = started.clone();
+                move || {
+                    let mut cx = Context::from_waker(Waker::noop());
+                    let mut got = Vec::new();
+                    loop {
+                        let mut buf = [0u8; 2];
+                        let mut read = ReadBuf::new(&mut buf);
+                        match Pin::new(&mut input).poll_read(&mut cx, &mut read) {
+                            Poll::Ready(Ok(())) if !read.filled().is_empty() => {
+                                got.extend_from_slice(read.filled());
+                                started.store(true, Ordering::Release);
+                            }
+                            // The end, or the hand-off: this reader is done.
+                            Poll::Ready(_) => return got,
+                            Poll::Pending => unreachable!("an iterator never waits"),
+                        }
+                    }
+                }
+            });
+            while !started.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            let moved = inner.hand_off();
+            let mut got = reader.join().unwrap();
+            if let Some(moved) = moved {
+                got.extend(InputStream::from_arc(moved).read_all().await.unwrap());
+            }
+            assert_eq!(got.len(), whole.len());
+            assert_eq!(got, whole);
+        }
     }
 
     #[tokio::test]

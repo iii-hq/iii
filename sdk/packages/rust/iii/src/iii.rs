@@ -2775,6 +2775,31 @@ impl IIIClient {
                 "a stream cannot travel in metadata: put it in the payload".into(),
             ));
         }
+        // Through an observer, its target's metadata is the observer's:
+        // refused before anything is sent, so no metadata is lost on the way
+        // (decision 53).
+        if observer.is_some() && metadata.is_some() {
+            crate::streams::release(&req.payload);
+            return Err(Error::Handler(OBSERVER_CALL_METADATA.to_string()));
+        }
+        // Engine-owned builtins always live in `default`. Other implicit calls
+        // stay in the caller's namespace. An explicit request namespace wins.
+        // A call through an observer names none: the engine routes it.
+        let namespace = match observer {
+            Some(_) => None,
+            None => match invocation_namespace(
+                namespace,
+                self.namespace(),
+                &req.function_id,
+                "CallRequest.namespace",
+            ) {
+                Ok(namespace) => namespace,
+                Err(error) => {
+                    crate::streams::release(&req.payload);
+                    return Err(error);
+                }
+            },
+        };
         // Received refs passed on as raw JSON are the callee's now: the
         // handler guard leaves them alone.
         crate::streams::mark_transferred(&req.payload);
@@ -2786,11 +2811,6 @@ impl IIIClient {
         // target, whatever namespace a request names, and checks that this
         // connection hosts the observer's function.
         if let Some(observer_id) = observer {
-            // Its target's metadata is the observer's: refused before anything
-            // is sent, so no metadata is lost on the way (decision 53).
-            if metadata.is_some() {
-                return Err(Error::Handler(OBSERVER_CALL_METADATA.to_string()));
-            }
             let (caller, observe_depth) = self.outgoing_caller();
             let detach = matches!(req.action, Some(CallAction::Void));
             let pumps = crate::streams::prepare(self, &mut req.payload).await?;
@@ -2812,15 +2832,6 @@ impl IIIClient {
                 .await;
             return pumps.settle(result, detach, deadline).await;
         }
-
-        // Engine-owned builtins always live in `default`. Other implicit calls
-        // stay in the caller's namespace. An explicit request namespace wins.
-        let namespace = invocation_namespace(
-            namespace,
-            self.namespace(),
-            &req.function_id,
-            "CallRequest.namespace",
-        )?;
 
         // Local dispatch: a function this worker hosts, confirmed by the
         // engine, runs in-process. `enqueue` keeps its queue receipt, and a
