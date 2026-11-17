@@ -894,8 +894,9 @@ impl InputStream {
     }
 
     /// The stream's lines, without their `\n` (or `\r\n`); the last one may
-    /// have no newline. Invalid UTF-8 becomes U+FFFD.
-    pub fn lines(&self) -> impl Stream<Item = Result<String, Error>> + Send + 'static {
+    /// have no newline. Invalid UTF-8 becomes U+FFFD. The stream is `Unpin`,
+    /// so `next()` and `try_next()` work on it without pinning.
+    pub fn lines(&self) -> impl Stream<Item = Result<String, Error>> + Send + Unpin + 'static {
         fn line(mut bytes: Vec<u8>) -> String {
             if bytes.last() == Some(&b'\r') {
                 bytes.pop();
@@ -905,7 +906,7 @@ impl InputStream {
                 Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
             }
         }
-        futures_util::stream::unfold(
+        Box::pin(futures_util::stream::unfold(
             (self.reader(), Vec::<u8>::new(), false),
             |(mut frames, mut buf, mut ended)| async move {
                 loop {
@@ -929,28 +930,32 @@ impl InputStream {
                     }
                 }
             },
-        )
+        ))
     }
 
     /// The stream's messages: its text frames, each decoded as JSON into
     /// `T`. A frame that is not JSON is decoded from the raw string (so a
-    /// `T` of `String` or `Value` takes it). Binary frames are skipped.
-    pub fn messages<T>(&self) -> impl Stream<Item = Result<T, Error>> + Send + 'static
+    /// `T` of `String` or `Value` takes it). Binary frames are skipped. The
+    /// stream is `Unpin`, so `next()` and `try_next()` work on it without
+    /// pinning.
+    pub fn messages<T>(&self) -> impl Stream<Item = Result<T, Error>> + Send + Unpin + 'static
     where
         T: DeserializeOwned + Send + 'static,
     {
-        self.reader().filter_map(|frame| async move {
+        Box::pin(self.reader().filter_map(|frame| async move {
             match frame {
                 Ok(Frame::Binary(_)) => None,
                 Ok(Frame::Text(text)) => Some(decode_message(text)),
                 Err(error) => Some(Err(error)),
             }
-        })
+        }))
     }
 
     /// Every frame, in order: text frames (messages) and binary frames
-    /// (bytes).
-    pub fn frames(&self) -> impl Stream<Item = Result<ChannelItem, Error>> + Send + 'static {
+    /// (bytes). The stream is `Unpin`.
+    pub fn frames(
+        &self,
+    ) -> impl Stream<Item = Result<ChannelItem, Error>> + Send + Unpin + 'static {
         self.reader().map(|frame| frame.map(ChannelItem::from))
     }
 
@@ -3447,7 +3452,7 @@ mod tests {
         }
 
         let input = bytes();
-        let mut lines = Box::pin(input.lines());
+        let mut lines = input.lines();
         assert_eq!(lines.next().await.unwrap().unwrap(), "a");
         input.cancel().await;
         assert_closed(
@@ -3457,7 +3462,7 @@ mod tests {
         );
 
         let input = text();
-        let mut messages = Box::pin(input.messages::<Value>());
+        let mut messages = input.messages::<Value>();
         assert_eq!(messages.next().await.unwrap().unwrap(), json!(1));
         input.cancel().await;
         assert_closed(
@@ -3467,7 +3472,7 @@ mod tests {
         );
 
         let input = text();
-        let mut frames = Box::pin(input.frames());
+        let mut frames = input.frames();
         frames.next().await.unwrap().unwrap();
         input.cancel().await;
         assert_closed(

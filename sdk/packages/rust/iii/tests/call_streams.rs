@@ -757,7 +757,12 @@ async fn messages_and_bytes_keep_their_order() {
     iii.call(remote(&function_id, json!({ "out": pipe.output })))
         .await
         .unwrap();
-    let messages: Vec<Value> = pipe.input.messages().try_collect().await.unwrap();
+    // The streams are Unpin: try_next() works on them without pinning.
+    let mut stream = pipe.input.messages::<Value>();
+    let mut messages = Vec::new();
+    while let Some(message) = stream.try_next().await.unwrap() {
+        messages.push(message);
+    }
     assert_eq!(
         messages,
         vec![
