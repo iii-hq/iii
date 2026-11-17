@@ -3208,13 +3208,16 @@ class III:
                     )
                     await plan.abort_sinks(timeout.message)
                     raise timeout
-            except asyncio.CancelledError:
-                _streams._spawn(plan.cancel("the call was cancelled"))
+            except BaseException as error:
+                # The caller does not get the result: the streams it hands over to read are released.
+                _streams.release_refs(result, self._stream_binding)
+                if isinstance(error, asyncio.CancelledError):
+                    _streams._spawn(plan.cancel("the call was cancelled"))
+                elif isinstance(error, StreamAbortedError):
+                    raise StreamAbortedError(
+                        error.reason, close_code=error.close_code, function_id=call.function_id
+                    ) from _streams.cause_of(error)
                 raise
-            except StreamAbortedError as error:
-                raise StreamAbortedError(
-                    error.reason, close_code=error.close_code, function_id=call.function_id
-                ) from _streams.cause_of(error)
         if call.action is not None:
             return result
         return self._materialize(result)
@@ -3540,7 +3543,9 @@ class III:
                     error = None if t.cancelled() else t.exception()
                     result = t.result() if not t.cancelled() and error is None else None
                     _streams._spawn(
-                        _streams.settle_local_sinks(sinks, error is None, self._settle_reason(error), result)
+                        _streams.settle_local_sinks(
+                            sinks, error is None, self._settle_reason(error), result, wait=False
+                        )
                     )
 
                 task.add_done_callback(settle)
@@ -3589,9 +3594,10 @@ class III:
         timeout: float | None = None,
     ) -> None:
         """R4 for a local call: it resolves once its sinks finished, and rejects with
-        ``STREAM_ABORTED`` when one was aborted, or with ``TIMEOUT`` (the open sinks
-        aborted) when they did not finish within ``timeout`` seconds. Not for a sink
-        the result hands back (see :func:`iii.streams.settle_local_sinks`)."""
+        ``STREAM_ABORTED`` as soon as one was aborted (the open ones aborted with it),
+        or with ``TIMEOUT`` (the open sinks aborted) when they did not finish within
+        ``timeout`` seconds. Not for a sink the result hands back (see
+        :func:`iii.streams.settle_local_sinks`)."""
         expired = self._local_timeout(call, local)
         try:
             finished = await _streams.settle_local_sinks(
@@ -3680,7 +3686,9 @@ class III:
                     error = f.exception()
                     result = f.result() if error is None else None
                     asyncio.run_coroutine_threadsafe(
-                        _streams.settle_local_sinks(sinks, error is None, self._settle_reason(error), result),
+                        _streams.settle_local_sinks(
+                            sinks, error is None, self._settle_reason(error), result, wait=False
+                        ),
                         self._loop,
                     )
 

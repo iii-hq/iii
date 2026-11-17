@@ -6,6 +6,7 @@ and every stream through a pipe (or travels on as its ref)."""
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import tempfile
@@ -1002,3 +1003,87 @@ def test_a_failing_sink_fails_the_call_with_the_sink_error(pair: Any) -> None:
     error = _run(run())
     assert "the sink failed: the disk went away" in str(error), repr(error)
     assert isinstance(error.__cause__, ConnectionError), repr(error.__cause__)
+
+
+class _BrokenWriter:
+    """A sink target whose every write fails, like a full disk."""
+
+    async def write(self, data: bytes) -> None:
+        raise ConnectionError("disk full")
+
+
+async def _write_until_it_fails(out: OutputStream) -> None:
+    from iii import StreamClosedError
+
+    for _ in range(300):
+        try:
+            await out.write(b"chunk")
+        except StreamClosedError:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("the sink never failed")
+
+
+@pytest.mark.parametrize("how", ["aborted", "sink-failed"])
+def test_a_sink_that_fails_fails_the_call_at_once_and_aborts_the_others(pair: Any, how: str) -> None:
+    # When the stream into one sink aborts, or the sink itself fails, the call fails with
+    # STREAM_ABORTED at once, not at its deadline, and its other sinks are aborted with it.
+    import time
+
+    caller, host, fid = pair
+
+    async def two(payload: dict[str, Any]) -> str:
+        first: OutputStream = payload["a"].keep_open()
+        payload["b"].keep_open()
+        if how == "aborted":
+            await first.abort("disk full")
+        else:
+            await _write_until_it_fails(first)
+        return "fine"
+
+    _register(host, fid("sink::two"), two)
+    a = OutputStream.to(io.BytesIO() if how == "aborted" else _BrokenWriter())
+    b = OutputStream.to(io.BytesIO())
+    request = {"function_id": fid("sink::two"), "payload": {"a": a, "b": b}, "timeout_ms": 4000}
+    t0 = time.monotonic()
+    with pytest.raises(StreamAbortedError) as error:
+        _run(caller.call_async(request))
+    assert time.monotonic() - t0 < 2.5, "the call waited for its deadline"
+    assert error.value.function_id == fid("sink::two")
+    if how == "sink-failed":
+        assert error.value.reason == "the sink failed: disk full"
+        assert isinstance(error.value.__cause__, ConnectionError)
+    assert b._aborted == a._aborted, (a._aborted, b._aborted)
+
+
+def test_a_handler_that_hands_back_a_write_side_after_the_callers_sink_failed_fails_the_call(pair: Any) -> None:
+    # A result that holds a stream to write ends the wait for the sinks, but a sink that
+    # failed already still fails the call, and the streams the result hands over to read
+    # are released: their writer learns the reader left.
+    caller, host, fid = pair
+    released = threading.Event()
+
+    async def rows() -> Any:
+        try:
+            while True:
+                yield b"row\n"
+                await asyncio.sleep(0.02)
+        finally:
+            released.set()
+
+    async def fail_then_pipe(payload: dict[str, Any]) -> dict[str, Any]:
+        await _write_until_it_fails(payload["out"])
+        back = await host.pipe_async()
+        return {"back": back.output, "rows": rows()}
+
+    _register(host, fid("sink::fail-then-pipe"), fail_then_pipe)
+    with pytest.raises(StreamAbortedError) as error:
+        _run(
+            caller.call_async(
+                {"function_id": fid("sink::fail-then-pipe"), "payload": {"out": OutputStream.to(_BrokenWriter())}}
+            )
+        )
+    assert error.value.reason == "the sink failed: disk full"
+    assert isinstance(error.value.__cause__, ConnectionError)
+    assert error.value.function_id == fid("sink::fail-then-pipe")
+    assert released.wait(5), "the stream of the dropped result was never released"

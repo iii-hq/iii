@@ -815,3 +815,83 @@ def test_a_cancelled_local_call_aborts_the_sinks_it_passed(engine: FakeEngine, c
     [error] = outcome
     assert isinstance(error, StreamClosedError)
     assert error.message == "this OutputStream was aborted (the call was cancelled)"
+
+
+@pytest.mark.parametrize("sync_call", [False, True], ids=["call_async", "call"])
+@pytest.mark.parametrize("how", ["aborted", "sink-failed", "sink-failed-write-side"])
+def test_a_local_sink_that_fails_fails_the_call_at_once_and_aborts_the_others(
+    engine: FakeEngine, connect: Any, how: str, sync_call: bool
+) -> None:
+    # As through the engine: STREAM_ABORTED at once, not at the call's deadline, and the
+    # other sinks aborted with it, also when the result hands a stream to write back.
+    import time
+
+    from iii import StreamClosedError
+
+    client = connect(engine)
+
+    class Broken:
+        async def write(self, data: bytes) -> None:
+            raise ConnectionError("disk full")
+
+    async def two(payload: dict[str, Any]) -> Any:
+        first: OutputStream = payload["a"].keep_open()
+        second: OutputStream = payload["b"].keep_open()
+        if how == "aborted":
+            await first.abort("disk full")
+        else:
+            with pytest.raises(StreamClosedError):
+                await first.write(b"page")
+        return {"b": second} if how == "sink-failed-write-side" else "fine"
+
+    client.register_function("sink::two", two)
+    _confirm(client, engine, "sink::two")
+    a = OutputStream.to(io.BytesIO() if how == "aborted" else Broken())
+    b = OutputStream.to(io.BytesIO())
+    request = {"function_id": "sink::two", "payload": {"a": a, "b": b}, "timeout_ms": 4000}
+    t0 = time.monotonic()
+    with pytest.raises(StreamAbortedError) as error:
+        if sync_call:
+            client.call(request)
+        else:
+            asyncio.run(client.call_async(request))
+    assert time.monotonic() - t0 < 2.5, "the call waited for its deadline"
+    assert error.value.function_id == "sink::two"
+    expected = "disk full" if how == "aborted" else "the sink failed: disk full"
+    assert error.value.reason == expected
+    assert (a._aborted, b._aborted) == (expected, expected)
+
+
+def test_a_local_void_call_does_not_abort_a_sink_when_another_fails(engine: FakeEngine, connect: Any) -> None:
+    # A void call waits for no sink: one that fails does not end the others, as through the engine.
+    client = connect(engine)
+    done = threading.Event()
+
+    async def two(payload: dict[str, Any]) -> None:
+        first: OutputStream = payload["a"].keep_open()
+        second: OutputStream = payload["b"].keep_open()
+        await first.abort("disk full")
+
+        async def later() -> None:
+            try:
+                await asyncio.sleep(0.2)
+                await second.write(b"still here")
+                await second.close()
+            finally:
+                done.set()
+
+        asyncio.get_running_loop().create_task(later())
+
+    client.register_function("sink::two-void", two)
+    _confirm(client, engine, "sink::two-void")
+    target = io.BytesIO()
+    b = OutputStream.to(target)
+    client.call(
+        {
+            "function_id": "sink::two-void",
+            "payload": {"a": OutputStream.to(io.BytesIO()), "b": b},
+            "action": CallAction.Void(),
+        }
+    )
+    assert done.wait(5)
+    assert b._aborted is None and target.getvalue() == b"still here"

@@ -94,6 +94,14 @@ def sink_failure(error: BaseException) -> StreamAbortedError:
     return failure
 
 
+def _abort_reason(error: BaseException) -> str:
+    """The reason the other sinks of a call abort with when ``error`` ended one of them:
+    a :class:`StreamAbortedError`'s own reason."""
+    if isinstance(error, StreamAbortedError):
+        return error.reason or error.message
+    return _reason(error)
+
+
 def cause_of(error: StreamAbortedError) -> BaseException:
     """What a call's ``StreamAbortedError`` is raised from: the sink's own error
     for a sink that failed, else ``error`` itself."""
@@ -530,7 +538,7 @@ class InputStream:
 
     A stream has one reader: a second iteration, :meth:`read_all`,
     :meth:`text`, :meth:`lines`, :meth:`messages` or :meth:`frames` raises
-    :class:`RuntimeError`; call :meth:`tee` before reading for two copies.
+    :class:`~iii.StreamInUseError`; call :meth:`tee` before reading for two copies.
     A received stream opens its socket on the first read. When the writer
     aborts the stream, the read raises :class:`~iii.StreamAbortedError` once
     the data sent before the abort has been read.
@@ -612,8 +620,8 @@ class InputStream:
         wrapped on while that loop runs, so it may await what lives there. A
         sync iterable (but a list or a tuple) is advanced on an SDK thread, one
         item at a time, so a blocking ``next()`` does not hold up the loop.
-        Any other item fails the stream: its reader gets
-        :class:`~iii.StreamAbortedError`.
+        Any other item fails the stream with a :class:`TypeError`; a reader at
+        the other end of a pipe gets :class:`~iii.StreamAbortedError`.
         """
         return cls(_IterSource(iterable, _running_loop()))
 
@@ -1109,8 +1117,9 @@ class OutputStream:
         they were accepted (backpressure).
 
         Raises:
-            RuntimeError: the stream is closed, aborted or was passed on.
-            StreamAbortedError: the reader left.
+            StreamClosedError: the stream is closed or aborted, its reader left
+                (or its local sink failed), or its connection failed.
+            StreamInUseError: the stream was passed on to another call.
         """
         self._check_writable()
         self._used = True
@@ -1120,8 +1129,9 @@ class OutputStream:
         """Send ``message`` as JSON in one text frame (a file or writer sink drops it).
 
         Raises:
-            RuntimeError: the stream is closed, aborted or was passed on.
-            StreamAbortedError: the reader left.
+            StreamClosedError: the stream is closed or aborted, its reader left
+                (or its local sink failed), or its connection failed.
+            StreamInUseError: the stream was passed on to another call.
         """
         self._check_writable()
         self._used = True
@@ -1535,22 +1545,31 @@ class Outbound:
     async def wait_sinks(self, result: Any = None, timeout: float | None = None) -> bool:
         """Until every sink finished (R4), for at most ``timeout`` seconds: ``False``
         when it expired first (the caller then aborts the open sinks:
-        :meth:`abort_sinks`). Raises what the first failed pump raised.
+        :meth:`abort_sinks`). The first pump that fails ends the wait at once: the
+        other open sinks are aborted with its reason, and this raises what it raised.
 
         Not when the call's ``result`` (as it arrived) hands the caller a stream to
         write (a write ref): the caller can only write it once the call returned, and
         a sink may depend on it (its own ref handed back, or a sink the handler wrote
         to and returned, bridged under a new ref). Waiting would never end; the sinks
-        finish in the background as the caller writes."""
-        if not self.sink_tasks or has_write_ref(result):
+        finish in the background as the caller writes. A sink that failed already
+        still fails the call: this raises its :func:`sink_failure`, the open sinks
+        aborted."""
+        if not self.sink_tasks:
             return True
-        _, pending = await asyncio.wait(self.sink_tasks, timeout=timeout)
-        if pending:
-            return False
+        if has_write_ref(result):
+            failed = self.sink_failure()
+            if failed is not None:
+                await self.abort_sinks(failed.reason)
+                raise failed
+            return True
+        _, pending = await asyncio.wait(self.sink_tasks, timeout=timeout, return_when=asyncio.FIRST_EXCEPTION)
         for task in self.sink_tasks:
-            if not task.cancelled() and task.exception() is not None:
-                raise cast(BaseException, task.exception())
-        return True
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                error = cast(BaseException, task.exception())
+                await self.abort_sinks(_abort_reason(error))
+                raise error
+        return not pending
 
     async def abort_sinks(self, reason: str) -> None:
         """The sinks still open: their pumps stopped, their pipe readers closed (the
@@ -1719,7 +1738,7 @@ async def pump_sink(reader: ChannelReader, sink: OutputStream) -> None:
             await reader.close()
             raise sink_failure(sink._sink_error) from sink._sink_error
         if isinstance(error, StreamAbortedError):
-            await sink._fail(error.reason or error.message)
+            await sink._fail(_abort_reason(error))
             raise
         await reader.close()
         await sink._fail(_reason(error))
@@ -1766,17 +1785,24 @@ async def settle_local_sinks(
     result: Any = None,
     timeout: float | None = None,
     timeout_reason: str = "timed out",
+    *,
+    wait: bool = True,
 ) -> bool:
     """A local call's sinks once its handler settled (R4): on success, an untouched
     sink is closed (in-process, nothing else can still write it) and the call
     waits for every sink to finish, for at most ``timeout`` seconds; on failure
     they are aborted. ``False`` when the wait expired: the sinks still open were
-    aborted with ``timeout_reason``.
+    aborted with ``timeout_reason``. The first sink that aborts (or fails) ends
+    the wait at once: the others still open are aborted with its reason, and this
+    raises its :class:`StreamAbortedError`. A void call (``wait`` false) waits for
+    no sink.
 
     A sink the handler handed back in ``result`` is the caller's to write: it is
     neither closed nor waited for. When ``result`` holds any ``OutputStream``, the
     call waits for no sink (one may depend on what the caller writes; see
-    :meth:`Outbound.wait_sinks`)."""
+    :meth:`Outbound.wait_sinks`), but a sink that failed already fails it: the
+    others still open are aborted (the caller then raises
+    :func:`local_sink_failure`)."""
     if not ok:
         for sink in sinks:
             await sink._fail(reason)
@@ -1786,20 +1812,29 @@ async def settle_local_sinks(
     for sink in sinks:
         if sink._untouched() and id(sink) not in handed_back:
             await sink._finish()
-    if not sinks or any(isinstance(stream, OutputStream) for stream in returned):
+    if not sinks or not wait:
+        return True
+    if any(isinstance(stream, OutputStream) for stream in returned):
+        failed = local_sink_failure(sinks)
+        if failed is not None:
+            await _abort_open(sinks, failed.reason)
         return True
     waits = [asyncio.ensure_future(sink._wait()) for sink in sinks]
-    _, pending = await asyncio.wait(waits, timeout=timeout)
-    if pending:
-        for sink in sinks:
-            if not sink._done.done():
-                await sink._fail(timeout_reason)
+    _, pending = await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_EXCEPTION)
+    failure = next((w.exception() for w in waits if w.done() and not w.cancelled() and w.exception() is not None), None)
+    if failure is not None or pending:
+        await _abort_open(sinks, timeout_reason if failure is None else _abort_reason(failure))
         await asyncio.gather(*waits, return_exceptions=True)
-        return False
-    for wait in waits:
-        if wait.exception() is not None:
-            raise cast(BaseException, wait.exception())
-    return True
+    if failure is not None:
+        raise failure
+    return not pending
+
+
+async def _abort_open(sinks: list[OutputStream], reason: str) -> None:
+    """Aborts those of ``sinks`` still open with ``reason``."""
+    for sink in sinks:
+        if not sink._done.done():
+            await sink._fail(reason)
 
 
 def local_sink_failure(sinks: list[OutputStream]) -> StreamAbortedError | None:
@@ -1921,6 +1956,22 @@ def has_write_ref(value: Any) -> bool:
     if isinstance(value, list):
         return any(has_write_ref(member) for member in value)
     return False
+
+
+def release_refs(value: Any, binding: _Binding) -> None:
+    """The read refs of ``value`` (JSON as it arrived: a result the caller does not
+    get) are released in the background, on the running loop: each socket opens and
+    closes, so the writer learns the reader left."""
+    if isinstance(value, dict):
+        if _is_ref(value):
+            if value["direction"] == "read":
+                _spawn(InputStream._from_ref(_ref_of(value), binding).cancel())
+            return
+        for member in value.values():
+            release_refs(member, binding)
+    elif isinstance(value, list):
+        for member in value:
+            release_refs(member, binding)
 
 
 def check_local_streams(value: Any) -> None:

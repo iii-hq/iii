@@ -34,8 +34,14 @@ class InvocationError(Exception):
 
 
 class StreamClosedError(InvocationError, RuntimeError):
-    """A write or send on an :class:`~iii.OutputStream` that is closed or aborted
-    (``code`` is ``'STREAM_CLOSED'``); also passing such a stream to a call.
+    """A stream that cannot be read or written any more (``code`` is ``'STREAM_CLOSED'``).
+
+    Raised by a write or send on an :class:`~iii.OutputStream` that is closed or
+    aborted, or whose reader left (the engine closed the socket, or the local
+    sink failed), or whose connection failed; by a read of an
+    :class:`~iii.InputStream` that was cancelled (by ``cancel()``, or by the
+    guard when its handler returned), so a partly read stream never looks
+    complete; and by passing such a stream to a call.
 
     Also a :class:`RuntimeError`, as these errors were before they had a code.
     """
