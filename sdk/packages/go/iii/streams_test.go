@@ -215,6 +215,86 @@ func TestInputStreamHasOneReader(t *testing.T) {
 	}
 }
 
+// repeatSource yields left binary frames of chunk.
+type repeatSource struct {
+	mu    sync.Mutex
+	left  int
+	chunk []byte
+}
+
+func (s *repeatSource) next(context.Context) (StreamFrame, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.left == 0 {
+		return StreamFrame{}, io.EOF
+	}
+	s.left--
+	return StreamFrame{Type: FrameBinary, Data: s.chunk}, nil
+}
+
+func (s *repeatSource) cancel() {
+	s.mu.Lock()
+	s.left = 0
+	s.mu.Unlock()
+}
+
+// A hand-off while a Read cuts a frame to its buffer loses no byte: what the reader got
+// and what the receiver reads are the whole stream, in order.
+func TestHandOffRacingAShortReadLosesNoByte(t *testing.T) {
+	const frames = 2000
+	chunk := []byte("abcdef")
+	whole := bytes.Repeat(chunk, frames)
+	for range 200 {
+		in := &InputStream{inner: newInput(nil, &repeatSource{left: frames, chunk: chunk}, nil)}
+		started := make(chan struct{})
+		read := make(chan []byte)
+		go func() {
+			var got []byte
+			buf := make([]byte, 2)
+			for {
+				n, err := in.Read(buf)
+				if err != nil {
+					// The end, or the hand-off: this reader is done.
+					read <- got
+					return
+				}
+				if got == nil {
+					close(started)
+				}
+				got = append(got, buf[:n]...)
+			}
+		}()
+		<-started
+		var recv *inputInner
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			moved, err := in.inner.moveOut()
+			if err == nil {
+				recv = moved
+				break
+			}
+			if in.inner.readToTheEnd() {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("hand-off: %v", err)
+			}
+			// A read in flight: try again.
+		}
+		got := <-read
+		if recv != nil {
+			rest, err := (&InputStream{inner: recv}).ReadAll(streamCtx(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, rest...)
+		}
+		if len(got) != len(whole) || !bytes.Equal(got, whole) {
+			t.Fatalf("reader and receiver got %d bytes, want %d", len(got), len(whole))
+		}
+	}
+}
+
 func TestOutputStreamToWriter(t *testing.T) {
 	ctx := streamCtx(t)
 	s := newSink()

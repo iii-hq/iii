@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -368,6 +369,13 @@ func errSentTwice() error {
 
 // next returns the next frame for reader; a second reader gets STREAM_IN_USE.
 func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, error) {
+	return in.nextUpTo(ctx, reader, math.MaxInt)
+}
+
+// nextUpTo is next with a binary frame cut to limit bytes: the rest is kept for the
+// next read under the same locks, so a hand-off cannot take the stream between the two
+// and lose it.
+func (in *inputInner) nextUpTo(ctx context.Context, reader uint64, limit int) (StreamFrame, error) {
 	in.readMu.Lock()
 	defer in.readMu.Unlock()
 	in.mu.Lock()
@@ -397,10 +405,9 @@ func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, err
 	}
 	in.status = readReading
 	if len(in.leftover) > 0 {
-		rest := in.leftover
-		in.leftover = nil
+		frame := in.cutLocked(StreamFrame{Type: FrameBinary, Data: in.leftover}, limit)
 		in.mu.Unlock()
-		return StreamFrame{Type: FrameBinary, Data: rest}, nil
+		return frame, nil
 	}
 	if in.src == nil {
 		src, err := in.openLocked()
@@ -434,7 +441,18 @@ func (in *inputInner) next(ctx context.Context, reader uint64) (StreamFrame, err
 		go src.cancel()
 		return StreamFrame{}, err
 	}
-	return frame, nil
+	return in.cutLocked(frame, limit), nil
+}
+
+// cutLocked cuts a binary frame to limit bytes and keeps the rest as the leftover (or
+// clears it); in.mu is held.
+func (in *inputInner) cutLocked(frame StreamFrame, limit int) StreamFrame {
+	in.leftover = nil
+	if frame.Type == FrameBinary && len(frame.Data) > limit {
+		in.leftover = frame.Data[limit:]
+		frame.Data = frame.Data[:limit:limit]
+	}
+	return frame
 }
 
 // openLocked opens the socket of a ref-backed stream.
@@ -447,15 +465,6 @@ func (in *inputInner) openLocked() (frameSource, error) {
 		return nil, err
 	}
 	return &wsSource{ep: ep, ref: *in.ref}, nil
-}
-
-// putBack keeps the rest of a binary frame for the next read.
-func (in *inputInner) putBack(rest []byte) {
-	in.mu.Lock()
-	if in.status == readReading {
-		in.leftover = rest
-	}
-	in.mu.Unlock()
 }
 
 // cancel stops reading: the socket, if open, closes (the engine then closes the
@@ -712,18 +721,14 @@ func (s *InputStream) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	for {
-		frame, err := in.next(context.Background(), in.ioReader)
+		frame, err := in.nextUpTo(context.Background(), in.ioReader, len(p))
 		if err != nil {
 			return 0, err
 		}
 		if frame.Type != FrameBinary || len(frame.Data) == 0 {
 			continue
 		}
-		n := copy(p, frame.Data)
-		if n < len(frame.Data) {
-			in.putBack(frame.Data[n:])
-		}
-		return n, nil
+		return copy(p, frame.Data), nil
 	}
 }
 
