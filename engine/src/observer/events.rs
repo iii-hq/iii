@@ -14,7 +14,7 @@
 //! | `engine::on-observers-changed` | `{ observer_id, function_id, target, state, reason? }`, one call per observer creation (its first state) and per state change |
 //! | `configuration::on-updated` | a configuration entry registered, updated or deleted |
 //! | `observability::on-log` | one ingested log record |
-//! | `observability::on-span` | `{ trace_ids }`, one coalesced window of span activity |
+//! | `observability::on-span` | `{ trace_ids, error_trace_ids }`, one coalesced window of span activity |
 //! | `stream::on-changed` | one stream write or custom event (`iii-stream`) |
 //! | `stream::on-join`, `stream::on-leave` | a stream client joined or left a group (`iii-stream`) |
 //!
@@ -225,7 +225,8 @@ pub fn register_observability_event_sources(engine: &Engine) {
         engine,
         OBSERVABILITY_ON_SPAN,
         "Engine-hosted source: spans were recorded; one call per ~300ms window lists the \
-         distinct trace ids it touched (re-read them with engine::traces::*).",
+         distinct trace ids it touched and, in error_trace_ids, those with an error span \
+         (re-read them with engine::traces::*).",
         closed(schema_of::<SpanEvent>()),
     );
 }

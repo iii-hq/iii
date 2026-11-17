@@ -62,7 +62,7 @@ const (
 	FnOnObserversChanged = "engine::on-observers-changed"
 	// FnOnLog is called once per log record.
 	FnOnLog = "observability::on-log"
-	// FnOnSpan is called once per window of recorded spans: { trace_ids }.
+	// FnOnSpan is called once per window of recorded spans: { trace_ids, error_trace_ids }.
 	FnOnSpan = "observability::on-span"
 	// FnOnConfigurationUpdate is called when a configuration entry is registered,
 	// updated or deleted.

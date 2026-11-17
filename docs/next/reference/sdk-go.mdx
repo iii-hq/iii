@@ -2146,7 +2146,7 @@ Engine-hosted sources: private functions of the engine whose handler returns the
 | `FnOnWorkersChanged` | `"engine::on-workers-changed"` | FnOnWorkersChanged is called when a worker connects, disconnects or updates its metadata: \{ event, worker_id \}. |
 | `FnOnObserversChanged` | `"engine::on-observers-changed"` | FnOnObserversChanged is called once per observer state change: \{ observer_id, function_id, target, state, reason? \}. |
 | `FnOnLog` | `"observability::on-log"` | FnOnLog is called once per log record. |
-| `FnOnSpan` | `"observability::on-span"` | FnOnSpan is called once per window of recorded spans: \{ trace_ids \}. |
+| `FnOnSpan` | `"observability::on-span"` | FnOnSpan is called once per window of recorded spans: \{ trace_ids, error_trace_ids \}. |
 | `FnOnConfigurationUpdate` | `"configuration::on-updated"` | FnOnConfigurationUpdate is called when a configuration entry is registered, updated or deleted. |
 
 Log function paths. Mirrors LogFunctions in the Node SDK. Call these with `VoidAction` (fire-and-forget) to write to the engine log.

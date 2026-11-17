@@ -125,4 +125,9 @@ pub struct LogEvent {
 pub struct SpanEvent {
     /// Distinct trace ids that had span activity in this coalesced window.
     pub trace_ids: Vec<String>,
+    /// The subset of `trace_ids` that recorded a span with status `error` in
+    /// this window, so an error monitor does not re-read every active trace
+    /// to find them.
+    #[serde(default)]
+    pub error_trace_ids: Vec<String>,
 }
