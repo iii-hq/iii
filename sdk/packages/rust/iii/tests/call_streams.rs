@@ -27,7 +27,8 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use common::engine_ws_url;
 use iii_helpers::observability::OtelConfig;
 use iii_sdk::protocol::{
-    ChannelDirection, ChannelItem, STREAM_ABORTED, STREAM_CLOSED, STREAM_IN_USE, STREAM_NOT_ALLOWED,
+    ChannelDirection, ChannelItem, STREAM_ABORTED, STREAM_CLOSED, STREAM_IN_USE,
+    STREAM_NOT_ALLOWED, StreamChannelRef, extract_channel_refs,
 };
 use iii_sdk::runtime::{FunctionRef, WorkerMetadata};
 use iii_sdk::{
@@ -1840,5 +1841,243 @@ async fn an_unread_stream_sent_in_two_calls_fails_the_second_with_stream_in_use(
     let first = kept.lock().unwrap()[0]["body"].clone();
     let body: InputStream = serde_json::from_value(first).unwrap();
     assert_eq!(body.text().await.unwrap(), "once");
+    iii.shutdown_async().await;
+}
+
+/// A local sink a first call still fills (its pump runs) is not sent in a
+/// second call: that call fails with `STREAM_IN_USE` before anything is
+/// sent, in-process as through the engine, and the first call ends well.
+#[tokio::test]
+async fn a_sink_still_piped_is_not_sent_again() {
+    let id = uid();
+    let iii = client(&format!("sink-piped-{id}")).await;
+    let (held, ignore) = (format!("st{id}::held"), format!("st{id}::ignore"));
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let f1 = iii.register_function(
+        &held,
+        RegisterFunction::new_async({
+            let (entered, release) = (entered.clone(), release.clone());
+            move |_: Render| {
+                let (entered, release) = (entered.clone(), release.clone());
+                async move {
+                    entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                    release.notified().await;
+                    Ok::<_, Error>(())
+                }
+            }
+        }),
+    );
+    let f2 = iii.register_function(
+        &ignore,
+        RegisterFunction::new(|_: Value| Ok::<_, Error>(Value::Null)),
+    );
+    ready(&f1).await;
+    ready(&f2).await;
+    let sink = Recorder::default();
+    let dst = OutputStream::to_writer(sink.clone());
+    let first = tokio::spawn({
+        let (iii, payload) = (iii.clone(), json!({ "out": dst.clone() }));
+        async move { iii.call(remote(&held, payload)).await }
+    });
+    until("the first call's handler", || {
+        entered.load(std::sync::atomic::Ordering::SeqCst)
+    })
+    .await;
+    for local in [false, true] {
+        let error = iii
+            .call(via(local, &ignore, json!({ "out": dst.clone() })))
+            .await
+            .expect_err("a sink still filled was sent again");
+        assert_eq!(error.code(), Some(STREAM_IN_USE), "{local}: {error:?}");
+    }
+    release.notify_one();
+    first.await.unwrap().unwrap();
+    assert!(sink.closed(), "the first call's sink did not end");
+    iii.shutdown_async().await;
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+struct TwoSinks {
+    abort: String,
+    a: OutputStream,
+    b: OutputStream,
+}
+
+/// The stream into one sink aborts while the other stays open: the call
+/// fails with `STREAM_ABORTED` at once, not at its timeout, and the other
+/// sink is aborted before it returns. Whichever sink aborts, in-process as
+/// through the engine.
+#[tokio::test]
+async fn a_sink_abort_fails_the_call_at_once_and_aborts_the_other_sinks() {
+    let id = uid();
+    let iii = client(&format!("sink-abort-{id}")).await;
+    let function_id = format!("st{id}::two");
+    let held: Arc<Mutex<Vec<OutputStream>>> = Arc::default();
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async({
+            let held = held.clone();
+            move |req: TwoSinks| {
+                let held = held.clone();
+                async move {
+                    req.a.keep_open();
+                    req.b.keep_open();
+                    let (aborted, open) = if req.abort == "a" {
+                        (req.a, req.b)
+                    } else {
+                        (req.b, req.a)
+                    };
+                    // Kept alive: the other sink's writer stays open.
+                    held.lock().unwrap().push(open);
+                    aborted.abort("disk full").await?;
+                    Ok::<_, Error>("fine")
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    for local in [false, true] {
+        for abort in ["a", "b"] {
+            let (a, b) = (Recorder::default(), Recorder::default());
+            let (out_a, out_b) = (
+                OutputStream::to_writer(a.clone()),
+                OutputStream::to_writer(b.clone()),
+            );
+            let started = std::time::Instant::now();
+            let error = tokio::time::timeout(
+                WAIT,
+                iii.call(
+                    via(
+                        local,
+                        &function_id,
+                        json!({ "abort": abort, "a": out_a.clone(), "b": out_b.clone() }),
+                    )
+                    .timeout(Duration::from_secs(3)),
+                ),
+            )
+            .await
+            .expect("the call resolved")
+            .unwrap_err();
+            assert_eq!(
+                error.code(),
+                Some(STREAM_ABORTED),
+                "{local} {abort}: {error:?}"
+            );
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "{local} {abort}: the call waited {elapsed:?}"
+            );
+            let (open, open_sink) = if abort == "a" {
+                (&out_b, &b)
+            } else {
+                (&out_a, &a)
+            };
+            assert!(
+                open.write(b"late").await.is_err(),
+                "{local} {abort}: the other sink stayed open"
+            );
+            assert!(!open_sink.closed(), "{local} {abort}");
+        }
+    }
+    held.lock().unwrap().clear();
+    iii.shutdown_async().await;
+}
+
+/// A handler whose sink failed returns a stream to write: the call does
+/// not wait for its sinks, but the sink's failure is still what it fails
+/// with, in-process as through the engine.
+#[tokio::test]
+async fn a_sink_failure_wins_over_a_result_with_a_stream_to_write() {
+    let id = uid();
+    let iii = client(&format!("sink-fails-pipe-{id}")).await;
+    let function_id = format!("st{id}::fail-then-pipe");
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async({
+            let iii = iii.clone();
+            move |req: Render| {
+                let iii = iii.clone();
+                async move {
+                    let mut failed = false;
+                    for _ in 0..300 {
+                        if req.out.write(b"chunk").await.is_err() {
+                            failed = true;
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    if !failed {
+                        return Err(Error::Handler("the sink never failed".into()));
+                    }
+                    let pipe = iii.pipe().await?;
+                    Ok::<_, Error>(json!({ "upload": pipe.output }))
+                }
+            }
+        }),
+    );
+    ready(&function).await;
+    for local in [false, true] {
+        let error = iii
+            .call(via(
+                local,
+                &function_id,
+                json!({ "out": OutputStream::to_writer(Broken(0)) }),
+            ))
+            .await
+            .expect_err("the call succeeded with a failed sink");
+        assert_eq!(error.code(), Some(STREAM_ABORTED), "{local}: {error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("the sink failed: the disk went away"),
+            "{local}: {error}"
+        );
+    }
+    iii.shutdown_async().await;
+}
+
+/// Outside a handler, a call's result read as a `Value`: the read refs
+/// `extract_channel_refs` finds open with `InputStream::from_ref`, bound to
+/// the client given (several are alive here), and read to the end. A write
+/// ref is refused.
+#[tokio::test]
+async fn a_read_ref_found_in_a_result_opens_with_from_ref() {
+    let id = uid();
+    let iii = client(&format!("from-ref-{id}")).await;
+    let function_id = format!("st{id}::export");
+    let function = iii.register_function(
+        &function_id,
+        RegisterFunction::new_async(|input: Value| async move {
+            let text = input["text"].as_str().unwrap_or_default().to_string();
+            Ok::<_, Error>(json!({ "report": { "body": InputStream::from_bytes(text) } }))
+        }),
+    );
+    ready(&function).await;
+    for local in [false, true] {
+        let result = iii
+            .call(via(local, &function_id, json!({ "text": "the report" })))
+            .await
+            .unwrap();
+        let mut refs = extract_channel_refs(&result);
+        assert_eq!(refs.len(), 1, "{local}: {result}");
+        let (path, channel) = refs.remove(0);
+        assert_eq!(path, "report.body", "{local}");
+        assert_eq!(channel.direction, ChannelDirection::Read, "{local}");
+        let write = StreamChannelRef {
+            direction: ChannelDirection::Write,
+            ..channel.clone()
+        };
+        let body = InputStream::from_ref(channel, &iii).unwrap();
+        assert_eq!(body.text().await.unwrap(), "the report", "{local}");
+        let error = InputStream::from_ref(write, &iii).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("a \"write\" ref is an OutputStream"),
+            "{local}: {error}"
+        );
+    }
     iii.shutdown_async().await;
 }

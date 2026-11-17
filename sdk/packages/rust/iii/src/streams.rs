@@ -38,7 +38,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures_util::{Stream, StreamExt, future::BoxFuture};
+use futures_util::{Stream, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use schemars::{JsonSchema, r#gen::SchemaGenerator, schema::Schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -223,6 +223,25 @@ impl WireRef {
             channel_id: self.channel_id,
             access_key: self.access_key,
             direction: self.direction,
+        }
+    }
+
+    /// The key a received stream of this ref is tracked under.
+    fn key(&self) -> RefKey {
+        (
+            self.channel_id.clone(),
+            self.access_key.clone(),
+            self.direction,
+        )
+    }
+}
+
+impl From<StreamChannelRef> for WireRef {
+    fn from(channel: StreamChannelRef) -> Self {
+        Self {
+            channel_id: channel.channel_id,
+            access_key: channel.access_key,
+            direction: channel.direction,
         }
     }
 }
@@ -626,7 +645,8 @@ fn sent_twice() -> Error {
 /// result (a `read` ref deserializes to it), or is built to be sent:
 /// [`from_reader`](Self::from_reader), [`from_stream`](Self::from_stream),
 /// [`from_bytes`](Self::from_bytes). Put it in a call payload or a handler
-/// result and the SDK streams it to the other side.
+/// result and the SDK streams it to the other side. A read ref found in a
+/// raw value opens with [`from_ref`](Self::from_ref).
 ///
 /// Read it once, one way: as a `Stream` of byte chunks, an `AsyncRead`,
 /// [`read_all`](Self::read_all), [`text`](Self::text),
@@ -674,12 +694,87 @@ impl InputStream {
         Self::from_arc(Arc::new(inner))
     }
 
-    pub(crate) fn from_ref(channel: StreamChannelRef, iii: Option<&IIIClient>) -> Self {
+    /// A new stream on the pipe end `channel`, bound to `iii`.
+    pub(crate) fn from_channel(channel: StreamChannelRef, iii: &IIIClient) -> Self {
         let stream = Self::from_inner(InputInner::new(Some(channel), None));
-        if let Some(iii) = iii {
-            stream.bind(iii);
-        }
+        stream.bind(iii);
         stream
+    }
+
+    /// Opens a read ref (one `extract_channel_refs` found in a call's
+    /// result read as a [`Value`], say) as a stream bound to `iii`. It is
+    /// what deserializing the ref into an `InputStream` gives: a received
+    /// stream its invocation tracks is that stream, a stream of this process
+    /// passed as a placeholder is that stream, and in a handler the guard
+    /// settles it. A `write` ref, or a placeholder already received, fails
+    /// with [`Error::Runtime`].
+    ///
+    /// ```rust,no_run
+    /// # use iii_sdk::{CallRequest, IIIClient, InputStream};
+    /// # use iii_sdk::protocol::{ChannelDirection, extract_channel_refs};
+    /// # use serde_json::json;
+    /// # async fn demo(iii: &IIIClient) -> Result<(), iii_sdk::Error> {
+    /// let result = iii
+    ///     .call(CallRequest::new("reports::export", json!({ "report_id": "r-42" })))
+    ///     .await?;
+    /// for (path, channel) in extract_channel_refs(&result) {
+    ///     if channel.direction == ChannelDirection::Read {
+    ///         let body = InputStream::from_ref(channel, iii)?;
+    ///         println!("{path}: {}", body.text().await?);
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn from_ref(channel: StreamChannelRef, iii: &IIIClient) -> Result<InputStream, Error> {
+        let stream = Self::received(WireRef::from(channel)).map_err(Error::Runtime)?;
+        stream.bind(iii);
+        Ok(stream)
+    }
+
+    /// The stream a received read ref stands for (see [`from_ref`]): its
+    /// placeholder's stream, the one its invocation tracks, or a new one;
+    /// bound to the handler's client and tracked by its guard.
+    ///
+    /// [`from_ref`]: Self::from_ref
+    fn received(wire: WireRef) -> Result<Self, String> {
+        if wire.direction != ChannelDirection::Read {
+            return Err(
+                "expected a stream to read (direction \"read\"): a \"write\" ref is an OutputStream"
+                    .into(),
+            );
+        }
+        let stream = match wire.placeholder_token() {
+            Some(token) => match claim(token) {
+                Some(Local::Input(inner)) => {
+                    inner.hand_over();
+                    InputStream::from_arc(inner)
+                }
+                Some(other) => {
+                    register(token, other);
+                    return Err(gone(&wire.channel_id));
+                }
+                None => return Err(gone(&wire.channel_id)),
+            },
+            None => {
+                // A ref the invocation received: the handler's stream, typed
+                // or read from its raw input.
+                let key = wire.key();
+                if let Some(Tracked::Input(inner)) = received_stream(&key) {
+                    return Ok(InputStream::from_arc(inner));
+                }
+                InputStream::from_inner(InputInner::new(Some(wire.into_ref()), None))
+            }
+        };
+        if let Some(client) = context::current_client() {
+            let mut bound = stream.inner.bound.lock_or_recover();
+            if bound.is_none() {
+                *bound = Some(Endpoint::of(&client));
+            }
+        }
+        if let Some(guard) = context::current_streams() {
+            guard.track(Tracked::Input(stream.inner.clone()));
+        }
+        Ok(stream)
     }
 
     fn from_frames(frames: FrameStream) -> Self {
@@ -974,43 +1069,7 @@ impl<'de> Deserialize<'de> for InputStream {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error as _;
         let wire = WireRef::deserialize(deserializer)?;
-        if wire.direction != ChannelDirection::Read {
-            return Err(D::Error::custom(
-                "expected a stream to read (direction \"read\"): a \"write\" ref is an OutputStream",
-            ));
-        }
-        let stream = match wire.placeholder_token() {
-            Some(token) => match claim(token) {
-                Some(Local::Input(inner)) => {
-                    inner.hand_over();
-                    InputStream::from_arc(inner)
-                }
-                Some(other) => {
-                    register(token, other);
-                    return Err(D::Error::custom(gone(&wire.channel_id)));
-                }
-                None => return Err(D::Error::custom(gone(&wire.channel_id))),
-            },
-            None => {
-                // A ref the invocation received: the handler's stream, typed
-                // or read from its raw input.
-                let key = (wire.channel_id.clone(), ChannelDirection::Read);
-                if let Some(Tracked::Input(inner)) = received_stream(&key) {
-                    return Ok(InputStream::from_arc(inner));
-                }
-                InputStream::from_inner(InputInner::new(Some(wire.into_ref()), None))
-            }
-        };
-        if let Some(client) = context::current_client() {
-            let mut bound = stream.inner.bound.lock_or_recover();
-            if bound.is_none() {
-                *bound = Some(Endpoint::of(&client));
-            }
-        }
-        if let Some(guard) = context::current_streams() {
-            guard.track(Tracked::Input(stream.inner.clone()));
-        }
-        Ok(stream)
+        InputStream::received(wire).map_err(D::Error::custom)
     }
 }
 
@@ -1363,17 +1422,27 @@ impl OutputInner {
         }
     }
 
-    /// Takes the stream as the sink of a pump.
+    /// Takes the stream as the sink of a pump: one pump at a time, so a sink
+    /// sent to one call is not filled by another as well.
     fn take_sink(&self) -> Result<(), Error> {
         let mut st = self.state.lock_or_recover();
         if st.outcome.is_some() {
             return Err(closed());
         }
-        if st.usage == Use::Forwarded {
+        if matches!(st.usage, Use::Forwarded | Use::Piped) {
             return Err(already_sent());
         }
         st.usage = Use::Piped;
         Ok(())
+    }
+
+    /// Why sending it fails, checked before anything is sent: its ref was
+    /// sent on, or a pump fills it (`STREAM_IN_USE`).
+    fn refusal(&self) -> Option<Error> {
+        match self.state.lock_or_recover().usage {
+            Use::Forwarded | Use::Piped => Some(already_sent()),
+            Use::Unused | Use::Used => None,
+        }
     }
 
     /// Its ref was passed on as raw JSON: the other side writes it now.
@@ -1521,11 +1590,10 @@ impl OutputStream {
         }
     }
 
-    pub(crate) fn from_ref(channel: StreamChannelRef, iii: Option<&IIIClient>) -> Self {
+    /// A new stream on the pipe end `channel`, bound to `iii`.
+    pub(crate) fn from_channel(channel: StreamChannelRef, iii: &IIIClient) -> Self {
         let stream = Self::from_arc(Arc::new(OutputInner::new(Some(channel), OutIo::Ws(None))));
-        if let Some(iii) = iii {
-            stream.bind(iii);
-        }
+        stream.bind(iii);
         stream
     }
 
@@ -1716,7 +1784,7 @@ impl<'de> Deserialize<'de> for OutputStream {
                 None => return Err(D::Error::custom(gone(&wire.channel_id))),
             },
             None => {
-                let key = (wire.channel_id.clone(), ChannelDirection::Write);
+                let key = wire.key();
                 if let Some(Tracked::Output(inner)) = received_stream(&key) {
                     return Ok(OutputStream::from_arc(inner));
                 }
@@ -1818,8 +1886,8 @@ async fn create_pipe(iii: &IIIClient) -> Result<(StreamChannelRef, StreamChannel
 pub(crate) async fn pipe(iii: &IIIClient) -> Result<Pipe, Error> {
     let (writer, reader) = create_pipe(iii).await?;
     Ok(Pipe {
-        input: InputStream::from_ref(reader, Some(iii)),
-        output: OutputStream::from_ref(writer, Some(iii)),
+        input: InputStream::from_channel(reader, iii),
+        output: OutputStream::from_channel(writer, iii),
     })
 }
 
@@ -1868,8 +1936,18 @@ impl Tracked {
     }
 }
 
-/// A received ref: its channel id and direction.
-type RefKey = (String, ChannelDirection);
+/// A received ref: its channel id, access key and direction. The whole ref
+/// gives the stream: one with another key (forged from a channel id) is not
+/// that stream.
+type RefKey = (String, String, ChannelDirection);
+
+fn key_of(channel: &StreamChannelRef) -> RefKey {
+    (
+        channel.channel_id.clone(),
+        channel.access_key.clone(),
+        channel.direction,
+    )
+}
 
 /// The refs that invocations of this process received, while their handlers
 /// run: a handler that deserializes one gets the stream its guard tracks, and
@@ -1947,7 +2025,7 @@ pub(crate) fn mark_transferred(value: &Value) {
     }
     visit_refs(value, 0, &mut |found| {
         if let Some(channel) = ref_of(found)
-            && let Some(tracked) = received(&(channel.channel_id, channel.direction))
+            && let Some(tracked) = received(&key_of(&channel))
         {
             tracked.transfer();
         }
@@ -2003,7 +2081,7 @@ impl StreamGuard {
             let Some(channel) = ref_of(value) else {
                 continue;
             };
-            let key = (channel.channel_id.clone(), channel.direction);
+            let key = key_of(&channel);
             let tracked = match channel.direction {
                 ChannelDirection::Read => {
                     let inner = InputInner::new(Some(channel), None);
@@ -2174,15 +2252,18 @@ pub(crate) struct Pumps {
 
 impl Pumps {
     /// Settles a call that sent these pumps' streams (R4): with the result,
-    /// it resolves once every sink got its whole stream, and fails with the
-    /// error of a sink that did not (`STREAM_ABORTED` for an abort). With an
-    /// error, it stops every pump (aborting their streams with it) first.
+    /// it resolves once every sink got its whole stream. A sink that did not
+    /// (`STREAM_ABORTED` for an abort) fails the call at once, and the other
+    /// sinks are aborted with it. With an error, it stops every pump
+    /// (aborting their streams with it) first.
     ///
     /// `detach` (a void call) leaves the pumps running on their own once the
     /// call was sent, and so does a result that holds a stream to write (the
     /// caller writes it after the call returned, maybe into one of these
-    /// sinks). The wait ends at `deadline`, the call's timeout: the sinks
-    /// still open are then aborted, and the call fails with a timeout.
+    /// sinks), unless a sink already failed. The wait ends at `deadline`, the
+    /// call's timeout: the sinks still open are then aborted, and the call
+    /// fails with a timeout. A sink that failed (its writer's error) is what
+    /// the call fails with, whatever the function returned.
     pub(crate) async fn settle(
         self,
         result: Result<Value, Error>,
@@ -2193,53 +2274,60 @@ impl Pumps {
             return result;
         }
         let Pumps { mut sources, sinks } = self;
-        let detach = detach || result.as_ref().is_ok_and(has_write_stream);
         if detach && result.is_ok() {
             // Dropping a pump's cancel sender detaches it: it runs to the end.
             return result;
         }
+        let result = match result {
+            // Not waited for, but a sink that already failed fails the call,
+            // as on the other paths.
+            Ok(value) if has_write_stream(&value) => {
+                match failed_sink(sinks.iter().filter_map(|pump| pump.sink.as_ref())) {
+                    Some(error) => Err(error),
+                    None => return Ok(value),
+                }
+            }
+            other => other,
+        };
         match result {
             Ok(value) => {
                 // Sources keep pumping: the function reads them.
                 drop(sources);
-                let (cancels, mut tasks): (Vec<_>, Vec<_>) = sinks
+                let outs: Vec<_> = sinks.iter().filter_map(|pump| pump.sink.clone()).collect();
+                let (mut cancels, tasks): (Vec<_>, Vec<_>) = sinks
                     .into_iter()
                     .map(|pump| (pump.cancel, pump.task))
                     .unzip();
-                // How many tasks finished: a finished JoinHandle is not polled again.
-                let mut finished = 0;
-                let wait = async {
-                    let mut failure = None;
-                    for task in tasks.iter_mut() {
-                        let outcome = match task.await {
-                            Ok(outcome) => outcome,
-                            Err(error) => {
-                                Err(Error::Runtime(format!("stream pump stopped: {error}")))
-                            }
-                        };
-                        finished += 1;
+                let mut running: FuturesUnordered<_> = tasks
+                    .into_iter()
+                    .map(|task| async move {
+                        task.await.unwrap_or_else(|error| {
+                            Err(Error::Runtime(format!("stream pump stopped: {error}")))
+                        })
+                    })
+                    .collect();
+                // The first sink that did not get its whole stream, in the
+                // order they end.
+                let first_failure = async {
+                    while let Some(outcome) = running.next().await {
                         if let Err(error) = outcome {
-                            failure.get_or_insert(error);
+                            return Some(error);
                         }
                     }
-                    failure
+                    None
                 };
-                let waited = tokio::time::timeout_at(deadline, wait).await;
-                match waited {
-                    Ok(Some(error)) => Err(error),
-                    Ok(None) => Ok(value),
-                    Err(_) => {
-                        for cancel in cancels.into_iter().flatten() {
-                            let _ = cancel.send(SINK_TIMEOUT.to_string());
-                        }
-                        // The sinks are aborted before the call fails, as on
-                        // the error path: a write to one after it fails.
-                        for task in tasks.into_iter().skip(finished) {
-                            let _ = task.await;
-                        }
-                        Err(Error::Timeout)
-                    }
+                let (reason, error) = match tokio::time::timeout_at(deadline, first_failure).await {
+                    Ok(None) => return Ok(value),
+                    Ok(Some(error)) => (abort_reason(&error), error),
+                    Err(_) => (SINK_TIMEOUT.to_string(), Error::Timeout),
+                };
+                for cancel in cancels.iter_mut().filter_map(Option::take) {
+                    let _ = cancel.send(reason.clone());
                 }
+                // The other sinks are aborted before the call fails, as on
+                // the error path: a write to one after it fails.
+                while running.next().await.is_some() {}
+                Err(failed_sink(&outs).unwrap_or(error))
             }
             Err(error) => {
                 let reason = error.to_string();
@@ -2284,12 +2372,10 @@ pub(crate) fn has_write_stream(value: &Value) -> bool {
     walk(value, 0)
 }
 
-/// Refuses a payload that holds one stream twice (`STREAM_IN_USE`), on
-/// every path, before anything is sent.
+/// Refuses a payload that holds one stream twice, raw refs included, or a
+/// stream already read to the end or sent (`STREAM_IN_USE`), on every path,
+/// before anything is sent.
 pub(crate) fn check_sent_once(value: &Value) -> Result<(), Error> {
-    if !placeholders_used() {
-        return Ok(());
-    }
     let mut seen: Vec<(String, ChannelDirection)> = Vec::new();
     let mut twice = false;
     let mut note = |identity: (String, ChannelDirection)| {
@@ -2310,7 +2396,12 @@ pub(crate) fn check_sent_once(value: &Value) -> Result<(), Error> {
                     }
                     input.channel.clone()
                 }
-                Some(Local::Output(output)) => output.channel.clone(),
+                Some(Local::Output(output)) => {
+                    if refused.is_none() {
+                        refused = output.refusal();
+                    }
+                    output.channel.clone()
+                }
                 None => None,
             };
             match channel {
@@ -2356,6 +2447,14 @@ fn visit_streams<'a>(value: &'a Value, depth: usize, visit: &mut impl FnMut(&'a 
     }
 }
 
+/// The reason a stream is aborted with for `error`: an abort's own reason.
+fn abort_reason(error: &Error) -> String {
+    match error {
+        Error::StreamAborted { reason } => reason.clone(),
+        other => other.to_string(),
+    }
+}
+
 /// Moves `frames` into `out` until they end (then closes it) or fail (then
 /// aborts it with the reason). A cancel aborts it with the cancel's reason.
 async fn pump(
@@ -2387,11 +2486,7 @@ async fn pump(
             Some(Ok(Frame::Binary(data))) => out.write(&data).await?,
             Some(Ok(Frame::Text(text))) => out.send_text(&text).await?,
             Some(Err(error)) => {
-                let reason = match &error {
-                    Error::StreamAborted { reason } => reason.clone(),
-                    other => other.to_string(),
-                };
-                let _ = out.abort(&reason).await;
+                let _ = out.abort(&abort_reason(&error)).await;
                 return Err(error);
             }
             None => return out.close().await,
@@ -2491,7 +2586,7 @@ async fn prepare_streams(iii: &IIIClient, value: &mut Value) -> Result<Pumps, Er
         match taken {
             Claimed::Source(frames) => {
                 refs.insert(token, serde_json::to_value(&reader)?);
-                let out = OutputStream::from_ref(writer, Some(iii)).inner;
+                let out = OutputStream::from_channel(writer, iii).inner;
                 pumps.sources.push(Pump {
                     cancel: Some(cancel),
                     task: tokio::spawn(pump(frames, out, Some(signal))),
@@ -2598,9 +2693,11 @@ pub(crate) fn abort_sources(sources: &[Arc<InputInner>], reason: &str) {
 /// Settles an in-process call's sinks (R4), as `Pumps::settle` does a
 /// remote call's: with the result, a sink the handler never took, or dropped
 /// unused, is closed (nothing else can end it), then the call waits for every
-/// sink to end, until `deadline`, and fails with `STREAM_ABORTED` if one
-/// aborted. A result that holds a stream to write is not waited for. With an
-/// error, the sinks still open are aborted with it.
+/// sink to end, until `deadline`, and fails with `STREAM_ABORTED` as soon as
+/// one aborted, aborting the others. A result that holds a stream to write
+/// is not waited for, unless a sink already failed. With an error, the sinks
+/// still open are aborted with it. A sink that failed (its writer's error)
+/// is what the call fails with, whatever the handler returned.
 pub(crate) async fn settle_local_sinks(
     sinks: Vec<(String, Arc<OutputInner>)>,
     result: Result<Value, Error>,
@@ -2624,6 +2721,7 @@ async fn settle_sinks(
             let _ = sink.abort(reason).await;
         }
     }
+    let failed = || failed_sink(sinks.iter().map(|(_, sink)| sink));
     match result {
         Ok(value) => {
             for (token, sink) in &sinks {
@@ -2632,27 +2730,50 @@ async fn settle_sinks(
                 }
             }
             if has_write_stream(&value) {
-                return Ok(value);
+                // Not waited for, but a sink that already failed fails the
+                // call, as on the other paths.
+                return match failed() {
+                    Some(error) => {
+                        abort_all(&sinks, &abort_reason(&error)).await;
+                        Err(error)
+                    }
+                    None => Ok(value),
+                };
             }
-            let wait = async {
-                for (_, sink) in &sinks {
-                    match sink.settled().await {
-                        Some(Outcome::Closed) => {}
-                        Some(Outcome::Aborted(reason)) => {
-                            return Err(Error::StreamAborted { reason });
-                        }
+            let mut ending: FuturesUnordered<_> = sinks
+                .iter()
+                .map(|(_, sink)| async move {
+                    let mut outcome = sink.settled().await;
+                    if outcome.is_none() {
                         // Its receiver dropped it unused: a plain call's
                         // untouched stream ends.
-                        None => {
-                            let _ = sink.close().await;
-                        }
+                        let _ = sink.close().await;
+                        outcome = sink.outcome();
                     }
+                    match outcome {
+                        Some(Outcome::Aborted(reason)) => Err(reason),
+                        _ => Ok(()),
+                    }
+                })
+                .collect();
+            // The first sink that aborted, in the order they end.
+            let wait = async {
+                while let Some(ended) = ending.next().await {
+                    ended?;
                 }
-                Ok(())
+                Ok::<(), String>(())
             };
-            match tokio::time::timeout_at(deadline, wait).await {
+            let waited = tokio::time::timeout_at(deadline, wait).await;
+            // A close still in flight holds its sink: dropped before the
+            // aborts below wait for it.
+            drop(ending);
+            match waited {
                 Ok(Ok(())) => Ok(value),
-                Ok(Err(error)) => Err(error),
+                Ok(Err(reason)) => {
+                    // None stays open after the call failed.
+                    abort_all(&sinks, &reason).await;
+                    Err(failed().unwrap_or(Error::StreamAborted { reason }))
+                }
                 Err(_) => {
                     abort_all(&sinks, SINK_TIMEOUT).await;
                     Err(Error::Timeout)
@@ -2662,7 +2783,7 @@ async fn settle_sinks(
         Err(error) => {
             // The handler's write into a sink that failed fails, and so may
             // the handler: the sink's failure is why.
-            let failed = failed_sink(sinks.iter().map(|(_, sink)| sink));
+            let failed = failed();
             abort_all(&sinks, &error.to_string()).await;
             Err(failed.unwrap_or(error))
         }
@@ -3028,6 +3149,65 @@ mod tests {
         serde_json::to_value(&output).unwrap();
         assert_eq!(code(output.inner.take_sink().unwrap_err()), in_use);
         assert_eq!(code(output.write(b"x").await.unwrap_err()), in_use);
+
+        // A sink a pump still fills is not filled by another, nor sent again.
+        let sink = OutputStream::to_writer(tokio::io::sink());
+        sink.inner.take_sink().unwrap();
+        assert_eq!(code(sink.inner.take_sink().unwrap_err()), in_use);
+        let payload = json!({ "out": sink });
+        assert_eq!(code(check_sent_once(&payload).unwrap_err()), in_use);
+        release(&payload);
+    }
+
+    /// A raw ref twice is refused in a process that never made a
+    /// placeholder. That flag is the process's, so the check runs in a
+    /// process of its own: this test binary, running this test alone.
+    #[test]
+    fn a_raw_ref_twice_is_refused_without_placeholders() {
+        const ALONE: &str = "III_SDK_TEST_NO_PLACEHOLDERS";
+        if std::env::var_os(ALONE).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "streams::tests::a_raw_ref_twice_is_refused_without_placeholders",
+                    "--quiet",
+                ])
+                .env(ALONE, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "{status}");
+            return;
+        }
+        assert!(!placeholders_used());
+        let raw = json!({"channel_id": "c", "access_key": "k", "direction": "read"});
+        let error = check_sent_once(&json!([raw, raw])).unwrap_err();
+        assert_eq!(error.code(), Some(crate::protocol::STREAM_IN_USE));
+    }
+
+    /// A ref with the channel id of a tracked stream and another access key
+    /// is not that stream: it deserializes to a stream of its own, and
+    /// passing it on leaves the tracked one alone.
+    #[tokio::test]
+    async fn a_tracked_stream_needs_its_access_key() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let id = format!("tracked-{}", new_token());
+        let end = |direction: &str, key: &str| json!({"channel_id": id, "access_key": key, "direction": direction});
+        let guard = StreamGuard::new(false);
+        guard.track_input(
+            &iii,
+            &json!({ "in": end("read", "the-key"), "out": end("write", "the-key") }),
+        );
+        let input = |key| serde_json::from_value::<InputStream>(end("read", key)).unwrap();
+        let output = |key| serde_json::from_value::<OutputStream>(end("write", key)).unwrap();
+        let (tracked_in, tracked_out) = (input("the-key"), output("the-key"));
+        assert!(Arc::ptr_eq(&tracked_in.inner, &input("the-key").inner));
+        assert!(Arc::ptr_eq(&tracked_out.inner, &output("the-key").inner));
+        assert!(!Arc::ptr_eq(&tracked_in.inner, &input("forged").inner));
+        assert!(!Arc::ptr_eq(&tracked_out.inner, &output("forged").inner));
+        mark_transferred(&json!([end("read", "forged"), end("write", "forged")]));
+        assert_eq!(tracked_in.inner.describe(), "unread");
+        assert!(!tracked_out.inner.forwarded());
+        guard.settle(&Err(Error::Handler("done".into())));
     }
 
     #[tokio::test]
@@ -3069,6 +3249,29 @@ mod tests {
         assert!(has_write_stream(&json!({ "out": [write] })));
         assert!(!has_write_stream(&json!({ "body": read, "n": 1 })));
         assert!(!has_write_stream(&Value::Null));
+    }
+
+    /// `from_ref` opens what deserializing the ref gives: a write ref and a
+    /// placeholder already received fail, a placeholder of this process is
+    /// its stream.
+    #[tokio::test]
+    async fn from_ref_opens_what_deserializing_gives() {
+        let iii = IIIClient::new("ws://127.0.0.1:0");
+        let of = |value: Value| serde_json::from_value::<StreamChannelRef>(value).unwrap();
+        let write = of(json!({"channel_id": "c", "access_key": "k", "direction": "write"}));
+        let error = InputStream::from_ref(write, &iii).unwrap_err();
+        assert!(matches!(error, Error::Runtime(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("a \"write\" ref is an OutputStream"),
+            "{error}"
+        );
+        let placeholder = of(serde_json::to_value(InputStream::from_bytes(&b"here"[..])).unwrap());
+        let local = InputStream::from_ref(placeholder.clone(), &iii).unwrap();
+        assert_eq!(local.read_all().await.unwrap(), b"here");
+        let error = InputStream::from_ref(placeholder, &iii).unwrap_err();
+        assert!(error.to_string().contains("no longer available"), "{error}");
     }
 
     #[test]

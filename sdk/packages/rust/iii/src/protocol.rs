@@ -32,7 +32,9 @@ pub const STREAM_ABORTED: &str = "STREAM_ABORTED";
 pub const STREAM_NOT_ALLOWED: &str = "STREAM_NOT_ALLOWED";
 
 /// Code of [`Error::StreamClosed`](crate::Error::StreamClosed): a write or
-/// send on a stream already closed or aborted.
+/// send on a stream already closed or aborted, or after its reader left, and
+/// a read of a stream that was cancelled (by its reader, or when its handler
+/// returned).
 pub const STREAM_CLOSED: &str = "STREAM_CLOSED";
 
 /// Code of [`Error::StreamInUse`](crate::Error::StreamInUse): a second

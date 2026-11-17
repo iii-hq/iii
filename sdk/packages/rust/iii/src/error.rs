@@ -40,9 +40,14 @@ pub enum Error {
     /// [`CallAction::Enqueue`](crate::CallAction::Enqueue). Nothing was sent.
     #[error("{0}")]
     StreamNotAllowed(String),
-    /// A write or send on a stream already closed or aborted, code
-    /// `STREAM_CLOSED`
-    /// ([`protocol::STREAM_CLOSED`](crate::protocol::STREAM_CLOSED)).
+    /// A stream used after it ended, code `STREAM_CLOSED`
+    /// ([`protocol::STREAM_CLOSED`](crate::protocol::STREAM_CLOSED)): a
+    /// write or send on a stream already closed or aborted, or after its
+    /// reader left, and a read of an [`InputStream`](crate::InputStream)
+    /// that was cancelled (by
+    /// [`InputStream::cancel`](crate::InputStream::cancel), or when its
+    /// handler returned before reading it to the end). A cancelled stream
+    /// never ends as if it were complete.
     #[error("{0}")]
     StreamClosed(String),
     /// A stream already in use, code `STREAM_IN_USE`
