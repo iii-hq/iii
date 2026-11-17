@@ -49,6 +49,15 @@ function shells() {
 }
 const SHELLS = shells()
 
+/** `pwsh` or `powershell`: a shell's name, for test names and sandbox folders. */
+function label(shell) {
+  return shell
+    .split(/[\\/]/)
+    .pop()
+    .replace(/\.exe$/i, '')
+    .toLowerCase()
+}
+
 /**
  * PATH for a run: the system's own folders and the shell's, so no iii
  * installed on this machine counts as one already there.
@@ -279,8 +288,8 @@ it('finds the PowerShells this machine should have', { skip: !process.env.CI }, 
 
 describe('the body alone', () => {
   for (const shell of SHELLS) {
-    it(`${shell}: points at the registry and installs nothing`, async () => {
-      const box = sandbox(`alone-${shell}`)
+    it(`${label(shell)}: points at the registry and installs nothing`, async () => {
+      const box = sandbox(`alone-${label(shell)}`)
       const file = join(ROOT, 'www', 'registry', 'install', 'iii', 'body-only.ps1')
       mkdirSync(dirname(file), { recursive: true })
       writeFileSync(file, `& {\n${BODY}\n}\n`)
@@ -293,7 +302,7 @@ describe('the body alone', () => {
 })
 
 for (const shell of SHELLS) {
-  describe(`install.ps1 under ${shell}`, { timeout: 120_000 }, () => {
+  describe(`install.ps1 under ${label(shell)}`, { timeout: 120_000 }, () => {
     it('parses, composed as the registry serves it', () => {
       const file = publish('0.27.0', 'parse')
       const res = spawnSync(
@@ -310,7 +319,7 @@ for (const shell of SHELLS) {
     })
 
     it('installs a fresh iii, reports it, and prints the setup command', async () => {
-      const box = sandbox(`fresh-${shell}`)
+      const box = sandbox(`fresh-${label(shell)}`)
       publish('0.27.0', 'latest')
       const res = await install(shell, box, 'latest')
       assert.equal(res.status, 0, res.output)
@@ -336,7 +345,7 @@ for (const shell of SHELLS) {
     })
 
     it('upgrades an older iii in place, with no setup offer', async () => {
-      const box = sandbox(`upgrade-${shell}`)
+      const box = sandbox(`upgrade-${label(shell)}`)
       fakeIii('0.26.0', join(box.bin, 'iii.exe'))
       publish('0.27.0', 'latest')
       const res = await install(shell, box, 'latest')
@@ -355,7 +364,7 @@ for (const shell of SHELLS) {
     })
 
     it('does nothing when iii is already at that version', async () => {
-      const box = sandbox(`same-${shell}`)
+      const box = sandbox(`same-${label(shell)}`)
       fakeIii('0.27.0', join(box.bin, 'iii.exe'))
       publish('0.27.0', 'latest')
       served.length = 0
@@ -369,7 +378,7 @@ for (const shell of SHELLS) {
     })
 
     it('installs the version VERSION names, through the registry script for it', async () => {
-      const box = sandbox(`version-${shell}`)
+      const box = sandbox(`version-${label(shell)}`)
       publish('0.27.0', 'latest')
       publish('0.26.0', '0.26.0')
       const res = await install(shell, box, 'latest', { VERSION: 'iii/v0.26.0' })
@@ -380,7 +389,7 @@ for (const shell of SHELLS) {
     })
 
     it('stops when the registry answers a redirect with another version', async () => {
-      const box = sandbox(`loop-${shell}`)
+      const box = sandbox(`loop-${label(shell)}`)
       publish('0.27.0', 'latest')
       publish('0.27.0', '0.25.1')
       const res = await install(shell, box, 'latest', { VERSION: '0.25.1' })
@@ -390,7 +399,7 @@ for (const shell of SHELLS) {
     })
 
     it('installs nothing when the archive does not match its digest', async () => {
-      const box = sandbox(`digest-${shell}`)
+      const box = sandbox(`digest-${label(shell)}`)
       publish('0.27.0', 'latest', { digest: '0'.repeat(64) })
       const res = await install(shell, box, 'latest')
       assert.notEqual(res.status, 0)
@@ -400,7 +409,7 @@ for (const shell of SHELLS) {
 
     // The target detected on a Windows machine: off Windows there is none.
     it('keeps a working iii when the new build does not run here, and reports it', { skip: !ON_WINDOWS }, async () => {
-      const box = sandbox(`broken-${shell}`)
+      const box = sandbox(`broken-${label(shell)}`)
       fakeIii('0.26.0', join(box.bin, 'iii.exe'))
       publish('0.27.0', 'latest', { broken: true })
       const res = await install(shell, box, 'latest')
@@ -416,7 +425,7 @@ for (const shell of SHELLS) {
     })
 
     it('installs a build that does not run here when TARGET names it, with a warning', async () => {
-      const box = sandbox(`target-${shell}`)
+      const box = sandbox(`target-${label(shell)}`)
       publish('0.27.0', 'latest', { broken: true })
       const res = await install(shell, box, 'latest', { TARGET: WINDOWS_TARGET })
       assert.equal(res.status, 0, res.output)
@@ -425,7 +434,7 @@ for (const shell of SHELLS) {
     })
 
     it('points macOS and Linux at the sh installer', { skip: ON_WINDOWS }, async () => {
-      const box = sandbox(`unix-${shell}`)
+      const box = sandbox(`unix-${label(shell)}`)
       publish('0.27.0', 'latest')
       const res = await install(shell, box, 'latest', { TARGET: undefined })
       assert.notEqual(res.status, 0)
@@ -438,7 +447,7 @@ for (const shell of SHELLS) {
     })
 
     it('names the builds there are when this version has none for the target', async () => {
-      const box = sandbox(`missing-${shell}`)
+      const box = sandbox(`missing-${label(shell)}`)
       publish('0.27.0', 'latest')
       const res = await install(shell, box, 'latest', { TARGET: 'riscv64gc-unknown-linux-gnu' })
       assert.notEqual(res.status, 0)
