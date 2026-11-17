@@ -843,18 +843,17 @@ func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, er
 	if err := checkCallStreams(req); err != nil {
 		return nil, err
 	}
+	if err := refuseCallRequest(req); err != nil {
+		release(req.payload())
+		return nil, err
+	}
+	// Received refs the payload passes on as raw JSON are the callee's now: their guards
+	// leave them alone. Only a call that passed every check gets them.
+	markTransferred(req.payload())
 	// The call's timeout bounds its wait for the sinks it passes, too.
 	deadline := time.Now().Add(c.callTimeout(req.Timeout))
 	if req.Observer != nil {
 		return c.callThroughObserver(ctx, req, deadline)
-	}
-	if err := refuseBlankCallNamespace(req.Namespace, "CallRequest.Namespace"); err != nil {
-		return nil, err
-	}
-	switch req.Dispatch {
-	case "", DispatchAuto, DispatchRemote:
-	default:
-		return nil, fmt.Errorf("iii: CallRequest.Dispatch must be %q or %q, got %q", DispatchAuto, DispatchRemote, req.Dispatch)
 	}
 	namespace := invocationNamespace(req.FunctionID, req.Namespace, c.namespace)
 	if req.Dispatch != DispatchRemote && (req.Action == nil || req.Action.Type != "enqueue") {
@@ -895,31 +894,40 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 	return c.Call(ctx, req)
 }
 
+// refuseCallRequest is why req cannot be dispatched, nil when it can: checked before
+// anything is sent, so a refused call keeps its streams.
+func refuseCallRequest(req CallRequest) error {
+	if obs := req.Observer; obs != nil {
+		switch {
+		case obs.owner == nil:
+			return errors.New("iii: CallRequest.Observer is not an observer handed out by the client")
+		case req.FunctionID != "" || req.Namespace != "":
+			return fmt.Errorf("iii: CallRequest.FunctionID and Namespace must be empty with Observer: the call goes to observer %s's target", obs.id)
+		case req.Metadata != nil:
+			// Its target's metadata is the observer's: refused before anything is sent, so
+			// no metadata is lost on the way (decision 53).
+			return errObserverCallMetadata
+		case req.Action != nil && req.Action.Type == "enqueue":
+			return fmt.Errorf("iii: a call through observer %s cannot be enqueued", obs.id)
+		}
+		return nil
+	}
+	if err := refuseBlankCallNamespace(req.Namespace, "CallRequest.Namespace"); err != nil {
+		return err
+	}
+	switch req.Dispatch {
+	case "", DispatchAuto, DispatchRemote:
+		return nil
+	}
+	return fmt.Errorf("iii: CallRequest.Dispatch must be %q or %q, got %q", DispatchAuto, DispatchRemote, req.Dispatch)
+}
+
 // callThroughObserver sends an invokefunction to the observer's target with
 // activation.observer_id and no namespace: the engine routes it to the target it
 // stored for the observer and checks the rest.
 func (c *Client) callThroughObserver(ctx context.Context, req CallRequest, deadline time.Time) (json.RawMessage, error) {
-	obs := req.Observer
-	refuse := func(err error) (json.RawMessage, error) {
-		release(req.payload())
-		return nil, err
-	}
-	if obs.owner == nil {
-		return refuse(errors.New("iii: CallRequest.Observer is not an observer handed out by the client"))
-	}
-	if req.FunctionID != "" || req.Namespace != "" {
-		return refuse(fmt.Errorf("iii: CallRequest.FunctionID and Namespace must be empty with Observer: the call goes to observer %s's target", obs.id))
-	}
-	// Its target's metadata is the observer's: refused before anything is sent, so no
-	// metadata is lost on the way (decision 53).
-	if req.Metadata != nil {
-		return refuse(errObserverCallMetadata)
-	}
-	if req.Action != nil && req.Action.Type == "enqueue" {
-		return refuse(fmt.Errorf("iii: a call through observer %s cannot be enqueued", obs.id))
-	}
-	req.FunctionID = obs.target
-	return c.callRemote(ctx, req, "", &Activation{ObserverID: obs.id}, deadline)
+	req.FunctionID = req.Observer.target
+	return c.callRemote(ctx, req, "", &Activation{ObserverID: req.Observer.id}, deadline)
 }
 
 // invokeRemote is the routed path: an InvokeFunction through the engine. Inside a
@@ -1789,6 +1797,9 @@ type outcome struct {
 	result  json.RawMessage
 	errBody *ErrorBody
 	err     error
+	// sent are the pumps of the streams result carries (sendOutcome): whoever drops the
+	// result stops them.
+	sent *pumps
 }
 
 // outcomeOf encodes what a handler or a deliver hook returned: a json.RawMessage is
@@ -1831,6 +1842,11 @@ func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMess
 	// without delaying the answer.
 	guard.settle(handler)
 	out := deliver(ctx, handler)
+	if out.sent != handler.sent {
+		// A deliver hook's own answer: the streams of the handler's result it does not
+		// carry are not sent, so their pumps stop.
+		out.sent = handler.sent.keep(out)
+	}
 	// A deliver hook's own answer: its streams are sent too.
 	out = c.sendOutcome(out, sc.answered)
 	if out.err != nil {

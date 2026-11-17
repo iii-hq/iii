@@ -55,7 +55,8 @@ type StreamRequest struct {
 // with code [iii.CodeStreamAborted], never io.EOF: the body read so far is incomplete,
 // and io.ReadAll returns it together with the error. Read returns [ErrMissingChannel]
 // when RequestBody is nil. A body the handler started reading and did not finish is
-// cancelled when it returns.
+// cancelled when it returns. In a [Wrap] handler, the body is also cancelled when the
+// invocation's context ends: a Read in flight then fails with STREAM_CLOSED.
 func (r *StreamRequest) Read(p []byte) (int, error) {
 	if r.RequestBody == nil {
 		return 0, ErrMissingChannel
@@ -162,6 +163,9 @@ func (r *StreamResponse) Close() error {
 //     returned value ([Response]) or reports the error;
 //   - a request body fn started reading and did not finish is cancelled.
 //
+// While fn runs, the request body is cancelled when ctx ends, so a read that waits for
+// more of the body returns then.
+//
 // fn must not use req or res after it returns, unless it called KeepOpen on
 // res.Stream(). Wrap returns nil when fn is nil.
 func Wrap(fn HandlerFunc) iii.Handler {
@@ -183,6 +187,12 @@ func Wrap(fn HandlerFunc) iii.Handler {
 			Path:        in.Path,
 			Method:      in.Method,
 			RequestBody: in.RequestBody,
+		}
+		if body := in.RequestBody; body != nil {
+			// Reads of the body are bound to the invocation: [iii.InputStream.Read] has no
+			// ctx of its own.
+			stop := context.AfterFunc(ctx, body.Cancel)
+			defer stop()
 		}
 		return fn(ctx, req, NewStreamResponse(ctx, in.Response))
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -186,7 +187,7 @@ func hasWriteStream(raw json.RawMessage) bool {
 // checkSentOnce refuses a payload that holds one stream twice, a stream already read to
 // the end, or one already sent (STREAM_IN_USE), on every path, before anything is sent.
 func checkSentOnce(raw json.RawMessage) error {
-	if !placeholdersUsed.Load() || !bytes.Contains(raw, channelIDKey) {
+	if !bytes.Contains(raw, channelIDKey) {
 		return nil
 	}
 	v, ok := decodeValue(raw)
@@ -215,8 +216,11 @@ func checkSentOnce(raw json.RawMessage) error {
 				if e.in.ref != nil {
 					id = e.in.ref.ChannelID
 				}
-			case e.out != nil && e.out.ref != nil:
-				id = e.out.ref.ChannelID
+			case e.out != nil:
+				sent = sent || e.out.sentOn()
+				if e.out.ref != nil {
+					id = e.out.ref.ChannelID
+				}
 			}
 		}
 		note(receivedKey{id, ref.Direction})
@@ -232,8 +236,8 @@ func checkSentOnce(raw json.RawMessage) error {
 	return nil
 }
 
-// release drops the streams raw carries as placeholders: a value nobody reads (a void
-// call's result, a call refused before it was sent).
+// release drops the placeholders of the streams raw carries, for a call refused before
+// it was sent: the streams stay their caller's.
 func release(raw json.RawMessage) {
 	if !mayHavePlaceholder(raw) {
 		return
@@ -243,6 +247,24 @@ func release(raw json.RawMessage) {
 		return
 	}
 	visitPlaceholders(v, func(token string, _ ChannelDirection) { claimPlaceholder(token) })
+}
+
+// discard drops the streams of a value nobody reads (a void call's result): their
+// placeholders go, and the sources among them are cancelled, which closes what they read
+// (a producer blocked on an io.Pipe then gets an error).
+func discard(raw json.RawMessage) {
+	if !mayHavePlaceholder(raw) {
+		return
+	}
+	v, ok := decodeValue(raw)
+	if !ok {
+		return
+	}
+	visitPlaceholders(v, func(token string, _ ChannelDirection) {
+		if e, ok := claimPlaceholder(token); ok && e.in != nil {
+			e.in.cancel()
+		}
+	})
 }
 
 // markTransferred marks the received refs raw passes on as raw JSON (a call payload, a
@@ -256,7 +278,7 @@ func markTransferred(raw json.RawMessage) {
 		return
 	}
 	visitRefs(v, func(ref StreamChannelRef) {
-		if e := lookupReceived(receivedKey{ref.ChannelID, ref.Direction}); e != nil {
+		if e := lookupReceived(receivedKey{ref.ChannelID, ref.Direction}, ref.AccessKey); e != nil {
 			if e.in != nil {
 				e.in.transfer()
 			} else {
@@ -274,8 +296,7 @@ func enqueueRejection() error {
 var errStreamInMetadata = errors.New("iii: a stream cannot travel in metadata: put it in the payload")
 
 // checkCallStreams applies the checks every call makes before anything is sent: no
-// stream in an enqueued call (R9), each stream once, no stream in the metadata. The
-// received refs the payload passes on are the callee's then.
+// stream in an enqueued call (R9), each stream once, no stream in the metadata.
 func checkCallStreams(req CallRequest) error {
 	payload := req.payload()
 	if req.Action != nil && req.Action.Type == "enqueue" && containsStream(payload) {
@@ -291,7 +312,6 @@ func checkCallStreams(req CallRequest) error {
 		release(req.Metadata)
 		return errStreamInMetadata
 	}
-	markTransferred(payload)
 	return nil
 }
 
@@ -306,11 +326,13 @@ type pump struct {
 	out    *outputInner
 	done   chan struct{}
 	err    error
+	// channel is the channel id of the ref that took its stream's place.
+	channel string
 }
 
-func startPump(src frameSource, out *outputInner) *pump {
+func startPump(src frameSource, out *outputInner, channel string) *pump {
 	ctx, cancel := context.WithCancelCause(context.Background())
-	p := &pump{cancel: cancel, out: out, done: make(chan struct{})}
+	p := &pump{cancel: cancel, out: out, done: make(chan struct{}), channel: channel}
 	go func() {
 		defer close(p.done)
 		defer cancel(nil)
@@ -381,6 +403,82 @@ type pumps struct {
 	sinks   []*pump
 }
 
+// notSentReason is the reason the streams of a result nobody gets are aborted with.
+const notSentReason = "the result that held the stream was not sent"
+
+// stop stops every pump, aborting its stream with reason.
+func (p *pumps) stop(reason string) {
+	if p == nil {
+		return
+	}
+	for _, pm := range p.sources {
+		pm.stop(reason)
+	}
+	for _, pm := range p.sinks {
+		pm.stop(reason)
+	}
+}
+
+// join is the pumps of p and q.
+func (p *pumps) join(q *pumps) *pumps {
+	switch {
+	case p == nil:
+		return q
+	case q == nil:
+		return p
+	}
+	return &pumps{
+		sources: append(slices.Clip(p.sources), q.sources...),
+		sinks:   append(slices.Clip(p.sinks), q.sinks...),
+	}
+}
+
+// keep stops the pumps of the streams out does not carry (a deliver hook answered with a
+// value of its own, or an error: nobody reads them) and returns the others.
+func (p *pumps) keep(out outcome) *pumps {
+	if p == nil {
+		return nil
+	}
+	carried := map[string]bool{}
+	if out.errBody == nil && bytes.Contains(out.result, channelIDKey) {
+		if v, ok := decodeValue(out.result); ok {
+			visitRefs(v, func(ref StreamChannelRef) { carried[ref.ChannelID] = true })
+		}
+	}
+	kept := &pumps{}
+	for _, pm := range p.sources {
+		if carried[pm.channel] {
+			kept.sources = append(kept.sources, pm)
+		} else {
+			pm.stop(notSentReason)
+		}
+	}
+	for _, pm := range p.sinks {
+		if carried[pm.channel] {
+			kept.sinks = append(kept.sinks, pm)
+		} else {
+			pm.stop(notSentReason)
+		}
+	}
+	return kept
+}
+
+// endings sends the index of each of dones once it is closed, until quit is: a wait for
+// several streams sees the first that ends, whatever their order.
+func endings(dones []<-chan struct{}, quit <-chan struct{}) <-chan int {
+	ended := make(chan int, len(dones))
+	for i, done := range dones {
+		go func() {
+			select {
+			case <-done:
+				ended <- i
+			case <-quit:
+			}
+		}()
+	}
+	return ended
+}
+
 // settle settles a call that sent these pumps' streams (R4). With a result it returns
 // once every sink got its whole stream, and fails with the error of a sink that did
 // not (STREAM_ABORTED for an abort). With an error it stops every pump, aborting their
@@ -390,26 +488,30 @@ type pumps struct {
 // and so does a result that holds a stream to write (the caller writes it after the
 // call returned, maybe into one of these sinks). The wait ends at deadline, the call's
 // timeout, or when ctx ends: the sinks still open are then aborted, and the call fails
-// with ErrTimeout (or ctx's error). Stopping a pump does not wait for it: a sink whose
-// Write blocks does not hold the call past its deadline. A sink that failed (its
-// writer's error) is what the call fails with, whatever the function returned, unless
-// ctx ended.
+// with ErrTimeout (or ctx's error). A sink that did not get its whole stream fails the
+// call at once, and the other sinks are aborted with it. Stopping a pump does not wait
+// for it: a sink whose Write blocks does not hold the call past its deadline. A sink
+// that failed (its writer's error) is what the call fails with, whatever the function
+// returned, unless ctx ended.
 func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, detach bool, deadline time.Time) (json.RawMessage, error) {
 	if p == nil || len(p.sources)+len(p.sinks) == 0 {
 		return result, err
 	}
-	if err == nil && (detach || hasWriteStream(result)) {
+	if err == nil && detach {
+		return result, nil
+	}
+	if err == nil && hasWriteStream(result) {
+		// Not waited for, but a sink that already failed fails the call, as on the other
+		// paths.
+		if failed := p.failure(ctx, nil); failed != nil {
+			p.stop(failed.Error())
+			return nil, failed
+		}
 		return result, nil
 	}
 	if err != nil {
 		// The sinks are aborted before the call fails: a write to one after it fails.
-		reason := err.Error()
-		for _, pm := range p.sources {
-			pm.stop(reason)
-		}
-		for _, pm := range p.sinks {
-			pm.stop(reason)
-		}
+		p.stop(err.Error())
 		return nil, p.failure(ctx, err)
 	}
 	// Sources keep pumping: the function reads them.
@@ -420,12 +522,19 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 			pm.stop(reason)
 		}
 	}
-	var failure error
-	for _, pm := range p.sinks {
+	dones := make([]<-chan struct{}, len(p.sinks))
+	for i, pm := range p.sinks {
+		dones[i] = pm.done
+	}
+	quit := make(chan struct{})
+	defer close(quit)
+	ended := endings(dones, quit)
+	for range p.sinks {
 		select {
-		case <-pm.done:
-			if pm.err != nil && failure == nil {
-				failure = pm.err
+		case i := <-ended:
+			if pm := p.sinks[i]; pm.err != nil {
+				stopSinks(abortReason(pm.err))
+				return nil, p.failure(ctx, pm.err)
 			}
 		case <-timer.C:
 			stopSinks(sinkTimeout)
@@ -434,9 +543,6 @@ func (p *pumps) settle(ctx context.Context, result json.RawMessage, err error, d
 			stopSinks(ctx.Err().Error())
 			return nil, ctx.Err()
 		}
-	}
-	if failure != nil {
-		return nil, p.failure(ctx, failure)
 	}
 	return result, nil
 }
@@ -572,10 +678,10 @@ func (c *Client) prepareStreams(ctx context.Context, raw json.RawMessage) (json.
 	for i, cl := range claimed {
 		if cl.entry.in != nil {
 			refs[cl.token] = pipes[i].reader
-			started.sources = append(started.sources, startPump(cl.src, newOutput(&pipes[i].writer, nil, ep)))
+			started.sources = append(started.sources, startPump(cl.src, newOutput(&pipes[i].writer, nil, ep), pipes[i].reader.ChannelID))
 		} else {
 			refs[cl.token] = pipes[i].writer
-			started.sinks = append(started.sinks, startPump(&wsSource{ep: ep, ref: pipes[i].reader}, cl.entry.out))
+			started.sinks = append(started.sinks, startPump(&wsSource{ep: ep, ref: pipes[i].reader}, cl.entry.out, pipes[i].writer.ChannelID))
 		}
 	}
 	v = replaceStreams(v, func(ref StreamChannelRef) (any, bool) {
@@ -691,10 +797,10 @@ func localSinks(payload json.RawMessage) []localSink {
 // settleLocalSinks settles an in-process call's sinks (R4), as pumps.settle does a
 // remote call's: with a result, a sink its handler never took is closed (nothing else
 // can end it), then the call waits for every sink to end, until deadline, and fails with
-// STREAM_ABORTED if one aborted. A result that holds a stream to write is not waited
-// for. With an error, the sinks still open are aborted with it. A sink that failed (its
-// writer's error) is what the call fails with, whatever the handler returned, unless
-// ctx ended.
+// STREAM_ABORTED as soon as one aborted, aborting the others. A result that holds a
+// stream to write is not waited for. With an error, the sinks still open are aborted
+// with it. A sink that failed (its writer's error) is what the call fails with,
+// whatever the handler returned, unless ctx ended.
 func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMessage, err error, deadline time.Time) (json.RawMessage, error) {
 	if len(sinks) == 0 {
 		return result, err
@@ -702,7 +808,9 @@ func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMes
 	abortAll := func(reason string) {
 		for _, s := range sinks {
 			claimPlaceholder(s.token)
-			_ = s.out.abort(reason)
+			// At once: the close frame of a pipe end goes in the background, so the call
+			// does not wait on its socket past its deadline.
+			s.out.abortNow(reason)
 		}
 	}
 	// A sink that failed is why the call failed (the handler's writes failed after it),
@@ -730,14 +838,29 @@ func settleLocalSinks(ctx context.Context, sinks []localSink, result json.RawMes
 		}
 	}
 	if hasWriteStream(result) {
+		// Not waited for, but a sink that already failed fails the call, as on the other
+		// paths.
+		if failed := failure(nil); failed != nil {
+			abortAll(failed.Error())
+			return nil, failed
+		}
 		return result, nil
 	}
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
-	for _, s := range sinks {
+	dones := make([]<-chan struct{}, len(sinks))
+	for i, s := range sinks {
+		dones[i] = s.out.done
+	}
+	quit := make(chan struct{})
+	defer close(quit)
+	ended := endings(dones, quit)
+	for range sinks {
 		select {
-		case <-s.out.done:
-			if _, aborted, reason := s.out.outcome(); aborted {
+		case i := <-ended:
+			if _, aborted, reason := sinks[i].out.outcome(); aborted {
+				// None stays open after the call failed.
+				abortAll(reason)
 				return nil, failure(streamAbortedError(reason))
 			}
 		case <-timer.C:
@@ -822,9 +945,9 @@ func (g *streamGuard) trackInput(c *Client, raw json.RawMessage) {
 			ep = c.streamEndpoint()
 		}
 		if ref.Direction == ChannelRead {
-			g.adopt(key, &receivedEntry{in: newInput(&ref, nil, ep)})
+			g.adopt(key, &receivedEntry{in: newInput(&ref, nil, ep), accessKey: ref.AccessKey})
 		} else {
-			g.adopt(key, &receivedEntry{out: newOutput(&ref, nil, ep)})
+			g.adopt(key, &receivedEntry{out: newOutput(&ref, nil, ep), accessKey: ref.AccessKey})
 		}
 	})
 }
@@ -873,22 +996,24 @@ type streamCall struct {
 }
 
 // sendOutcome makes the streams in out's result ready to send: pipes replace the
-// placeholders, and their pumps start (prepareStreams), when the result is answered;
-// otherwise nobody reads them, and they are released. The received refs the result
-// passes on are the caller's then.
+// placeholders, and their pumps start (prepareStreams; out.sent holds them), when the
+// result is answered; otherwise nobody reads them, and they are discarded. The received
+// refs the result passes on are the caller's then.
 func (c *Client) sendOutcome(out outcome, answered bool) outcome {
 	if out.errBody != nil {
 		return out
 	}
 	if !answered {
-		release(out.result)
+		discard(out.result)
 		return out
 	}
-	result, _, err := c.prepareStreams(c.lifeCtx, out.result)
+	result, started, err := c.prepareStreams(c.lifeCtx, out.result)
 	if err != nil {
+		out.sent.stop(err.Error())
 		return outcome{errBody: errorBodyFromHandlerError(err), err: err}
 	}
 	out.result = result
+	out.sent = out.sent.join(started)
 	markTransferred(result)
 	return out
 }
@@ -914,9 +1039,9 @@ func (c *Client) trackResult(raw json.RawMessage) {
 		}
 		key := receivedKey{ref.ChannelID, ref.Direction}
 		if ref.Direction == ChannelRead {
-			storeReceived(key, &receivedEntry{in: newInput(&ref, nil, ep)})
+			storeReceived(key, &receivedEntry{in: newInput(&ref, nil, ep), accessKey: ref.AccessKey})
 		} else {
-			storeReceived(key, &receivedEntry{out: newOutput(&ref, nil, ep)})
+			storeReceived(key, &receivedEntry{out: newOutput(&ref, nil, ep), accessKey: ref.AccessKey})
 		}
 	})
 }

@@ -47,7 +47,7 @@ const abortCloseCode = websocket.StatusInternalError
 const maxCloseReason = 123
 
 // streamDialTimeout bounds the dial of a stream socket opened by an operation that
-// takes no context: io.Reader reads, Close and Abort.
+// takes no context (io.Reader reads, Close and Abort), and the handshake of a read end.
 const streamDialTimeout = 30 * time.Second
 
 // channelURL builds the URL of one end of a pipe from the engine WS base, as every SDK
@@ -150,6 +150,8 @@ type wsSource struct {
 	mu        sync.Mutex
 	conn      *websocket.Conn
 	cancelled bool
+	// stopDial ends the dial in flight: a cancel does not wait for its handshake.
+	stopDial context.CancelFunc
 }
 
 func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
@@ -159,10 +161,29 @@ func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
 		return StreamFrame{}, errSourceCancelled
 	}
 	conn := s.conn
+	var dialCtx context.Context
+	if conn == nil {
+		// Bounded, since an io.Reader read has no ctx of its own, and ended by a cancel.
+		dialCtx, s.stopDial = context.WithTimeout(ctx, streamDialTimeout)
+	}
 	s.mu.Unlock()
 	if conn == nil {
-		dialed, err := dialChannel(ctx, s.ep, s.ref, ChannelRead)
-		if err != nil {
+		dialed, err := dialChannel(dialCtx, s.ep, s.ref, ChannelRead)
+		s.mu.Lock()
+		s.stopDial()
+		s.stopDial = nil
+		cancelled := s.cancelled
+		if !cancelled && err == nil {
+			s.conn = dialed
+		}
+		s.mu.Unlock()
+		switch {
+		case cancelled:
+			if dialed != nil {
+				go closeReader(dialed)
+			}
+			return StreamFrame{}, errSourceCancelled
+		case err != nil:
 			if ctx.Err() != nil {
 				return StreamFrame{}, ctx.Err()
 			}
@@ -170,14 +191,6 @@ func (s *wsSource) next(ctx context.Context) (StreamFrame, error) {
 			// HTTP 404) never gets the stream: it is incomplete, not empty.
 			return StreamFrame{}, streamAbortedError("could not open the stream: " + err.Error())
 		}
-		s.mu.Lock()
-		if s.cancelled {
-			s.mu.Unlock()
-			go closeReader(dialed)
-			return StreamFrame{}, errSourceCancelled
-		}
-		s.conn = dialed
-		s.mu.Unlock()
 		conn = dialed
 	}
 	typ, data, err := conn.Read(ctx)
@@ -225,8 +238,11 @@ func (s *wsSource) cancel() {
 		return
 	}
 	s.cancelled = true
-	conn := s.conn
+	conn, stopDial := s.conn, s.stopDial
 	s.mu.Unlock()
+	if stopDial != nil {
+		stopDial()
+	}
 	if conn != nil {
 		go closeReader(conn)
 	}
@@ -240,29 +256,38 @@ func closeReader(conn *websocket.Conn) {
 }
 
 // readerSource reads an io.Reader in frames of up to channelFrameSize bytes. A read
-// error aborts the stream with its message. The reader is closed, when it is an
-// io.Closer, once the stream ends, fails or is cancelled.
+// error aborts the stream with its message, after the data the Read returned with it.
+// The reader is closed, when it is an io.Closer, once the stream ends, fails or is
+// cancelled, and when the ctx of a read ends while that read is in flight.
 type readerSource struct {
 	r io.Reader
 
 	mu     sync.Mutex
 	eof    bool
 	closed bool
+	// failed is the error a Read returned together with data: the next frame is the abort.
+	failed error
 }
 
 func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
 	s.mu.Lock()
-	eof, closed := s.eof, s.closed
+	eof, closed, failed := s.eof, s.closed, s.failed
 	s.mu.Unlock()
 	switch {
 	case eof:
 		return StreamFrame{}, io.EOF
 	case closed:
 		return StreamFrame{}, errSourceCancelled
+	case failed != nil:
+		s.cancel()
+		return StreamFrame{}, streamAbortedError(failed.Error())
 	}
 	if err := ctx.Err(); err != nil {
 		return StreamFrame{}, err
 	}
+	// ctx ends a Read that blocks (an io.Pipe nobody writes) by closing the reader.
+	stop := context.AfterFunc(ctx, s.cancel)
+	defer stop()
 	buf := make([]byte, channelFrameSize)
 	for {
 		n, err := s.r.Read(buf)
@@ -270,15 +295,24 @@ func (s *readerSource) next(ctx context.Context) (StreamFrame, error) {
 		cancelled := s.closed && !s.eof
 		s.mu.Unlock()
 		if cancelled {
-			// Cancelled while this Read was in flight: what it returns is not the end.
+			// Cancelled while this Read was in flight, by ctx or a cancel: what it returns
+			// is not the end.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return StreamFrame{}, ctxErr
+			}
 			return StreamFrame{}, errSourceCancelled
 		}
 		if n > 0 {
-			if err == io.EOF {
+			switch {
+			case err == io.EOF:
 				s.mu.Lock()
 				s.eof = true
 				s.mu.Unlock()
 				s.cancel()
+			case err != nil:
+				s.mu.Lock()
+				s.failed = err
+				s.mu.Unlock()
 			}
 			return StreamFrame{Type: FrameBinary, Data: buf[:n]}, nil
 		}

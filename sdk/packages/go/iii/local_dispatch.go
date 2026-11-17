@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,10 @@ import (
 // engine for in-process calls, runs here without touching the wire, and is delivered
 // here: this worker evaluates its observers' capture and filters, which the engine never
 // sees. Nobody observing it means zero frames; matched observers mean one report item.
+
+// lateResultReason is the reason the streams of a result that came after its caller
+// stopped waiting are aborted with.
+const lateResultReason = "the caller stopped waiting for the result that held the stream"
 
 // localTarget returns the function Call may run in-process, with the call state it
 // starts with: registered here, the engine confirmed it with local_dispatch, the
@@ -140,12 +145,27 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	// The sinks the caller passes: the call returns once they ended.
 	sinks := localSinks(data)
 	done := make(chan outcome, 1)
-	go func() { done <- run() }()
+	// left: the caller stopped waiting. A result that comes after is dropped, and so are
+	// its streams: nobody reads them.
+	var handoff sync.Mutex
+	left := false
+	go func() {
+		out := run()
+		handoff.Lock()
+		defer handoff.Unlock()
+		if left {
+			out.sent.stop(lateResultReason)
+			return
+		}
+		done <- out
+	}()
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
 	var result json.RawMessage
+	answered := false
 	select {
 	case out := <-done:
+		answered = true
 		if out.errBody != nil {
 			err = newInvocationError(out.errBody, functionID)
 		} else {
@@ -158,10 +178,22 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	case <-c.shutdown:
 		err = ErrNotConnected
 	}
+	if !answered {
+		handoff.Lock()
+		left = true
+		handoff.Unlock()
+		select {
+		case out := <-done: // it came as the wait ended
+			out.sent.stop(lateResultReason)
+		default:
+		}
+	}
 	if err != nil {
 		abortLocalSources(sources, err)
 	}
 	if result, err = settleLocalSinks(ctx, sinks, result, err, deadline); err != nil {
+		// Failed on its sinks (the handler succeeded): its sources are aborted too.
+		abortLocalSources(sources, err)
 		return nil, err
 	}
 	c.trackResult(result)

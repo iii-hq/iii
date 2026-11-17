@@ -212,6 +212,8 @@ type receivedKey struct {
 type receivedEntry struct {
 	in  *inputInner
 	out *outputInner
+	// accessKey is its ref's: only the whole ref gives the stream ("" for a placeholder).
+	accessKey string
 	// guard is the invocation whose input holds it; nil for a call result.
 	guard *streamGuard
 	at    time.Time
@@ -236,14 +238,16 @@ var received struct {
 
 var receivedLen atomic.Int64
 
-func lookupReceived(key receivedKey) *receivedEntry {
+// lookupReceived is the stream tracked under key for a ref that carries accessKey: a ref
+// with another key (one forged from a channel id) is not that stream.
+func lookupReceived(key receivedKey, accessKey string) *receivedEntry {
 	if receivedLen.Load() == 0 {
 		return nil
 	}
 	received.mu.Lock()
 	defer received.mu.Unlock()
 	e := received.m[key]
-	if e == nil || e.transferred() {
+	if e == nil || e.accessKey != accessKey || e.transferred() {
 		return nil
 	}
 	return e
@@ -898,7 +902,7 @@ func (s *InputStream) UnmarshalJSON(data []byte) error {
 	if ref.Direction != ChannelRead {
 		return errors.New(`iii: expected a stream to read (direction "read"): a "write" ref is an OutputStream`)
 	}
-	if e := lookupReceived(receivedKey{ref.ChannelID, ChannelRead}); e != nil && e.in != nil {
+	if e := lookupReceived(receivedKey{ref.ChannelID, ChannelRead}, ref.AccessKey); e != nil && e.in != nil {
 		// In-process, the receiver's guard tracks the caller's stream: it is the
 		// receiver's now.
 		if token, ok := placeholderToken(ref); ok {
@@ -1351,6 +1355,14 @@ func (o *outputInner) forwarded() bool {
 	return o.usage == useForwarded
 }
 
+// sentOn: the stream was sent (its ref forwarded, or a pump fills it from a pipe); it is
+// not sent again.
+func (o *outputInner) sentOn() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.usage == useForwarded || o.usage == usePiped
+}
+
 // transfer marks a received ref passed on as raw JSON: the other side writes it now.
 func (o *outputInner) transfer() {
 	o.mu.Lock()
@@ -1377,14 +1389,15 @@ func (o *outputInner) marshal() ([]byte, error) {
 	return placeholderJSON(token, ChannelWrite), nil
 }
 
-// takeSink takes the stream as the sink of a pump.
+// takeSink takes the stream as the sink of a pump: one pump at a time, so a sink sent to
+// one call is not filled by another as well.
 func (o *outputInner) takeSink() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.ended {
 		return errStreamEnded()
 	}
-	if o.usage == useForwarded {
+	if o.usage == useForwarded || o.usage == usePiped {
 		return errAlreadySent()
 	}
 	o.usage = usePiped
@@ -1611,7 +1624,7 @@ func (s *OutputStream) UnmarshalJSON(data []byte) error {
 	if ref.Direction != ChannelWrite {
 		return errors.New(`iii: expected a stream to write (direction "write"): a "read" ref is an InputStream`)
 	}
-	if e := lookupReceived(receivedKey{ref.ChannelID, ChannelWrite}); e != nil && e.out != nil {
+	if e := lookupReceived(receivedKey{ref.ChannelID, ChannelWrite}, ref.AccessKey); e != nil && e.out != nil {
 		if token, ok := placeholderToken(ref); ok {
 			claimPlaceholder(token)
 		}

@@ -84,7 +84,8 @@ type handshake struct {
 type fakeOptions struct {
 	// requestEnd ends the request body channel after its chunks: "" closes it cleanly,
 	// "abort" closes it the way the engine reports an aborted writer (1011 and a
-	// reason), and "drop" cuts the connection with no close frame.
+	// reason), "drop" cuts the connection with no close frame, and "hold" keeps it open
+	// until the reader leaves.
 	requestEnd string
 	// stallWrites delays reading a write channel, so a large write blocks meanwhile.
 	stallWrites time.Duration
@@ -138,6 +139,12 @@ func newFakeEngineWith(t *testing.T, opts fakeOptions, requestChunks ...[]byte) 
 				_ = conn.Close(websocket.StatusInternalError, "channel writer aborted: connection lost before close")
 			case "drop":
 				_ = conn.CloseNow()
+			case "hold":
+				for {
+					if _, _, err := conn.Read(ctx); err != nil {
+						return
+					}
+				}
 			default:
 				_ = conn.Close(websocket.StatusNormalClosure, "stream_complete")
 			}
@@ -753,5 +760,41 @@ func TestStreamRequestReadStopsAtEOF(t *testing.T) {
 	}
 	if n, err := req.Read(nil); n != 0 || err != nil {
 		t.Fatalf("Read(nil) = (%d, %v), want (0, nil)", n, err)
+	}
+}
+
+// TestStreamRequestReadEndsWithItsContext: a read of a request body that stays open
+// without data ends when the invocation's context does: the body is cancelled, and the
+// read fails with STREAM_CLOSED.
+func TestStreamRequestReadEndsWithItsContext(t *testing.T) {
+	f := newFakeEngineWith(t, fakeOptions{requestEnd: "hold"}, []byte("head "))
+	// The only live client: the request body binds to it.
+	c := iii.New(f.address())
+	t.Cleanup(func() { _ = c.Close() })
+	handler := Wrap(func(ctx context.Context, req *StreamRequest, res *StreamResponse) (any, error) {
+		_, err := io.ReadAll(req)
+		return nil, err
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	payload := workerPayload(t, true)
+	done := make(chan error, 1)
+	go func() {
+		_, err := handler(ctx, payload)
+		done <- err
+	}()
+	select {
+	case <-f.reads:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request body was never read")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if streamCode(err) != iii.CodeStreamClosed {
+			t.Errorf("read of the request body = %v, want STREAM_CLOSED", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the read of the request body did not end with its context")
 	}
 }
