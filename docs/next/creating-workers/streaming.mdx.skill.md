@@ -11,10 +11,10 @@ SDK closes, aborts, or cancels each stream that the handler received. See
 [Manage the Stream lifecycle](#manage-the-stream-lifecycle).
 
 <Note>
-  The examples use the stream API of the 0.27 SDKs. To call functions with streams, read streams,
-  and create pipes, see [Using iii / Streaming](../using-iii/streaming). For how a stream works, see
-  [Understanding iii / Streaming](../understanding-iii/streaming). To move code from the channel
-  API, see [Upgrading from 0.26.x](../upgrading/from-0-26-x).
+  To call functions with streams, read streams, and create pipes, see [Using iii /
+  Streaming](../using-iii/streaming). For how a stream works, see [Understanding iii /
+  Streaming](../understanding-iii/streaming). To move code from the channel API, see [Upgrading from
+  0.26.x](../upgrading/from-0-26-x).
 </Note>
 
 ## Receive a stream
@@ -797,8 +797,7 @@ A large message crosses the connection in WebSocket frames:
   frames.
 - The engine sends each message larger than **1 MiB** to a worker as one fragmented text message
   with frames of 1 MiB, so that no frame is larger than the frame size limit of a worker.
-- The engine accepts a message as one frame or as fragments. It also accepts the large single frames
-  that SDKs before 0.24.5 send.
+- The engine accepts a message as one frame or as fragments.
 
 Fragments do not change the function APIs.
 
@@ -812,18 +811,11 @@ The engine sets the receive limit when the worker registers:
 
 - A browser worker gets **16 MiB**.
 - A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**. The version that
-  the worker reports has no effect. The Rust, Node, Python, and Go SDKs declare the feature from
-  0.25.0. The browser SDK does not declare it.
-- Each other worker gets **64 MiB** when it reports an SDK version of 0.24.5 or later. The engine
-  reads the version as semver (`0.24.6`, `0.25.0-rc.5`) or as PEP 440 (`0.25.0rc5`, `0.24.5.post1`).
-  The worker gets **16 MiB** when the version is missing, when the engine cannot parse it, or when
-  it is older than 0.24.5. A pre-release of 0.24.5 is older than 0.24.5. Other features, such as
-  `observe.v1`, do not change the limit.
-
-SDKs 0.24.5 through 0.25.0-rc.5 do not declare `large-messages.v1`, so the engine uses the version
-that they report. A Rust worker on one of these SDKs can set `WorkerMetadata.version` to its own
-version. If that version is older than 0.24.5, the worker gets 16 MiB. Upgrade the worker to SDK
-0.25.0 or later.
+  the worker reports has no effect. The Rust, Node, Python, and Go SDKs declare the feature. The
+  browser SDK does not declare it.
+- Each other worker gets **64 MiB** or **16 MiB**. The engine sets this limit from the SDK version
+  that the worker reports. A worker that reports no version, or a version that the engine cannot
+  read, gets **16 MiB**. Other features, such as `observe.v1`, do not change the limit.
 
 ### Messages over the limit
 
@@ -835,9 +827,6 @@ version. If that version is older than 0.24.5, the worker gets 16 MiB. Upgrade t
   `payload_too_large` as the result. For a result, the caller that waits for the result gets
   `payload_too_large`. The engine cannot answer other messages, such as a call that expects no
   result, so it logs them.
-- An engine from before the receive limit check sends each message as one frame and does not check
-  the limit of the target. A worker on an older SDK can then disconnect. Use an engine and SDKs from
-  the same release, or newer.
 
 The same limits apply to the events that the engine sends to the target of an observer. The engine
 also keeps at most **64 MiB** of one observed event. This size includes each field that the
@@ -877,5 +866,5 @@ In the browser:
   page reads them stay in memory. Read a stream as it arrives, or cancel it.
 - The URL of a stream's socket keeps the query string of the engine URL, such as `?token=`.
 
-Workers on different SDKs, and on 0.26 and 0.27 SDKs, can send streams to each other. See
+Workers on different SDKs can send streams to each other. For workers on different SDK versions, see
 [Mixed fleets](../upgrading/from-0-26-x#mixed-fleets).
