@@ -276,7 +276,8 @@ containers:
         assert_eq!(executable(deep.path()).as_deref(), Some("a/b/c/tool"));
     }
 
-    #[cfg(unix)]
+    // This fixture needs byte-preserving filenames; macOS APFS rejects invalid UTF-8.
+    #[cfg(target_os = "linux")]
     #[test]
     fn guest_binary_search_skips_non_utf8_paths_without_changing_native_selection() {
         use std::os::unix::ffi::OsStringExt;

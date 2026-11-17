@@ -1808,6 +1808,7 @@ pub(crate) mod tests {
     const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
 
     /// One lock entry, as Compose writes one.
+    #[cfg(unix)]
     fn migration_lock_entry(
         key: &str,
         name: &str,
@@ -1824,6 +1825,8 @@ pub(crate) mod tests {
 
     /// An update followed by adapter migration: `compose::update worker=db` moves `db` (selector `^1` kept) from 1.2.0 to 1.3.0.
     /// The same update migrates a generated 0.3.x adapter. The migration must keep db at 1.3.0.
+    // VM migration validates scripts, and VM workers are unsupported on Windows.
+    #[cfg(unix)]
     #[tokio::test]
     async fn migration_keeps_the_version_the_update_selected() {
         use wiremock::{Mock, ResponseTemplate, matchers};
@@ -1963,6 +1966,8 @@ pub(crate) mod tests {
     }
 
     /// Migration preserves a multi-line flow `start_after` whose `]` sits at the key's indentation.
+    // VM workers are Unix-only; edit's multiline flow parser test remains cross-platform.
+    #[cfg(unix)]
     #[tokio::test]
     async fn migration_preserves_multiline_flow_start_after() {
         let dir = tempfile::tempdir().unwrap();

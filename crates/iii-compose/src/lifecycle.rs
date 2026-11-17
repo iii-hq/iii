@@ -2423,10 +2423,19 @@ mod findings_package_hook_tests {
         };
         project.shutdown().await;
         let run = value("run").expect("run never ran");
+        // Both directories exist; resolve temp-directory symlinks such as /var on macOS.
         let expected = format!(
             "{}|tool|binary|from-environment|{}",
-            dir.path().join(".iii/workers/tool").display(),
-            dir.path().join("hook-cwd").display()
+            dir.path()
+                .join(".iii/workers/tool")
+                .canonicalize()
+                .unwrap()
+                .display(),
+            dir.path()
+                .join("hook-cwd")
+                .canonicalize()
+                .unwrap()
+                .display()
         );
         assert_eq!(run, expected, "{lines}");
         assert_eq!(value("post_run"), Some(run), "hook output:\n{lines}");
