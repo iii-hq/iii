@@ -13,7 +13,9 @@ A really good piece from Yohei this week, named something a lot of us building a
 
 That description is exact. What I want to argue, from a year of building [iii](https://iii.dev/), is that the substrate is not the missing thing. The framing has been. Treating the substrate as a problem each agent team has to solve is what makes everyone rebuild it. Treat it as a system everyone shares and installs into, and the problem dissolves.
 
-That is the bet iii has been running on. Three primitives: Worker, Function, Observer. Small enough that every category in the list above is the same primitive composed differently. And because they're the same primitive, the substrate is not architecture. It's a command.
+> _This post was updated to match iii’s current, optimized execution model._
+
+That is the bet iii has been running on. One primitive: the Function, which you call or observe. Small enough that every category in the list above is the same primitive composed differently. And because it's the same primitive, the substrate is not architecture. It's a command.
 
 **iii worker add**
 
@@ -171,7 +173,7 @@ The "missing primitive" framing is the right framing: the missing thing may be a
 
 That description fits iii exactly. It also fits what's on iii.dev/registry today. The substrate isn't missing. It's installed in three commands and extended at runtime in one. The reason it doesn't feel solved yet, in the broader ecosystem, is that we've been treating it as architecture each team builds. The move that worked, for us, was to make it a primitive each team installs and extends.
 
-The agent harness debate, the memory debate, the workflow debate, the orchestration debate; they all dissolve into composition once you have the right primitive. Three primitives. One engine. A registry that anyone can publish to. A `iii worker add` command that turns the substrate into a one-liner. Real-time live discovery so capabilities show up the moment they connect. Same contract, both sides, so application teams and platform teams stop having to translate at every boundary.
+The agent harness debate, the memory debate, the workflow debate, the orchestration debate; they all dissolve into composition once you have the right primitive. One primitive. One engine. A registry that anyone can publish to. A `iii worker add` command that turns the substrate into a one-liner. Real-time live discovery so capabilities show up the moment they connect. Same contract, both sides, so application teams and platform teams stop having to translate at every boundary.
 
 When the substrate is a primitive instead of a project, capability evolution is what the system does, not what the team builds.
 

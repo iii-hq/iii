@@ -243,8 +243,9 @@ curl -X POST http://localhost:3111/math/add-two-numbers \
 
 ## How it works
 
-For a walkthrough of how the engine, workers, functions, and observers in this scaffold fit
-together, see [Understanding iii](./understanding-iii). It uses this project as the worked example.
+For a walkthrough of how the functions in this scaffold call and observe each other, and how the
+workers and the engine host and route them, see [Understanding iii](./understanding-iii). It uses
+this project as the worked example.
 
 <Tip title="Inspect what's running">
   Open the iii console in ADE: run `iii call compose::add worker=ade` in a new terminal in the
@@ -268,6 +269,6 @@ running system.
     Learn how to use iii in production.
   </Card>
   <Card title="Understanding iii" href="./understanding-iii" icon="table-layout">
-    Understand workers, functions, and observers from a conceptual point of view.
+    Understand the Function, its call and observe operators, and the Workers that host it.
   </Card>
 </CardGroup>

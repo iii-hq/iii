@@ -126,7 +126,7 @@ export const statements: Statement[] = [
     heavy: 'add a worker.',
     ghost: 'add a worker.',
     body: [
-      'AI is the forcing function. simplicity beats complexity. the category-shopping era of software engineering (evaluate, procure, integrate, repeat) is ending. what replaces it is one protocol, three primitives, and a registry of workers that compose without coordination. anything can participate. everything composes. software becomes unreasonably simple to create, extend, and modify.',
+      'AI is the forcing function. simplicity beats complexity. the category-shopping era of software engineering (evaluate, procure, integrate, repeat) is ending. what replaces it is one protocol, one primitive, and a registry of workers that compose without coordination. anything can participate. everything composes. software becomes unreasonably simple to create, extend, and modify.',
     ],
   },
 ]

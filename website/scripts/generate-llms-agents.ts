@@ -16,7 +16,7 @@ const AGENTS_APPENDIX_PATH = path.join(WEBSITE_ROOT, "scripts", "agents-appendix
 
 /** llms.txt-style blockquote (one-line summary for crawlers). */
 const LLMS_TAGLINE =
-  "iii turns distributed backend complexity into a simple set of real-time, interoperable primitives called Workers, Functions, and Observers. The result is coordinated execution that behaves as if it were a single runtime."
+  "iii is an engine that connects functions, agents, APIs, models, browsers, and machines into one live, composable system, built on one primitive: the Function."
 
 function isoDate(): string {
   return new Date().toISOString().slice(0, 10)
@@ -198,21 +198,22 @@ export function buildLlmsTxt(html: string, blogSection = ""): string {
   const tail = `
 ## Core pages
 
-- [Homepage](https://iii.dev/) — positioning and visuals
-- [Manifesto](https://iii.dev/manifesto) — paradigm argument
-- [Documentation](https://iii.dev/docs) — full documentation
-- [Blog index (markdown)](https://iii.dev/blog/index.md) — architecture posts for coding agents
-- [llms.txt](https://iii.dev/llms.txt) — this file (AI / LLM discovery)
-- [AGENTS.md](https://iii.dev/AGENTS.md) — build path: install, wire-level notes, and guardrails for coding agents
-- [GitHub](https://github.com/iii-hq/iii) — engine, TypeScript/Python/Rust SDKs
+- [Docs](${SITE_ORIGIN}/docs/index.md): what iii is, and how to build and run an iii system
+- [Understanding iii](${SITE_ORIGIN}/docs/understanding-iii.md): the Function, call and observe, and the workers and engine that host and route it
+- [Quickstart](${SITE_ORIGIN}/docs/quickstart.md): two workers in two languages, composed through the engine
+- [Worker registry](${SITE_ORIGIN}/registry): workers you can add to a project with \`compose::add\`
+- [Manifesto](${SITE_ORIGIN}/manifesto): why iii exists
 
 ## Optional
 
-- [Worker registry](https://iii.dev/registry) — published workers
+- [Benchmarks](${SITE_ORIGIN}/benchmarks): engine performance, measured on every change
+- [Roadmap](${SITE_ORIGIN}/roadmap): technical specifications and what comes next
+- [GitHub](https://github.com/iii-hq/iii): engine, SDKs, docs, and website source
+- [Worker source](https://github.com/iii-hq/workers): source of the registry workers
 
 ## Want to build on iii?
 
-This file is for understanding iii. To install the engine and ship your first Worker, read **[AGENTS.md](https://iii.dev/AGENTS.md)** and the **[install guide](https://iii.dev/docs/install)**.
+Read [AGENTS.md](${SITE_ORIGIN}/AGENTS.md) for install steps, guardrails, and agent skills, then the [install guide](${SITE_ORIGIN}/docs/install.md).
 
 Last updated: ${isoDate()}
 `.trimStart()
@@ -243,7 +244,7 @@ export function buildAgentsMd(html: string, agentsAppendix: string, blogSection 
   const intro = [
     "# iii for AI Agents",
     "",
-    "This file is public **[AGENTS.md](https://agents.md/)**-style guidance for **[iii](https://iii.dev/)** (the product): positioning, comparisons, scraped homepage copy, and wire-level notes for autonomous agents.",
+    "This file follows the [agents.md](https://agents.md/) format. It is for coding agents that install iii, build workers, and operate an iii project. It has the same overview as llms.txt, then the wire-level primitives, install steps, and guardrails.",
     "",
     "## Overview and comparisons (pre-written)",
     "",
