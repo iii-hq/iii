@@ -415,16 +415,20 @@ pub(crate) async fn prepare_metadata_with_versions(
 /// candidate prepared before it: a declaration whose exact version `earlier`
 /// already resolved takes that result instead of a second registry round trip.
 /// Without it, adding the sandbox adapter to a project that has no lock yet
-/// resolved every container twice.
+/// resolved every container twice. Selected versions take precedence over the lock on disk,
+/// including selections outside `force` that an earlier phase of this operation made.
 pub(crate) async fn prepare_metadata_reusing(
     compose: &mut ComposeFile,
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
     earlier: &PreparedLock,
 ) -> Result<PreparedLock> {
+    // Selected versions belong to the in-flight operation, not the older lock on disk.
+    let mut force = force.clone();
+    force.extend(selected_versions.keys().cloned());
     prepare_metadata_with_resolver(
         compose,
-        force,
+        &force,
         selected_versions,
         |key, reference, range, platform| {
             let reused = earlier
@@ -1281,6 +1285,45 @@ mod tests {
             Some(&updated)
         );
         assert!(!prepared.lock.containers.contains_key("local"));
+    }
+
+    #[tokio::test]
+    async fn reusing_metadata_keeps_selected_candidate_instead_of_disk_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let text = "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n";
+        let previous = lock();
+        let before = serde_yaml::to_string(&previous).unwrap();
+        std::fs::write(lock_path(&path), &before).unwrap();
+        let mut compose = ComposeFile::parse(text, &path).unwrap();
+        for version in ["0.23.0", "0.22.8"] {
+            let mut updated = previous.containers["state"].resolved.clone();
+            updated.version = version.to_string();
+            updated.default_config =
+                Some(serde_yaml::from_str("capabilities: [worker.build]\n").unwrap());
+            updated.artifacts.values_mut().next().unwrap().sha256 = "b".repeat(64);
+            let force = BTreeSet::from(["state".to_string()]);
+            let versions = BTreeMap::from([("state".to_string(), version.to_string())]);
+            let earlier =
+                prepare_metadata_with_resolver(&mut compose, &force, &versions, |_, _, _, _| {
+                    std::future::ready(Ok(updated.clone()))
+                })
+                .await
+                .unwrap();
+            let reused =
+                prepare_metadata_reusing(&mut compose, &BTreeSet::new(), &versions, &earlier)
+                    .await
+                    .unwrap();
+            assert_eq!(reused.lock, earlier.lock);
+            assert_eq!(reused.package_changes, earlier.package_changes);
+            assert!(reused.changed());
+            assert_eq!(compose.containers["state"].version.as_deref(), Some("next"));
+            assert_eq!(
+                compose.containers["state"].resolved_package.as_ref(),
+                Some(&updated)
+            );
+            assert_eq!(std::fs::read_to_string(lock_path(&path)).unwrap(), before);
+        }
     }
 
     #[tokio::test]

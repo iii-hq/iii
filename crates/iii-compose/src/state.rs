@@ -126,9 +126,7 @@ impl ChildRecord {
     }
 
     pub fn from_child(child: &crate::lifecycle::Child, status: ChildStatus) -> Self {
-        match child {
-            crate::lifecycle::Child::Process(process) => Self::from_supervised(process, status),
-        }
+        Self::from_supervised(child, status)
     }
 }
 

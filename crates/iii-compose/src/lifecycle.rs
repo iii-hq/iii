@@ -21,7 +21,6 @@
 
 use std::{
     collections::BTreeMap,
-    process::ExitStatus,
     time::{Duration, Instant},
 };
 
@@ -276,36 +275,7 @@ impl From<ComposeError> for StartFailure {
 
 /// One supervised container: a local process group. A VM container is one too: the
 /// `iii sandbox run` that boots its VM (spec 7.6).
-pub enum Child {
-    Process(Supervised),
-}
-
-impl Child {
-    pub fn poll(&self) -> Outcome {
-        match self {
-            Self::Process(process) => process.poll(),
-        }
-    }
-
-    pub async fn wait(&self) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.wait().await,
-        }
-    }
-
-    pub async fn stop(&self, grace: Duration) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.stop(grace).await,
-        }
-    }
-
-    /// Inherited from an earlier daemon rather than started here.
-    pub fn is_adopted(&self) -> bool {
-        match self {
-            Self::Process(process) => process.is_adopted(),
-        }
-    }
-}
+pub type Child = Supervised;
 
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Child>;
@@ -649,6 +619,7 @@ pub async fn restart_one(
         operation_id.clone(),
         None,
         None,
+        false,
     )
     .await
     .unwrap_or_else(|| cancelled_op(operation_id))
@@ -671,6 +642,7 @@ pub(crate) async fn restart_one_supervised(
         operation_id.clone(),
         None,
         Some((attempt, total_attempts)),
+        false,
     )
     .await
     .unwrap_or_else(|| cancelled_op(operation_id))
@@ -692,10 +664,37 @@ pub(crate) async fn restart_one_until_shutdown(
         operation_id,
         Some(shutdown),
         None,
+        false,
     )
     .await
 }
 
+/// Preparation cancellation targets stopped, unlike a committed operator restart.
+pub(crate) async fn restart_prepared_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<OpResult> {
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        Some(shutdown),
+        None,
+        true,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_inner(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -704,14 +703,28 @@ async fn restart_one_inner(
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
     retry: Option<(u32, u32)>,
+    cancel_replacement: bool,
 ) -> Option<OpResult> {
     report::in_project_scope(
         &ctx.file.path,
-        restart_one_scoped(ctx, children, records, key, operation_id, shutdown, retry),
+        restart_one_scoped(
+            ctx,
+            children,
+            records,
+            key,
+            operation_id,
+            shutdown,
+            retry,
+            cancel_replacement,
+        ),
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_scoped(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -720,6 +733,7 @@ async fn restart_one_scoped(
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
     retry: Option<(u32, u32)>,
+    cancel_replacement: bool,
 ) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -760,7 +774,11 @@ async fn restart_one_scoped(
         }
         await_name_release(ctx, key).await
     };
-    let Some(released) = ctx.shutdown.signal().run(released).await else {
+    let replacement_shutdown = match shutdown.filter(|_| cancel_replacement) {
+        Some(signal) => signal.or(ctx.shutdown.signal()),
+        None => ctx.shutdown.signal(),
+    };
+    let Some(released) = replacement_shutdown.run(released).await else {
         report::plan_done();
         return None;
     };
@@ -773,11 +791,10 @@ async fn restart_one_scoped(
 
     report::starting(key, "starting");
     let started = Instant::now();
-    // An individual operation cancellation still finishes its replacement.
-    // Daemon shutdown is different: the target state is stopped, so interrupt
-    // preparation/readiness and reap any child already started by this attempt.
+    // Public individual restarts finish their replacement. Preparation's explicit signal
+    // instead drains the replacement, as daemon shutdown does, without dropping ownership.
     let outcome =
-        start_one_attempt(ctx, key, Some(ctx.shutdown.signal()), Some(&operation_id)).await;
+        start_one_attempt(ctx, key, Some(replacement_shutdown), Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
@@ -1464,7 +1481,6 @@ async fn start_one_until_shutdown(
     // Capture before waiting on readiness: whatever the child prints while starting is exactly
     // what an operator needs when it does not.
     ctx.logs.capture(key, output.stdout, output.stderr);
-    let child = Child::Process(child);
     report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
@@ -1542,7 +1558,7 @@ async fn stop_one(
     // post_run never fired for the containers most likely to need it.
     if let Some(container) = ctx.file.containers.get(key)
         && let Some(script) = container.scripts.post_run.clone()
-        && let Ok(user_env) = container.resolve_user_env(key)
+        && let Ok(user_env) = container_env(ctx, key, container, false)
     {
         let start = StartSpec::Shell(script);
         // Where the container ran, as its start and `pre_run` had it: a bundle's
@@ -2255,5 +2271,164 @@ containers:
             at("api") < at("database") && at("reports") < at("database"),
             "the target stops last: {order:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod findings_package_hook_tests {
+    use crate::ComposeFile;
+    use std::path::{Path, PathBuf};
+    fn compose_path(dir: &Path, text: &str) -> PathBuf {
+        let path = dir.join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+    /// A tar.gz holding `files`: name, mode, body.
+    fn tar_gz(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, mode, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *body).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Finding 3: a package's `scripts.run` gets `III_PACKAGE_DIR`; its `post_run`, fired by the stop,
+    /// must get it too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f03_post_run_of_a_package_gets_its_package_dir() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+
+        let server = wiremock::MockServer::start().await;
+        let archive = tar_gz(&[("worker", 0o755, b"#!/bin/sh\nexec sleep 60\n")]);
+        let sha256 = hex::encode(sha2::Sha256::digest(&archive));
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "tool" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "tool", "version": "1.0.0", "type": "binary",
+                    "binaries": { (crate::registry::host_targets()[0]): {
+                        "sha256": sha256, "url": format!("{}/tool", server.uri())
+                    }},
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/tool"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hooks.out");
+        let pid = dir.path().join("pid");
+        let _cleanup = crate::daemon::findings_lifecycle_tests::ProcessCleanup(vec![pid.clone()]);
+        std::fs::write(dir.path().join("hook.env"), "HOOK_VALUE=from-file\n").unwrap();
+        std::fs::create_dir(dir.path().join("hook-cwd")).unwrap();
+        let path = compose_path(
+            dir.path(),
+            &format!(
+                "startup_timeout: 5s\nstop_timeout: 500ms\ncontainers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    env_file: [hook.env]\n    working_dir: ./hook-cwd\n    environment: {{HOOK_VALUE: from-environment}}\n    scripts:\n      run: 'echo \"run      III_PACKAGE_DIR=[$III_PACKAGE_DIR|$III_PACKAGE_NAME|$III_PACKAGE_KIND|$HOOK_VALUE|$PWD]\" >> {out}; echo $$$$ > {pid}; exec sleep 60'\n      post_run: 'echo \"post_run III_PACKAGE_DIR=[$III_PACKAGE_DIR|$III_PACKAGE_NAME|$III_PACKAGE_KIND|$HOOK_VALUE|$PWD]\" >> {out}'\n",
+                out = out.display(),
+                pid = pid.display(),
+            ),
+        );
+        // Lock and copy the package into the project, as `iii compose build` does.
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        let mut file = ComposeFile::load(&path).unwrap();
+        crate::lockfile::attach(&mut file).unwrap();
+
+        let pid_file = pid.clone();
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let alive = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok())
+                    .is_some_and(crate::process::is_running);
+                let workers: Vec<serde_json::Value> = alive
+                    .then(|| serde_json::json!({ "name": "tool", "namespace": "shop" }))
+                    .into_iter()
+                    .collect();
+                answered(serde_json::json!({ "workers": workers }))
+            }
+            "engine::functions::list" => answered(serde_json::json!({ "functions": [] })),
+            "configuration::get" => {
+                serde_json::json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(serde_json::json!({ "action": "missing" })),
+            _ => not_found(),
+        })
+        .await;
+        let engine = std::sync::Arc::new(crate::engine::EngineClient::connect(&url, "t", "shop"));
+        while !engine.is_connected() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let project = crate::project::Project::open(
+            &format!("repro-f03-{}", uuid::Uuid::new_v4()),
+            "shop".into(),
+            file,
+            engine,
+            url,
+        )
+        .await
+        .unwrap();
+        let up = crate::state::TEST_PACKAGE_CACHE
+            .scope(cache.path().to_path_buf(), project.up(None, "up".into()))
+            .await;
+        assert_eq!(up.status, crate::lifecycle::OpStatus::Ok, "{up:?}");
+        let down = crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                project.down(None, "down".into()),
+            )
+            .await;
+        assert_eq!(down.status, crate::lifecycle::OpStatus::Ok, "{down:?}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let lines = loop {
+            let text = std::fs::read_to_string(&out).unwrap_or_default();
+            if text.contains("post_run") || std::time::Instant::now() > deadline {
+                break text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        let value = |hook: &str| {
+            lines
+                .lines()
+                .find(|line| line.starts_with(hook))
+                .and_then(|line| line.split_once("=["))
+                .map(|(_, value)| value.trim_end_matches(']').to_string())
+        };
+        project.shutdown().await;
+        let run = value("run").expect("run never ran");
+        let expected = format!(
+            "{}|tool|binary|from-environment|{}",
+            dir.path().join(".iii/workers/tool").display(),
+            dir.path().join("hook-cwd").display()
+        );
+        assert_eq!(run, expected, "{lines}");
+        assert_eq!(value("post_run"), Some(run), "hook output:\n{lines}");
     }
 }

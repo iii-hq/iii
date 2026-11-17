@@ -72,13 +72,6 @@ pub fn is_vm_binary(container: &Container) -> bool {
     is_binary(container) && declares_vm(container)
 }
 
-/// `WorkerBuildRequest.base_image` for `container`: its `runtime.base_image`, over the
-/// manifest's. `None` leaves the adapter to the manifest's; contract 1.4 requires one with a
-/// binary source.
-pub fn base_image(container: &Container) -> Option<&str> {
-    container.base_image.as_deref()
-}
-
 /// The rule of spec 4.2 for container `key` when it is a binary package, which
 /// `sandbox::validate_scripts` applies: its scripts run on the host like any other's, and a VM
 /// needs `runtime.base_image`
@@ -131,53 +124,13 @@ pub fn worker_source(
 /// same file on every machine; unlike the host, a symlink is passed over, since the adapter
 /// refuses one (contract 1.4). `None` when there is none.
 pub fn executable(package_dir: &Path) -> Option<String> {
-    fn find(dir: &Path, depth: usize) -> Option<Vec<String>> {
-        if depth > 3 {
-            return None;
-        }
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .ok()?
-            .filter_map(|entry| entry.ok())
-            .collect();
-        entries.sort_by_key(|entry| entry.file_name());
-        let name = |entry: &std::fs::DirEntry| entry.file_name().to_str().map(str::to_string);
-        for entry in &entries {
-            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
-                continue;
-            };
-            if metadata.is_file()
-                && is_executable(&metadata)
-                && let Some(name) = name(entry)
-            {
-                return Some(vec![name]);
-            }
-        }
-        for entry in &entries {
-            let is_dir = std::fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_dir());
-            if is_dir
-                && let Some(name) = name(entry)
-                && let Some(mut rest) = find(&entry.path(), depth + 1)
-            {
-                rest.insert(0, name);
-                return Some(rest);
-            }
-        }
-        None
-    }
-
-    find(package_dir, 0).map(|components| components.join("/"))
-}
-
-#[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-/// A VM runs on Unix only (`SANDBOX_UNSUPPORTED_PLATFORM`), where a Linux build has no `.exe`.
-#[cfg(not(unix))]
-fn is_executable(_: &std::fs::Metadata) -> bool {
-    false
+    let path = crate::registry::package_binary(package_dir, crate::registry::BinarySymlinks::Skip)?;
+    let relative = path.strip_prefix(package_dir).ok()?;
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_str())
+        .collect::<Option<Vec<_>>>()
+        .map(|components| components.join("/"))
 }
 
 #[cfg(test)]
@@ -275,8 +228,11 @@ containers:
         assert_eq!(checked("vm-without-image", "bundle"), Ok(()));
         let vm = attached(file.containers["vm"].clone(), "binary");
         assert!(is_vm_binary(&vm));
-        assert_eq!(base_image(&vm), Some("docker.io/library/alpine:3.20"));
-        assert_eq!(base_image(&file.containers["host"]), None);
+        assert_eq!(
+            vm.base_image.as_deref(),
+            Some("docker.io/library/alpine:3.20")
+        );
+        assert_eq!(file.containers["host"].base_image.as_deref(), None);
     }
 
     #[cfg(unix)]
@@ -318,6 +274,23 @@ containers:
         assert_eq!(executable(deep.path()), None);
         write(&deep.path().join("a/b/c/tool"), 0o755);
         assert_eq!(executable(deep.path()).as_deref(), Some("a/b/c/tool"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_binary_search_skips_non_utf8_paths_without_changing_native_selection() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = tempfile::tempdir().unwrap();
+        let invalid = dir
+            .path()
+            .join(std::ffi::OsString::from_vec(vec![b'a', 0xff]));
+        write(&invalid, 0o755);
+        write(&dir.path().join("z-tool"), 0o755);
+        assert_eq!(executable(dir.path()).as_deref(), Some("z-tool"));
+        assert_eq!(
+            crate::registry::package_binary(dir.path(), crate::registry::BinarySymlinks::Follow),
+            Some(invalid)
+        );
     }
 
     #[cfg(unix)]

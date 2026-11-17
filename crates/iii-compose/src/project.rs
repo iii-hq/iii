@@ -36,7 +36,7 @@ use crate::{
     config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Child, Children, LifecycleCtx, OpResult, OpStatus},
+    lifecycle::{self, Children, LifecycleCtx, OpResult, OpStatus},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     restart,
@@ -69,6 +69,54 @@ pub struct Project {
     legacy_vms: std::sync::Mutex<BTreeMap<String, crate::state::VmRecord>>,
     inner: Mutex<Inner>,
     shutdown: crate::shutdown::ShutdownController,
+}
+
+/// One declaration snapshot shared by build admission and execution.
+pub(crate) struct BuildPlan {
+    file: ComposeFile,
+    targets: Vec<String>,
+}
+
+impl BuildPlan {
+    fn new(file: ComposeFile, worker: Option<&str>) -> Result<Self> {
+        let targets = match worker {
+            Some(key) if !file.containers.contains_key(key) => {
+                return Err(ComposeError::UnknownContainer {
+                    container: key.to_string(),
+                });
+            }
+            Some(key) => vec![key.to_string()],
+            None => file
+                .start_order()?
+                .into_iter()
+                .filter(|key| file.containers[key].scripts.build.is_some())
+                .collect(),
+        };
+        Ok(Self { file, targets })
+    }
+
+    fn builds_vm(&self) -> bool {
+        self.targets.iter().any(|key| {
+            self.file.containers[key]
+                .scripts
+                .build_command()
+                .is_some_and(crate::sandbox::is_sandbox_build)
+        })
+    }
+
+    pub(crate) fn scope(&self) -> std::collections::BTreeSet<String> {
+        let mut scope = std::collections::BTreeSet::new();
+        for key in &self.targets {
+            scope.extend(crate::dag::dependency_closure(&self.file, key));
+        }
+        if self.builds_vm()
+            && let Ok(Some(adapter)) =
+                crate::sandbox::adapter_key(&self.file, crate::sandbox::adapter_name(&self.file))
+        {
+            scope.extend(crate::dag::dependency_closure(&self.file, &adapter));
+        }
+        scope
+    }
 }
 
 /// How often the supervisor checks whether a ready child is still alive.
@@ -652,6 +700,7 @@ impl Project {
                 key,
                 format!("supervisor:{key}"),
                 Some((spent, restart_config.max_attempts)),
+                None,
             )
             .await;
         let ready = result
@@ -896,7 +945,7 @@ impl Project {
                                 &format!("{key} survived (pid {pid}), adopted"),
                                 Tone::Plain,
                             );
-                            inner.children.insert(key.clone(), Child::Process(child));
+                            inner.children.insert(key.clone(), child);
                         }
                         // `reconcile` verified the identity a moment ago, so this
                         // means the process exited in between. Record it as gone
@@ -1269,14 +1318,46 @@ impl Project {
     /// so the reaper never sees them gone and their restart budget pays nothing,
     /// whether the adapter comes back or they fail with it.
     pub async fn restart_one(&self, key: &str, operation_id: String) -> OpResult {
-        let mut inner = self.inner.lock().await;
+        self.restart_one_with_signal(key, operation_id, None).await
+    }
+
+    /// Restarts preparation's replaced adapter, draining owned children on cancellation.
+    pub(crate) async fn restart_one_until_shutdown(
+        &self,
+        key: &str,
+        operation_id: String,
+        shutdown: crate::shutdown::ShutdownSignal,
+    ) -> OpResult {
+        self.restart_one_with_signal(key, operation_id, Some(shutdown))
+            .await
+    }
+
+    async fn restart_one_with_signal(
+        &self,
+        key: &str,
+        operation_id: String,
+        shutdown: Option<crate::shutdown::ShutdownSignal>,
+    ) -> OpResult {
+        let mut inner = match &shutdown {
+            Some(signal) => match signal.run(self.inner.lock()).await {
+                Some(inner) => inner,
+                None => return lifecycle::cancelled_op(operation_id),
+            },
+            None => self.inner.lock().await,
+        };
         let vms = self.vms_hosted_by(&inner, key).await;
         inner.restarts.operator_took_control(Some(key));
         for vm in &vms {
             inner.restarts.operator_took_control(Some(vm));
         }
         let mut result = self
-            .restart_one_locked(&mut inner, key, operation_id.clone(), None)
+            .restart_one_locked(
+                &mut inner,
+                key,
+                operation_id.clone(),
+                None,
+                shutdown.clone(),
+            )
             .await;
 
         let ready = result
@@ -1286,7 +1367,13 @@ impl Project {
         if ready {
             for vm in &vms {
                 let bounced = self
-                    .restart_one_locked(&mut inner, vm, operation_id.clone(), None)
+                    .restart_one_locked(
+                        &mut inner,
+                        vm,
+                        operation_id.clone(),
+                        None,
+                        shutdown.clone(),
+                    )
                     .await;
                 result.changed |= bounced.changed;
                 result.containers.extend(bounced.containers);
@@ -1385,6 +1472,7 @@ impl Project {
         key: &str,
         operation_id: String,
         supervised_attempt: Option<(u32, u32)>,
+        shutdown: Option<crate::shutdown::ShutdownSignal>,
     ) -> OpResult {
         let package_cache = self.package_cache();
         let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
@@ -1408,7 +1496,18 @@ impl Project {
             legacy_vms: &self.legacy_vms,
         };
 
-        let result = if let Some((attempt, total_attempts)) = supervised_attempt {
+        let result = if let Some(shutdown) = shutdown {
+            lifecycle::restart_prepared_until_shutdown(
+                &ctx,
+                children,
+                &mut state.containers,
+                key,
+                operation_id.clone(),
+                shutdown,
+            )
+            .await
+            .unwrap_or_else(|| lifecycle::cancelled_op(operation_id))
+        } else if let Some((attempt, total_attempts)) = supervised_attempt {
             lifecycle::restart_one_supervised(
                 &ctx,
                 children,
@@ -1440,33 +1539,31 @@ impl Project {
     /// that declares one, in start order, and restarts nothing. The adapter starts first when a
     /// VM build needs it and the project is down. `cancel` stops the build that runs and skips the
     /// rest. A container whose `scripts.build` is `""` or absent is `skipped`.
+    #[cfg(test)]
     pub(crate) async fn build(
         &self,
         worker: Option<&str>,
         operation_id: &str,
         cancel: &crate::shutdown::ShutdownSignal,
     ) -> Result<lifecycle::BuildRun> {
-        let file = self.file.read().await.clone();
-        let targets: Vec<String> = match worker {
-            Some(key) if !file.containers.contains_key(key) => {
-                return Err(ComposeError::UnknownContainer {
-                    container: key.to_string(),
-                });
-            }
-            Some(key) => vec![key.to_string()],
-            None => file
-                .start_order()?
-                .into_iter()
-                .filter(|key| file.containers[key].scripts.build.is_some())
-                .collect(),
-        };
+        self.build_prepared(self.build_plan(worker).await?, operation_id, cancel)
+            .await
+    }
+
+    pub(crate) async fn build_plan(&self, worker: Option<&str>) -> Result<BuildPlan> {
+        BuildPlan::new(self.file.read().await.clone(), worker)
+    }
+
+    /// Executes exactly the snapshot registered with the daemon's build gate.
+    pub(crate) async fn build_prepared(
+        &self,
+        plan: BuildPlan,
+        operation_id: &str,
+        cancel: &crate::shutdown::ShutdownSignal,
+    ) -> Result<lifecycle::BuildRun> {
+        let vm_build = plan.builds_vm();
+        let BuildPlan { file, targets } = plan;
         let operation = crate::operation::active(operation_id);
-        let vm_build = targets.iter().any(|key| {
-            file.containers[key]
-                .scripts
-                .build_command()
-                .is_some_and(crate::sandbox::is_sandbox_build)
-        });
         let adapter = crate::sandbox::adapter_name(&file);
         if vm_build
             && let Ok(Some(adapter_key)) = crate::sandbox::adapter_key(&file, adapter)
@@ -1484,8 +1581,9 @@ impl Project {
             // The build's cancel reaches the adapter's start too: a cancelled build waits for no
             // adapter, and builds nothing.
             let started = self
-                .up_until_shutdown(
-                    Some(&adapter_key),
+                .start_build_adapter(
+                    &file,
+                    &adapter_key,
                     format!("{operation_id}-adapter"),
                     cancel.clone(),
                 )
@@ -1591,6 +1689,53 @@ impl Project {
             results,
             cancelled: cancel.requested(),
         })
+    }
+
+    /// Adapter startup uses the build's snapshot too, not a later declaration edit.
+    async fn start_build_adapter(
+        &self,
+        file: &ComposeFile,
+        adapter: &str,
+        operation_id: String,
+        cancel: crate::shutdown::ShutdownSignal,
+    ) -> Option<OpResult> {
+        let shutdown = cancel.or(self.shutdown.signal());
+        let mut inner = shutdown.run(self.inner.lock()).await?;
+        inner.restarts.operator_took_control(Some(adapter));
+        let package_cache = self.package_cache();
+        let empty_env_diagnostics = crate::config::EmptyEnvDiagnostics::default();
+        let Inner {
+            children, state, ..
+        } = &mut *inner;
+        let ctx = LifecycleCtx {
+            shutdown: &self.shutdown,
+            file,
+            engine: &self.engine,
+            post_runs: &self.post_runs,
+            compose_namespace: &self.compose_namespace,
+            project_namespace: &self.project_namespace,
+            engine_url: &self.engine_url,
+            logs: &self.logs,
+            package_cache: &package_cache,
+            state_dir: self.store.dir(),
+            sandbox_token: &self.sandbox_token,
+            empty_env_diagnostics: &empty_env_diagnostics,
+            legacy_vms: &self.legacy_vms,
+        };
+        let result = lifecycle::up_until_shutdown(
+            &ctx,
+            children,
+            &mut state.containers,
+            Some(adapter),
+            operation_id,
+            shutdown,
+        )
+        .await;
+        let snapshot = state.clone();
+        drop(inner);
+        let _ = self.store.save(&snapshot);
+        report::empty_env_warnings(&empty_env_diagnostics.snapshot());
+        result
     }
 
     /// Spec 5.3: rebuilds each of `keys` that runs here and whose package `file` changed, while it
@@ -1711,6 +1856,25 @@ impl Project {
     pub(crate) async fn vms_restarting_with(&self, restart: &[String]) -> Vec<String> {
         let inner = self.inner.lock().await;
         self.vms_hosted_by_any(&inner, restart).await
+    }
+
+    /// The containers a selective teardown actually stops, independent of disk edits.
+    pub(crate) async fn down_scope(
+        &self,
+        target: &str,
+    ) -> Result<std::collections::BTreeSet<String>> {
+        let file = self.file.read().await;
+        if !file.containers.contains_key(target) {
+            return Err(ComposeError::UnknownContainer {
+                container: target.to_string(),
+            });
+        }
+        let mut scope: std::collections::BTreeSet<_> =
+            crate::dag::transitive_dependents(&file, target)
+                .into_iter()
+                .collect();
+        scope.insert(target.to_string());
+        Ok(scope)
     }
 
     pub async fn down(&self, target: Option<&str>, operation_id: String) -> OpResult {
@@ -1961,9 +2125,7 @@ mod reconnect_shutdown_tests {
                 "worker".into(),
                 crate::state::ChildRecord::from_supervised(&child, ChildStatus::Ready),
             );
-            inner
-                .children
-                .insert("worker".into(), Child::Process(child));
+            inner.children.insert("worker".into(), child);
             project.store.save(&inner.state).unwrap();
         }
         let mut reconnect = Box::pin(project.reconcile_after_reconnect());

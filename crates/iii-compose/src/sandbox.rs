@@ -4,10 +4,8 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! The explicit VM mode: which containers run in a VM (`scripts.run: iii sandbox run`) and need
-//! the sandbox adapter, the generated container that installs it, the rewrite of the containers
-//! 0.26 ran in a VM (spec 7.3), and what Compose still asks the adapter about a VM that
-//! `iii sandbox run` boots: whether it runs, its stop and its destroy. Compose boots no VM itself.
+//! Explicit VM declarations, adapter provisioning and migration from 0.26 (spec 7.3).
+//! Compose queries, stops and destroys VMs; `iii sandbox run`, not Compose, boots them.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -520,18 +518,9 @@ pub(crate) async fn migrate(
     path: &Path,
     edited: &mut String,
     file: &mut ComposeFile,
-    project_namespace: &str,
     prepared: &mut PreparedLock,
 ) -> Result<Option<Migration>> {
-    rewrite_due(
-        path,
-        edited,
-        file,
-        project_namespace,
-        prepared,
-        &BTreeSet::new(),
-    )
-    .await
+    rewrite_due(path, edited, file, prepared, &BTreeSet::new()).await
 }
 
 /// [`migrate`], logging no rewrite of the containers in `quiet`: `compose::add` writes the
@@ -540,13 +529,11 @@ pub(crate) async fn rewrite_due(
     path: &Path,
     edited: &mut String,
     file: &mut ComposeFile,
-    project_namespace: &str,
     prepared: &mut PreparedLock,
     quiet: &BTreeSet<String>,
 ) -> Result<Option<Migration>> {
     // What runs in a VM decides, whatever namespace `engine.sandbox` binds: a project with only
     // ephemeral sandboxes keeps its adapter (spec 7.2).
-    let _ = project_namespace;
     if vm_needs(file).is_empty() {
         return Ok(None);
     }
@@ -930,6 +917,7 @@ fn host_only(name: &str) -> bool {
                 sandbox_cli::BUILD_DIR_ENV,
                 sandbox_cli::BUILD_TIMEOUT_ENV,
                 sandbox_cli::BUILD_BASE_IMAGE_ENV,
+                sandbox_cli::BUILD_WORKER_ENV,
                 sandbox_cli::BUILD_COMPOSE_FILE_ENV,
                 sandbox_cli::PACKAGE_DIR_ENV,
                 sandbox_cli::PACKAGE_NAME_ENV,
@@ -975,6 +963,7 @@ pub(crate) fn layer_own_vm_env(
         .keys()
         .map(String::as_str)
         .chain(crate::spawn::RESERVED_ENV)
+        .chain([crate::spawn::HOST_USER_ID_ENV])
         .filter(|name| !host_only(name))
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -1034,6 +1023,17 @@ pub(crate) fn layer_own_vm_env(
             container.base_image.clone().unwrap_or_default(),
         ),
         (
+            sandbox_cli::BUILD_WORKER_ENV.to_string(),
+            crate::build_record::plan_worker(
+                &compose_file,
+                key,
+                match &container.worker {
+                    WorkerSource::Path { declared, .. } => declared.clone(),
+                    WorkerSource::Package { reference } => format!("package://{reference}"),
+                },
+            )?,
+        ),
+        (
             sandbox_cli::BUILD_TIMEOUT_ENV.to_string(),
             container.scripts.build_timeout.as_millis().to_string(),
         ),
@@ -1063,12 +1063,9 @@ fn vm_id(state_key: &str) -> String {
     hex::encode(Sha256::digest(state_key))[..32].to_string()
 }
 
-/// How long a registered adapter may take to register `adapter::info` (spec 7.4);
-/// short under test, below STOP_RETRY.
+/// How long a registered adapter may take to register `adapter::info`; short under test.
 const INFO_RETRY: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 10 });
-/// How long a VM start waits for a dropped engine connection to come back: an
-/// engine restart's few seconds plus the SDK's 2 s reconnect delay, so a dead
-/// engine fails the start near 0.25's ~17 s, not at PREPARE_TIMEOUT; short under test.
+/// How long an adapter call waits for the engine to reconnect; short under test.
 const RECONNECT_GRACE: Duration = Duration::from_secs(if cfg!(test) { 5 } else { 10 });
 /// `worker::destroy` removes a VM's whole state, rootfs included.
 const DESTROY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1120,17 +1117,9 @@ pub(crate) async fn stop_own_vm(ctx: &LifecycleCtx<'_>, key: &str) -> bool {
     true
 }
 
-/// [`call`] for a step of `container`'s start (or its destroy), which an engine
-/// restart must not fail: 0.25 prepared without the bus. A call whose connection drops, or that
-/// begins after a drop before the engine is back, is sent again once it is,
-/// unless the managed engine exited, all within `timeout`; an engine not back
-/// within [`RECONNECT_GRACE`] fails the step with the `NotConnected`, so the
-/// restart policy decides. Only the first connection, as at daemon start, gets
-/// the whole `timeout`. The adapter registers its functions after its worker
-/// name, and again on its own reconnect, so `function_not_found` is asked again
-/// for [`INFO_RETRY`] after a drop, or from the first call with `registering`.
-/// Each step is idempotent; a re-sent `worker::start` that meets the boot of
-/// the dropped one gets S502, which [`worker_start`] stops.
+/// [`call`] for `destroy_vm`: retry idempotent adapter calls after an engine reconnect,
+/// unless the managed engine exited. Reconnects get [`RECONNECT_GRACE`], while the first
+/// connection gets `timeout`. Missing functions get [`INFO_RETRY`] while registering.
 #[allow(clippy::too_many_arguments)]
 async fn start_call<T: serde::de::DeserializeOwned>(
     engine: &EngineClient,
@@ -1817,6 +1806,205 @@ pub(crate) mod tests {
     }
 
     const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
+
+    /// One lock entry, as Compose writes one.
+    fn migration_lock_entry(
+        key: &str,
+        name: &str,
+        requested: &str,
+        version: &str,
+        kind: &str,
+    ) -> String {
+        format!(
+            "  {key}:\n    worker: package://api.workers.iii.dev/{name}\n    requested: \"{requested}\"\n    resolved:\n      name: {name}\n      version: {version}\n      type: {kind}\n      artifacts:\n        {target}:\n          url: https://example.test/{name}\n          sha256: \"{sha}\"\n",
+            target = crate::registry::host_targets()[0],
+            sha = "0".repeat(64)
+        )
+    }
+
+    /// An update followed by adapter migration: `compose::update worker=db` moves `db` (selector `^1` kept) from 1.2.0 to 1.3.0.
+    /// The same update migrates a generated 0.3.x adapter. The migration must keep db at 1.3.0.
+    #[tokio::test]
+    async fn migration_keeps_the_version_the_update_selected() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let server = adapter_registry(b"").await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "db" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "db", "version": "1.3.0", "type": "binary",
+                    "binaries": { (crate::registry::host_targets()[0]): {
+                        "sha256": "1".repeat(64),
+                        "url": format!("{}/artifact", server.uri()),
+                    }},
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "link", VM_MANIFEST);
+        let request = crate::edit::parse_worker("sandbox-libkrun@0.3.1").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  link: {worker: path://./link}\n  db: {worker: package://api.workers.iii.dev/db, version: \"^1\"}\n",
+            &request,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, &text).unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n{}{}",
+                migration_lock_entry("db", "db", "^1", "1.2.0", "binary"),
+                migration_lock_entry(
+                    "sandbox-libkrun",
+                    "sandbox-libkrun",
+                    "0.3.1",
+                    "0.3.1",
+                    "binary"
+                ),
+            ),
+        )
+        .unwrap();
+
+        let before_lock = std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap();
+
+        // What `Daemon::update` does: the update's own prepare, then `migrate`.
+        let mut edited = text.clone();
+        let mut current = ComposeFile::parse(&edited, &path).unwrap();
+        let mut force = BTreeSet::from(["db".to_string()]);
+        let mut selected = BTreeMap::from([("db".to_string(), "1.3.0".to_string())]);
+        let (after_update, after_migrate, migration) = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), async {
+                let mut prepared = crate::lockfile::prepare_metadata_with_versions(
+                    &mut current,
+                    &force,
+                    &selected,
+                )
+                .await
+                .unwrap();
+                let after_update = prepared.resolved_version("db").map(str::to_string);
+                let migration =
+                    crate::sandbox::migrate(&path, &mut edited, &mut current, &mut prepared)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    apply_adapter_change(
+                        &path,
+                        &mut edited,
+                        &mut current,
+                        "default",
+                        &mut prepared,
+                        &mut force,
+                        &mut selected,
+                        true,
+                        false,
+                    )
+                    .await
+                    .unwrap(),
+                    None,
+                );
+                assert!(prepared.package_changed("db"));
+                assert_eq!(
+                    std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+                    before_lock
+                );
+                prepared.write_if_changed().unwrap();
+                let written: serde_yaml::Value = serde_yaml::from_str(
+                    &std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    written["containers"]["db"]["requested"].as_str(),
+                    Some("^1")
+                );
+                assert_eq!(
+                    written["containers"]["db"]["resolved"]["version"].as_str(),
+                    Some("1.3.0")
+                );
+                (
+                    after_update,
+                    prepared.resolved_version("db").map(str::to_string),
+                    migration,
+                )
+            })
+            .await;
+
+        let db_requests: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/resolve")
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body).unwrap())
+            .filter(|body| body["worker"] == "db")
+            .collect();
+        assert_eq!(db_requests.len(), 1, "migration must not resolve db again");
+        assert_eq!(db_requests[0]["version"], "1.3.0");
+        assert_eq!(current.containers["db"].version.as_deref(), Some("^1"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(migration.is_some_and(|migration| migration.adapter.is_some()));
+        assert_eq!(
+            after_update.as_deref(),
+            Some("1.3.0"),
+            "the update selected 1.3.0"
+        );
+        assert_eq!(
+            after_migrate.as_deref(),
+            Some("1.3.0"),
+            "the migration moved db back to the version in the lock on disk"
+        );
+    }
+
+    /// Migration preserves a multi-line flow `start_after` whose `]` sits at the key's indentation.
+    #[tokio::test]
+    async fn migration_preserves_multiline_flow_start_after() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        manifest(dir.path(), "db", "scripts: {start: run}\n");
+        manifest(dir.path(), "link", VM_MANIFEST);
+        let text = "containers:\n  sb:\n    worker: path://./sb\n  db:\n    worker: path://./db\n  link:\n    worker: path://./link\n    start_after: [\n      db,\n    ]\n";
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        let mut file = ComposeFile::load(&path).expect("the 0.26 file is valid YAML");
+        assert_eq!(file.containers["link"].start_after, ["db"]);
+        let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new())
+            .await
+            .unwrap();
+        let mut edited = text.to_string();
+
+        let result = crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await;
+
+        let rewrite = crate::edit::explicit_vm_mode(text, "link", "sb")
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.is_ok(),
+            "migrate failed: {:?}\nrewritten text:\n{}",
+            result.err(),
+            rewrite.text
+        );
+        assert_eq!(file.containers["link"].start_after, ["db", "sb"]);
+        assert!(edited.contains("    start_after: [\n      db,\n      sb,\n    ]\n"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            migrate(&path, &mut edited, &mut file, &mut prepared)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
     const OWN_VM: &str = "start_after: [sb], scripts: {run: iii sandbox run}";
 
     /// To Compose it is a plain process, whatever its manifest says, that still needs the
@@ -2970,7 +3158,7 @@ pub(crate) mod tests {
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(due_migrations(&file), ["link", "dev", "opt"]);
 
-        let migration = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let migration = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap()
             .unwrap();
@@ -2984,7 +3172,7 @@ pub(crate) mod tests {
         );
         assert_eq!(due_migrations(&file), Vec::<String>::new());
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3000,7 +3188,7 @@ pub(crate) mod tests {
         std::fs::write(&path, PROJECT_MIGRATED).unwrap();
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3049,7 +3237,7 @@ pub(crate) mod tests {
         );
         let (mut edited, mut file, mut lock) = prepared(&path).await;
 
-        let migration = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let migration = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap()
             .unwrap();
@@ -3069,7 +3257,7 @@ pub(crate) mod tests {
         std::fs::write(&path, refused).unwrap();
         write_lock(&path, &[("onboarding", "onboarding", "0.2.0", "bundle")]);
         let (mut edited, mut file, mut lock) = prepared(&path).await;
-        let error = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let error = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap_err();
         assert_eq!(error.code(), "SANDBOX_RUN_WITHOUT_BUILD");
@@ -3111,7 +3299,7 @@ pub(crate) mod tests {
         let migration = crate::registry::TEST_REGISTRY
             .scope(
                 server.uri(),
-                migrate(&path, &mut edited, &mut file, "default", &mut lock),
+                migrate(&path, &mut edited, &mut file, &mut lock),
             )
             .await
             .unwrap()
@@ -3140,7 +3328,7 @@ pub(crate) mod tests {
         manifest(dir.path(), "plain", "scripts: {start: run}\n");
         let (mut edited, mut file, mut lock) = prepared(&path).await;
         assert_eq!(
-            migrate(&path, &mut edited, &mut file, "default", &mut lock)
+            migrate(&path, &mut edited, &mut file, &mut lock)
                 .await
                 .unwrap(),
             None
@@ -3159,7 +3347,7 @@ pub(crate) mod tests {
         write_lock(&path, &[("sb", "sandbox-libkrun", "0.3.1", "binary")]);
         let (mut edited, mut file, mut lock) = prepared(&path).await;
 
-        let error = migrate(&path, &mut edited, &mut file, "default", &mut lock)
+        let error = migrate(&path, &mut edited, &mut file, &mut lock)
             .await
             .unwrap_err();
 

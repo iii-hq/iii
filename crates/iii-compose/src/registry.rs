@@ -4,20 +4,9 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
-//! Turning `package://host/name` into a binary on disk.
-//!
-//! Three steps, and the middle one is the reason the other two exist:
-//!
-//! 1. **Resolve.** The registry is asked which exact version satisfies the
-//!    declared range for this host's target, and answers with a URL and a
-//!    digest.
-//! 2. **Verify.** The archive is hashed before anything is written where a
-//!    process will run it. A download that does not match its digest is not a
-//!    slow download or a corrupt one — it is a different artefact than the
-//!    registry promised, and it never reaches disk.
-//! 3. **Cache.** Installs are keyed by package metadata, target, and SHA-256,
-//!    so only the exact verified artefact is reused across registries and
-//!    projects.
+//! Resolves `package://host/name` for the container's target, verifies the archive's SHA-256
+//! before installation, and caches only that verified artifact. Cache keys include registry,
+//! package metadata, target and digest, so projects cannot reuse a different artifact.
 
 use std::{
     collections::BTreeMap,
@@ -2099,38 +2088,58 @@ fn publish(
     })
 }
 
-/// Finds the executable inside an install directory.
-///
-/// Archives are not uniform: some hold the binary at the root, some inside one
-/// directory. Rather than guess a layout, take the first executable file.
+/// Native installs retain their existing symlink behavior; guest inputs must contain no links.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BinarySymlinks {
+    Follow,
+    Skip,
+}
+
+/// Finds the native executable inside an install directory.
 fn installed_binary(install_dir: &Path) -> Option<PathBuf> {
-    fn first_executable(dir: &Path, depth: usize) -> Option<PathBuf> {
+    package_binary(install_dir, BinarySymlinks::Follow)
+}
+
+/// Root files first, then directories in name order, at most three directories deep.
+/// Integrity metadata is never a program. Guest paths must also be UTF-8 and Unix executables.
+pub(crate) fn package_binary(install_dir: &Path, symlinks: BinarySymlinks) -> Option<PathBuf> {
+    #[cfg(not(unix))]
+    if symlinks == BinarySymlinks::Skip {
+        return None;
+    }
+
+    fn find(dir: &Path, depth: usize, symlinks: BinarySymlinks) -> Option<PathBuf> {
         if depth > 3 {
+            return None;
+        }
+        if symlinks == BinarySymlinks::Skip && !std::fs::symlink_metadata(dir).ok()?.is_dir() {
             return None;
         }
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .ok()?
-            .filter_map(|e| e.ok())
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name() != INTEGRITY_FILE)
+            .filter(|entry| {
+                symlinks == BinarySymlinks::Follow || entry.file_name().to_str().is_some()
+            })
+            .filter_map(|entry| {
+                let path = entry.path();
+                let metadata = match symlinks {
+                    BinarySymlinks::Follow => std::fs::metadata(&path),
+                    BinarySymlinks::Skip => std::fs::symlink_metadata(&path),
+                };
+                metadata.ok().map(|metadata| (path, metadata))
+            })
             .collect();
-        // Deterministic: the same archive must yield the same binary on every
-        // machine, and read_dir order is not promised.
-        entries.sort_by_key(|entry| entry.file_name());
-
-        for entry in &entries {
-            // Inherited ACLs can make the integrity marker executable, but it
-            // is cache metadata, never the worker program.
-            if entry.file_name() == INTEGRITY_FILE {
-                continue;
-            }
-            let path = entry.path();
-            if path.is_file() && is_executable(&path) {
-                return Some(path);
+        entries.sort_by(|(a, _), (b, _)| a.file_name().cmp(&b.file_name()));
+        for (path, metadata) in &entries {
+            if metadata.is_file() && is_executable(path, metadata) {
+                return Some(path.clone());
             }
         }
-        for entry in &entries {
-            let path = entry.path();
-            if path.is_dir()
-                && let Some(found) = first_executable(&path, depth + 1)
+        for (path, metadata) in &entries {
+            if metadata.is_dir()
+                && let Some(found) = find(path, depth + 1, symlinks)
             {
                 return Some(found);
             }
@@ -2138,19 +2147,17 @@ fn installed_binary(install_dir: &Path) -> Option<PathBuf> {
         None
     }
 
-    first_executable(install_dir, 0)
+    find(install_dir, 0, symlinks)
 }
 
 #[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
+fn is_executable(_: &Path, metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    metadata.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(windows)]
-fn is_executable(path: &Path) -> bool {
+fn is_executable(path: &Path, _: &std::fs::Metadata) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
@@ -3465,6 +3472,9 @@ mod tests {
             &[("bin/worker-migrate", 0o755), ("bin/worker", 0o755)],
             &[("z-root", 0o755), ("a/b/c/deep", 0o755)],
             &[("a/b/c/d/too-deep", 0o755), ("a/README", 0o644)],
+            &[("a/b/c/deep", 0o755)],
+            &[("a/sub/tool", 0o755), ("b/tool", 0o755)],
+            &[("z-root", 0o755), ("a-root", 0o755)],
             &[("only-data.txt", 0o644)],
         ];
         for files in trees {
@@ -3482,6 +3492,69 @@ mod tests {
                     .into_owned()
             });
             assert_eq!(crate::vm_binary::executable(dir.path()), host, "{files:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_search_symlink_policy_preserves_native_links_and_rejects_guest_links() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let package = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let tool = outside.path().join("tool");
+        std::fs::write(&tool, b"executable").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file_link = package.path().join("a-link");
+        symlink(&tool, &file_link).unwrap();
+        assert_eq!(installed_binary(package.path()), Some(file_link.clone()));
+        assert_eq!(crate::vm_binary::executable(package.path()), None);
+
+        std::fs::remove_file(&file_link).unwrap();
+        symlink(outside.path(), package.path().join("bin")).unwrap();
+        assert_eq!(
+            installed_binary(package.path()),
+            Some(package.path().join("bin/tool"))
+        );
+        assert_eq!(crate::vm_binary::executable(package.path()), None);
+
+        let parent = tempfile::tempdir().unwrap();
+        let root_link = parent.path().join("package");
+        symlink(outside.path(), &root_link).unwrap();
+        assert_eq!(installed_binary(&root_link), Some(root_link.join("tool")));
+        assert_eq!(crate::vm_binary::executable(&root_link), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_search_skips_integrity_metadata_at_every_depth_for_both_policies() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for layout in ["", "bin", "a/b/c"] {
+            let package = tempfile::tempdir().unwrap();
+            let dir = package.path().join(layout);
+            std::fs::create_dir_all(&dir).unwrap();
+            let marker = dir.join(INTEGRITY_FILE);
+            std::fs::write(&marker, b"metadata").unwrap();
+            std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(installed_binary(package.path()), None, "{layout}");
+            assert_eq!(
+                crate::vm_binary::executable(package.path()),
+                None,
+                "{layout}"
+            );
+            let tool = dir.join("tool");
+            std::fs::write(&tool, b"executable").unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(installed_binary(package.path()), Some(tool), "{layout}");
+            assert_eq!(
+                crate::vm_binary::executable(package.path()),
+                Some(if layout.is_empty() {
+                    "tool".into()
+                } else {
+                    format!("{layout}/tool")
+                })
+            );
         }
     }
 

@@ -228,6 +228,63 @@ fn remove_temporary_files(build_dir: &Path) -> Result<()> {
 /// `PACKAGE_NOT_INSTALLED` until `materialize_project` copied it there.
 pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
     let worker = declared_worker(compose_file, container)?;
+    source_for_worker(compose_file, container, &worker)
+}
+
+/// Private daemon-to-child context. The digest detects an edited declaration without
+/// re-expanding placeholders in the child's different environment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PlannedWorker {
+    worker: String,
+    declaration_sha256: Option<String>,
+}
+
+pub(crate) fn plan_worker(compose_file: &Path, container: &str, worker: String) -> Result<String> {
+    let declaration_sha256 = match raw_worker(compose_file, container) {
+        Ok(raw) => Some(worker_digest(compose_file, &raw)?),
+        // In-memory Compose plans need not have been persisted yet.
+        Err(ComposeError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    serde_json::to_string(&PlannedWorker {
+        worker,
+        declaration_sha256,
+    })
+    .map_err(|error| invalid_data(compose_file, error.to_string()))
+}
+
+fn worker_digest(path: &Path, worker: &str) -> Result<String> {
+    // Hash structured data, not a concatenation of unframed fields.
+    let encoded =
+        serde_json::to_vec(worker).map_err(|error| invalid_data(path, error.to_string()))?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(encoded))))
+}
+
+pub(crate) fn source_with_plan(
+    compose_file: &Path,
+    container: &str,
+    plan: &PlannedWorker,
+) -> Result<BuildSource> {
+    if let Some(expected) = &plan.declaration_sha256 {
+        let raw = raw_worker(compose_file, container)?;
+        if worker_digest(compose_file, &raw)? != *expected {
+            return Err(ComposeError::BuildFailed {
+                container: container.to_string(),
+                code: crate::sandbox_cli::BUILD_INPUT_CHANGED.to_string(),
+                message:
+                    "the worker declaration changed after the build was planned; build it again"
+                        .to_string(),
+            });
+        }
+    }
+    source_for_worker(compose_file, container, &plan.worker)
+}
+
+/// Reads mutable package identity as usual, but never re-expands a planned worker in child env.
+fn source_for_worker(compose_file: &Path, container: &str, worker: &str) -> Result<BuildSource> {
     if let Some(dir) = worker.strip_prefix("path://").filter(|dir| !dir.is_empty()) {
         return Ok(BuildSource::Path {
             dir: dir.to_string(),
@@ -250,7 +307,7 @@ pub fn source(compose_file: &Path, container: &str) -> Result<BuildSource> {
     }
     Err(ComposeError::UnsupportedWorkerSource {
         container: container.to_string(),
-        source_uri: worker,
+        source_uri: worker.to_string(),
     })
 }
 
@@ -469,6 +526,11 @@ pub(crate) fn invalid_data(path: &Path, message: String) -> ComposeError {
 /// Only that value is read: the rest of the file may reference variables the caller's
 /// environment does not hold (`iii sandbox build` runs with one container's env).
 fn declared_worker(compose_file: &Path, container: &str) -> Result<String> {
+    let worker = raw_worker(compose_file, container)?;
+    crate::interpolate::expand(&worker, compose_file, &|name| std::env::var(name).ok())
+}
+
+fn raw_worker(compose_file: &Path, container: &str) -> Result<String> {
     let declaration = declaration(compose_file, container)?;
     let worker = declaration
         .get("worker")
@@ -477,7 +539,7 @@ fn declared_worker(compose_file: &Path, container: &str) -> Result<String> {
             path: compose_file.to_path_buf(),
             message: format!("containers.{container}.worker must be a string"),
         })?;
-    crate::interpolate::expand(worker, compose_file, &|name| std::env::var(name).ok())
+    Ok(worker.to_string())
 }
 
 /// Container `container` as `compose_file` declares it, unexpanded.
@@ -1092,6 +1154,24 @@ mod tests {
     }
 
     #[test]
+    fn directory_entry_filter_is_not_the_compose_key_validator() {
+        // Disk enumeration needs a component filter; config additionally rejects blank/NUL keys.
+        for key in [" ", "a\0b"] {
+            assert!(is_directory_name(key));
+            let yaml = format!(
+                "containers:\n  {}: {{worker: path://./worker}}\n",
+                serde_json::to_string(key).unwrap()
+            );
+            let error = crate::config::ComposeFile::parse(&yaml, "/project/worker-compose.yaml")
+                .unwrap_err();
+            assert!(
+                matches!(error, ComposeError::InvalidContainerKey { .. }),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn only_a_plain_container_key_names_a_directory() {
         for key in ["state", "sandbox-libkrun", "a.b", "my_worker"] {
             assert!(is_directory_name(key), "{key}");
@@ -1099,5 +1179,46 @@ mod tests {
         for key in ["", ".", "..", ".hidden", "a/b", "a\\b", "/abs", "../up"] {
             assert!(!is_directory_name(key), "{key}");
         }
+    }
+
+    #[test]
+    fn f05_planned_path_keeps_daemon_resolution_and_detects_a_changed_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let text = "containers:\n  api:\n    worker: path://${APP_DIR:-./app}\n";
+        std::fs::write(&path, text).unwrap();
+        let plan: PlannedWorker =
+            serde_json::from_str(&plan_worker(&path, "api", "path://./app".into()).unwrap())
+                .unwrap();
+        assert_eq!(
+            source_with_plan(&path, "api", &plan).unwrap(),
+            BuildSource::Path {
+                dir: "./app".into()
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        std::fs::write(&path, text.replace("./app", "./new")).unwrap();
+        let error = source_with_plan(&path, "api", &plan).unwrap_err();
+        assert!(
+            matches!(error, ComposeError::BuildFailed { code, .. } if code == crate::sandbox_cli::BUILD_INPUT_CHANGED)
+        );
+    }
+    #[test]
+    fn f05_planned_package_still_reads_replacements_from_the_install_record() {
+        let (dir, file) = project();
+        record_package(dir.path(), "0.2.0", "sha256:8c3406");
+        let plan: PlannedWorker = serde_json::from_str(
+            &plan_worker(&file, "onboarding", "package://onboarding".into()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            source_with_plan(&file, "onboarding", &plan).unwrap(),
+            package_source("0.2.0", "sha256:8c3406")
+        );
+        record_package(dir.path(), "0.3.0", "sha256:aa11");
+        assert_eq!(
+            source_with_plan(&file, "onboarding", &plan).unwrap(),
+            package_source("0.3.0", "sha256:aa11")
+        );
     }
 }
