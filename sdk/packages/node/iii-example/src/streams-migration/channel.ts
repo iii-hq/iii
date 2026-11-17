@@ -100,7 +100,7 @@ export function startReportsWorker(engineUrl = ENGINE_URL) {
         await writeLine({ type: 'row', n, value: `${report_id}-row-${n}-${'x'.repeat(64)}` })
         written++
         // Yield to the event loop now and then, so a reports::cancel gets through.
-        if (written % 64 === 0) await new Promise(resolve => setImmediate(resolve))
+        if (written % 64 === 0) await new Promise((resolve) => setImmediate(resolve))
       }
       // Re-check after the last row: a cancel during it must not write 'end'.
       const reason = stopReason()
@@ -201,12 +201,10 @@ export async function runExport(
         newline = partial.indexOf('\n')
       }
       if (partial.length > MAX_LINE_BYTES) abort('line too long')
-      if (opts.stopAfterRows !== undefined && rowsSeen >= opts.stopAfterRows)
-        abort('caller stopped early')
+      if (opts.stopAfterRows !== undefined && rowsSeen >= opts.stopAfterRows) abort('caller stopped early')
       if (abortReason) break // leaving the loop cancels the stream: the producer's next write fails
       // A deliberately slow reader: backpressure holds the producer instead of growing buffers.
-      if (opts.slowEveryRows && rowsSeen % opts.slowEveryRows === 0)
-        await new Promise(r => setTimeout(r, 5))
+      if (opts.slowEveryRows && rowsSeen % opts.slowEveryRows === 0) await new Promise((r) => setTimeout(r, 5))
     }
   } catch (error) {
     if (!abortReason) throw error
@@ -222,7 +220,7 @@ export async function runExport(
 
 async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | 'timeout'> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<'timeout'>(resolve => {
+  const timeout = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), ms)
   })
   try {
@@ -253,9 +251,7 @@ async function main(): Promise<void> {
       deadline_ms: 20_000,
       slowEveryRows: 500,
     })
-    console.log(
-      `[demo] full export: ${full.lines.length} lines, result ${JSON.stringify(full.result)}`,
-    )
+    console.log(`[demo] full export: ${full.lines.length} lines, result ${JSON.stringify(full.result)}`)
     check(full.lines[0]?.type === 'header', 'header received first')
     check(full.rowsSeen === 5000, 'all 5000 rows received')
     check(
@@ -263,14 +259,8 @@ async function main(): Promise<void> {
       'rows arrived in order',
     )
     const last = full.lines[full.lines.length - 1]
-    check(
-      last?.type === 'end' && last.rows_written === 5000,
-      'end marker received, then the stream ended',
-    )
-    check(
-      full.result.aborted === false && full.result.rows_written === 5000,
-      'producer reported completion',
-    )
+    check(last?.type === 'end' && last.rows_written === 5000, 'end marker received, then the stream ended')
+    check(full.result.aborted === false && full.result.rows_written === 5000, 'producer reported completion')
     check(
       full.result.max_in_flight_bytes <= 1024,
       `producer kept one line in flight (${full.result.max_in_flight_bytes} bytes)`,
@@ -283,9 +273,7 @@ async function main(): Promise<void> {
       deadline_ms: 20_000,
       stopAfterRows: 200,
     })
-    console.log(
-      `[demo] early stop: saw ${early.rowsSeen} rows, result ${JSON.stringify(early.result)}`,
-    )
+    console.log(`[demo] early stop: saw ${early.rowsSeen} rows, result ${JSON.stringify(early.result)}`)
     check(early.abortReason === 'caller stopped early', 'caller cancelled its end')
     check(
       early.result.aborted === true && early.result.rows_written < 100_000,
@@ -351,7 +339,7 @@ async function main(): Promise<void> {
 
 main().then(
   () => process.exit(0),
-  error => {
+  (error) => {
     console.error('[demo] channel: FAIL', error)
     process.exit(1)
   },
