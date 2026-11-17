@@ -996,7 +996,10 @@ pipe(buffer_size: int | None = None) -> Pipe
 ```python
 pipe = iii.pipe()
 iii.call({"function_id": "files::count", "payload": {"body": pipe.input}, "action": CallAction.Void()})
-asyncio.run(pipe.output.write(b"data"))
+async def send() -> None:
+    async with pipe.output as out:  # closed at the end: the reader sees the end
+        await out.write(b"data")
+asyncio.run(send())
 ```
 
 
@@ -1317,7 +1320,7 @@ file and an async generator in a payload are streamed as well.
 
 A stream has one reader: a second iteration, `read_all`,
 `text`, `lines`, `messages` or `frames` raises
-`RuntimeError`; call `tee` before reading for two copies.
+`StreamInUseError`; call `tee` before reading for two copies.
 A received stream opens its socket on the first read. When the writer
 aborts the stream, the read raises `StreamAbortedError` once
 the data sent before the abort has been read.
@@ -1702,8 +1705,14 @@ sink passed in its payload was aborted, even if the function succeeded.
 
 #### StreamClosedError
 
-A write or send on an `OutputStream` that is closed or aborted
-(``code`` is ``'STREAM_CLOSED'``); also passing such a stream to a call.
+A stream that cannot be read or written any more (``code`` is ``'STREAM_CLOSED'``).
+
+Raised by a write or send on an `OutputStream` that is closed or
+aborted, or whose reader left (the engine closed the socket, or the local
+sink failed), or whose connection failed; by a read of an
+`InputStream` that was cancelled (by ``cancel()``, or by the
+guard when its handler returned), so a partly read stream never looks
+complete; and by passing such a stream to a call.
 
 Also a `RuntimeError`, as these errors were before they had a code.
 

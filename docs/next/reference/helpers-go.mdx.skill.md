@@ -57,6 +57,8 @@ For each invocation Wrap decodes the `InternalRequest` and calls fn with the `St
 - an untouched response is closed when fn returned nil, so the http worker answers with an empty 200, and left alone otherwise, so the http worker answers from the returned value (`Response`) or reports the error;
 - a request body fn started reading and did not finish is cancelled.
 
+While fn runs, the request body is cancelled when ctx ends, so a read that waits for more of the body returns then.
+
 fn must not use req or res after it returns, unless it called KeepOpen on res.Stream(). Wrap returns nil when fn is nil.
 
 **Signature**
@@ -254,7 +256,7 @@ StreamRequest is the incoming request a `HandlerFunc` receives, Node StreamReque
 | `Path` | `string` | No | Path is the route template that matched. The Node type does not declare it; the http worker sends it. |
 | `Method` | `string` | Yes | Method is the HTTP method of the request. |
 | `RequestBody` | `*iii.InputStream` | No | RequestBody is the raw request body (Node request_body), nil when the invocation carried none. `StreamRequest.Read` reads it; read it another way (its Lines or Frames, say), or pass it on unread in a call payload, instead, not as well. |
-| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the raw request body and implements `io.Reader`: it is `iii.InputStream.Read` on RequestBody. It returns io.EOF only once the http worker sent the whole body and closed the stream. If the stream was aborted instead (its writer failed or went away before finishing), Read returns an `*iii.InvocationError` with code `iii.CodeStreamAborted`, never io.EOF: the body read so far is incomplete, and io.ReadAll returns it together with the error. Read returns `ErrMissingChannel` when RequestBody is nil. A body the handler started reading and did not finish is cancelled when it returns. |
+| `Read` | `func(p []byte) (int, error)` | Yes | Read reads the raw request body and implements `io.Reader`: it is `iii.InputStream.Read` on RequestBody. It returns io.EOF only once the http worker sent the whole body and closed the stream. If the stream was aborted instead (its writer failed or went away before finishing), Read returns an `*iii.InvocationError` with code `iii.CodeStreamAborted`, never io.EOF: the body read so far is incomplete, and io.ReadAll returns it together with the error. Read returns `ErrMissingChannel` when RequestBody is nil. A body the handler started reading and did not finish is cancelled when it returns. In a `Wrap` handler, the body is also cancelled when the invocation's context ends: a Read in flight then fails with STREAM_CLOSED. |
 
 ---
 

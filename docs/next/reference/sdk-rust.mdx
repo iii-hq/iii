@@ -1377,7 +1377,7 @@ Errors returned by the III SDK.
 | `WebSocket` | `(String)` | Yes | - |
 | `StreamAborted` | `{ reason: String }` | Yes | A stream ended with an abort, code `STREAM_ABORTED`<br />(`protocol::STREAM_ABORTED`): its<br />writer called `OutputStream::abort`,<br />failed or went away before it closed. The data read before it is not<br />the whole stream. A call whose sink received an aborted stream fails<br />with it too, even when the function succeeded.<br /><br />Through an engine pipe the reason is the engine's (`channel writer<br />aborted: ...`); in-process it is the writer's own. |
 | `StreamNotAllowed` | `(String)` | Yes | A call that cannot carry a stream, code `STREAM_NOT_ALLOWED`<br />(`protocol::STREAM_NOT_ALLOWED`):<br />a payload holding a stream sent with<br />`CallAction::Enqueue`. Nothing was sent. |
-| `StreamClosed` | `(String)` | Yes | A write or send on a stream already closed or aborted, code<br />`STREAM_CLOSED`<br />(`protocol::STREAM_CLOSED`). |
+| `StreamClosed` | `(String)` | Yes | A stream used after it ended, code `STREAM_CLOSED`<br />(`protocol::STREAM_CLOSED`): a<br />write or send on a stream already closed or aborted, or after its<br />reader left, and a read of an `InputStream`<br />that was cancelled (by<br />`InputStream::cancel`, or when its<br />handler returned before reading it to the end). A cancelled stream<br />never ends as if it were complete. |
 | `StreamInUse` | `(String)` | Yes | A stream already in use, code `STREAM_IN_USE`<br />(`protocol::STREAM_IN_USE`): a<br />second reader (a clone included), the same stream twice in one<br />payload, or a stream sent on after it was read to the end or already<br />sent. |
 | `RegistrationRejected` | `{ code: String, namespace: String, worker_name: Option<String>, function_id: Option<String>, owner_worker_id: String }` | Yes | Fatal registration rejection: another live worker already holds this<br />worker name in the namespace, or the engine sent a rejection that<br />names no function with a code this SDK does not know. The SDK stops<br />and does not reconnect. A rejection that names a function<br />(`FUNCTION_NAMESPACE_CONFLICT`, `INVALID_ARGS_FORMAT`, `UNSUPPORTED`)<br />refuses only that function, is logged, and does not produce this<br />error. |
 | `code` | `fn() -> Option<&str>` | Yes | The wire code of this error, when it has one: the `code` of a remote failure or a registration rejection, `TIMEOUT` for `Error::Timeout`, and the stream codes: `STREAM_ABORTED`, `STREAM_NOT_ALLOWED`, `STREAM_CLOSED`, `STREAM_IN_USE`. |
@@ -2193,7 +2193,8 @@ An `InputStream` arrives as a field of a handler's input or of a call's
 result (a `read` ref deserializes to it), or is built to be sent:
 `from_reader`, `from_stream`,
 `from_bytes`. Put it in a call payload or a handler
-result and the SDK streams it to the other side.
+result and the SDK streams it to the other side. A read ref found in a
+raw value opens with `from_ref`.
 
 Read it once, one way: as a `Stream` of byte chunks, an `AsyncRead`,
 `read_all`, `text`,
@@ -2225,6 +2226,7 @@ reader: only one of them can read it.
 | `frames` | fn() -&gt; impl Stream&lt;Item = Result&lt;[`ChannelItem`](#channelitem), [`Error`](#error)&gt;&gt; + Send + 'static | Yes | Every frame, in order: text frames (messages) and binary frames (bytes). |
 | `from_bytes` | `fn(bytes: impl Into<Bytes>) -> Self` | Yes | A stream of `bytes`. |
 | `from_reader` | `fn(reader: R) -> Self` | Yes | A stream of what `reader` yields, read in chunks of up to 64 KiB. A read error aborts the stream with its message. |
+| `from_ref` | fn(channel: [`StreamChannelRef`](#streamchannelref), iii: &IIIClient) -&gt; Result&lt;[`InputStream`](#inputstream), [`Error`](#error)&gt; | Yes | Opens a read ref (one `extract_channel_refs` found in a call's result read as a `Value`, say) as a stream bound to `iii`. It is what deserializing the ref into an `InputStream` gives: a received stream its invocation tracks is that stream, a stream of this process passed as a placeholder is that stream, and in a handler the guard settles it. A `write` ref, or a placeholder already received, fails with `Error::Runtime`. |
 | `from_stream` | `fn(stream: S) -> Self` | Yes | A stream of the chunks `stream` yields. An `Err` aborts the stream with its message: the reader gets `Error::StreamAborted`, not a short stream that looks complete. |
 | `lines` | fn() -&gt; impl Stream&lt;Item = Result&lt;String, [`Error`](#error)&gt;&gt; + Send + 'static | Yes | The stream's lines, without their `\n` (or `\r\n`); the last one may have no newline. Invalid UTF-8 becomes U+FFFD. |
 | `messages` | fn() -&gt; impl Stream&lt;Item = Result&lt;T, [`Error`](#error)&gt;&gt; + Send + 'static | Yes | The stream's messages: its text frames, each decoded as JSON into `T`. A frame that is not JSON is decoded from the raw string (so a `T` of `String` or `Value` takes it). Binary frames are skipped. |
