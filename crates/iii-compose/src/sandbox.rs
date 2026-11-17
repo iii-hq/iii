@@ -1793,6 +1793,211 @@ pub(crate) mod tests {
     }
 
     const VM_MANIFEST: &str = "runtime: {base_image: python}\nscripts: {start: run}\n";
+
+    /// One lock entry, as Compose writes one.
+    fn migration_lock_entry(
+        key: &str,
+        name: &str,
+        requested: &str,
+        version: &str,
+        kind: &str,
+    ) -> String {
+        format!(
+            "  {key}:\n    worker: package://api.workers.iii.dev/{name}\n    requested: \"{requested}\"\n    resolved:\n      name: {name}\n      version: {version}\n      type: {kind}\n      artifacts:\n        {target}:\n          url: https://example.test/{name}\n          sha256: \"{sha}\"\n",
+            target = crate::registry::host_targets()[0],
+            sha = "0".repeat(64)
+        )
+    }
+
+    /// An update followed by adapter migration: `compose::update worker=db` moves `db` (selector `^1` kept) from 1.2.0 to 1.3.0.
+    /// The same update migrates a generated 0.3.x adapter. The migration must keep db at 1.3.0.
+    #[tokio::test]
+    async fn migration_keeps_the_version_the_update_selected() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+        let server = adapter_registry(b"").await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "db" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "db", "version": "1.3.0", "type": "binary",
+                    "binaries": { (crate::registry::host_targets()[0]): {
+                        "sha256": "1".repeat(64),
+                        "url": format!("{}/artifact", server.uri()),
+                    }},
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "link", VM_MANIFEST);
+        let request = crate::edit::parse_worker("sandbox-libkrun@0.3.1").unwrap();
+        let crate::edit::Outcome::Added(text) = crate::edit::upsert_container(
+            "containers:\n  link: {worker: path://./link}\n  db: {worker: package://api.workers.iii.dev/db, version: \"^1\"}\n",
+            &request,
+        )
+        .unwrap() else {
+            panic!("the adapter is new");
+        };
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, &text).unwrap();
+        std::fs::write(
+            crate::lockfile::lock_path(&path),
+            format!(
+                "version: 1\ncontainers:\n{}{}",
+                migration_lock_entry("db", "db", "^1", "1.2.0", "binary"),
+                migration_lock_entry(
+                    "sandbox-libkrun",
+                    "sandbox-libkrun",
+                    "0.3.1",
+                    "0.3.1",
+                    "binary"
+                ),
+            ),
+        )
+        .unwrap();
+
+        let before_lock = std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap();
+
+        // What `Daemon::update` does: the update's own prepare, then `migrate`.
+        let mut edited = text.clone();
+        let mut current = ComposeFile::parse(&edited, &path).unwrap();
+        let mut force = BTreeSet::from(["db".to_string()]);
+        let mut selected = BTreeMap::from([("db".to_string(), "1.3.0".to_string())]);
+        let (after_update, after_migrate, migration) = crate::registry::TEST_REGISTRY
+            .scope(server.uri(), async {
+                let mut prepared = crate::lockfile::prepare_metadata_with_versions(
+                    &mut current,
+                    &force,
+                    &selected,
+                )
+                .await
+                .unwrap();
+                let after_update = prepared.resolved_version("db").map(str::to_string);
+                let migration = crate::sandbox::migrate(
+                    &path,
+                    &mut edited,
+                    &mut current,
+                    "default",
+                    &mut prepared,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    apply_adapter_change(
+                        &path,
+                        &mut edited,
+                        &mut current,
+                        "default",
+                        &mut prepared,
+                        &mut force,
+                        &mut selected,
+                        true,
+                        false,
+                    )
+                    .await
+                    .unwrap(),
+                    None,
+                );
+                assert!(prepared.package_changed("db"));
+                assert_eq!(
+                    std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+                    before_lock
+                );
+                prepared.write_if_changed().unwrap();
+                let written: serde_yaml::Value = serde_yaml::from_str(
+                    &std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    written["containers"]["db"]["requested"].as_str(),
+                    Some("^1")
+                );
+                assert_eq!(
+                    written["containers"]["db"]["resolved"]["version"].as_str(),
+                    Some("1.3.0")
+                );
+                (
+                    after_update,
+                    prepared.resolved_version("db").map(str::to_string),
+                    migration,
+                )
+            })
+            .await;
+
+        let db_requests: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == "/resolve")
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body).unwrap())
+            .filter(|body| body["worker"] == "db")
+            .collect();
+        assert_eq!(db_requests.len(), 1, "migration must not resolve db again");
+        assert_eq!(db_requests[0]["version"], "1.3.0");
+        assert_eq!(current.containers["db"].version.as_deref(), Some("^1"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(migration.is_some_and(|migration| migration.adapter.is_some()));
+        assert_eq!(
+            after_update.as_deref(),
+            Some("1.3.0"),
+            "the update selected 1.3.0"
+        );
+        assert_eq!(
+            after_migrate.as_deref(),
+            Some("1.3.0"),
+            "the migration moved db back to the version in the lock on disk"
+        );
+    }
+
+    /// Migration preserves a multi-line flow `start_after` whose `]` sits at the key's indentation.
+    #[tokio::test]
+    async fn migration_preserves_multiline_flow_start_after() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        manifest(dir.path(), "db", "scripts: {start: run}\n");
+        manifest(dir.path(), "link", VM_MANIFEST);
+        let text = "containers:\n  sb:\n    worker: path://./sb\n  db:\n    worker: path://./db\n  link:\n    worker: path://./link\n    start_after: [\n      db,\n    ]\n";
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        let mut file = ComposeFile::load(&path).expect("the 0.26 file is valid YAML");
+        assert_eq!(file.containers["link"].start_after, ["db"]);
+        let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new())
+            .await
+            .unwrap();
+        let mut edited = text.to_string();
+
+        let result =
+            crate::sandbox::migrate(&path, &mut edited, &mut file, "default", &mut prepared).await;
+
+        let rewrite = crate::edit::explicit_vm_mode(text, "link", "sb")
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.is_ok(),
+            "migrate failed: {:?}\nrewritten text:\n{}",
+            result.err(),
+            rewrite.text
+        );
+        assert_eq!(file.containers["link"].start_after, ["db", "sb"]);
+        assert!(edited.contains("    start_after: [\n      db,\n      sb,\n    ]\n"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(
+            migrate(&path, &mut edited, &mut file, "default", &mut prepared)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
     const OWN_VM: &str = "start_after: [sb], scripts: {run: iii sandbox run}";
 
     /// To Compose it is a plain process, whatever its manifest says, that still needs the

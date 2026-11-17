@@ -552,21 +552,49 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                 ));
             }
             Some((head, end)) => {
-                let line = entry_lines[head];
-                let body = without_comment(line);
-                let flow = body
-                    .find('[')
-                    .zip(body.rfind(']'))
-                    .filter(|(open, close)| open < close);
-                if let Some((open, close)) = flow {
-                    let separator = if body[open + 1..close].trim().is_empty() {
-                        ""
+                if let Some(flow) = flow_span(entry_lines, head) {
+                    let (close_line, close_column) = flow.close;
+                    let line = entry_lines[close_line];
+                    if close_line > head && line[..close_column].trim().is_empty() {
+                        let item_indent = entry_lines[flow.open.0 + 1..close_line]
+                            .iter()
+                            .find(|line| {
+                                !line.trim().is_empty() && !line.trim_start().starts_with('#')
+                            })
+                            .map_or_else(
+                                || format!("{}  ", leading_whitespace(entry_lines[flow.open.0])),
+                                |line| leading_whitespace(line).to_string(),
+                            );
+                        if let Some((last_line, last_column)) = flow.last
+                            && !entry_lines[last_line][last_column..].starts_with(',')
+                        {
+                            let mut rewritten = entry_lines[last_line].to_string();
+                            let token_len = rewritten[last_column..]
+                                .chars()
+                                .next()
+                                .map_or(0, char::len_utf8);
+                            rewritten.insert(last_column + token_len, ',');
+                            edits.push((entry.start + last_line, 1, vec![rewritten]));
+                        }
+                        edits.push((
+                            entry.start + close_line,
+                            0,
+                            vec![format!("{item_indent}{item},")],
+                        ));
                     } else {
-                        ", "
-                    };
-                    let mut rewritten = line.to_string();
-                    rewritten.insert_str(close, &format!("{separator}{item}"));
-                    edits.push((entry.start + head, 1, vec![rewritten]));
+                        let separator = match flow.last {
+                            None => "",
+                            Some((line, column))
+                                if entry_lines[line][column..].starts_with(',') =>
+                            {
+                                " "
+                            }
+                            Some(_) => ", ",
+                        };
+                        let mut rewritten = line.to_string();
+                        rewritten.insert_str(close_column, &format!("{separator}{item}"));
+                        edits.push((entry.start + close_line, 1, vec![rewritten]));
+                    }
                 } else if let Some(last_item) = entry_lines[head + 1..end]
                     .iter()
                     .rev()
@@ -686,6 +714,101 @@ fn scalar_text(value: &Value) -> String {
     }
 }
 
+/// Positions in a flow collection, excluding comments and quoted delimiters.
+struct FlowSpan {
+    open: (usize, usize),
+    close: (usize, usize),
+    last: Option<(usize, usize)>,
+}
+
+/// Finds the matching flow delimiter across lines without rewriting any scalar text.
+fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
+    let line = lines[head];
+    let indent = leading_whitespace(line).len();
+    let colon = line.find(':')?;
+    let mut open_row = head;
+    let mut value = line[colon + 1..].trim_start();
+    loop {
+        while value.starts_with(['&', '!']) {
+            let end = value.find(char::is_whitespace).unwrap_or(value.len());
+            value = value[end..].trim_start();
+        }
+        if value.starts_with(['[', '{']) {
+            break;
+        }
+        if !value.is_empty() && !value.starts_with('#') {
+            return None;
+        }
+        open_row += 1;
+        let line = *lines.get(open_row)?;
+        value = line.trim_start();
+        // A following field is not this field's value; comments have no indentation.
+        if !value.is_empty() && !value.starts_with('#') && leading_whitespace(line).len() <= indent
+        {
+            return None;
+        }
+    }
+    let open_column = lines[open_row].len() - value.len();
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut last = None;
+    for (row, line) in lines.iter().enumerate().skip(open_row) {
+        let mut chars = line.char_indices().peekable();
+        let mut previous: Option<char> = None;
+        while let Some((column, c)) = chars.next() {
+            if row == open_row && column < open_column {
+                continue;
+            }
+            match quote {
+                Some('"') => match c {
+                    '\\' => {
+                        chars.next();
+                    }
+                    '"' => quote = None,
+                    _ => {}
+                },
+                Some(_) => {
+                    if c == '\'' {
+                        if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                            chars.next();
+                        } else {
+                            quote = None;
+                        }
+                    }
+                }
+                None => match c {
+                    '#' if previous.is_none_or(|c| c.is_whitespace() || ",[{".contains(c)) => break,
+                    '\'' | '"'
+                        if previous.is_none_or(|c| c.is_whitespace() || ":[{,".contains(c)) =>
+                    {
+                        quote = Some(c);
+                    }
+                    '[' => delimiters.push(']'),
+                    '{' => delimiters.push('}'),
+                    ']' | '}' => {
+                        if delimiters.pop() != Some(c) {
+                            return None;
+                        }
+                        if delimiters.is_empty() {
+                            return Some(FlowSpan {
+                                open: (open_row, open_column),
+                                close: (row, column),
+                                last,
+                            });
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            if !c.is_whitespace() && (row != open_row || column != open_column) {
+                last = Some((row, column));
+            }
+            previous = Some(c);
+        }
+    }
+    None
+}
+
 /// The line range `[head, end)` in `lines` of the field `name` written at indentation `at`: its
 /// key line and what belongs to it (deeper lines, and sequence items or comments at its own
 /// indentation), without the blank lines and comments that trail it.
@@ -697,6 +820,9 @@ fn field_span(lines: &[&str], at: &str, name: &str) -> Option<(usize, usize)> {
             .and_then(|(key, _)| serde_yaml::from_str::<String>(key).ok())
             .is_some_and(|key| key == name)
     })?;
+    if let Some(flow) = flow_span(lines, head) {
+        return Some((head, flow.close.0 + 1));
+    }
     let mut end = head + 1;
     while end < lines.len() {
         let body = lines[end].trim_start();
@@ -2034,6 +2160,157 @@ containers:
             upsert_container(text, &new).unwrap(),
             Outcome::Replaced { .. }
         ));
+    }
+
+    #[test]
+    fn explicit_vm_preserves_next_line_flow_opener_and_comments() {
+        for opening in [
+            "\n      &deps [",
+            " # keep field comment\n      # ignore [ in a comment\n      &deps [",
+            " !!seq # keep tag comment\n      &deps\n      [",
+            "\n      !!seq &deps [",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let text = format!(
+                "containers:\n  db: {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after:{opening}\n        db, # keep dependency\n    ] # keep closing\n    environment: {{TOKEN: '${{TOKEN:-review}}'}}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            );
+            let before = crate::ComposeFile::parse(&text, &path).expect("valid input Compose");
+            assert_eq!(before.containers["link"].start_after, ["db"]);
+
+            let rewrite = explicit_vm_mode(&text, "link", "sb").unwrap().unwrap();
+
+            let after = crate::ComposeFile::parse(&rewrite.text, &path)
+                .expect("migration must stay valid Compose");
+            assert_eq!(after.containers["link"].start_after, ["db", "sb"]);
+            assert_eq!(
+                rewrite.text,
+                text.replace("    ] # keep closing", "        sb,\n    ] # keep closing")
+            );
+            assert_eq!(
+                rewrite
+                    .text
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with(']'))
+                    .count(),
+                1
+            );
+            assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn explicit_vm_keeps_flow_separator_comments_outside_dependencies() {
+        for (value, dependencies) in [
+            ("[db,# comment ]\n      queue,\n    ]", vec!["db", "queue"]),
+            (
+                "[# comment ]\n      db,\n      queue,\n    ]",
+                vec!["db", "queue"],
+            ),
+            (
+                "[db#suffix, '#notcomment',# comment ]\n      queue,\n    ]",
+                vec!["db#suffix", "#notcomment", "queue"],
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let text = format!(
+                "containers:\n  db: {{worker: path://./db}}\n  'db#suffix': {{worker: path://./db}}\n  '#notcomment': {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after: {value}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            );
+            let before = crate::ComposeFile::parse(&text, &path).expect("valid input Compose");
+            assert_eq!(before.containers["link"].start_after, dependencies);
+
+            let rewrite = explicit_vm_mode(&text, "link", "sb").unwrap().unwrap();
+
+            let after =
+                crate::ComposeFile::parse(&rewrite.text, &path).expect("valid output Compose");
+            let mut expected = dependencies;
+            expected.push("sb");
+            assert_eq!(
+                after.containers["link"].start_after, expected,
+                "adapter must not be inserted inside a comment"
+            );
+            assert_eq!(rewrite.text, text.replace("    ]\n", "      sb,\n    ]\n"));
+            assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn field_span_includes_nested_flow_values_and_ignores_quoted_delimiters() {
+        let lines = [
+            "    config_override: {",
+            "      values: [\"quoted]#\", {inner: [nested]}], # ] }",
+            "    } # end",
+            "    environment: {KEEP: '${VAR}'}",
+        ];
+        assert_eq!(field_span(&lines, "    ", "config_override"), Some((0, 3)));
+    }
+
+    #[test]
+    fn explicit_vm_preserves_multiline_flow_dependencies_and_raw_fields() {
+        for (dependencies, expected) in [
+            ("[\n      db,\n    ]", "[\n      db,\n      sb,\n    ]"),
+            (
+                "[ # opening ] is a comment\n      'db', # keep this ]\n    ] # closing",
+                "[ # opening ] is a comment\n      'db', # keep this ]\n      sb,\n    ] # closing",
+            ),
+            (
+                "[\n      \"db]#\", # quoted delimiter\n    ]",
+                "[\n      \"db]#\", # quoted delimiter\n      sb,\n    ]",
+            ),
+            (
+                "[\n      'db' # no trailing comma\n    ]",
+                "[\n      'db', # no trailing comma\n      sb,\n    ]",
+            ),
+            (
+                "[\n      'db', \"queue\"] # inline close",
+                "[\n      'db', \"queue\", sb] # inline close",
+            ),
+            ("['db',] # trailing comma", "['db', sb] # trailing comma"),
+            ("[\n    ] # empty", "[\n      sb,\n    ] # empty"),
+            (
+                "[\n      'db]''#',\n    ]",
+                "[\n      'db]''#',\n      sb,\n    ]",
+            ),
+            (
+                "[\n      \"db\\\"]#\",\n    ]",
+                "[\n      \"db\\\"]#\",\n      sb,\n    ]",
+            ),
+            (
+                "[\n      '${DEPENDENCY}',\n    ]",
+                "[\n      '${DEPENDENCY}',\n      sb,\n    ]",
+            ),
+            (
+                "&deps [\n      db,\n    ]",
+                "&deps [\n      db,\n      sb,\n    ]",
+            ),
+            (
+                "!!seq &deps [\n      db,\n    ]",
+                "!!seq &deps [\n      db,\n      sb,\n    ]",
+            ),
+            ("[] # empty", "[sb] # empty"),
+        ] {
+            let prefix = "containers:\n  link:\n    worker: path://${APP_DIR:-./link}\n    ";
+            let suffix = "\n    config_override:\n      start_after: [nested]\n      data: {items: [\"raw]#\", {key: '${VAR:-value}'}]}\n    environment: {TOKEN: '${TOKEN}'}\n    scripts: {run: iii sandbox run}\n";
+            let text = format!("{prefix}\"start_after\": {dependencies}{suffix}");
+            let rewrite = explicit_vm_mode(&text, "link", "sb").unwrap().unwrap();
+            let expected = format!("{prefix}\"start_after\": {expected}{suffix}").replace(
+                "    scripts: {run: iii sandbox run}\n",
+                "    scripts:\n      run: iii sandbox run\n      build: iii sandbox build\n",
+            );
+            assert_eq!(rewrite.text, expected, "input: {dependencies}");
+            let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+            let mut wanted = entry_fields(&text, "link").unwrap()["start_after"]
+                .as_sequence()
+                .unwrap()
+                .clone();
+            wanted.push(Value::from("sb"));
+            assert_eq!(
+                parsed["containers"]["link"]["start_after"],
+                Value::Sequence(wanted)
+            );
+            assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
+        }
     }
 
     /// Spec 7.1: the adapter in `start_after` (after `version`), then `scripts.build` and
