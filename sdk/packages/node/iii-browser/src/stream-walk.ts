@@ -3,7 +3,8 @@
  * sends (stream values to replace with refs) and what it receives (refs to turn
  * into streams). Only arrays and plain objects (`Object.prototype` or `null`
  * prototype) are walked, so a `Date`, a `Map` or a class instance is left as it
- * is, with whatever it holds.
+ * is, with whatever it holds. A walk does not go back into a container it is
+ * inside of (a cycle).
  */
 import { InputStream, OutputStream, streamKind } from './call-streams'
 import type { StreamChannelRef } from './iii-types'
@@ -17,49 +18,73 @@ function isPlainObject(value: object): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null
 }
 
+/** Sets `key` on `out` as an own data property: an own `__proto__` key too, which an assignment takes as the prototype. */
+function setOwn(out: Record<string, unknown>, key: string, value: unknown): void {
+  if (key === '__proto__')
+    Object.defineProperty(out, key, { value, writable: true, enumerable: true, configurable: true })
+  else out[key] = value
+}
+
 /**
  * `value` with every stream value and channel ref replaced by what `fn`
  * returns for it. Copy-on-write: a container without one is returned as it is.
  */
 export function mapStreams(value: unknown, fn: (slot: unknown, kind: StreamSlotKind) => unknown): unknown {
+  return mapWalk(value, fn, new Set())
+}
+
+/**
+ * {@link mapStreams} under the containers in `path`. One of them reached again
+ * (a cycle) is left as it is: its streams were found on the way in. A container
+ * reached twice without a cycle is walked twice, so its streams count twice.
+ */
+function mapWalk(value: unknown, fn: (slot: unknown, kind: StreamSlotKind) => unknown, path: Set<object>): unknown {
   if (value === null || typeof value !== 'object') return value
   if (isChannelRef(value)) return fn(value, 'ref')
   const kind = streamKind(value)
   if (kind) return fn(value, kind)
+  if (path.has(value)) return value
   if (Array.isArray(value)) {
+    path.add(value)
     let out: unknown[] | undefined
     for (let i = 0; i < value.length; i++) {
-      const mapped = mapStreams(value[i], fn)
+      const mapped = mapWalk(value[i], fn, path)
       if (mapped !== value[i]) {
         out ??= value.slice()
         out[i] = mapped
       }
     }
+    path.delete(value)
     return out ?? value
   }
   if (!isPlainObject(value)) return value
+  path.add(value)
   let out: Record<string, unknown> | undefined
   for (const [k, v] of Object.entries(value)) {
-    const mapped = mapStreams(v, fn)
+    const mapped = mapWalk(v, fn, path)
     if (mapped !== v) {
       out ??= { ...value }
-      out[k] = mapped
+      setOwn(out, k, mapped)
     }
   }
+  path.delete(value)
   return out ?? value
 }
 
 /** Whether `value` holds a stream value or a channel ref. */
-export function containsStreams(value: unknown): boolean {
+export function containsStreams(value: unknown, seen: WeakSet<object> = new WeakSet()): boolean {
   if (value === null || typeof value !== 'object') return false
   if (isChannelRef(value) || streamKind(value)) return true
+  // Seen already: that first visit gives the answer.
+  if (seen.has(value)) return false
+  seen.add(value)
   if (Array.isArray(value)) {
-    for (const item of value) if (containsStreams(item)) return true
+    for (const item of value) if (containsStreams(item, seen)) return true
     return false
   }
   if (!isPlainObject(value)) return false
   for (const key in value) {
-    if (containsStreams(value[key])) return true
+    if (containsStreams(value[key], seen)) return true
   }
   return false
 }
@@ -92,16 +117,30 @@ export function holdsWriteSide(value: unknown): boolean {
 
 /**
  * A copy of `value` that keeps its streams: arrays and plain objects are
- * copied, an {@link InputStream} or {@link OutputStream} is the same object,
- * and every other value is copied with `cloneLeaf`.
+ * copied (once each, so a cycle is copied as a cycle), an {@link InputStream}
+ * or {@link OutputStream} is the same object, and every other value is copied
+ * with `cloneLeaf`.
  */
-export function cloneKeepingStreams(value: unknown, cloneLeaf: (leaf: unknown) => unknown): unknown {
+export function cloneKeepingStreams(
+  value: unknown,
+  cloneLeaf: (leaf: unknown) => unknown,
+  copies: Map<object, unknown> = new Map(),
+): unknown {
   if (value === null || typeof value !== 'object') return cloneLeaf(value)
   if (value instanceof InputStream || value instanceof OutputStream) return value
-  if (Array.isArray(value)) return value.map((item) => cloneKeepingStreams(item, cloneLeaf))
+  if (copies.has(value)) return copies.get(value)
+  if (Array.isArray(value)) {
+    const out: unknown[] = new Array(value.length)
+    copies.set(value, out)
+    value.forEach((item, i) => {
+      out[i] = cloneKeepingStreams(item, cloneLeaf, copies)
+    })
+    return out
+  }
   if (!isPlainObject(value)) return cloneLeaf(value)
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(value)) out[k] = cloneKeepingStreams(v, cloneLeaf)
+  copies.set(value, out)
+  for (const [k, v] of Object.entries(value)) setOwn(out, k, cloneKeepingStreams(v, cloneLeaf, copies))
   return out
 }
 

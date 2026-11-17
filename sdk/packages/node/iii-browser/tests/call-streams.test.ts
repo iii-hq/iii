@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   abortInput,
   asStream,
+  cutOutput,
   forwardableRef,
   handOn,
   handOver,
@@ -952,5 +953,144 @@ describe('an abort does not wait for a write the sink holds', () => {
     await new Promise((r) => setTimeout(r, 20))
     await out.abort('stop')
     await expect(pump).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+  })
+})
+
+describe('regressions from the PR review', () => {
+  /** `p`, or a rejection after `ms`: an operation that never settles fails the test instead of hanging it. */
+  const within = <T>(p: Promise<T>, ms = 1000): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`not settled within ${ms} ms`)), ms)),
+    ])
+  const tick = () => new Promise((r) => setTimeout(r, 20))
+  /** An async iterable whose `next()` never settles and whose `return()` resolves at once. */
+  const hanging = () => {
+    let returned = false
+    const source = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined),
+        return: async () => {
+          returned = true
+          return { done: true as const, value: undefined }
+        },
+      }),
+    }
+    return { input: InputStream.from(source), returned: () => returned }
+  }
+
+  it('the walks stop at a cycle: no stack overflow, and a clone keeps the cycle', () => {
+    const cyclic: Record<string, unknown> = { n: 1, list: [] as unknown[] }
+    cyclic.self = cyclic
+    ;(cyclic.list as unknown[]).push(cyclic)
+    expect(containsStreams(cyclic)).toBe(false)
+    expect(holdsWriteSide(cyclic)).toBe(false)
+    expect(mapStreams(cyclic, () => 'x')).toBe(cyclic)
+    const input = InputStream.from('x')
+    const streamed: Record<string, unknown> = { body: input }
+    streamed.self = streamed
+    expect(containsStreams(streamed)).toBe(true)
+    const kinds: string[] = []
+    mapStreams(streamed, (slot, kind) => {
+      kinds.push(kind)
+      return slot
+    })
+    // Found once: a cycle is not the same stream twice.
+    expect(kinds).toEqual(['input'])
+    const copy = cloneKeepingStreams(streamed, structuredClone) as Record<string, unknown>
+    expect(copy).not.toBe(streamed)
+    expect(copy.self).toBe(copy)
+    expect(copy.body).toBe(input)
+    // A container reached twice without a cycle is still walked twice: its stream is there twice.
+    const shared = { s: InputStream.from('y') }
+    const twice: string[] = []
+    mapStreams({ a: shared, b: shared }, (slot, kind) => {
+      twice.push(kind)
+      return slot
+    })
+    expect(twice).toEqual(['input', 'input'])
+  })
+
+  it('an own __proto__ key stays an own data property in the copies (mapStreams, cloneKeepingStreams)', () => {
+    const value = JSON.parse('{"__proto__":{"flag":true},"n":1}') as Record<string, unknown>
+    value.body = InputStream.from('x')
+    const copy = cloneKeepingStreams(value, structuredClone) as Record<string, unknown>
+    expect(Object.getPrototypeOf(copy)).toBe(Object.prototype)
+    expect(Object.getOwnPropertyDescriptor(copy, '__proto__')?.value).toEqual({ flag: true })
+    const withStream = JSON.parse('{"__proto__":{"n":1}}') as Record<string, unknown>
+    Object.defineProperty(withStream, '__proto__', { value: { body: InputStream.from('x') }, enumerable: true })
+    const mapped = mapStreams(withStream, () => 'ref') as Record<string, unknown>
+    expect(Object.getPrototypeOf(mapped)).toBe(Object.prototype)
+    expect(Object.getOwnPropertyDescriptor(mapped, '__proto__')?.value).toEqual({ body: 'ref' })
+  })
+
+  it('a cancel or an abort fails a read in progress even when the source ignores it (its next() never settles)', async () => {
+    for (const end of ['cancel', 'abortInput'] as const) {
+      const { input, returned } = hanging()
+      const reading = input.bytes()
+      reading.catch(() => undefined)
+      await tick()
+      if (end === 'cancel') await within(input.cancel())
+      else await within(abortInput(input, 'the call timed out'))
+      expect(returned(), end).toBe(true)
+      await expect(within(reading), end).rejects.toMatchObject(
+        end === 'cancel' ? { code: 'STREAM_CLOSED' } : { code: 'STREAM_ABORTED', reason: 'the call timed out' },
+      )
+    }
+  })
+
+  it('a partly read stream passed on is the receiver’s: the original can no longer be read nor sent', async () => {
+    const input = InputStream.from(['head;', 'a', 'b'])
+    const it = input[Symbol.asyncIterator]()
+    expect(decode((await it.next()).value as Uint8Array)).toBe('head;')
+    const rest = handOver(input)
+    expect(isTransferred(input)).toBe(true)
+    await expect(it.next()).rejects.toMatchObject({ code: 'STREAM_IN_USE' })
+    // The original's loop ended on that error without cancelling what the receiver reads.
+    expect(await rest.text()).toBe('ab')
+  })
+
+  it('the call’s abort (cutOutput) cuts a close still queued behind a write the sink holds; abort() after close() stays a no-op', async () => {
+    const stuck = () =>
+      OutputStream.to(
+        new WritableStream<Uint8Array>({ write: () => new Promise<void>(() => undefined) }, { highWaterMark: 1 }),
+      )
+    const out = stuck()
+    const write = out.write('a')
+    write.catch(() => undefined)
+    await tick()
+    const closing = out.close()
+    closing.catch(() => undefined)
+    // abort() after close() is the close, as in the other SDKs.
+    expect(out.abort('late')).toBe(closing)
+    cutOutput(out, 'the call timed out')
+    await expect(within(write)).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+    await expect(within(outputDone(out))).rejects.toMatchObject({
+      code: 'STREAM_ABORTED',
+      reason: 'the call timed out',
+    })
+    await expect(within(closing)).rejects.toMatchObject({ code: 'STREAM_CLOSED' })
+    // A close that finished stays a close.
+    const { sink, state } = collector()
+    const closed = OutputStream.to(sink)
+    await closed.close()
+    cutOutput(closed, 'late')
+    expect(state()).toBe('closed')
+    await expect(outputDone(closed)).resolves.toBeUndefined()
+  })
+
+  it('cancelling toWebStream() cancels the source before the first pull and while a pull waits', async () => {
+    const before = endlessReadable()
+    await within(InputStream.from(before.stream).toWebStream().cancel())
+    expect(before.cancelled()).toBe(true)
+
+    const { input, returned } = hanging()
+    const reader = input.toWebStream().getReader()
+    const read = reader.read()
+    read.catch(() => undefined)
+    await tick()
+    await within(reader.cancel())
+    expect(returned()).toBe(true)
+    await expect(within(read)).resolves.toMatchObject({ done: true })
   })
 })

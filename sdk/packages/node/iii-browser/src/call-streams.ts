@@ -65,6 +65,8 @@ type InputState = {
   failure?: unknown
   /** Sent to another function by its ref: this worker can no longer read it. */
   transferred: boolean
+  /** Fails the read waiting on the source: a cancel does not wait for a source that ignores it (an async generator). */
+  interrupt?: (failure: unknown) => void
   id?: string
   scope?: StreamScope
 }
@@ -80,6 +82,8 @@ type OutputState = {
   transferred: boolean
   /** How it was ended (`close()` or `abort()`), once one was asked for. */
   ended?: 'closed' | 'aborted'
+  /** The close finished, or an abort was asked for: a close still waiting for its writes can be cut ({@link cutOutput}). */
+  over?: boolean
   end?: Promise<void>
   failure?: unknown
   chain: Promise<unknown>
@@ -302,7 +306,8 @@ export class InputStream implements AsyncIterable<Uint8Array> {
 
   /** A Web `ReadableStream` of the stream's bytes. Cancelling it cancels the stream. */
   toWebStream(): ReadableStream<Uint8Array> {
-    const chunks = binaryChunks(claim(this))
+    const st = claim(this)
+    const chunks = binaryChunks(st)
     return new ReadableStream<Uint8Array>(
       {
         async pull(controller) {
@@ -311,6 +316,9 @@ export class InputStream implements AsyncIterable<Uint8Array> {
           else controller.enqueue(next.value)
         },
         async cancel() {
+          // Cancelled here, as cancel() does: return() alone waits behind a pull in progress, and before the
+          // first pull it ends the generator without its finally.
+          if (!st.transferred) await cancelInput(st, true)
           await chunks.return(undefined)
         },
       },
@@ -373,9 +381,15 @@ async function pullFrom(st: InputState): Promise<ChannelItem | null> {
     const reader = new ChannelReader(st.binding?.wsBase ?? '', st.ref as StreamChannelRef)
     st.source = { next: () => reader.next(), cancel: () => reader.cancel() }
   }
+  const source = st.source
   let item: ChannelItem | null
+  let interrupt: ((failure: unknown) => void) | undefined
   try {
-    item = await st.source.next()
+    item = await new Promise<ChannelItem | null>((resolve, reject) => {
+      interrupt = reject
+      st.interrupt = reject
+      source.next().then(resolve, reject)
+    })
   } catch (error) {
     if (st.finished && st.failure !== undefined) throw st.failure
     // A stream this one reads through (a tee, a stream handed over) was cancelled: its STREAM_CLOSED goes on as it is.
@@ -390,6 +404,8 @@ async function pullFrom(st: InputState): Promise<ChannelItem | null> {
     st.finished = true
     st.failure = failure
     throw failure
+  } finally {
+    if (st.interrupt === interrupt) st.interrupt = undefined
   }
   if (st.finished) {
     // Cancelled or aborted while this read waited.
@@ -409,6 +425,8 @@ async function cancelInput(st: InputState, attach: boolean, failure: Error = can
   if (st.finished) return
   st.finished = true
   st.failure = failure
+  // A read waiting on the source fails now, whether or not the source's next() settles on its cancel.
+  st.interrupt?.(failure)
   if (st.source) {
     await st.source.cancel()
   } else if (attach && st.ref) {
@@ -425,8 +443,8 @@ async function* binaryChunks(st: InputState): AsyncGenerator<Uint8Array, void, u
       if (item.type === 'binary' && item.value.byteLength > 0) yield item.value
     }
   } finally {
-    // A loop left early (break, return, a throw in its body) cancels the stream.
-    if (!st.finished) await cancelInput(st, false)
+    // A loop left early (break, return, a throw in its body) cancels the stream, unless it was sent away.
+    if (!st.finished && !st.transferred) await cancelInput(st, false)
   }
 }
 
@@ -438,7 +456,7 @@ async function* allFrames(st: InputState): AsyncGenerator<StreamFrame, void, und
       yield item
     }
   } finally {
-    if (!st.finished) await cancelInput(st, false)
+    if (!st.finished && !st.transferred) await cancelInput(st, false)
   }
 }
 
@@ -457,7 +475,7 @@ async function* jsonMessages(st: InputState): AsyncGenerator<unknown, void, unde
       yield message
     }
   } finally {
-    if (!st.finished) await cancelInput(st, false)
+    if (!st.finished && !st.transferred) await cancelInput(st, false)
   }
 }
 
@@ -486,7 +504,7 @@ async function* textLines(st: InputState): AsyncGenerator<string, void, undefine
     pending += decoder.decode()
     if (pending.length > 0) yield withoutCr(pending)
   } finally {
-    if (!st.finished) await cancelInput(st, false)
+    if (!st.finished && !st.transferred) await cancelInput(st, false)
   }
 }
 
@@ -706,9 +724,14 @@ export class OutputStream {
     st.ended = 'closed'
     st.end = handled(
       enqueue(st, (sink) => sink.close()).then(
-        () => st.settleDone(),
+        () => {
+          st.over = true
+          st.settleDone()
+        },
         (error) => {
-          st.settleDone(error)
+          // Cut by an abort: the abort settles `done`, with its reason.
+          if (st.ended !== 'aborted') st.settleDone(error)
+          st.over = true
           throw error
         },
       ),
@@ -725,26 +748,7 @@ export class OutputStream {
     const st = outputState(this)
     if (st.transferred) return Promise.resolve()
     if (st.end) return st.end
-    const text = reason === undefined ? 'aborted' : errorText(reason)
-    st.ended = 'aborted'
-    const error = new StreamAbortedError(text)
-    // A write the sink holds (backpressure), and those queued behind it, fail now with STREAM_CLOSED.
-    const held = st.inflight > 0
-    st.failure ??= streamClosedError('the stream was aborted')
-    st.cutWrites(streamClosedError('the stream was aborted while the write waited'))
-    // Not queued behind writes in flight: an abort cuts the stream now.
-    const aborted = sinkOf(st)
-      .abort(text)
-      .finally(() => st.settleDone(error))
-    if (held) {
-      // Nor does it wait for a sink that still holds a write: a WritableStream's own abort waits for it.
-      aborted.catch(noop)
-      st.settleDone(error)
-      st.end = Promise.resolve()
-    } else {
-      st.end = handled(aborted)
-    }
-    return st.end
+    return abortOutput(st, reason === undefined ? 'aborted' : errorText(reason))
   }
 
   /**
@@ -770,6 +774,30 @@ export class OutputStream {
   toJSON(): StreamInfo {
     return { stream: true, direction: 'write', id: streamId(outputState(this)) }
   }
+}
+
+/** Aborts `st` now: what {@link OutputStream.abort} does, also over a close still waiting for its writes. */
+function abortOutput(st: OutputState, text: string): Promise<void> {
+  st.ended = 'aborted'
+  st.over = true
+  const error = new StreamAbortedError(text)
+  // A write the sink holds (backpressure), and those queued behind it, fail now with STREAM_CLOSED.
+  const held = st.inflight > 0
+  st.failure ??= streamClosedError('the stream was aborted')
+  st.cutWrites(streamClosedError('the stream was aborted while the write waited'))
+  // Not queued behind writes in flight: an abort cuts the stream now.
+  const aborted = sinkOf(st)
+    .abort(text)
+    .finally(() => st.settleDone(error))
+  if (held) {
+    // Nor does it wait for a sink that still holds a write: a WritableStream's own abort waits for it.
+    aborted.catch(noop)
+    st.settleDone(error)
+    st.end = Promise.resolve()
+  } else {
+    st.end = handled(aborted)
+  }
+  return st.end
 }
 
 function refusal(st: OutputState): Error | undefined {
@@ -844,6 +872,7 @@ function failSink(st: OutputState, error: unknown): Error {
     st.sinkFailure = failure
     // A close that failed is not a close: the sink may not hold the whole stream.
     st.ended = 'aborted'
+    st.over = true
     st.failure = sinkClosedError(failure)
     st.end ??= Promise.resolve()
     st.settleDone(failure)
@@ -942,9 +971,17 @@ export function causeOf(error: StreamAbortedError): unknown {
   return sinkFailures.has(error) ? (error as { cause?: unknown }).cause : error
 }
 
-/** Whether `s` was closed or aborted. */
-export function outputEnded(s: OutputStream): boolean {
-  return outputState(s).ended !== undefined
+/**
+ * Aborts `s` for the call that passed it, which failed or timed out: as
+ * `abort()`, and a close still waiting behind a write the sink holds (the
+ * guard's close after the handler returned) is cut too, so that write fails
+ * now. A stream whose close finished, or that was aborted or sent on, is left
+ * as it is.
+ */
+export function cutOutput(s: OutputStream, reason: string): void {
+  const st = outputState(s)
+  if (st.transferred || st.over) return
+  void abortOutput(st, reason)
 }
 
 /** Whether a read of `s` began. */
@@ -994,17 +1031,18 @@ export function handOnRefusal(s: InputStream): Error | undefined {
 /**
  * What `s` is passed on as when it goes to another function without its ref
  * (in-process, or pumped into a pipe). Never read: `s` itself. A read began
- * and did not finish: a new InputStream over the rest, which leaves the guard
- * of the invocation that holds `s`. Read to its end: the one-reader error, as
- * reading it again would throw.
+ * and did not finish: a new InputStream over the rest, and `s` counts as sent
+ * (it leaves its guard, and reading or sending it again fails with
+ * `STREAM_IN_USE`). Read to its end: the one-reader error, as reading it again
+ * would throw.
  */
 export function handOn(s: InputStream): InputStream {
   const refused = handOnRefusal(s)
   if (refused) throw refused
   const st = inputState(s)
   if (!st.claimed) return s
-  detach(s)
-  return makeInput(localInputState({ next: () => pullFrame(st), cancel: () => cancelInput(st, false) }))
+  markTransferred(s)
+  return makeInput(localInputState({ next: () => pullFrom(st), cancel: () => cancelInput(st, false) }))
 }
 
 /** The {@link StreamInfo} of a channel ref. */

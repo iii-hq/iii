@@ -1037,3 +1037,126 @@ describe('a caller sink that fails (as the Python and Rust SDKs)', () => {
     expect((error as { cause?: unknown }).cause).toBe(diskFull)
   })
 })
+
+describe('regressions from the PR review', () => {
+  it('local: a cyclic payload, metadata or result goes through, private or copied (the stream walks stop at a cycle)', async () => {
+    const solo = worker('streams-local-cycles')
+    const echo = async (input: { n: number; self: unknown }, metadata: unknown) => {
+      const cyclic: Record<string, unknown> = { n: input.n, same: input.self === input }
+      cyclic.self = cyclic
+      cyclic.meta = (metadata as { m?: number } | undefined)?.m
+      return cyclic
+    }
+    solo.registerFunction(fid('local-cycle-copied'), echo)
+    solo.registerFunction(fid('local-cycle-private'), echo, { private: true })
+    await localDispatchReady(solo, fid('local-cycle-copied'))
+    await localDispatchReady(solo, fid('local-cycle-private'))
+    for (const function_id of [fid('local-cycle-copied'), fid('local-cycle-private')]) {
+      const payload: Record<string, unknown> = { n: 1 }
+      payload.self = payload
+      const metadata: Record<string, unknown> = { m: 2 }
+      metadata.self = metadata
+      const result = await within(
+        solo.call<unknown, Record<string, unknown>>({ function_id, payload, metadata } as never),
+      )
+      expect(result, function_id).toMatchObject({ n: 1, same: true, meta: 2 })
+      expect(result.self, function_id).toBe(result)
+    }
+  })
+
+  it('local: an own __proto__ key of a payload with a stream reaches the handler as a field', async () => {
+    const solo = worker('streams-local-proto')
+    solo.registerFunction(fid('local-proto'), async (input: Record<string, unknown>) => ({
+      proto: Object.getOwnPropertyDescriptor(input, '__proto__')?.value,
+      text: await (input.body as InputStream).text(),
+    }))
+    await localDispatchReady(solo, fid('local-proto'))
+    const payload = JSON.parse('{"__proto__":{"flag":true}}') as Record<string, unknown>
+    payload.body = InputStream.from('x')
+    await expect(within(solo.call({ function_id: fid('local-proto'), payload }))).resolves.toEqual({
+      proto: { flag: true },
+      text: 'x',
+    })
+  })
+
+  it('local: the call timeout aborts a sink whose close waits behind a write the handler left: the write fails', async () => {
+    const solo = worker('streams-local-queued-close')
+    let writeError: unknown
+    solo.registerFunction(fid('local-queued-close'), async ({ out }: { out: OutputStream }) => {
+      // Not awaited: the handler returns, and the guard's close waits behind this write.
+      out.write('x').catch((error: unknown) => {
+        writeError = error
+      })
+      return 'returned'
+    })
+    await localDispatchReady(solo, fid('local-queued-close'))
+    const stuck = new WritableStream<Uint8Array>(
+      { write: () => new Promise<void>(() => undefined) },
+      { highWaterMark: 1 },
+    )
+    await expect(
+      within(solo.call({ function_id: fid('local-queued-close'), payload: { out: stuck }, timeoutMs: 300 })),
+    ).rejects.toMatchObject({ code: 'TIMEOUT' })
+    await waitFor(() => writeError, 'the held write failed', 2000)
+    expect(writeError).toMatchObject({ code: 'STREAM_CLOSED' })
+  })
+
+  it('routed: two calls started together with the same unread stream: the second fails with STREAM_IN_USE', async () => {
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('take-text'), async ({ body }: { body: InputStream }) => body.text())
+    })
+    const kinds: Record<string, () => Promise<{ body: InputStream; feed?: () => Promise<void> }>> = {
+      'pipe().input (its ref travels)': async () => {
+        const pipe = await caller.pipe()
+        return { body: pipe.input, feed: () => pipe.output.write('all').then(() => pipe.output.close()) }
+      },
+      'InputStream.from (pumped)': async () => ({ body: InputStream.from('all') }),
+    }
+    for (const [kind, make] of Object.entries(kinds)) {
+      const { body, feed } = await make()
+      const calls = [0, 1].map(() => caller.call<unknown, string>({ function_id: fid('take-text'), payload: { body } }))
+      for (const call of calls) call.catch(() => undefined)
+      await feed?.()
+      const settled = await within(Promise.allSettled(calls))
+      expect(settled.map((s) => s.status).sort(), kind).toEqual(['fulfilled', 'rejected'])
+      const fulfilled = settled.find((s) => s.status === 'fulfilled') as PromiseFulfilledResult<string>
+      const rejected = settled.find((s) => s.status === 'rejected') as PromiseRejectedResult
+      expect(fulfilled.value, kind).toBe('all')
+      expect(rejected.reason, kind).toMatchObject({
+        code: 'STREAM_IN_USE',
+        message: expect.stringMatching(/already sent/),
+      })
+    }
+  })
+
+  it('routed: a handler that returns a write side after the caller sink failed still fails the call with the sink failure', async () => {
+    const { caller } = await pair((host) => {
+      host.registerFunction(fid('sink-fails-write-side'), async ({ out }: { out: OutputStream }) => {
+        try {
+          for (let i = 0; i < 300; i++) {
+            await out.write('chunk;')
+            await sleep(10)
+          }
+        } catch {
+          // the caller's sink failed: this write is STREAM_CLOSED
+        }
+        const pipe = await host.pipe()
+        void pipe.input.cancel()
+        return { back: pipe.output }
+      })
+    })
+    const diskFull = new Error('disk full')
+    const sink = new WritableStream<Uint8Array>({
+      write() {
+        throw diskFull
+      },
+    })
+    const error = await within(
+      caller.call({ function_id: fid('sink-fails-write-side'), payload: { out: sink } }),
+      8000,
+    ).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(StreamAbortedError)
+    expect(error).toMatchObject({ code: 'STREAM_ABORTED', reason: 'the sink failed: disk full' })
+    expect((error as { cause?: unknown }).cause).toBe(diskFull)
+  })
+})

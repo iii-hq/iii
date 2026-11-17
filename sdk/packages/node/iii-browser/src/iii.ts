@@ -2,6 +2,7 @@ import {
   abortInput,
   asStream,
   causeOf,
+  cutOutput,
   detach,
   errorText,
   forwardableRef,
@@ -14,7 +15,6 @@ import {
   markTransferred,
   OutputStream,
   outputDone,
-  outputEnded,
   outputFromRef,
   pumpStream,
   releaseInput,
@@ -1110,6 +1110,9 @@ class Sdk implements ISdk {
     const forwarded = [...slots.values()].filter((entry) => entry.ref !== undefined)
     const piped = [...slots.values()].filter((entry) => entry.ref === undefined)
     const pipes = await Promise.all(piped.map(() => this.createPipeRefs()))
+    // Checked again after the wait, and claimed below with no other wait: a call that started meanwhile with
+    // the same stream may have sent it, and the second call is refused rather than sending it too.
+    for (const entry of slots.values()) if (isTransferred(entry.stream)) throw alreadySent()
     const binding = this.streamBinding()
     piped.forEach((entry, i) => {
       const { reader, writer } = pipes[i]
@@ -1323,6 +1326,12 @@ class Sdk implements ISdk {
     // A result that hands the caller a write side (its own sink passed back, a pipe into it)
     // can be what the sinks wait for: waiting here would never end. They run on.
     if (holdsWriteSide(result)) {
+      // The caller's own sink failed already: the call fails with that, as the local path does.
+      const failed = this.failedSink(outbound.sinks, request.function_id)
+      if (failed) {
+        this.discardStreams(received)
+        throw failed
+      }
       for (const sink of sinks)
         sink.catch((error) => this.logError(`Stream sink of ${request.function_id} failed`, error))
       return received as TOutput
@@ -1750,7 +1759,7 @@ class Sdk implements ISdk {
     const sources = passed.filter((s): s is InputStream => s instanceof InputStream && forwardableRef(s) === undefined)
     /** The call failed: sinks it passed that are still open are aborted with its error. */
     const abortSinks = (error: unknown) => {
-      for (const sink of sinks) if (!outputEnded(sink)) void sink.abort(errorText(error))
+      for (const sink of sinks) cutOutput(sink, errorText(error))
     }
 
     const startedAt = Date.now()
