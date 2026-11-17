@@ -21,7 +21,6 @@
 
 use std::{
     collections::BTreeMap,
-    process::ExitStatus,
     time::{Duration, Instant},
 };
 
@@ -692,6 +691,10 @@ pub(crate) async fn restart_prepared_until_shutdown(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_inner(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -718,6 +721,10 @@ async fn restart_one_inner(
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_scoped(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,

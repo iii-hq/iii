@@ -36,7 +36,7 @@ use crate::{
     config::{ComposeFile, RestartConfig},
     engine::EngineClient,
     error::{ComposeError, Result},
-    lifecycle::{self, Child, Children, LifecycleCtx, OpResult, OpStatus},
+    lifecycle::{self, Children, LifecycleCtx, OpResult, OpStatus},
     logs::{LogCursor, LogStore, LogStream, LogsOutcome},
     process::Supervised,
     restart,
