@@ -2588,14 +2588,66 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_restart_cancelled_by_shutdown_does_not_fail_the_vms() {
         let fixture = fixture("").await;
+        // Public status must refuse after cancellation. Inspect the lifecycle's
+        // actual records and owned handles instead, never persisted fallback.
+        let snapshot = |inner: &Inner| {
+            (
+                inner.state.containers.clone(),
+                inner
+                    .children
+                    .iter()
+                    .map(|(key, child)| {
+                        (key.clone(), (child.pid, child.birth.clone(), child.poll()))
+                    })
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        };
+        let (records_before, children_before) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
         fixture.project.shutdown.cancel();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
+        let status = fixture.project.status().await;
+        let (records_after, children_after) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
+        let started = fixture.started();
 
-        assert_eq!(containers(&result), ["*"]);
-        assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
-        assert_eq!(fixture.last_error_of("vm").await, "");
+        // Teardown before assertions so a regression does not strand the
+        // fixture's processes. None of the snapshots keeps a guard across it.
         fixture.project.shutdown().await;
+        let (records_stopped, children_stopped) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
+        assert!(matches!(
+            status,
+            Err(ComposeError::OperationCancelled { operation_id }) if operation_id == "status"
+        ));
+        assert_eq!(containers(&result), ["*"]);
+        assert_eq!(result.status, OpStatus::Failed);
+        assert!(!result.changed);
+        assert_eq!(
+            result.containers[0].error.as_ref().unwrap().code,
+            "OPERATION_CANCELLED"
+        );
+        assert_eq!(records_after, records_before);
+        assert_eq!(children_after, children_before);
+        for vm in ["vm", "web"] {
+            assert_eq!(records_after[vm].status, ChildStatus::Ready);
+            assert_eq!(records_after[vm].last_error, None);
+            assert_eq!(records_after[vm].pid, Some(children_after[vm].0));
+            assert_eq!(children_after[vm].2, crate::process::Outcome::Running);
+        }
+        assert!(started.is_empty(), "cancelled restart must not start a VM");
+        assert!(children_stopped.is_empty());
+        for key in records_after.keys() {
+            assert_eq!(records_stopped[key].status, ChildStatus::Stopped);
+            assert_eq!(fixture.alive(key), None, "{key} must stop with the project");
+        }
     }
 
     #[tokio::test]
