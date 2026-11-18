@@ -466,8 +466,9 @@ pub(crate) async fn prepare_metadata_reusing(
     .await
 }
 
-/// Consume the exact graph metadata selected by the dependency planner. Do not
-/// reinterpret the opaque request using an exact-version lookup and a new graph.
+/// Consume the exact graph metadata selected by the dependency planner. An existing
+/// opaque dependency may need an exact lookup only to obtain its missing provenance;
+/// its identity/content must match, and its planned package/graph are never replaced.
 pub(crate) async fn prepare_metadata_with_plan(
     compose: &mut ComposeFile,
     force: &BTreeSet<String>,
@@ -484,7 +485,35 @@ pub(crate) async fn prepare_metadata_with_plan(
             let selected = selections.get(&key).cloned();
             async move {
                 match selected {
-                    Some(selection) if selection.package.version == range => Ok(selection),
+                    Some(mut selection) if selection.package.version == range => {
+                        let (registry, name) = crate::registry::split_reference(&reference);
+                        if selection.root_binding.is_none() && name != selection.package.name {
+                            // An existing opaque dependency keeps its declared reference,
+                            // but its node in another root's graph has no request echo.
+                            // Obtain that proof without replacing the planned package/graph.
+                            if selection.package.registry != registry {
+                                return Err(ComposeError::PackageNotResolved {
+                                    container: key, name: reference, range,
+                                    message: "the planned package authority differs from the preserved reference".into(),
+                                });
+                            }
+                            let proven = crate::registry::resolve_selection_on(
+                                &key, &reference, &range, platform,
+                            ).await?;
+                            if !selection.same_package(&proven)
+                                || !proven.root_binding.as_ref().is_some_and(|binding| {
+                                    binding.validates_lock(&name, &range, &proven.package)
+                                })
+                            {
+                                return Err(ComposeError::PackageNotResolved {
+                                    container: key, name: reference, range,
+                                    message: "the preserved reference resolves to different package metadata or lacks a valid root binding".into(),
+                                });
+                            }
+                            selection.root_binding = proven.root_binding;
+                        }
+                        Ok(selection)
+                    }
                     Some(_) => Err(ComposeError::PackageNotResolved {
                         container: key,
                         name: reference,

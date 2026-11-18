@@ -186,6 +186,31 @@ pub(crate) struct Selection {
     pub root_binding: Option<ResolveRoot>,
 }
 
+impl Selection {
+    pub(crate) fn compatible_with(&self, other: &Self) -> bool {
+        self.same_package(other) && self.root_binding == other.root_binding
+    }
+
+    /// Download locations may rotate; package identity and every artifact digest may not.
+    /// Provenance is checked separately because an unbound dependency can acquire the
+    /// missing request echo only after this comparison succeeds.
+    pub(crate) fn same_package(&self, other: &Self) -> bool {
+        let (a, b) = (&self.package, &other.package);
+        a.registry == b.registry
+            && a.name == b.name
+            && a.alias_of == b.alias_of
+            && a.version == b.version
+            && a.kind == b.kind
+            && a.default_config == b.default_config
+            && a.artifacts.len() == b.artifacts.len()
+            && a.artifacts.iter().all(|(target, artifact)| {
+                b.artifacts
+                    .get(target)
+                    .is_some_and(|other| artifact.sha256.eq_ignore_ascii_case(&other.sha256))
+            })
+    }
+}
+
 impl From<ResolvedPackage> for Selection {
     fn from(package: ResolvedPackage) -> Self {
         Self {

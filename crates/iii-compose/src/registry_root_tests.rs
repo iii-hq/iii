@@ -1248,3 +1248,346 @@ async fn remembered_binding_does_not_reuse_an_echo_for_a_different_selector() {
         .await;
     server.verify().await;
 }
+
+#[tokio::test]
+async fn update_preserved_opaque_dependency_requires_matching_provenance_before_effects() {
+    use crate::{ComposeFile, dependencies, edit, lockfile};
+    for case in [
+        "valid", "identity", "digest", "config", "alias", "echo", "selector", "schema", "version",
+        "absent",
+    ] {
+        let server = MockServer::start().await;
+        let mut previous = node("tool-linux");
+        previous["version"] = "1.1.0".into();
+        let mut previous_binding = binding("team/tool", "next", "tool-linux");
+        previous_binding["version"] = "1.1.0".into();
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                json!({"worker":"team/tool","version":"next"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "root":previous_binding,"graph":[previous],"edges":[]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut planned = node("tool-linux");
+        planned["archive_url"] = "https://planned.example/tool.tar.gz".into();
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                json!({"worker":"api","version":"next"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "graph":[node("api"),planned],"edges":[{"from":"api","to":"tool-linux"}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut proven = node("tool-linux");
+        proven["archive_url"] = "https://proof.example/tool.tar.gz?signature=rotated".into();
+        let mut proof = binding("team/tool", "1.2.3", "tool-linux");
+        match case {
+            "identity" => {
+                proven["name"] = "other-tool".into();
+                proof["name"] = "other-tool".into();
+            }
+            "digest" => proven["sha256"] = "b".repeat(64).into(),
+            "config" => proven["config"] = json!({"different":true}),
+            "alias" => proven["alias_of"] = "other-tool".into(),
+            "echo" => proof["requested"]["worker"] = "other/tool".into(),
+            "selector" => proof["requested"]["version"] = "next".into(),
+            "schema" => proof["schema"] = 2.into(),
+            "version" => {
+                proven["version"] = "1.2.4".into();
+                proof["version"] = "1.2.4".into();
+            }
+            "valid" | "absent" => {}
+            _ => unreachable!(),
+        }
+        let mut response = json!({"graph":[proven],"edges":[]});
+        if case != "absent" {
+            response["root"] = proof;
+        }
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                json!({"worker":"team/tool","version":"1.2.3"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let text = "containers:\n  tool: {worker: package://registry.example.test/team/tool, version: next}\n";
+        std::fs::write(&path, text).unwrap();
+        TEST_REGISTRY.scope(server.uri(), async {
+            let mut existing = ComposeFile::parse(text, &path).unwrap();
+            lockfile::prepare_metadata(&mut existing, &Default::default()).await.unwrap()
+                .write_if_changed().unwrap();
+            let before = std::fs::read(lockfile::lock_path(&path)).unwrap();
+            assert_eq!(existing.containers["tool"].resolved_package.as_ref().unwrap().version, "1.1.0");
+            let asked = edit::parse_worker("package://registry.example.test/api@next").unwrap();
+            let plan = dependencies::plan(&existing, &[asked], &dependencies::Policy::Update { generated: Default::default() }).await.unwrap();
+            let tool = plan.containers.iter().find(|c| c.key == "tool").unwrap();
+            assert_eq!(tool.source, edit::Source::Package {reference:"registry.example.test/team/tool".into(), version:Some("next".into())});
+            assert!(plan.selections["tool"].root_binding.is_none());
+            let planned_package = plan.selections["tool"].package.clone();
+            let mut edited = text.to_string();
+            for declaration in &plan.containers {
+                match edit::upsert_container(&edited, declaration).unwrap() {
+                    edit::Outcome::Added(next) | edit::Outcome::Replaced {text:next,..} => edited = next,
+                    edit::Outcome::Unchanged => {}
+                }
+            }
+            let mut current = ComposeFile::parse(&edited, &path).unwrap();
+            let result = lockfile::prepare_metadata_with_plan(&mut current, &Default::default(), &plan.selected_versions, &plan.selections).await;
+            // Metadata preparation must not edit either file or install an artifact.
+            assert_eq!(std::fs::read(lockfile::lock_path(&path)).unwrap(), before);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            if case == "valid" {
+                let prepared = result.unwrap();
+                assert_eq!(current.containers["tool"].resolved_package.as_ref(), Some(&planned_package));
+                assert_eq!(current.containers["api"].start_after, ["tool"]);
+                prepared.write_if_changed().unwrap();
+                let mut reload = ComposeFile::parse(&edited, &path).unwrap();
+                lockfile::attach(&mut reload).unwrap();
+                assert_eq!(reload.containers["tool"].resolved_package.as_ref(), Some(&planned_package));
+                assert_eq!(reload.containers["tool"].version.as_deref(), Some("next"));
+                let lock: Value = serde_yaml::from_str(&std::fs::read_to_string(lockfile::lock_path(&path)).unwrap()).unwrap();
+                assert_eq!(lock["containers"]["tool"]["root_binding"]["requested"]["worker"], "team/tool");
+                assert_eq!(lock["containers"]["tool"]["root_binding"]["requested"]["version"], "1.2.3");
+                assert_eq!(lock["containers"]["tool"]["root_binding"]["name"], "tool-linux");
+            } else {
+                let error = result.err().expect("mismatched proof must fail");
+                let ComposeError::PackageNotResolved {message,..} = error else { panic!("{case}: {error}") };
+                let expected = match case {
+                    "identity" | "digest" | "config" | "alias" => "the preserved reference resolves to different package metadata or lacks a valid root binding",
+                    "echo" | "selector" => "the registry root binding does not match the exact request",
+                    "schema" => "unsupported registry root binding schema; expected 1",
+                    "version" => "the registry root does not match the requested exact version",
+                    "absent" => "the registry graph has no unique requested root; opaque requests require an explicit v1 root binding",
+                    _ => unreachable!(),
+                };
+                assert_eq!(message, expected, "{case}");
+                assert!(current.containers.values().all(|c| c.resolved_package.is_none()), "{case}");
+            }
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(),3,"{case}");
+            assert!(requests.iter().all(|r| r.method == "POST"),"no downloads: {case}");
+        }).await;
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn shared_dependency_accepts_alternate_urls_but_rejects_a_different_digest() {
+    use crate::{ComposeFile, dependencies, edit, lockfile};
+    for different_digest in [false, true] {
+        for reverse in [false, true] {
+            let server = MockServer::start().await;
+            for root in ["api", "jobs"] {
+                let mut queue = node("queue");
+                queue["archive_url"] =
+                    format!("https://{root}.example/queue.tar.gz?signature={root}").into();
+                if different_digest && root == "jobs" {
+                    queue["sha256"] = "b".repeat(64).into();
+                }
+                Mock::given(matchers::method("POST"))
+                    .and(matchers::path("/resolve"))
+                    .and(matchers::body_partial_json(
+                        json!({"worker":root,"version":"next"}),
+                    ))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "graph":[node(root),queue],"edges":[{"from":root,"to":"queue"}]
+                    })))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("worker-compose.yaml");
+            let initial = "containers:\n  local: {worker: path://.}\n";
+            let file = ComposeFile::parse(initial, &path).unwrap();
+            let mut names = ["api", "jobs"];
+            if reverse {
+                names.reverse();
+            }
+            let asked: Vec<_> = names
+                .iter()
+                .map(|name| {
+                    edit::parse_worker(&format!("package://registry.example.test/{name}@next"))
+                        .unwrap()
+                })
+                .collect();
+            TEST_REGISTRY
+                .scope(server.uri(), async {
+                    let result =
+                        dependencies::plan(&file, &asked, &dependencies::Policy::Add).await;
+                    if different_digest {
+                        let error = result.unwrap_err();
+                        assert!(
+                            error.to_string().contains(
+                                "different versions, artifacts, or default configurations"
+                            ),
+                            "{error}"
+                        );
+                        assert!(!lockfile::lock_path(&path).exists());
+                    } else {
+                        let plan = result.unwrap();
+                        assert_eq!(
+                            plan.containers.iter().filter(|c| c.key == "queue").count(),
+                            1
+                        );
+                        for root in names {
+                            assert_eq!(
+                                plan.containers
+                                    .iter()
+                                    .find(|c| c.key == root)
+                                    .unwrap()
+                                    .start_after,
+                                ["queue"]
+                            );
+                        }
+                        let queue = &plan.selections["queue"].package;
+                        assert_eq!(
+                            queue.artifacts[host_target()].url,
+                            format!(
+                                "https://{}.example/queue.tar.gz?signature={}",
+                                names[0], names[0]
+                            )
+                        );
+                        let mut text = initial.to_string();
+                        for declaration in &plan.containers {
+                            match edit::upsert_container(&text, declaration).unwrap() {
+                                edit::Outcome::Added(next)
+                                | edit::Outcome::Replaced { text: next, .. } => text = next,
+                                edit::Outcome::Unchanged => {}
+                            }
+                        }
+                        let mut current = ComposeFile::parse(&text, &path).unwrap();
+                        let prepared = lockfile::prepare_metadata_with_plan(
+                            &mut current,
+                            &Default::default(),
+                            &plan.selected_versions,
+                            &plan.selections,
+                        )
+                        .await
+                        .unwrap();
+                        prepared.write_if_changed().unwrap();
+                        let mut reload = ComposeFile::parse(&text, &path).unwrap();
+                        lockfile::attach(&mut reload).unwrap();
+                        assert_eq!(
+                            reload.containers["queue"].resolved_package.as_ref(),
+                            Some(queue)
+                        );
+                    }
+                    let requests = server.received_requests().await.unwrap();
+                    assert_eq!(requests.len(), 2);
+                    assert!(requests.iter().all(|r| r.method == "POST"));
+                })
+                .await;
+            server.verify().await;
+        }
+    }
+}
+
+#[test]
+fn selection_compatibility_ignores_only_urls_not_identity_content_or_provenance() {
+    let worker: ResolvedWorker = serde_json::from_value(node("queue")).unwrap();
+    let base = selected_package("queue", DEFAULT_REGISTRY, worker).unwrap();
+    let mut mirror = base.clone();
+    mirror.package.artifacts.values_mut().next().unwrap().url =
+        "https://mirror.example/queue?signed=rotated".into();
+    assert!(base.same_package(&mirror));
+    assert!(base.compatible_with(&mirror));
+    let mut upper_digest = mirror.clone();
+    upper_digest
+        .package
+        .artifacts
+        .values_mut()
+        .next()
+        .unwrap()
+        .sha256
+        .make_ascii_uppercase();
+    assert!(base.same_package(&upper_digest));
+    for field in [
+        "registry", "name", "alias", "version", "kind", "config", "digest", "target",
+    ] {
+        let mut other = mirror.clone();
+        match field {
+            "registry" => other.package.registry = "https://foreign.example".into(),
+            "name" => other.package.name = "foreign".into(),
+            "alias" => other.package.alias_of = Some("foreign".into()),
+            "version" => other.package.version = "1.2.4".into(),
+            "kind" => other.package.kind = "binary".into(),
+            "config" => {
+                other.package.default_config =
+                    Some(serde_yaml::from_str("different: true").unwrap())
+            }
+            "digest" => {
+                other.package.artifacts.values_mut().next().unwrap().sha256 = "b".repeat(64)
+            }
+            "target" => {
+                let artifact = other.package.artifacts.pop_first().unwrap().1;
+                other
+                    .package
+                    .artifacts
+                    .insert("other-target".into(), artifact);
+            }
+            _ => unreachable!(),
+        }
+        assert!(!base.same_package(&other), "{field}");
+    }
+    let mut bound = base.clone();
+    bound.root_binding =
+        Some(serde_json::from_value(binding("team/queue", "next", "queue")).unwrap());
+    let mut other_selector = bound.clone();
+    other_selector.root_binding =
+        Some(serde_json::from_value(binding("team/queue", "latest", "queue")).unwrap());
+    // Same content is necessary but not sufficient when coalescing selections.
+    assert!(bound.same_package(&other_selector));
+    assert!(!bound.compatible_with(&other_selector));
+    assert!(!bound.compatible_with(&base));
+}
+
+#[tokio::test]
+async fn opaque_dependency_proof_cannot_cross_the_planned_registry_authority() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker-compose.yaml");
+    let mut file = crate::ComposeFile::parse(
+        "containers:\n  tool: {worker: package://registry.example.test/team/tool, version: next}\n",
+        &path,
+    )
+    .unwrap();
+    let worker: ResolvedWorker = serde_json::from_value(node("tool-linux")).unwrap();
+    let planned = selected_package("tool", "https://foreign.example", worker).unwrap();
+    let selections = BTreeMap::from([("tool".into(), planned)]);
+    let versions = BTreeMap::from([("tool".into(), "1.2.3".into())]);
+    let error = TEST_REGISTRY
+        .scope(
+            server.uri(),
+            crate::lockfile::prepare_metadata_with_plan(
+                &mut file,
+                &Default::default(),
+                &versions,
+                &selections,
+            ),
+        )
+        .await
+        .err()
+        .expect("authority mismatch must fail before lookup");
+    let ComposeError::PackageNotResolved { message, .. } = error else {
+        panic!("{error}")
+    };
+    assert_eq!(
+        message,
+        "the planned package authority differs from the preserved reference"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert!(file.containers["tool"].resolved_package.is_none());
+    assert!(!crate::lockfile::lock_path(&path).exists());
+}

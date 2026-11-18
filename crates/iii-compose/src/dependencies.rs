@@ -762,14 +762,21 @@ fn plan_resolved(
                         selection.root_binding = None;
                     }
                 }
-                if let Some(previous) =
-                    selections.insert(declaration.key.clone(), selection.clone())
-                    && previous != selection
-                {
-                    return Err(conflict(
-                        &declaration.key,
-                        "the dependency resolves to conflicting package metadata",
-                    ));
+                match selections.entry(declaration.key.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(selection);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        let previous: &registry::Selection = entry.get();
+                        if !previous.compatible_with(&selection) {
+                            return Err(conflict(
+                                &declaration.key,
+                                "the dependency resolves to conflicting package metadata",
+                            ));
+                        }
+                        // Keep the first selection in the deterministic expansion order.
+                        // A mirror/signed URL from another root is not a new release.
+                    }
                 }
             }
             retarget(
