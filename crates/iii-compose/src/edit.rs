@@ -806,8 +806,11 @@ fn inline_entry_as_block(
 /// require separation after the key colon. Find that colon outside a quoted key
 /// and insert only the missing space, never rewriting the value or nested pairs.
 fn block_flow_pair(line: &str) -> String {
+    // A colon in a trailing comment is not a mapping separator. Keep the
+    // comment and its whitespace untouched when a null key needs a colon.
+    let data = without_comment(line);
     let mut quote = None;
-    let mut chars = line.char_indices().peekable();
+    let mut chars = data.char_indices().peekable();
     while let Some((at, c)) = chars.next() {
         match quote {
             Some('"') => match c {
@@ -837,11 +840,15 @@ fn block_flow_pair(line: &str) -> String {
                     {
                         return format!("{} {}", &line[..end], &line[end..]);
                     }
-                    break;
+                    return line.to_string();
                 }
                 _ => {}
             },
         }
+    }
+    if quote.is_none() && !data.trim().is_empty() {
+        let end = data.trim_end().len();
+        return format!("{}:{}", &line[..end], &line[end..]);
     }
     line.to_string()
 }
@@ -1740,6 +1747,64 @@ mod tests {
         assert_eq!(document["containers"]["api"], request);
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
         assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn null_valued_flow_entries_preserve_null_and_trailing_comments() {
+        for field in [
+            "config_override",
+            "'config_override'",
+            "\"config_override\"",
+            "config_override # note: null, not a separator\n  ",
+            "\"config_override\" # quoted: null\n  ",
+        ] {
+            let text = format!(
+                "containers:\n  tool: {{worker: package://api.workers.iii.dev/tool, version: '1.0.0', {field}}}\n  local: {{worker: path://.}}\n"
+            );
+            crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+            let before: Value = serde_yaml::from_str(&text).unwrap();
+            assert_eq!(
+                before["containers"]["tool"].get("config_override"),
+                Some(&Value::Null)
+            );
+            assert_eq!(
+                upsert_container(&text, &parse_worker("tool@1.0.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+            let out = changed(&text, &parse_worker("tool@1.1.0").unwrap());
+            crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+            let after: Value = serde_yaml::from_str(&out).unwrap();
+            assert_eq!(
+                after["containers"]["tool"].get("config_override"),
+                Some(&Value::Null)
+            );
+            assert_eq!(after["containers"]["tool"]["version"], "1.1.0");
+            assert_eq!(after["containers"].as_mapping().unwrap().len(), 2);
+            if let Some((_, comment)) = field.split_once('#') {
+                assert!(out.contains(&format!("#{}", comment.trim_end())), "{out}");
+            }
+            assert!(out.ends_with("  local: {worker: path://.}\n"));
+            assert_eq!(
+                upsert_container(&out, &parse_worker("tool@1.1.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+        }
+        assert_eq!(
+            block_flow_pair("config_override  # note: null"),
+            "config_override:  # note: null"
+        );
+        assert_eq!(
+            block_flow_pair("'config:override' # note"),
+            "'config:override': # note"
+        );
+        assert_eq!(
+            block_flow_pair("config_override: # already null"),
+            "config_override: # already null"
+        );
+        assert_eq!(
+            block_flow_pair("worker: package://host/name"),
+            "worker: package://host/name"
+        );
     }
 
     #[test]
