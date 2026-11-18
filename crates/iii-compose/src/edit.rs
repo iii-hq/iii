@@ -947,12 +947,22 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
     let mut delimiters = Vec::new();
     let mut quote = None;
     let mut comment = false;
+    let mut verbatim_tag = false;
     let mut previous: Option<char> = None;
     let mut chars = body.char_indices().peekable();
     while let Some((at, c)) = chars.next() {
         if comment {
             if c == '\n' {
                 comment = false;
+            }
+            previous = Some(c);
+            continue;
+        }
+        if verbatim_tag {
+            if c == '>' {
+                verbatim_tag = false;
+            } else if c.is_whitespace() {
+                return None;
             }
             previous = Some(c);
             continue;
@@ -975,6 +985,12 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
                 }
             }
             None => match c {
+                '!' if previous.is_none_or(|p| p.is_whitespace() || ":[{,".contains(p))
+                    && chars.peek().is_some_and(|(_, next)| *next == '<') =>
+                {
+                    chars.next();
+                    verbatim_tag = true;
+                }
                 '#' if previous.is_none_or(|p| p.is_whitespace() || ",[{".contains(p)) => {
                     comment = true
                 }
@@ -997,7 +1013,7 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
         }
         previous = Some(c);
     }
-    if quote.is_some() || !delimiters.is_empty() {
+    if quote.is_some() || verbatim_tag || !delimiters.is_empty() {
         return None;
     }
     parts.push(&body[start..]);
@@ -1454,9 +1470,11 @@ fn prune_flow_dependency_items(
     let mut item_index = 0;
     let mut kept = Vec::new();
     for item in items {
-        let has_value = item
-            .lines()
-            .any(|line| !without_comment(line).trim().is_empty());
+        let has_value = item.lines().any(|line| {
+            // A full comment can start at column zero inside a flow collection.
+            // Quoted '#...' scalars still begin with a quote and remain values.
+            !line.trim_start().starts_with('#') && !without_comment(line).trim().is_empty()
+        });
         if !has_value {
             kept.push(item);
             continue;
@@ -2797,6 +2815,134 @@ containers:
             remove_containers(text, &["c", "b", "a"]).unwrap(),
             "containers:\n  keep:\n    worker: path://./keep\n    config_override: {message: untouched}\n  last: {worker: path://./last}\n"
         );
+    }
+
+    #[test]
+    fn flow_dependency_pruning_preserves_verbatim_tags() {
+        for needs in [
+            "[db, !<tag:yaml.org,2002:str> queue]",
+            "[!<tag:yaml.org,2002:str> db, !<tag:yaml.org,2002:str> queue]",
+            "[\n      db,\n      !<tag:yaml.org,2002:str> queue,\n    ]",
+        ] {
+            for flow in [false, true] {
+                let api = if flow {
+                    format!(
+                        "  api: {{worker: package://api.workers.iii.dev/api, version: '1.0.0', start_after: {needs}, config_override: {{message: '!<plain,scalar>'}}}}\n"
+                    )
+                } else {
+                    format!(
+                        "  api:\n    worker: package://api.workers.iii.dev/api\n    version: '1.0.0'\n    start_after: {needs}\n    config_override: {{message: '!<plain,scalar>'}}\n"
+                    )
+                };
+                let text = format!(
+                    "containers:\n  db: {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n{api}"
+                );
+                crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+                let updated = changed(&text, &parse_worker("api@1.1.0").unwrap());
+                for original in [&text, &updated] {
+                    for crlf in [false, true] {
+                        let input = if crlf {
+                            original.replace('\n', "\r\n")
+                        } else {
+                            original.clone()
+                        };
+                        let output = remove_container(&input, "db").unwrap().unwrap();
+                        let parsed =
+                            crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                        assert_eq!(parsed.containers["api"].start_after, ["queue"]);
+                        assert!(
+                            output.contains("!<tag:yaml.org,2002:str> queue"),
+                            "{output}"
+                        );
+                        assert!(output.contains("config_override: {message: '!<plain,scalar>'}"));
+                        assert!(remove_container(&output, "db").unwrap().is_none());
+                        if crlf {
+                            assert!(!output.replace("\r\n", "").contains('\n'));
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            flow_mapping_parts("db, !<tag:yaml.org,2002:str> queue").unwrap(),
+            ["db", " !<tag:yaml.org,2002:str> queue"]
+        );
+        assert_eq!(
+            flow_mapping_parts("'!<literal,not-tag>', queue")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            flow_mapping_parts("plain!<not-a-tag, queue").unwrap().len(),
+            2
+        );
+        assert!(flow_mapping_parts("db, !<tag:yaml.org,2002:str queue").is_none());
+    }
+
+    #[test]
+    fn flow_dependency_comments_are_not_values_but_quoted_hash_names_are() {
+        for (needs, expected_needs) in [
+            (
+                "[db, queue,\n# retained comment\n    ]",
+                "[ queue,\n# retained comment\n    ]",
+            ),
+            (
+                "[db, queue,\n  # indented retained comment\n    ]",
+                "[ queue,\n  # indented retained comment\n    ]",
+            ),
+            (
+                "[db, \"#queue\",\n# retained comment\n    ]",
+                "[ \"#queue\",\n# retained comment\n    ]",
+            ),
+            (
+                "[db, '#queue',\n# retained comment\n    ]",
+                "[ '#queue',\n# retained comment\n    ]",
+            ),
+        ] {
+            for flow in [false, true] {
+                let api = if flow {
+                    format!(
+                        "  api: {{worker: path://./api, start_after: {needs}, config_override: {{start_after: [db]}}}}\n"
+                    )
+                } else {
+                    format!(
+                        "  api:\n    worker: path://./api\n    start_after: {needs}\n    config_override: {{start_after: [db]}}\n"
+                    )
+                };
+                let prefix = "containers:\n  db: {worker: path://./db}\n  queue: {worker: path://./queue}\n  '#queue': {worker: path://./hash-queue}\n";
+                let text = format!("{prefix}{api}");
+                crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+                let wanted = text
+                    .replace("  db: {worker: path://./db}\n", "")
+                    .replace(needs, expected_needs);
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        text.replace('\n', "\r\n")
+                    } else {
+                        text.clone()
+                    };
+                    let expected = if crlf {
+                        wanted.replace('\n', "\r\n")
+                    } else {
+                        wanted.clone()
+                    };
+                    let output = remove_container(&input, "db").unwrap().unwrap();
+                    assert_eq!(output, expected);
+                    let parsed =
+                        crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert_eq!(
+                        parsed.containers["api"].start_after,
+                        [if needs.contains("#queue") {
+                            "#queue"
+                        } else {
+                            "queue"
+                        }]
+                    );
+                    assert!(output.contains("config_override: {start_after: [db]}"));
+                }
+            }
+        }
     }
 
     #[test]
