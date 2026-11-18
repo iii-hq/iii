@@ -153,6 +153,20 @@ where
 }
 
 impl ResolveRoot {
+    pub(crate) fn validates_derived_pin(
+        &self,
+        name: &str,
+        requested: &str,
+        package: &ResolvedPackage,
+    ) -> bool {
+        semver::Version::parse(requested).is_ok()
+            && requested == package.version
+            && self
+                .requested
+                .as_ref()
+                .is_some_and(|echo| self.validates_lock(name, &echo.version, package))
+    }
+
     // Locks may come from the original selector or an exact-version lookup. An
     // unpinned `*` plan is written as its selected exact version by the editor.
     // The chosen registry remains the trust boundary; this is not a signature.
@@ -184,11 +198,15 @@ impl ResolveRoot {
 pub(crate) struct Selection {
     pub package: ResolvedPackage,
     pub root_binding: Option<ResolveRoot>,
+    /// An automatic adapter pin explicitly derived from this validated range selection.
+    pub derived_pin: bool,
 }
 
 impl Selection {
     pub(crate) fn compatible_with(&self, other: &Self) -> bool {
-        self.same_package(other) && self.root_binding == other.root_binding
+        self.same_package(other)
+            && self.root_binding == other.root_binding
+            && self.derived_pin == other.derived_pin
     }
 
     /// Download locations may rotate; package identity and every artifact digest may not.
@@ -216,6 +234,7 @@ impl From<ResolvedPackage> for Selection {
         Self {
             package,
             root_binding: None,
+            derived_pin: false,
         }
     }
 }
@@ -648,6 +667,7 @@ pub(crate) fn selected_package(
     Ok(Selection {
         package,
         root_binding,
+        derived_pin: false,
     })
 }
 
@@ -1495,6 +1515,20 @@ async fn install_binary(
             path: install_dir.clone(),
         })?;
     Ok((program, InstallStatus::Downloaded))
+}
+
+/// Compatibility is checked for the actual container placement, never a blanket
+/// host-only rule. Bundle archives are platform independent; binary locks retain
+/// all published targets so the same lock can be used on another supported host.
+pub(crate) fn check_package_platform(
+    container: &str,
+    resolved: &ResolvedPackage,
+    platform: Platform,
+) -> Result<()> {
+    if resolved.kind == "binary" {
+        artifact_for_target(container, resolved, platform.target(&resolved.artifacts))?;
+    }
+    Ok(())
 }
 
 /// Selects the artifact that can run on this Compose host.

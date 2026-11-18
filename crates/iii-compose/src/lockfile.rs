@@ -61,6 +61,9 @@ struct LockedContainer {
     /// It is provenance, not authentication of a registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     root_binding: Option<crate::registry::ResolveRoot>,
+    /// This exact adapter pin was derived from the recorded binding's range.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    derived_pin: bool,
 }
 
 impl LockedContainer {
@@ -103,6 +106,7 @@ impl PreparedLock {
     /// Writes the lock atomically when its serialized state changed.
     pub fn write_if_changed(&self) -> Result<()> {
         validate(&self.path, &self.lock)?;
+        self.check_platforms()?;
         if !self.changed {
             return Ok(());
         }
@@ -200,9 +204,17 @@ impl PreparedLock {
         }
     }
 
+    fn check_platforms(&self) -> Result<()> {
+        for (key, entry) in &self.lock.containers {
+            crate::registry::check_package_platform(key, &entry.resolved, entry.platform())?;
+        }
+        Ok(())
+    }
+
     /// Acquires every resolved artifact with the Compose concurrency limit.
     pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
         validate(&self.path, &self.lock)?;
+        self.check_platforms()?;
         let requests = self
             .lock
             .containers
@@ -346,6 +358,7 @@ fn frozen_lock(compose: &ComposeFile) -> Result<ComposeLock> {
                 ),
             });
         }
+        crate::registry::check_package_platform(key, &entry.resolved, *platform)?;
     }
     if let Some(extra) = lock
         .containers
@@ -431,6 +444,23 @@ pub(crate) async fn prepare_metadata_reusing(
     selected_versions: &BTreeMap<String, String>,
     earlier: &PreparedLock,
 ) -> Result<PreparedLock> {
+    prepare_metadata_reusing_selections(
+        compose,
+        force,
+        selected_versions,
+        earlier,
+        &BTreeMap::new(),
+    )
+    .await
+}
+
+pub(crate) async fn prepare_metadata_reusing_selections(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    selected_versions: &BTreeMap<String, String>,
+    earlier: &PreparedLock,
+    selected: &BTreeMap<String, crate::registry::Selection>,
+) -> Result<PreparedLock> {
     // Selected versions belong to the in-flight operation, not the older lock on disk.
     let mut force = force.clone();
     force.extend(selected_versions.keys().cloned());
@@ -451,8 +481,22 @@ pub(crate) async fn prepare_metadata_reusing(
                 .map(|entry| crate::registry::Selection {
                     package: entry.resolved.clone(),
                     root_binding: entry.root_binding.clone(),
+                    derived_pin: entry.derived_pin,
                 });
+            let selected = selected.get(&key).cloned();
             async move {
+                if let Some(selection) = selected {
+                    if selection.package.version != range {
+                        return Err(ComposeError::PackageNotResolved {
+                            container: key,
+                            name: reference,
+                            range,
+                            message: "the derived adapter pin differs from its selected release"
+                                .into(),
+                        });
+                    }
+                    return Ok(selection);
+                }
                 match reused {
                     Some(resolved) => Ok(resolved),
                     None => {
@@ -468,7 +512,8 @@ pub(crate) async fn prepare_metadata_reusing(
 
 /// Consume the exact graph metadata selected by the dependency planner. An existing
 /// opaque dependency may need an exact lookup only to obtain its missing provenance;
-/// its identity/content must match, and its planned package/graph are never replaced.
+/// its identity/content must match. Only equivalent artifact locations and provenance
+/// may be refreshed; the planned identity, digests, configuration and graph stay fixed.
 pub(crate) async fn prepare_metadata_with_plan(
     compose: &mut ComposeFile,
     force: &BTreeSet<String>,
@@ -509,6 +554,12 @@ pub(crate) async fn prepare_metadata_with_plan(
                                     container: key, name: reference, range,
                                     message: "the preserved reference resolves to different package metadata or lacks a valid root binding".into(),
                                 });
+                            }
+                            // The proof has already passed the same URL/digest conversion
+                            // as the graph. Refresh locations for identical verified bytes;
+                            // never replace identity, configuration, digests or graph.
+                            for (target, artifact) in &mut selection.package.artifacts {
+                                artifact.url.clone_from(&proven.package.artifacts[target].url);
                             }
                             selection.root_binding = proven.root_binding;
                         }
@@ -592,6 +643,7 @@ where
                         let resolved = selection.package;
                         LockedContainer {
                             root_binding: selection.root_binding,
+                            derived_pin: selection.derived_pin,
                             worker,
                             requested,
                             vm: vm_entry(platform, &resolved),
@@ -642,6 +694,9 @@ where
         graphs,
     };
     validate(&path, &lock)?;
+    for (key, entry) in &lock.containers {
+        crate::registry::check_package_platform(key, &entry.resolved, entry.platform())?;
+    }
     attach_entries(&lock, compose);
     let changed = previous.as_ref() != Some(&lock);
     Ok(PreparedLock {
@@ -754,12 +809,17 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
             )));
         }
         if let Some(binding) = &entry.root_binding {
-            if !binding.validates_lock(&expected_name, &entry.requested, &entry.resolved) {
+            let valid = if entry.derived_pin {
+                binding.validates_derived_pin(&expected_name, &entry.requested, &entry.resolved)
+            } else {
+                binding.validates_lock(&expected_name, &entry.requested, &entry.resolved)
+            };
+            if !valid {
                 return Err(invalid(format!(
                     "container '{container}' has an invalid requested-root binding"
                 )));
             }
-        } else if entry.resolved.name != expected_name {
+        } else if entry.derived_pin || entry.resolved.name != expected_name {
             return Err(invalid(format!(
                 "container '{container}' resolved '{}', expected '{expected_name}'",
                 entry.resolved.name
@@ -883,6 +943,7 @@ mod tests {
                 "state".to_string(),
                 LockedContainer {
                     root_binding: None,
+                    derived_pin: false,
                     worker: "package://api.workers.iii.dev/state".to_string(),
                     requested: "next".to_string(),
                     vm: false,
@@ -1059,6 +1120,7 @@ mod tests {
             crate::registry::Selection {
                 package: entry.resolved,
                 root_binding: entry.root_binding,
+                derived_pin: entry.derived_pin,
             },
         )]);
         let versions = BTreeMap::from([("state".into(), "1.2.4".into())]);
@@ -1076,6 +1138,147 @@ mod tests {
         );
         assert!(compose.containers["state"].resolved_package.is_none());
         assert!(!lock_path(&path).exists());
+    }
+
+    #[test]
+    fn derived_pin_keeps_the_range_echo_and_rejects_forged_derivation() {
+        let path = Path::new("worker-compose.lock");
+        let mut lock = bound_lock();
+        let entry = lock.containers.get_mut("state").unwrap();
+        entry.requested = "1.2.3".into();
+        entry.root_binding = Some(serde_json::from_value(serde_json::json!({
+            "schema":1,"requested":{"worker":"team/tool","version":"^1"},"name":"tool-linux","version":"1.2.3"
+        })).unwrap());
+        assert!(
+            validate(path, &lock).is_err(),
+            "a range echo alone is not an exact lookup"
+        );
+        lock.containers.get_mut("state").unwrap().derived_pin = true;
+        validate(path, &lock).unwrap();
+        let mut wrong = lock.clone();
+        wrong.containers.get_mut("state").unwrap().requested = "1.2.4".into();
+        assert!(validate(path, &wrong).is_err());
+        wrong = lock.clone();
+        wrong.containers.get_mut("state").unwrap().root_binding = None;
+        assert!(validate(path, &wrong).is_err());
+        wrong = lock;
+        wrong.containers.get_mut("state").unwrap().root_binding = Some(serde_json::from_value(serde_json::json!({
+            "schema":1,"requested":{"worker":"team/tool","version":"^2"},"name":"tool-linux","version":"1.2.3"
+        })).unwrap());
+        assert!(validate(path, &wrong).is_err());
+    }
+
+    #[test]
+    fn derived_pin_requires_a_complete_semantic_version() {
+        let path = Path::new("worker-compose.lock");
+        let with_version = |version: &str| {
+            let mut lock = bound_lock();
+            let entry = lock.containers.get_mut("state").unwrap();
+            entry.derived_pin = true;
+            entry.requested = version.into();
+            entry.resolved.version = version.into();
+            entry.root_binding = Some(
+                serde_json::from_value(serde_json::json!({
+                    "schema": 1,
+                    "requested": {"worker": "team/tool", "version": "next"},
+                    "name": "tool-linux",
+                    "version": version
+                }))
+                .unwrap(),
+            );
+            lock
+        };
+        // Request, resolved version and binding agree. All other metadata comes
+        // from a valid lock, so rejection must be the derived-pin binding check.
+        for version in [
+            "nightly", "next", "^1.2.3", "=1.2.3", "1", "1.2", "1.2.x", " 1.2.3", "1.2.3 ",
+        ] {
+            let error = validate(path, &with_version(version)).unwrap_err();
+            let ComposeError::InvalidLock { message, .. } = error else {
+                panic!("{version}: {error}")
+            };
+            assert_eq!(
+                message, "container 'state' has an invalid requested-root binding",
+                "{version}"
+            );
+        }
+        for version in ["1.2.3", "1.2.3-rc.1"] {
+            validate(path, &with_version(version)).unwrap();
+        }
+        // SemVer build metadata parses, but the existing filesystem-name guard
+        // still rejects '+'. Do not weaken that separate contract in this fix.
+        let error = validate(path, &with_version("1.2.3+build.7")).unwrap_err();
+        let ComposeError::InvalidLock { message, .. } = error else {
+            panic!("{error}")
+        };
+        assert_eq!(message, "container 'state' has an unsafe resolved version");
+    }
+
+    #[tokio::test]
+    async fn binary_target_compatibility_is_checked_before_candidate_effects_and_frozen_start() {
+        for vm in [false, true] {
+            for supported in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("worker-compose.yaml");
+                let placement = if vm {
+                    "    runtime: {base_image: alpine}\n"
+                } else {
+                    ""
+                };
+                let mut file = ComposeFile::parse(&format!("containers:\n  state:\n    worker: package://state\n    version: next\n{placement}"),&path).unwrap();
+                let platform = if vm { Platform::Vm } else { Platform::Host };
+                let mut package = lock().containers.remove("state").unwrap().resolved;
+                let artifact = package.artifacts.values().next().unwrap().clone();
+                package.artifacts =
+                    BTreeMap::from([("foreign-unsupported-target".into(), artifact.clone())]);
+                if supported {
+                    package
+                        .artifacts
+                        .insert(platform.targets()[0].into(), artifact);
+                }
+                let prepared = prepare_metadata_with_resolver(
+                    &mut file,
+                    &BTreeSet::new(),
+                    &BTreeMap::new(),
+                    |_, _, _, _| std::future::ready(Ok(package.clone())),
+                )
+                .await;
+                if supported {
+                    let prepared = prepared.unwrap();
+                    prepared.write_if_changed().unwrap();
+                    preflight_frozen(&file).unwrap();
+                    assert_eq!(
+                        file.containers["state"]
+                            .resolved_package
+                            .as_ref()
+                            .unwrap()
+                            .artifacts
+                            .len(),
+                        2
+                    );
+                } else {
+                    assert_eq!(prepared.err().unwrap().code(), "UNSUPPORTED_PLATFORM");
+                    assert!(file.containers["state"].resolved_package.is_none());
+                    assert!(!lock_path(&path).exists());
+                    let mut portable = lock();
+                    let entry = portable.containers.get_mut("state").unwrap();
+                    entry.worker = "package://state".into();
+                    entry.vm = vm;
+                    entry.resolved = package;
+                    // Structural load remains portable; consuming on this platform is refused.
+                    write_atomically(
+                        &lock_path(&path),
+                        &serde_yaml::to_string(&portable).unwrap(),
+                    )
+                    .unwrap();
+                    assert!(load(&lock_path(&path)).unwrap().is_some());
+                    assert_eq!(
+                        preflight_frozen(&file).unwrap_err().code(),
+                        "UNSUPPORTED_PLATFORM"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

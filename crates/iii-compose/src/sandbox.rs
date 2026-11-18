@@ -374,12 +374,29 @@ pub(crate) fn adapter_gone(
 /// `package://<adapter>` at the newest release in [`ADAPTER_RANGE`], pinned to
 /// that exact version.
 pub(crate) async fn adapter_request(adapter: &str) -> Result<NewContainer> {
+    selected_adapter_request(adapter)
+        .await
+        .map(|(request, _)| request)
+}
+
+async fn selected_adapter_request(
+    adapter: &str,
+) -> Result<(NewContainer, crate::registry::Selection)> {
     let mut request = edit::parse_worker(adapter)?;
-    if let Source::Package { reference, version } = &mut request.source {
-        let node = crate::registry::resolve_node(&request.key, reference, ADAPTER_RANGE).await?;
-        *version = Some(node.version);
-    }
-    Ok(request)
+    let Source::Package { reference, version } = &mut request.source else {
+        unreachable!("adapter requests are registry packages");
+    };
+    let mut selection = crate::registry::resolve_selection_on(
+        &request.key,
+        reference,
+        ADAPTER_RANGE,
+        crate::registry::Platform::Host,
+    )
+    .await?;
+    *version = Some(selection.package.version.clone());
+    // Preserve the range echo unchanged; record separately why the edit is exact.
+    selection.derived_pin = selection.root_binding.is_some();
+    Ok((request, selection))
 }
 
 /// The first pass ([`crate::lockfile::prepare_metadata`]), with the adapter a
@@ -466,6 +483,18 @@ pub(crate) async fn adapter_change(
     refresh: bool,
     allow_remove: bool,
 ) -> Result<Option<AdapterChange>> {
+    selected_adapter_change(text, file, project_namespace, refresh, allow_remove)
+        .await
+        .map(|selected| selected.map(|(change, _)| change))
+}
+
+async fn selected_adapter_change(
+    text: &str,
+    file: &ComposeFile,
+    project_namespace: &str,
+    refresh: bool,
+    allow_remove: bool,
+) -> Result<Option<(AdapterChange, Option<crate::registry::Selection>)>> {
     let adapter = adapter_name(file);
     let needed = !needs(file, project_namespace).is_empty();
     let Some(key) = adapter_key(file, adapter)? else {
@@ -473,23 +502,24 @@ pub(crate) async fn adapter_change(
             return Ok(None);
         }
         refuse_key_taken(file, adapter)?;
-        return Ok(Some(AdapterChange::Upsert(adapter_request(adapter).await?)));
+        let (request, selection) = selected_adapter_request(adapter).await?;
+        return Ok(Some((AdapterChange::Upsert(request), Some(selection))));
     };
     if !is_generated_adapter(text, file, &key)? {
         return Ok(None);
     }
     if !needed {
-        return Ok(allow_remove.then_some(AdapterChange::Remove(key)));
+        return Ok(allow_remove.then_some((AdapterChange::Remove(key), None)));
     }
     if !refresh {
         return Ok(None);
     }
     let container = &file.containers[&key];
-    let mut request = adapter_request(adapter).await?;
+    let (mut request, selection) = selected_adapter_request(adapter).await?;
     let unchanged = matches!(&request.source, Source::Package { version, .. }
         if version.as_deref() == container.version.as_deref());
     request.key = key;
-    Ok((!unchanged).then_some(AdapterChange::Upsert(request)))
+    Ok((!unchanged).then_some((AdapterChange::Upsert(request), Some(selection))))
 }
 
 /// What [`migrate`] changed.
@@ -544,7 +574,8 @@ pub(crate) async fn rewrite_due(
     match &declared {
         None => {
             refuse_key_taken(file, &adapter)?;
-            update = Some((None, adapter_request(&adapter).await?));
+            let (request, selection) = selected_adapter_request(&adapter).await?;
+            update = Some((None, request, selection));
         }
         Some(key) => {
             if let Some(version) = adapter_version(file, Some(prepared), key)
@@ -557,20 +588,20 @@ pub(crate) async fn rewrite_due(
                         range: ADAPTER_RANGE.to_string(),
                     });
                 }
-                let mut request = adapter_request(&adapter).await?;
+                let (mut request, selection) = selected_adapter_request(&adapter).await?;
                 request.key.clone_from(key);
-                update = Some((Some(version), request));
+                update = Some((Some(version), request, selection));
             }
         }
     }
     let adapter_key = match (&update, declared) {
-        (Some((_, request)), _) => request.key.clone(),
+        (Some((_, request, _)), _) => request.key.clone(),
         (None, Some(key)) => key,
         (None, None) => unreachable!("a missing adapter is always added"),
     };
 
     let mut text = edited.clone();
-    if let Some((_, request)) = &update {
+    if let Some((_, request, _)) = &update {
         match edit::upsert_container(&text, request)? {
             edit::Outcome::Added(next) | edit::Outcome::Replaced { text: next, .. } => text = next,
             edit::Outcome::Unchanged => {}
@@ -593,7 +624,7 @@ pub(crate) async fn rewrite_due(
     crate::dag::validate_dependencies(&next)?;
     *edited = text;
     *file = next;
-    if let Some((_, request)) = &update
+    if let Some((_, request, selection)) = &update
         && let Source::Package {
             version: Some(version),
             ..
@@ -606,11 +637,12 @@ pub(crate) async fn rewrite_due(
             prepared,
             &BTreeSet::from([request.key.clone()]),
             &BTreeMap::from([(request.key.clone(), version.clone())]),
+            &BTreeMap::from([(request.key.clone(), selection.clone())]),
         )
         .await?;
     }
 
-    if let Some((Some(from), request)) = &update
+    if let Some((Some(from), request, _)) = &update
         && let Source::Package {
             version: Some(to), ..
         } = &request.source
@@ -646,7 +678,7 @@ pub(crate) async fn rewrite_due(
     }
     Ok(Some(Migration {
         containers: rewritten.into_iter().map(|(key, _)| key).collect(),
-        adapter: update.map(|(_, request)| AdapterChange::Upsert(request)),
+        adapter: update.map(|(_, request, _)| AdapterChange::Upsert(request)),
     }))
 }
 
@@ -680,7 +712,13 @@ pub(crate) async fn iii_sandbox_request(file: &ComposeFile) -> Result<NewContain
     let adapter = adapter_name(file);
     let Some(key) = adapter_key(file, adapter)? else {
         refuse_key_taken(file, adapter)?;
-        return adapter_request(adapter).await;
+        // Let the ordinary graph planner resolve the range once. The caller
+        // pins that complete selection, rather than resolving here and losing it.
+        let mut request = edit::parse_worker(adapter)?;
+        if let Source::Package { version, .. } = &mut request.source {
+            *version = Some(ADAPTER_RANGE.to_string());
+        }
+        return Ok(request);
     };
     let container = &file.containers[&key];
     let mut request = edit::parse_worker(&match &container.worker {
@@ -705,6 +743,7 @@ async fn reprepare(
     prepared: &mut PreparedLock,
     force: &BTreeSet<String>,
     selected: &BTreeMap<String, String>,
+    selections: &BTreeMap<String, crate::registry::Selection>,
 ) -> Result<()> {
     *current = ComposeFile::parse(edited, path)?;
     let mut versions = selected.clone();
@@ -715,8 +754,10 @@ async fn reprepare(
                 .or_insert_with(|| version.to_string());
         }
     }
-    *prepared =
-        crate::lockfile::prepare_metadata_reusing(current, force, &versions, prepared).await?;
+    *prepared = crate::lockfile::prepare_metadata_reusing_selections(
+        current, force, &versions, prepared, selections,
+    )
+    .await?;
     Ok(())
 }
 
@@ -739,13 +780,18 @@ pub(crate) async fn apply_adapter_change(
 ) -> Result<Option<AdapterChange>> {
     // The adapter's range and then its exact version: one request, not two.
     crate::registry::remembering(async move {
-        let Some(change) =
-            adapter_change(edited, current, project_namespace, refresh, allow_remove).await?
+        let Some((change, selection)) =
+            selected_adapter_change(edited, current, project_namespace, refresh, allow_remove)
+                .await?
         else {
             return Ok(None);
         };
+        let mut selections = BTreeMap::new();
         let next = match &change {
             AdapterChange::Upsert(request) => {
+                if let Some(selection) = selection {
+                    selections.insert(request.key.clone(), selection);
+                }
                 if let Source::Package {
                     version: Some(version),
                     ..
@@ -764,7 +810,16 @@ pub(crate) async fn apply_adapter_change(
         if let Some(next) = next {
             *edited = next;
         }
-        reprepare(path, edited, current, prepared, force, selected).await?;
+        reprepare(
+            path,
+            edited,
+            current,
+            prepared,
+            force,
+            selected,
+            &selections,
+        )
+        .await?;
         Ok(Some(change))
     })
     .await
@@ -2289,6 +2344,71 @@ pub(crate) mod tests {
                 }),
             )
             .await;
+    }
+
+    #[tokio::test]
+    async fn bound_adapter_range_selection_survives_edit_and_lock_without_exact_lookup() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        for migrate_first in [false, true] {
+            for exact_refuses in [false, true] {
+                if migrate_first && cfg!(not(unix)) {
+                    continue;
+                }
+                let server = MockServer::start().await;
+                let artifact = serde_json::json!({"url":"https://example.test/selected-adapter", "sha256":"a".repeat(64)});
+                Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+                    .and(matchers::body_partial_json(serde_json::json!({"worker":"sandbox-libkrun","version":ADAPTER_RANGE})))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "root":{"schema":1,"requested":{"worker":"sandbox-libkrun","version":ADAPTER_RANGE},"name":"sandbox-libkrun","version":"0.5.0"},
+                        "graph":[{"name":"sandbox-libkrun","version":"0.5.0","type":"binary","binaries":{(crate::registry::host_targets()[0]):artifact}}],"edges":[]
+                    }))).expect(1).mount(&server).await;
+                let response = if exact_refuses {
+                    ResponseTemplate::new(422)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"graph":[{
+                        "name":"sandbox-libkrun","version":"0.5.0","type":"binary",
+                        "binaries":{(crate::registry::host_targets()[0]):{"url":"https://example.test/changed","sha256":"b".repeat(64)}}
+                    }]}))
+                };
+                Mock::given(matchers::method("POST"))
+                    .and(matchers::path("/resolve"))
+                    .and(matchers::body_partial_json(
+                        serde_json::json!({"version":"0.5.0"}),
+                    ))
+                    .respond_with(response)
+                    .expect(0)
+                    .mount(&server)
+                    .await;
+                let dir = tempfile::tempdir().unwrap();
+                manifest(dir.path(), "vm", VM_MANIFEST);
+                let text = "containers:\n  vm: {worker: path://./vm}\n";
+                let mut file = parse(dir.path(), text);
+                let mut edited = text.to_string();
+                let path = file.path.clone();
+                crate::registry::TEST_REGISTRY.scope(server.uri(), async {
+                    let mut prepared = crate::lockfile::prepare_metadata(&mut file,&BTreeSet::new()).await.unwrap();
+                    if migrate_first {
+                        migrate(&path,&mut edited,&mut file,&mut prepared).await.unwrap().unwrap();
+                    } else {
+                        apply_adapter_change(&path,&mut edited,&mut file,"default",&mut prepared,
+                            &mut BTreeSet::new(),&mut BTreeMap::new(),false,false).await.unwrap().unwrap();
+                    }
+                    assert_eq!(prepared.resolved_version("sandbox-libkrun"),Some("0.5.0"));
+                    let package = file.containers["sandbox-libkrun"].resolved_package.as_ref().unwrap();
+                    assert!(package.artifacts.values().all(|a|a.sha256=="a".repeat(64)));
+                    prepared.write_if_changed().unwrap();
+                    let mut reload = parse(dir.path(),&edited);
+                    crate::lockfile::attach(&mut reload).unwrap();
+                    assert_eq!(reload.containers["sandbox-libkrun"].resolved_package.as_ref(),Some(package));
+                    let lock: serde_json::Value = serde_yaml::from_str(&std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap()).unwrap();
+                    assert_eq!(lock["containers"]["sandbox-libkrun"]["requested"],"0.5.0");
+                    assert_eq!(lock["containers"]["sandbox-libkrun"]["root_binding"]["requested"]["version"],ADAPTER_RANGE);
+                    assert_eq!(lock["containers"]["sandbox-libkrun"]["derived_pin"],true);
+                    assert_eq!(server.received_requests().await.unwrap().len(),1);
+                }).await;
+                server.verify().await;
+            }
+        }
     }
 
     async fn adapter_requests(server: &wiremock::MockServer) -> usize {

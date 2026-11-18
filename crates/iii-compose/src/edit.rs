@@ -317,6 +317,12 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             })
         }
         None => {
+            // The text editor's block locator does not recognize `key: {...}`.
+            // Normalize that existing entry before deciding this is an append;
+            // otherwise a normal update writes a duplicate container key.
+            if let Some(block) = inline_entry_as_block(&lines, &containers, &indent, &new.key)? {
+                return upsert_container(&join(&block, text), new);
+            }
             let mut out: Vec<String> = lines[..containers.end]
                 .iter()
                 .map(|l| l.to_string())
@@ -1342,6 +1348,38 @@ mod tests {
             Outcome::Added(text) | Outcome::Replaced { text, .. } => text,
             Outcome::Unchanged => panic!("expected an edit"),
         }
+    }
+
+    #[test]
+    fn upsert_updates_an_existing_flow_mapping_without_duplicating_the_key() {
+        let text = "# keep\ncontainers:\n  tool: {worker: 'package://registry.example/team/tool', version: next, config_name: mine} # tool note\n  local: {worker: path://.}\n";
+        let request = parse_worker("package://registry.example/team/tool@1.2.3").unwrap();
+        let Outcome::Replaced { text: edited, .. } = upsert_container(text, &request).unwrap()
+        else {
+            panic!("existing flow entry must be replaced, never appended");
+        };
+        let parsed = crate::ComposeFile::parse(&edited, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(parsed.containers.len(), 2);
+        assert_eq!(parsed.containers["tool"].version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            parsed.containers["tool"].config_name.as_deref(),
+            Some("mine")
+        );
+        assert!(edited.contains("# tool note"));
+        assert!(edited.contains("  local: {worker: path://.}\n"));
+        assert_eq!(
+            upsert_container(&edited, &request).unwrap(),
+            Outcome::Unchanged
+        );
+        let same = parse_worker("package://registry.example/team/tool@next").unwrap();
+        assert_eq!(upsert_container(text, &same).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn flow_mapping_upsert_keeps_source_kind_protection() {
+        let text = "containers:\n  tool: {worker: path://.}\n";
+        let error = upsert_container(text, &parse_worker("tool@1.2.3").unwrap()).unwrap_err();
+        assert_eq!(error.code(), "WORKER_SOURCE_CHANGED");
     }
 
     /// `compose::add` writes `runtime.base_image` as given, and the file reads it back.
