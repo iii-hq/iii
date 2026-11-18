@@ -373,9 +373,24 @@ changes and causes no restart.
 
 ### Package lock
 
-Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
-requested selector. The lock keeps the resolved dependency graph, versions, package types, artifact
-URLs, SHA-256 digests, and default configuration returned by the registry.
+Compose writes a lock beside each compose file, replacing its final `.yaml` or `.yml` extension
+with `.lock` and preserving the rest of the file name.
+
+| Compose file | Lockfile |
+| --- | --- |
+| `worker-compose.yaml` | `worker-compose.lock` |
+| `worker-compose.dev.yaml` | `worker-compose.dev.lock` |
+| `worker-compose.prod.yml` | `worker-compose.prod.lock` |
+| `config/local.yaml` | `config/local.lock` |
+
+Compose files in the same directory keep independent locks. Selecting a file with `--file` in the
+CLI or `file` in a `compose::*` call selects its corresponding lock for reads, writes, and frozen
+validation. Compose does not fall back to another compose file's lock. In frozen mode, a missing or
+outdated lock for the selected file is an error, even if another valid lock exists beside it.
+
+The compose file keeps the requested selector. The lock keeps the resolved dependency graph,
+versions, package types, artifact URLs, SHA-256 digests, and default configuration returned by the
+registry.
 
 ```text
 worker-compose.yaml: next
