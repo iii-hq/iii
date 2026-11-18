@@ -1,5 +1,5 @@
 {
-  "entryPoints": ["src/index.ts", "src/stream.ts", "src/state.ts"],
+  "entryPoints": ["src/index.ts", "src/stream.ts", "src/state.ts", "src/protocol.ts"],
   "json": "api-docs.json",
   "tsconfig": "tsconfig.json",
   "excludePrivate": true,

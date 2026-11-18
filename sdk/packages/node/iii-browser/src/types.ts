@@ -1,7 +1,7 @@
-import type { ChannelReader, ChannelWriter } from './channels'
+import type { InputStream, OutputStream } from './call-streams'
 import type { RegistrationRejectedError } from './errors'
 import type { IIIConnectionState } from './iii-constants'
-import type { CallRequest, RegisterFunctionMessage, StreamChannelRef } from './iii-types'
+import type { CallRequest, RegisterFunctionMessage } from './iii-types'
 import type { FunctionObservers } from './observable'
 import type {
   AddedHook,
@@ -190,6 +190,30 @@ export interface ISdk {
    */
   // biome-ignore lint/suspicious/noExplicitAny: TOutput defaults to any so untyped calls type-check (the engine cannot express the return type statically)
   trigger<TInput = unknown, TOutput = any>(request: CallRequest<TInput>): Promise<TOutput>
+
+  /**
+   * Creates a pipe: an {@link InputStream} and an {@link OutputStream} joined
+   * through the engine; what is written into `output` is read from `input`.
+   * Put either end in a payload or a result for the other side to use: it
+   * travels as its ref. This worker owns the pipe and must stay connected until
+   * the other side attached.
+   *
+   * A source or a sink placed in a payload gets its pipe from the SDK, so most
+   * code does not need this: use it for an end that must exist before its
+   * source does, a two-way session (two pipes), or a pipe handed to a call
+   * made later.
+   *
+   * @param options - `bufferSize`: frames the engine holds before the reader attached.
+   *
+   * @example
+   * ```typescript
+   * const pipe = await worker.pipe()
+   * const result = worker.call({ function_id: 'files::process', payload: { body: pipe.input } })
+   * await file.stream().pipeTo(pipe.output.toWebStream())
+   * await result
+   * ```
+   */
+  pipe(options?: PipeOptions): Promise<Pipe>
 
   /**
    * Observes a function: every call of `source` that passes its `filters`
@@ -474,19 +498,21 @@ export interface FunctionRef<I = any, O = any> {
   unregister(): void
 }
 
+/** Options of {@link ISdk.pipe}. */
+export type PipeOptions = {
+  /** Frames the engine holds for the pipe before its reader attached (engine default when omitted). */
+  bufferSize?: number
+}
+
 /**
- * A streaming channel pair for worker-to-worker data transfer. Created via
- * the `createChannel` helper from `iii-browser-sdk/helpers`.
+ * The two ends of a pipe made by {@link ISdk.pipe}: what is written into
+ * `output` is read from `input`. Either end can be put in a payload or a result.
  */
-export type Channel = {
-  /** Writer end of the channel. */
-  writer: ChannelWriter
-  /** Reader end of the channel. */
-  reader: ChannelReader
-  /** Serializable reference to the writer (can be sent to other workers). */
-  writerRef: StreamChannelRef
-  /** Serializable reference to the reader (can be sent to other workers). */
-  readerRef: StreamChannelRef
+export type Pipe = {
+  /** The read end. */
+  input: InputStream
+  /** The write end. */
+  output: OutputStream
 }
 
 /**

@@ -23,7 +23,9 @@ use std::{future::Future, sync::Arc};
 
 use serde_json::Value;
 
+use crate::iii::IIIClient;
 use crate::protocol::{Activation, Caller};
+use crate::streams::StreamGuard;
 
 /// The invocation a handler is running for.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,12 +53,24 @@ pub struct InvocationCtx {
 }
 
 /// The current invocation plus what the SDK tracks per task.
-#[derive(Debug)]
 pub(crate) struct Frame {
     /// `None` inside `scope(None, ..)`: no invocation, but the nesting stays.
     pub ctx: Option<InvocationCtx>,
     /// How many local calls are nested on this task's stack.
     pub local_depth: u32,
+    /// The client the handler runs on: streams deserialized here bind to it.
+    pub client: Option<IIIClient>,
+    /// The streams of the invocation, settled when its handler returns.
+    pub streams: Option<Arc<StreamGuard>>,
+}
+
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Frame")
+            .field("ctx", &self.ctx)
+            .field("local_depth", &self.local_depth)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Frame {
@@ -82,15 +96,53 @@ pub fn current_invocation() -> Option<InvocationCtx> {
 /// handler's context in a task it spawns; `None` runs `fut` outside any
 /// invocation. The local-call nesting of the calling task is carried too, so
 /// recursing through spawned tasks stays bounded.
+///
+/// With an invocation, the calling handler's client and its stream guard are
+/// carried as well: a stream deserialized in the task binds to that client,
+/// and the handler's return settles it like the handler's own streams (see
+/// [`InputStream`](crate::InputStream)). Call
+/// [`OutputStream::keep_open`](crate::OutputStream::keep_open) on one the
+/// task keeps writing after the handler returned.
 pub fn scope<F>(ctx: impl Into<Option<InvocationCtx>>, fut: F) -> impl Future<Output = F::Output>
 where
     F: Future,
 {
+    let ctx = ctx.into();
+    let (client, streams) = if ctx.is_some() {
+        CURRENT
+            .try_with(|frame| {
+                frame
+                    .as_ref()
+                    .map(|f| (f.client.clone(), f.streams.clone()))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    } else {
+        (None, None)
+    };
     let frame = Frame {
-        ctx: ctx.into(),
+        ctx,
         local_depth: local_depth(),
+        client,
+        streams,
     };
     CURRENT.scope(Some(Arc::new(frame)), fut)
+}
+
+/// The client of the handler the calling task runs for.
+pub(crate) fn current_client() -> Option<IIIClient> {
+    CURRENT
+        .try_with(|frame| frame.as_ref().and_then(|f| f.client.clone()))
+        .ok()
+        .flatten()
+}
+
+/// The stream guard of the invocation the calling task runs for.
+pub(crate) fn current_streams() -> Option<Arc<StreamGuard>> {
+    CURRENT
+        .try_with(|frame| frame.as_ref().and_then(|f| f.streams.clone()))
+        .ok()
+        .flatten()
 }
 
 /// Borrow-based access for the SDK's hot paths: no clone of the context.
@@ -171,6 +223,8 @@ mod tests {
         let frame = Arc::new(Frame {
             ctx: Some(ctx("a::b")),
             local_depth: 7,
+            client: None,
+            streams: None,
         });
         scope_frame(frame, async {
             let with_ctx = tokio::spawn(scope(current_invocation(), async { local_depth() }));

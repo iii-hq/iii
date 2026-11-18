@@ -23,7 +23,7 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 			if !errors.As(err, &ie) || ie.Code != "payload_too_large" {
 				t.Fatalf("above: %v", err)
 			}
-			want := "Serialized JSON envelope is 67108865 bytes; limit is 67108864 bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+			want := "Serialized JSON envelope is 67108865 bytes; limit is 67108864 bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
 			if ie.Message != want {
 				t.Fatalf("message = %q, want %q", ie.Message, want)
 			}
@@ -60,7 +60,7 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 	if !errors.As(err, &escapeSizeErr) || escapeSizeErr.Code != "payload_too_large" {
 		t.Fatalf("escaped envelope above 64 MiB error: %v", err)
 	}
-	wantEscapeMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(serialized), maxJSONMessageBytes)
+	wantEscapeMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size", len(serialized), maxJSONMessageBytes)
 	if escapeSizeErr.Message != wantEscapeMessage {
 		t.Fatalf("escaped envelope message = %q, want %q", escapeSizeErr.Message, wantEscapeMessage)
 	}
@@ -83,7 +83,7 @@ func TestJSONSizeBoundaryEscapesAndNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", len(oversized), maxJSONMessageBytes)
+	want := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size", len(oversized), maxJSONMessageBytes)
 	f, err := prepareFrame(oversized)
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +153,7 @@ func TestJSONLocalQueuesAndRegistrations(t *testing.T) {
 		Message string `json:"message"`
 	}
 	expectedSize := len(raw)
-	expectedMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", expectedSize, maxJSONMessageBytes)
+	expectedMessage := fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size", expectedSize, maxJSONMessageBytes)
 	if err := json.Unmarshal(result["error"], &fallback); err != nil || fallback.Code != "payload_too_large" || fallback.Message != expectedMessage {
 		t.Fatalf("fallback error: %+v (%v)", fallback, err)
 	}

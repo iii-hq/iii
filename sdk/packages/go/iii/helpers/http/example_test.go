@@ -16,7 +16,7 @@ func ExampleWrap() {
 	client := iii.RegisterWorker(iii.DefaultEngineURL)
 	defer client.Close()
 
-	_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(client,
+	_, _ = client.RegisterFunction("api::echo", iiihttp.Wrap(
 		func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 			body, err := io.ReadAll(req)
 			if err != nil {
@@ -44,10 +44,7 @@ func ExampleWrap() {
 // ExampleWrap_buffered answers without streaming by returning a Response. The handler is
 // called here with a plain payload, as a direct call would send it.
 func ExampleWrap_buffered() {
-	client := iii.New(iii.DefaultEngineURL)
-	defer client.Close()
-
-	handler := iiihttp.Wrap(client,
+	handler := iiihttp.Wrap(
 		func(ctx context.Context, req *iiihttp.StreamRequest, res *iiihttp.StreamResponse) (any, error) {
 			return iiihttp.Response[map[string]string]{
 				StatusCode: 200,

@@ -6,7 +6,6 @@ export default defineConfig({
     './src/stream.ts',
     './src/state.ts',
     './src/helpers.ts',
-    './src/channel.ts',
     './src/runtime.ts',
     './src/errors.ts',
     './src/internal.ts',

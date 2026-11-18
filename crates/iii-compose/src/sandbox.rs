@@ -914,7 +914,10 @@ async fn follow_logs(
     cursor: &mut Option<u64>,
     from_end: &mut bool,
 ) {
-    let Ok(channel) = iii_sdk::helpers::create_channel(client, None).await else {
+    let Ok(pipe) = client.pipe().await else {
+        return;
+    };
+    let Ok(channel) = writer_ref(&pipe.output) else {
         return;
     };
     let request = WorkerLogsRequest {
@@ -922,11 +925,7 @@ async fn follow_logs(
         vm_id: vm.vm_id.clone(),
         cursor: *cursor,
         follow: true,
-        channel: contract::StreamChannelRef {
-            channel_id: channel.writer_ref.channel_id,
-            access_key: channel.writer_ref.access_key,
-            direction: contract::ChannelDirection::Write,
-        },
+        channel,
         from_end: *from_end,
     };
     let reply: std::result::Result<WorkerLogsResponse, _> = call(
@@ -945,7 +944,7 @@ async fn follow_logs(
         if std::mem::take(from_end) {
             *cursor = started.cursor;
         }
-        *capture = Some(sink.capture_records(channel.reader));
+        *capture = Some(sink.capture_records(pipe.input));
     }
 }
 
@@ -966,6 +965,14 @@ pub(crate) async fn stream_end(
         *cursor = Some(last);
     }
     true
+}
+
+/// The ref of a pipe's write end, for an adapter to write the stream into: the
+/// same JSON as the SDK's ref.
+pub(crate) fn writer_ref(
+    output: &iii_sdk::OutputStream,
+) -> std::result::Result<contract::StreamChannelRef, serde_json::Error> {
+    serde_json::from_value(serde_json::to_value(output)?)
 }
 
 /// Fails the start of `container` unless the adapter speaks this engine's

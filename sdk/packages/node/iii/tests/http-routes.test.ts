@@ -65,7 +65,7 @@ describe('HTTP routes: observers of http::on-request', () => {
     const fn = iii.registerFunction(
       'test::api::json::raw',
       http(async (req: HttpRequest, response: StreamResponse) => {
-        const rawBody = await req.request_body.readAll()
+        const rawBody = await req.request_body.bytes()
 
         response.status(200)
         response.headers({ 'content-type': 'application/json' })
@@ -252,7 +252,7 @@ describe('HTTP routes: observers of http::on-request', () => {
         response.status(200)
         response.headers({ 'content-type': 'application/json' })
 
-        for await (const chunk of req.request_body.stream) {
+        for await (const chunk of req.request_body) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
         }
 
@@ -367,7 +367,7 @@ describe('HTTP routes: observers of http::on-request', () => {
       http(async (req: HttpRequest, response: StreamResponse) => {
         const chunks: Buffer[] = []
 
-        for await (const chunk of req.request_body.stream) {
+        for await (const chunk of req.request_body) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
         }
 
@@ -426,7 +426,7 @@ describe('HTTP routes: observers of http::on-request', () => {
       http(async (req: HttpRequest, response: StreamResponse) => {
         const chunks: Buffer[] = []
 
-        for await (const chunk of req.request_body.stream) {
+        for await (const chunk of req.request_body) {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
         }
 

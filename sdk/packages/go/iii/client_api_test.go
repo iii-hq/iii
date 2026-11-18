@@ -61,27 +61,34 @@ func TestNewResolvesEngineURL(t *testing.T) {
 	}
 }
 
-// A7: Client.OpenWriter / OpenReader dial the client's address with its WithHeaders and
+// A7: a stream bound to a client dials the client's address with its WithHeaders and
 // the III_TOKEN bearer.
-func TestClientOpenReaderWriterUseClientAddressAndHeaders(t *testing.T) {
+func TestBoundStreamsUseClientAddressAndHeaders(t *testing.T) {
 	setToken(t, ptr("secret"))
 	m := newMockEngine(t)
 	c := New(m.url, WithHeaders(http.Header{"X-Other": {"kept"}}))
-	ref := func(dir ChannelDirection) StreamChannelRef {
-		return StreamChannelRef{ChannelID: "chan", AccessKey: "key", Direction: dir}
+	t.Cleanup(func() { _ = c.Close() })
+	var w OutputStream
+	var r InputStream
+	if err := json.Unmarshal([]byte(`{"channel_id":"chan","access_key":"key","direction":"write"}`), &w); err != nil {
+		t.Fatal(err)
 	}
-	w := c.OpenWriter(ref(ChannelWrite))
-	r := c.OpenReader(ref(ChannelRead))
-	t.Cleanup(func() { _ = w.Close(); _ = r.Close() })
+	if err := json.Unmarshal([]byte(`{"channel_id":"chan","access_key":"key","direction":"read"}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	w.Bind(c)
+	r.Bind(c)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := w.SendMessage(ctx, "hi"); err != nil {
-		t.Fatalf("SendMessage: %v", err)
+	if err := w.Send(ctx, "hi"); err != nil {
+		t.Fatalf("Send: %v", err)
 	}
-	if _, err := r.ensureConnected(ctx); err != nil {
-		t.Fatalf("reader connect: %v", err)
-	}
+	t.Cleanup(func() { _ = w.Close() })
+	// The mock engine never ends the stream: the read is cut short once it dialled.
+	readCtx, cancelRead := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancelRead()
+	_, _ = r.ReadAll(readCtx)
 	for i, dir := range []string{"write", "read"} {
 		h := m.handshakeAt(i)
 		if want := "/ws/channels/chan?key=key&dir=" + dir; h.uri != want {

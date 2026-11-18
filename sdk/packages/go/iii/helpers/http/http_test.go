@@ -152,7 +152,16 @@ func TestRequestDecodesWorkerPayload(t *testing.T) {
 	if !reflect.DeepEqual(req.Headers["x-multi"], MultiValue{"1", "2"}) || req.Headers["accept"].First() != "*/*" {
 		t.Errorf("headers = %v", req.Headers)
 	}
-	if req.RequestBody == nil || *req.RequestBody != (iii.StreamChannelRef{ChannelID: "c1", AccessKey: "k1", Direction: iii.ChannelRead}) {
+	// A stream never read marshals back to its own ref (it would be forwarded).
+	refOf := func(v any) string {
+		t.Helper()
+		out, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return string(out)
+	}
+	if req.RequestBody == nil || refOf(req.RequestBody) != `{"channel_id":"c1","access_key":"k1","direction":"read"}` {
 		t.Errorf("request_body = %+v", req.RequestBody)
 	}
 
@@ -160,9 +169,14 @@ func TestRequestDecodesWorkerPayload(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatalf("unmarshal InternalRequest: %v", err)
 	}
-	if in.Response.Direction != iii.ChannelWrite || in.Response.ChannelID != "c2" || in.RequestBody.ChannelID != "c1" ||
-		string(in.Body) != `{"name":"widget"}` {
-		t.Errorf("InternalRequest = %+v", in)
+	if in.Response == nil || in.RequestBody == nil || string(in.Body) != `{"name":"widget"}` {
+		t.Fatalf("InternalRequest = %+v", in)
+	}
+	if got := refOf(in.Response); got != `{"channel_id":"c2","access_key":"k2","direction":"write"}` {
+		t.Errorf("response = %s", got)
+	}
+	if got := refOf(in.RequestBody); got != `{"channel_id":"c1","access_key":"k1","direction":"read"}` {
+		t.Errorf("request_body = %s", got)
 	}
 }
 
