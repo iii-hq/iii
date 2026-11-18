@@ -1185,13 +1185,9 @@ mod tests {
 
     fn reset_telemetry_globals() {
         let acc = get_metrics_accumulator();
-        acc.invocations_total.store(0, Ordering::Relaxed);
-        acc.invocations_success.store(0, Ordering::Relaxed);
-        acc.invocations_error.store(0, Ordering::Relaxed);
-        acc.invocations_deferred.store(0, Ordering::Relaxed);
+        acc.reset_invocations_for_test();
         acc.workers_spawns.store(0, Ordering::Relaxed);
         acc.workers_deaths.store(0, Ordering::Relaxed);
-        acc.invocations_by_function.clear();
 
         let telemetry = collector();
         telemetry.cron_executions.store(0, Ordering::Relaxed);
@@ -2874,13 +2870,9 @@ mod tests {
         engine.worker_registry.register_worker(worker);
 
         let acc = get_metrics_accumulator();
-        acc.invocations_total.store(12, Ordering::Relaxed);
-        acc.invocations_success.store(9, Ordering::Relaxed);
-        acc.invocations_error.store(3, Ordering::Relaxed);
+        acc.record_local_invocations("svc::worker", 12, 3);
         acc.workers_spawns.store(4, Ordering::Relaxed);
         acc.workers_deaths.store(1, Ordering::Relaxed);
-        acc.invocations_by_function
-            .insert("svc::worker".to_string(), 12);
 
         let telemetry = collector();
         telemetry.queue_emits.store(7, Ordering::Relaxed);
