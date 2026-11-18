@@ -4,14 +4,27 @@
 // advisories reachable only from website/docs are reported, not gated
 // (they are tracked separately).
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
-// Dev-only paths whose advisory has no fix the dependent accepts. Each is
-// reported, not gated, and names the advisory and the path suffix it covers.
-const accepted = [
-  // typedoc 0.28.20 needs minimatch 10 (it calls Minimatch#matchOne, which 11
-  // makes private) and only builds the API reference from our own globs.
-  { advisory: 'GHSA-g3hv-75wg-m249', path: '>typedoc>minimatch' },
-]
+// No upstream fix exists for GHSA-fc5q-39xc-vjpf. Report the locally patched
+// versions only when the lockfile still records the exact patch integrity.
+// Keep the advisory visible; do not suppress unpatched or new versions.
+const locallyPatched = new Set()
+const lock = readFileSync(new URL('../pnpm-lock.yaml', import.meta.url), 'utf8')
+for (const version of ['2.3.2', '4.0.7']) {
+  const patchPath = `patches/picomatch@${version}.patch`
+  const hash = createHash('sha256')
+    .update(readFileSync(new URL(`../${patchPath}`, import.meta.url)))
+    .digest('hex')
+  if (
+    lock.includes(`  picomatch@${version}:\n    hash: ${hash}\n    path: ${patchPath}`) &&
+    lock.includes(`  picomatch@${version}(patch_hash=${hash}): {}`) &&
+    !lock.includes(`  picomatch@${version}: {}`)
+  ) {
+    locallyPatched.add(version)
+  }
+}
 
 let out
 try {
@@ -31,7 +44,9 @@ for (const a of Object.values(advisories)) {
   for (const f of a.findings ?? []) {
     for (const p of f.paths ?? []) {
       const root = p.split('>')[0]
-      if (accepted.some(x => x.advisory === id && p.endsWith(x.path))) {
+      const patched = id === 'GHSA-fc5q-39xc-vjpf' &&
+        a.module_name === 'picomatch' && locallyPatched.has(f.version)
+      if (patched) {
         known.add(`${a.severity.padEnd(8)} ${a.module_name}@${f.version}  ${p}  ${a.url}`)
       } else if (root.startsWith('sdk__packages__node__')) {
         sdk.add(`${a.severity.padEnd(8)} ${a.module_name}@${f.version}  ${p}  ${a.url}`)
@@ -47,7 +62,7 @@ console.log('Advisory paths outside the SDK packages (report only):')
 for (const [k, v] of Object.entries(others).sort()) console.log(`  ${k}: ${v}`)
 
 if (known.size) {
-  console.log('\nAccepted dev-only advisory paths (report only):')
+  console.log('\nLocally patched advisory paths (report only):')
   for (const line of [...known].sort()) console.log(`  ${line}`)
 }
 
@@ -56,4 +71,4 @@ if (sdk.size) {
   for (const line of [...sdk].sort()) console.error(`  ${line}`)
   process.exit(1)
 }
-console.log('\nSDK packages: no advisories.')
+console.log('\nSDK packages: no unmitigated advisories.')

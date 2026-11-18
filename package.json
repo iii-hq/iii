@@ -8,6 +8,7 @@
     "build:rust": "cargo build --release",
     "build:engine": "cargo build --release -p iii",
     "test": "turbo run test",
+    "test:security": "node --test scripts/security-dependencies.test.mjs",
     "test:node": "turbo run test --filter=iii-sdk",
     "test:rust": "cargo test --workspace --all-features",
     "test:engine": "cargo test -p iii --all-features",
@@ -26,7 +27,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.3.6",
     "tsx": "^4.21.0",
-    "turbo": "^2.5.0"
+    "turbo": "^2.9.14"
   },
   "packageManager": "pnpm@10.19.0",
   "engines": {

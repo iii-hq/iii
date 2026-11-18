@@ -1,0 +1,51 @@
+diff --git a/lib/parse.js b/lib/parse.js
+index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..61e14adb5a80025935d4e35b5244bee785494f0b 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -284,6 +284,35 @@ const repeatedExtglobRecursion = pattern => {
+   return depth;
+ };
+ 
++// GHSA-fc5q-39xc-vjpf: repeating a branch that already contains an
++// unbounded quantifier can backtrack exponentially, even without alternation.
++const hasUnboundedQuantifier = branch => {
++  let escaped = false;
++  let quoted = false;
++  let bracket = false;
++
++  for (const ch of branch) {
++    if (escaped) {
++      escaped = false;
++      continue;
++    }
++    if (ch === '\\') {
++      escaped = true;
++      continue;
++    }
++    if (ch === '"') {
++      quoted = !quoted;
++      continue;
++    }
++    if (quoted) continue;
++    if (ch === '[') bracket = true;
++    if (ch === ']') bracket = false;
++    if (!bracket && (ch === '*' || ch === '+')) return true;
++  }
++
++  return false;
++};
++
+ const analyzeRepeatedExtglob = (body, options) => {
+   if (options.maxExtglobRecursion === false) {
+     return { risky: false };
+@@ -343,6 +372,10 @@ const analyzeRepeatedExtglob = (body, options) => {
+       : { risky: true };
+   }
+ 
++  if (branches.some(hasUnboundedQuantifier)) {
++    return { risky: true };
++  }
++
+   return { risky: false };
+ };
+ 
