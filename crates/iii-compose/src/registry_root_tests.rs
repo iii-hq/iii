@@ -693,9 +693,11 @@ async fn root_binding_cannot_merge_a_different_package_at_the_declared_container
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let file =
-        crate::ComposeFile::parse("containers: {}\n", dir.path().join("worker-compose.yaml"))
-            .unwrap();
+    let file = crate::ComposeFile::parse(
+        "containers:\n  local: {worker: path://.}\n",
+        dir.path().join("worker-compose.yaml"),
+    )
+    .unwrap();
     let asked = crate::edit::NewContainer {
         // The graph's queue is a dependency, not the requested tool.
         key: "queue".into(),
@@ -731,9 +733,11 @@ async fn root_binding_keeps_dependency_edges_registry_qualified() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let file =
-        crate::ComposeFile::parse("containers: {}\n", dir.path().join("worker-compose.yaml"))
-            .unwrap();
+    let file = crate::ComposeFile::parse(
+        "containers:\n  local: {worker: path://.}\n",
+        dir.path().join("worker-compose.yaml"),
+    )
+    .unwrap();
     let asked: Vec<_> = [("one.example", "one"), ("two.example", "two")]
         .into_iter()
         .map(|(registry, key)| crate::edit::NewContainer {
