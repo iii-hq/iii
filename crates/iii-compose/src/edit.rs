@@ -1749,7 +1749,12 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
 
     let mut end = at + 1;
     for line in &lines[at + 1..containers.end] {
-        if line.trim().is_empty() || line.starts_with(&format!("{indent} ")) {
+        // Comment indentation has no structural meaning in YAML. A field
+        // following a column-zero comment can still belong to this container.
+        if line.trim().is_empty()
+            || line.trim_start().starts_with('#')
+            || line.starts_with(&format!("{indent} "))
+        {
             end += 1;
         } else {
             break;
@@ -1760,8 +1765,14 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
     while start > containers.start && lines[start - 1].trim_start().starts_with('#') {
         start -= 1;
     }
-    // And trailing blank lines belong to whatever follows, not to this entry.
-    while end > at + 1 && lines[end - 1].trim().is_empty() {
+    // Trailing blank lines and comments at/before container indentation belong
+    // to what follows. Only interior comments need the expanded range above;
+    // retain the previous ownership of deeper entry comments.
+    while end > at + 1
+        && (lines[end - 1].trim().is_empty()
+            || (lines[end - 1].trim_start().starts_with('#')
+                && leading_whitespace(lines[end - 1]).len() <= indent.len()))
+    {
         end -= 1;
     }
     Some(Entry { start, end })
@@ -3756,6 +3767,105 @@ containers:
     fn a_file_without_a_trailing_newline_keeps_not_having_one() {
         let out = added(FILE.trim_end());
         assert!(!out.ends_with('\n'), "gained a trailing newline");
+    }
+
+    #[test]
+    fn removal_includes_fields_after_comments_without_reassigning_settings() {
+        for header in ["", "&gone", "!!map &gone"] {
+            for comment in [
+                "# settings for gone",
+                " # settings for gone",
+                "  # settings for gone",
+                "    # settings for gone",
+            ] {
+                for keep_settings in ["", "    config_override: {mode: keep}\n"] {
+                    for tail in [
+                        "",
+                        "# next container\n  after:\n    worker: path://./after\n    config_override: {mode: after}\n",
+                        "# root settings\nnamespace: default\n",
+                    ] {
+                        let prefix = format!(
+                            "# heading\ncontainers:\n  keep:\n    worker: path://./keep\n{keep_settings}"
+                        );
+                        let gone = format!(
+                            "  gone: {header}\n    worker: path://./gone\n{comment}\n    config_override: {{mode: gone}}\n    environment:\n# still part of gone\n      MODE: gone\n"
+                        );
+                        let text = format!("{prefix}{gone}{tail}");
+                        let expected = format!("{prefix}{tail}");
+                        crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+                        for crlf in [false, true] {
+                            let input = if crlf {
+                                text.replace('\n', "\r\n")
+                            } else {
+                                text.clone()
+                            };
+                            let wanted = if crlf {
+                                expected.replace('\n', "\r\n")
+                            } else {
+                                expected.clone()
+                            };
+                            let before: Value = serde_yaml::from_str(&input).unwrap();
+                            let output = remove_container(&input, "gone").unwrap().unwrap();
+                            assert_eq!(output, wanted);
+                            assert_eq!(
+                                remove_containers(&input, &["gone", "gone"]).unwrap(),
+                                wanted
+                            );
+                            let after: Value = serde_yaml::from_str(&output).unwrap();
+                            assert_eq!(after["containers"]["keep"], before["containers"]["keep"]);
+                            if let Some(previous) = before["containers"].get("after") {
+                                assert_eq!(&after["containers"]["after"], previous);
+                            }
+                            assert!(after["containers"].get("gone").is_none());
+                            crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upsert_crosses_interior_comments_but_keeps_following_entry_comments() {
+        for header in ["", "&api"] {
+            let text = format!(
+                "containers:\n  api: {header}\n    worker: package://api.workers.iii.dev/api\n# release belongs to api\n    version: '1.0.0'\n# settings also belong to api\n    config_override: {{mode: preserved}}\n# describes keep, not api\n  keep: {{worker: path://./keep}}\n"
+            );
+            let expected = text.replace("version: '1.0.0'", "version: \"1.1.0\"");
+            for crlf in [false, true] {
+                let input = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text.clone()
+                };
+                let wanted = if crlf {
+                    expected.replace('\n', "\r\n")
+                } else {
+                    expected.clone()
+                };
+                assert_eq!(
+                    upsert_container(&input, &parse_worker("api@1.0.0").unwrap()).unwrap(),
+                    Outcome::Unchanged
+                );
+                let output = changed(&input, &parse_worker("api@1.1.0").unwrap());
+                assert_eq!(output, wanted);
+                let before: Value = serde_yaml::from_str(&input).unwrap();
+                let after: Value = serde_yaml::from_str(&output).unwrap();
+                assert_eq!(after["containers"]["keep"], before["containers"]["keep"]);
+                assert_eq!(
+                    after["containers"]["api"]["config_override"],
+                    before["containers"]["api"]["config_override"]
+                );
+                let tail =
+                    "containers:\n# describes keep, not api\n  keep: {worker: path://./keep}\n";
+                let tail = if crlf {
+                    tail.replace('\n', "\r\n")
+                } else {
+                    tail.to_string()
+                };
+                assert_eq!(remove_container(&output, "api").unwrap().unwrap(), tail);
+            }
+        }
     }
 
     #[test]
