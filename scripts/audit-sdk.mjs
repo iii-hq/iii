@@ -4,27 +4,11 @@
 // advisories reachable only from website/docs are reported, not gated
 // (they are tracked separately).
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { validatePicomatchPatches } from './security-patches.mjs'
 
-// No upstream fix exists for GHSA-fc5q-39xc-vjpf. Report the locally patched
-// versions only when the lockfile still records the exact patch integrity.
-// Keep the advisory visible; do not suppress unpatched or new versions.
-const locallyPatched = new Set()
-const lock = readFileSync(new URL('../pnpm-lock.yaml', import.meta.url), 'utf8')
-for (const version of ['2.3.2', '4.0.7']) {
-  const patchPath = `patches/picomatch@${version}.patch`
-  const hash = createHash('sha256')
-    .update(readFileSync(new URL(`../${patchPath}`, import.meta.url)))
-    .digest('hex')
-  if (
-    lock.includes(`  picomatch@${version}:\n    hash: ${hash}\n    path: ${patchPath}`) &&
-    lock.includes(`  picomatch@${version}(patch_hash=${hash}): {}`) &&
-    !lock.includes(`  picomatch@${version}: {}`)
-  ) {
-    locallyPatched.add(version)
-  }
-}
+// Report locally mitigated versions only after verifying reviewed digests,
+// patch files and lockfile snapshots. Keep the upstream advisory visible.
+const locallyPatched = validatePicomatchPatches()
 
 let out
 try {

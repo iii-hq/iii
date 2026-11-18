@@ -400,6 +400,9 @@ def test_a_key_function_that_rejects_its_observer_does_not_block_the_sdk(engine:
         ("kept", None),
         ("refused", "REFUSED"),
     }
+    # Drain queued acknowledgements before resetting the capture; otherwise
+    # a late rejection from the initial registration can race the rebuild ack.
+    settle(client, engine)
     # the same while the index is rebuilt for observers already active
     engine.clear()
     rejecting = {"on": False}

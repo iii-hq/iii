@@ -1,51 +1,30 @@
 diff --git a/lib/parse.js b/lib/parse.js
-index caa2b86aa5a567df33cef4bda3c7a97794f439f8..7d38011c47c71da8442cd207f33754e878d7beb3 100644
+index caa2b86aa5a567df33cef4bda3c7a97794f439f8..bead870f65989cf8374e3189e68c6be26ef8d91c 100644
 --- a/lib/parse.js
 +++ b/lib/parse.js
-@@ -280,6 +280,35 @@ const repeatedExtglobRecursion = pattern => {
-   return depth;
- };
+@@ -512,12 +512,24 @@ const parse = (input, options) => {
+     const body = input.slice(token.startIndex + 2, state.index);
+     const analysis = analyzeRepeatedExtglob(body, opts);
  
-+// GHSA-fc5q-39xc-vjpf: repeating a branch that already contains an
-+// unbounded quantifier can backtrack exponentially, even without alternation.
-+const hasUnboundedQuantifier = branch => {
-+  let escaped = false;
-+  let quoted = false;
-+  let bracket = false;
+-    if ((token.type === 'plus' || token.type === 'star') && analysis.risky) {
++    // GHSA-fc5q-39xc-vjpf: inspect parsed tokens, not raw characters.
++    // Brackets (including POSIX classes), quotes and escaped/literal pluses
++    // are already classified by the parser and must not become quantifiers.
++    const hasUnboundedQuantifier = opts.maxExtglobRecursion !== false &&
++      tokens.slice(token.tokensIndex + 2).some(tok =>
++        tok.unbounded === true ||
++        ((tok.type === 'star' || tok.type === 'globstar') && Boolean(tok.output)) ||
++        (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) ||
++        (tok.type === 'paren' && tok.extglob && /[+*]\)?$/.test(tok.output || ''))
++      );
 +
-+  for (const ch of branch) {
-+    if (escaped) {
-+      escaped = false;
-+      continue;
-+    }
-+    if (ch === '\\') {
-+      escaped = true;
-+      continue;
-+    }
-+    if (ch === '"') {
-+      quoted = !quoted;
-+      continue;
-+    }
-+    if (quoted) continue;
-+    if (ch === '[') bracket = true;
-+    if (ch === ']') bracket = false;
-+    if (!bracket && (ch === '*' || ch === '+')) return true;
-+  }
-+
-+  return false;
-+};
-+
- const analyzeRepeatedExtglob = (body, options) => {
-   if (options.maxExtglobRecursion === false) {
-     return { risky: false };
-@@ -313,6 +342,10 @@ const analyzeRepeatedExtglob = (body, options) => {
-     }
-   }
++    if ((token.type === 'plus' || token.type === 'star') && (analysis.risky || hasUnboundedQuantifier)) {
+       const safeOutput = analysis.safeOutput
+         ? (token.output ? '' : ONE_CHAR) + (opts.capture ? `(${analysis.safeOutput})` : analysis.safeOutput)
+         : undefined;
+       const open = tokens[token.tokensIndex];
  
-+  if (branches.some(hasUnboundedQuantifier)) {
-+    return { risky: true };
-+  }
-+
-   return { risky: false };
- };
- 
++      open.unbounded = Boolean(analysis.safeOutput);
+       open.type = 'text';
+       open.value = literal;
+       open.output = safeOutput || utils.escapeRegex(literal);

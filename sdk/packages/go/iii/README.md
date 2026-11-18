@@ -11,7 +11,7 @@ Go SDK for the [iii engine](https://iii.dev).
 go get github.com/iii-hq/iii/sdk/packages/go/iii
 ```
 
-Requires Go 1.25 or later.
+Requires Go 1.26 or later.
 
 ## Hello World
 
