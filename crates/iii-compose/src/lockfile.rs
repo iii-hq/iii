@@ -728,6 +728,27 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn loaded_symlink_uses_the_resolved_compose_files_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path().join("projects");
+        let config = dir.path().join("config");
+        std::fs::create_dir(&projects).unwrap();
+        std::fs::create_dir(&config).unwrap();
+        let target = projects.join("local.yaml");
+        let link = config.join("dev.yaml");
+        std::fs::write(&target, "containers:\n  local:\n    worker: path://.\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compose = ComposeFile::load(&link).unwrap();
+
+        assert_eq!(
+            lock_path(&compose.path),
+            projects.canonicalize().unwrap().join("local.lock")
+        );
+    }
+
     #[tokio::test]
     async fn metadata_preparation_keeps_sibling_compose_locks_independent() {
         let dir = tempfile::tempdir().unwrap();
@@ -825,7 +846,8 @@ mod tests {
         let default_lock = dir.path().join("worker-compose.lock");
         let before = std::fs::read_to_string(&default_lock).unwrap();
         let mut dev = ComposeFile::load(&dev_path).unwrap();
-        let expected = dir.path().join("worker-compose.dev.lock");
+        // ComposeFile::load canonicalizes symlinked temp roots and Windows prefixes.
+        let expected = dev.path.with_file_name("worker-compose.dev.lock");
 
         assert!(matches!(
             preflight_frozen(&dev),
@@ -850,7 +872,7 @@ mod tests {
             files.push(ComposeFile::load(path).unwrap());
         }
         let default_lock = dir.path().join("worker-compose.lock");
-        let dev_lock = dir.path().join("worker-compose.dev.lock");
+        let dev_lock = files[1].path.with_file_name("worker-compose.dev.lock");
         let valid = serde_yaml::to_string(&lock()).unwrap();
         let mut stale = lock();
         stale.containers.get_mut("state").unwrap().requested = "latest".to_string();

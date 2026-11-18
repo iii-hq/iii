@@ -373,8 +373,10 @@ changes and causes no restart.
 
 ### Package lock
 
-Compose writes a lock beside each compose file, replacing its final `.yaml` or `.yml` extension
-with `.lock` and preserving the rest of the file name.
+Compose resolves a selected symlink before deriving the lock path. It writes the lock beside the
+resolved compose file, replacing its final `.yaml` or `.yml` extension with `.lock` and preserving
+the rest of the file name. For example, if `config/dev.yaml` links to `projects/local.yaml`, the lock
+is `projects/local.lock`, not `config/dev.lock`.
 
 | Compose file | Lockfile |
 | --- | --- |
@@ -383,9 +385,13 @@ with `.lock` and preserving the rest of the file name.
 | `worker-compose.prod.yml` | `worker-compose.prod.lock` |
 | `config/local.yaml` | `config/local.lock` |
 
-Compose files in the same directory keep independent locks. Selecting a file with `--file` in the
-CLI or `file` in a `compose::*` call selects its corresponding lock for reads, writes, and frozen
-validation. Compose does not fall back to another compose file's lock. In frozen mode, a missing or
+Compose files with different stems in the same directory keep independent locks. Files that differ
+only by extension, such as `worker-compose.yaml` and `worker-compose.yml`, share
+`worker-compose.lock`. Use different stems, such as `worker-compose.yaml` and
+`worker-compose.dev.yml`, when you need independent locks.
+
+Selecting a file with `--file` in the CLI or `file` in a `compose::*` call selects its corresponding
+lock for reads, writes, and frozen validation. Compose does not fall back to another compose file's lock. In frozen mode, a missing or
 outdated lock for the selected file is an error, even if another valid lock exists beside it.
 
 The compose file keeps the requested selector. The lock keeps the resolved dependency graph,
