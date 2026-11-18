@@ -182,7 +182,7 @@ jobs:
       # Queue every accepted /bench instead of replacing the single pending job.
       queue: max
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -256,7 +256,7 @@ jobs:
             echo "::endgroup::"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-compare-${{ needs.authorize.outputs.pr }}-${{ github.run_id }}
@@ -273,7 +273,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: bench-compare-${{ needs.authorize.outputs.pr }}-${{ github.run_id }}
