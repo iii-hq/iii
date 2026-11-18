@@ -78,8 +78,7 @@ struct ResolveResponse {
 }
 
 /// Explicit identity for registries whose request names are not package names.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 struct ResolveRoot {
     schema: u32,
     requested: RootRequest,
@@ -87,11 +86,76 @@ struct ResolveRoot {
     version: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+impl<'de> Deserialize<'de> for ResolveRoot {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            schema: u32,
+            requested: RootRequest,
+            name: String,
+            version: String,
+        }
+        let Fields {
+            schema,
+            requested,
+            name,
+            version,
+        } = deserialize_root_object(deserializer)?;
+        Ok(Self {
+            schema,
+            requested,
+            name,
+            version,
+        })
+    }
+}
+
+#[derive(Debug)]
 struct RootRequest {
     worker: String,
     version: String,
+}
+
+impl<'de> Deserialize<'de> for RootRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            worker: String,
+            version: String,
+        }
+        let Fields { worker, version } = deserialize_root_object(deserializer)?;
+        Ok(Self { worker, version })
+    }
+}
+
+/// Restrict binding structs to objects without buffering away duplicate fields.
+fn deserialize_root_object<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a registry root binding object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            map: M,
+        ) -> std::result::Result<T, M::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
 }
 
 /// Only a validated response can supply the root to either resolution path.
@@ -1810,12 +1874,19 @@ fn validate_resolution(
     } else if let Ok(requirement) = semver::VersionReq::parse(range) {
         let selected = semver::Version::parse(&worker.version)
             .map_err(|_| refuse("the registry root is not a semantic version"))?;
-        // Match the planner's range semantics for prereleases. Tags remain registry-owned.
-        if !requirement.matches(&semver::Version::new(
-            selected.major,
-            selected.minor,
-            selected.patch,
-        )) {
+        // An explicit prerelease comparator owns its full semver semantics, including
+        // conjunctions and prerelease exclusions. Only ordinary ranges retain the
+        // planner's prerelease-as-release compatibility. Tags remain registry-owned.
+        let selected = if requirement
+            .comparators
+            .iter()
+            .any(|comparator| !comparator.pre.is_empty())
+        {
+            selected
+        } else {
+            semver::Version::new(selected.major, selected.minor, selected.patch)
+        };
+        if !requirement.matches(&selected) {
             return Err(refuse(
                 "the registry root does not satisfy the requested version range",
             ));

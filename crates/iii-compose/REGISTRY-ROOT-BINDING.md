@@ -66,8 +66,13 @@ An exact-resolution POST for `1.2.3` needs a response echoing `1.2.3`, not `next
 node's selected version. The node may retain an existing safe alias: `alias_of`
 continues to determine canonical package/cache identity. Every graph name is
 unique. A competing node whose name equals the request cannot be redirected to
-another root. Exact semantic versions must match exactly; parseable ranges use the
-existing planner's prerelease-as-release semantics. Tags remain registry-owned.
+another root. Exact semantic versions must match exactly. If any parsed range
+comparator explicitly specifies a prerelease, `VersionReq::matches` compares the
+unmodified selected version against the whole conjunction, retaining semver's
+prerelease exclusions and thresholds. Only ranges without an explicit prerelease
+retain the planner's prerelease-as-release compatibility (`^1.0` accepts
+`1.1.0-rc.1`). No manual selector splitting is used; `UpdateScope` is unchanged.
+Tags remain registry-owned. Existing build-metadata/path rejection is unchanged.
 
 An explicit binding's graph must be closed, root-reachable and acyclic. Edges use
 safe graph names, not request text or foreign registry-qualified references. Missing
@@ -92,8 +97,13 @@ may explicitly name a root; production graph results always originate in validat
   no matching safe node is unsupported and fails `PACKAGE_NOT_RESOLVED` with explicit
   binding guidance. There is no single-node, container-key or basename fallback.
 - `ResolveResponse` and graph workers retain their existing unknown-field tolerance.
-  `root` and `root.requested` are strict (`deny_unknown_fields`). A present malformed
-  extension is a deserialization/registry error, not a silent legacy downgrade.
+  Non-null `root` and `root.requested` must be objects: a map-only visitor delegates
+  directly to typed private `deny_unknown_fields` structs via
+  `MapAccessDeserializer`. No `Value` buffer discards duplicate entries. Positional
+  arrays, unknown or duplicate fields and `requested: null` are refused. Optional
+  `root: null` retains the legacy behavior above; duplicate top-level `root` is
+  still refused, including duplicate nulls. A present malformed extension is a
+  deserialization/registry error, not a silent legacy downgrade.
   Unsupported `root.schema` fails closed. Future semantics require a new reviewed
   schema; schema 1 cannot quietly acquire another authority or binding map.
 - Older consumers ignore `root` due to their existing serde behavior. This does
@@ -131,7 +141,8 @@ no cochange. No external worker, remote repository or smoke fixture was modified
 
 ## Regression matrix and verification boundary
 
-`src/registry_root_tests.rs` adds nine narrow tests:
+`src/registry_root_tests.rs` contains the original nine tests plus four focal
+F1/F2 regressions (thirteen total, all PENDING):
 
 - valid explicit binding (root not first), safe canonical alias, legacy same-name;
 - both HTTP lookup paths reject absent/ambiguous binding, wrong request/authority,
@@ -144,7 +155,12 @@ no cochange. No external worker, remote repository or smoke fixture was modified
   targets, raw interpolation/escapes/selectors, canonical manifest and digest,
   canonical/alias cache reuse, exactly two source GETs (tool/queue);
 - conflicting safe container key, same dependency name at distinct authorities,
-  and wrong archive digest without publishing a cache install.
+  and wrong archive digest without publishing a cache install;
+- explicit prerelease exact/range positives and negatives, mixed/two-prerelease
+  conjunctions and ordinary-range compatibility in legacy and bound responses;
+- valid declaration-ordered positional arrays, duplicate top-level `root` and every
+  root/requested field tested with raw JSON (not `Value`), null boundaries, strict
+  nested unknown fields and unchanged top-level unknown tolerance.
 
 Existing raw-reference planning tests now declare the binding they previously
 assumed. Their subprocess environment matrix remains unchanged; the new joined
@@ -157,8 +173,8 @@ Formatting/source checks are not runtime proof. Future minimum authorized checks
 cargo test -p iii-compose registry::root_tests
 cargo test -p iii-compose explicit_registry_references_remain_raw_after_resolution_and_upsert
 cargo test -p iii-compose a_renamed_container_plans_the_package_it_runs
-cargo test -p iii-compose registry::tests
-cargo test -p iii-compose dependencies::tests
+cargo test -p iii-compose concurrent_alias_and_canonical_installs_share_a_bundle
+cargo test -p iii-compose update_compares_a_prerelease_with_an_operator_range_as_its_release
 ```
 
 No command above was run. Future heavy admission requires separate authorization,

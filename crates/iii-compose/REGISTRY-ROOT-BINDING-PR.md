@@ -8,7 +8,8 @@
   basename/container-key guessing; reject ambiguous or inconsistent bindings.
 - Preserve canonical package/cache/alias semantics and raw compose references,
   escapes and selectors. No lock schema, SDK, adapter or artifact changes.
-- Add nine focused contract and in-process HTTP/lock/archive/cache regressions.
+- Add nine focused contract and in-process HTTP/lock/archive/cache regressions,
+  plus four F1/F2 prerelease/parser regressions (thirteen total, all PENDING).
 
 Base: `c5129b8da5c0f4db8719ae6dd58aee6fa297bc9b`.
 Branch: `fix/registry-requested-root-binding`.
@@ -62,7 +63,7 @@ no workaround or outside-scope read was attempted.
 
 ## Pending checks, not PASS
 
-All Rust compilation and all nine new tests are **PENDING**. See the contract doc's
+All Rust compilation and all thirteen new tests are **PENDING**. See the contract doc's
 minimum test matrix. The local mock server, test archives and temporary caches
 exist only as unexecuted Rust test code. There was no network listener, artifact
 GET, process/VM startup, Cargo/rustc/build, SDK/npm command or cache inspection.
@@ -81,3 +82,26 @@ remote PR. Heavy compilation/tests require fresh separate authorization and
 metadata admission, the parent's shared target, `/tmp/iii-agents-heavy.lock`,
 nice 15, ionice c3 and jobs 4. No current capacity or automatic cap increase is
 assumed. A future engine artifact and full scenario17 run are separate gated work.
+
+## Focal review correction: F1 / F2
+
+The follow-up preserves `7b2fce73e64b502bc9de2da54abef7d6d900fd8e` in history and
+changes only `registry.rs`, `registry_root_tests.rs` and these two documents.
+
+- F1: if any parsed comparator has a prerelease, match the unmodified selected
+  version with semver's complete conjunction. Ordinary ranges retain existing
+  prerelease-as-release compatibility; exact-version handling and `UpdateScope`
+  are untouched. No dependency versions change.
+- F2: both binding types deserialize only through a map visitor into typed private
+  field structs. This preserves serde's unknown/duplicate field rejection without
+  a `Value` intermediary. `root: null` remains legacy; `requested: null` and valid
+  positional arrays fail. Raw JSON tests exercise duplicate `root`, `schema`,
+  `requested`, `name`, root `version`, `worker`, and requested `version` fields.
+- The minimum future matrix is now only the root test module plus the four named
+  regression tests in the contract document, not whole registry/dependency suites.
+
+Focal source checks: direct rustfmt/check and git diff checks only. The ten security
+functions remain compared against frozen c512; dependencies/daemon stay byte-identical
+to 7b2. These checks do not prove Rust type correctness or runtime test results.
+All thirteen tests remain PENDING; runtime=0, build=0. Producer cochange remains
+separate and gated on review. No helper, artifact, SDK, runtime or remote was touched.

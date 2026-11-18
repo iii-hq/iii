@@ -219,6 +219,190 @@ fn root_binding_is_strict_inside_the_optional_extension_only() {
     assert!(serde_json::from_value::<ResolveResponse>(body).is_ok());
 }
 
+/// Explicit prerelease constraints use semver's whole conjunction, not a stripped version.
+#[test]
+fn root_binding_preserves_explicit_prerelease_constraints_and_ordinary_range_compatibility() {
+    let cases = [
+        ("1.2.3-rc.1", "1.2.3-rc.1", true),
+        ("1.2.3-rc.2", "1.2.3-rc.1", false),
+        ("1.2.3", "1.2.3-rc.1", false),
+        ("=1.2.3-rc.1", "1.2.3-rc.1", true),
+        ("=1.2.3-rc.2", "1.2.3-rc.1", false),
+        ("=1.2.3-rc.1", "1.2.3", false),
+        ("^1.2.3-rc.2", "1.2.3-rc.1", false),
+        ("^1.2.3-rc.2", "1.2.3-rc.2", true),
+        ("^1.2.3-rc.2", "1.2.3-rc.3", true),
+        ("^1.2.3-rc.2", "1.2.3", true),
+        ("^1.2.3-rc.2", "1.2.4-rc.1", false),
+        (">=1.2.3-rc.2, <2.0.0", "1.2.3-rc.3", true),
+        (">=1.2.3-rc.2, <2.0.0", "1.2.3-rc.1", false),
+        (">=1.2.3-rc.2, <2.0.0", "1.3.0-rc.1", false),
+        (">=1.2.3-rc.2, <2.0.0", "1.9.0", true),
+        (">=1.2.3-rc.1, <1.2.3-rc.4", "1.2.3-rc.2", true),
+        (">=1.2.3-rc.1, <1.2.3-rc.4", "1.2.3-rc.4", false),
+        (">=1.2.3-rc.2, <1.2.3", "1.2.3-rc.3", true),
+        (">=1.2.3, <1.3.0-rc.2", "1.3.0-rc.1", true),
+        (">=1.2.3, <1.3.0-rc.2", "1.3.0-rc.2", false),
+        (">=1.2.3, <1.3.0-rc.2", "1.2.4-rc.1", false),
+        ("^1.0", "1.1.0-rc.1", true),
+        ("^1.0", "2.0.0-rc.1", false),
+    ];
+    for explicit in [false, true] {
+        for (selector, selected, accepted) in cases {
+            let request = if explicit { OPAQUE } else { "tool" };
+            let mut body =
+                json!({"graph": [{"name": "tool", "version": selected, "type": "bundle"}]});
+            if explicit {
+                body["root"] = binding(request, selector, "tool");
+                body["root"]["version"] = selected.into();
+            }
+            let result = validate_resolution(
+                "tool",
+                DEFAULT_REGISTRY,
+                request,
+                selector,
+                serde_json::from_value(body).unwrap(),
+            );
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "explicit={explicit}, {selector} -> {selected}: {result:?}"
+            );
+            if let Err(error) = result {
+                assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
+            }
+        }
+    }
+}
+
+#[test]
+fn root_binding_rejects_valid_positional_arrays_in_raw_json() {
+    // These are well-typed, declaration-ordered representations accepted by a derived
+    // struct visitor. Only the object boundary must reject them; no Value round trip.
+    let arrays = [
+        r#"[1,{"worker":"${SCENARIO_LITERAL}/tool","version":"next"},"tool","1.2.3"]"#,
+        r#"{"schema":1,"requested":["${SCENARIO_LITERAL}/tool","next"],"name":"tool","version":"1.2.3"}"#,
+    ];
+    for root in arrays {
+        let raw = format!(
+            r#"{{"graph":[{{"name":"tool","version":"1.2.3","type":"bundle"}}],"root":{root}}}"#
+        );
+        let error = serde_json::from_str::<ResolveResponse>(&raw).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid type: sequence"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn root_binding_rejects_duplicate_fields_without_losing_raw_json_entries() {
+    let request = r#"{"worker":"${SCENARIO_LITERAL}/tool","version":"next"}"#;
+    let root = format!(r#"{{"schema":1,"requested":{request},"name":"tool","version":"1.2.3"}}"#);
+    let graph = r#""graph":[{"name":"tool","version":"1.2.3","type":"bundle"}]"#;
+    let mut cases = vec![
+        (
+            "root",
+            format!(r#"{{{graph},"root":{root},"root":{root}}}"#),
+        ),
+        ("root", format!(r#"{{{graph},"root":null,"root":{root}}}"#)),
+        ("root", format!(r#"{{{graph},"root":{root},"root":null}}"#)),
+        ("root", format!(r#"{{{graph},"root":null,"root":null}}"#)),
+    ];
+    for (field, value) in [
+        ("schema", "1"),
+        ("requested", request),
+        ("name", r#""tool""#),
+        ("version", r#""1.2.3""#),
+    ] {
+        let duplicate = format!(r#"{},"{field}":{value}}}"#, root.strip_suffix('}').unwrap());
+        cases.push((field, format!(r#"{{{graph},"root":{duplicate}}}"#)));
+    }
+    for (field, value) in [
+        ("worker", r#""${SCENARIO_LITERAL}/tool""#),
+        ("version", r#""next""#),
+    ] {
+        let duplicate = format!(
+            r#"{},"{field}":{value}}}"#,
+            request.strip_suffix('}').unwrap()
+        );
+        let duplicate_root = root.replace(request, &duplicate);
+        cases.push((field, format!(r#"{{{graph},"root":{duplicate_root}}}"#)));
+    }
+    for (field, raw) in cases {
+        let error = serde_json::from_str::<ResolveResponse>(&raw).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("duplicate field `{field}`")),
+            "{error}: {raw}"
+        );
+    }
+}
+
+#[test]
+fn root_binding_null_and_unknown_field_boundaries_remain_explicit() {
+    for alias in ["", r#", "alias_of":"canonical-tool""#] {
+        for root in ["", r#", "root":null"#] {
+            let raw = format!(
+                r#"{{"graph":[{{"name":"tool","version":"1.2.3","type":"bundle"{alias}}}],"future_metadata":true{root}}}"#
+            );
+            let response: ResolveResponse = serde_json::from_str(&raw).unwrap();
+            assert!(response.root.is_none());
+            assert!(
+                validate_resolution("renamed", DEFAULT_REGISTRY, "tool", "1.2.3", response).is_ok()
+            );
+            let error = validate_resolution(
+                "tool",
+                DEFAULT_REGISTRY,
+                OPAQUE,
+                "1.2.3",
+                serde_json::from_str(&raw).unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), "PACKAGE_NOT_RESOLVED");
+        }
+    }
+    let root = r#"{"schema":1,"requested":{"worker":"${SCENARIO_LITERAL}/tool","version":"next"},"name":"tool","version":"1.2.3"}"#;
+    for invalid in [
+        root.replace(
+            r#"{"worker":"${SCENARIO_LITERAL}/tool","version":"next"}"#,
+            "null",
+        ),
+        root.replace(r#""schema":1"#, r#""schema":null"#),
+        root.replace(r#""worker":"${SCENARIO_LITERAL}/tool""#, r#""worker":null"#),
+        root.replace(r#""name":"tool""#, r#""name":null"#),
+        root.replace(r#""version":"1.2.3""#, r#""version":null"#),
+        root.replace(r#""version":"next""#, r#""version":null"#),
+        root.replace(r#""schema":1"#, r#""schema":1,"unknown":true"#),
+        root.replace(r#""version":"next""#, r#""version":"next","unknown":true"#),
+    ] {
+        let raw = format!(r#"{{"graph":[],"root":{invalid}}}"#);
+        assert!(
+            serde_json::from_str::<ResolveResponse>(&raw).is_err(),
+            "{raw}"
+        );
+    }
+    // Unknown schema is well-typed but must still fail semantic validation.
+    let raw = format!(
+        r#"{{"graph":[{{"name":"tool","version":"1.2.3","type":"bundle"}}],"root":{}}}"#,
+        root.replace(r#""schema":1"#, r#""schema":2"#)
+    );
+    let error = validate_resolution(
+        "tool",
+        DEFAULT_REGISTRY,
+        OPAQUE,
+        "next",
+        serde_json::from_str(&raw).unwrap(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported registry root binding schema")
+    );
+}
+
 #[cfg(unix)]
 fn bundle(name: &str) -> Vec<u8> {
     let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
