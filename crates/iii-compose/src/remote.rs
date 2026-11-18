@@ -789,17 +789,38 @@ async fn dispatch(
         },
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
-        Operation::List => Ok(with_host_targets(json!({
-            "daemon": daemon.worker_name,
-            // Which machine answered. Several daemons share an engine, so a
-            // caller who reached one by namespace can confirm it was the one
-            // they meant.
-            "daemon_namespace": daemon.daemon_namespace,
-            "daemon_pid": std::process::id(),
-            "projects": daemon.list().await,
-        }))),
-        Operation::Status => match daemon.status(file.as_deref()).await {
-            Ok(project) => Ok(with_host_targets(json!({
+        Operation::List => {
+            let projects = tokio::time::timeout(
+                std::time::Duration::from_millis(op_metadata("compose::list").0),
+                daemon.list(),
+            )
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|err| compose_error(&err))?;
+            Ok(with_host_targets(json!({
+                "daemon": daemon.worker_name,
+                // Which machine answered, even when reached by namespace.
+                "daemon_namespace": daemon.daemon_namespace,
+                "daemon_pid": std::process::id(),
+                "projects": projects,
+            })))
+        }
+        Operation::Status => {
+            // Loading can adopt/reap recovered children: do not add a new
+            // cancellation point to that lifecycle work. Only snapshot
+            // acquisition below is safe to drop at the existing read deadline.
+            let project = daemon
+                .status(file.as_deref())
+                .await
+                .map_err(|err| compose_error(&err))?;
+            let containers = tokio::time::timeout(
+                std::time::Duration::from_millis(op_metadata("compose::status").0),
+                project.status(),
+            )
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|err| compose_error(&err))?;
+            Ok(with_host_targets(json!({
                 "namespace": project.project_namespace,
                 "file": project.file_path(),
                 // Derived from the file, so nobody can guess it: where this
@@ -808,10 +829,9 @@ async fn dispatch(
                 // Which process is answering. `--detach` waits on this: another
                 // daemon would otherwise answer for the one being launched.
                 "daemon_pid": std::process::id(),
-                "containers": project.status().await,
-            }))),
-            Err(err) => Err(compose_error(&err)),
-        },
+                "containers": containers,
+            })))
+        }
         // What the operating system sees, which is not always what the daemon
         // believes: descendants of a container, and anything still carrying
         // this project's environment after the process compose started is
@@ -1200,7 +1220,8 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::list" => {
             "List every project loaded by this compose daemon, and the target \
-             triples this host resolves packages for."
+             triples this host resolves packages for. Waits for current per-project \
+             snapshots; cancellation or the request deadline fails the whole list."
         }
         "compose::status" => {
             "Report the project namespace, state directory, daemon pid, the \
@@ -1208,7 +1229,8 @@ fn op_description(function_id: &str) -> &'static str {
              of every declared container, with a package's declared version \
              selector as 'requested'. A container declaring a 'restart' policy \
              reports as 'restarting' while it waits for the supervisor's next \
-             attempt."
+             attempt. Waits for a current snapshot; cancellation or the request \
+             deadline returns an error, never persisted fallback state."
         }
         "compose::ps" => {
             "List the operating-system processes of this daemon's projects, or of \
