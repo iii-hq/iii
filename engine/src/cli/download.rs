@@ -170,13 +170,17 @@ fn extract_from_targz(binary_name: &str, archive_bytes: &[u8]) -> Result<Vec<u8>
 }
 
 /// Extract a binary from a zip archive (Windows).
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 fn extract_from_zip(binary_name: &str, archive_bytes: &[u8]) -> Result<Vec<u8>, ExtractError> {
     use std::io::{Cursor, Read};
 
     let reader = Cursor::new(archive_bytes);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|e| ExtractError::ExtractionFailed(e.to_string()))?;
+    // Validate every entry before returning any installable binary bytes.
+    archive
+        .validate_header_consistency()
+        .map_err(|e| ExtractError::ExtractionFailed(e.to_string()))?;
 
     let exe_name = format!("{}.exe", binary_name);
 
@@ -255,6 +259,58 @@ pub enum DownloadAndInstallError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn zip_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write;
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, body) in entries {
+            archive
+                .start_file(
+                    *name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .unwrap();
+            archive.write_all(body).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn zip_windows_reader_accepts_root_nested_and_extensionless_binaries() {
+        for name in ["iii.exe", "package/iii.exe", "iii"] {
+            assert_eq!(
+                extract_from_zip("iii", &zip_entries(&[(name, b"binary")])).unwrap(),
+                b"binary"
+            );
+        }
+    }
+
+    #[test]
+    fn zip_windows_reader_rejects_later_header_mismatch_before_returning_binary() {
+        let mut bytes = zip_entries(&[("iii.exe", b"binary"), ("safe.txt", b"other")]);
+        let local = bytes
+            .windows(4)
+            .enumerate()
+            .filter(|(_, b)| *b == b"PK\x03\x04")
+            .nth(1)
+            .unwrap()
+            .0;
+        bytes[local + 30..local + 38].copy_from_slice(b"evil.txt");
+        let error = extract_from_zip("iii", &bytes).unwrap_err();
+        assert!(
+            error.to_string().contains("header inconsistency"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn zip_windows_reader_rejects_corrupted_payload_crc() {
+        let mut bytes = zip_entries(&[("iii.exe", b"binary")]);
+        let index = bytes.windows(6).position(|b| b == b"binary").unwrap();
+        bytes[index] ^= 1;
+        assert!(extract_from_zip("iii", &bytes).is_err());
+    }
 
     #[test]
     fn test_checksum_computation() {

@@ -15,8 +15,8 @@ use std::{
     },
 };
 
-use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use jiff::Timestamp;
 use opentelemetry::KeyValue;
 use tokio::sync::{Notify, RwLock, mpsc, watch};
 use uuid::Uuid;
@@ -48,7 +48,7 @@ pub struct RuntimeWorkerInfo {
     /// `WorkerRegistration`. Surfaces in `engine::workers::list` / `info`.
     pub description: Option<String>,
     pub worker_type: String,
-    pub connected_at: DateTime<Utc>,
+    pub connected_at: Timestamp,
     pub function_ids: Vec<String>,
     pub internal: bool,
 }
@@ -376,7 +376,7 @@ pub struct WorkerConnection {
     pub invocations: Arc<RwLock<HashSet<Uuid>>>,
     pub runtime: Option<String>,
     pub version: Option<String>,
-    pub connected_at: DateTime<Utc>,
+    pub connected_at: Timestamp,
     pub name: Option<String>,
     /// One-line summary reported by the worker via `engine::workers::register`.
     pub description: Option<String>,
@@ -451,7 +451,7 @@ impl WorkerConnection {
             external_function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
-            connected_at: Utc::now(),
+            connected_at: Timestamp::now(),
             name: None,
             description: None,
             os: None,
@@ -489,7 +489,7 @@ impl WorkerConnection {
             external_function_ids: Arc::new(RwLock::new(HashSet::new())),
             runtime: None,
             version: None,
-            connected_at: Utc::now(),
+            connected_at: Timestamp::now(),
             name: None,
             description: None,
             os: None,

@@ -752,7 +752,7 @@ impl TelemetryContext {
             platform: "iii-engine".to_string(),
             os_name: std::env::consts::OS.to_string(),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
-            time: chrono::Utc::now().timestamp_millis(),
+            time: jiff::Timestamp::now().as_millisecond(),
             insert_id: Some(uuid::Uuid::new_v4().to_string()),
             country: None,
             language,
@@ -1946,7 +1946,7 @@ mod tests {
             env_info: make_env_info(),
         };
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = jiff::Timestamp::now().as_millisecond();
         let event = ctx.build_event("evt", serde_json::json!({}), None);
         assert!((event.time - now_ms).abs() < 5000);
     }

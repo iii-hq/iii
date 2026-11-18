@@ -19,13 +19,13 @@ iii.observe("orders::create", "alerts::big-order");
 
 Every function is observable. By default, each successful call of `orders::create` runs
 `alerts::big-order` with the `Observed` payload of that call (its input, output, and caller; the call's metadata only when `capture` names it). Events are
-function calls too: an HTTP request is a call of `http::on-request`, a cron tick a call of
-`cron::on-tick`, a row change a call of `database::on-row-changed`. Observing one of them is how a
+function calls too: an HTTP request is a call of `http::on-request`, a row change a call of
+`database::on-row-changed`. Observing one of them is how a
 function runs on that event.
 
 | Part | Fields | Notes |
 | --- | --- | --- |
-| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, capture? }` | `args` are for the function's worker (a route, a cron expression, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `capture`: which parts of the call the payload carries (`input`, `output`, `error`, `caller`, `metadata`), and with them which calls run the target: `input`/`output` fire on success, `error` on error, `caller`/`metadata` only add fields (a non-empty `capture` must name one of `input`, `output`, `error`: `INVALID_ARGS` otherwise). Default `['input', 'output', 'caller']` (success only; `metadata` is opt-in). `on` and `deliver` are deprecated: the engine translates them with a warning (see [Code written for 0.25](#code-written-for-025)). Ids, status, and timing are always there; `capture: []` fires on success and moves no payloads |
+| `source` (left side) | `"fn::id"`, or `{ function_id, namespace?, args?, filters?, capture? }` | `args` are for the function's worker (a route, a table, a topic), validated against its `args_format`. `filters` are for iii: they select which calls reach the target. `capture`: which parts of the call the payload carries (`input`, `output`, `error`, `caller`, `metadata`), and with them which calls run the target: `input`/`output` fire on success, `error` on error, `caller`/`metadata` only add fields (a non-empty `capture` must name one of `input`, `output`, `error`: `INVALID_ARGS` otherwise). Default `['input', 'output', 'caller']` (success only; `metadata` is opt-in). `on` and `deliver` are deprecated: the engine translates them with a warning (see [Code written for 0.25](#code-written-for-025)). Ids, status, and timing are always there; `capture: []` fires on success and moves no payloads |
 | `target` (right side) | a registered function id (or `{ function_id, namespace }`) | No inline handler. The observer stays `pending` until the target is registered |
 | `options` | `id?`, `max_fires?`, `expires_in_ms?`, `max_in_flight?`, `metadata?` | `id` defaults to a UUID kept across replays. `metadata` is the sidecar of every activation |
 
@@ -244,7 +244,7 @@ reason code.
 ## Filters
 
 Filters are declarative JSON, evaluated by the same `iii-filter` language in the engine and every
-SDK. Full reference: https://iii.dev/docs/reference/filters.
+SDK. Full reference: https://iii.dev/docs/reference/filters.md.
 
 - A clause is `"<path>": { "$op": operand }`. Explicit operators only: `{ "input.op": "insert" }`
   is `INVALID_FILTER`; write `{ "input.op": { "$eq": "insert" } }`. Clauses are ANDed.
@@ -267,7 +267,7 @@ SDK. Full reference: https://iii.dev/docs/reference/filters.
 
 This is provider-side work: a worker that turns something outside iii (a schedule, a socket, a
 database log) into calls of a function others observe. Full guide:
-https://iii.dev/docs/creating-workers/observable-functions.
+https://iii.dev/docs/creating-workers/observable-functions.md.
 
 The worker registers a function whose handler returns the event, and calls it when the event
 happens. iii does the rest by default. Four hooks override those defaults:
@@ -594,8 +594,7 @@ Private functions in the `default` namespace whose handler returns the event, so
 `output` are both the event. Observe them with `capture: ['input']` to receive the event alone, as
 the payload's `input`.
 Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CHANGED`,
-`WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`, `STREAM_CHANGED`,
-`STREAM_JOIN`, `STREAM_LEAVE`).
+`WORKERS_CHANGED`, `OBSERVERS_CHANGED`, `LOG`, `SPAN`, `CONFIGURATION_UPDATED`).
 
 | Function | `input` |
 | --- | --- |
@@ -605,7 +604,6 @@ Calling one is `FORBIDDEN`. The constants live in `EngineSources` (`FUNCTIONS_CH
 | `configuration::on-updated` | `{ type, event_type, id, name, ... }`, no value (read it with `configuration::get`) |
 | `observability::on-log` | one log record |
 | `observability::on-span` | `{ trace_ids: [...] }` per window (~300 ms) |
-| `stream::on-changed`, `stream::on-join`, `stream::on-leave` (`iii-stream`) | the stream event; filter on `input.stream_name`, `input.group_id` |
 
 ```typescript
 iii.observe({ function_id: "engine::on-workers-changed", capture: ["input"] }, "ops::on-worker");
@@ -614,7 +612,7 @@ iii.observe(
     filters: { "input.id": { $eq: "orders" }, "input.event_type": { $eq: "configuration:updated" } } },
   "orders::reload",
 );
-// a worker in another namespace names default for observability::* and stream::*
+// a worker in another namespace names default for observability::*
 iii.observe(
   { function_id: "observability::on-log", namespace: "default", capture: ["input"],
     filters: { "input.severity_text": { $eq: "ERROR" } } },
@@ -625,20 +623,8 @@ iii.observe(
 ## Code written for 0.25
 
 To move code written for 0.25 to 0.26, follow the upgrade guide:
-https://iii.dev/docs/upgrading/from-0-25-x.
+https://iii.dev/docs/upgrading/from-0-25-x.md.
 
-- `source.on` and `source.deliver` are deprecated, not refused. A 0.26 engine translates them to
-  the 0.25 behavior (`deliver: "output"` hands the target the bare output, `null` after a failure)
-  and logs one warning per registration. Only invalid values get `INVALID_ARGS`. Replace them:
-  `on: "error"` -> `capture: ["error", "caller"]` (or the failed-calls-with-input recipe above),
-  `on: "complete"` -> add `"error"`, `deliver: "input"`/`"output"` -> `capture: ["input"]`/
-  `["output"]` read from the payload. Support will be removed in a future release.
-- A worker without the `observe.capture` feature (0.25 SDK, 0.26 release candidate SDK) always gets
-  the 0.25 semantics on a 0.26 engine: outcomes from `on` (absent = success), whatever `capture`
-  names. Its hosted functions get the legacy `on` in their observer views.
-- A 0.26 SDK on an engine without `observe.capture` (0.25, 0.26 release candidate) sends the `on`
-  its `capture` implies, reads views without `fires_on` from `on`, and logs a one-time deprecation
-  warning. Upgrade the engine.
 - The `Observed` payload omits absent fields; 0.25 sent `"output": null` for a captured output a
   successful call did not report.
 
@@ -655,12 +641,12 @@ https://iii.dev/docs/upgrading/from-0-25-x.
 
 Inspect observers with `engine::observers::list({ function_id?, namespace?, worker? })` and
 `engine::observers::get({ id })`; `engine::observers::dispose({ id })` removes one. Docs:
-https://iii.dev/docs/using-iii/observers.
+https://iii.dev/docs/using-iii/observers.md.
 
 ## When to Use
 
 - Use this skill to run a function when another function is called, fails, or completes; to bind
-  a function to an HTTP route, a cron schedule, a queue topic, a state or database change, or an
+  a function to an HTTP route, a queue topic, a state or database change, or an
   engine event; or to write or debug filters.
 - Use it to write an event source other workers observe, with `onObserverAdded`,
   `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver`, and `private`.

@@ -331,7 +331,7 @@ test("llms.txt and AGENTS.md are generated from the built homepage and read as p
   const agents = await read("AGENTS.md")
   assert.ok(agents.startsWith("# iii for AI Agents"), "AGENTS.md heading drifted")
   assert.match(agents, /## Homepage copy \(extracted from iii\.dev HTML\)/)
-  assert.match(agents, /## Primitives \(wire-level\)/)
+  assert.match(agents, /## Primitive and operators \(wire-level\)/)
   assert.match(agents, /Last updated: \d{4}-\d{2}-\d{2}\n$/)
 })
 

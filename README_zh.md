@@ -1,182 +1,168 @@
-<h1 align="center">iii</h1>
+<div align="center">
 
-> 本文件是 [README.md](README.md) 的简体中文翻译。为方便同步，正文中的代码、命令、专有名词（Worker、Function、Observer、Compose、SDK 等）保持原文。
+# iii
 
-![iii: 从点对点集成到基于共享运行时的零集成](.github/assets/zero-integration.png)
+**更多应用，更少基础设施。**
 
-<p align="center">
-<a href="https://trendshift.io/repositories/22583?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-22583" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/22583" alt="iii-hq%2Fiii | Trendshift" width="250" height="55"/></a>
-</p>
+将任何函数、智能体、API、模型、浏览器、基础设施和机器连接成一个实时、可组合的系统。
 
+[![GitHub stars](https://img.shields.io/github/stars/iii-hq/iii?style=flat&logo=github)](https://github.com/iii-hq/iii/stargazers)
+[![CI](https://img.shields.io/github/actions/workflow/status/iii-hq/iii/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/iii-hq/iii/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/iii-hq/iii?label=release)](https://github.com/iii-hq/iii/releases)
+[![Contributors](https://img.shields.io/github/contributors/iii-hq/iii)](https://github.com/iii-hq/iii/graphs/contributors)
+[![License](https://img.shields.io/badge/license-Apache--2.0%20%2B%20ELv2-blue)](#许可证)
 
-<!-- Release -->
-<p align="center">
-  <a href="https://hub.docker.com/r/iiidev/iii"><img src="https://img.shields.io/docker/v/iiidev/iii?label=docker" alt="Docker"></a>
-  <a href="https://www.npmjs.com/package/iii-sdk"><img src="https://img.shields.io/npm/v/iii-sdk?label=npm" alt="npm"></a>
-  <a href="https://pypi.org/project/iii-sdk/"><img src="https://img.shields.io/pypi/v/iii-sdk?label=pypi" alt="PyPI"></a>
-  <a href="https://crates.io/crates/iii-sdk"><img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fcrates.io%2Fapi%2Fv1%2Fcrates%2Fiii-sdk&query=%24.crate.max_stable_version&label=crates.io&prefix=v&color=orange" alt="Crates.io"></a>
-  <a href="https://discord.gg/iiidev"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
-</p>
+[![npm](https://img.shields.io/npm/v/iii-sdk?label=npm&logo=npm)](https://www.npmjs.com/package/iii-sdk)
+[![npm downloads](https://img.shields.io/npm/dw/iii-sdk?label=npm%20downloads)](https://www.npmjs.com/package/iii-sdk)
+[![PyPI](https://img.shields.io/pypi/v/iii-sdk?label=PyPI&logo=pypi&logoColor=white)](https://pypi.org/project/iii-sdk/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/iii-sdk?label=PyPI%20downloads)](https://pypistats.org/packages/iii-sdk)
+[![crates.io](https://img.shields.io/crates/v/iii-sdk?logo=rust)](https://crates.io/crates/iii-sdk)
+[![docs.rs](https://img.shields.io/docsrs/iii-sdk?logo=docsdotrs)](https://docs.rs/iii-sdk)
+[![Go Reference](https://pkg.go.dev/badge/github.com/iii-hq/iii/sdk/packages/go/iii.svg)](https://pkg.go.dev/github.com/iii-hq/iii/sdk/packages/go/iii)
+[![Docker pulls](https://img.shields.io/docker/pulls/iiidev/iii?logo=docker&logoColor=white)](https://hub.docker.com/r/iiidev/iii)
 
-<!-- Downloads -->
-<p align="center">
-  <a href="https://workers.iii.dev/"><img src="https://workers.iii.dev/badge/downloads.svg" alt="Worker downloads"></a>
-  <a href="https://workers.iii.dev/"><img src="https://workers.iii.dev/badge/weekly.svg" alt="Weekly worker downloads"></a>
-  <a href="https://hub.docker.com/r/iiidev/iii"><img src="https://img.shields.io/docker/pulls/iiidev/iii?label=docker%20pulls&color=2496ed" alt="Docker pulls"></a>
-  <a href="https://www.npmjs.com/package/iii-sdk"><img src="https://img.shields.io/npm/dt/iii-sdk?label=npm%20downloads&color=cb3837" alt="npm downloads"></a>
-  <a href="https://pepy.tech/projects/iii-sdk"><img src="https://static.pepy.tech/personalized-badge/iii-sdk?period=total&units=international_system&left_color=grey&right_color=blue&left_text=pypi%20downloads" alt="PyPI downloads"></a>
-  <a href="https://crates.io/crates/iii-sdk"><img src="https://img.shields.io/crates/d/iii-sdk?label=crates.io%20downloads&color=e6a04c" alt="Crates.io downloads"></a>
-</p>
+[![Discord](https://img.shields.io/discord/1322278831184281721?label=Discord&logo=discord&logoColor=white)](https://discord.gg/iiidev)
+[![X](https://img.shields.io/twitter/follow/iiidevs?style=flat&logo=x)](https://x.com/iiidevs)
 
-<!-- Index -->
-<p align="center">
-  <a href="#什么是-iii">什么是 iii？</a> ·
-  <a href="#安装-iii">安装 iii</a> ·
-  <a href="#添加-worker">添加 Worker</a> ·
-  <a href="#sdk">SDK</a> ·
-  <a href="#面向第三方-harness-的-agent-skills">Agent Skills</a> ·
-  <a href="#资源">资源</a>
-</p>
+[官网](https://iii.dev) · [文档](https://iii.dev/docs) · [快速入门](https://iii.dev/docs/quickstart) · [Worker 注册表](https://iii.dev/registry) · [博客](https://iii.dev/blog) · [宣言](https://iii.dev/manifesto)
 
-## 什么是 iii？
+[English](README.md) | 简体中文
 
-iii 是在实时场景中组合（compose）、观测（observe）、发现（discover）、扩展（extend）并响应（react）你技术栈中每一个服务的最简单方式，即 **CODER**。
+</div>
 
-每一个后端在写下第一行业务逻辑之前，都始于一个项目。队列、定时任务（cron）、HTTP、状态管理、可观测性、agent、沙箱（sandbox），往往各自都带来一套需要单独打通的集成方案，让 CODER 变得复杂。iii 用一个实时的系统界面（live system surface）统一解决了所有这些关注点。
+## 为什么选择 iii
 
-```bash
-iii compose --namespace dev --up
-iii call -n dev compose::add worker=queue
-iii call -n dev compose::add worker=agent
-iii call -n dev compose::add worker=<anything>
+每个服务都有自己的运行时、API 和故障方式。让服务协同工作意味着没完没了的集成和埋点工作：错误处理、网关、同步、链路追踪，以及永无止境的维护。
+
+据估计，多达 70% 的开发时间花在集成上。我们能找到的最低估计也有 40%。
+
+iii 用一个原语 **Function** 消除这些工作。服务、智能体和工具作为 worker 连接到同一个引擎，它们能做的一切都是 Function，任何其他 worker 都可以调用（call）或观察（observe）它，不论使用什么语言、运行在哪台机器上。worker 可以定义在 Compose 文件中，并运行在任何基础设施上。整个服务栈可以轻松地启动、停止、升级或替换。
+
+iii 就像把一整个应用平台握在手中，却没有供应商锁定。结果是一个可组合、可观测、可发现、可扩展且具备响应能力的系统。参见[为 C.O.D.E.R. 而构建](#为-coder-而构建)。
+
+## 一个原语：Function
+
+iii 围绕一个原语 **Function** 和两个操作来组织软件：
+
+- `worker.call(a)` 立即运行函数 `a`。
+- `worker.observe(a, b)` 使函数 `a` 运行时，函数 `b` 也运行。
+
+worker 托管函数。队列、数据库、HTTP、流、沙箱、可观测性、智能体和业务逻辑都是函数。一个 HTTP 请求是对 `http::on-request` 的一次调用。一次数据库写入是对 `database::on-row-changed` 的一次调用。一条队列消息是对 `queue::on-message` 的一次调用。要响应其中任何一个，都使用同一个 `observe`。
+
+```typescript
+import { registerWorker } from 'iii-sdk'
+
+const worker = registerWorker('ws://localhost:49134')
+
+worker.registerFunction('orders::create', async (order: { item: string; total: number }) => {
+  return { id: crypto.randomUUID(), ...order }
+})
+
+worker.registerFunction('alerts::big-order', async ({ input }: { input: { total: number } }) => {
+  console.log(`Big order: ${input.total}`)
+})
+
+// When orders::create runs with a total of 500 or more, alerts::big-order runs
+const observer = worker.observe(
+  { function_id: 'orders::create', filters: { 'input.total': { $gte: 500 } } },
+  'alerts::big-order',
+)
+await observer.ready()
+
+// Run orders::create now and wait for its result
+const order = await worker.call({ function_id: 'orders::create', payload: { item: 'widget', total: 750 } })
+console.log(order)
 ```
 
-每个 Worker 都会加入实时目录（live catalog）。其他所有 Worker 会立即收到通知并可以直接调用它。可在 [workers.iii.dev](https://workers.iii.dev/) 浏览可用的 Worker。
+每个 SDK 都提供相同的 API。参见 [sdk/README.md](sdk/README.md)。
 
-这也是关于 agent 的故事：当某个任务需要系统尚不具备的能力时，agent 可以添加一个 Worker、发现它的函数、调用它们，并追踪发生了什么。开发者与 agent 使用的是同一套接口。
+## 为 C.O.D.E.R. 而构建
 
-### 三大原语
+| | 特性 | 你得到什么 |
+| --- | --- | --- |
+| **C** | 可组合性（Composability） | 不同语言、不同位置的函数无缝协同工作。 |
+| **O** | 可观测性（Observability） | 一条 trace 跨语言、跨机器跟踪每一个执行步骤。可通过 OTLP 导出。 |
+| **D** | 可发现性（Discoverability） | 引擎维护所有 Function 的实时注册表。它始终保持最新，让开发者和智能体对系统一目了然。 |
+| **E** | 可扩展性（Extensibility） | 只需一条命令，就可以随时添加或移除 worker。 |
+| **R** | 响应性（Reactivity） | 任何东西都可以是观察者或被观察者。响应和事件不需要预先规划。 |
 
-iii 由 3 个原语驱动：
-
-**Workers** 是连接到 iii 引擎并注册 Functions 的进程。一个 TypeScript API 服务是一个 Worker，一个 Python 数据管道是一个 Worker，一个 Rust 微服务也是一个 Worker。只需几行代码，任何功能都可以被改造为一个 Worker。Compose 还能在运行时添加 Worker，因此 agent 和应用可以在系统运行的过程中对其扩展。
-
-**Functions** 是具有稳定标识符的工作单元（例如 `content::classify`、`orders::validate`）。Function 接收输入、执行工作，并可选择性地返回输出。Functions 存在于 Worker 之中，任何 Worker 都可以用 `iii.call()` 调用任何 Function，无论它运行在哪里。
-
-**Observers** 让系统具备响应能力。`iii.observe('orders::create', 'alerts::big-order')` 的含义是：当 `orders::create` 运行时，`alerts::big-order` 随之运行。每一个 Function 都可以被观测（observe），包括 Worker 为事件提供的 Function：一个 HTTP 请求是对 `http::on-request` 的一次调用，cron 的一次 tick 是对 `cron::on-tick` 的一次调用，一条队列消息是对 `queue::on-message` 的一次调用。iii 负责路由、序列化和投递。
-
-通过将服务所能做的一切映射到这三个原语，iii 打造出一个既毫不费力地可组合、又完全可观测的开发流程。
-
-## 带来什么改变
-
-在使用 iii 之前：
-
-- 新的可观测性工具：数不尽的集成工作
-- 新的 agent harness：单独的重试配置、单独的链路追踪、单独的超时
-- 新的队列：厂商评估、采购，以及数周的集成
-
-在使用 iii 之后：
-
-- 在 `worker-compose.yaml` 中声明 Worker
-- 用 `iii compose --up` 运行它们
-- 完成。它已进入系统，可被追踪、可被调用。
-
-平台团队发布 Worker，应用团队注册函数并观测（observe）它们要响应的函数，agent 使用同一份目录、同一套函数调用。
-
-扩展 iii 就是添加一个 Compose Worker；编排 iii 就是调用函数；观测 iii 就是打开那条链路追踪（trace）。
-
-## 安装 iii
-
-安装 `iii`：
+## 安装
 
 ```bash
 curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 ```
 
-## 添加 Worker
+安装程序会询问是否设置你的第一个项目。按 Enter，然后打开 http://127.0.0.1:3113。
 
-在 `worker-compose.yaml` 中声明项目的 Worker，或通过一个正在运行的 Compose 守护进程添加它们：
+在 CI、Docker 构建和脚本中，可以不经提示直接安装：
 
 ```bash
-iii call -n dev compose::add worker=queue
+curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
 ```
 
-在 [workers.iii.dev](https://workers.iii.dev/) 浏览软件包，并查阅
-[Compose 文档](https://iii.dev/docs/using-iii/compose)。
+[安装指南](https://iii.dev/docs/install)列出了所有安装选项。
+
+## 快速入门
+
+在第一个终端中创建并启动项目：
+
+```bash
+iii project init my-app && cd my-app
+iii compose --up   # start the engine and the project's workers; keep it running
+```
+
+在第二个终端中从注册表添加一个 worker：
+
+```bash
+cd my-app
+iii call compose::add worker=http
+```
+
+引擎监听 `ws://localhost:49134`。控制台运行在 http://127.0.0.1:3113。下一步请阅读[快速入门](https://iii.dev/docs/quickstart)。
 
 ## SDK
 
-| 语言 | 软件包 | 安装 |
-| -------- | -------------------------------------------------- | ------------------------------------------- |
-| Node.js  | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` 或 `npm install iii-sdk` |
-| Python   | [`iii-sdk`](https://pypi.org/project/iii-sdk/)     | `pip install iii-sdk`                       |
-| Rust     | [`iii-sdk`](https://crates.io/crates/iii-sdk)      | 添加到 `Cargo.toml`                         |
-| Go       | [`iii-sdk`](sdk/packages/go/iii)                       | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
-
-## 面向第三方 harness 的 Agent Skills
-
-如果你使用的是 iii harness，那么 agent skills 会自动可用。
-
-如果你使用的是其他 harness，可以通过以下方式安装 iii 的 skills：
-
-```bash
-npx skills add iii-hq/iii/skills
-```
-
-这些 skills 覆盖了 iii 的每一个原语：HTTP 端点、队列、cron、状态、流、Observer、可观测函数（observable function）等等。完整列表见 [skills/](skills/)。
-
-[iii-hq/workers](https://github.com/iii-hq/workers) 中的每个 Worker 也自带各自的 skill。可与 Worker 一起安装：
-
-```bash
-npx skills add iii-hq/workers --list        # 列出可用的 worker skills
-npx skills add iii-hq/workers --skill database # 单个 worker
-npx skills add iii-hq/workers --all         # 所有 worker skill
-```
-
-引擎自带的 Worker（`configuration`、`iii-worker-manager`、`iii-http-functions`、`iii-stream` 和 `iii-sandbox`），以及由引擎自动提供的函数、遥测与可观测性 Worker，都在本仓库中。HTTP、cron、队列、状态、pubsub 和 bridge 则是独立的 Compose Worker。使用 `npx skills add iii-hq/iii --full-depth --skill <name>` 安装某个引擎 skill；独立 Worker 会在 [iii-hq/workers](https://github.com/iii-hq/workers) 中随自身分发各自的 skills。
+| 语言 | 包 | 安装 |
+| --- | --- | --- |
+| TypeScript（Node.js） | [`iii-sdk`](https://www.npmjs.com/package/iii-sdk) | `pnpm add iii-sdk` |
+| TypeScript（浏览器） | [`iii-browser-sdk`](https://www.npmjs.com/package/iii-browser-sdk) | `pnpm add iii-browser-sdk` |
+| Python | [`iii-sdk`](https://pypi.org/project/iii-sdk/) | `pip install iii-sdk` |
+| Rust | [`iii-sdk`](https://crates.io/crates/iii-sdk) | `cargo add iii-sdk` |
+| Go | [`iii`](https://pkg.go.dev/github.com/iii-hq/iii/sdk/packages/go/iii) | `go get github.com/iii-hq/iii/sdk/packages/go/iii` |
 
 ## 仓库结构
 
-| 目录 | 说明 | README |
-| ---------- | ------------------------------------------------------- | -------------------------------------- |
-| `engine/`  | iii 引擎（Rust）——核心运行时、模块与协议 | [engine/README.md](engine/README.md)   |
-| `sdk/`     | 面向 Node.js、Python、Rust 与 Go 的 SDK                  | [sdk/README.md](sdk/README.md)         |
-| `skills/`  | 供 agent 阅读的参考材料                       | [skills/README.md](skills/README.md)   |
-| `website/` | iii 官网                                             | [website/](website/)                   |
-| `docs/`    | 文档站点（Mintlify/MDX）                       | [docs/README.md](docs/README.md)       |
+| 路径 | 内容 |
+| --- | --- |
+| [`engine/`](engine/README.md) | Rust 引擎和 `iii` CLI |
+| [`sdk/`](sdk/README.md) | TypeScript、Python、Rust 和 Go 的 SDK |
+| [`docs/`](docs/README.md) | [iii.dev/docs](https://iii.dev/docs) 的文档源码（Mintlify） |
+| [`website/`](website/README.md) | [iii.dev](https://iii.dev) 的源码 |
+| [`skills/`](skills/) | 面向编码智能体的 agent skills |
+| [`tech-specs/`](tech-specs/) | 技术规范 |
 
-工作区依赖关系见 [CONTRIBUTING.md](CONTRIBUTING.md#how-dependencies-work)，持续集成与发布流程见 [CI/CD](CONTRIBUTING.md#cicd)。
+## 贡献
 
-## 资源
+欢迎贡献。请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解环境设置、命令和贡献许可条款。
 
-- [文档](https://iii.dev/docs)
-- [CLI 与引擎](https://github.com/iii-hq/iii)
-- [示例](https://github.com/iii-hq/iii-examples)
-- [贡献指南](CONTRIBUTING.md)
+```bash
+pnpm install && pnpm build   # JS/TS packages
+cargo build --release        # engine and Rust SDK
+pnpm test && cargo test      # tests
+```
 
-## Star 趋势
+请在 [GitHub issues](https://github.com/iii-hq/iii/issues) 中报告 bug 和提出功能请求。
 
-<p align="center">
-  <a href="https://www.star-history.com/?repos=iii-hq%2Fiii&type=date&legend=top-left">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&theme=dark&legend=bottom-right" />
-      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&legend=bottom-right" />
-      <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=iii-hq/iii&type=date&legend=bottom-right" />
-    </picture>
-  </a>
-</p>
+## 社区
+
+- [Discord](https://discord.gg/iiidev)：提问与讨论
+- [X](https://x.com/iiidevs) 和 [LinkedIn](https://www.linkedin.com/company/iii-dev)：新闻
+- [博客](https://iii.dev/blog)：架构文章和完整示例
+- [路线图](https://iii.dev/roadmap)：后续计划
 
 ## 许可证
 
-iii 按如下方式授权：
+- `engine/`（引擎和 CLI）：[Elastic License 2.0](engine/LICENSE)
+- iii worker、文档和 SDK：[Apache License 2.0](sdk/LICENSE)
 
-| 目录 | 许可证 |
-| ---------- | ------------------------------------- |
-| `engine/`  | [Elastic License 2.0](engine/LICENSE) |
-| `sdk/`     | [Apache License 2.0](sdk/LICENSE)     |
-| `docs/`    | [Apache License 2.0](docs/LICENSE)    |
-| `website/` | [Apache License 2.0](docs/LICENSE) |
-
-引擎运行时和 CLI 采用 Elastic License 2.0（ELv2）授权。所有 SDK、文档以及官网均采用 Apache License 2.0 授权。
-
-更多细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+所有贡献均以 Apache 2.0 许可提交。完整的贡献和许可说明参见 [CONTRIBUTING.md](CONTRIBUTING.md#license-of-contributions)。

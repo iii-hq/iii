@@ -89,7 +89,7 @@ impl SocketStreamConnection {
                 let id = data.id.clone();
                 let subscription_id = data.subscription_id.clone();
                 self.emit_join_leave(msg);
-                let timestamp = chrono::Utc::now().timestamp_millis();
+                let timestamp = jiff::Timestamp::now().as_millisecond();
 
                 self.subscriptions.insert(
                     subscription_id.clone(),

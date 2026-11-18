@@ -457,7 +457,7 @@ pub(crate) fn runtime_worker_info_from_registration(
         name: worker_type.clone(),
         description: builtin_worker_description(&worker_type).map(|s| s.to_string()),
         worker_type: worker_type.clone(),
-        connected_at: chrono::Utc::now(),
+        connected_at: jiff::Timestamp::now(),
         function_ids,
         internal: mandatory_worker_names().contains(worker_type.as_str()),
     }

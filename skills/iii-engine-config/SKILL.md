@@ -29,10 +29,6 @@ engine:
     iii-worker-manager:
       host: 127.0.0.1
       port: 49134
-    iii-http-functions: {}
-    iii-stream:
-      host: 127.0.0.1
-      port: 3112
   sandbox:
     adapter: sandbox-libkrun
 containers: {}
@@ -51,12 +47,10 @@ iii compose --namespace orders-daemon --up --file worker-compose.yaml
 `III_COMPOSE_STATE_DIR`, it uses `<state-root>/<project-slug>/<daemon-namespace>/`. Changing `engine:`
 requires restarting Compose. Do not combine a managed file with explicit `--engine`.
 
-Allowed engine worker base names are:
+Declare these engine workers by base name:
 
 - `configuration`
 - `iii-worker-manager`
-- `iii-http-functions` (deprecated)
-- `iii-stream` (deprecated)
 
 Use `#instance` for another instance of an allowed worker. `iii-engine-functions`,
 `iii-telemetry`, `iii-observability`, and the `iii-sandbox` router are injected automatically and
