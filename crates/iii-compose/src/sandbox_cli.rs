@@ -1767,11 +1767,11 @@ fn build_record_of(
 
 /// Milliseconds since the epoch as RFC 3339 UTC to the second; now, when out of range.
 fn rfc3339(ms: u64) -> String {
-    i64::try_from(ms)
+    let timestamp = i64::try_from(ms)
         .ok()
-        .and_then(chrono::DateTime::from_timestamp_millis)
-        .unwrap_or_else(chrono::Utc::now)
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
+        .unwrap_or_else(jiff::Timestamp::now);
+    format!("{timestamp:.0}")
 }
 
 /// A `worker::build` that did not answer with an image. The adapter's answer is the build's
@@ -2367,6 +2367,35 @@ mod tests {
     use serde_json::{Value, json};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn build_timestamp_preserves_utc_seconds_and_truncates_milliseconds() {
+        for (ms, expected) in [
+            (0, "1970-01-01T00:00:00Z"),
+            (1, "1970-01-01T00:00:00Z"),
+            (999, "1970-01-01T00:00:00Z"),
+            (1_000, "1970-01-01T00:00:01Z"),
+            (1_700_000_000_999, "2023-11-14T22:13:20Z"),
+        ] {
+            assert_eq!(rfc3339(ms), expected);
+        }
+    }
+
+    #[test]
+    fn build_timestamp_out_of_range_falls_back_to_current_utc_second() {
+        for ms in [
+            jiff::Timestamp::MAX.as_millisecond() as u64 + 1,
+            i64::MAX as u64,
+            u64::MAX,
+        ] {
+            let before = jiff::Timestamp::now().as_second();
+            let rendered = rfc3339(ms);
+            let after = jiff::Timestamp::now().as_second();
+            let timestamp: jiff::Timestamp = rendered.parse().unwrap();
+            assert!((before..=after).contains(&timestamp.as_second()));
+            assert_eq!(rendered, format!("{timestamp:.0}"));
+        }
+    }
 
     fn compose_vars() -> BTreeMap<String, String> {
         [

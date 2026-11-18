@@ -754,7 +754,7 @@ async fn record_host_build(
             command,
             dependency_files: record::dependency_files(&worker_dir)?,
             image: None,
-            built_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            built_at: format!("{:.0}", jiff::Timestamp::now()),
         };
         record::write(&dir, &record).map(|()| None)
     })
@@ -865,6 +865,8 @@ mod tests {
             }
         );
         assert_eq!(record.image, None);
+        let built_at: jiff::Timestamp = record.built_at.parse().unwrap();
+        assert_eq!(record.built_at, format!("{built_at:.0}"));
         assert_eq!(project.due().await, None);
         let logs = project.logs().await;
         assert!(logs.contains(&LogEntry {

@@ -10,7 +10,8 @@ Files that differ from the bundle:
   with `--up`, `build` and `logs`, `iii ps`, `iii kill`), the removed `iii worker` and `iii console`
   commands with their replacements, Compose tooling as iii-level, and every finding emitted as a
   warning.
-- `general.md`: the primitives in 0.26 order (workers, functions, observers), with pages about
+- `general.md`: one primitive (the Function, with call and observe; workers host functions), the
+  0.26 order (workers, functions, observers) when the parts are named together, and pages about
   0.25 triggers left alone.
 - `workers.md`: the Move to Worker Docs flag is always emitted as a warning, and the sandbox
   contract's S-codes stay on `creating-workers/sandboxes.mdx`, where their `docs_url` points.

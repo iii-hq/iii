@@ -70,8 +70,7 @@ pub struct BuildRecord {
     /// The image a VM build wrote; a host build has none, and its `build.json` omits the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<BuildImage>,
-    /// When the build finished, RFC 3339 UTC to the second, e.g. `2026-11-10T14:03:22Z`:
-    /// `Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)`.
+    /// When the build finished, RFC 3339 UTC to the second, e.g. `2026-11-10T14:03:22Z`.
     pub built_at: String,
 }
 

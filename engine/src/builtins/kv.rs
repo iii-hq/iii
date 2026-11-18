@@ -457,7 +457,7 @@ impl BuiltinKvStore {
     }
 
     pub async fn try_acquire_lock(&self, index: &str, key: &str, owner: &str, ttl_ms: u64) -> bool {
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = jiff::Timestamp::now().as_millisecond();
         let expires_at_ms = now_ms.saturating_add(ttl_ms as i64);
         let lock_value = serde_json::to_value(KvLockEntry {
             owner: owner.to_string(),

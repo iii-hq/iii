@@ -296,7 +296,7 @@ iii call iii::durable::publish --json '{"topic":"emails","data":{"to":"a@b.com",
 ```
 
 <Tip>
-  Open the [console](../using-iii/console) and go to the **Traces** tab to watch the message flow
+  Open the [console](../using-iii/ade) and go to the **Traces** tab to watch the message flow
   from the publish through to `email::send` running.
 </Tip>
 

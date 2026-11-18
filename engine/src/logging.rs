@@ -6,8 +6,8 @@
 
 use std::{fmt, sync::OnceLock};
 
-use chrono::Local;
 use colored::Colorize;
+use jiff::Zoned;
 use tracing::{
     Event, Level, Subscriber,
     field::{Field, Visit},
@@ -299,8 +299,11 @@ fn render_fields_tree(fields: &[(&String, &FieldValue)]) -> String {
 
 /// Format timestamp as [HH:MM:SS.mmm AM/PM]
 fn format_timestamp() -> String {
-    let now = Local::now();
-    now.format("[%I:%M:%S%.3f %p]").to_string()
+    format_local_timestamp(&Zoned::now())
+}
+
+fn format_local_timestamp(now: &Zoned) -> String {
+    now.strftime("[%I:%M:%S%.3f %p]").to_string()
 }
 
 struct IIILogFormatter;
@@ -1266,6 +1269,22 @@ mod tests {
     // =========================================================================
     // format_timestamp tests
     // =========================================================================
+
+    #[test]
+    fn timestamp_local_format_preserves_timezone_clock_and_am_pm() {
+        for (input, expected) in [
+            (
+                "2026-01-02T00:04:05.123456789-05:00[America/New_York]",
+                "[12:04:05.123 AM]",
+            ),
+            (
+                "2026-07-02T12:04:05-04:00[America/New_York]",
+                "[12:04:05.000 PM]",
+            ),
+        ] {
+            assert_eq!(format_local_timestamp(&input.parse().unwrap()), expected);
+        }
+    }
 
     #[test]
     fn test_format_timestamp() {

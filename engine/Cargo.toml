@@ -1,6 +1,6 @@
 [package]
 name = "iii"
-version = "0.26.1-rc.1"
+version = "0.26.1-rc.2"
 edition = "2024"
 license = "Elastic-2.0"
 
@@ -115,7 +115,7 @@ opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["tonic", "grpc-tonic", "logs", "tls-roots", "tls-ring"] }
 futures = "0.3"
 futures-util = "0.3"
-chrono = { version = "0.4", features = ["serde"] }
+jiff = { version = "0.2.43", features = ["serde"] }
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 # Both already in the tree via axum; declared directly so the worker WS
@@ -176,7 +176,7 @@ indicatif = "0.18"
 semver = { version = "1", features = ["serde"] }
 flate2 = "1"
 tar = "0.4"
-zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
 thiserror = "2"
 tokio-tungstenite = "0.28"
 # Used by bin_resolve::find_existing_binary to locate helper binaries on $PATH.

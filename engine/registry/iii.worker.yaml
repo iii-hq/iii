@@ -1,0 +1,16 @@
+# The iii engine on the iii registry: its binaries and its installer
+# (install.sh, next to this file), published with every iii release by
+# .github/workflows/_publish-engine-registry.yml and installed with
+#
+#   curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
+#
+# The registry row `iii` also carries the engine's skills, published from
+# engine/src/workers/engine_fn by _publish-worker-skills.yml.
+iii: v1
+name: iii
+language: rust
+deploy: executable
+bin: iii
+description: The iii engine and its CLI.
+license: Elastic-2.0
+repo: https://github.com/iii-hq/iii

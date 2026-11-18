@@ -6,6 +6,12 @@ an engine worker manifest, and every publishable engine worker is present.
 Registry slugs (manifest ``name``) must stay aligned with what skill discovery
 emits. Matrix ``worker`` values remain the engine config / runtime names used
 by ``_publish-engine-workers.yml`` when reloading config.yaml.
+
+The engine itself is the registry executable named in
+``engine/registry/iii.worker.yaml`` (``iii``), published by
+``_publish-engine-registry.yml``. An engine worker whose manifest has that name
+(engine_fn) only names where its skills go: it stays out of the matrices, or
+both jobs would publish the same versions of ``iii``.
 """
 
 from __future__ import annotations
@@ -32,6 +38,16 @@ _INLINE_MATRIX_ENTRY_RE = re.compile(
 )
 
 _WORKFLOW_NAMES = ("release-iii.yml", "alpha-release.yml")
+_ENGINE_EXECUTABLE_MANIFEST = "engine/registry/iii.worker.yaml"
+
+
+def _engine_executable_slugs(repo_root: pathlib.Path) -> set[str]:
+    """The registry name the engine executable is published under, if any."""
+    path = repo_root / _ENGINE_EXECUTABLE_MANIFEST
+    if not path.is_file():
+        return set()
+    name = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("name")
+    return {name.strip()} if isinstance(name, str) and name.strip() else set()
 
 
 def _load_matrix(repo_root: pathlib.Path, workflow_name: str) -> list[dict[str, str]]:
@@ -66,6 +82,7 @@ def _load_matrix(repo_root: pathlib.Path, workflow_name: str) -> list[dict[str, 
 def validate(repo_root: pathlib.Path) -> list[str]:
     errors: list[str] = []
     discovered = {entry["worker_dir"]: entry["slug"] for entry in discover(repo_root)}
+    executables = _engine_executable_slugs(repo_root)
     matrices: dict[str, list[dict[str, str]]] = {}
 
     for workflow_name in _WORKFLOW_NAMES:
@@ -79,6 +96,8 @@ def validate(repo_root: pathlib.Path) -> list[str]:
         matrix_dirs = [entry["worker_dir"] for entry in matrix]
 
         for worker_dir in sorted(set(discovered) - set(matrix_dirs)):
+            if discovered[worker_dir] in executables:
+                continue
             errors.append(
                 f"{workflow_name}: missing publishable engine worker {worker_dir!r}"
             )
@@ -116,6 +135,12 @@ def validate(repo_root: pathlib.Path) -> list[str]:
                 continue
 
             registry_name = registry_name.strip()
+            if registry_name in executables:
+                errors.append(
+                    f"{workflow_name}: {worker_dir}: {registry_name!r} is the engine "
+                    f"executable ({_ENGINE_EXECUTABLE_MANIFEST}), published by "
+                    "_publish-engine-registry.yml; leave it out of the matrix"
+                )
             if worker_dir in discovered and discovered[worker_dir] != registry_name:
                 errors.append(
                     f"{workflow_name}: {worker_dir}: discover slug "
