@@ -859,15 +859,54 @@ fn production_state_response() -> Value {
     })
 }
 
+/// The historical probe above is Linux/GNU. This is a distinct synthetic host
+/// response for metadata-only portability checks, not a relabeled real artifact.
+fn synthetic_host_state_response() -> Value {
+    let target = Platform::Host.targets()[0];
+    let mut response = production_state_response();
+    response["target"] = target.into();
+    response["graph"][1]["binaries"] = json!({(target): {
+        "url": format!("https://example.test/synthetic/state-{target}.tar.gz"),
+        "sha256": "b".repeat(64)
+    }});
+    response
+}
+
+#[test]
+fn historical_identity_only_root_wire_remains_a_linux_gnu_metadata_sample() {
+    let body = production_state_response();
+    assert_eq!(body["target"], "x86_64-unknown-linux-gnu");
+    assert_eq!(body["root"], json!({"name":"state", "version":"0.23.1"}));
+    assert_eq!(body["graph"][1]["binaries"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        body["graph"][1]["binaries"]["x86_64-unknown-linux-gnu"]["url"],
+        "https://example.test/state.tar.gz"
+    );
+    assert_eq!(
+        body["graph"][1]["binaries"]["x86_64-unknown-linux-gnu"]["sha256"],
+        "a".repeat(64)
+    );
+    let validated = validate_resolution(
+        "state",
+        DEFAULT_REGISTRY,
+        "state",
+        "0.23.1",
+        serde_json::from_value(body).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(validated.response.graph[validated.root].name, "state");
+    assert!(validated.response.root.unwrap().requested.is_none());
+}
+
 #[tokio::test]
 async fn production_identity_only_root_works_for_graph_package_and_lock_reload() {
     let server = MockServer::start().await;
     Mock::given(matchers::method("POST"))
         .and(matchers::path("/resolve"))
         .and(matchers::body_partial_json(
-            json!({"worker":"state","version":"0.23.1"}),
+            json!({"worker":"state","version":"0.23.1","target":Platform::Host.targets()[0]}),
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(production_state_response()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(synthetic_host_state_response()))
         .expect(3)
         .mount(&server)
         .await;
@@ -904,6 +943,23 @@ async fn production_identity_only_root_works_for_graph_package_and_lock_reload()
             );
             let stored = std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap();
             assert!(!stored.contains("root_binding"));
+            let resolved = reloaded.containers["state"]
+                .resolved_package
+                .as_ref()
+                .unwrap();
+            let target = Platform::Host.targets()[0];
+            assert_eq!(resolved.artifacts.len(), 1);
+            assert_eq!(resolved.artifacts[target].sha256, "b".repeat(64));
+            assert_eq!(
+                resolved.artifacts[target].url,
+                format!("https://example.test/synthetic/state-{target}.tar.gz")
+            );
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 3);
+            assert!(
+                requests.iter().all(|request| request.method == "POST"),
+                "metadata-only fixture must not download artifacts"
+            );
         })
         .await;
     server.verify().await;
@@ -1334,7 +1390,10 @@ async fn update_preserved_opaque_dependency_requires_matching_provenance_before_
             let tool = plan.containers.iter().find(|c| c.key == "tool").unwrap();
             assert_eq!(tool.source, edit::Source::Package {reference:"registry.example.test/team/tool".into(), version:Some("next".into())});
             assert!(plan.selections["tool"].root_binding.is_none());
-            let planned_package = plan.selections["tool"].package.clone();
+            let mut expected_package = plan.selections["tool"].package.clone();
+            for artifact in expected_package.artifacts.values_mut() {
+                artifact.url = "https://proof.example/tool.tar.gz?signature=rotated".into();
+            }
             let mut edited = text.to_string();
             for declaration in &plan.containers {
                 match edit::upsert_container(&edited, declaration).unwrap() {
@@ -1349,12 +1408,12 @@ async fn update_preserved_opaque_dependency_requires_matching_provenance_before_
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
             if case == "valid" {
                 let prepared = result.unwrap();
-                assert_eq!(current.containers["tool"].resolved_package.as_ref(), Some(&planned_package));
+                assert_eq!(current.containers["tool"].resolved_package.as_ref(), Some(&expected_package));
                 assert_eq!(current.containers["api"].start_after, ["tool"]);
                 prepared.write_if_changed().unwrap();
                 let mut reload = ComposeFile::parse(&edited, &path).unwrap();
                 lockfile::attach(&mut reload).unwrap();
-                assert_eq!(reload.containers["tool"].resolved_package.as_ref(), Some(&planned_package));
+                assert_eq!(reload.containers["tool"].resolved_package.as_ref(), Some(&expected_package));
                 assert_eq!(reload.containers["tool"].version.as_deref(), Some("next"));
                 let lock: Value = serde_yaml::from_str(&std::fs::read_to_string(lockfile::lock_path(&path)).unwrap()).unwrap();
                 assert_eq!(lock["containers"]["tool"]["root_binding"]["requested"]["worker"], "team/tool");
@@ -1590,4 +1649,252 @@ async fn opaque_dependency_proof_cannot_cross_the_planned_registry_authority() {
     assert!(server.received_requests().await.unwrap().is_empty());
     assert!(file.containers["tool"].resolved_package.is_none());
     assert!(!crate::lockfile::lock_path(&path).exists());
+}
+
+#[tokio::test]
+async fn discarded_add_subtree_does_not_require_artifact_metadata_but_surviving_nodes_do() {
+    use crate::{ComposeFile, dependencies, edit};
+    for (direct, update) in [(false, false), (true, false), (false, true)] {
+        let server = MockServer::start().await;
+        let mut invalid = node("cache");
+        invalid.as_object_mut().unwrap().remove("archive_url");
+        let mut edges = vec![
+            json!({"from":"api","to":"queue"}),
+            json!({"from":"queue","to":"cache"}),
+        ];
+        if direct {
+            edges.push(json!({"from":"api","to":"cache"}));
+        }
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "graph":[node("api"),node("queue"),invalid],"edges":edges
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = ComposeFile::parse("containers:\n  queue: {worker: package://registry.example.test/queue, version: next}\n", dir.path().join("worker-compose.yaml")).unwrap();
+        let old: ResolvedWorker = serde_json::from_value(node("queue")).unwrap();
+        file.containers["queue"].resolved_package = Some(
+            selected_package("queue", "https://registry.example.test", old)
+                .unwrap()
+                .package,
+        );
+        let asked = edit::parse_worker("package://registry.example.test/api@next").unwrap();
+        let policy = if update {
+            dependencies::Policy::Update {
+                generated: Default::default(),
+            }
+        } else {
+            dependencies::Policy::Add
+        };
+        let result = TEST_REGISTRY
+            .scope(server.uri(), dependencies::plan(&file, &[asked], &policy))
+            .await;
+        if !direct && !update {
+            let plan = result.unwrap();
+            assert_eq!(
+                plan.containers
+                    .iter()
+                    .map(|c| c.key.as_str())
+                    .collect::<Vec<_>>(),
+                ["api"]
+            );
+            assert_eq!(plan.containers[0].start_after, ["queue"]);
+            assert!(!plan.selections.contains_key("cache"));
+        } else {
+            let ComposeError::PackageNotResolved { name, message, .. } = result.unwrap_err() else {
+                panic!("wrong failure")
+            };
+            assert_eq!(name, "cache");
+            assert!(
+                message.contains("no archive_url + sha256 pair"),
+                "{message}"
+            );
+        }
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn final_binary_graph_selection_checks_the_actual_container_platform() {
+    use crate::{ComposeFile, dependencies, edit};
+    for platform in [Platform::Host, Platform::Vm] {
+        for supported in [false, true] {
+            let server = MockServer::start().await;
+            let target = if supported {
+                platform.targets()[0]
+            } else {
+                "foreign-unsupported-target"
+            };
+            Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"graph":[node("api"),{
+                    "name":"tool","version":"1.2.3","type":"binary",
+                    "binaries":{(target):{"url":"https://example.test/tool","sha256":"a".repeat(64)}}
+                }],"edges":[{"from":"api","to":"tool"}]}))).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let file = ComposeFile::parse(
+                "containers:\n  local: {worker: path://.}\n",
+                dir.path().join("worker-compose.yaml"),
+            )
+            .unwrap();
+            // Request tool explicitly to assign VM placement without consulting an
+            // unrelated existing package. Both graphs select the same tool release.
+            let mut tool = edit::parse_worker("package://registry.example.test/tool@next").unwrap();
+            if platform == Platform::Vm {
+                tool.fields.insert(
+                    "runtime".into(),
+                    serde_yaml::from_str("base_image: alpine").unwrap(),
+                );
+            }
+            // Use the graph for api only; tool's node lookup is an independent graph.
+            Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+                .and(matchers::body_partial_json(json!({"worker":"tool"})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"graph":[{
+                    "name":"tool","version":"1.2.3","type":"binary",
+                    "binaries":{(target):{"url":"https://example.test/tool","sha256":"a".repeat(64)}}
+                }]}))).with_priority(1).mount(&server).await;
+            let api = edit::parse_worker("package://registry.example.test/api@next").unwrap();
+            let result = TEST_REGISTRY
+                .scope(
+                    server.uri(),
+                    dependencies::plan(&file, &[api, tool], &dependencies::Policy::Add),
+                )
+                .await;
+            if supported {
+                assert!(result.unwrap().selections.contains_key("tool"));
+            } else {
+                assert_eq!(result.unwrap_err().code(), "UNSUPPORTED_PLATFORM");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn equivalent_proof_refreshes_expired_url_but_still_verifies_the_planned_digest() {
+    for corrupt in [false, true] {
+        let server = MockServer::start().await;
+        let archive = bundle("tool-linux");
+        let digest = hex::encode(Sha256::digest(&archive));
+        let expired = format!("{}/expired", server.uri());
+        let fresh = format!("{}/fresh", server.uri());
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/expired"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/fresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(if corrupt {
+                bundle("wrong-bytes")
+            } else {
+                archive
+            }))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let worker = json!({"name":"tool-linux","version":"1.2.3","type":"bundle","archive_url":fresh,"sha256":digest});
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "root":binding("team/tool","1.2.3","tool-linux"),"graph":[worker],"edges":[]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let planned: ResolvedWorker = serde_json::from_value(json!({
+            "name":"tool-linux","version":"1.2.3","type":"bundle","archive_url":expired,"sha256":digest
+        })).unwrap();
+        let planned = selected_package("tool", "https://registry.example.test", planned).unwrap();
+        let expected_digest = planned.package.artifacts[host_target()].sha256.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let mut file = crate::ComposeFile::parse("containers:\n  tool: {worker: package://registry.example.test/team/tool, version: next}\n",&path).unwrap();
+        let versions = BTreeMap::from([("tool".into(), "1.2.3".into())]);
+        let selections = BTreeMap::from([("tool".into(), planned.clone())]);
+        TEST_REGISTRY
+            .scope(server.uri(), async {
+                let mut prepared = crate::lockfile::prepare_metadata_with_plan(
+                    &mut file,
+                    &Default::default(),
+                    &versions,
+                    &selections,
+                )
+                .await
+                .unwrap();
+                let resolved = file.containers["tool"].resolved_package.as_ref().unwrap();
+                assert_eq!(resolved.name, planned.package.name);
+                assert_eq!(resolved.artifacts[host_target()].sha256, expected_digest);
+                assert_eq!(resolved.artifacts[host_target()].url, fresh);
+                let installed = prepared.install(cache.path()).await;
+                if corrupt {
+                    assert_eq!(installed.unwrap_err().code(), "PACKAGE_DIGEST_MISMATCH");
+                    let install = cache_install_dir(
+                        &registry_cache_root(cache.path(), resolved),
+                        resolved,
+                        host_target(),
+                        &expected_digest,
+                    );
+                    assert!(!install.exists());
+                } else {
+                    installed.unwrap();
+                    prepared.write_if_changed().unwrap();
+                    let read: Value = serde_yaml::from_str(
+                        &std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        read["containers"]["tool"]["resolved"]["artifacts"][host_target()]["url"],
+                        fresh
+                    );
+                }
+            })
+            .await;
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn generated_binary_dependency_without_host_artifact_fails_before_any_lock_write() {
+    use crate::{ComposeFile, dependencies, edit};
+    for supported in [false, true] {
+        let server = MockServer::start().await;
+        let target = if supported {
+            Platform::Host.targets()[0]
+        } else {
+            "foreign-unsupported-target"
+        };
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"graph":[node("api"),{
+                "name":"tool","version":"1.2.3","type":"binary",
+                "binaries":{(target):{"url":"https://example.test/tool","sha256":"a".repeat(64)}}
+            }],"edges":[{"from":"api","to":"tool"}]})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let file = ComposeFile::parse("containers:\n  local: {worker: path://.}\n", &path).unwrap();
+        let api = edit::parse_worker("package://registry.example.test/api@next").unwrap();
+        let result = TEST_REGISTRY
+            .scope(
+                server.uri(),
+                dependencies::plan(&file, &[api], &dependencies::Policy::Add),
+            )
+            .await;
+        if supported {
+            assert!(result.unwrap().selections.contains_key("tool"));
+        } else {
+            assert_eq!(result.unwrap_err().code(), "UNSUPPORTED_PLATFORM");
+        }
+        assert!(!crate::lockfile::lock_path(&path).exists());
+        server.verify().await;
+    }
 }

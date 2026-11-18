@@ -18,7 +18,7 @@ type Identity = (String, String);
 
 #[derive(Clone)]
 struct Package {
-    selection: Option<registry::Selection>,
+    selection: Option<registry::ResolvedWorker>,
     registry: String,
     node: Node,
     /// A fresh resolution of a range cannot identify an already running version.
@@ -323,13 +323,7 @@ where
                             .get(&declaration.key)
                             .map_or(Platform::Host, crate::vm_binary::platform)
                     };
-                    let selection = selections
-                        .get(&node.name)
-                        .cloned()
-                        .map(|worker| {
-                            registry::selected_package(&declaration.key, &registry, worker)
-                        })
-                        .transpose()?;
+                    let selection = selections.get(&node.name).cloned();
                     Ok(Candidate {
                         declaration,
                         package: Some(Package {
@@ -660,7 +654,7 @@ fn plan_resolved(
     let mut order = Vec::new();
     let mut aliases = Vec::new();
     let mut selected_versions = BTreeMap::new();
-    let mut selections = BTreeMap::new();
+    let mut selection_candidates = Vec::new();
     for Candidate {
         mut declaration,
         package,
@@ -735,49 +729,27 @@ fn plan_resolved(
                     version: Some(package.node.version.clone()),
                 };
             }
-            if selected_versions.contains_key(&declaration.key)
-                && let Some(mut selection) = package.selection.clone()
-            {
-                if explicit.is_none() && !declared_source {
-                    // Generated references name the canonical package, not the root's
-                    // opaque request or an alias that was coalesced into it.
-                    selection.package.name = package.node.canonical_name().to_string();
-                    selection.package.alias_of = None;
-                    selection.root_binding = None;
-                }
-                if declared_source {
+            if selected_versions.contains_key(&declaration.key) && package.selection.is_some() {
+                let identity = if explicit.is_none() && !declared_source {
+                    Some((package.node.canonical_name().to_string(), None))
+                } else if declared_source {
                     let current = &existing[&declaration.key];
                     let Source::Package { reference, .. } = &declaration.source else {
                         unreachable!("declared registry dependency changed source kind");
                     };
                     let (_, requested_name) = registry::split_reference(reference);
-                    // A validated existing safe alias can retain its public spelling while
-                    // taking the same canonical package's release from the new graph.
-                    // Opaque names still require their own explicit root provenance.
-                    if requested_name == current.node.name
-                        && registry::is_path_safe(&requested_name)
-                    {
-                        selection.package.name = current.node.name.clone();
-                        selection.package.alias_of = current.node.alias_of.clone();
-                        selection.root_binding = None;
-                    }
+                    (requested_name == current.node.name && registry::is_path_safe(&requested_name))
+                        .then(|| (current.node.name.clone(), current.node.alias_of.clone()))
+                } else {
+                    None
+                };
+                // Reused declarations prune their dependency trees later. Retain wire
+                // metadata here; an artifact for a discarded node is never needed.
+                let mut candidate = package.clone();
+                if declared_source {
+                    candidate.platform = existing[&declaration.key].platform;
                 }
-                match selections.entry(declaration.key.clone()) {
-                    std::collections::btree_map::Entry::Vacant(entry) => {
-                        entry.insert(selection);
-                    }
-                    std::collections::btree_map::Entry::Occupied(entry) => {
-                        let previous: &registry::Selection = entry.get();
-                        if !previous.compatible_with(&selection) {
-                            return Err(conflict(
-                                &declaration.key,
-                                "the dependency resolves to conflicting package metadata",
-                            ));
-                        }
-                        // Keep the first selection in the deterministic expansion order.
-                        // A mirror/signed URL from another root is not a new release.
-                    }
-                }
+                selection_candidates.push((declaration.key.clone(), candidate, identity));
             }
             retarget(
                 &mut declaration.start_after,
@@ -843,7 +815,38 @@ fn plan_resolved(
     containers.retain(|key, _| reachable.contains(key));
     aliases.retain(|alias| reachable.contains(&alias.container));
     selected_versions.retain(|key, _| reachable.contains(key));
-    selections.retain(|key, _| reachable.contains(key));
+    let mut selections = BTreeMap::new();
+    for (key, package, identity) in selection_candidates {
+        if !selected_versions.contains_key(&key) {
+            continue;
+        }
+        let Some(worker) = package.selection else {
+            continue;
+        };
+        let mut selection = registry::selected_package(&key, &package.registry, worker)?;
+        if let Some((name, alias_of)) = identity {
+            selection.package.name = name;
+            selection.package.alias_of = alias_of;
+            selection.root_binding = None;
+            selection.derived_pin = false;
+        }
+        registry::check_package_platform(&key, &selection.package, package.platform)?;
+        match selections.entry(key.clone()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(selection);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                let previous: &registry::Selection = entry.get();
+                if !previous.compatible_with(&selection) {
+                    return Err(conflict(
+                        &key,
+                        "the dependency resolves to conflicting package metadata",
+                    ));
+                }
+                // Keep the first compatible URL in deterministic expansion order.
+            }
+        }
+    }
     let mut sorted = Vec::new();
     while !order.is_empty() {
         let Some(index) = order.iter().position(|key| {
@@ -1205,12 +1208,22 @@ mod tests {
                             }
                             if reverse { asked.reverse(); }
                             let server = MockServer::start().await;
-                            let binary = |name: &str, alias: Option<&str>| serde_json::json!({
-                                "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
-                                "binaries": {(registry::vm_targets()[0]): {
-                                    "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
-                                }}
-                            });
+                            let binary = |name: &str, alias: Option<&str>| {
+                                // Explicit roots run in VMs; generated queue/shell
+                                // declarations have no VM scripts/runtime and run on Host.
+                                // Synthetic metadata only: no artifact is downloaded here.
+                                let binaries: BTreeMap<_, _> = registry::host_targets().iter()
+                                    .chain(registry::vm_targets().iter())
+                                    .map(|target| ((*target).to_string(), serde_json::json!({
+                                        "sha256":"a".repeat(64),
+                                        "url":format!("https://example.test/synthetic/{target}.tar.gz")
+                                    })))
+                                    .collect();
+                                serde_json::json!({
+                                    "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
+                                    "binaries": binaries
+                                })
+                            };
                             let tool_graph = serde_json::json!({
                                 "root": {"schema": 1, "requested": {"worker": wanted_worker,
                                     "version": selector.unwrap_or("*")}, "name": "tool", "version": "1.2.3"},
@@ -1299,6 +1312,25 @@ mod tests {
                             assert_eq!(parsed.containers["tool"].version.as_deref(), Some(selector.unwrap_or("1.2.3")));
                             assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii sandbox run"));
                             assert_eq!(crate::vm_binary::platform(&parsed.containers["tool"]), Platform::Vm);
+                            // Placement is per declaration, not inherited along graph edges.
+                            for declaration in &planned.containers {
+                                let expected = if matches!(declaration.key.as_str(), "tool" | "app") {
+                                    Platform::Vm
+                                } else {
+                                    Platform::Host
+                                };
+                                let actual = crate::vm_binary::platform(&parsed.containers[&declaration.key]);
+                                assert_eq!(actual, expected, "{}", declaration.key);
+                                let selected = &planned.selections[&declaration.key].package;
+                                let target = actual.target(&selected.artifacts);
+                                assert!(selected.artifacts.contains_key(target), "{}: {target}", declaration.key);
+                                assert_eq!(selected.artifacts[target].sha256, "a".repeat(64));
+                            }
+                            assert_eq!(crate::vm_binary::platform(&parsed.containers["queue"]), Platform::Host);
+                            if copied_as_dependency {
+                                assert_eq!(crate::vm_binary::platform(&parsed.containers["app"]), Platform::Vm);
+                                assert_eq!(crate::vm_binary::platform(&parsed.containers["shell"]), Platform::Host);
+                            }
                             // A repeated upsert preserves the raw spelling and is a no-op.
                             assert_eq!(crate::edit::upsert_container(&text, root).unwrap(), crate::edit::Outcome::Unchanged);
                         }

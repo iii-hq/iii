@@ -565,11 +565,10 @@ fn apply_update_plan(
             break;
         }
     }
-    for container in removable {
-        if let Some(next) = crate::edit::remove_container(&edited, &container)? {
-            edited = next;
-            yaml_changed = true;
-        }
+    if !removable.is_empty() {
+        let keys: Vec<&str> = removable.iter().map(String::as_str).collect();
+        edited = crate::edit::remove_containers(&edited, &keys)?;
+        yaml_changed = true;
     }
     Ok(UpdateEdit {
         edited,
@@ -1309,12 +1308,16 @@ impl Daemon {
             .map(crate::edit::WorkerInput::parse)
             .collect::<Result<Vec<_>>>()?;
         // The router is built into the engine: `iii-sandbox` asks for its adapter.
+        let mut pin_adapter = None;
         if asked.iter().any(crate::sandbox::is_iii_sandbox) {
             let mut file = ComposeFile::load(path)?;
             crate::lockfile::attach(&mut file)?;
             let adapter = self
                 .prepare(&operation_id, crate::sandbox::iii_sandbox_request(&file))
                 .await??;
+            if crate::sandbox::adapter_key(&file, crate::sandbox::adapter_name(&file))?.is_none() {
+                pin_adapter = Some(adapter.key.clone());
+            }
             for worker in asked
                 .iter_mut()
                 .filter(|worker| crate::sandbox::is_iii_sandbox(worker))
@@ -1337,10 +1340,10 @@ impl Daemon {
         let (_mutation, text, wanted, aliases, selected_versions, selections, resolved_graphs) = loop {
             let AddPlan {
                 snapshot,
-                wanted,
+                mut wanted,
                 aliases,
                 selected_versions,
-                selections,
+                mut selections,
                 resolved_graphs,
             } = self
                 .prepare(
@@ -1348,6 +1351,24 @@ impl Daemon {
                     self.plan_add(path, &declarations, &asked_keys, &operation_id),
                 )
                 .await??;
+            if let Some(key) = &pin_adapter {
+                let selection =
+                    selections
+                        .get_mut(key)
+                        .ok_or_else(|| ComposeError::InvalidWorkerSpec {
+                            spec: key.clone(),
+                            reason: "the adapter graph has no selected package metadata".into(),
+                        })?;
+                selection.derived_pin = selection.root_binding.is_some();
+                for declaration in wanted
+                    .iter_mut()
+                    .filter(|declaration| &declaration.key == key)
+                {
+                    if let crate::edit::Source::Package { version, .. } = &mut declaration.source {
+                        *version = Some(selection.package.version.clone());
+                    }
+                }
+            }
             let mutation = self
                 .prepare(&operation_id, self.lock_mutation(path))
                 .await?;
@@ -2094,15 +2115,17 @@ impl Daemon {
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
         let mut removal_order = removal_order(&before, &requested)?;
-        let mut edited = text.clone();
         for worker in &workers {
-            let Some(next) = crate::edit::remove_container(&edited, worker)? else {
+            if !before.containers.contains_key(worker) {
                 return Err(ComposeError::UnknownContainer {
                     container: worker.to_string(),
                 });
-            };
-            edited = next;
+            }
         }
+        // Process stop order remains dependents-first. Text removal is one
+        // atomic batch, since YAML aliases need not be start_after edges.
+        let edit_order: Vec<&str> = removal_order.iter().map(String::as_str).collect();
+        let mut edited = crate::edit::remove_containers(&text, &edit_order)?;
 
         let mut current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
@@ -5913,6 +5936,21 @@ containers:
         );
     }
 
+    #[test]
+    fn batch_removal_text_is_valid_when_aliases_are_not_lifecycle_edges() {
+        let text = "containers:\n  zdb: &db {worker: path://./db}\n  api: {worker: path://./api, config_override: *db}\n  queue: {worker: path://./queue}\n";
+        let file = ComposeFile::parse(text, Path::new("/tmp/worker-compose.yaml")).unwrap();
+        for request in [["zdb", "api"], ["api", "zdb"]] {
+            let requested = request.into_iter().collect::<BTreeSet<_>>();
+            let order = removal_order(&file, &requested).unwrap();
+            let keys = order.iter().map(String::as_str).collect::<Vec<_>>();
+            let edited = crate::edit::remove_containers(text, &keys).unwrap();
+            assert_eq!(edited, "containers:\n  queue: {worker: path://./queue}\n");
+            ComposeFile::parse(&edited, Path::new("/tmp/worker-compose.yaml")).unwrap();
+        }
+        assert!(crate::edit::remove_container(text, "zdb").is_err());
+    }
+
     /// The generated adapter is appended after the VMs, with no edge in the
     /// file: removed together, the VM still goes first, so its destroy never
     /// restarts the adapter this same removal stopped.
@@ -5985,6 +6023,64 @@ containers:
         );
     }
 
+    // Poll the real operation to the metadata transaction, not its later restart.
+    // No polling timer: file inspection is coupled to progress of that same future.
+    async fn until_adapter_committed(
+        path: &Path,
+        operation: impl std::future::Future<Output = Result<MutationOutcome>>,
+    ) -> std::result::Result<std::result::Result<(), String>, tokio::time::error::Elapsed> {
+        let mut operation = Box::pin(operation);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            futures::future::poll_fn(|cx| {
+                let progress = std::future::Future::poll(operation.as_mut(), cx);
+                let written = std::fs::read_to_string(path).ok();
+                let locked = std::fs::read_to_string(crate::lockfile::lock_path(path)).ok();
+                let committed = written
+                    .as_deref()
+                    .and_then(|text| ComposeFile::parse(text, path).ok())
+                    .is_some_and(|file| {
+                        file.containers
+                            .get("sandbox-libkrun")
+                            .is_some_and(|container| container.version.as_deref() == Some("0.5.0"))
+                    })
+                    && locked
+                        .as_deref()
+                        .and_then(|text| serde_yaml::from_str::<serde_yaml::Value>(text).ok())
+                        .is_some_and(|lock| {
+                            lock["containers"]["sandbox-libkrun"]["resolved"]["version"].as_str()
+                                == Some("0.5.0")
+                        });
+                if committed {
+                    return std::task::Poll::Ready(Ok(()));
+                }
+                match progress {
+                    std::task::Poll::Ready(result) => std::task::Poll::Ready(Err(format!(
+                        "operation ended before metadata commit: {result:?}"
+                    ))),
+                    std::task::Poll::Pending => std::task::Poll::Pending,
+                }
+            }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn adapter_commit_oracle_rejects_an_operation_ending_with_only_yaml_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  sandbox-libkrun: {worker: package://sandbox-libkrun, version: 0.5.0}\n",
+        )
+        .unwrap();
+        let ended = std::future::ready(Err(ComposeError::OperationCancelled {
+            operation_id: "test".into(),
+        }));
+        let result = until_adapter_committed(&path, ended).await.unwrap();
+        assert!(result.unwrap_err().contains("before metadata commit"));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn update_all_refreshes_a_generated_adapter_that_is_the_only_package() {
@@ -6005,16 +6101,26 @@ containers:
             None,
             EnginePolicy::External,
         );
-        // Whatever the restart's outcome: no engine is listening.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            crate::registry::TEST_REGISTRY.scope(
-                server.uri(),
-                daemon.update(Some(&path), &[], "update".into()),
-            ),
-        )
-        .await
-        .expect("adapter metadata update must finish before the restart deadline");
+        // This test owns the metadata transaction, not a restart against an absent
+        // engine. Inspect the commit after each poll of the real update, without
+        // sleeps or a timeout-as-success oracle. Persisting both files never yields.
+        let cache = tempfile::tempdir().unwrap();
+        let committed = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            crate::state::TEST_PACKAGE_CACHE.scope(cache.path().to_path_buf(), async {
+                let update = crate::registry::TEST_REGISTRY.scope(
+                    server.uri(),
+                    daemon.update(Some(&path), &[], "update".into()),
+                );
+                until_adapter_committed(&path, update).await
+                // `update` (and its mutation guard) is dropped before shutdown below.
+            }),
+        ))
+        .await;
+        daemon.shutdown().await;
+        committed
+            .expect("update panicked before metadata commit")
+            .expect("adapter metadata commit exceeded its deadline")
+            .expect("adapter metadata commit failed");
         let text = std::fs::read_to_string(&path).unwrap();
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
@@ -6039,7 +6145,6 @@ containers:
             selectors.iter().any(|s| s == crate::sandbox::ADAPTER_RANGE),
             "{selectors:?}"
         );
-        daemon.shutdown().await;
     }
 
     #[tokio::test]
@@ -6115,6 +6220,88 @@ containers:
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
         daemon.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn add_router_pins_the_bound_graph_selection_without_an_exact_lookup() {
+        use sha2::{Digest, Sha256};
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+        let server = MockServer::start().await;
+        let archive = adapter_archive();
+        let digest = hex::encode(Sha256::digest(&archive));
+        Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(serde_json::json!({"worker":"sandbox-libkrun","version":crate::sandbox::ADAPTER_RANGE})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "root":{"schema":1,"requested":{"worker":"sandbox-libkrun","version":crate::sandbox::ADAPTER_RANGE},"name":"sandbox-libkrun","version":"0.5.0"},
+                "graph":[{"name":"sandbox-libkrun","version":"0.5.0","type":"binary",
+                    "binaries":{(crate::registry::host_targets()[0]):{"url":format!("{}/artifact",server.uri()),"sha256":digest}}}],"edges":[]
+            }))).expect(1).mount(&server).await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({"version":"0.5.0"}),
+            ))
+            .respond_with(ResponseTemplate::new(422))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  local: {worker: path://., scripts: {run: exit 0}}\n",
+        )
+        .unwrap();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".into(),
+            format!("bound-router-{}", uuid::Uuid::new_v4()),
+            None,
+            EnginePolicy::External,
+        );
+        let committed = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            crate::state::TEST_PACKAGE_CACHE.scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), async {
+                    until_adapter_committed(
+                        &path,
+                        daemon.add(Some(&path), &["iii-sandbox".into()], "bound-add".into()),
+                    )
+                    .await
+                }),
+            ),
+        ))
+        .await;
+        daemon.shutdown().await;
+        committed
+            .expect("add panicked")
+            .expect("no adapter commit before deadline")
+            .expect("add failed before commit");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut file = ComposeFile::parse(&text, &path).unwrap();
+        crate::lockfile::attach(&mut file).unwrap();
+        assert_eq!(
+            file.containers["sandbox-libkrun"].version.as_deref(),
+            Some("0.5.0")
+        );
+        assert!(
+            file.containers["sandbox-libkrun"]
+                .resolved_package
+                .as_ref()
+                .unwrap()
+                .artifacts
+                .values()
+                .all(|a| a.sha256 == digest)
+        );
+        assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        server.verify().await;
     }
 
     /// Runs `operation` until the compose file at `path` or its lock differs from before it, or
