@@ -150,6 +150,7 @@ struct AddPlan {
     wanted: Vec<crate::edit::NewContainer>,
     aliases: Vec<crate::dependencies::Alias>,
     selected_versions: BTreeMap<String, String>,
+    selections: BTreeMap<String, crate::registry::Selection>,
     resolved_graphs: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -487,6 +488,7 @@ struct UpdateEdit {
     edited: String,
     yaml_changed: bool,
     selected_versions: BTreeMap<String, String>,
+    selections: BTreeMap<String, crate::registry::Selection>,
     resolved_graphs: BTreeMap<String, BTreeSet<String>>,
 }
 
@@ -573,6 +575,7 @@ fn apply_update_plan(
         edited,
         yaml_changed,
         selected_versions: plan.selected_versions,
+        selections: plan.selections,
         resolved_graphs,
     })
 }
@@ -1130,7 +1133,8 @@ impl Daemon {
 
     /// Every project that finished loading. A cell still being filled has no
     /// project to act on yet, so it is skipped rather than waited for: the
-    /// caller asking for a list must not block on somebody else's `up`.
+    /// listing membership does not wait for another project's initial load.
+    /// Reading a loaded project's current status can still wait for its `up`.
     async fn loaded(&self) -> Vec<Arc<Project>> {
         self.projects
             .lock()
@@ -1149,18 +1153,23 @@ impl Daemon {
             .collect()
     }
 
-    /// Every project this daemon knows, for `compose::list`.
-    pub async fn list(&self) -> Vec<serde_json::Value> {
+    /// Every loaded project, with a current snapshot for `compose::list`.
+    ///
+    /// Snapshots are acquired sequentially, not atomically across projects.
+    /// A busy project can delay the list; cancellation fails the whole request
+    /// rather than returning a partial list or stale containers.
+    pub async fn list(&self) -> Result<Vec<serde_json::Value>> {
         let projects: Vec<Arc<Project>> = self.loaded().await;
         let mut listed = Vec::new();
         for project in projects {
+            let containers = project.status().await?;
             listed.push(serde_json::json!({
                 "namespace": project.project_namespace,
                 "file": project.file_path(),
-                "containers": project.status().await,
+                "containers": containers,
             }));
         }
-        listed
+        Ok(listed)
     }
 
     /// Brings a project up, loading its file if this is the first time.
@@ -1325,12 +1334,13 @@ impl Daemon {
         // add declaring one of this graph's dependencies as `path://`, say)
         // is planned again, and past the limit the add fails for a retry.
         let mut replans = 0;
-        let (_mutation, text, wanted, aliases, selected_versions, resolved_graphs) = loop {
+        let (_mutation, text, wanted, aliases, selected_versions, selections, resolved_graphs) = loop {
             let AddPlan {
                 snapshot,
                 wanted,
                 aliases,
                 selected_versions,
+                selections,
                 resolved_graphs,
             } = self
                 .prepare(
@@ -1358,6 +1368,7 @@ impl Daemon {
                     wanted,
                     aliases,
                     selected_versions,
+                    selections,
                     resolved_graphs,
                 );
             }
@@ -1419,10 +1430,11 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_metadata_with_versions(
+                crate::lockfile::prepare_metadata_with_plan(
                     &mut current,
                     &force,
                     &selected_versions,
+                    &selections,
                 ),
             )
             .await??;
@@ -1612,7 +1624,10 @@ impl Daemon {
                 operation_id: operation_id.to_string(),
             });
         }
+        plan.selections
+            .retain(|key, _| selected_versions.contains_key(key));
         Ok(AddPlan {
+            selections: plan.selections,
             snapshot,
             wanted: plan.containers,
             aliases: plan.aliases,
@@ -1804,6 +1819,7 @@ impl Daemon {
             mut edited,
             yaml_changed,
             mut selected_versions,
+            selections,
             resolved_graphs,
         } = apply_update_plan(&text, &compose, &previous_graphs, &roots, plan)?;
         // A generated dependency no updated graph includes any more, but that
@@ -1832,10 +1848,11 @@ impl Daemon {
         let mut prepared = self
             .prepare(
                 &operation_id,
-                crate::lockfile::prepare_metadata_with_versions(
+                crate::lockfile::prepare_metadata_with_plan(
                     &mut current,
                     &force,
                     &selected_versions,
+                    &selections,
                 ),
             )
             .await??;
@@ -3984,6 +4001,7 @@ containers:
             fields: serde_yaml::Mapping::new(),
         };
         let plan = crate::dependencies::Plan {
+            selections: BTreeMap::new(),
             containers: vec![api.clone()],
             aliases: Vec::new(),
             selected_versions: BTreeMap::from([("api".to_string(), "2.0.0".to_string())]),
@@ -4040,6 +4058,7 @@ containers:
             fields: serde_yaml::Mapping::new(),
         };
         let plan = crate::dependencies::Plan {
+            selections: BTreeMap::new(),
             containers: vec![api.clone()],
             aliases: Vec::new(),
             selected_versions: BTreeMap::from([("api".to_string(), "2.0.0".to_string())]),
@@ -4083,6 +4102,8 @@ containers:
             _ => "1.3.0",
         };
         crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: members
                 .iter()
                 .map(|name| registry_node(name, version(name)))
@@ -4180,6 +4201,8 @@ containers:
             |key, _, _, _| async move {
                 assert_eq!(key, "api");
                 Ok(crate::registry::Graph {
+                    selections: BTreeMap::new(),
+                    root: None,
                     nodes: vec![
                         registry_node("api", "1.0.0"),
                         registry_node("shell", "1.0.0"),
@@ -4429,7 +4452,7 @@ containers:
         );
         let before = daemon.status(Some(&path)).await.unwrap();
         assert_eq!(
-            reported_state(before.status().await),
+            reported_state(before.status().await.unwrap()),
             (Some("0.22.8".to_string()), Some("0.22.8".to_string()))
         );
 
@@ -4456,7 +4479,7 @@ containers:
             "the update restarted the project, so this is not the no-restart path"
         );
         assert_eq!(
-            reported_state(after.status().await),
+            reported_state(after.status().await.unwrap()),
             (Some("latest".to_string()), Some("0.22.8".to_string()))
         );
         daemon.shutdown().await;
@@ -4554,7 +4577,7 @@ containers:
             "status must answer with the project the held load produced"
         );
         assert_eq!(
-            reported_state(after.status().await),
+            reported_state(after.status().await.unwrap()),
             (Some("latest".to_string()), Some("0.22.8".to_string()))
         );
         daemon.shutdown().await;
@@ -4568,6 +4591,8 @@ containers:
         };
         *version = Some("next".to_string());
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "state".to_string(),
                 version: "0.22.8".to_string(),
@@ -4591,6 +4616,8 @@ containers:
     #[test]
     fn configurable_engine_root_points_to_engine_workers() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "configuration".to_string(),
                 version: "0.23.0".to_string(),
@@ -4619,6 +4646,8 @@ containers:
     #[test]
     fn injected_engine_root_says_no_declaration_is_needed() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "iii-engine-functions".to_string(),
                 version: "0.23.0".to_string(),
@@ -4643,6 +4672,8 @@ containers:
     #[test]
     fn engine_dependencies_are_filtered_from_expanded_graphs() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "api".to_string(),
@@ -4679,6 +4710,8 @@ containers:
     #[test]
     fn expanded_graph_is_dependency_first_even_when_registry_nodes_are_not() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "state".to_string(),
@@ -4714,6 +4747,8 @@ containers:
     #[test]
     fn expanded_graph_rejects_registry_dependency_cycles() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "api".to_string(),
@@ -4742,6 +4777,8 @@ containers:
     #[test]
     fn local_path_worker_satisfies_a_registry_dependency() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4780,6 +4817,8 @@ containers:
     #[test]
     fn local_path_worker_stops_registry_dependency_expansion() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4827,6 +4866,8 @@ containers:
     #[test]
     fn dependency_reachable_without_the_local_worker_is_still_declared() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4865,6 +4906,8 @@ containers:
     #[test]
     fn explicitly_requested_path_worker_is_still_a_source_conflict() {
         let graph = crate::registry::Graph {
+            selections: BTreeMap::new(),
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "console".to_string(),
                 version: "1.9.11".to_string(),
@@ -5970,7 +6013,8 @@ containers:
                 daemon.update(Some(&path), &[], "update".into()),
             ),
         )
-        .await;
+        .await
+        .expect("adapter metadata update must finish before the restart deadline");
         let text = std::fs::read_to_string(&path).unwrap();
         let compose = ComposeFile::parse(&text, &path).unwrap();
         assert_eq!(
@@ -5979,6 +6023,22 @@ containers:
             "{text}"
         );
         assert!(crate::edit::is_generated_container(&text, "sandbox-libkrun").unwrap());
+        let requests = server.received_requests().await.unwrap();
+        let selectors: Vec<String> = requests
+            .iter()
+            .filter(|r| r.method == "POST")
+            .map(|r| {
+                serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()["version"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert!(selectors.iter().any(|s| s == "0.2.0"), "{selectors:?}");
+        assert!(
+            selectors.iter().any(|s| s == crate::sandbox::ADAPTER_RANGE),
+            "{selectors:?}"
+        );
         daemon.shutdown().await;
     }
 
@@ -6988,6 +7048,7 @@ pub(crate) mod findings_lifecycle_tests {
         let adapter = project
             .status()
             .await
+            .unwrap()
             .into_iter()
             .find(|status| status.container == "sandbox-libkrun")
             .unwrap();

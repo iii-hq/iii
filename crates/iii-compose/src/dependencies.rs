@@ -18,6 +18,7 @@ type Identity = (String, String);
 
 #[derive(Clone)]
 struct Package {
+    selection: Option<registry::Selection>,
     registry: String,
     node: Node,
     /// A fresh resolution of a range cannot identify an already running version.
@@ -70,6 +71,7 @@ pub(crate) struct Plan {
     pub aliases: Vec<Alias>,
     /// Exact registry selections keyed by the final container name.
     pub selected_versions: BTreeMap<String, String>,
+    pub selections: BTreeMap<String, registry::Selection>,
 }
 
 /// How a plan treats dependencies the compose file already declares.
@@ -184,13 +186,6 @@ impl UpdateScope {
     }
 }
 
-/// The package a reference names: its last path segment.
-fn package_name(reference: &str) -> &str {
-    reference
-        .rsplit_once('/')
-        .map_or(reference, |(_, name)| name)
-}
-
 /// Resolve before editing or downloading. Existing package declarations must be
 /// inspected too: an old alias may be present only in the compose file.
 pub(crate) async fn plan(
@@ -279,19 +274,28 @@ where
                 .iter()
                 .map(|node| (node.name.clone(), node.clone()))
                 .collect();
-            // A container may be named apart from the package it runs
-            // (`database: package://…/state`). The graph names the package,
-            // so expand under that name and give the root its key back.
-            let graph_root = if nodes.contains_key(package_name(reference)) {
-                package_name(reference).to_string()
-            } else {
-                worker.key.clone()
-            };
+            // Only the registry's validated binding (or an exact name in a synthetic
+            // graph) identifies the root. A basename/container key is not evidence.
+            let (_, requested_name) = registry::split_reference(reference);
+            let graph_root = graph.root.clone().unwrap_or(requested_name);
+            if !nodes.contains_key(&graph_root) {
+                return Err(conflict(
+                    &worker.key,
+                    "the registry graph does not bind the requested worker",
+                ));
+            }
+            let selections = graph.selections.clone();
             let mut root = worker.clone();
             root.key = graph_root.clone();
             root.fields.clear();
             root.start_after.clear();
             let expanded = crate::daemon::expand_graph(&root, reference, graph, &paths)?;
+            if graph_root != worker.key && expanded.iter().any(|node| node.key == worker.key) {
+                return Err(conflict(
+                    &worker.key,
+                    "the container key conflicts with another registry graph node",
+                ));
+            }
             let (registry, _) = registry::split_reference(reference);
             expanded
                 .into_iter()
@@ -319,9 +323,17 @@ where
                             .get(&declaration.key)
                             .map_or(Platform::Host, crate::vm_binary::platform)
                     };
+                    let selection = selections
+                        .get(&node.name)
+                        .cloned()
+                        .map(|worker| {
+                            registry::selected_package(&declaration.key, &registry, worker)
+                        })
+                        .transpose()?;
                     Ok(Candidate {
                         declaration,
                         package: Some(Package {
+                            selection,
                             registry: registry.clone(),
                             node,
                             exact_version: true,
@@ -383,6 +395,7 @@ where
             Ok((
                 key,
                 Package {
+                    selection: None,
                     registry,
                     node,
                     exact_version,
@@ -647,6 +660,7 @@ fn plan_resolved(
     let mut order = Vec::new();
     let mut aliases = Vec::new();
     let mut selected_versions = BTreeMap::new();
+    let mut selections = BTreeMap::new();
     for Candidate {
         mut declaration,
         package,
@@ -721,6 +735,50 @@ fn plan_resolved(
                     version: Some(package.node.version.clone()),
                 };
             }
+            if selected_versions.contains_key(&declaration.key)
+                && let Some(mut selection) = package.selection.clone()
+            {
+                if explicit.is_none() && !declared_source {
+                    // Generated references name the canonical package, not the root's
+                    // opaque request or an alias that was coalesced into it.
+                    selection.package.name = package.node.canonical_name().to_string();
+                    selection.package.alias_of = None;
+                    selection.root_binding = None;
+                }
+                if declared_source {
+                    let current = &existing[&declaration.key];
+                    let Source::Package { reference, .. } = &declaration.source else {
+                        unreachable!("declared registry dependency changed source kind");
+                    };
+                    let (_, requested_name) = registry::split_reference(reference);
+                    // A validated existing safe alias can retain its public spelling while
+                    // taking the same canonical package's release from the new graph.
+                    // Opaque names still require their own explicit root provenance.
+                    if requested_name == current.node.name
+                        && registry::is_path_safe(&requested_name)
+                    {
+                        selection.package.name = current.node.name.clone();
+                        selection.package.alias_of = current.node.alias_of.clone();
+                        selection.root_binding = None;
+                    }
+                }
+                match selections.entry(declaration.key.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(selection);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry) => {
+                        let previous: &registry::Selection = entry.get();
+                        if !previous.compatible_with(&selection) {
+                            return Err(conflict(
+                                &declaration.key,
+                                "the dependency resolves to conflicting package metadata",
+                            ));
+                        }
+                        // Keep the first selection in the deterministic expansion order.
+                        // A mirror/signed URL from another root is not a new release.
+                    }
+                }
+            }
             retarget(
                 &mut declaration.start_after,
                 &package.registry,
@@ -785,6 +843,7 @@ fn plan_resolved(
     containers.retain(|key, _| reachable.contains(key));
     aliases.retain(|alias| reachable.contains(&alias.container));
     selected_versions.retain(|key, _| reachable.contains(key));
+    selections.retain(|key, _| reachable.contains(key));
     let mut sorted = Vec::new();
     while !order.is_empty() {
         let Some(index) = order.iter().position(|key| {
@@ -806,6 +865,7 @@ fn plan_resolved(
         containers: sorted,
         aliases,
         selected_versions,
+        selections,
     })
 }
 
@@ -825,6 +885,7 @@ mod tests {
                 fields: Default::default(),
             },
             package: Some(Package {
+                selection: None,
                 registry: registry::DEFAULT_REGISTRY.into(),
                 exact_version: true,
                 platform: Platform::Host,
@@ -1151,6 +1212,8 @@ mod tests {
                                 }}
                             });
                             let tool_graph = serde_json::json!({
+                                "root": {"schema": 1, "requested": {"worker": wanted_worker,
+                                    "version": selector.unwrap_or("*")}, "name": "tool", "version": "1.2.3"},
                                 "graph": [binary("tool", None), binary("queue", None)],
                                 "edges": [{"from":"tool", "to":"queue"}]
                             });
@@ -1342,6 +1405,8 @@ mod tests {
                 assert_eq!(key, "tool");
                 assert_eq!(platform, Platform::Vm);
                 Ok(registry::Graph {
+                    selections: BTreeMap::new(),
+                    root: None,
                     nodes: vec![node("tool", "1.0.0")],
                     edges: vec![],
                 })
@@ -1806,6 +1871,8 @@ mod tests {
                 },
                 |_, _, _, _| async {
                     Ok::<_, ComposeError>(registry::Graph {
+                        selections: BTreeMap::new(),
+                        root: Some("state".into()),
                         nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
                         edges: vec![("state".into(), "queue".into())],
                     })

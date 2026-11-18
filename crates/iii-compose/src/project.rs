@@ -1913,28 +1913,32 @@ impl Project {
     }
 
     /// Current state of every declared container, for `compose::status`.
-    pub async fn status(&self) -> Vec<ContainerStatus> {
-        let file = self.file.read().await;
-        let inner = self.inner.try_lock().ok();
-        let stored = if inner.is_none() {
-            self.store.load().ok().flatten()
-        } else {
-            None
+    ///
+    /// Waits for lifecycle changes instead of presenting persisted state as a
+    /// current snapshot. Shutdown cancels acquisition with `OPERATION_CANCELLED`;
+    /// callers can also bound the future with their existing request deadline.
+    pub async fn status(&self) -> Result<Vec<ContainerStatus>> {
+        let shutdown = self.shutdown.signal();
+        let cancelled = || ComposeError::OperationCancelled {
+            operation_id: "status".to_string(),
         };
-        file.containers
+        // Match up/reconcile: taking file first would block a reconciler that
+        // owns inner and needs file.write(). Never fall back to the state store.
+        let inner = shutdown
+            .run(self.inner.lock())
+            .await
+            .ok_or_else(cancelled)?;
+        let file = shutdown.run(self.file.read()).await.ok_or_else(cancelled)?;
+        let statuses = file
+            .containers
             .iter()
             .map(|(key, container)| {
-                let record = inner
-                    .as_ref()
-                    .and_then(|inner| inner.state.containers.get(key))
-                    .or_else(|| stored.as_ref().and_then(|state| state.containers.get(key)));
-                let running = inner.as_ref().is_some_and(|inner| {
-                    inner.children.get(key).is_some_and(|child| {
-                        matches!(
-                            child.poll(),
-                            crate::process::Outcome::Running | crate::process::Outcome::Unknown
-                        )
-                    })
+                let record = inner.state.containers.get(key);
+                let running = inner.children.get(key).is_some_and(|child| {
+                    matches!(
+                        child.poll(),
+                        crate::process::Outcome::Running | crate::process::Outcome::Unknown
+                    )
                 });
                 let state = match (running, record.map(|record| record.status)) {
                     (true, _) => ChildStatus::Ready,
@@ -1947,14 +1951,17 @@ impl Project {
                     version: container.version_label(),
                     requested: container.requested().map(str::to_owned),
                     pid: record.filter(|_| running).and_then(|record| record.pid),
-                    owned: inner
-                        .as_ref()
-                        .is_some_and(|inner| inner.children.contains_key(key)),
+                    owned: inner.children.contains_key(key),
                     log_path: self.logs.path(key),
                     last_error: record.and_then(|record| record.last_error.clone()),
                 }
             })
-            .collect()
+            .collect();
+        // Only synchronous, non-waiting child polls and owned copies above.
+        // No guard escapes into the caller's JSON serialization or network work.
+        drop(file);
+        drop(inner);
+        Ok(statuses)
     }
 
     /// Reads retained stdout and stderr without exposing arbitrary host paths.
@@ -2385,6 +2392,7 @@ mod adapter_restart_tests {
             self.project
                 .status()
                 .await
+                .unwrap()
                 .into_iter()
                 .find(|status| status.container == key)
                 .unwrap()
@@ -2395,6 +2403,7 @@ mod adapter_restart_tests {
             self.project
                 .status()
                 .await
+                .unwrap()
                 .into_iter()
                 .find(|status| status.container == key)
                 .unwrap()
@@ -2579,14 +2588,66 @@ mod adapter_restart_tests {
     #[tokio::test]
     async fn a_restart_cancelled_by_shutdown_does_not_fail_the_vms() {
         let fixture = fixture("").await;
+        // Public status must refuse after cancellation. Inspect the lifecycle's
+        // actual records and owned handles instead, never persisted fallback.
+        let snapshot = |inner: &Inner| {
+            (
+                inner.state.containers.clone(),
+                inner
+                    .children
+                    .iter()
+                    .map(|(key, child)| {
+                        (key.clone(), (child.pid, child.birth.clone(), child.poll()))
+                    })
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        };
+        let (records_before, children_before) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
         fixture.project.shutdown.cancel();
 
         let result = fixture.project.restart_one("sb", "restart".into()).await;
+        let status = fixture.project.status().await;
+        let (records_after, children_after) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
+        let started = fixture.started();
 
-        assert_eq!(containers(&result), ["*"]);
-        assert_eq!(fixture.state_of("vm").await, ChildStatus::Ready);
-        assert_eq!(fixture.last_error_of("vm").await, "");
+        // Teardown before assertions so a regression does not strand the
+        // fixture's processes. None of the snapshots keeps a guard across it.
         fixture.project.shutdown().await;
+        let (records_stopped, children_stopped) = {
+            let inner = fixture.project.inner.lock().await;
+            snapshot(&inner)
+        };
+        assert!(matches!(
+            status,
+            Err(ComposeError::OperationCancelled { operation_id }) if operation_id == "status"
+        ));
+        assert_eq!(containers(&result), ["*"]);
+        assert_eq!(result.status, OpStatus::Failed);
+        assert!(!result.changed);
+        assert_eq!(
+            result.containers[0].error.as_ref().unwrap().code,
+            "OPERATION_CANCELLED"
+        );
+        assert_eq!(records_after, records_before);
+        assert_eq!(children_after, children_before);
+        for vm in ["vm", "web"] {
+            assert_eq!(records_after[vm].status, ChildStatus::Ready);
+            assert_eq!(records_after[vm].last_error, None);
+            assert_eq!(records_after[vm].pid, Some(children_after[vm].0));
+            assert_eq!(children_after[vm].2, crate::process::Outcome::Running);
+        }
+        assert!(started.is_empty(), "cancelled restart must not start a VM");
+        assert!(children_stopped.is_empty());
+        for key in records_after.keys() {
+            assert_eq!(records_stopped[key].status, ChildStatus::Stopped);
+            assert_eq!(fixture.alive(key), None, "{key} must stop with the project");
+        }
     }
 
     #[tokio::test]
@@ -2824,6 +2885,7 @@ mod adapter_restart_tests {
         project
             .status()
             .await
+            .unwrap()
             .into_iter()
             .find(|status| status.container == "own")
             .unwrap()
@@ -2992,7 +3054,7 @@ mod adapter_restart_tests {
 
         assert_eq!(alive(dir.path(), "own"), None);
         assert_eq!(containers(&result), ["sb", "own"]);
-        let status = project.status().await;
+        let status = project.status().await.unwrap();
         let own = status.iter().find(|status| status.container == "own");
         assert_eq!(own.unwrap().state, ChildStatus::Failed);
         project.shutdown().await;
@@ -3633,3 +3695,6 @@ mod adapter_restart_tests {
         project.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod status_tests;

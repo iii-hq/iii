@@ -72,6 +72,183 @@ struct ResolveResponse {
     /// twice.
     #[serde(default)]
     edges: Vec<ResolvedEdge>,
+    /// Legacy identity-only root or v1 request binding. Request text is never a path.
+    #[serde(default)]
+    root: Option<ResolveRoot>,
+}
+
+/// Explicit identity for registries whose request names are not package names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ResolveRoot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested: Option<RootRequest>,
+    name: String,
+    version: String,
+}
+
+impl<'de> Deserialize<'de> for ResolveRoot {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            #[serde(default, deserialize_with = "present_root_field")]
+            schema: Option<u32>,
+            #[serde(default, deserialize_with = "present_root_field")]
+            requested: Option<RootRequest>,
+            name: String,
+            version: String,
+        }
+        let Fields {
+            schema,
+            requested,
+            name,
+            version,
+        } = deserialize_root_object(deserializer)?;
+        if schema.is_some() != requested.is_some() {
+            return Err(serde::de::Error::custom(
+                "root schema and requested must appear together",
+            ));
+        }
+        Ok(Self {
+            schema,
+            requested,
+            name,
+            version,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RootRequest {
+    worker: String,
+    version: String,
+}
+
+impl<'de> Deserialize<'de> for RootRequest {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            worker: String,
+            version: String,
+        }
+        let Fields { worker, version } = deserialize_root_object(deserializer)?;
+        Ok(Self { worker, version })
+    }
+}
+
+// Missing legacy fields are permitted; explicit null is not a downgrade to legacy.
+fn present_root_field<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl ResolveRoot {
+    // Locks may come from the original selector or an exact-version lookup. An
+    // unpinned `*` plan is written as its selected exact version by the editor.
+    // The chosen registry remains the trust boundary; this is not a signature.
+    pub(crate) fn validates_lock(
+        &self,
+        name: &str,
+        requested: &str,
+        package: &ResolvedPackage,
+    ) -> bool {
+        self.schema == Some(1)
+            && self.requested.as_ref().is_some_and(|echo| {
+                echo.worker == name
+                    && (echo.version == requested
+                        || echo.version == package.version
+                        || (echo.version == "*" && requested == package.version))
+            })
+            && self.name == package.name
+            && self.version == package.version
+            && check_selected_version(requested, &package.version).is_ok()
+            && self
+                .requested
+                .as_ref()
+                .is_some_and(|echo| check_selected_version(&echo.version, &package.version).is_ok())
+    }
+}
+
+/// A validated selection, including request provenance when names differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub package: ResolvedPackage,
+    pub root_binding: Option<ResolveRoot>,
+}
+
+impl Selection {
+    pub(crate) fn compatible_with(&self, other: &Self) -> bool {
+        self.same_package(other) && self.root_binding == other.root_binding
+    }
+
+    /// Download locations may rotate; package identity and every artifact digest may not.
+    /// Provenance is checked separately because an unbound dependency can acquire the
+    /// missing request echo only after this comparison succeeds.
+    pub(crate) fn same_package(&self, other: &Self) -> bool {
+        let (a, b) = (&self.package, &other.package);
+        a.registry == b.registry
+            && a.name == b.name
+            && a.alias_of == b.alias_of
+            && a.version == b.version
+            && a.kind == b.kind
+            && a.default_config == b.default_config
+            && a.artifacts.len() == b.artifacts.len()
+            && a.artifacts.iter().all(|(target, artifact)| {
+                b.artifacts
+                    .get(target)
+                    .is_some_and(|other| artifact.sha256.eq_ignore_ascii_case(&other.sha256))
+            })
+    }
+}
+
+impl From<ResolvedPackage> for Selection {
+    fn from(package: ResolvedPackage) -> Self {
+        Self {
+            package,
+            root_binding: None,
+        }
+    }
+}
+
+/// Restrict binding structs to objects without buffering away duplicate fields.
+fn deserialize_root_object<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Object<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a registry root binding object")
+        }
+
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            map: M,
+        ) -> std::result::Result<T, M::Error> {
+            T::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+        }
+    }
+    deserializer.deserialize_map(Object(std::marker::PhantomData))
+}
+
+/// Only a validated response can supply the root to either resolution path.
+#[derive(Debug)]
+struct ValidatedResolution {
+    response: ResolveResponse,
+    root: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +258,10 @@ struct ResolvedEdge {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ResolvedWorker {
+pub(crate) struct ResolvedWorker {
+    /// Attached only after validation, never deserialized from a graph worker.
+    #[serde(skip)]
+    root_binding: Option<ResolveRoot>,
     name: String,
     #[serde(default)]
     alias_of: Option<String>,
@@ -428,6 +608,17 @@ pub async fn resolve_package_on(
     version_range: &str,
     platform: Platform,
 ) -> Result<ResolvedPackage> {
+    resolve_selection_on(container, reference, version_range, platform)
+        .await
+        .map(|selection| selection.package)
+}
+
+pub(crate) async fn resolve_selection_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+) -> Result<Selection> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let endpoint = TEST_REGISTRY
@@ -443,7 +634,21 @@ pub async fn resolve_package_on(
         platform.targets(),
     )
     .await?;
-    into_resolved_package(container, &registry, worker, host_target())
+    selected_package(container, &registry, worker)
+}
+
+/// Convert only nodes that survived the planner's local dependency boundaries.
+pub(crate) fn selected_package(
+    container: &str,
+    registry: &str,
+    worker: ResolvedWorker,
+) -> Result<Selection> {
+    let root_binding = worker.root_binding.clone();
+    let package = into_resolved_package(container, registry, worker, host_target())?;
+    Ok(Selection {
+        package,
+        root_binding,
+    })
 }
 
 /// Converts and validates one registry response for lock persistence.
@@ -1137,6 +1342,12 @@ pub(crate) async fn resolve_node_on(
 /// A resolved graph: what to declare, and what each one needs.
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
+    /// Validated wire nodes retained until local boundaries choose what to declare.
+    /// Their immutable metadata, not another selector lookup, prepares the lock.
+    pub(crate) selections: BTreeMap<String, ResolvedWorker>,
+    /// Safe graph node selected by the validated request binding, never a container key.
+    /// `None` is for caller-constructed graphs, which must contain the exact request name.
+    pub root: Option<String>,
     pub nodes: Vec<Node>,
     /// `(from, to)`: `from` calls `to`.
     pub edges: Vec<(String, String)>,
@@ -1196,7 +1407,24 @@ pub async fn resolve_graph_on(
         platform.targets(),
     )
     .await?;
+    let root_index = response.root;
+    let root = response.response.graph[root_index].name.clone();
+    let mut response = response.response;
+    if response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
+        response.graph[root_index].root_binding = response.root.clone();
+    }
+    let selections = response
+        .graph
+        .iter()
+        .map(|worker| (worker.name.clone(), worker.clone()))
+        .collect();
     Ok(Graph {
+        selections,
+        root: Some(root),
         nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
             .edges
@@ -1557,7 +1785,7 @@ async fn resolve_response(
     name: &str,
     version_range: &str,
     candidates: &[&str],
-) -> Result<ResolveResponse> {
+) -> Result<ValidatedResolution> {
     let mut builder = reqwest::Client::builder().timeout(RESOLVE_ATTEMPT_TIMEOUT);
     if let Some(version) = crate::host_version() {
         builder = builder.user_agent(format!("iii/{version}"));
@@ -1611,8 +1839,7 @@ async fn resolve_response(
         .await
         .map_err(|err| registry_error(container, registry, &err.to_string()))?;
 
-    check_names(container, registry, &resolved)?;
-    Ok(resolved)
+    validate_resolution(container, registry, name, version_range, resolved)
 }
 
 /// The index of the next of `candidates` after `tried` to resolve for: only
@@ -1714,6 +1941,150 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
     Ok(())
 }
 
+/// Tags are registry-owned; exact/range selectors must match the selected release.
+fn check_selected_version(range: &str, version: &str) -> std::result::Result<(), &'static str> {
+    if let Ok(exact) = semver::Version::parse(range) {
+        if semver::Version::parse(version).ok().as_ref() != Some(&exact) {
+            return Err("the registry root does not match the requested exact version");
+        }
+    } else if let Ok(requirement) = semver::VersionReq::parse(range) {
+        let selected = semver::Version::parse(version)
+            .map_err(|_| "the registry root is not a semantic version")?;
+        let selected = if requirement
+            .comparators
+            .iter()
+            .any(|comparator| !comparator.pre.is_empty())
+        {
+            selected
+        } else {
+            // Preserve ordinary-range prerelease compatibility, not explicit prerelease comparators.
+            semver::Version::new(selected.major, selected.minor, selected.patch)
+        };
+        if !requirement.matches(&selected) {
+            return Err("the registry root does not satisfy the requested version range");
+        }
+    }
+    Ok(())
+}
+
+/// Validate the request identity separately from every filesystem-facing identity.
+fn validate_resolution(
+    container: &str,
+    registry: &str,
+    name: &str,
+    range: &str,
+    response: ResolveResponse,
+) -> Result<ValidatedResolution> {
+    check_names(container, registry, &response)?;
+    let refuse = |message: &str| ComposeError::PackageNotResolved {
+        container: container.to_string(),
+        name: name.to_string(),
+        range: range.to_string(),
+        message: message.to_string(),
+    };
+    let mut names = BTreeMap::new();
+    for (index, worker) in response.graph.iter().enumerate() {
+        if names.insert(worker.name.as_str(), index).is_some() {
+            return Err(refuse("the registry returned duplicate graph names"));
+        }
+    }
+    let root_name = match &response.root {
+        Some(root) => {
+            if root.schema.is_some() && root.schema != Some(1) {
+                return Err(refuse(
+                    "unsupported registry root binding schema; expected 1",
+                ));
+            }
+            if root
+                .requested
+                .as_ref()
+                .is_some_and(|echo| echo.worker != name || echo.version != range)
+            {
+                return Err(refuse(
+                    "the registry root binding does not match the exact request",
+                ));
+            }
+            if root.schema.is_none() && root.name != name {
+                return Err(refuse(
+                    "the legacy registry root must match the exact requested name",
+                ));
+            }
+            if root.name != name && names.contains_key(name) {
+                return Err(refuse(
+                    "the registry root binding conflicts with the requested graph node",
+                ));
+            }
+            root.name.as_str()
+        }
+        None => name,
+    };
+    let root = names.get(root_name).copied().ok_or_else(|| {
+        refuse("the registry graph has no unique requested root; opaque requests require an explicit v1 root binding")
+    })?;
+    let worker = &response.graph[root];
+    if response
+        .root
+        .as_ref()
+        .is_some_and(|binding| binding.version != worker.version)
+    {
+        return Err(refuse(
+            "the registry root binding version differs from its graph node",
+        ));
+    }
+    check_selected_version(range, &worker.version).map_err(refuse)?;
+    if response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
+        // A binding names a closed graph, not an invitation to install unrelated nodes.
+        let mut incoming = vec![0usize; response.graph.len()];
+        let mut outgoing = vec![Vec::new(); response.graph.len()];
+        for edge in &response.edges {
+            let (Some(&from), Some(&to)) =
+                (names.get(edge.from.as_str()), names.get(edge.to.as_str()))
+            else {
+                return Err(refuse(
+                    "the registry root graph has an edge outside its named nodes",
+                ));
+            };
+            outgoing[from].push(to);
+            incoming[to] += 1;
+        }
+        let mut reached = std::collections::BTreeSet::new();
+        let mut pending = vec![root];
+        while let Some(index) = pending.pop() {
+            if reached.insert(index) {
+                pending.extend(outgoing[index].iter().copied());
+            }
+        }
+        if reached.len() != response.graph.len() {
+            return Err(refuse("the registry root graph contains unrelated nodes"));
+        }
+        let mut ready: Vec<_> = incoming
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect();
+        let mut visited = 0;
+        while let Some(index) = ready.pop() {
+            visited += 1;
+            for &to in &outgoing[index] {
+                incoming[to] -= 1;
+                if incoming[to] == 0 {
+                    ready.push(to);
+                }
+            }
+        }
+        if visited != response.graph.len() {
+            return Err(refuse(
+                "the registry root graph contains conflicting cyclic edges",
+            ));
+        }
+    }
+    Ok(ValidatedResolution { response, root })
+}
+
 /// The named worker out of its own graph.
 ///
 /// Installing takes only the root: what a project runs is what its compose file
@@ -1737,20 +2108,29 @@ async fn resolve(
         })
         .ok()
         .flatten();
-    if let Some(worker) = remembered {
+    if let Some(worker) = remembered
+        && worker.root_binding.as_ref().is_none_or(|binding| {
+            binding
+                .requested
+                .as_ref()
+                .is_some_and(|echo| echo.worker == name && echo.version == version_range)
+        })
+    {
+        // A cached legacy release has no echoed selector. A bound response must
+        // not turn an earlier selector's echo into provenance for a new request.
         return Ok(worker);
     }
-    let resolved = resolve_response(container, registry, name, version_range, candidates).await?;
-    let worker = resolved
-        .graph
-        .into_iter()
-        .find(|worker| worker.name == name)
-        .ok_or_else(|| ComposeError::PackageNotResolved {
-            container: container.to_string(),
-            name: name.to_string(),
-            range: version_range.to_string(),
-            message: "the registry resolved a graph that does not contain it".to_string(),
-        })?;
+    let mut resolved =
+        resolve_response(container, registry, name, version_range, candidates).await?;
+    let mut worker = resolved.response.graph.swap_remove(resolved.root);
+    if resolved
+        .response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
+        worker.root_binding = resolved.response.root;
+    }
     let _ = RESOLVED.try_with(|resolved| {
         let mut resolved = resolved
             .lock()
@@ -2714,7 +3094,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(resolved.graph[0].name, "state");
+        assert_eq!(resolved.response.graph[0].name, "state");
     }
 
     #[tokio::test]
@@ -3205,7 +3585,7 @@ mod tests {
             resolve_response("judge-laya", &server.uri(), "judge-laya", "*", &candidates)
                 .await
                 .unwrap();
-        assert_eq!(resolved.graph[0].version, "0.2.0");
+        assert_eq!(resolved.response.graph[0].version, "0.2.0");
 
         // Without the glibc candidate the registry's refusal is the answer.
         let error = resolve_response(
@@ -4618,3 +4998,7 @@ mod tests {
         assert!(!project.path().join("x").exists());
     }
 }
+
+#[cfg(test)]
+#[path = "registry_root_tests.rs"]
+mod root_tests;
