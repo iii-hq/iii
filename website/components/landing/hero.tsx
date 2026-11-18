@@ -11,10 +11,12 @@ async function installTabs(): Promise<InstallTab[]> {
   return Promise.all(
     hero.install.tabs.map(async (tab) => {
       const commands = tab.steps.flatMap((step) => ('command' in step ? [step.command] : []))
-      const tokens = await Promise.all(commands.map((command) => tokenize(command, 'bash')))
+      const lang = 'lang' in tab ? tab.lang : 'bash'
+      const tokens = await Promise.all(commands.map((command) => tokenize(command, lang)))
       return {
         id: tab.id,
         label: tab.label,
+        prompt: 'prompt' in tab ? tab.prompt : '$',
         commands: commands.map((command, i) => ({ command, tokens: tokens[i].flat() })),
       }
     }),
