@@ -481,6 +481,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test dependency security patches
+        run: pnpm test:security
+
       #- name: Lint
       #  run: npx @biomejs/biome check sdk/packages/node
 
