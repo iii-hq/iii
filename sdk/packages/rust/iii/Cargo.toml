@@ -17,6 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 arc-swap = "1"
+bytes = "1"
 async-trait = "0.1.92"
 futures-util = "0.3"
 hostname = "0.4"
@@ -24,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth", "raw_value"] }
 schemars = "0.8"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }

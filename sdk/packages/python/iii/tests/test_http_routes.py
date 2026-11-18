@@ -93,8 +93,8 @@ async def test_raw_json_request_body(engine_http_url, iii_client: III):
                 "raw_body": raw.decode("utf-8"),
             }
         ).encode("utf-8")
-        await response.writer.write(result)
-        await response.writer.close_async()
+        await response.write(result)
+        await response.close()
 
     fn_ref = iii_client.register_function(function_id, handler)
     route = iii_client.observe(
@@ -292,8 +292,8 @@ async def test_download_pdf_streaming(engine_http_url, iii_client: III):
     async def handler(req: StreamRequest, response: StreamResponse):
         await response.status(200)
         await response.headers({"content-type": "application/pdf"})
-        await response.writer.write(original_pdf)
-        await response.writer.close_async()
+        await response.write(original_pdf)
+        await response.close()
 
     fn_ref = iii_client.register_function("test.api.download.pdf.py", handler)
     route = iii_client.observe(
@@ -336,8 +336,8 @@ async def test_upload_pdf_streaming(engine_http_url, iii_client: III):
 
         received_data = bytearray(b"".join(chunks))
         body = json.dumps({"received_size": len(received_data)}).encode("utf-8")
-        await response.writer.write(body)
-        await response.writer.close_async()
+        await response.write(body)
+        await response.close()
 
     fn_ref = iii_client.register_function("test.api.upload.pdf.py", handler)
     route = iii_client.observe(
@@ -390,10 +390,10 @@ async def test_sse_streaming(engine_http_url, iii_client: III):
                 frame += f"data: {line}\n"
             frame += "\n"
 
-            await response.writer.write(frame.encode("utf-8"))
+            await response.write(frame.encode("utf-8"))
             await asyncio.sleep(0.05)
 
-        await response.writer.close_async()
+        await response.close()
 
     fn_ref = iii_client.register_function("test.api.sse.py", handler)
     route = iii_client.observe(
@@ -460,8 +460,8 @@ async def test_urlencoded_form_data(engine_http_url, iii_client: III):
                 "age": params.get("age", [None])[0],
             }
         ).encode("utf-8")
-        await response.writer.write(result)
-        await response.writer.close_async()
+        await response.write(result)
+        await response.close()
 
     fn_ref = iii_client.register_function("test.api.form.urlencoded.py", handler)
     route = iii_client.observe(
@@ -523,8 +523,8 @@ async def test_multipart_form_data(engine_http_url, iii_client: III):
                 "body_size": len(raw),
             }
         ).encode("utf-8")
-        await response.writer.write(result)
-        await response.writer.close_async()
+        await response.write(result)
+        await response.close()
 
     fn_ref = iii_client.register_function("test.api.form.multipart.py", handler)
     route = iii_client.observe(

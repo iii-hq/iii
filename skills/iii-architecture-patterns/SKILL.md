@@ -239,7 +239,7 @@ retries it, then moves it to the topic's DLQ.
 
 ## Boundaries
 
-- For built-in source args, function registration syntax, calls, and channels, use
+- For built-in source args, function registration syntax, calls, and streams, use
   `iii-core-primitives`.
 - For observer options, filters, and writing event sources, use `iii-observe`.
 - For engine ports, adapters, engine-owned workers, and RBAC (`rbac-proxy`), use `iii-engine-config`;

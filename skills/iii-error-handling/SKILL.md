@@ -24,7 +24,11 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 | `function_not_invokable` | SDK local dispatch | Registration exists but cannot be invoked as a normal local function | Inspect registration/invocation type |
 | `invocation_failed` | SDK worker handler wrappers | Local worker handler or SDK-side handler path failed | Inspect handler logs, stacktrace, and payload validation |
 | `TIMEOUT` | Node/Python SDK caller timeout | Client waited longer than the `call()` timeout | Increase timeout only if the workload is expected to run long; otherwise optimize or enqueue |
-| `payload_too_large` | SDK | An outgoing message exceeds 16 MiB | Use a channel; a call to a function in the same worker runs in-process (no limit) unless sent with `dispatch: 'remote'` |
+| `payload_too_large` | SDK | An outgoing message exceeds the SDK limit (64 MiB; 16 MiB in the browser) | Send the data as a stream; a call to a function in the same worker runs in-process (no limit) unless sent with `dispatch: 'remote'` |
+| `STREAM_ABORTED` | Every SDK (Go `iii.CodeStreamAborted`) | A stream's writer aborted (its source or handler failed, `abort()`, or a lost connection). A read throws `StreamAbortedError` (Rust `Error::StreamAborted`, Go an `*iii.InvocationError`) after the data already sent, and a call whose sink was aborted, or whose sink failed, fails with it | Treat the data as incomplete and discard partial output; the `reason` is the engine's text, so look for the cause in the writer's call result or logs |
+| `STREAM_NOT_ALLOWED` | Every SDK (Go `iii.CodeStreamNotAllowed`) | A payload with a stream was sent with `CallAction.Enqueue`; nothing was sent | Store the data and enqueue its key, or make a live call (`CallAction.Void` is allowed) |
+| `STREAM_CLOSED` | Every SDK (Go `iii.CodeStreamClosed`) | A write or a `send` on an `OutputStream` after `close()` or `abort()`, or after its reader left; or a read of an `InputStream` that was cancelled (`cancel()`, a read loop left early, or its handler returned) | Stop writing; check why the stream ended first (a cancelled reader, or a guard that closed it when the handler returned) |
+| `STREAM_IN_USE` | Every SDK (Go `iii.CodeStreamInUse`) | A second read of an `InputStream`, the same stream twice in one payload, or passing on a stream already read to the end or already sent | Read a stream once (use `tee()` in TypeScript or Python for two copies) and put each stream in one place of one payload |
 
 ## Observer Errors
 

@@ -41,7 +41,7 @@ registerWorker(address?: string, options?: InitOptions) => IIIClient
       Enable worker metrics via OpenTelemetry. Defaults to `true`.
     </ParamField>
     <ParamField body="headers" type="Record<string, string>">
-      Custom HTTP headers sent during the WebSocket handshake, on the main connection and on streaming channels. `Authorization: Bearer $III_TOKEN` is added unless you set `Authorization` here.
+      Custom HTTP headers sent during the WebSocket handshake, on the main connection and on the sockets of streams (InputStream, OutputStream). `Authorization: Bearer $III_TOKEN` is added unless you set `Authorization` here.
     </ParamField>
     <ParamField body="invocationTimeoutMs" type="number">
       Default timeout for `worker.call()` invocations in milliseconds. Defaults to `30000`.
@@ -89,6 +89,11 @@ const other = registerWorker('ws://localhost:49134', { workerName: 'my-worker' }
 Registers a new function with a local handler or an HTTP invocation config.
 The handler's return value is what the function's observers observe; an
 event source's handler returns the event it is called with.
+
+HTTP-invoked functions (HttpInvocationConfig) are deprecated
+(iii-http-functions) and will be removed in an upcoming release: register
+a handler that makes the HTTP call instead. Migration guide:
+https://iii.dev/docs/upgrading/migrate-from-http-functions
 
 Every call of the function, local or routed, runs the handler and then
 goes to the observers that want it (`onObservationMatch`; by default all of
@@ -665,6 +670,55 @@ onObserverRemoved(functionId: string, hook: RemovedHook | null) => IIIClient
 
 ---
 
+### pipe
+
+Creates a pipe: an InputStream and an OutputStream joined
+through the engine; what is written into `output` is read from `input`.
+Put either end in a payload or a result for the other side to use: it
+travels as its ref. This worker owns the pipe and must stay connected until
+the other side attached.
+
+A source or a sink placed in a payload gets its pipe from the SDK, so most
+code does not need this: use it for an end that must exist before its
+source does, a two-way session (two pipes), or a pipe handed to a call
+made later.
+
+**Signature**
+
+```typescript
+pipe(options?: PipeOptions) => Promise<Pipe>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="options" type="PipeOptions">
+  `bufferSize`: frames the engine holds before the reader attached.
+
+  <Expandable title="`PipeOptions` fields">
+    <ParamField body="bufferSize" type="number">
+      Frames the engine holds for the pipe before its reader attached (engine default when omitted).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+const pipe = await worker.pipe()
+const result = worker.call({ function_id: 'files::process', payload: { body: pipe.input } })
+await pipeline(createReadStream('report.csv'), pipe.output.toWritable())
+await result
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
 ### shutdown
 
 Gracefully shutdown the iii, cleaning up all resources.
@@ -691,12 +745,11 @@ The `iii-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-sdk/channel` | `Channel`, `ChannelReader`, `ChannelWriter`, `StreamChannelRef` |
 | `iii-sdk/engine` | `EngineFunctions`, `EngineSources`, `RemoteFunctionHandler` |
-| `iii-sdk/errors` | `InvocationError`, `InvocationErrorInit`, `ObserveRejection`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `isErrorBody` |
-| `iii-sdk/helpers` | `ChannelDirection`, `ChannelItem`, `createChannel`, `createStream`, `extractChannelRefs`, `isChannelRef` |
-| `iii-sdk` | `AddedHook`, `Call`, `CallAction`, `CallRequest`, `Caller`, `CallerInfo`, `Capture`, `DEFAULT_ENGINE_URL`, `DeliverHook`, `EngineSources`, `EnqueueResult`, `Filter`, `FunctionRef`, `IIIClient`, `IIIConnectionState`, `InitOptions`, `InvocationContext`, `InvocationError`, `InvocationErrorInit`, `JsonValue`, `Key`, `MatchHook`, `MatchKeys`, `MatchPredicate`, `MiddlewareFunctionInput`, `ObserveReason`, `ObserveRejection`, `ObserveSource`, `Observed`, `Observer`, `ObserverHandle`, `ObserverOptions`, `ObserverState`, `RegisterFunctionOptions`, `RegistrationRejectedError`, `RemovedHook`, `StreamRequest`, `StreamResponse`, `Target`, `TelemetryOptions`, `registerWorker` |
-| `iii-sdk/protocol` | `ActivationWire`, `CallRequest`, `CallerWire`, `CaptureWire`, `DroppedReportStatsWire`, `ErrorBody`, `FEATURE_LARGE_MESSAGES_V1`, `FEATURE_LOCAL_DISPATCH_V1`, `FEATURE_OBSERVE_V1`, `FEATURE_OBSERVE_V2`, `FunctionRegisteredMessage`, `InvocationResultMessage`, `InvocationsObservedMessage`, `LocalFunctionStatsWire`, `LocalInvocationStatsMessage`, `MessageType`, `ObserveMessage`, `ObserveResultMessage`, `ObserveSourceWire`, `ObservedItemWire`, `ObserverAckMessage`, `ObserverAddedMessage`, `ObserverInfoWire`, `ObserverRemovedMessage`, `ObserverStateChangedMessage`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegistrationRejectedMessage`, `SDK_FEATURES`, `TriggerRequest`, `UnobserveMessage` |
+| `iii-sdk/errors` | `InvocationError`, `InvocationErrorInit`, `ObserveRejection`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `StreamAbortedError`, `isErrorBody` |
+| `iii-sdk/helpers` | `createStream` |
+| `iii-sdk` | `AddedHook`, `Call`, `CallAction`, `CallRequest`, `Caller`, `CallerInfo`, `Capture`, `DEFAULT_ENGINE_URL`, `DeliverHook`, `EngineSources`, `EnqueueResult`, `Filter`, `FunctionRef`, `IIIClient`, `IIIConnectionState`, `InitOptions`, `InputStream`, `InputStreamSource`, `InvocationContext`, `InvocationError`, `InvocationErrorInit`, `JsonValue`, `Key`, `MatchHook`, `MatchKeys`, `MatchPredicate`, `MiddlewareFunctionInput`, `ObserveReason`, `ObserveRejection`, `ObserveSource`, `Observed`, `Observer`, `ObserverHandle`, `ObserverOptions`, `ObserverState`, `OutputStream`, `OutputStreamSink`, `Pipe`, `PipeOptions`, `RegisterFunctionOptions`, `RegistrationRejectedError`, `RemovedHook`, `StreamAbortedError`, `StreamFrame`, `StreamInfo`, `StreamRequest`, `StreamResponse`, `Target`, `TelemetryOptions`, `registerWorker` |
+| `iii-sdk/protocol` | `ActivationWire`, `CallRequest`, `CallerWire`, `CaptureWire`, `ChannelDirection`, `ChannelItem`, `DroppedReportStatsWire`, `ErrorBody`, `FEATURE_LARGE_MESSAGES_V1`, `FEATURE_LOCAL_DISPATCH_V1`, `FEATURE_OBSERVE_V1`, `FEATURE_OBSERVE_V2`, `FunctionRegisteredMessage`, `InvocationResultMessage`, `InvocationsObservedMessage`, `LocalFunctionStatsWire`, `LocalInvocationStatsMessage`, `MessageType`, `ObserveMessage`, `ObserveResultMessage`, `ObserveSourceWire`, `ObservedItemWire`, `ObserverAckMessage`, `ObserverAddedMessage`, `ObserverInfoWire`, `ObserverRemovedMessage`, `ObserverStateChangedMessage`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegistrationRejectedMessage`, `SDK_FEATURES`, `StreamChannelRef`, `TriggerRequest`, `UnobserveMessage`, `extractChannelRefs`, `isChannelRef` |
 | `iii-sdk/runtime` | `FunctionRef`, `IIIConnectionState` |
 | `iii-sdk/state` | `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
 
@@ -704,7 +757,7 @@ The `iii-sdk` package provides additional entry points:
 
 ### iii-sdk
 
-[`AddedHook`](#addedhook) · [`Call`](#call) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallerInfo`](#callerinfo) · [`Capture`](#capture) · [`DeliverHook`](#deliverhook) · [`EnqueueResult`](#enqueueresult) · [`Filter`](#filter) · [`InitOptions`](#initoptions) · [`InvocationContext`](#invocationcontext) · [`JsonValue`](#jsonvalue) · [`Key`](#key) · [`MatchHook`](#matchhook) · [`MatchKeys`](#matchkeys) · [`MatchPredicate`](#matchpredicate) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserveReason`](#observereason) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverState`](#observerstate) · [`ObserveSource`](#observesource) · [`RemovedHook`](#removedhook) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`Target`](#target) · [`TelemetryOptions`](#telemetryoptions)
+[`AddedHook`](#addedhook) · [`Call`](#call) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallerInfo`](#callerinfo) · [`Capture`](#capture) · [`DeliverHook`](#deliverhook) · [`EnqueueResult`](#enqueueresult) · [`Filter`](#filter) · [`InitOptions`](#initoptions) · [`InputStream`](#inputstream) · [`InputStreamSource`](#inputstreamsource) · [`InvocationContext`](#invocationcontext) · [`JsonValue`](#jsonvalue) · [`Key`](#key) · [`MatchHook`](#matchhook) · [`MatchKeys`](#matchkeys) · [`MatchPredicate`](#matchpredicate) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserveReason`](#observereason) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverState`](#observerstate) · [`ObserveSource`](#observesource) · [`OutputStream`](#outputstream) · [`OutputStreamSink`](#outputstreamsink) · [`Pipe`](#pipe) · [`PipeOptions`](#pipeoptions) · [`RemovedHook`](#removedhook) · [`StreamFrame`](#streamframe) · [`StreamInfo`](#streaminfo) · [`StreamRequest`](#streamrequest) · [`StreamResponse`](#streamresponse) · [`Target`](#target) · [`TelemetryOptions`](#telemetryoptions)
 
 #### AddedHook
 
@@ -832,13 +885,44 @@ Configuration options passed to registerWorker.
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
 | `enableMetricsReporting` | `boolean` | No | Enable worker metrics via OpenTelemetry. Defaults to `true`. |
-| `headers` | `Record<string, string>` | No | Custom HTTP headers sent during the WebSocket handshake, on the main connection and<br />on streaming channels. `Authorization: Bearer $III_TOKEN` is added unless you set<br />`Authorization` here. |
+| `headers` | `Record<string, string>` | No | Custom HTTP headers sent during the WebSocket handshake, on the main connection and<br />on the sockets of streams (InputStream, OutputStream). `Authorization: Bearer $III_TOKEN` is added unless you set<br />`Authorization` here. |
 | `invocationTimeoutMs` | `number` | No | Default timeout for `worker.call()` invocations in milliseconds. Defaults to `30000`. |
 | `namespace` | `string` | No | Namespace this worker belongs to. Resolution order:<br />`options.namespace` -> `process.env.III_NAMESPACE` -> undefined. When<br />undefined the engine applies its `default` namespace.<br /><br />It scopes more than the registration. The worker and its functions<br />register here, so identically-named entries coexist across namespaces, and<br />everything the worker does afterwards follows it: a `call` resolves its<br />target here, and an `observe` its source and target, unless the call<br />names another namespace. One declaration places the whole worker. |
 | `otel` | `Omit<OtelConfig, "engineWsUrl" \| "engineWsHeaders">` | No | OpenTelemetry configuration. OTel is initialized automatically by default.<br />Set `{ enabled: false }` or env `OTEL_ENABLED=false/0/no/off` to disable.<br />The `engineWsUrl` is set automatically from the III address, and `engineWsHeaders`<br />from the handshake headers of the main connection. |
 | `reconnectionConfig` | `Partial<IIIReconnectionConfig>` | No | WebSocket reconnection behavior. |
 | `workerDescription` | `string` | No | One-line, human/LLM-readable summary of what this worker does.<br />Surfaces in `engine::workers::list` / `engine::workers::info`. |
 | `workerName` | `string` | No | Display name for this worker. A non-empty `III_WORKER_NAME` overrides it. Defaults to `hostname:pid`. |
+
+---
+
+#### InputStream
+
+The read side of a stream. A field of a handler's input or of a call's
+result arrives as one when the sender put a source there (a Node
+`Readable`, a Web `ReadableStream`, a `Blob`, an async generator, or an
+`InputStream`). Build one yourself with InputStream.from.
+
+A stream has one reader: read it once, with one of `for await`,
+bytes, text, lines, messages, frames,
+toReadable or toWebStream. Call tee first for two.
+Pass it on unread in a payload or a result and its ref travels instead: no
+bytes go through this worker. Inside a handler, a stream the handler started
+reading and did not finish is cancelled when the handler returns.
+
+A stream carries bytes (binary frames) and, separately, JSON messages (text
+frames): byte reads skip the messages, messages skips the bytes, and
+frames yields both in order. An abort surfaces as a
+StreamAbortedError from the read, after the data sent before it.
+
+---
+
+#### InputStreamSource
+
+What InputStream.from reads from.
+
+```typescript
+type InputStreamSource = InputStream | Readable | ReadableStream<Uint8Array> | Blob | Uint8Array | ArrayBuffer | string | AsyncIterable<Uint8Array | string> | Iterable<Uint8Array | string>
+```
 
 ---
 
@@ -1043,6 +1127,55 @@ The left side of `iii.observe`: what is observed.
 
 ---
 
+#### OutputStream
+
+The write side of a stream. A field of a handler's input arrives as one when
+the caller put a sink there (a Node `Writable`, a Web `WritableStream`, or an
+`OutputStream`); the call resolves once what the handler wrote reached the
+sink. Build one yourself with OutputStream.to.
+
+Inside a handler, a stream the handler wrote to (or bridged) is closed when
+the handler returns and aborted when it throws, unless it was closed,
+aborted, sent on, or kept open with keepOpen. One the handler never
+touched is closed when it returns, whatever it returns. In an observer
+activation (an HTTP route target), it is closed only when the handler returns
+`undefined` or `null`, and left alone otherwise: the HTTP worker reads an
+untouched response and a value as a buffered response.
+
+---
+
+#### OutputStreamSink
+
+What OutputStream.to writes into.
+
+```typescript
+type OutputStreamSink = Writable | WritableStream<Uint8Array>
+```
+
+---
+
+#### Pipe
+
+The two ends of a pipe made by IIIClient.pipe: what is written into
+`output` is read from `input`. Either end can be put in a payload or a result.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [`InputStream`](#inputstream) | Yes | The read end. |
+| `output` | [`OutputStream`](#outputstream) | Yes | The write end. |
+
+---
+
+#### PipeOptions
+
+Options of IIIClient.pipe.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bufferSize` | `number` | No | Frames the engine holds for the pipe before its reader attached (engine default when omitted). |
+
+---
+
 #### RemovedHook
 
 Runs once for every accepted observer when it is removed. An error it throws is logged.
@@ -1050,6 +1183,32 @@ Runs once for every accepted observer when it is removed. An error it throws is 
 ```typescript
 type RemovedHook = (obs: Observer) => void | Promise<void>
 ```
+
+---
+
+#### StreamFrame
+
+One frame of InputStream.frames: bytes, or a text message.
+
+```typescript
+type StreamFrame = { type: "binary"; value: Buffer } | { type: "text"; value: string }
+```
+
+---
+
+#### StreamInfo
+
+What an observer's target sees in place of a stream that the observed call
+carried in its `input` or `output`: that a stream was there, its direction
+and its channel id, without the access key (a stream has one reader, and it
+is the observed function). The engine still sends the key on the wire; the
+SDK drops it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `direction` | `"read" \| "write"` | Yes | - |
+| `id` | `string` | Yes | - |
+| `stream` | `true` | Yes | - |
 
 ---
 
@@ -1065,16 +1224,17 @@ type StreamRequest = Omit<InternalHttpRequest<TBody>, "response">
 
 #### StreamResponse
 
-Response object passed to streaming function handlers. Use `status()` and
-`headers()` to set response metadata, write to `stream` for streaming
-responses, and call `close()` when done.
+Response object passed to streaming function handlers (the `http` helper of
+`@iii-dev/helpers/http`). Use `status()` and `headers()` to set response
+metadata, `write()` or `stream` for the body, and `close()` when done.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `close` | `() => void` | Yes | Close the response. |
-| `headers` | `(headers: Record<string, string>) => void` | Yes | Set response headers. |
-| `status` | `(statusCode: number) => void` | Yes | Set the HTTP status code. |
-| `stream` | `NodeJS.WritableStream` | Yes | Writable stream for the response body. |
+| `close` | `() => Promise<void>` | Yes | Close the response. |
+| `headers` | `(headers: Record<string, string>) => Promise<void>` | Yes | Set response headers (a `set_headers` message on the response stream). |
+| `status` | `(statusCode: number) => Promise<void>` | Yes | Set the HTTP status code (a `set_status` message on the response stream). |
+| `stream` | `NodeJS.WritableStream` | Yes | Writable stream for the response body; ending it ends the response. |
+| `write` | `(chunk: Uint8Array \| string) => Promise<void>` | Yes | Write a chunk of the body. |
 
 ---
 
@@ -1097,57 +1257,6 @@ Worker metadata reported to the engine (language, framework, project).
 | `framework` | `string` | No | Framework name, if applicable. |
 | `language` | `string` | No | Programming language of the worker. |
 | `project_name` | `string` | No | Name of the project this worker belongs to. |
-
-### iii-sdk/channel
-
-[`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`StreamChannelRef`](#streamchannelref)
-
-#### Channel
-
-A streaming channel pair for worker-to-worker data transfer. Created via
-the `createChannel` helper from `iii-sdk/helpers`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `reader` | [`ChannelReader`](#channelreader) | Yes | Reader end of the channel. |
-| `readerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the reader (can be sent to other workers). |
-| `writer` | [`ChannelWriter`](#channelwriter) | Yes | Writer end of the channel. |
-| `writerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the writer (can be sent to other workers). |
-
----
-
-#### ChannelReader
-
-Read end of a streaming channel. Provides both a Node.js `Readable` stream
-for binary data and an `onMessage` callback for structured text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream` | `Readable` | Yes | Node.js Readable stream for binary data. |
-
----
-
-#### ChannelWriter
-
-Write end of a streaming channel. Provides both a Node.js `Writable` stream
-and a `sendMessage` method for sending structured text messages.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `stream` | `Writable` | Yes | Node.js Writable stream for binary data. |
-
----
-
-#### StreamChannelRef
-
-Serializable reference to one end of a streaming channel. Can be included
-in invocation payloads to pass channel endpoints between workers.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `access_key` | `string` | Yes | Access key for authentication. |
-| `channel_id` | `string` | Yes | Unique channel identifier. |
-| `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
 
 ### iii-sdk/engine
 
@@ -1200,7 +1309,7 @@ type RemoteFunctionHandler = (data: TInput, metadata?: JsonValue) => TOutput | P
 
 ### iii-sdk/errors
 
-[`InvocationError`](#invocationerror) · [`InvocationErrorInit`](#invocationerrorinit) · [`ObserveRejection`](#observerejection) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit)
+[`InvocationError`](#invocationerror) · [`InvocationErrorInit`](#invocationerrorinit) · [`ObserveRejection`](#observerejection) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`StreamAbortedError`](#streamabortederror)
 
 #### InvocationError
 
@@ -1279,36 +1388,30 @@ Fields used to construct a RegistrationRejectedError.
 | `owner_worker_id` | `string` | Yes | - |
 | `worker_name` | `string` | No | - |
 
-### iii-sdk/helpers
-
-[`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem)
-
-#### ChannelDirection
-
-Direction of a streaming channel endpoint. Mirrors the Rust SDK's
-`ChannelDirection` enum and matches the literal values used by
-StreamChannelRef.direction.
-
-```typescript
-type ChannelDirection = typeof ChannelDirection[keyof typeof ChannelDirection]
-```
-
 ---
 
-#### ChannelItem
+#### StreamAbortedError
 
-Discriminated runtime tag for an item observed on a streaming channel.
-Mirrors the Rust SDK's `ChannelItem` enum (`Text` / `Binary`). Carrier for
-factory + type-guard helpers so callers can construct and discriminate
-channel items without depending on Rust-specific shape.
+A stream failed instead of ending: its writer aborted it (a source that
+threw, a handler that threw while writing, `out.abort()`), or its socket was
+lost. Thrown by the reads of an InputStream after the data sent
+before the abort, and the error a call rejects with when a sink it passed
+was aborted (`code` is `STREAM_ABORTED` in both cases).
 
-```typescript
-type ChannelItem = { type: "text"; value: string } | { type: "binary"; value: Uint8Array }
-```
+`reason` is what the reader was told. Across the engine that is the
+engine's text (`channel writer aborted: closed with code 1011`), not the
+writer's own reason: the engine does not relay it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `reason` | `string` | Yes | Why the stream was aborted, as the reader learned it. |
+| `stacktrace` | `string` | No | - |
 
 ### iii-sdk/protocol
 
-[`ActivationWire`](#activationwire) · [`CallerWire`](#callerwire) · [`CallRequest`](#callrequest) · [`CaptureWire`](#capturewire) · [`DroppedReportStatsWire`](#droppedreportstatswire) · [`ErrorBody`](#errorbody) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`LocalFunctionStatsWire`](#localfunctionstatswire) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MessageType`](#messagetype) · [`ObservedItemWire`](#observeditemwire) · [`ObserveMessage`](#observemessage) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserveResultMessage`](#observeresultmessage) · [`ObserverInfoWire`](#observerinfowire) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`ObserveSourceWire`](#observesourcewire) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`UnobserveMessage`](#unobservemessage)
+[`ActivationWire`](#activationwire) · [`CallerWire`](#callerwire) · [`CallRequest`](#callrequest) · [`CaptureWire`](#capturewire) · [`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem) · [`DroppedReportStatsWire`](#droppedreportstatswire) · [`ErrorBody`](#errorbody) · [`FunctionRegisteredMessage`](#functionregisteredmessage) · [`InvocationResultMessage`](#invocationresultmessage) · [`InvocationsObservedMessage`](#invocationsobservedmessage) · [`LocalFunctionStatsWire`](#localfunctionstatswire) · [`LocalInvocationStatsMessage`](#localinvocationstatsmessage) · [`MessageType`](#messagetype) · [`ObservedItemWire`](#observeditemwire) · [`ObserveMessage`](#observemessage) · [`ObserverAckMessage`](#observerackmessage) · [`ObserverAddedMessage`](#observeraddedmessage) · [`ObserveResultMessage`](#observeresultmessage) · [`ObserverInfoWire`](#observerinfowire) · [`ObserverRemovedMessage`](#observerremovedmessage) · [`ObserverStateChangedMessage`](#observerstatechangedmessage) · [`ObserveSourceWire`](#observesourcewire) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegistrationRejectedMessage`](#registrationrejectedmessage) · [`StreamChannelRef`](#streamchannelref) · [`UnobserveMessage`](#unobservemessage)
 
 #### ActivationWire
 
@@ -1356,6 +1459,30 @@ carries, and with them the outcomes that fire it.
 
 ```typescript
 type CaptureWire = OpenEnum<"input" | "output" | "error" | "caller" | "metadata">
+```
+
+---
+
+#### ChannelDirection
+
+Direction of a streaming channel endpoint. Mirrors the Rust SDK's
+`ChannelDirection` enum and matches the literal values used by
+StreamChannelRef.direction.
+
+```typescript
+type ChannelDirection = typeof ChannelDirection[keyof typeof ChannelDirection]
+```
+
+---
+
+#### ChannelItem
+
+One frame of a channel: a binary frame carries bytes, a text frame a
+message. Mirrors the Rust SDK's `ChannelItem` enum (`Text` / `Binary`);
+`InputStream.frames()` yields these.
+
+```typescript
+type ChannelItem = { type: "text"; value: string } | { type: "binary"; value: Uint8Array }
 ```
 
 ---
@@ -1696,6 +1823,19 @@ severity:
 | `namespace` | `string` | Yes | Namespace of the refused registration. |
 | `owner_worker_id` | `string` | Yes | ID of the live worker that already owns the contested identity; `""` on a rejection that is not a conflict. |
 | `worker_name` | `string` | No | Contested worker name. Present only for `WORKER_NAMESPACE_CONFLICT`. |
+
+---
+
+#### StreamChannelRef
+
+Serializable reference to one end of a streaming channel. Can be included
+in invocation payloads to pass channel endpoints between workers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `string` | Yes | Access key for authentication. |
+| `channel_id` | `string` | Yes | Unique channel identifier. |
+| `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
 
 ---
 

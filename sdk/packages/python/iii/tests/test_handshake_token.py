@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from iii.channels import ChannelReader, ChannelWriter, build_channel_url
+from iii._channels import ChannelReader, ChannelWriter, build_channel_url
 from iii.iii import III
 from iii.iii_types import StreamChannelRef
 
@@ -110,7 +110,7 @@ async def test_channels_send_the_handshake_headers(
 ) -> None:
     monkeypatch.setenv("III_TOKEN", "secret")
     connect = AsyncMock()
-    monkeypatch.setattr("iii.channels.websockets.connect", connect)
+    monkeypatch.setattr("iii._channels.websockets.connect", connect)
 
     await channel_cls("ws://engine.test", _ref())._ensure_connected()
     await channel_cls("ws://engine.test", _ref(), {"Authorization": "Bearer explicit"})._ensure_connected()
