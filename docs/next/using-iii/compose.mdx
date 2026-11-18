@@ -208,7 +208,7 @@ ready stay as they are.
 | ----------- | -------------------------------------------------------------------------------------------- |
 | `file`      | The project to start.                                                                        |
 | `container` | Starts that worker and the workers it depends on, and nothing else.                          |
-| `frozen`    | Requires a current `worker-compose.lock` and does not resolve package selectors when `true`. |
+| `frozen`    | Requires a current lock for the selected compose file and does not resolve package selectors when `true`. |
 
 #### compose::up failures
 
@@ -379,9 +379,30 @@ changes and causes no restart.
 
 ### Package lock
 
-Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
-requested selector. The lock keeps the resolved dependency graph, versions, package types, artifact
-URLs, SHA-256 digests, and default configuration returned by the registry.
+Compose resolves a selected symlink before deriving the lock path. It writes the lock beside the
+resolved compose file, replacing its final `.yaml` or `.yml` extension with `.lock` and preserving
+the rest of the file name. For example, if `config/dev.yaml` links to `projects/local.yaml`, the lock
+is `projects/local.lock`, not `config/dev.lock`.
+
+| Compose file | Lockfile |
+| --- | --- |
+| `worker-compose.yaml` | `worker-compose.lock` |
+| `worker-compose.dev.yaml` | `worker-compose.dev.lock` |
+| `worker-compose.prod.yml` | `worker-compose.prod.lock` |
+| `config/local.yaml` | `config/local.lock` |
+
+Compose files with different stems in the same directory keep independent locks. Files that differ
+only by extension, such as `worker-compose.yaml` and `worker-compose.yml`, share
+`worker-compose.lock`. Use different stems, such as `worker-compose.yaml` and
+`worker-compose.dev.yml`, when you need independent locks.
+
+Selecting a file with `--file` in the CLI or `file` in a `compose::*` call selects its corresponding
+lock for reads, writes, and frozen validation. Compose does not fall back to another compose file's lock. In frozen mode, a missing or
+outdated lock for the selected file is an error, even if another valid lock exists beside it.
+
+The compose file keeps the requested selector. The lock keeps the resolved dependency graph,
+versions, package types, artifact URLs, SHA-256 digests, and default configuration returned by the
+registry.
 
 ```text
 worker-compose.yaml: next
