@@ -773,8 +773,10 @@ fn inline_entry_as_block(
                 if trimmed.is_empty() {
                     continue;
                 }
-                out.push(format!("{inner}{trimmed}"));
-                if !trimmed.starts_with('#') {
+                if trimmed.starts_with('#') {
+                    out.push(format!("{inner}{trimmed}"));
+                } else {
+                    out.push(format!("{inner}{}", block_flow_pair(trimmed)));
                     leading = false;
                 }
             } else {
@@ -798,6 +800,50 @@ fn inline_entry_as_block(
         ));
     }
     Ok(Some(out))
+}
+
+/// Flow mappings permit JSON-style `"key":"value"` pairs. Block mappings
+/// require separation after the key colon. Find that colon outside a quoted key
+/// and insert only the missing space, never rewriting the value or nested pairs.
+fn block_flow_pair(line: &str) -> String {
+    let mut quote = None;
+    let mut chars = line.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match quote {
+            Some('"') => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                ':' => {
+                    let end = at + 1;
+                    if line[end..]
+                        .chars()
+                        .next()
+                        .is_some_and(|next| !next.is_whitespace())
+                    {
+                        return format!("{} {}", &line[..end], &line[end..]);
+                    }
+                    break;
+                }
+                _ => {}
+            },
+        }
+    }
+    line.to_string()
 }
 
 /// Split only outer mapping pairs, retaining raw field text and nested syntax.
@@ -1296,7 +1342,10 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
             .strip_prefix(indent)
             .filter(|body| !body.starts_with(char::is_whitespace))
             .and_then(|body| body.split_once(':'))
-            .filter(|(_, value)| opens_block(without_comment(value).trim()))
+            .filter(|(_, value)| {
+                opens_block(without_comment(value).trim())
+                    && flow_span(&lines[..containers.end], *i).is_none()
+            })
             .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
             .is_some_and(|name| name == key)
     })?;
@@ -1691,6 +1740,100 @@ mod tests {
         assert_eq!(document["containers"]["api"], request);
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
         assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn json_style_flow_pairs_remain_valid_for_upsert_and_vm_rewrite() {
+        for fields in [
+            r#"{"worker":"package://api.workers.iii.dev/tool","version":"1.0.0","config_override":{"message":"á: # , }","nested:key":{"quoted":"a\\\"b"}}}"#,
+            r#"{"worker": "package://api.workers.iii.dev/tool", "version": "1.0.0", "config_override": {"message": "á: # , }", "nested:key": {"quoted": "a\\\"b"}}}"#,
+        ] {
+            let text =
+                format!("containers:\n  tool: {fields} # keep\n  other: {{worker: path://.}}\n");
+            let before: Value = serde_yaml::from_str(&text).unwrap();
+            assert_eq!(
+                upsert_container(&text, &parse_worker("tool@1.0.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+            let out = changed(&text, &parse_worker("tool@1.1.0").unwrap());
+            crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+            let after: Value = serde_yaml::from_str(&out).unwrap();
+            assert_eq!(after["containers"]["tool"]["version"], "1.1.0");
+            assert_eq!(
+                after["containers"]["tool"]["config_override"],
+                before["containers"]["tool"]["config_override"]
+            );
+            assert!(out.ends_with("  other: {worker: path://.}\n"));
+            assert!(out.contains("# keep"));
+            assert_eq!(
+                upsert_container(&out, &parse_worker("tool@1.1.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+        }
+        let text = "containers:\n  vm: {\"worker\":\"path://./vm\",\"config_override\":{\"message\":\"a:b\"}}\n  sb: {worker: path://./sb}\n";
+        let out = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap().text;
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        let parsed: Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["containers"]["vm"]["config_override"]["message"],
+            "a:b"
+        );
+        assert_eq!(
+            parsed["containers"]["vm"]["scripts"]["run"],
+            "iii sandbox run"
+        );
+        assert!(explicit_vm_mode(&out, "vm", "sb").unwrap().is_none());
+    }
+
+    #[test]
+    fn flow_mapping_after_properties_header_is_normalized_without_breaking_aliases() {
+        for header in ["", "&api", "!!map &api"] {
+            let alias = if header.is_empty() {
+                ""
+            } else {
+                "    config_override: *api\n"
+            };
+            let text = format!(
+                "containers:\n  api: {header} # header\n    # before flow\n    {{worker: package://api.workers.iii.dev/api,\n     version: '1.0.0', config_override: {{message: unchanged}}}} # tail\n  consumer:\n    worker: path://./consumer\n{alias}"
+            );
+            assert_eq!(
+                upsert_container(&text, &parse_worker("api@1.0.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+            let out = changed(&text, &parse_worker("api@1.1.0").unwrap());
+            crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+            let parsed: Value = serde_yaml::from_str(&out).unwrap();
+            assert_eq!(parsed["containers"].as_mapping().unwrap().len(), 2);
+            assert_eq!(parsed["containers"]["api"]["version"], "1.1.0");
+            assert_eq!(
+                parsed["containers"]["api"]["config_override"]["message"],
+                "unchanged"
+            );
+            if !header.is_empty() {
+                assert!(out.contains(&format!("api: {header}")));
+                assert!(out.contains("config_override: *api"));
+                assert_eq!(
+                    parsed["containers"]["consumer"]["config_override"]["version"],
+                    "1.1.0"
+                );
+            }
+            assert!(
+                out.contains("# header") && out.contains("# before flow") && out.contains("# tail")
+            );
+            assert_eq!(
+                upsert_container(&out, &parse_worker("api@1.1.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+        }
+        // An actual anchored block must still take the direct rewrite path.
+        let block = "containers:\n  api: &api # keep\n    worker: package://api.workers.iii.dev/api\n    version: '1.0.0'\n  consumer:\n    worker: path://./consumer\n    config_override: *api\n";
+        let out = changed(block, &parse_worker("api@1.1.0").unwrap());
+        assert_eq!(out, block.replace("version: '1.0.0'", "version: \"1.1.0\""));
+        let parsed: Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["containers"]["consumer"]["config_override"]["version"],
+            "1.1.0"
+        );
     }
 
     #[test]
