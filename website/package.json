@@ -55,7 +55,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.186.0",
-    "node-html-parser": "^7.0.1",
+    "node-html-parser": "^9.0.7",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
