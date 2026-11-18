@@ -23,7 +23,10 @@ A child may exit after being polled, just as before.
   stopped project queried before shutdown cancellation still returns stopped.
 - The remote status handler bounds snapshot acquisition with the existing
   published 10,000 ms read budget. Expiry drops the waiting future and returns
-  the SDK's existing `TIMEOUT` error. It does not cancel the lifecycle operation.
+  the public `TIMEOUT` error as `Error::Remote`, with message `invocation timed out`
+  and no stacktrace. Returning the SDK's `Error::Timeout` variant from a handler
+  would instead publish `invocation_failed`; that variant is used only as the
+  message source here. Expiry does not cancel the lifecycle operation.
   Initial project loading/recovery keeps its existing lifecycle behavior and is
   outside this new server-side acquisition timer; the caller's RPC deadline
   still bounds its own request. No new cancellation point interrupts adoption
@@ -75,6 +78,21 @@ lock release, genuine stopped output, stale persisted ready isolation, and
 reaped-child PID behavior. Pending/ready polls and `try_write` are deterministic
 oracles; there are no sleeps, external processes, VM adapters or engine connections.
 Existing remote status/list schema and equality tests are retained unchanged.
+
+Three additional `remote::timeout_tests` exercise the actual local timeout-error
+conversion, zero-budget timeout/drop of two pending acquisition futures, and
+shutdown cancellation. They check the SDK's public Error serialization and
+invocation-error view, not a hand-written wire converter. The acquisition
+futures model snapshot/list waits; actual Project lock release remains covered
+by the unchanged ten `project::status_tests`.
+
+Wire evidence is deliberately split: these Compose tests assert `Error::Remote`
+fields; the unchanged SDK `dispatch::error_body` preserves them, and
+`sdk/packages/rust/iii/tests/error_wire.rs::remote_error_passes_code_through_without_backfilled_stacktrace`
+exercises that real registered-handler wire path. The SDK test uses a WebSocket
+mock and is not run here. No public offline entry to the private handler mapper
+was found: local dispatch requires engine confirmation. No new integrated wire
+test or network validation is claimed, and no SDK code is changed.
 
 Tests are **AUTHORED_NOTRUN** in this source-only change. A later authorized review
 may run the focused `project::status_tests` library tests with `--locked --offline

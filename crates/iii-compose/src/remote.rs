@@ -795,7 +795,7 @@ async fn dispatch(
                 daemon.list(),
             )
             .await
-            .map_err(|_| Error::Timeout)?
+            .map_err(read_timeout)?
             .map_err(|err| compose_error(&err))?;
             Ok(with_host_targets(json!({
                 "daemon": daemon.worker_name,
@@ -818,7 +818,7 @@ async fn dispatch(
                 project.status(),
             )
             .await
-            .map_err(|_| Error::Timeout)?
+            .map_err(read_timeout)?
             .map_err(|err| compose_error(&err))?;
             Ok(with_host_targets(json!({
                 "namespace": project.project_namespace,
@@ -1462,6 +1462,15 @@ fn compose_error(error: &ComposeError) -> Error {
     Error::Remote {
         code: error.code().to_string(),
         message: error.to_string(),
+        stacktrace: None,
+    }
+}
+
+/// Handler failures must be Remote to preserve TIMEOUT in the wire ErrorBody.
+fn read_timeout(_: tokio::time::error::Elapsed) -> Error {
+    Error::Remote {
+        code: "TIMEOUT".to_string(),
+        message: Error::Timeout.to_string(),
         stacktrace: None,
     }
 }
@@ -2437,3 +2446,6 @@ mod tests {
         assert!(reports[0].1["error_kind"].is_null());
     }
 }
+
+#[cfg(test)]
+mod timeout_tests;
