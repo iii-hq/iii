@@ -184,13 +184,6 @@ impl UpdateScope {
     }
 }
 
-/// The package a reference names: its last path segment.
-fn package_name(reference: &str) -> &str {
-    reference
-        .rsplit_once('/')
-        .map_or(reference, |(_, name)| name)
-}
-
 /// Resolve before editing or downloading. Existing package declarations must be
 /// inspected too: an old alias may be present only in the compose file.
 pub(crate) async fn plan(
@@ -279,14 +272,22 @@ where
                 .iter()
                 .map(|node| (node.name.clone(), node.clone()))
                 .collect();
-            // A container may be named apart from the package it runs
-            // (`database: package://…/state`). The graph names the package,
-            // so expand under that name and give the root its key back.
-            let graph_root = if nodes.contains_key(package_name(reference)) {
-                package_name(reference).to_string()
-            } else {
-                worker.key.clone()
-            };
+            // Only the registry's validated binding (or an exact name in a synthetic
+            // graph) identifies the root. A basename/container key is not evidence.
+            let (_, requested_name) = registry::split_reference(reference);
+            let graph_root = graph.root.clone().unwrap_or(requested_name);
+            if !nodes.contains_key(&graph_root) {
+                return Err(conflict(
+                    &worker.key,
+                    "the registry graph does not bind the requested worker",
+                ));
+            }
+            if graph_root != worker.key && nodes.contains_key(&worker.key) {
+                return Err(conflict(
+                    &worker.key,
+                    "the container key conflicts with another registry graph node",
+                ));
+            }
             let mut root = worker.clone();
             root.key = graph_root.clone();
             root.fields.clear();
@@ -1151,6 +1152,8 @@ mod tests {
                                 }}
                             });
                             let tool_graph = serde_json::json!({
+                                "root": {"schema": 1, "requested": {"worker": wanted_worker,
+                                    "version": selector.unwrap_or("*")}, "name": "tool", "version": "1.2.3"},
                                 "graph": [binary("tool", None), binary("queue", None)],
                                 "edges": [{"from":"tool", "to":"queue"}]
                             });
@@ -1342,6 +1345,7 @@ mod tests {
                 assert_eq!(key, "tool");
                 assert_eq!(platform, Platform::Vm);
                 Ok(registry::Graph {
+                    root: None,
                     nodes: vec![node("tool", "1.0.0")],
                     edges: vec![],
                 })
@@ -1806,6 +1810,7 @@ mod tests {
                 },
                 |_, _, _, _| async {
                     Ok::<_, ComposeError>(registry::Graph {
+                        root: Some("state".into()),
                         nodes: vec![node("state", "1.1.0"), node("queue", "2.0.0")],
                         edges: vec![("state".into(), "queue".into())],
                     })

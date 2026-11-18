@@ -493,7 +493,7 @@ async fn update_without_workers_is_unchanged_when_only_path_workers_are_declared
     );
     assert_eq!(std::fs::read_to_string(file).unwrap(), COMPOSE);
     assert!(
-        daemon.list().await.is_empty(),
+        daemon.list().await.unwrap().is_empty(),
         "no project should be started"
     );
 }
