@@ -325,8 +325,21 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
                     .map(str::to_string),
             );
             out.extend(lines[entry.end..].iter().map(|l| l.to_string()));
+            let candidate = join(&out, text);
+            let candidate_fields = entry_fields(&candidate, &new.key)
+                .map_err(|err| invalid(&new.key, &format!("edit leaves invalid YAML: {err}")))?;
+            // A replaced field may have defined an anchor. Do not attach that
+            // anchor to its new value or silently change an untouched alias.
+            for (field, value) in &existing_fields {
+                if !changes.contains_key(field) && candidate_fields.get(field) != Some(value) {
+                    return Err(invalid(
+                        &new.key,
+                        "edit changes an unrequested field through an alias",
+                    ));
+                }
+            }
             Ok(Outcome::Replaced {
-                text: join(&out, text),
+                text: candidate,
                 from: existing.unwrap_or_else(|| "unpinned".to_string()),
                 to: wanted.unwrap_or_else(|| "unpinned".to_string()),
             })
@@ -366,10 +379,34 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let containers = find_containers(&lines)?;
     let indent = entry_indent(&lines, &containers);
-    let Some((_, entry)) = find_complete_entry(&lines, &containers, &indent, key) else {
+    if find_complete_entry(&lines, &containers, &indent, key).is_none() {
         return Ok(None);
-    };
+    }
+    remove_containers(text, &[key]).map(Some)
+}
 
+/// Apply a requested batch against one original document and validate only the
+/// final candidate. Intermediate removal order must not orphan anchors that are
+/// used exclusively by other entries in the same batch. No file is written here.
+pub(crate) fn remove_containers(text: &str, keys: &[&str]) -> Result<String> {
+    let Some(&key) = keys.first() else {
+        return Ok(text.to_string());
+    };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let containers = find_containers(&lines)?;
+    let indent = entry_indent(&lines, &containers);
+    let mut entries = Vec::new();
+    for requested in keys {
+        let (_, entry) =
+            find_complete_entry(&lines, &containers, &indent, requested).ok_or_else(|| {
+                ComposeError::UnknownContainer {
+                    container: (*requested).into(),
+                }
+            })?;
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
     let document: Value =
         serde_yaml::from_str(text).map_err(|err| invalid(key, &err.to_string()))?;
     let offsets = line_offsets(&lines);
@@ -380,10 +417,14 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
         &offsets,
         &containers,
         &indent,
-        &entry,
-        key,
+        &entries,
+        keys,
     )?;
-    edits.push((offsets[entry.start]..offsets[entry.end], String::new()));
+    edits.extend(
+        entries
+            .iter()
+            .map(|entry| (offsets[entry.start]..offsets[entry.end], String::new())),
+    );
     edits.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
 
     let mut out = text.to_string();
@@ -402,7 +443,11 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
                 entry
                     .get("start_after")
                     .and_then(Value::as_sequence)
-                    .is_some_and(|needs| needs.iter().any(|need| need.as_str() == Some(key)))
+                    .is_some_and(|needs| {
+                        needs
+                            .iter()
+                            .any(|need| need.as_str().is_some_and(|name| keys.contains(&name)))
+                    })
             })
         })
     {
@@ -411,7 +456,7 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
             "removal leaves a dependency on the removed container",
         ));
     }
-    Ok(Some(out))
+    Ok(out)
 }
 
 /// True when Compose created this container block and may remove it as a stale dependency.
@@ -1131,22 +1176,22 @@ fn dependency_removals(
     offsets: &[usize],
     containers: &Block,
     indent: &str,
-    removed_entry: &Entry,
-    key: &str,
+    removed_entries: &[Entry],
+    keys: &[&str],
 ) -> Result<Vec<(std::ops::Range<usize>, String)>> {
     let heads = container_boundaries(lines, containers, indent);
     let mut edits = Vec::new();
 
     for (position, head) in heads.iter().copied().enumerate() {
         let end = heads.get(position + 1).copied().unwrap_or(containers.end);
-        if removed_entry.contains(&head) {
+        if removed_entries.iter().any(|entry| entry.contains(&head)) {
             continue;
         }
         // Flow entries have an outer dependency field too, but their nested
         // application data must never enter the block-field scan.
         if let Some(span) = flow_span(&lines[..end], head) {
             edits.extend(flow_dependency_removal(
-                text, document, lines, offsets, head, &span, key,
+                text, document, lines, offsets, head, &span, keys,
             )?);
             continue;
         }
@@ -1156,7 +1201,10 @@ fn dependency_removals(
 
         let Some(field_indent) = lines[head + 1..end]
             .iter()
-            .find(|line| line.trim_start().starts_with("worker:"))
+            .find(|line| {
+                let body = line.trim_start();
+                !body.is_empty() && !body.starts_with('#')
+            })
             .map(|line| leading_whitespace(line).to_string())
         else {
             continue;
@@ -1187,7 +1235,7 @@ fn dependency_removals(
             let items = &body[open + 1..close];
             let kept: Vec<&str> = items
                 .split(',')
-                .filter(|item| dependency_name(item) != key)
+                .filter(|item| !keys.contains(&dependency_name(item)))
                 .collect();
             if kept.len() == items.split(',').count() {
                 continue;
@@ -1226,7 +1274,7 @@ fn dependency_removals(
             let Some(item) = trimmed.strip_prefix("- ") else {
                 continue;
             };
-            if dependency_name(item) == key {
+            if keys.contains(&dependency_name(item)) {
                 matching_items.push(index);
             } else {
                 surviving_items += 1;
@@ -1259,8 +1307,9 @@ fn flow_dependency_removal(
     offsets: &[usize],
     head: usize,
     span: &FlowSpan,
-    removed: &str,
+    removed_keys: &[&str],
 ) -> Result<Vec<(std::ops::Range<usize>, String)>> {
+    let removed = removed_keys[0];
     let name = lines[head]
         .trim_start()
         .split_once(':')
@@ -1274,7 +1323,10 @@ fn flow_dependency_removal(
     else {
         return Ok(vec![]);
     };
-    if !needs.iter().any(|v| v.as_str() == Some(removed)) {
+    if !needs
+        .iter()
+        .any(|v| v.as_str().is_some_and(|name| removed_keys.contains(&name)))
+    {
         return Ok(vec![]);
     }
     let start = offsets[span.open.0] + span.open.1 + 1;
@@ -1293,7 +1345,10 @@ fn flow_dependency_removal(
             .and_then(|row| pair_lines[row].split_once(':'))
             .and_then(|(field, _)| serde_yaml::from_str::<String>(field.trim()).ok());
         if field.as_deref() == Some("start_after") {
-            if needs.iter().all(|v| v.as_str() == Some(removed)) {
+            if needs
+                .iter()
+                .all(|v| v.as_str().is_some_and(|name| removed_keys.contains(&name)))
+            {
                 // Delete this pair plus one separator; all other raw pairs stay.
                 let range = if index + 1 < parts.len() {
                     at..at + part.len() + 1
@@ -1328,7 +1383,10 @@ fn flow_dependency_removal(
                     .get(item_index)
                     .ok_or_else(|| invalid(removed, "dependency span/value mismatch"))?;
                 item_index += 1;
-                if value.as_str() != Some(removed) {
+                if !value
+                    .as_str()
+                    .is_some_and(|name| removed_keys.contains(&name))
+                {
                     kept.push(item);
                 }
             }
@@ -2624,6 +2682,124 @@ containers:
     fn a_commented_container_key_is_read_like_a_bare_one() {
         let text = "containers:\n  # added by compose::add\n  state: # pinned\n    worker: package://state\n    version: '1.0.0'\n";
         assert!(is_generated_container(text, "state").unwrap());
+    }
+
+    #[test]
+    fn removal_uses_outer_field_indentation_even_when_settings_precede_worker() {
+        for header in ["", "&api", "!!map &api"] {
+            for outer_dependencies in ["", "    start_after: [db, queue] # outer\n"] {
+                let nested = "    config_override:\n      worker: application-data\n      start_after: [db]\n      deeper:\n        start_after: [db]\n";
+                let text = format!(
+                    "containers:\n  db: {{worker: path://./db}}\n  api: {header}\n{nested}    worker: path://./api\n{outer_dependencies}  queue: {{worker: path://./queue}}\n"
+                );
+                let remaining = if outer_dependencies.is_empty() {
+                    ""
+                } else {
+                    "    start_after: [ queue] # outer\n"
+                };
+                let expected = format!(
+                    "containers:\n  api: {header}\n{nested}    worker: path://./api\n{remaining}  queue: {{worker: path://./queue}}\n"
+                );
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        text.replace('\n', "\r\n")
+                    } else {
+                        text.clone()
+                    };
+                    let wanted = if crlf {
+                        expected.replace('\n', "\r\n")
+                    } else {
+                        expected.clone()
+                    };
+                    let output = remove_container(&input, "db").unwrap().unwrap();
+                    assert_eq!(output, wanted);
+                    let before: Value = serde_yaml::from_str(&input).unwrap();
+                    let after: Value = serde_yaml::from_str(&output).unwrap();
+                    assert_eq!(
+                        before["containers"]["api"]["config_override"],
+                        after["containers"]["api"]["config_override"]
+                    );
+                    crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upsert_rejects_replacing_fields_whose_anchors_are_still_referenced() {
+        for fields in [
+            "    worker: package://api.workers.iii.dev/api\n    version: &release '1.0.0'\n    config_override: {release: *release}\n",
+            "    {worker: package://api.workers.iii.dev/api, version: &release '1.0.0', config_override: {release: *release}}\n",
+        ] {
+            let text = format!("containers:\n  api:\n{fields}");
+            let before: Value = serde_yaml::from_str(&text).unwrap();
+            assert_eq!(
+                upsert_container(&text, &parse_worker("api@1.0.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+            let error = upsert_container(&text, &parse_worker("api@1.1.0").unwrap()).unwrap_err();
+            assert!(
+                error.to_string().contains("edit leaves invalid YAML"),
+                "{error}"
+            );
+            assert_eq!(
+                before["containers"]["api"]["config_override"]["release"],
+                "1.0.0"
+            );
+            let unreferenced = text.replace(
+                "config_override: {release: *release}",
+                "config_override: {release: '1.0.0'}",
+            );
+            let output = changed(&unreferenced, &parse_worker("api@1.1.0").unwrap());
+            let parsed: Value = serde_yaml::from_str(&output).unwrap();
+            assert_eq!(parsed["containers"]["api"]["version"], "1.1.0");
+            assert_eq!(
+                parsed["containers"]["api"]["config_override"]["release"],
+                "1.0.0"
+            );
+        }
+        let text = "containers:\n  api:\n    worker: package://api.workers.iii.dev/api\n    version: &release '1.0.0'\n  other:\n    worker: path://./other\n    config_override: {release: *release}\n";
+        assert!(upsert_container(text, &parse_worker("api@1.1.0").unwrap()).is_err());
+    }
+
+    #[test]
+    fn batch_removal_validates_final_document_independently_of_request_order() {
+        for flow in [false, true] {
+            let definitions = if flow {
+                "  db: &db {worker: path://./db}\n  api: {worker: path://./api, config_override: *db}\n"
+            } else {
+                "  db: &db\n    worker: path://./db\n  api:\n    worker: path://./api\n    config_override: *db\n"
+            };
+            for dependent in [
+                "  keep: {worker: path://./keep, start_after: [db, api, queue], config_override: {start_after: [db]}}\n",
+                "  keep:\n    worker: path://./keep\n    start_after:\n    - db\n    - api\n    - queue\n    config_override: {start_after: [db]}\n",
+            ] {
+                let text = format!(
+                    "containers:\n{definitions}{dependent}  queue: {{worker: path://./queue}}\n"
+                );
+                assert!(remove_container(&text, "db").is_err());
+                let first = remove_containers(&text, &["db", "api"]).unwrap();
+                for order in [&["api", "db"][..], &["db", "api", "db"][..]] {
+                    assert_eq!(remove_containers(&text, order).unwrap(), first);
+                }
+                let parsed = crate::ComposeFile::parse(&first, "/tmp/worker-compose.yaml").unwrap();
+                assert_eq!(parsed.containers.len(), 2);
+                assert_eq!(parsed.containers["keep"].start_after, ["queue"]);
+                let yaml: Value = serde_yaml::from_str(&first).unwrap();
+                assert_eq!(
+                    yaml["containers"]["keep"]["config_override"]["start_after"][0],
+                    "db"
+                );
+                assert!(matches!(
+                    remove_containers(&text, &["db", "missing"]),
+                    Err(ComposeError::UnknownContainer { .. })
+                ));
+                assert_eq!(remove_containers(&text, &[]).unwrap(), text);
+            }
+        }
+        // An alias surviving the requested batch still makes the final edit invalid.
+        let text = "containers:\n  db: &db {worker: path://./db}\n  api: {worker: path://./api}\n  keep: {worker: path://./keep, config_override: *db}\n";
+        assert!(remove_containers(text, &["db", "api"]).is_err());
     }
 
     #[test]

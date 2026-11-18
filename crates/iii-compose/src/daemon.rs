@@ -565,11 +565,10 @@ fn apply_update_plan(
             break;
         }
     }
-    for container in removable {
-        if let Some(next) = crate::edit::remove_container(&edited, &container)? {
-            edited = next;
-            yaml_changed = true;
-        }
+    if !removable.is_empty() {
+        let keys: Vec<&str> = removable.iter().map(String::as_str).collect();
+        edited = crate::edit::remove_containers(&edited, &keys)?;
+        yaml_changed = true;
     }
     Ok(UpdateEdit {
         edited,
@@ -2116,15 +2115,17 @@ impl Daemon {
         let allow_remove =
             !crate::sandbox::needs(&before, &self.project_namespace(&before)).is_empty();
         let mut removal_order = removal_order(&before, &requested)?;
-        let mut edited = text.clone();
         for worker in &workers {
-            let Some(next) = crate::edit::remove_container(&edited, worker)? else {
+            if !before.containers.contains_key(worker) {
                 return Err(ComposeError::UnknownContainer {
                     container: worker.to_string(),
                 });
-            };
-            edited = next;
+            }
         }
+        // Process stop order remains dependents-first. Text removal is one
+        // atomic batch, since YAML aliases need not be start_after edges.
+        let edit_order: Vec<&str> = removal_order.iter().map(String::as_str).collect();
+        let mut edited = crate::edit::remove_containers(&text, &edit_order)?;
 
         let mut current = crate::ComposeFile::parse(&edited, path)?;
         self.engine_policy.validate_project(&current)?;
@@ -5933,6 +5934,21 @@ containers:
             std::fs::read_to_string(workers.join(".packages.json")).ok(),
             before
         );
+    }
+
+    #[test]
+    fn batch_removal_text_is_valid_when_aliases_are_not_lifecycle_edges() {
+        let text = "containers:\n  zdb: &db {worker: path://./db}\n  api: {worker: path://./api, config_override: *db}\n  queue: {worker: path://./queue}\n";
+        let file = ComposeFile::parse(text, Path::new("/tmp/worker-compose.yaml")).unwrap();
+        for request in [["zdb", "api"], ["api", "zdb"]] {
+            let requested = request.into_iter().collect::<BTreeSet<_>>();
+            let order = removal_order(&file, &requested).unwrap();
+            let keys = order.iter().map(String::as_str).collect::<Vec<_>>();
+            let edited = crate::edit::remove_containers(text, &keys).unwrap();
+            assert_eq!(edited, "containers:\n  queue: {worker: path://./queue}\n");
+            ComposeFile::parse(&edited, Path::new("/tmp/worker-compose.yaml")).unwrap();
+        }
+        assert!(crate::edit::remove_container(text, "zdb").is_err());
     }
 
     /// The generated adapter is appended after the VMs, with no edge in the
