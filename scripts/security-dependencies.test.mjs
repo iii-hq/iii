@@ -7,7 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { parse, stringify } from 'yaml'
-import { digest, reviewedPicomatch, validatePicomatchPatches } from './security-patches.mjs'
+import { digest, normalizeLines, reviewedPicomatch, validatePicomatchPatches } from './security-patches.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 
@@ -68,7 +68,7 @@ for (const [version, [importer, chain]] of Object.entries(picomatchChains)) {
     const result = spawnSync(process.execPath, ['--input-type=commonjs', '-e', `
       const assert = require('node:assert/strict');
       const pm = require(${JSON.stringify(filename)});
-      const patterns = ['+(*)', '*(*)', '+(*a)', '*(*a)', '+(*?)', '+(a*)', '+(+(*a))', '+(a+)'];
+      const patterns = ['+(*)', '*(*)', '+(*a)', '*(*a)', '+(*?)', '+(a*)', '+(+(*a))', '+(a+)', '+(*(a)a)', '+(*(a)ab)', '+(*(a)b|a)'];
       for (const pattern of patterns) {
         const regex = pm.makeRe(pattern);
         assert.equal(regex.test(pattern), true, pattern + ' must match its literal fallback');
@@ -76,6 +76,12 @@ for (const [version, [importer, chain]] of Object.entries(picomatchChains)) {
         assert.equal(regex.test('a'.repeat(48) + '/'), false, pattern);
       }
       assert.equal(pm.isMatch('+a+a', '+(+a)'), true);
+      assert.equal(pm.makeRe('+(*(a)b)').test('aabab'), true);
+      assert.equal(pm.makeRe('+(+(a)b)').test('aabab'), true);
+      assert.equal(pm.makeRe('*(*(a)b)').test('aabab'), true);
+      for (const pattern of ['+(*(a)b)', '+(+(a)b)', '*(*(a)b)']) {
+        assert.equal(pm.makeRe(pattern).test('a'.repeat(20000) + '!'), false);
+      }
       assert.equal(pm.isMatch('item-+(+(*(a)))', '+(item-+(+(*(a))))'), true);
       assert.equal(pm.makeRe('a'.repeat(64), { maxLength: 64 }).test('a'.repeat(64)), true);
       assert.throws(() => pm.makeRe('a'.repeat(65), { maxLength: 64 }), /maximum allowed length/);
@@ -123,7 +129,9 @@ test('KaTeX renders math and does not trust unsafe HTML commands', () => {
 })
 
 test('audit reports all advisories and fails closed when patch integrity fails', () => {
-  const code = readFileSync(path.join(root, 'scripts/audit-sdk.mjs'), 'utf8')
+  const source = readFileSync(path.join(root, 'scripts/audit-sdk.mjs'), 'utf8')
+  const crlf = source.replace(/\r?\n/g, '\r\n')
+  const code = normalizeLines(crlf)
     .replace(/^#!.*\n/, '')
     .replace(/^import .*\n/gm, '')
   const advisories = {
@@ -138,18 +146,25 @@ test('audit reports all advisories and fails closed when patch integrity fails',
       findings: [{ version: '1.0.0', paths: ['sdk__packages__node__iii>another-package'] }],
     },
   }
-  let audited = false
-  let exitCode = 0
-  const messages = []
-  runInNewContext(code, {
-    validatePicomatchPatches() { throw new Error('invalid digest') },
-    execFileSync() { audited = true; return JSON.stringify({ advisories }) },
-    console: { log: message => messages.push(message), error: message => messages.push(message) },
-    process: { exit: code => { exitCode = code } },
-  })
-  assert.equal(audited, true)
-  assert.equal(exitCode, 1)
-  assert.match(messages.join('\n'), /invalid digest/)
-  assert.match(messages.join('\n'), /another-package/)
-  assert.match(messages.join('\n'), /picomatch/)
+  for (const report of [advisories, {}]) {
+    let audited = false
+    let exitCode = 0
+    const messages = []
+    const errors = []
+    runInNewContext(code, {
+      validatePicomatchPatches() { throw new Error('invalid digest') },
+      execFileSync() { audited = true; return JSON.stringify({ advisories: report }) },
+      console: { log: message => messages.push(message), error: message => errors.push(message) },
+      process: { exit: code => { exitCode = code } },
+    })
+    assert.equal(audited, true)
+    assert.equal(exitCode, 1)
+    assert.match(errors.join('\n'), /invalid digest/)
+    assert.doesNotMatch(messages.join('\n'), /Locally patched advisory paths/)
+    if (Object.keys(report).length) {
+      assert.match(errors.join('\n'), /another-package/)
+      assert.match(errors.join('\n'), /picomatch@4\.0\.7.*sdk__packages__node__helpers>tsdown>picomatch/)
+      assert.doesNotMatch(messages.join('\n'), /picomatch/)
+    }
+  }
 })
