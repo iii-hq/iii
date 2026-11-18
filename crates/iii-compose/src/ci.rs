@@ -30,5 +30,7 @@ pub const CI_ENV_VARS: &[&str] = &[
 
 /// True when any of [`CI_ENV_VARS`] is set, to any value.
 pub fn is_ci_environment() -> bool {
-    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
+    CI_ENV_VARS
+        .iter()
+        .any(|var| std::env::var_os(var).is_some())
 }

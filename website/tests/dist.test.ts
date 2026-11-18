@@ -305,7 +305,11 @@ test("robots.txt keeps every crawler group off the registry's counted installers
   // A crawler reads only the group that names it, so a group without these
   // lines would let that crawler count registry downloads.
   const groups = (await read("robots.txt")).split(/^(?=User-agent:)/m).slice(1)
-  assert.ok(groups.length > 0, "robots.txt has no User-agent group")
+  // The wildcard group covers every crawler that no other group names.
+  assert.ok(
+    groups.some((group) => group.split("\n", 1)[0].trim() === "User-agent: *"),
+    "robots.txt has no User-agent: * group",
+  )
   for (const group of groups) {
     const agent = group.split("\n", 1)[0]
     assert.match(group, /^Disallow: \/registry\/install\/$/m, `${agent} may fetch /registry/install/`)

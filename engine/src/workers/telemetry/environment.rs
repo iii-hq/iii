@@ -691,26 +691,11 @@ state:
     #[test]
     #[serial]
     fn test_resolve_execution_context_prefers_explicit_env() {
-        const CI_VARS: &[&str] = &[
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-
         let saved: Vec<(&str, Option<String>)> =
-            CI_VARS.iter().map(|v| (*v, env::var(v).ok())).collect();
+            CI_ENV_VARS.iter().map(|v| (*v, env::var(v).ok())).collect();
 
         unsafe {
-            for var in CI_VARS {
+            for var in CI_ENV_VARS {
                 env::remove_var(var);
             }
             env::set_var(EXECUTION_CONTEXT_ENV, "docker");
@@ -868,21 +853,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_ci_var() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }
@@ -905,21 +876,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_github_actions() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }
@@ -940,21 +897,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_gitlab_ci() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }
