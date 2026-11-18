@@ -485,27 +485,9 @@ fn detect_timezone() -> String {
     std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string())
 }
 
-/// Environment variables that mark a CI runner. Public so a test that needs to
-/// look like a developer machine can clear the whole set instead of keeping its
-/// own copy, which would drift and pass locally while failing on a runner.
-pub const CI_ENV_VARS: &[&str] = &[
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "CIRCLECI",
-    "JENKINS_URL",
-    "TRAVIS",
-    "BUILDKITE",
-    "TF_BUILD",
-    "CODEBUILD_BUILD_ID",
-    "BITBUCKET_BUILD_NUMBER",
-    "DRONE",
-    "TEAMCITY_VERSION",
-];
-
-pub fn is_ci_environment() -> bool {
-    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
-}
+/// The CI runner check lives in compose, which tells the registry that an
+/// install comes from CI; telemetry turns itself off on the same list.
+pub use iii_compose::ci::{CI_ENV_VARS, is_ci_environment};
 
 /// True when `III_TELEMETRY_ENABLED` is set to a value that reads as off.
 /// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring

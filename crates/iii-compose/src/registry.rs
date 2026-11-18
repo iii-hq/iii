@@ -61,6 +61,12 @@ const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// the connection and answers nothing is tried again, not waited out for the
 /// whole [`DOWNLOAD_TIMEOUT`] three times.
 const DOWNLOAD_HEADERS_TIMEOUT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 30 });
+/// Marks an artefact fetch made on a CI runner, so the registry counts it as a
+/// CI download (`ci_count`) rather than as a person installing the worker. A
+/// header, not a `/resolve` field: a frozen install replays the URLs recorded
+/// in the lock without resolving, and a URL that carried the flag into a lock
+/// would mark a developer's later install as CI.
+const CI_HEADER: &str = "x-iii-ci";
 const INTEGRITY_FILE: &str = ".iii-compose-integrity.json";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1199,9 +1205,7 @@ async fn download_and_extract(
     archive_sha256: &str,
     lock: fslock::LockFile,
 ) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .timeout(DOWNLOAD_TIMEOUT)
-        .build()
+    let client = artifact_client(crate::ci::is_ci_environment())
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
 
     let mut attempt = 1;
@@ -1236,6 +1240,21 @@ async fn download_and_extract(
         extract_and_publish(bytes, &install_dir, &archive_sha256, &cancel)
     })
     .await
+}
+
+/// The client artefact fetches go through: the same `iii/<version>` user agent
+/// as `/resolve`, and [`CI_HEADER`] on every request when `ci`.
+fn artifact_client(ci: bool) -> reqwest::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT);
+    if let Some(version) = crate::host_version() {
+        builder = builder.user_agent(format!("iii/{version}"));
+    }
+    if ci {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(CI_HEADER, reqwest::header::HeaderValue::from_static("true"));
+        builder = builder.default_headers(headers);
+    }
+    builder.build()
 }
 
 /// One GET of an artefact, hashed as it arrives: the bytes, their digest and
@@ -1689,6 +1708,34 @@ mod tests {
             .iter()
             .filter(|request| request.url.path() == "/artifact")
             .count()
+    }
+
+    #[tokio::test]
+    async fn an_artefact_fetch_on_a_ci_runner_carries_the_ci_header() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/artifact"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"archive".to_vec()))
+            .mount(&server)
+            .await;
+        let url = format!("{}/artifact", server.uri());
+
+        for ci in [true, false] {
+            let client = artifact_client(ci).unwrap();
+            fetch_artifact(&client, "shell", &url).await.unwrap();
+        }
+
+        let requests = server.received_requests().await.unwrap();
+        let flags: Vec<Option<&str>> = requests
+            .iter()
+            .map(|request| {
+                request
+                    .headers
+                    .get(CI_HEADER)
+                    .map(|value| value.to_str().unwrap())
+            })
+            .collect();
+        assert_eq!(flags, [Some("true"), None]);
     }
 
     #[tokio::test]
