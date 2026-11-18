@@ -312,7 +312,7 @@ jobs:
             ### Engine
 
             ```sh
-            curl -fsSL https://iii.dev/registry/install/iii/${{ needs.prepare.outputs.version }}.sh | sh
+            curl -fsSL https://iii.dev/registry/install/iii/${{ needs.prepare.outputs.version }}.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
             ```
 
             `alpha.sh` instead of the version installs the newest alpha.
