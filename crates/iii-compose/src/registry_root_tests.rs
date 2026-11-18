@@ -12,7 +12,8 @@ const OPAQUE: &str = "${SCENARIO_LITERAL}/tool";
 const REGISTRY: &str = "registry.example.test";
 
 fn node(name: &str) -> Value {
-    json!({"name": name, "version": "1.2.3", "type": "bundle"})
+    json!({"name": name, "version": "1.2.3", "type": "bundle",
+        "archive_url": "https://example.test/artifact.tar.gz", "sha256": "a".repeat(64)})
 }
 
 fn binding(request: &str, selector: &str, name: &str) -> Value {
@@ -49,7 +50,10 @@ fn root_binding_selects_one_safe_node_without_changing_request_or_alias_identity
             response.response.graph[response.root].alias_of.as_deref(),
             Some("canonical-tool")
         );
-        assert_eq!(response.response.root.unwrap().requested.worker, request);
+        assert_eq!(
+            response.response.root.unwrap().requested.unwrap().worker,
+            request
+        );
     }
 }
 
@@ -124,6 +128,27 @@ async fn root_binding_rejects_invalid_identity_graph_and_paths_in_both_lookup_pa
         cases.push((format!("unsafe alias {alias}"), body));
     }
     for (label, body) in cases {
+        let reason = match label.as_str() {
+            "wrong request" | "foreign authority" | "wrong selector" => {
+                "the registry root binding does not match the exact request"
+            }
+            "unsupported schema" => "unsupported registry root binding schema; expected 1",
+            "missing node"
+            | "root traversal"
+            | "no binding (container and basename cannot prove identity)" => {
+                "the registry graph has no unique requested root; opaque requests require an explicit v1 root binding"
+            }
+            "root version mismatch" => {
+                "the registry root binding version differs from its graph node"
+            }
+            "opaque edge" | "foreign edge" | "missing edge node" => {
+                "the registry root graph has an edge outside its named nodes"
+            }
+            "unrelated graph" => "the registry root graph contains unrelated nodes",
+            "cyclic edges" => "the registry root graph contains conflicting cyclic edges",
+            "duplicate name" => "the registry returned duplicate graph names",
+            _ => "", // Path refusals assert the precise field and value below.
+        };
         let server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .and(matchers::path("/resolve"))
@@ -143,14 +168,23 @@ async fn root_binding_rejects_invalid_identity_graph_and_paths_in_both_lookup_pa
                 let exact = resolve_package_on("tool", &reference, "next", Platform::Vm)
                     .await
                     .unwrap_err();
-                assert_eq!(graph.code(), exact.code(), "{label}");
-                assert!(
-                    matches!(
-                        graph.code(),
-                        "PACKAGE_NOT_RESOLVED" | "REGISTRY_NAME_REFUSED"
-                    ),
-                    "{label}: {graph}"
-                );
+                for error in [graph, exact] {
+                    match error {
+                        ComposeError::PackageNotResolved { message, .. } => {
+                            assert_eq!(message, reason, "{label}")
+                        }
+                        ComposeError::RegistryNameRefused { field, value, .. } => {
+                            let expected = match label.as_str() {
+                                "unsafe node" => ("name", OPAQUE),
+                                "unsafe dependency" => ("name", "../queue"),
+                                "unsafe version" => ("version", "../1.2.3"),
+                                _ => ("alias_of", label.strip_prefix("unsafe alias ").unwrap()),
+                            };
+                            assert_eq!((field.as_str(), value.as_str()), expected, "{label}");
+                        }
+                        error => panic!("wrong rejection for {label}: {error}"),
+                    }
+                }
             })
             .await;
         server.verify().await;
@@ -489,7 +523,7 @@ async fn bundle_registry() -> MockServer {
     server
 }
 
-/// Plan -> exact HTTP resolution -> lock -> verified archive/cache -> raw text persistence.
+/// Plan -> immutable selected metadata -> lock -> verified archive/cache -> raw text persistence.
 /// No injected planner resolver, no preseeded lock/cache, no executable is started.
 #[cfg(unix)]
 #[tokio::test]
@@ -569,10 +603,11 @@ async fn root_binding_survives_planning_exact_lock_install_cache_and_raw_editing
                         Platform::Vm
                     );
                     let force = plan.selected_versions.keys().cloned().collect();
-                    let mut prepared = lockfile::prepare_metadata_with_versions(
+                    let mut prepared = lockfile::prepare_metadata_with_plan(
                         &mut parsed,
                         &force,
                         &plan.selected_versions,
+                        &plan.selections,
                     )
                     .await
                     .unwrap();
@@ -670,10 +705,9 @@ async fn root_binding_survives_planning_exact_lock_install_cache_and_raw_editing
                             .any(|r| r["worker"] == wanted
                                 && r["version"] == selector.unwrap_or("*"))
                     );
-                    assert!(
-                        posts
-                            .iter()
-                            .any(|r| r["worker"] == wanted && r["version"] == "1.2.3")
+                    assert_eq!(
+                        posts.iter().filter(|r| r["worker"] == OPAQUE).count(),
+                        usize::from(wanted == OPAQUE)
                     );
                     assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 2);
                 })
@@ -805,6 +839,412 @@ async fn root_binding_never_publishes_an_archive_with_a_different_digest() {
             assert_eq!(error.code(), "PACKAGE_DIGEST_MISMATCH");
             assert!(!install_dir.exists());
         })
+        .await;
+    server.verify().await;
+}
+
+/// Shape observed by CI's public Registry probe; no opaque request binding is implied.
+fn production_state_response() -> Value {
+    json!({
+        "root": {"name": "state", "version": "0.23.1"},
+        "target": "x86_64-unknown-linux-gnu",
+        "graph": [
+            {"name":"configuration", "version":"0.26.0", "type":"engine"},
+            {"name":"state", "version":"0.23.1", "type":"binary",
+             "binaries": {"x86_64-unknown-linux-gnu": {
+                 "url":"https://example.test/state.tar.gz", "sha256":"a".repeat(64)
+             }}}
+        ],
+        "edges": [{"from":"state", "to":"configuration"}]
+    })
+}
+
+#[tokio::test]
+async fn production_identity_only_root_works_for_graph_package_and_lock_reload() {
+    let server = MockServer::start().await;
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/resolve"))
+        .and(matchers::body_partial_json(
+            json!({"worker":"state","version":"0.23.1"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(production_state_response()))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker-compose.yaml");
+    let text = "containers:\n  state: {worker: package://state, version: 0.23.1}\n";
+    TEST_REGISTRY
+        .scope(server.uri(), async {
+            let graph = resolve_graph_on("state", "state", "0.23.1", Platform::Host)
+                .await
+                .unwrap();
+            assert_eq!(graph.root.as_deref(), Some("state"));
+            assert_eq!(
+                resolve_package("state", "state", "0.23.1")
+                    .await
+                    .unwrap()
+                    .name,
+                "state"
+            );
+            let mut file = crate::ComposeFile::parse(text, &path).unwrap();
+            let prepared = crate::lockfile::prepare_metadata(&mut file, &Default::default())
+                .await
+                .unwrap();
+            prepared.write_if_changed().unwrap();
+            let mut reloaded = crate::ComposeFile::parse(text, &path).unwrap();
+            crate::lockfile::attach(&mut reloaded).unwrap();
+            assert_eq!(
+                reloaded.containers["state"]
+                    .resolved_package
+                    .as_ref()
+                    .unwrap()
+                    .name,
+                "state"
+            );
+            let stored = std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap();
+            assert!(!stored.contains("root_binding"));
+        })
+        .await;
+    server.verify().await;
+}
+
+#[test]
+fn legacy_root_is_not_an_opaque_binding_and_invalid_metadata_is_never_ignored() {
+    let mut cases = Vec::new();
+    for (request, version, pointer, replacement, expected) in [
+        (
+            "team/state",
+            "0.23.1",
+            "/root/name",
+            json!("state"),
+            "the legacy registry root must match the exact requested name",
+        ),
+        (
+            "state",
+            "0.23.1",
+            "/root/name",
+            json!("configuration"),
+            "the legacy registry root must match the exact requested name",
+        ),
+        (
+            "state",
+            "0.23.1",
+            "/root/version",
+            json!("0.23.2"),
+            "the registry root binding version differs from its graph node",
+        ),
+        (
+            "state",
+            "0.23.2",
+            "/root/version",
+            json!("0.23.1"),
+            "the registry root does not match the requested exact version",
+        ),
+    ] {
+        let mut body = production_state_response();
+        *body.pointer_mut(pointer).unwrap() = replacement;
+        cases.push((request, version, body, expected));
+    }
+    for (request, version, body, expected) in cases {
+        let error = validate_resolution(
+            "state",
+            DEFAULT_REGISTRY,
+            request,
+            version,
+            serde_json::from_value(body).unwrap(),
+        )
+        .unwrap_err();
+        let ComposeError::PackageNotResolved { message, .. } = error else {
+            panic!("{error}")
+        };
+        assert_eq!(message, expected);
+    }
+    let mut duplicate = production_state_response();
+    let duplicate_node = duplicate["graph"][1].clone();
+    duplicate["graph"]
+        .as_array_mut()
+        .unwrap()
+        .push(duplicate_node);
+    assert!(
+        validate_resolution(
+            "state",
+            DEFAULT_REGISTRY,
+            "state",
+            "0.23.1",
+            serde_json::from_value(duplicate).unwrap()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("duplicate graph names")
+    );
+    for (field, value) in [
+        ("name", "../state"),
+        ("version", "../0.23.1"),
+        ("alias_of", "../state"),
+    ] {
+        let mut body = production_state_response();
+        body["graph"][1][field] = value.into();
+        let error = validate_resolution(
+            "state",
+            DEFAULT_REGISTRY,
+            "state",
+            "0.23.1",
+            serde_json::from_value(body).unwrap(),
+        )
+        .unwrap_err();
+        let ComposeError::RegistryNameRefused {
+            field: refused,
+            value: actual,
+            ..
+        } = error
+        else {
+            panic!("{error}")
+        };
+        assert_eq!((refused.as_str(), actual.as_str()), (field, value));
+    }
+    for root in [
+        r#"["state","0.23.1"]"#,
+        r#"{"name":"state","version":"0.23.1","schema":1}"#,
+        r#"{"name":"state","version":"0.23.1","schema":null}"#,
+        r#"{"name":"state","version":"0.23.1","requested":null}"#,
+        r#"{"name":"state","version":"0.23.1","extra":true}"#,
+        r#"{"name":"state","name":"state","version":"0.23.1"}"#,
+        r#"{"name":"state","version":"0.23.1","version":"0.23.1"}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<ResolveResponse>(&format!(r#"{{"graph":[],"root":{root}}}"#))
+                .is_err(),
+            "{root}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn planned_bound_release_and_graph_are_reused_instead_of_resolving_the_exact_name_again() {
+    use crate::{ComposeFile, dependencies, edit, lockfile};
+    let server = MockServer::start().await;
+    let body = json!({"root":binding("team/tool","next","tool-preview"),
+        "graph":[node("tool-preview"),node("queue")], "edges":[{"from":"tool-preview","to":"queue"}]});
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/resolve"))
+        .and(matchers::body_partial_json(
+            json!({"worker":"team/tool","version":"next"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // A legal but different exact answer must never be used with the preview's graph.
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/resolve"))
+        .and(matchers::body_partial_json(
+            json!({"worker":"team/tool","version":"1.2.3"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "root":binding("team/tool","1.2.3","tool"),
+            "graph":[node("tool"),node("cache")],"edges":[{"from":"tool","to":"cache"}]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker-compose.yaml");
+    let initial = "containers:\n  local: {worker: path://.}\n";
+    let file = ComposeFile::parse(initial, &path).unwrap();
+    let asked = edit::parse_worker("package://registry.example.test/team/tool@next").unwrap();
+    TEST_REGISTRY
+        .scope(server.uri(), async {
+            let plan = dependencies::plan(&file, &[asked], &dependencies::Policy::Add)
+                .await
+                .unwrap();
+            assert_eq!(
+                plan.containers
+                    .iter()
+                    .find(|c| c.key == "tool")
+                    .unwrap()
+                    .start_after,
+                ["queue"]
+            );
+            let mut text = initial.to_string();
+            for declaration in &plan.containers {
+                match edit::upsert_container(&text, declaration).unwrap() {
+                    edit::Outcome::Added(next) | edit::Outcome::Replaced { text: next, .. } => {
+                        text = next
+                    }
+                    edit::Outcome::Unchanged => {}
+                }
+            }
+            let mut file = ComposeFile::parse(&text, &path).unwrap();
+            let prepared = lockfile::prepare_metadata_with_plan(
+                &mut file,
+                &Default::default(),
+                &plan.selected_versions,
+                &plan.selections,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                file.containers["tool"].resolved_package.as_ref().unwrap(),
+                &plan.selections["tool"].package
+            );
+            assert_eq!(
+                file.containers["tool"]
+                    .resolved_package
+                    .as_ref()
+                    .unwrap()
+                    .name,
+                "tool-preview"
+            );
+            assert!(!file.containers.contains_key("cache"));
+            prepared.write_if_changed().unwrap();
+            let mut reload = ComposeFile::parse(&text, &path).unwrap();
+            lockfile::attach(&mut reload).unwrap();
+            assert_eq!(
+                reload.containers["tool"].resolved_package,
+                file.containers["tool"].resolved_package
+            );
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        })
+        .await;
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn root_key_collision_is_checked_only_after_local_dependency_boundaries() {
+    use crate::{ComposeFile, dependencies, edit};
+    for reachable in [false, true] {
+        let server = MockServer::start().await;
+        let mut body = json!({"graph":[node("tool"),node("bridge"),node("database")],
+            "edges":[{"from":"tool","to":"bridge"},{"from":"bridge","to":"database"}]});
+        if !reachable {
+            body["graph"][1]
+                .as_object_mut()
+                .unwrap()
+                .remove("archive_url");
+            body["graph"][2]
+                .as_object_mut()
+                .unwrap()
+                .remove("archive_url");
+        }
+        if reachable {
+            body["edges"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"from":"tool","to":"database"}));
+        }
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = ComposeFile::parse(
+            "containers:\n  bridge: {worker: path://.}\n",
+            dir.path().join("worker-compose.yaml"),
+        )
+        .unwrap();
+        let mut asked = edit::parse_worker("tool@next").unwrap();
+        asked.key = "database".into();
+        let result = TEST_REGISTRY
+            .scope(
+                server.uri(),
+                dependencies::plan(&file, &[asked], &dependencies::Policy::Add),
+            )
+            .await;
+        if reachable {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("container key conflicts with another registry graph node")
+            );
+        } else {
+            let plan = result.unwrap();
+            assert_eq!(plan.containers.len(), 1);
+            assert_eq!(plan.containers[0].key, "database");
+            assert_eq!(plan.containers[0].start_after, ["bridge"]);
+        }
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn exact_opaque_binding_is_persisted_and_reloaded_without_basename_or_alias_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+        .and(matchers::body_partial_json(json!({"worker":"team/tool","version":"1.2.3"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "root":binding("team/tool","1.2.3","tool-linux"), "graph":[node("tool-linux")], "edges":[]
+        }))).expect(1).mount(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("worker-compose.yaml");
+    let text =
+        "containers:\n  tool: {worker: package://registry.example.test/team/tool, version: next}\n";
+    let mut file = crate::ComposeFile::parse(text, &path).unwrap();
+    let versions = BTreeMap::from([("tool".to_string(), "1.2.3".to_string())]);
+    let prepared = TEST_REGISTRY
+        .scope(
+            server.uri(),
+            crate::lockfile::prepare_metadata_with_versions(
+                &mut file,
+                &Default::default(),
+                &versions,
+            ),
+        )
+        .await
+        .unwrap();
+    prepared.write_if_changed().unwrap();
+    let mut reloaded = crate::ComposeFile::parse(text, &path).unwrap();
+    crate::lockfile::attach(&mut reloaded).unwrap();
+    let package = reloaded.containers["tool"]
+        .resolved_package
+        .as_ref()
+        .unwrap();
+    assert_eq!(package.name, "tool-linux");
+    assert_eq!(package.alias_of, None);
+    let saved: Value =
+        serde_yaml::from_str(&std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap())
+            .unwrap();
+    assert_eq!(saved["containers"]["tool"]["requested"], "next");
+    assert_eq!(
+        saved["containers"]["tool"]["root_binding"]["requested"]["version"],
+        "1.2.3"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn remembered_binding_does_not_reuse_an_echo_for_a_different_selector() {
+    let server = MockServer::start().await;
+    for selector in ["next", "1.2.3"] {
+        Mock::given(matchers::method("POST")).and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(json!({"worker":"team/tool","version":selector})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "root":binding("team/tool",selector,"tool-linux"),"graph":[node("tool-linux")],"edges":[]
+            }))).expect(1).mount(&server).await;
+    }
+    TEST_REGISTRY
+        .scope(
+            server.uri(),
+            remembering(async {
+                for selector in ["next", "1.2.3"] {
+                    let selection = resolve_selection_on(
+                        "tool",
+                        "registry.example.test/team/tool",
+                        selector,
+                        Platform::Host,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(
+                        selection.root_binding.unwrap().requested.unwrap().version,
+                        selector
+                    );
+                }
+            }),
+        )
         .await;
     server.verify().await;
 }
