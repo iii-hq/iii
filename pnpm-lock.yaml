@@ -12,10 +12,10 @@ overrides:
 
 patchedDependencies:
   picomatch@2.3.2:
-    hash: 17466b0fe3f3da769e274eff6b6fc11efae284318553662c68cbcabc0915817a
+    hash: 816490c068ab2dbd1c9d0d1a809d6b1aa2ba687bba07ddd4f0622f901da0fccc
     path: patches/picomatch@2.3.2.patch
   picomatch@4.0.7:
-    hash: 8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a
+    hash: 711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39
     path: patches/picomatch@4.0.7.patch
   typedoc@0.28.20:
     hash: 0b133078303fff45d93a4c1c4d4ccd84f8199851e8c1a0d774790e92f1fa1396
@@ -4384,11 +4384,11 @@ snapshots:
       enquirer: 2.4.1
       env-paths: 2.2.1
       execa: 5.1.1
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a))
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39))
       ignore: 5.3.2
       object-treeify: 1.1.33
       open: 8.4.2
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       systeminformation: 5.33.19
       undici: 7.30.2
       which: 4.0.0
@@ -6001,9 +6001,9 @@ snapshots:
     dependencies:
       reusify: 1.1.0
 
-  fdir@6.5.0(picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)):
+  fdir@6.5.0(picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)):
     optionalDependencies:
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
 
   fflate@0.8.3: {}
 
@@ -6892,7 +6892,7 @@ snapshots:
   micromatch@4.0.8:
     dependencies:
       braces: 3.0.3
-      picomatch: 2.3.2(patch_hash=17466b0fe3f3da769e274eff6b6fc11efae284318553662c68cbcabc0915817a)
+      picomatch: 2.3.2(patch_hash=816490c068ab2dbd1c9d0d1a809d6b1aa2ba687bba07ddd4f0622f901da0fccc)
 
   mimic-fn@2.1.0: {}
 
@@ -7069,9 +7069,9 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  picomatch@2.3.2(patch_hash=17466b0fe3f3da769e274eff6b6fc11efae284318553662c68cbcabc0915817a): {}
+  picomatch@2.3.2(patch_hash=816490c068ab2dbd1c9d0d1a809d6b1aa2ba687bba07ddd4f0622f901da0fccc): {}
 
-  picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a): {}
+  picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39): {}
 
   pkg-up@3.1.0:
     dependencies:
@@ -7249,7 +7249,7 @@ snapshots:
       dts-resolver: 2.1.3
       get-tsconfig: 4.14.3
       obug: 2.2.1
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       rolldown: 1.0.0-rc.17
     optionalDependencies:
       typescript: 5.9.3
@@ -7546,8 +7546,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a))
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39))
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
 
   tinyrainbow@3.1.1: {}
 
@@ -7583,7 +7583,7 @@ snapshots:
       hookable: 6.1.2
       import-without-cache: 0.3.3
       obug: 2.2.1
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       rolldown: 1.0.0-rc.17
       rolldown-plugin-dts: 0.23.2(rolldown@1.0.0-rc.17)(typescript@5.9.3)
       semver: 7.7.4
@@ -7726,8 +7726,8 @@ snapshots:
   vite@7.3.7(@types/node@24.11.0)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       esbuild: 0.28.2
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a))
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39))
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       postcss: 8.5.32
       rollup: 4.67.5
       tinyglobby: 0.2.17
@@ -7742,8 +7742,8 @@ snapshots:
   vite@7.3.7(@types/node@25.9.4)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.9.1):
     dependencies:
       esbuild: 0.28.2
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a))
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39))
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       postcss: 8.5.32
       rollup: 4.67.5
       tinyglobby: 0.2.17
@@ -7769,7 +7769,7 @@ snapshots:
       magic-string: 0.30.21
       obug: 2.2.1
       pathe: 2.0.3
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       std-env: 4.2.0
       tinybench: 2.9.0
       tinyexec: 1.3.1
@@ -7800,7 +7800,7 @@ snapshots:
       magic-string: 0.30.21
       obug: 2.2.1
       pathe: 2.0.3
-      picomatch: 4.0.7(patch_hash=8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a)
+      picomatch: 4.0.7(patch_hash=711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39)
       std-env: 4.2.0
       tinybench: 2.9.0
       tinyexec: 1.3.1

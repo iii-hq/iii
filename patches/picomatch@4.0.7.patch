@@ -1,8 +1,8 @@
 diff --git a/lib/parse.js b/lib/parse.js
-index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..c87e7cb2e8da6fdc1f71adad5c58bf3b6ef8b0c3 100644
+index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..3f3a7851d57e83f87a8c7dc6f326258ca43f025e 100644
 --- a/lib/parse.js
 +++ b/lib/parse.js
-@@ -541,12 +541,50 @@ const parse = (input, options) => {
+@@ -541,12 +541,55 @@ const parse = (input, options) => {
      const body = input.slice(token.startIndex + 2, state.index);
      const analysis = analyzeRepeatedExtglob(body, opts);
  
@@ -18,12 +18,17 @@ index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..c87e7cb2e8da6fdc1f71adad5c58bf3b
 +      const literal = tokens[start + 2];
 +      const close = tokens[start + 3];
 +      const delimiter = tokens[start + 4];
++      // Match toRegex's precedence: explicit nonempty flags override nocase.
++      const flags = opts.flags || (opts.nocase ? 'i' : '');
++      const ignoreCase = flags.includes('i');
 +      return (repeat.type === 'star' || repeat.type === 'plus') && repeat.output === '' &&
 +        open.type === 'paren' && open.extglob && open.output === '(?:' &&
 +        literal.type === 'text' && /^[a-zA-Z0-9]$/.test(literal.value) && literal.output === undefined &&
 +        close.type === 'paren' && close.extglob && /^\)[*+]$/.test(close.output || '') &&
 +        delimiter.type === 'text' && /^[a-zA-Z0-9]$/.test(delimiter.value) &&
-+        delimiter.output === undefined && delimiter.value !== literal.value;
++        delimiter.output === undefined &&
++        (ignoreCase ? delimiter.value.toLowerCase() !== literal.value.toLowerCase()
++          : delimiter.value !== literal.value);
 +    };
 +
 +    // GHSA-fc5q-39xc-vjpf: inspect parsed tokens, not raw characters.
@@ -54,7 +59,7 @@ index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..c87e7cb2e8da6fdc1f71adad5c58bf3b
        open.type = 'text';
        open.value = literal;
        open.output = safeOutput || utils.escapeRegex(literal);
-@@ -555,6 +593,7 @@ const parse = (input, options) => {
+@@ -555,6 +598,7 @@ const parse = (input, options) => {
          tokens[i].value = '';
          tokens[i].output = '';
          delete tokens[i].suffix;

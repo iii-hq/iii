@@ -77,6 +77,17 @@ for (const [version, [importer, chain]] of Object.entries(picomatchChains)) {
       }
       assert.equal(pm.isMatch('+a+a', '+(+a)'), true);
       assert.equal(pm.makeRe('+(*(a)b)').test('aabab'), true);
+      for (const options of [{ nocase: true }, { flags: 'i' }, { flags: 'gi' }, { nocase: true, flags: '' }]) {
+        const pattern = '+(*(a)A)';
+        const regex = pm.makeRe(pattern, options);
+        assert.equal(regex.test(pattern), true);
+        regex.lastIndex = 0;
+        assert.equal(regex.test('a'.repeat(48) + '!'), false);
+        const safe = pm.makeRe('+(*(a)b)', options);
+        assert.equal(safe.test('AaBAb'), true);
+      }
+      assert.equal(pm.makeRe('+(*(a)A)').test('aaAaA'), true);
+      assert.equal(pm.makeRe('+(*(a)A)', { nocase: true, flags: 'm' }).test('aaAaA'), true);
       assert.equal(pm.makeRe('+(+(a)b)').test('aabab'), true);
       assert.equal(pm.makeRe('*(*(a)b)').test('aabab'), true);
       for (const pattern of ['+(*(a)b)', '+(+(a)b)', '*(*(a)b)']) {
@@ -153,7 +164,14 @@ test('audit reports all advisories and fails closed when patch integrity fails',
     const errors = []
     runInNewContext(code, {
       validatePicomatchPatches() { throw new Error('invalid digest') },
-      execFileSync() { audited = true; return JSON.stringify({ advisories: report }) },
+      execFileSync() {
+        audited = true
+        const stdout = JSON.stringify({ advisories: report })
+        if (Object.keys(report).length) {
+          throw Object.assign(new Error('pnpm audit exited with status 1'), { stdout })
+        }
+        return stdout
+      },
       console: { log: message => messages.push(message), error: message => errors.push(message) },
       process: { exit: code => { exitCode = code } },
     })

@@ -9,12 +9,12 @@ import { parse } from 'yaml'
 // matching, without requiring our local literal fallback or retired versions.
 export const reviewedPicomatch = {
   '2.3.2': {
-    patch: '17466b0fe3f3da769e274eff6b6fc11efae284318553662c68cbcabc0915817a',
-    parser: 'f548a9384788cc0f7a3720624ea088519a46ea5325cdd2fb9b9fbace3809a843',
+    patch: '816490c068ab2dbd1c9d0d1a809d6b1aa2ba687bba07ddd4f0622f901da0fccc',
+    parser: '7bc1b9c1d7025547db6fedf572056034c65996e4b7a1081eb782308ebc48bfaf',
   },
   '4.0.7': {
-    patch: '8c8e8881c5a79cc9f1116ffd2f5d521602ffdc9bf5f90a09230c44b182caa85a',
-    parser: 'c48630d5b1ace5836c67c556d1d29741cabb03fcb52f18f91ff9b1e062fbe5dc',
+    patch: '711ccf8ab59a8bb16857ffa5f4d519a65cad45e4e674bd6a4f74fab1b221da39',
+    parser: 'e9d000b9f281a2783b06826293b500ad98cf3e14d5cb60abe25860559d91b129',
   },
 }
 
