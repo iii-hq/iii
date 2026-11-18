@@ -4083,6 +4083,7 @@ containers:
             _ => "1.3.0",
         };
         crate::registry::Graph {
+            root: None,
             nodes: members
                 .iter()
                 .map(|name| registry_node(name, version(name)))
@@ -4180,6 +4181,7 @@ containers:
             |key, _, _, _| async move {
                 assert_eq!(key, "api");
                 Ok(crate::registry::Graph {
+                    root: None,
                     nodes: vec![
                         registry_node("api", "1.0.0"),
                         registry_node("shell", "1.0.0"),
@@ -4568,6 +4570,7 @@ containers:
         };
         *version = Some("next".to_string());
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "state".to_string(),
                 version: "0.22.8".to_string(),
@@ -4591,6 +4594,7 @@ containers:
     #[test]
     fn configurable_engine_root_points_to_engine_workers() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "configuration".to_string(),
                 version: "0.23.0".to_string(),
@@ -4619,6 +4623,7 @@ containers:
     #[test]
     fn injected_engine_root_says_no_declaration_is_needed() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "iii-engine-functions".to_string(),
                 version: "0.23.0".to_string(),
@@ -4643,6 +4648,7 @@ containers:
     #[test]
     fn engine_dependencies_are_filtered_from_expanded_graphs() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "api".to_string(),
@@ -4679,6 +4685,7 @@ containers:
     #[test]
     fn expanded_graph_is_dependency_first_even_when_registry_nodes_are_not() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "state".to_string(),
@@ -4714,6 +4721,7 @@ containers:
     #[test]
     fn expanded_graph_rejects_registry_dependency_cycles() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "api".to_string(),
@@ -4742,6 +4750,7 @@ containers:
     #[test]
     fn local_path_worker_satisfies_a_registry_dependency() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4780,6 +4789,7 @@ containers:
     #[test]
     fn local_path_worker_stops_registry_dependency_expansion() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4827,6 +4837,7 @@ containers:
     #[test]
     fn dependency_reachable_without_the_local_worker_is_still_declared() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![
                 crate::registry::Node {
                     name: "tailscale".to_string(),
@@ -4865,6 +4876,7 @@ containers:
     #[test]
     fn explicitly_requested_path_worker_is_still_a_source_conflict() {
         let graph = crate::registry::Graph {
+            root: None,
             nodes: vec![crate::registry::Node {
                 name: "console".to_string(),
                 version: "1.9.11".to_string(),
