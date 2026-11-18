@@ -407,6 +407,21 @@ pub(crate) fn remove_containers(text: &str, keys: &[&str]) -> Result<String> {
             entries.push(entry);
         }
     }
+    // A comment immediately before the next entry can also be included in the
+    // preceding block. Apply its removal once, using the union of line spans,
+    // before translating any range into offsets in the original document.
+    entries.sort_by_key(|entry| entry.start);
+    let mut merged: Vec<Entry> = Vec::new();
+    for entry in entries {
+        if let Some(last) = merged.last_mut()
+            && entry.start < last.end
+        {
+            last.end = last.end.max(entry.end);
+        } else {
+            merged.push(entry);
+        }
+    }
+    let entries = merged;
     let document: Value =
         serde_yaml::from_str(text).map_err(|err| invalid(key, &err.to_string()))?;
     let offsets = line_offsets(&lines);
@@ -1166,6 +1181,44 @@ fn line_offsets(lines: &[&str]) -> Vec<usize> {
     offsets
 }
 
+/// Decode a mapping field key and retain the byte position of its separator.
+/// Quoted keys can contain colons or escapes; neither changes the value slice.
+fn mapping_key(line: &str) -> Option<(String, usize)> {
+    let data = without_comment(line);
+    let mut quote = None;
+    let mut chars = data.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        match quote {
+            Some('"') => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => match c {
+                '\'' | '"' if data[..at].trim().is_empty() => quote = Some(c),
+                ':' => {
+                    return serde_yaml::from_str::<String>(data[..at].trim())
+                        .ok()
+                        .map(|name| (name, at));
+                }
+                _ => {}
+            },
+        }
+    }
+    None
+}
+
 /// Text edits that remove `key` from every surviving container's dependency
 /// field. Ranges use byte offsets into the original document and therefore can
 /// be applied from the end without disturbing one another.
@@ -1210,9 +1263,12 @@ fn dependency_removals(
             continue;
         };
 
-        let Some(start_after_at) = (head + 1..end).find(|index| {
-            leading_whitespace(lines[*index]) == field_indent
-                && lines[*index].trim_start().starts_with("start_after:")
+        let Some((start_after_at, colon)) = (head + 1..end).find_map(|index| {
+            if leading_whitespace(lines[index]) != field_indent {
+                return None;
+            }
+            let (name, colon) = mapping_key(lines[index])?;
+            (name == "start_after").then_some((index, colon))
         }) else {
             continue;
         };
@@ -1222,15 +1278,12 @@ fn dependency_removals(
             .strip_suffix("\r\n")
             .or_else(|| line.strip_suffix('\n'))
             .unwrap_or(line);
-        let Some(colon) = body.find("start_after:") else {
-            continue;
-        };
-        let value = without_comment(&body[colon + "start_after:".len()..]);
+        let value = without_comment(&body[colon + 1..]);
 
         if let Some(open_relative) = value.find('[')
             && let Some(close_relative) = value[open_relative + 1..].find(']')
         {
-            let open = colon + "start_after:".len() + open_relative;
+            let open = colon + 1 + open_relative;
             let close = open + 1 + close_relative;
             let items = &body[open + 1..close];
             let kept: Vec<&str> = items
@@ -2682,6 +2735,136 @@ containers:
     fn a_commented_container_key_is_read_like_a_bare_one() {
         let text = "containers:\n  # added by compose::add\n  state: # pinned\n    worker: package://state\n    version: '1.0.0'\n";
         assert!(is_generated_container(text, "state").unwrap());
+    }
+
+    #[test]
+    fn batch_removal_merges_overlapping_comment_spans_without_touching_survivors() {
+        for comment in [
+            "# x",
+            "# This comment is longer than the entire surviving keep entry below.",
+        ] {
+            for crlf in [false, true] {
+                let text = format!(
+                    "# retained\ncontainers:\n  a:\n    worker: path://./a\n    {comment}\n  b:\n    worker: path://./b\n    {comment}\n  c:\n    worker: path://./c\n  keep: {{worker: path://.}}\n"
+                );
+                let text = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text
+                };
+                let expected = "# retained\ncontainers:\n  keep: {worker: path://.}\n";
+                let expected = if crlf {
+                    expected.replace('\n', "\r\n")
+                } else {
+                    expected.into()
+                };
+                for keys in [
+                    &["a", "b", "c"][..],
+                    &["c", "a", "b"][..],
+                    &["b", "c", "a", "b"][..],
+                ] {
+                    let output = remove_containers(&text, keys).unwrap();
+                    assert_eq!(output, expected);
+                    crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                }
+            }
+        }
+        // Intersecting ranges must not make separate ranges consume a survivor.
+        let text = "containers:\n  a:\n    worker: path://./a\n    # shared\n  b:\n    worker: path://./b\n  keep:\n    worker: path://./keep\n    config_override: {message: untouched}\n  c: {worker: path://./c}\n  last: {worker: path://./last}\n";
+        assert_eq!(
+            remove_containers(text, &["c", "b", "a"]).unwrap(),
+            "containers:\n  keep:\n    worker: path://./keep\n    config_override: {message: untouched}\n  last: {worker: path://./last}\n"
+        );
+    }
+
+    #[test]
+    fn removal_recognizes_quoted_dependency_keys_after_flow_normalization() {
+        for key in [
+            "start_after",
+            "\"start_after\"",
+            "'start_after'",
+            r#""start_\u0061fter""#,
+        ] {
+            for keep in [false, true] {
+                let needs = if keep {
+                    "[\"db\", \"queue\"]"
+                } else {
+                    "[\"db\"]"
+                };
+                // YAML requires separation for a plain key; JSON-style quoted
+                // keys intentionally retain their adjacent value delimiter.
+                let separator = if key == "start_after" { " " } else { "" };
+                let text = format!(
+                    "containers:\n  db: {{worker: path://./db}}\n  tool: {{\"worker\":\"package://api.workers.iii.dev/tool\",\"version\":\"1.0.0\",{key}:{separator}{needs},\"config_override\":{{\"start_after\":[\"db\"]}}}}\n  queue: {{worker: path://./queue}}\n"
+                );
+                crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml")
+                    .expect("regression fixture must be a valid Compose declaration");
+                let updated = changed(&text, &parse_worker("tool@1.1.0").unwrap());
+                assert!(updated.contains(&format!("    {key}:")), "{updated}");
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        updated.replace('\n', "\r\n")
+                    } else {
+                        updated.clone()
+                    };
+                    let output = remove_container(&input, "db").unwrap().unwrap();
+                    let parsed =
+                        crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert_eq!(parsed.containers["tool"].version.as_deref(), Some("1.1.0"));
+                    let expected: Vec<String> = if keep { vec!["queue".into()] } else { vec![] };
+                    assert_eq!(parsed.containers["tool"].start_after, expected);
+                    let value: Value = serde_yaml::from_str(&output).unwrap();
+                    assert_eq!(
+                        value["containers"]["tool"]["config_override"]["start_after"][0],
+                        "db"
+                    );
+                    let expected = input.replace("  db: {worker: path://./db}", "");
+                    let newline = if crlf { "\r\n" } else { "\n" };
+                    let expected = expected.replacen(
+                        &format!("containers:{newline}{newline}"),
+                        &format!("containers:{newline}"),
+                        1,
+                    );
+                    let expected = if keep {
+                        expected.replace(needs, "[ \"queue\"]")
+                    } else {
+                        expected.replace(&format!("    {key}: {needs}{newline}"), "")
+                    };
+                    assert_eq!(output, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_block_dependency_keys_preserve_nested_and_neighbor_fields() {
+        for key in [
+            "start_after",
+            "\"start_after\"",
+            "'start_after'",
+            r#""start_\u0061fter""#,
+        ] {
+            let text = format!(
+                "containers:\n  db: {{worker: path://./db}}\n  api: &api\n    config_override:\n      'start_after': [db]\n    \"worker\": path://./api\n    {key}: # edge\n    - db\n    - queue # keep\n    env_file: [db]\n  queue: {{worker: path://./queue}}\n"
+            );
+            let output = remove_container(&text, "db").unwrap().unwrap();
+            assert_eq!(
+                output,
+                text.replace("  db: {worker: path://./db}\n", "")
+                    .replace("    - db\n", "")
+            );
+            crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+        }
+        assert_eq!(
+            mapping_key("    \"start:after\": [db]").unwrap().0,
+            "start:after"
+        );
+        assert_eq!(
+            mapping_key("    'start_after': [db] # comment: kept")
+                .unwrap()
+                .0,
+            "start_after"
+        );
     }
 
     #[test]
