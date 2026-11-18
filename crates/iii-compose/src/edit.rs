@@ -1280,28 +1280,37 @@ fn dependency_removals(
             .unwrap_or(line);
         let value = without_comment(&body[colon + 1..]);
 
-        if let Some(open_relative) = value.find('[')
-            && let Some(close_relative) = value[open_relative + 1..].find(']')
+        if let Some(span) = flow_span(&lines[..end], start_after_at)
+            .filter(|span| lines[span.open.0][span.open.1..].starts_with('['))
         {
-            let open = colon + 1 + open_relative;
-            let close = open + 1 + close_relative;
-            let items = &body[open + 1..close];
-            let kept: Vec<&str> = items
-                .split(',')
-                .filter(|item| !keys.contains(&dependency_name(item)))
-                .collect();
-            if kept.len() == items.split(',').count() {
+            let (container, _) = mapping_key(lines[head])
+                .ok_or_else(|| invalid(keys[0], "invalid container mapping key"))?;
+            let needs = document
+                .get("containers")
+                .and_then(|v| v.get(&container))
+                .and_then(|v| v.get("start_after"))
+                .and_then(Value::as_sequence)
+                .ok_or_else(|| invalid(keys[0], "expected a dependency sequence"))?;
+            if !needs
+                .iter()
+                .any(|v| v.as_str().is_some_and(|name| keys.contains(&name)))
+            {
                 continue;
             }
-            if kept.is_empty() {
+            if needs
+                .iter()
+                .all(|v| v.as_str().is_some_and(|name| keys.contains(&name)))
+            {
                 edits.push((
-                    offsets[start_after_at]..offsets[start_after_at + 1],
+                    offsets[start_after_at]..offsets[span.close.0 + 1],
                     String::new(),
                 ));
             } else {
+                let open = offsets[span.open.0] + span.open.1 + 1;
+                let close = offsets[span.close.0] + span.close.1;
                 edits.push((
-                    offsets[start_after_at] + open + 1..offsets[start_after_at] + close,
-                    kept.join(","),
+                    open..close,
+                    prune_flow_dependency_items(&text[open..close], needs, keys)?,
                 ));
             }
             continue;
@@ -1420,33 +1429,9 @@ fn flow_dependency_removal(
             let pair_offsets = line_offsets(&pair_lines);
             let list_start = pair_offsets[list.open.0] + list.open.1 + 1;
             let list_end = pair_offsets[list.close.0] + list.close.1;
-            let items = flow_mapping_parts(&part[list_start..list_end])
-                .ok_or_else(|| invalid(removed, "invalid flow dependency list"))?;
-            let mut item_index = 0;
-            let mut kept = Vec::new();
-            for item in items {
-                let has_value = item
-                    .lines()
-                    .any(|line| !without_comment(line).trim().is_empty());
-                if !has_value {
-                    kept.push(item);
-                    continue;
-                }
-                let value = needs
-                    .get(item_index)
-                    .ok_or_else(|| invalid(removed, "dependency span/value mismatch"))?;
-                item_index += 1;
-                if !value
-                    .as_str()
-                    .is_some_and(|name| removed_keys.contains(&name))
-                {
-                    kept.push(item);
-                }
-            }
-            if item_index != needs.len() {
-                return Err(invalid(removed, "dependency span/value mismatch"));
-            }
-            return Ok(vec![(at + list_start..at + list_end, kept.join(","))]);
+            let kept =
+                prune_flow_dependency_items(&part[list_start..list_end], needs, removed_keys)?;
+            return Ok(vec![(at + list_start..at + list_end, kept)]);
         }
         at += part.len() + 1;
     }
@@ -1454,6 +1439,43 @@ fn flow_dependency_removal(
         removed,
         "cannot locate the outer flow dependency field",
     ))
+}
+
+/// Prune using values resolved in full-document context, never comma-splitting
+/// quoted scalars or reparsing detached aliases. Preserve raw surviving items.
+fn prune_flow_dependency_items(
+    body: &str,
+    needs: &[Value],
+    removed_keys: &[&str],
+) -> Result<String> {
+    let key = removed_keys[0];
+    let items =
+        flow_mapping_parts(body).ok_or_else(|| invalid(key, "invalid flow dependency list"))?;
+    let mut item_index = 0;
+    let mut kept = Vec::new();
+    for item in items {
+        let has_value = item
+            .lines()
+            .any(|line| !without_comment(line).trim().is_empty());
+        if !has_value {
+            kept.push(item);
+            continue;
+        }
+        let value = needs
+            .get(item_index)
+            .ok_or_else(|| invalid(key, "dependency span/value mismatch"))?;
+        item_index += 1;
+        if !value
+            .as_str()
+            .is_some_and(|name| removed_keys.contains(&name))
+        {
+            kept.push(item);
+        }
+    }
+    if item_index != needs.len() {
+        return Err(invalid(key, "dependency span/value mismatch"));
+    }
+    Ok(kept.join(","))
 }
 
 /// Locate container boundaries independently of field-edit representation.
@@ -2775,6 +2797,112 @@ containers:
             remove_containers(text, &["c", "b", "a"]).unwrap(),
             "containers:\n  keep:\n    worker: path://./keep\n    config_override: {message: untouched}\n  last: {worker: path://./last}\n"
         );
+    }
+
+    #[test]
+    fn multiline_flow_dependencies_survive_upsert_then_remove() {
+        for key in [
+            "start_after",
+            "\"start_after\"",
+            "'start_after'",
+            r#""start_\u0061fter""#,
+        ] {
+            for (needs, remaining) in [
+                ("[db, queue]", vec!["queue"]),
+                ("[\n      db,\n      queue\n    ]", vec!["queue"]),
+                (
+                    "[\n      \"\\u0064b\",\n      # keep survivor\n      'queue',\n      db,\n    ]",
+                    vec!["queue"],
+                ),
+                ("[\n      db\n    ]", vec![]),
+            ] {
+                let text = format!(
+                    "containers:\n  db: {{worker: path://./db}}\n  api: {{worker: package://api.workers.iii.dev/api, version: '1.0.0', {key}: {needs}, config_override: {{start_after: [db], message: 'keep, # ]'}}}}\n  queue: {{worker: path://./queue}}\n"
+                );
+                crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+                let updated = changed(&text, &parse_worker("api@1.1.0").unwrap());
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        updated.replace('\n', "\r\n")
+                    } else {
+                        updated.clone()
+                    };
+                    let output = remove_container(&input, "db").unwrap().unwrap();
+                    let parsed =
+                        crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert_eq!(parsed.containers["api"].version.as_deref(), Some("1.1.0"));
+                    assert_eq!(parsed.containers["api"].start_after, remaining);
+                    let before: Value = serde_yaml::from_str(&input).unwrap();
+                    let after: Value = serde_yaml::from_str(&output).unwrap();
+                    assert_eq!(
+                        after["containers"]["api"]["config_override"],
+                        before["containers"]["api"]["config_override"]
+                    );
+                    if remaining.is_empty() {
+                        assert!(after["containers"]["api"].get("start_after").is_none());
+                    }
+                    if needs.contains("# keep survivor") {
+                        assert!(output.contains("# keep survivor"));
+                    }
+                    assert!(output.ends_with(if crlf {
+                        "  queue: {worker: path://./queue}\r\n"
+                    } else {
+                        "  queue: {worker: path://./queue}\n"
+                    }));
+                    if crlf {
+                        assert!(!output.replace("\r\n", "").contains('\n'));
+                    }
+                    assert!(remove_container(&output, "db").unwrap().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn block_flow_dependencies_use_document_values_and_preserve_neighbors() {
+        for (field, expected_field) in [
+            (
+                "    start_after:\n      [db,\n       queue] # close\n",
+                "    start_after:\n      [\n       queue] # close\n",
+            ),
+            (
+                "    'start_after': [\n      db,\n      queue\n    ] # close\n",
+                "    'start_after': [\n      queue\n    ] # close\n",
+            ),
+            ("    \"start_after\": [\n      db\n    ] # close\n", ""),
+            (
+                "    start_after: [db, queue] # close\n",
+                "    start_after: [ queue] # close\n",
+            ),
+        ] {
+            let prefix =
+                "containers:\n  db: {worker: path://./db}\n  api:\n    worker: path://./api\n";
+            let suffix = "    env_file: [db]\n    config_override: {start_after: [db]}\n  queue: {worker: path://./queue}\n";
+            let text = format!("{prefix}{field}{suffix}");
+            let wanted =
+                format!("containers:\n  api:\n    worker: path://./api\n{expected_field}{suffix}");
+            for crlf in [false, true] {
+                let input = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text.clone()
+                };
+                let expected = if crlf {
+                    wanted.replace('\n', "\r\n")
+                } else {
+                    wanted.clone()
+                };
+                let output = remove_container(&input, "db").unwrap().unwrap();
+                assert_eq!(output, expected);
+                crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+            }
+        }
+        // Alias values are resolved using the original document, not the slice.
+        let text = "containers:\n  db: {worker: path://./db}\n  queue:\n    worker: path://./queue\n    config_override: &queue_name queue\n  api:\n    worker: path://./api\n    start_after: [\n      db,\n      *queue_name\n    ]\n";
+        let output = remove_container(text, "db").unwrap().unwrap();
+        assert!(output.contains("*queue_name"));
+        let parsed = crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(parsed.containers["api"].start_after, ["queue"]);
     }
 
     #[test]
