@@ -948,6 +948,11 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
     let mut quote = None;
     let mut comment = false;
     let mut verbatim_tag = false;
+    // Whitespace can continue a plain scalar; it does not itself permit node
+    // properties. Only collection/value boundaries start a new YAML node.
+    let mut node_start = true;
+    let mut plain_scalar = false;
+    let mut property = false;
     let mut previous: Option<char> = None;
     let mut chars = body.char_indices().peekable();
     while let Some((at, c)) = chars.next() {
@@ -967,6 +972,18 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
             previous = Some(c);
             continue;
         }
+        if property {
+            if c.is_whitespace() {
+                property = false;
+                previous = Some(c);
+                continue;
+            }
+            if !",[]{}".contains(c) {
+                previous = Some(c);
+                continue;
+            }
+            property = false;
+        }
         match quote {
             Some('"') => match c {
                 '\\' => {
@@ -985,30 +1002,53 @@ fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
                 }
             }
             None => match c {
-                '!' if previous.is_none_or(|p| p.is_whitespace() || ":[{,".contains(p))
-                    && chars.peek().is_some_and(|(_, next)| *next == '<') =>
-                {
+                '!' if node_start && chars.peek().is_some_and(|(_, next)| *next == '<') => {
                     chars.next();
                     verbatim_tag = true;
                 }
+                '!' | '&' if node_start => property = true,
                 '#' if previous.is_none_or(|p| p.is_whitespace() || ",[{".contains(p)) => {
                     comment = true
                 }
-                '\'' | '"' if previous.is_none_or(|p| p.is_whitespace() || ":[{,".contains(p)) => {
-                    quote = Some(c)
+                '\'' | '"' if node_start => {
+                    quote = Some(c);
+                    node_start = false;
+                    plain_scalar = false;
                 }
-                '[' => delimiters.push(']'),
-                '{' => delimiters.push('}'),
+                '[' | '{' => {
+                    delimiters.push(if c == '[' { ']' } else { '}' });
+                    node_start = true;
+                    plain_scalar = false;
+                }
                 ']' | '}' => {
                     if delimiters.pop() != Some(c) {
                         return None;
                     }
+                    node_start = false;
+                    plain_scalar = false;
                 }
-                ',' if delimiters.is_empty() => {
-                    parts.push(&body[start..at]);
-                    start = at + 1;
+                ',' => {
+                    if delimiters.is_empty() {
+                        parts.push(&body[start..at]);
+                        start = at + 1;
+                    }
+                    node_start = true;
+                    plain_scalar = false;
                 }
-                _ => {}
+                ':' if !plain_scalar
+                    || chars.peek().is_none_or(|(_, next)| {
+                        next.is_whitespace() || ",[]{}".contains(*next)
+                    }) =>
+                {
+                    node_start = true;
+                    plain_scalar = false;
+                }
+                '?' if node_start && chars.peek().is_none_or(|(_, next)| next.is_whitespace()) => {}
+                c if c.is_whitespace() => {}
+                _ => {
+                    node_start = false;
+                    plain_scalar = true;
+                }
             },
         }
         previous = Some(c);
@@ -1611,12 +1651,19 @@ fn dependency_name(value: &str) -> &str {
     without_comment(value).trim().trim_matches(['"', '\''])
 }
 
-/// Keeps the file's final newline as it was: adding one to a file without it,
-/// or dropping one from a file with it, is a diff line nobody asked for.
+/// Preserve uniform CRLF/LF convention and whether a final newline was present.
+/// Callers supply logical lines; generated lines must not rewrite a CRLF file.
 fn join(lines: &[String], original: &str) -> String {
-    let mut text = lines.join("\n");
+    let bytes = original.as_bytes();
+    let crlf = bytes.contains(&b'\n')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(at, byte)| *byte != b'\n' || (at > 0 && bytes[at - 1] == b'\r'));
+    let newline = if crlf { "\r\n" } else { "\n" };
+    let mut text = lines.join(newline);
     if original.ends_with('\n') {
-        text.push('\n');
+        text.push_str(newline);
     }
     text
 }
@@ -2815,6 +2862,113 @@ containers:
             remove_containers(text, &["c", "b", "a"]).unwrap(),
             "containers:\n  keep:\n    worker: path://./keep\n    config_override: {message: untouched}\n  last: {worker: path://./last}\n"
         );
+    }
+
+    #[test]
+    fn upsert_preserves_uniform_line_endings_and_final_newline() {
+        for entry in [
+            "  tool:\n    worker: package://api.workers.iii.dev/tool\n    version: '1.0.0'\n",
+            "  tool: {worker: package://api.workers.iii.dev/tool, version: '1.0.0'}\n",
+        ] {
+            for newline in ["\n", "\r\n"] {
+                for final_newline in [false, true] {
+                    let lf =
+                        format!("# heading\ncontainers:\n{entry}  keep: {{worker: path://.}}\n");
+                    let text = if final_newline {
+                        lf
+                    } else {
+                        lf.trim_end_matches('\n').to_string()
+                    };
+                    let text = text.replace('\n', newline);
+                    let output = changed(&text, &parse_worker("tool@1.1.0").unwrap());
+                    assert_eq!(output.ends_with('\n'), final_newline);
+                    let tail = format!(
+                        "  keep: {{worker: path://.}}{}",
+                        if final_newline { newline } else { "" }
+                    );
+                    assert!(output.ends_with(&tail), "{output:?}");
+                    assert!(output.starts_with(&format!("# heading{newline}containers:{newline}")));
+                    if newline == "\r\n" {
+                        assert!(!output.replace("\r\n", "").contains('\n'));
+                    } else {
+                        assert!(!output.contains('\r'));
+                    }
+                    crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert_eq!(
+                        upsert_container(&output, &parse_worker("tool@1.1.0").unwrap()).unwrap(),
+                        Outcome::Unchanged
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plain_scalar_tag_text_is_not_a_yaml_property_during_upsert() {
+        for settings in [
+            "{message: literal !<text}",
+            "{message: literal !<text> suffix}",
+            "{message: literal !<text:more}",
+            "{message: literal !local &anchor !<text}",
+            "{message: https://example.test/path !<text}",
+            "{message: literal\n      !<text}",
+            "{message: literal !<text, other: !<tag:yaml.org,2002:str> queue}",
+            "{\"message\":\"literal !<text\", \"other\":!<tag:yaml.org,2002:str> queue}",
+            "{message: &message !<tag:yaml.org,2002:str> literal !<text, copy: *message}",
+            "{message: !<tag:yaml.org,2002:str> &message literal !<text, copy: *message}",
+            "{values: [literal !<text, !<tag:yaml.org,2002:str> queue], message: unchanged}",
+        ] {
+            let text = format!(
+                "containers:\n  tool: {{worker: package://api.workers.iii.dev/tool, version: '1.0.0', config_override: {settings}}}\n  keep: {{worker: path://.}}\n"
+            );
+            crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+            for crlf in [false, true] {
+                let input = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text.clone()
+                };
+                let before: Value = serde_yaml::from_str(&input).unwrap();
+                assert_eq!(
+                    upsert_container(&input, &parse_worker("tool@1.0.0").unwrap()).unwrap(),
+                    Outcome::Unchanged
+                );
+                let output = changed(&input, &parse_worker("tool@1.1.0").unwrap());
+                crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                let after: Value = serde_yaml::from_str(&output).unwrap();
+                assert_eq!(after["containers"]["tool"]["version"], "1.1.0");
+                assert_eq!(
+                    after["containers"]["tool"]["config_override"],
+                    before["containers"]["tool"]["config_override"]
+                );
+                assert!(output.contains("!<text"), "{output}");
+                assert!(output.ends_with(if crlf {
+                    "  keep: {worker: path://.}\r\n"
+                } else {
+                    "  keep: {worker: path://.}\n"
+                }));
+                assert_eq!(
+                    upsert_container(&output, &parse_worker("tool@1.1.0").unwrap()).unwrap(),
+                    Outcome::Unchanged
+                );
+                if crlf {
+                    assert!(!output.replace("\r\n", "").contains('\n'));
+                }
+            }
+        }
+        assert_eq!(
+            flow_mapping_parts("message: literal !<text, other: value").unwrap(),
+            ["message: literal !<text", " other: value"]
+        );
+        assert_eq!(
+            flow_mapping_parts("db, &q !<tag:yaml.org,2002:str> queue").unwrap(),
+            ["db", " &q !<tag:yaml.org,2002:str> queue"]
+        );
+        assert_eq!(
+            flow_mapping_parts("db, !<tag:yaml.org,2002:str> &q queue").unwrap(),
+            ["db", " !<tag:yaml.org,2002:str> &q queue"]
+        );
+        assert!(flow_mapping_parts("db, &q !<tag:yaml.org,2002:str queue").is_none());
     }
 
     #[test]
