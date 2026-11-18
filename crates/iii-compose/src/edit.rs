@@ -1215,7 +1215,13 @@ fn is_container_head(line: &str, indent: &str) -> bool {
     let Some(rest) = line.strip_prefix(indent) else {
         return false;
     };
-    !rest.starts_with([' ', '\t', '#']) && without_comment(rest).trim_end().ends_with(':')
+    !rest.starts_with([' ', '\t', '#'])
+        && rest.split_once(':').is_some_and(|(_, value)| {
+            // An anchor/tag is a property of this mapping, not its contents.
+            // Keep dependency discovery and generated-marker lookup consistent
+            // with the block headers accepted by find_entry.
+            opens_block(without_comment(value).trim())
+        })
 }
 
 /// `line` without its trailing YAML comment, whose `#` must follow whitespace:
@@ -2432,6 +2438,72 @@ containers:
     fn a_commented_container_key_is_read_like_a_bare_one() {
         let text = "containers:\n  # added by compose::add\n  state: # pinned\n    worker: package://state\n    version: '1.0.0'\n";
         assert!(is_generated_container(text, "state").unwrap());
+    }
+
+    #[test]
+    fn removing_prunes_dependencies_from_anchored_block_entries() {
+        for header in ["&api", "!!map &api", "&api !!map"] {
+            for (dependencies, expected) in [
+                (
+                    "    start_after: [db, queue] # keep edge comment\n",
+                    "    start_after: [ queue] # keep edge comment\n",
+                ),
+                (
+                    "    start_after:\n      - db\n      - queue # keep edge comment\n",
+                    "    start_after:\n      - queue # keep edge comment\n",
+                ),
+                ("    start_after: [db]\n", ""),
+                ("    start_after:\n      - db\n", ""),
+            ] {
+                let text = format!(
+                    "# untouched\ncontainers:\n  db: &db # remove\n    worker: path://./db\n  api: {header} # keep header\n    worker: path://./api\n{dependencies}    config_override: {{unchanged: true}}\n  queue:\n    worker: path://./queue\n  consumer:\n    worker: path://./consumer\n    start_after: [queue]\n    config_override: *api\n"
+                );
+                let expected_text = format!(
+                    "# untouched\ncontainers:\n  api: {header} # keep header\n    worker: path://./api\n{expected}    config_override: {{unchanged: true}}\n  queue:\n    worker: path://./queue\n  consumer:\n    worker: path://./consumer\n    start_after: [queue]\n    config_override: *api\n"
+                );
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        text.replace('\n', "\r\n")
+                    } else {
+                        text.clone()
+                    };
+                    let wanted = if crlf {
+                        expected_text.replace('\n', "\r\n")
+                    } else {
+                        expected_text.clone()
+                    };
+                    let output = remove_container(&input, "db").unwrap().unwrap();
+                    assert_eq!(output, wanted);
+                    let parsed =
+                        crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert!(!parsed.containers.contains_key("db"));
+                    let expected_dependencies: Vec<String> = if expected.is_empty() {
+                        vec![]
+                    } else {
+                        vec!["queue".into()]
+                    };
+                    assert_eq!(parsed.containers["api"].start_after, expected_dependencies);
+                    assert_eq!(parsed.containers["consumer"].start_after, ["queue"]);
+                    let yaml: Value = serde_yaml::from_str(&output).unwrap();
+                    assert_eq!(
+                        yaml["containers"]["consumer"]["config_override"],
+                        yaml["containers"]["api"]
+                    );
+                    assert!(remove_container(&output, "db").unwrap().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_marker_lookup_recognizes_anchored_block_entries() {
+        let text = "containers:\n  # added by compose::add\n  generated: &generated # preserve\n    worker: package://generated\n    version: '1.0.0'\n  manual: !!map &manual\n    worker: path://./manual\n";
+        assert!(is_generated_container(text, "generated").unwrap());
+        assert!(!is_generated_container(text, "manual").unwrap());
+        assert!(!is_generated_container(text, "missing").unwrap());
+        assert!(!is_container_head("  api: {worker: path://./api}", "  "));
+        assert!(!is_container_head("    worker: path://./api", "  "));
+        assert!(!is_container_head("  # api: &api", "  "));
     }
 
     #[test]
