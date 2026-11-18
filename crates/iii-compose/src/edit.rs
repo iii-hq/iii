@@ -366,7 +366,7 @@ pub fn remove_container(text: &str, key: &str) -> Result<Option<String>> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let containers = find_containers(&lines)?;
     let indent = entry_indent(&lines, &containers);
-    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
+    let Some((_, entry)) = find_complete_entry(&lines, &containers, &indent, key) else {
         return Ok(None);
     };
 
@@ -387,13 +387,7 @@ pub(crate) fn is_generated_container(text: &str, key: &str) -> Result<bool> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let containers = find_containers(&lines)?;
     let indent = entry_indent(&lines, &containers);
-    let Some(entry) = find_entry(&lines, &containers, &indent, key) else {
-        return Ok(false);
-    };
-    let Some(head) = entry
-        .clone()
-        .find(|index| is_container_head(lines[*index], &indent))
-    else {
+    let Some((head, _)) = find_complete_entry(&lines, &containers, &indent, key) else {
         return Ok(false);
     };
     Ok(head > containers.start && lines[head - 1].trim() == MARKER)
@@ -1106,14 +1100,18 @@ fn dependency_removals(
     removed_entry: &Entry,
     key: &str,
 ) -> Vec<(std::ops::Range<usize>, String)> {
-    let heads: Vec<usize> = (containers.start..containers.end)
-        .filter(|index| is_container_head(lines[*index], indent))
-        .collect();
+    let heads = container_boundaries(lines, containers, indent);
     let mut edits = Vec::new();
 
     for (position, head) in heads.iter().copied().enumerate() {
         let end = heads.get(position + 1).copied().unwrap_or(containers.end);
         if removed_entry.contains(&head) {
+            continue;
+        }
+        // Flow entries still delimit containers, but their contents are not
+        // block fields. A nested application `worker`/`start_after` pair must
+        // never be mistaken for the container's dependency declaration.
+        if flow_span(&lines[..end], head).is_some() || !is_container_head(lines[head], indent) {
             continue;
         }
 
@@ -1209,6 +1207,58 @@ fn dependency_removals(
         );
     }
     edits
+}
+
+/// Locate container boundaries independently of field-edit representation.
+/// A complete flow span is skipped so its nested keys cannot become boundaries.
+fn container_boundaries(lines: &[&str], containers: &Block, indent: &str) -> Vec<usize> {
+    let mut heads = Vec::new();
+    let mut index = containers.start;
+    while index < containers.end {
+        let is_head = lines[index]
+            .strip_prefix(indent)
+            .filter(|body| !body.starts_with(char::is_whitespace) && !body.starts_with('#'))
+            .and_then(|body| body.split_once(':'))
+            .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
+            .is_some();
+        if is_head {
+            heads.push(index);
+            if let Some(span) = flow_span(&lines[..containers.end], index) {
+                index = span.close.0 + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    heads
+}
+
+/// Removal and generated-marker lookup need the complete entry, not a block
+/// eligible for field rewriting. Keep find_entry's normalization gate intact.
+fn find_complete_entry(
+    lines: &[&str],
+    containers: &Block,
+    indent: &str,
+    key: &str,
+) -> Option<(usize, Entry)> {
+    for head in container_boundaries(lines, containers, indent) {
+        let name = lines[head].strip_prefix(indent)?.split_once(':')?.0;
+        if serde_yaml::from_str::<String>(name).ok().as_deref() != Some(key) {
+            continue;
+        }
+        if let Some(span) = flow_span(&lines[..containers.end], head) {
+            if !lines[span.open.0][span.open.1..].starts_with('{') {
+                return None;
+            }
+            let mut start = head;
+            while start > containers.start && lines[start - 1].trim_start().starts_with('#') {
+                start -= 1;
+            }
+            return Some((head, start..span.close.0 + 1));
+        }
+        return find_entry(lines, containers, indent, key).map(|entry| (head, entry));
+    }
+    None
 }
 
 fn is_container_head(line: &str, indent: &str) -> bool {
@@ -2438,6 +2488,95 @@ containers:
     fn a_commented_container_key_is_read_like_a_bare_one() {
         let text = "containers:\n  # added by compose::add\n  state: # pinned\n    worker: package://state\n    version: '1.0.0'\n";
         assert!(is_generated_container(text, "state").unwrap());
+    }
+
+    #[test]
+    fn removing_and_marker_lookup_locate_complete_flow_entries() {
+        for entry in [
+            "  api: {worker: path://./api}\n",
+            "  api:\n    {worker: path://./api}\n",
+            "  api: &api # heading\n    # inside entry\n    {worker: path://./api,\n     config_override: {nested: true}} # end\n",
+            "  api: !!map &api {\n    worker: path://./api,\n    config_override: {nested: true}\n  } # end\n",
+        ] {
+            for generated in [false, true] {
+                let marker = if generated {
+                    "  # added by compose::add\n"
+                } else {
+                    ""
+                };
+                let prefix = "# untouched\ncontainers:\n  before:\n    worker: path://./before\n";
+                let suffix =
+                    "  after:\n    worker: path://./after\n    start_after: [before, api] # keep\n";
+                let text = format!("{prefix}{marker}{entry}{suffix}");
+                let expected = format!(
+                    "{prefix}  after:\n    worker: path://./after\n    start_after: [before] # keep\n"
+                );
+                for crlf in [false, true] {
+                    let input = if crlf {
+                        text.replace('\n', "\r\n")
+                    } else {
+                        text.clone()
+                    };
+                    let wanted = if crlf {
+                        expected.replace('\n', "\r\n")
+                    } else {
+                        expected.clone()
+                    };
+                    assert_eq!(is_generated_container(&input, "api").unwrap(), generated);
+                    assert!(!is_generated_container(&input, "after").unwrap());
+                    let output = remove_container(&input, "api").unwrap().unwrap();
+                    assert_eq!(output, wanted);
+                    let parsed =
+                        crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                    assert_eq!(parsed.containers.len(), 2);
+                    assert_eq!(parsed.containers["after"].start_after, ["before"]);
+                    assert!(remove_container(&output, "api").unwrap().is_none());
+                    assert!(!is_generated_container(&output, "api").unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn removal_never_scans_flow_application_data_as_block_dependencies() {
+        for flow in [
+            "  api: &api\n    {worker: path://./api,\n     config_override: {\n       worker: application-data,\n       start_after: [db]\n     }}\n",
+            "  api: {worker: path://./api,\n    config_override: {\n      worker: application-data,\n      start_after: [db]\n    }}\n",
+        ] {
+            // Also guard the preceding block: flow entries must remain actual
+            // boundaries even though their contents are excluded from scanning.
+            let prefix = "containers:\n  db:\n    worker: path://./db\n  before:\n    worker: path://./before\n    config_override:\n      worker: application-data\n      start_after: [db]\n";
+            let suffix = "  after: &after\n    worker: path://./after\n    start_after: [db, before] # real edges\n";
+            let text = format!("{prefix}{flow}{suffix}");
+            let expected = format!(
+                "containers:\n  before:\n    worker: path://./before\n    config_override:\n      worker: application-data\n      start_after: [db]\n{flow}  after: &after\n    worker: path://./after\n    start_after: [ before] # real edges\n"
+            );
+            for crlf in [false, true] {
+                let input = if crlf {
+                    text.replace('\n', "\r\n")
+                } else {
+                    text.clone()
+                };
+                let wanted = if crlf {
+                    expected.replace('\n', "\r\n")
+                } else {
+                    expected.clone()
+                };
+                let output = remove_container(&input, "db").unwrap().unwrap();
+                assert_eq!(output, wanted);
+                let parsed =
+                    crate::ComposeFile::parse(&output, "/tmp/worker-compose.yaml").unwrap();
+                assert_eq!(parsed.containers["after"].start_after, ["before"]);
+                let original: Value = serde_yaml::from_str(&input).unwrap();
+                let current: Value = serde_yaml::from_str(&output).unwrap();
+                for name in ["before", "api"] {
+                    assert_eq!(
+                        current["containers"][name]["config_override"],
+                        original["containers"][name]["config_override"]
+                    );
+                }
+            }
+        }
     }
 
     #[test]
