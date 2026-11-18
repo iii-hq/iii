@@ -25,8 +25,8 @@
     "dev:website": "turbo run dev --filter=iii-website"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.6",
-    "tsx": "^4.21.0",
+    "@biomejs/biome": "^2.6.8",
+    "tsx": "^4.23.15",
     "turbo": "^2.9.14",
     "yaml": "^2.9.1"
   },
