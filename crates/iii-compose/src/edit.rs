@@ -668,8 +668,8 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
     }))
 }
 
-/// `lines` with the one-line entry `key: {...}` of the `containers:` mapping written as a block,
-/// its fields in the order they were written. `None` when there is no such entry.
+/// Expand a flow-mapping entry without serializing its values: anchors, aliases,
+/// scalar spelling and nested flow collections stay connected to the document.
 fn inline_entry_as_block(
     lines: &[&str],
     containers: &Block,
@@ -681,37 +681,188 @@ fn inline_entry_as_block(
             .strip_prefix(indent)
             .filter(|body| !body.starts_with(char::is_whitespace))
             .and_then(|body| body.split_once(':'))
-            .filter(|(_, value)| {
-                let value = without_comment(value).trim();
-                value.starts_with('{') && value.ends_with('}')
-            })
             .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
             .is_some_and(|name| name == key)
     }) else {
         return Ok(None);
     };
-    let (name, value) = lines[at]
+    // Parse the complete document, not a detached value whose aliases would
+    // have no anchor definitions. Also reject duplicate/invalid input first.
+    let original: Value =
+        serde_yaml::from_str(&lines.join("\n")).map_err(|err| invalid(key, &err.to_string()))?;
+    if !original
+        .get("containers")
+        .and_then(|v| v.get(key))
+        .is_some_and(Value::is_mapping)
+    {
+        return Err(invalid(key, "expected a container mapping"));
+    }
+    let span = flow_span(&lines[..containers.end], at)
+        .ok_or_else(|| invalid(key, "expected a flow mapping to normalize"))?;
+    let (open_row, open_column) = span.open;
+    let (close_row, close_column) = span.close;
+    if !lines[open_row][open_column..].starts_with('{') {
+        return Err(invalid(key, "expected a flow mapping to normalize"));
+    }
+    let (name, _) = lines[at]
         .strip_prefix(indent)
         .and_then(|body| body.split_once(':'))
-        .unwrap_or_default();
-    let data = without_comment(value);
-    let fields: Mapping =
-        serde_yaml::from_str(data).map_err(|err| invalid(key, &err.to_string()))?;
-    let inner = format!("{indent}{indent}");
-    let mut out: Vec<String> = lines[..at].iter().map(|line| (*line).to_string()).collect();
-    // The entry's comment stays on its line.
-    out.push(format!("{indent}{name}:{}", trailing_comment(value, data)));
-    for (field, value) in &fields {
-        if let Some(field) = field.as_str() {
-            out.extend(
-                render_field(field, value, &inner)?
-                    .lines()
-                    .map(str::to_string),
-            );
+        .ok_or_else(|| invalid(key, "missing container key"))?;
+    let colon = lines[at]
+        .find(':')
+        .ok_or_else(|| invalid(key, "missing container key"))?;
+    let mut properties = Vec::new();
+    let mut comments = Vec::new();
+    for (row, line) in lines.iter().enumerate().take(open_row + 1).skip(at) {
+        let start = if row == at { colon + 1 } else { 0 };
+        let end = if row == open_row {
+            open_column
+        } else {
+            line.len()
+        };
+        let prefix = &line[start..end];
+        let data = without_comment(prefix);
+        if !data.trim().is_empty() {
+            properties.push(data.trim());
+        }
+        let comment = prefix[data.len()..].trim();
+        if !comment.is_empty() {
+            comments.push(comment);
         }
     }
-    out.extend(lines[at + 1..].iter().map(|line| (*line).to_string()));
+    let properties = properties.join(" ");
+    if !opens_block(&properties) {
+        return Err(invalid(key, "invalid flow mapping properties"));
+    }
+    let mut body = Vec::new();
+    for (row, line) in lines.iter().enumerate().take(close_row + 1).skip(open_row) {
+        let start = if row == open_row { open_column + 1 } else { 0 };
+        let end = if row == close_row {
+            close_column
+        } else {
+            line.len()
+        };
+        body.push(&line[start..end]);
+    }
+    let body = body.join("\n");
+    let inner = format!("{indent}{indent}");
+    let mut out: Vec<String> = lines[..at].iter().map(|line| (*line).to_string()).collect();
+    let properties = if properties.is_empty() {
+        properties
+    } else {
+        format!(" {properties}")
+    };
+    out.push(format!(
+        "{indent}{name}:{properties}{}",
+        trailing_comment(lines[close_row], &lines[close_row][..close_column + 1])
+    ));
+    out.extend(
+        comments
+            .into_iter()
+            .map(|comment| format!("{inner}{comment}")),
+    );
+    for field in
+        flow_mapping_parts(&body).ok_or_else(|| invalid(key, "invalid flow mapping span"))?
+    {
+        let mut leading = true;
+        for line in field.lines() {
+            let trimmed = line.trim_start();
+            // Comments between pairs are retained. Only the first actual field
+            // line is aligned; continuation text is never folded or reserialized.
+            if leading {
+                if trimmed.is_empty() {
+                    continue;
+                }
+                out.push(format!("{inner}{trimmed}"));
+                if !trimmed.starts_with('#') {
+                    leading = false;
+                }
+            } else {
+                out.push(format!("{inner}{line}"));
+            }
+        }
+    }
+    out.extend(
+        lines[close_row + 1..]
+            .iter()
+            .map(|line| (*line).to_string()),
+    );
+    // This edit changes presentation only. Refuse rather than silently changing
+    // scalar folding, anchor resolution, tags or any unrelated document value.
+    let normalized: Value =
+        serde_yaml::from_str(&out.join("\n")).map_err(|err| invalid(key, &err.to_string()))?;
+    if normalized != original {
+        return Err(invalid(
+            key,
+            "flow mapping normalization changed document values",
+        ));
+    }
     Ok(Some(out))
+}
+
+/// Split only outer mapping pairs, retaining raw field text and nested syntax.
+/// Semantic validation belongs to the full-document YAML parser above.
+fn flow_mapping_parts(body: &str) -> Option<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut delimiters = Vec::new();
+    let mut quote = None;
+    let mut comment = false;
+    let mut previous: Option<char> = None;
+    let mut chars = body.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if comment {
+            if c == '\n' {
+                comment = false;
+            }
+            previous = Some(c);
+            continue;
+        }
+        match quote {
+            Some('"') => match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => quote = None,
+                _ => {}
+            },
+            Some(_) => {
+                if c == '\'' {
+                    if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        chars.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+            }
+            None => match c {
+                '#' if previous.is_none_or(|p| p.is_whitespace() || ",[{".contains(p)) => {
+                    comment = true
+                }
+                '\'' | '"' if previous.is_none_or(|p| p.is_whitespace() || ":[{,".contains(p)) => {
+                    quote = Some(c)
+                }
+                '[' => delimiters.push(']'),
+                '{' => delimiters.push('}'),
+                ']' | '}' => {
+                    if delimiters.pop() != Some(c) {
+                        return None;
+                    }
+                }
+                ',' if delimiters.is_empty() => {
+                    parts.push(&body[start..at]);
+                    start = at + 1;
+                }
+                _ => {}
+            },
+        }
+        previous = Some(c);
+    }
+    if quote.is_some() || !delimiters.is_empty() {
+        return None;
+    }
+    parts.push(&body[start..]);
+    Some(parts)
 }
 
 /// The comment `line` carries after `data`, its part without the comment, as ` # ...`; empty when
@@ -1145,7 +1296,7 @@ fn find_entry(lines: &[&str], containers: &Block, indent: &str, key: &str) -> Op
             .strip_prefix(indent)
             .filter(|body| !body.starts_with(char::is_whitespace))
             .and_then(|body| body.split_once(':'))
-            .filter(|(_, value)| value.trim().is_empty() || value.trim_start().starts_with('#'))
+            .filter(|(_, value)| opens_block(without_comment(value).trim()))
             .and_then(|(name, _)| serde_yaml::from_str::<String>(name).ok())
             .is_some_and(|name| name == key)
     })?;
@@ -1540,6 +1691,70 @@ mod tests {
         assert_eq!(document["containers"]["api"], request);
         crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
         assert_eq!(upsert_container(&out, &worker).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn flow_mapping_update_preserves_external_and_exported_anchors() {
+        for fields in [
+            "{worker: package://api.workers.iii.dev/api, version: '1.0.0', config_override: *defaults, environment: &env {MODE: 'on'}}",
+            "{\n    worker: package://api.workers.iii.dev/api,\n    version: '1.0.0', # old release\n    config_override: *defaults,\n    environment: &env {MODE: 'on'},\n  }",
+        ] {
+            let text = format!(
+                "containers:\n  defaults:\n    worker: path://./defaults\n    config_override: &defaults {{version: nested}}\n  api: &api {fields} # api note\n  consumer:\n    worker: path://./consumer\n    environment: *env\n    config_override: *api\n"
+            );
+            assert_eq!(
+                upsert_container(&text, &parse_worker("api@1.0.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+            let out = changed(&text, &parse_worker("api@1.1.0").unwrap());
+            crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+            assert!(out.contains("  api: &api # api note\n"), "{out}");
+            assert!(out.contains("config_override: *defaults"), "{out}");
+            assert!(out.contains("environment: &env {MODE: 'on'}"), "{out}");
+            assert!(out.ends_with("  consumer:\n    worker: path://./consumer\n    environment: *env\n    config_override: *api\n"));
+            let parsed: Value = serde_yaml::from_str(&out).unwrap();
+            assert_eq!(parsed["containers"]["api"]["version"], "1.1.0");
+            assert_eq!(
+                parsed["containers"]["consumer"]["config_override"]["version"],
+                "1.1.0"
+            );
+            let modified: Value =
+                serde_yaml::from_str(&out.replace("version: nested", "version: changed")).unwrap();
+            assert_eq!(
+                modified["containers"]["api"]["config_override"]["version"],
+                "changed"
+            );
+            assert_eq!(
+                upsert_container(&out, &parse_worker("api@1.1.0").unwrap()).unwrap(),
+                Outcome::Unchanged
+            );
+        }
+    }
+
+    #[test]
+    fn multiline_flow_mapping_update_preserves_nested_values_comments_and_neighbors() {
+        let text = "# keep\ncontainers:\n  tool: {\n    worker: package://api.workers.iii.dev/tool, # source\n    version: '1.0.0',\n    config_override: {message: 'á, # } [ it''s', nested: [1, {key: value}], url: https://example.test/#fragment},\n  } # tool note\n  local: {worker: path://.}\n";
+        let before: Value = serde_yaml::from_str(text).unwrap();
+        assert_eq!(
+            upsert_container(text, &parse_worker("tool@1.0.0").unwrap()).unwrap(),
+            Outcome::Unchanged
+        );
+        let out = changed(text, &parse_worker("tool@1.1.0").unwrap());
+        let after: Value = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(after["containers"].as_mapping().unwrap().len(), 2);
+        assert_eq!(
+            after["containers"]["tool"]["config_override"],
+            before["containers"]["tool"]["config_override"]
+        );
+        assert_eq!(after["containers"]["tool"]["version"], "1.1.0");
+        assert!(out.starts_with("# keep\ncontainers:\n"));
+        assert!(out.ends_with("  local: {worker: path://.}\n"));
+        assert!(out.contains("# source") && out.contains("# tool note"));
+        crate::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            upsert_container(&out, &parse_worker("tool@1.1.0").unwrap()).unwrap(),
+            Outcome::Unchanged
+        );
     }
 
     #[test]
