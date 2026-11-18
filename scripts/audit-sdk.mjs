@@ -8,7 +8,14 @@ import { validatePicomatchPatches } from './security-patches.mjs'
 
 // Report locally mitigated versions only after verifying reviewed digests,
 // patch files and lockfile snapshots. Keep the upstream advisory visible.
-const locallyPatched = validatePicomatchPatches()
+let locallyPatched = new Set()
+let integrityError
+try {
+  locallyPatched = validatePicomatchPatches()
+} catch (error) {
+  integrityError = error
+  console.error(`Patch integrity check failed: ${error.message}`)
+}
 
 let out
 try {
@@ -53,6 +60,8 @@ if (known.size) {
 if (sdk.size) {
   console.error(`\n${sdk.size} advisory path(s) reach the SDK packages:`)
   for (const line of [...sdk].sort()) console.error(`  ${line}`)
+}
+if (integrityError || sdk.size) {
   process.exit(1)
 }
 console.log('\nSDK packages: no unmitigated advisories.')

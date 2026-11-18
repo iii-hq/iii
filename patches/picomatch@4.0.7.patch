@@ -1,8 +1,8 @@
 diff --git a/lib/parse.js b/lib/parse.js
-index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..7a791711a62f4245175e165fed4793d867bb6e78 100644
+index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..6e73c25dcae5ccad2b6084acd3aff7232b4782d8 100644
 --- a/lib/parse.js
 +++ b/lib/parse.js
-@@ -541,12 +541,24 @@ const parse = (input, options) => {
+@@ -541,12 +541,30 @@ const parse = (input, options) => {
      const body = input.slice(token.startIndex + 2, state.index);
      const analysis = analyzeRepeatedExtglob(body, opts);
  
@@ -10,13 +10,19 @@ index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..7a791711a62f4245175e165fed4793d8
 +    // GHSA-fc5q-39xc-vjpf: inspect parsed tokens, not raw characters.
 +    // Brackets (including POSIX classes), quotes and escaped/literal pluses
 +    // are already classified by the parser and must not become quantifiers.
-+    const hasUnboundedQuantifier = opts.maxExtglobRecursion !== false &&
-+      tokens.slice(token.tokensIndex + 2).some(tok =>
-+        tok.unbounded === true ||
-+        ((tok.type === 'star' || tok.type === 'globstar') && Boolean(tok.output)) ||
-+        (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) ||
-+        (tok.type === 'paren' && tok.extglob && /[+*]\)?$/.test(tok.output || ''))
-+      );
++    let hasUnboundedQuantifier = false;
++    if ((token.type === 'plus' || token.type === 'star') && opts.maxExtglobRecursion !== false) {
++      for (let i = token.tokensIndex + 2; i < tokens.length; i++) {
++        const tok = tokens[i];
++        if (tok.unbounded === true ||
++          ((tok.type === 'star' || tok.type === 'globstar') && Boolean(tok.output)) ||
++          (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) ||
++          (tok.type === 'paren' && tok.extglob && /[+*]\)?$/.test(tok.output || ''))) {
++          hasUnboundedQuantifier = true;
++          break;
++        }
++      }
++    }
 +
 +    if ((token.type === 'plus' || token.type === 'star') && (analysis.risky || hasUnboundedQuantifier)) {
        const safeOutput = analysis.safeOutput
@@ -28,3 +34,11 @@ index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..7a791711a62f4245175e165fed4793d8
        open.type = 'text';
        open.value = literal;
        open.output = safeOutput || utils.escapeRegex(literal);
+@@ -555,6 +573,7 @@ const parse = (input, options) => {
+         tokens[i].value = '';
+         tokens[i].output = '';
+         delete tokens[i].suffix;
++        delete tokens[i].unbounded;
+       }
+ 
+       state.output = token.output + open.output;

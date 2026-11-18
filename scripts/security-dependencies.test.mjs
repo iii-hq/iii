@@ -5,6 +5,8 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { runInNewContext } from 'node:vm'
+import { parse, stringify } from 'yaml'
 import { digest, reviewedPicomatch, validatePicomatchPatches } from './security-patches.mjs'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
@@ -25,6 +27,8 @@ test('patch integrity accepts CRLF but rejects unreviewed patches and snapshots'
   const lock = readFileSync(path.join(root, 'pnpm-lock.yaml'), 'utf8')
   const readPatch = name => readFileSync(path.join(root, name), 'utf8')
   assert.deepEqual([...validatePicomatchPatches()], ['2.3.2', '4.0.7'])
+  const quoted = stringify(parse(lock), { defaultKeyType: 'QUOTE_SINGLE', sortMapEntries: true })
+  assert.equal(validatePicomatchPatches({ lock: quoted }).size, 2)
   assert.equal(validatePicomatchPatches({
     lock: lock.replace(/\r?\n/g, '\r\n'),
     readPatch: name => readPatch(name).replace(/\r?\n/g, '\r\n'),
@@ -36,8 +40,10 @@ test('patch integrity accepts CRLF but rejects unreviewed patches and snapshots'
     lock: lock.replaceAll(original, changedHash),
     readPatch: name => name.includes('4.0.7') ? changed(name) : readPatch(name),
   }), /Unreviewed/)
+  const unpatched = parse(lock)
+  unpatched.snapshots['picomatch@4.0.7'] = {}
   assert.throws(() => validatePicomatchPatches({
-    lock: `${lock}\n  picomatch@4.0.7: {}\n`,
+    lock: stringify(unpatched),
   }), /Unreviewed/)
   assert.throws(() => validatePicomatchPatches({
     lock: lock.replace(original, '0'.repeat(64)),
@@ -70,6 +76,16 @@ for (const [version, [importer, chain]] of Object.entries(picomatchChains)) {
         assert.equal(regex.test('a'.repeat(48) + '/'), false, pattern);
       }
       assert.equal(pm.isMatch('+a+a', '+(+a)'), true);
+      assert.equal(pm.isMatch('item-+(+(*(a)))', '+(item-+(+(*(a))))'), true);
+      assert.equal(pm.makeRe('a'.repeat(64), { maxLength: 64 }).test('a'.repeat(64)), true);
+      assert.throws(() => pm.makeRe('a'.repeat(65), { maxLength: 64 }), /maximum allowed length/);
+      for (const depth of [1, 2, 3, 4, 64]) {
+        const pattern = '+('.repeat(depth) + 'a' + ')'.repeat(depth);
+        const regex = pm.makeRe(pattern, { maxExtglobRecursion: 1 });
+        assert.equal(regex.test('aaa'), depth === 1);
+        if (depth > 1) assert.equal(regex.test(pattern), true);
+      }
+      assert.equal(pm.isMatch('a', '?(a)'), true);
       assert.equal(pm.isMatch('1+2', '+([[:digit:]+])', { posix: true, literalBrackets: false }), true);
       assert.equal(pm.isMatch('src/index.ts', '**/*.ts'), true);
       assert.equal(pm.isMatch('foofoo', '+(foo|bar)'), true);
@@ -104,4 +120,36 @@ test('KaTeX renders math and does not trust unsafe HTML commands', () => {
     strict: 'ignore',
   })
   assert.doesNotMatch(html, /href="javascript:/)
+})
+
+test('audit reports all advisories and fails closed when patch integrity fails', () => {
+  const code = readFileSync(path.join(root, 'scripts/audit-sdk.mjs'), 'utf8')
+    .replace(/^#!.*\n/, '')
+    .replace(/^import .*\n/gm, '')
+  const advisories = {
+    picomatch: {
+      module_name: 'picomatch', severity: 'high',
+      github_advisory_id: 'GHSA-fc5q-39xc-vjpf',
+      findings: [{ version: '4.0.7', paths: ['sdk__packages__node__helpers>tsdown>picomatch'] }],
+    },
+    other: {
+      module_name: 'another-package', severity: 'critical',
+      github_advisory_id: 'GHSA-other',
+      findings: [{ version: '1.0.0', paths: ['sdk__packages__node__iii>another-package'] }],
+    },
+  }
+  let audited = false
+  let exitCode = 0
+  const messages = []
+  runInNewContext(code, {
+    validatePicomatchPatches() { throw new Error('invalid digest') },
+    execFileSync() { audited = true; return JSON.stringify({ advisories }) },
+    console: { log: message => messages.push(message), error: message => messages.push(message) },
+    process: { exit: code => { exitCode = code } },
+  })
+  assert.equal(audited, true)
+  assert.equal(exitCode, 1)
+  assert.match(messages.join('\n'), /invalid digest/)
+  assert.match(messages.join('\n'), /another-package/)
+  assert.match(messages.join('\n'), /picomatch/)
 })
