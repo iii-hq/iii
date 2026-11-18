@@ -17,7 +17,7 @@ export const links = {
   privacy: '/privacy-policy',
 } as const
 
-export const installCommand = 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh'
+export const installCommand = 'curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh'
 
 const askPrompt =
   'Read https://iii.dev/llms.txt and explain iii to me: its one primitive Function, as well as call(), observe(), and Workers, what it replaces in a typical backend, and how I would install it and build a first service.'

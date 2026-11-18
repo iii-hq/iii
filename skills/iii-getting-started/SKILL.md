@@ -15,7 +15,7 @@ worker runs a function with `call`, and `iii.observe(a, b)` means "when `a` runs
 ## Step 1: Install the Engine
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
 Verify it installed:

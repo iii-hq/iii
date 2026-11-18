@@ -24,7 +24,7 @@ export const hero = {
         steps: [
           {
             note: 'Install the engine. Press y at the prompt and the installer sets up the harness for you.',
-            command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh',
+            command: 'curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh',
           },
           { note: 'Then open http://127.0.0.1:3113' },
         ],
@@ -35,7 +35,7 @@ export const hero = {
         steps: [
           {
             note: 'Docker builds, CI jobs and scripts: the install only, no questions asked.',
-            command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive',
+            command: 'curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --non-interactive',
           },
         ],
       },
