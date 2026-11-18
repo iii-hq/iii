@@ -55,6 +55,12 @@ struct LockedContainer {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     vm: bool,
     resolved: ResolvedPackage,
+    /// Present only for an explicitly validated v1 request-to-package binding.
+    /// Old same-name locks omit it. New readers retain v1 lock compatibility; old
+    /// readers fail closed on this optional field rather than guessing a basename.
+    /// It is provenance, not authentication of a registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_binding: Option<crate::registry::ResolveRoot>,
 }
 
 impl LockedContainer {
@@ -96,6 +102,7 @@ pub struct PreparedLock {
 impl PreparedLock {
     /// Writes the lock atomically when its serialized state changed.
     pub fn write_if_changed(&self) -> Result<()> {
+        validate(&self.path, &self.lock)?;
         if !self.changed {
             return Ok(());
         }
@@ -195,6 +202,7 @@ impl PreparedLock {
 
     /// Acquires every resolved artifact with the Compose concurrency limit.
     pub(crate) async fn install(&mut self, cache_root: &Path) -> Result<()> {
+        validate(&self.path, &self.lock)?;
         let requests = self
             .lock
             .containers
@@ -400,12 +408,12 @@ pub(crate) async fn prepare_metadata_with_versions(
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
 ) -> Result<PreparedLock> {
-    prepare_metadata_with_resolver(
+    prepare_metadata_with_selections(
         compose,
         force,
         selected_versions,
         |key, reference, range, platform| async move {
-            crate::registry::resolve_package_on(&key, &reference, &range, platform).await
+            crate::registry::resolve_selection_on(&key, &reference, &range, platform).await
         },
     )
     .await
@@ -426,7 +434,7 @@ pub(crate) async fn prepare_metadata_reusing(
     // Selected versions belong to the in-flight operation, not the older lock on disk.
     let mut force = force.clone();
     force.extend(selected_versions.keys().cloned());
-    prepare_metadata_with_resolver(
+    prepare_metadata_with_selections(
         compose,
         &force,
         selected_versions,
@@ -440,12 +448,15 @@ pub(crate) async fn prepare_metadata_reusing(
                         && entry.resolved.version == range
                         && entry.vm == vm_entry(platform, &entry.resolved)
                 })
-                .map(|entry| entry.resolved.clone());
+                .map(|entry| crate::registry::Selection {
+                    package: entry.resolved.clone(),
+                    root_binding: entry.root_binding.clone(),
+                });
             async move {
                 match reused {
                     Some(resolved) => Ok(resolved),
                     None => {
-                        crate::registry::resolve_package_on(&key, &reference, &range, platform)
+                        crate::registry::resolve_selection_on(&key, &reference, &range, platform)
                             .await
                     }
                 }
@@ -455,7 +466,96 @@ pub(crate) async fn prepare_metadata_reusing(
     .await
 }
 
+/// Consume the exact graph metadata selected by the dependency planner. An existing
+/// opaque dependency may need an exact lookup only to obtain its missing provenance;
+/// its identity/content must match, and its planned package/graph are never replaced.
+pub(crate) async fn prepare_metadata_with_plan(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    versions: &BTreeMap<String, String>,
+    selections: &BTreeMap<String, crate::registry::Selection>,
+) -> Result<PreparedLock> {
+    let mut force = force.clone();
+    force.extend(versions.keys().cloned());
+    prepare_metadata_with_selections(
+        compose,
+        &force,
+        versions,
+        |key, reference, range, platform| {
+            let selected = selections.get(&key).cloned();
+            async move {
+                match selected {
+                    Some(mut selection) if selection.package.version == range => {
+                        let (registry, name) = crate::registry::split_reference(&reference);
+                        if selection.root_binding.is_none() && name != selection.package.name {
+                            // An existing opaque dependency keeps its declared reference,
+                            // but its node in another root's graph has no request echo.
+                            // Obtain that proof without replacing the planned package/graph.
+                            if selection.package.registry != registry {
+                                return Err(ComposeError::PackageNotResolved {
+                                    container: key, name: reference, range,
+                                    message: "the planned package authority differs from the preserved reference".into(),
+                                });
+                            }
+                            let proven = crate::registry::resolve_selection_on(
+                                &key, &reference, &range, platform,
+                            ).await?;
+                            if !selection.same_package(&proven)
+                                || !proven.root_binding.as_ref().is_some_and(|binding| {
+                                    binding.validates_lock(&name, &range, &proven.package)
+                                })
+                            {
+                                return Err(ComposeError::PackageNotResolved {
+                                    container: key, name: reference, range,
+                                    message: "the preserved reference resolves to different package metadata or lacks a valid root binding".into(),
+                                });
+                            }
+                            selection.root_binding = proven.root_binding;
+                        }
+                        Ok(selection)
+                    }
+                    Some(_) => Err(ComposeError::PackageNotResolved {
+                        container: key,
+                        name: reference,
+                        range,
+                        message: "the planned package version differs from the lock selection"
+                            .into(),
+                    }),
+                    None => {
+                        crate::registry::resolve_selection_on(&key, &reference, &range, platform)
+                            .await
+                    }
+                }
+            }
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn prepare_metadata_with_resolver<F, Fut>(
+    compose: &mut ComposeFile,
+    force: &BTreeSet<String>,
+    versions: &BTreeMap<String, String>,
+    resolve: F,
+) -> Result<PreparedLock>
+where
+    F: Fn(String, String, String, Platform) -> Fut,
+    Fut: std::future::Future<Output = Result<ResolvedPackage>>,
+{
+    prepare_metadata_with_selections(
+        compose,
+        force,
+        versions,
+        |key, reference, range, platform| {
+            let future = resolve(key, reference, range, platform);
+            async move { future.await.map(Into::into) }
+        },
+    )
+    .await
+}
+
+async fn prepare_metadata_with_selections<F, Fut>(
     compose: &mut ComposeFile,
     force: &BTreeSet<String>,
     selected_versions: &BTreeMap<String, String>,
@@ -463,7 +563,7 @@ async fn prepare_metadata_with_resolver<F, Fut>(
 ) -> Result<PreparedLock>
 where
     F: Fn(String, String, String, Platform) -> Fut,
-    Fut: std::future::Future<Output = Result<ResolvedPackage>>,
+    Fut: std::future::Future<Output = Result<crate::registry::Selection>>,
 {
     let path = lock_path(&compose.path);
     let previous = load(&path)?;
@@ -488,8 +588,10 @@ where
                     Some(entry) => entry.clone(),
                     None => {
                         let range = selected_versions.get(&key).unwrap_or(&requested).clone();
-                        let resolved = resolve(key.clone(), reference, range, platform).await?;
+                        let selection = resolve(key.clone(), reference, range, platform).await?;
+                        let resolved = selection.package;
                         LockedContainer {
+                            root_binding: selection.root_binding,
                             worker,
                             requested,
                             vm: vm_entry(platform, &resolved),
@@ -512,9 +614,6 @@ where
             .is_none_or(|old| runtime_entry_changed(old, &entry))
         {
             package_changes.insert(key.clone());
-        }
-        if let Some(container) = compose.containers.get_mut(&key) {
-            container.resolved_package = Some(entry.resolved.clone());
         }
         containers.insert(key, entry);
     }
@@ -542,6 +641,8 @@ where
         containers,
         graphs,
     };
+    validate(&path, &lock)?;
+    attach_entries(&lock, compose);
     let changed = previous.as_ref() != Some(&lock);
     Ok(PreparedLock {
         path,
@@ -646,14 +747,19 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
                 "container '{container}' worker must start with package://"
             )));
         };
-        let expected_name = reference.rsplit('/').next().unwrap_or(reference);
-        let (expected_registry, _) = crate::registry::split_reference(reference);
+        let (expected_registry, expected_name) = crate::registry::split_reference(reference);
         if entry.requested.trim().is_empty() {
             return Err(invalid(format!(
                 "container '{container}' has an empty requested version"
             )));
         }
-        if entry.resolved.name != expected_name {
+        if let Some(binding) = &entry.root_binding {
+            if !binding.validates_lock(&expected_name, &entry.requested, &entry.resolved) {
+                return Err(invalid(format!(
+                    "container '{container}' has an invalid requested-root binding"
+                )));
+            }
+        } else if entry.resolved.name != expected_name {
             return Err(invalid(format!(
                 "container '{container}' resolved '{}', expected '{expected_name}'",
                 entry.resolved.name
@@ -776,6 +882,7 @@ mod tests {
             containers: BTreeMap::from([(
                 "state".to_string(),
                 LockedContainer {
+                    root_binding: None,
                     worker: "package://api.workers.iii.dev/state".to_string(),
                     requested: "next".to_string(),
                     vm: false,
@@ -798,6 +905,177 @@ mod tests {
             )]),
             graphs: BTreeMap::from([("state".to_string(), BTreeSet::from(["state".to_string()]))]),
         }
+    }
+
+    fn bound_lock() -> ComposeLock {
+        let mut lock = lock();
+        let entry = lock.containers.get_mut("state").unwrap();
+        entry.worker = "package://registry.example.test/team/tool".into();
+        entry.requested = "next".into();
+        entry.resolved.registry = "https://registry.example.test".into();
+        entry.resolved.name = "tool-linux".into();
+        entry.resolved.version = "1.2.3".into();
+        entry.root_binding = Some(
+            serde_json::from_value(serde_json::json!({
+                "schema":1, "requested":{"worker":"team/tool","version":"next"},
+                "name":"tool-linux", "version":"1.2.3"
+            }))
+            .unwrap(),
+        );
+        lock
+    }
+
+    #[test]
+    fn bound_root_lock_roundtrips_and_legacy_same_name_locks_stay_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        for lock in [lock(), bound_lock()] {
+            validate(&path, &lock).unwrap();
+            write_atomically(&path, &serde_yaml::to_string(&lock).unwrap()).unwrap();
+            assert_eq!(load(&path).unwrap(), Some(lock));
+        }
+    }
+
+    #[test]
+    fn forged_or_inconsistent_root_bindings_are_refused_on_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        let original = serde_json::to_value(bound_lock()).unwrap();
+        for (pointer, value) in [
+            (
+                "/containers/state/root_binding/schema",
+                serde_json::json!(2),
+            ),
+            (
+                "/containers/state/root_binding/requested/worker",
+                serde_json::json!("tool"),
+            ),
+            (
+                "/containers/state/root_binding/requested/version",
+                serde_json::json!("other-tag"),
+            ),
+            (
+                "/containers/state/root_binding/name",
+                serde_json::json!("tool"),
+            ),
+            (
+                "/containers/state/root_binding/version",
+                serde_json::json!("1.2.4"),
+            ),
+            (
+                "/containers/state/resolved/registry",
+                serde_json::json!("https://other.example"),
+            ),
+            (
+                "/containers/state/resolved/alias_of",
+                serde_json::json!("../escape"),
+            ),
+            ("/containers/state/requested", serde_json::json!("1.2.4")),
+            (
+                "/containers/state/root_binding",
+                serde_json::json!({"name":"tool-linux","version":"1.2.3"}),
+            ),
+        ] {
+            let mut body = original.clone();
+            if pointer.ends_with("alias_of") {
+                body["containers"]["state"]["resolved"]["alias_of"] = value;
+            } else {
+                *body.pointer_mut(pointer).unwrap() = value;
+            }
+            std::fs::write(&path, serde_yaml::to_string(&body).unwrap()).unwrap();
+            let error = load(&path).unwrap_err();
+            assert_eq!(error.code(), "INVALID_COMPOSE_LOCK", "{pointer}: {error}");
+        }
+        let mut no_proof = bound_lock();
+        let entry = no_proof.containers.get_mut("state").unwrap();
+        entry.root_binding = None;
+        entry.resolved.alias_of = Some("tool".into());
+        assert!(
+            validate(&path, &no_proof).is_err(),
+            "alias cannot replace request provenance"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_candidate_is_refused_before_attach_write_or_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let mut compose = ComposeFile::parse(
+            "containers:\n  state: {worker: package://state, version: next}\n",
+            &path,
+        )
+        .unwrap();
+        let mut package = lock().containers.remove("state").unwrap().resolved;
+        package.name = "unrequested".into();
+        let error = prepare_metadata_with_resolver(
+            &mut compose,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            |_, _, _, _| std::future::ready(Ok(package.clone())),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error.code(), "INVALID_COMPOSE_LOCK");
+        assert!(compose.containers["state"].resolved_package.is_none());
+        assert!(!lock_path(&path).exists());
+        let invalid = PreparedLock {
+            path: lock_path(&path),
+            lock: bound_lock(),
+            existed: false,
+            changed: true,
+            package_changes: BTreeSet::new(),
+            install_statuses: BTreeMap::new(),
+        };
+        let mut invalid = invalid;
+        invalid
+            .lock
+            .containers
+            .get_mut("state")
+            .unwrap()
+            .root_binding = None;
+        assert_eq!(
+            invalid.write_if_changed().unwrap_err().code(),
+            "INVALID_COMPOSE_LOCK"
+        );
+        let cache = dir.path().join("must-not-be-created");
+        assert_eq!(
+            invalid.install(&cache).await.unwrap_err().code(),
+            "INVALID_COMPOSE_LOCK"
+        );
+        assert!(!cache.exists());
+        assert!(!lock_path(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn plan_handoff_rejects_a_changed_version_before_attach_or_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        let mut compose = ComposeFile::parse(
+            "containers:\n  state: {worker: package://registry.example.test/team/tool, version: next}\n", &path).unwrap();
+        let entry = bound_lock().containers.remove("state").unwrap();
+        let selections = BTreeMap::from([(
+            "state".into(),
+            crate::registry::Selection {
+                package: entry.resolved,
+                root_binding: entry.root_binding,
+            },
+        )]);
+        let versions = BTreeMap::from([("state".into(), "1.2.4".into())]);
+        let error =
+            prepare_metadata_with_plan(&mut compose, &BTreeSet::new(), &versions, &selections)
+                .await
+                .err()
+                .unwrap();
+        let ComposeError::PackageNotResolved { message, .. } = error else {
+            panic!("{error}")
+        };
+        assert_eq!(
+            message,
+            "the planned package version differs from the lock selection"
+        );
+        assert!(compose.containers["state"].resolved_package.is_none());
+        assert!(!lock_path(&path).exists());
     }
 
     #[test]

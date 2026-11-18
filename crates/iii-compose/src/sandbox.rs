@@ -1763,7 +1763,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A registry whose `/resolve` answers `sandbox-libkrun` 0.5.0 for this
+    /// A registry whose `/resolve` answers exact adapter pins, or latest 0.5.0 for this
     /// host, and serves `archive` as its artifact.
     pub(crate) async fn adapter_registry(archive: &[u8]) -> wiremock::MockServer {
         use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
@@ -1773,17 +1773,29 @@ pub(crate) mod tests {
             .and(matchers::body_partial_json(
                 serde_json::json!({ "worker": "sandbox-libkrun" }),
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "graph": [{
-                    "name": "sandbox-libkrun",
-                    "version": "0.5.0",
-                    "type": "binary",
-                    "binaries": { (crate::registry::host_targets()[0]): {
-                        "sha256": hex::encode(Sha256::digest(archive)),
-                        "url": format!("{}/artifact", server.uri()),
-                    }},
-                }]
-            })))
+            .respond_with({
+                let digest = hex::encode(Sha256::digest(archive));
+                let url = format!("{}/artifact", server.uri());
+                move |request: &wiremock::Request| {
+                    let request: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                    let version = match request["version"].as_str().unwrap() {
+                        "0.2.0" | "0.3.0" | "0.3.1" => request["version"].as_str().unwrap(),
+                        "0.5.0" | "^0.5" | "*" | "latest" => "0.5.0",
+                        selector => panic!("unexpected adapter selector: {selector}"),
+                    };
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "sandbox-libkrun",
+                        "version": version,
+                        "type": "binary",
+                        "binaries": { (crate::registry::host_targets()[0]): {
+                            "sha256": digest,
+                            "url": url,
+                        }},
+                    }]
+                        }))
+                }
+            })
             .mount(&server)
             .await;
         Mock::given(matchers::method("GET"))
@@ -2372,6 +2384,7 @@ pub(crate) mod tests {
             "sandbox-libkrun",
             BTreeSet::from(["sandbox-libkrun".to_string()]),
         );
+        assert_eq!(lock.resolved_version("sandbox-libkrun"), Some("0.2.0"));
         lock.write_if_changed().unwrap();
 
         // The last VM is gone: it stays.
@@ -2394,6 +2407,10 @@ pub(crate) mod tests {
                 .unwrap(),
             None
         );
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "operator pin must not be refreshed");
+        let request: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(request["version"], "0.2.0");
     }
 
     #[tokio::test]

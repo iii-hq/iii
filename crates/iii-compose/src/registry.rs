@@ -72,16 +72,18 @@ struct ResolveResponse {
     /// twice.
     #[serde(default)]
     edges: Vec<ResolvedEdge>,
-    /// Optional v1 request-to-node binding. Request text never becomes a path.
+    /// Legacy identity-only root or v1 request binding. Request text is never a path.
     #[serde(default)]
     root: Option<ResolveRoot>,
 }
 
 /// Explicit identity for registries whose request names are not package names.
-#[derive(Debug)]
-struct ResolveRoot {
-    schema: u32,
-    requested: RootRequest,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ResolveRoot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested: Option<RootRequest>,
     name: String,
     version: String,
 }
@@ -93,8 +95,10 @@ impl<'de> Deserialize<'de> for ResolveRoot {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Fields {
-            schema: u32,
-            requested: RootRequest,
+            #[serde(default, deserialize_with = "present_root_field")]
+            schema: Option<u32>,
+            #[serde(default, deserialize_with = "present_root_field")]
+            requested: Option<RootRequest>,
             name: String,
             version: String,
         }
@@ -104,6 +108,11 @@ impl<'de> Deserialize<'de> for ResolveRoot {
             name,
             version,
         } = deserialize_root_object(deserializer)?;
+        if schema.is_some() != requested.is_some() {
+            return Err(serde::de::Error::custom(
+                "root schema and requested must appear together",
+            ));
+        }
         Ok(Self {
             schema,
             requested,
@@ -113,7 +122,7 @@ impl<'de> Deserialize<'de> for ResolveRoot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RootRequest {
     worker: String,
     version: String,
@@ -131,6 +140,83 @@ impl<'de> Deserialize<'de> for RootRequest {
         }
         let Fields { worker, version } = deserialize_root_object(deserializer)?;
         Ok(Self { worker, version })
+    }
+}
+
+// Missing legacy fields are permitted; explicit null is not a downgrade to legacy.
+fn present_root_field<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl ResolveRoot {
+    // Locks may come from the original selector or an exact-version lookup. An
+    // unpinned `*` plan is written as its selected exact version by the editor.
+    // The chosen registry remains the trust boundary; this is not a signature.
+    pub(crate) fn validates_lock(
+        &self,
+        name: &str,
+        requested: &str,
+        package: &ResolvedPackage,
+    ) -> bool {
+        self.schema == Some(1)
+            && self.requested.as_ref().is_some_and(|echo| {
+                echo.worker == name
+                    && (echo.version == requested
+                        || echo.version == package.version
+                        || (echo.version == "*" && requested == package.version))
+            })
+            && self.name == package.name
+            && self.version == package.version
+            && check_selected_version(requested, &package.version).is_ok()
+            && self
+                .requested
+                .as_ref()
+                .is_some_and(|echo| check_selected_version(&echo.version, &package.version).is_ok())
+    }
+}
+
+/// A validated selection, including request provenance when names differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Selection {
+    pub package: ResolvedPackage,
+    pub root_binding: Option<ResolveRoot>,
+}
+
+impl Selection {
+    pub(crate) fn compatible_with(&self, other: &Self) -> bool {
+        self.same_package(other) && self.root_binding == other.root_binding
+    }
+
+    /// Download locations may rotate; package identity and every artifact digest may not.
+    /// Provenance is checked separately because an unbound dependency can acquire the
+    /// missing request echo only after this comparison succeeds.
+    pub(crate) fn same_package(&self, other: &Self) -> bool {
+        let (a, b) = (&self.package, &other.package);
+        a.registry == b.registry
+            && a.name == b.name
+            && a.alias_of == b.alias_of
+            && a.version == b.version
+            && a.kind == b.kind
+            && a.default_config == b.default_config
+            && a.artifacts.len() == b.artifacts.len()
+            && a.artifacts.iter().all(|(target, artifact)| {
+                b.artifacts
+                    .get(target)
+                    .is_some_and(|other| artifact.sha256.eq_ignore_ascii_case(&other.sha256))
+            })
+    }
+}
+
+impl From<ResolvedPackage> for Selection {
+    fn from(package: ResolvedPackage) -> Self {
+        Self {
+            package,
+            root_binding: None,
+        }
     }
 }
 
@@ -172,7 +258,10 @@ struct ResolvedEdge {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct ResolvedWorker {
+pub(crate) struct ResolvedWorker {
+    /// Attached only after validation, never deserialized from a graph worker.
+    #[serde(skip)]
+    root_binding: Option<ResolveRoot>,
     name: String,
     #[serde(default)]
     alias_of: Option<String>,
@@ -519,6 +608,17 @@ pub async fn resolve_package_on(
     version_range: &str,
     platform: Platform,
 ) -> Result<ResolvedPackage> {
+    resolve_selection_on(container, reference, version_range, platform)
+        .await
+        .map(|selection| selection.package)
+}
+
+pub(crate) async fn resolve_selection_on(
+    container: &str,
+    reference: &str,
+    version_range: &str,
+    platform: Platform,
+) -> Result<Selection> {
     let (registry, name) = split_reference(reference);
     #[cfg(test)]
     let endpoint = TEST_REGISTRY
@@ -534,7 +634,21 @@ pub async fn resolve_package_on(
         platform.targets(),
     )
     .await?;
-    into_resolved_package(container, &registry, worker, host_target())
+    selected_package(container, &registry, worker)
+}
+
+/// Convert only nodes that survived the planner's local dependency boundaries.
+pub(crate) fn selected_package(
+    container: &str,
+    registry: &str,
+    worker: ResolvedWorker,
+) -> Result<Selection> {
+    let root_binding = worker.root_binding.clone();
+    let package = into_resolved_package(container, registry, worker, host_target())?;
+    Ok(Selection {
+        package,
+        root_binding,
+    })
 }
 
 /// Converts and validates one registry response for lock persistence.
@@ -1228,6 +1342,9 @@ pub(crate) async fn resolve_node_on(
 /// A resolved graph: what to declare, and what each one needs.
 #[derive(Debug, Clone, Default)]
 pub struct Graph {
+    /// Validated wire nodes retained until local boundaries choose what to declare.
+    /// Their immutable metadata, not another selector lookup, prepares the lock.
+    pub(crate) selections: BTreeMap<String, ResolvedWorker>,
     /// Safe graph node selected by the validated request binding, never a container key.
     /// `None` is for caller-constructed graphs, which must contain the exact request name.
     pub root: Option<String>,
@@ -1290,9 +1407,23 @@ pub async fn resolve_graph_on(
         platform.targets(),
     )
     .await?;
-    let root = response.response.graph[response.root].name.clone();
-    let response = response.response;
+    let root_index = response.root;
+    let root = response.response.graph[root_index].name.clone();
+    let mut response = response.response;
+    if response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
+        response.graph[root_index].root_binding = response.root.clone();
+    }
+    let selections = response
+        .graph
+        .iter()
+        .map(|worker| (worker.name.clone(), worker.clone()))
+        .collect();
     Ok(Graph {
+        selections,
         root: Some(root),
         nodes: response.graph.into_iter().map(Node::from).collect(),
         edges: response
@@ -1810,6 +1941,32 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
     Ok(())
 }
 
+/// Tags are registry-owned; exact/range selectors must match the selected release.
+fn check_selected_version(range: &str, version: &str) -> std::result::Result<(), &'static str> {
+    if let Ok(exact) = semver::Version::parse(range) {
+        if semver::Version::parse(version).ok().as_ref() != Some(&exact) {
+            return Err("the registry root does not match the requested exact version");
+        }
+    } else if let Ok(requirement) = semver::VersionReq::parse(range) {
+        let selected = semver::Version::parse(version)
+            .map_err(|_| "the registry root is not a semantic version")?;
+        let selected = if requirement
+            .comparators
+            .iter()
+            .any(|comparator| !comparator.pre.is_empty())
+        {
+            selected
+        } else {
+            // Preserve ordinary-range prerelease compatibility, not explicit prerelease comparators.
+            semver::Version::new(selected.major, selected.minor, selected.patch)
+        };
+        if !requirement.matches(&selected) {
+            return Err("the registry root does not satisfy the requested version range");
+        }
+    }
+    Ok(())
+}
+
 /// Validate the request identity separately from every filesystem-facing identity.
 fn validate_resolution(
     container: &str,
@@ -1833,14 +1990,23 @@ fn validate_resolution(
     }
     let root_name = match &response.root {
         Some(root) => {
-            if root.schema != 1 {
+            if root.schema.is_some() && root.schema != Some(1) {
                 return Err(refuse(
                     "unsupported registry root binding schema; expected 1",
                 ));
             }
-            if root.requested.worker != name || root.requested.version != range {
+            if root
+                .requested
+                .as_ref()
+                .is_some_and(|echo| echo.worker != name || echo.version != range)
+            {
                 return Err(refuse(
                     "the registry root binding does not match the exact request",
+                ));
+            }
+            if root.schema.is_none() && root.name != name {
+                return Err(refuse(
+                    "the legacy registry root must match the exact requested name",
                 ));
             }
             if root.name != name && names.contains_key(name) {
@@ -1865,34 +2031,12 @@ fn validate_resolution(
             "the registry root binding version differs from its graph node",
         ));
     }
-    if let Ok(exact) = semver::Version::parse(range) {
-        if semver::Version::parse(&worker.version).ok().as_ref() != Some(&exact) {
-            return Err(refuse(
-                "the registry root does not match the requested exact version",
-            ));
-        }
-    } else if let Ok(requirement) = semver::VersionReq::parse(range) {
-        let selected = semver::Version::parse(&worker.version)
-            .map_err(|_| refuse("the registry root is not a semantic version"))?;
-        // An explicit prerelease comparator owns its full semver semantics, including
-        // conjunctions and prerelease exclusions. Only ordinary ranges retain the
-        // planner's prerelease-as-release compatibility. Tags remain registry-owned.
-        let selected = if requirement
-            .comparators
-            .iter()
-            .any(|comparator| !comparator.pre.is_empty())
-        {
-            selected
-        } else {
-            semver::Version::new(selected.major, selected.minor, selected.patch)
-        };
-        if !requirement.matches(&selected) {
-            return Err(refuse(
-                "the registry root does not satisfy the requested version range",
-            ));
-        }
-    }
-    if response.root.is_some() {
+    check_selected_version(range, &worker.version).map_err(refuse)?;
+    if response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
         // A binding names a closed graph, not an invitation to install unrelated nodes.
         let mut incoming = vec![0usize; response.graph.len()];
         let mut outgoing = vec![Vec::new(); response.graph.len()];
@@ -1964,12 +2108,29 @@ async fn resolve(
         })
         .ok()
         .flatten();
-    if let Some(worker) = remembered {
+    if let Some(worker) = remembered
+        && worker.root_binding.as_ref().is_none_or(|binding| {
+            binding
+                .requested
+                .as_ref()
+                .is_some_and(|echo| echo.worker == name && echo.version == version_range)
+        })
+    {
+        // A cached legacy release has no echoed selector. A bound response must
+        // not turn an earlier selector's echo into provenance for a new request.
         return Ok(worker);
     }
     let mut resolved =
         resolve_response(container, registry, name, version_range, candidates).await?;
-    let worker = resolved.response.graph.swap_remove(resolved.root);
+    let mut worker = resolved.response.graph.swap_remove(resolved.root);
+    if resolved
+        .response
+        .root
+        .as_ref()
+        .is_some_and(|root| root.schema.is_some())
+    {
+        worker.root_binding = resolved.response.root;
+    }
     let _ = RESOLVED.try_with(|resolved| {
         let mut resolved = resolved
             .lock()
