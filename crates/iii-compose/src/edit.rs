@@ -264,9 +264,23 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
             let declared_source = existing_fields
                 .get("worker")
                 .and_then(Value::as_str)
-                .map(parse_worker)
+                .map(|worker| {
+                    // Compose already supplies the container key. Unlike a new CLI
+                    // request, a declared path URI need not end in a directory name
+                    // (`path://.` and `path://..` are valid Compose sources).
+                    if let Some(path) = worker.strip_prefix("path://") {
+                        if path.is_empty() {
+                            return Err(invalid(worker, "the declared path is empty"));
+                        }
+                        Ok(Source::Path {
+                            path: path.to_string(),
+                        })
+                    } else {
+                        parse_worker(worker).map(|declared| declared.source)
+                    }
+                })
                 .transpose()?;
-            let declared = declared_source.as_ref().map(|worker| worker.source.kind());
+            let declared = declared_source.as_ref().map(Source::kind);
             let wanted_kind = new.source.kind();
             if let Some(declared) = declared
                 && declared != wanted_kind
@@ -285,8 +299,9 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
                 .map(str::to_string);
             let wanted = wanted_version(new);
             let mut changes = declaration_fields(new, Some(&existing_fields))?;
-            if declared_source.as_ref().is_some_and(|declared| {
-                match (&declared.source, &new.source) {
+            if declared_source
+                .as_ref()
+                .is_some_and(|declared| match (declared, &new.source) {
                     (
                         Source::Package {
                             reference: from, ..
@@ -295,8 +310,8 @@ pub fn upsert_container(text: &str, new: &NewContainer) -> Result<Outcome> {
                     ) => from == to,
                     (Source::Path { path: from }, Source::Path { path: to }) => from == to,
                     _ => false,
-                }
-            }) {
+                })
+            {
                 changes.remove("worker");
             }
             changes.retain(|key, value| existing_fields.get(key) != Some(value));
@@ -1380,6 +1395,97 @@ mod tests {
         let text = "containers:\n  tool: {worker: path://.}\n";
         let error = upsert_container(text, &parse_worker("tool@1.2.3").unwrap()).unwrap_err();
         assert_eq!(error.code(), "WORKER_SOURCE_CHANGED");
+    }
+
+    #[test]
+    fn existing_compose_paths_use_the_declared_key_in_both_flow_and_block_forms() {
+        for flow in [false, true] {
+            for path in [".", "..", "./workers/tool", "../workers/tool"] {
+                let text = if flow {
+                    format!("containers:\n  tool: {{worker: path://{path}}}\n")
+                } else {
+                    format!("containers:\n  tool:\n    worker: path://{path}\n")
+                };
+                let original = text.clone();
+                let compose = crate::ComposeFile::parse(&text, "/tmp/worker-compose.yaml").unwrap();
+                assert!(matches!(
+                    compose.containers["tool"].worker,
+                    crate::WorkerSource::Path { .. }
+                ));
+                let package = parse_worker("tool@1.2.3").unwrap();
+                let error = upsert_container(&text, &package).unwrap_err();
+                let ComposeError::WorkerSourceChanged {
+                    container,
+                    from,
+                    to,
+                    ..
+                } = error
+                else {
+                    panic!("{flow}/{path}: {error}")
+                };
+                assert_eq!(
+                    (container.as_str(), from.as_str(), to.as_str()),
+                    ("tool", "path", "package")
+                );
+                assert_eq!(text, original);
+                let mut same = NewContainer {
+                    key: "tool".into(),
+                    source: Source::Path { path: path.into() },
+                    start_after: vec![],
+                    fields: Mapping::new(),
+                };
+                assert_eq!(upsert_container(&text, &same).unwrap(), Outcome::Unchanged);
+                same.fields.insert("config_name".into(), "kept-path".into());
+                let Outcome::Replaced { text: edited, .. } =
+                    upsert_container(&text, &same).unwrap()
+                else {
+                    panic!("field edit must replace existing container")
+                };
+                let parsed =
+                    crate::ComposeFile::parse(&edited, "/tmp/worker-compose.yaml").unwrap();
+                let crate::WorkerSource::Path { declared, .. } = &parsed.containers["tool"].worker
+                else {
+                    panic!("path kind changed")
+                };
+                assert_eq!(declared, &format!("path://{path}"));
+                assert_eq!(
+                    parsed.containers["tool"].config_name.as_deref(),
+                    Some("kept-path")
+                );
+
+                let package_text = if flow {
+                    "containers:\n  tool: {worker: package://tool, version: 1.2.3}\n"
+                } else {
+                    "containers:\n  tool:\n    worker: package://tool\n    version: 1.2.3\n"
+                };
+                let error = upsert_container(package_text, &same).unwrap_err();
+                let ComposeError::WorkerSourceChanged { from, to, .. } = error else {
+                    panic!("{error}")
+                };
+                assert_eq!((from.as_str(), to.as_str()), ("package", "path"));
+            }
+        }
+    }
+
+    #[test]
+    fn declared_path_handling_does_not_relax_empty_uris_or_cli_key_inference() {
+        for spec in ["path://.", "path://..", "path://"] {
+            assert!(
+                parse_worker(spec).is_err(),
+                "a CLI request still needs an inferred key: {spec}"
+            );
+        }
+        let package = parse_worker("tool@1.2.3").unwrap();
+        for text in [
+            "containers:\n  tool: {worker: 'path://'}\n",
+            "containers:\n  tool:\n    worker: 'path://'\n",
+        ] {
+            assert!(crate::ComposeFile::parse(text, "/tmp/worker-compose.yaml").is_err());
+            assert_eq!(
+                upsert_container(text, &package).unwrap_err().code(),
+                "INVALID_WORKER_SPEC"
+            );
+        }
     }
 
     /// `compose::add` writes `runtime.base_image` as given, and the file reads it back.

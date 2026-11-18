@@ -1208,12 +1208,22 @@ mod tests {
                             }
                             if reverse { asked.reverse(); }
                             let server = MockServer::start().await;
-                            let binary = |name: &str, alias: Option<&str>| serde_json::json!({
-                                "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
-                                "binaries": {(registry::vm_targets()[0]): {
-                                    "sha256":"a".repeat(64), "url":"https://example.test/linux.tar.gz"
-                                }}
-                            });
+                            let binary = |name: &str, alias: Option<&str>| {
+                                // Explicit roots run in VMs; generated queue/shell
+                                // declarations have no VM scripts/runtime and run on Host.
+                                // Synthetic metadata only: no artifact is downloaded here.
+                                let binaries: BTreeMap<_, _> = registry::host_targets().iter()
+                                    .chain(registry::vm_targets().iter())
+                                    .map(|target| ((*target).to_string(), serde_json::json!({
+                                        "sha256":"a".repeat(64),
+                                        "url":format!("https://example.test/synthetic/{target}.tar.gz")
+                                    })))
+                                    .collect();
+                                serde_json::json!({
+                                    "name": name, "alias_of": alias, "version":"1.2.3", "type":"binary",
+                                    "binaries": binaries
+                                })
+                            };
                             let tool_graph = serde_json::json!({
                                 "root": {"schema": 1, "requested": {"worker": wanted_worker,
                                     "version": selector.unwrap_or("*")}, "name": "tool", "version": "1.2.3"},
@@ -1302,6 +1312,25 @@ mod tests {
                             assert_eq!(parsed.containers["tool"].version.as_deref(), Some(selector.unwrap_or("1.2.3")));
                             assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii sandbox run"));
                             assert_eq!(crate::vm_binary::platform(&parsed.containers["tool"]), Platform::Vm);
+                            // Placement is per declaration, not inherited along graph edges.
+                            for declaration in &planned.containers {
+                                let expected = if matches!(declaration.key.as_str(), "tool" | "app") {
+                                    Platform::Vm
+                                } else {
+                                    Platform::Host
+                                };
+                                let actual = crate::vm_binary::platform(&parsed.containers[&declaration.key]);
+                                assert_eq!(actual, expected, "{}", declaration.key);
+                                let selected = &planned.selections[&declaration.key].package;
+                                let target = actual.target(&selected.artifacts);
+                                assert!(selected.artifacts.contains_key(target), "{}: {target}", declaration.key);
+                                assert_eq!(selected.artifacts[target].sha256, "a".repeat(64));
+                            }
+                            assert_eq!(crate::vm_binary::platform(&parsed.containers["queue"]), Platform::Host);
+                            if copied_as_dependency {
+                                assert_eq!(crate::vm_binary::platform(&parsed.containers["app"]), Platform::Vm);
+                                assert_eq!(crate::vm_binary::platform(&parsed.containers["shell"]), Platform::Host);
+                            }
                             // A repeated upsert preserves the raw spelling and is a no-op.
                             assert_eq!(crate::edit::upsert_container(&text, root).unwrap(), crate::edit::Outcome::Unchanged);
                         }

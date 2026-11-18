@@ -859,15 +859,54 @@ fn production_state_response() -> Value {
     })
 }
 
+/// The historical probe above is Linux/GNU. This is a distinct synthetic host
+/// response for metadata-only portability checks, not a relabeled real artifact.
+fn synthetic_host_state_response() -> Value {
+    let target = Platform::Host.targets()[0];
+    let mut response = production_state_response();
+    response["target"] = target.into();
+    response["graph"][1]["binaries"] = json!({(target): {
+        "url": format!("https://example.test/synthetic/state-{target}.tar.gz"),
+        "sha256": "b".repeat(64)
+    }});
+    response
+}
+
+#[test]
+fn historical_identity_only_root_wire_remains_a_linux_gnu_metadata_sample() {
+    let body = production_state_response();
+    assert_eq!(body["target"], "x86_64-unknown-linux-gnu");
+    assert_eq!(body["root"], json!({"name":"state", "version":"0.23.1"}));
+    assert_eq!(body["graph"][1]["binaries"].as_object().unwrap().len(), 1);
+    assert_eq!(
+        body["graph"][1]["binaries"]["x86_64-unknown-linux-gnu"]["url"],
+        "https://example.test/state.tar.gz"
+    );
+    assert_eq!(
+        body["graph"][1]["binaries"]["x86_64-unknown-linux-gnu"]["sha256"],
+        "a".repeat(64)
+    );
+    let validated = validate_resolution(
+        "state",
+        DEFAULT_REGISTRY,
+        "state",
+        "0.23.1",
+        serde_json::from_value(body).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(validated.response.graph[validated.root].name, "state");
+    assert!(validated.response.root.unwrap().requested.is_none());
+}
+
 #[tokio::test]
 async fn production_identity_only_root_works_for_graph_package_and_lock_reload() {
     let server = MockServer::start().await;
     Mock::given(matchers::method("POST"))
         .and(matchers::path("/resolve"))
         .and(matchers::body_partial_json(
-            json!({"worker":"state","version":"0.23.1"}),
+            json!({"worker":"state","version":"0.23.1","target":Platform::Host.targets()[0]}),
         ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(production_state_response()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(synthetic_host_state_response()))
         .expect(3)
         .mount(&server)
         .await;
@@ -904,6 +943,23 @@ async fn production_identity_only_root_works_for_graph_package_and_lock_reload()
             );
             let stored = std::fs::read_to_string(crate::lockfile::lock_path(&path)).unwrap();
             assert!(!stored.contains("root_binding"));
+            let resolved = reloaded.containers["state"]
+                .resolved_package
+                .as_ref()
+                .unwrap();
+            let target = Platform::Host.targets()[0];
+            assert_eq!(resolved.artifacts.len(), 1);
+            assert_eq!(resolved.artifacts[target].sha256, "b".repeat(64));
+            assert_eq!(
+                resolved.artifacts[target].url,
+                format!("https://example.test/synthetic/state-{target}.tar.gz")
+            );
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 3);
+            assert!(
+                requests.iter().all(|request| request.method == "POST"),
+                "metadata-only fixture must not download artifacts"
+            );
         })
         .await;
     server.verify().await;
