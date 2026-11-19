@@ -37,8 +37,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Local;
 use colored::{Color, Colorize};
+use jiff::Zoned;
 
 tokio::task_local! {
     static PROJECT_SCOPE: String;
@@ -1653,7 +1653,7 @@ pub(crate) fn restarting(key: &str) {
         "{} {} {}",
         RUNNING.dimmed(),
         key.bold(),
-        format!("restarting at {}", Local::now().format("%H:%M:%S")).dimmed()
+        format!("restarting at {}", Zoned::now().strftime("%H:%M:%S")).dimmed()
     ));
 }
 

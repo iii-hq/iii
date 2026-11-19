@@ -22,7 +22,7 @@ Branch on exact `code` strings, but keep engine wire codes separate from SDK-loc
 | `FORBIDDEN` | RBAC / worker-gated engine functions | RBAC denied the action | Do not retry blindly; inspect policy, auth context, and allowed functions |
 | `timeout` | A target worker's handler, forwarded verbatim by the engine | Not produced by the engine or the Node/Python SDKs (they emit `TIMEOUT`); appears only if the worker you called returns it | Treat as a timeout if you know the target worker emits it; otherwise branch on `TIMEOUT` |
 | `function_not_invokable` | SDK local dispatch | Registration exists but cannot be invoked as a normal local function | Inspect registration/invocation type |
-| `invocation_failed` | SDK worker handler wrappers | Local worker handler, HTTP-invoked function wrapper, or SDK-side handler path failed | Inspect handler logs, stacktrace, and payload validation |
+| `invocation_failed` | SDK worker handler wrappers | Local worker handler or SDK-side handler path failed | Inspect handler logs, stacktrace, and payload validation |
 | `TIMEOUT` | Node/Python SDK caller timeout | Client waited longer than the `call()` timeout | Increase timeout only if the workload is expected to run long; otherwise optimize or enqueue |
 | `payload_too_large` | SDK | An outgoing message exceeds 16 MiB | Use a channel; a call to a function in the same worker runs in-process (no limit) unless sent with `dispatch: 'remote'` |
 
@@ -53,7 +53,7 @@ in `iii.observer.dropped.total` / `iii.observer.activation.failures.total` and i
 
 ## Handler vs Engine Errors
 
-- Handler errors originate in user function code, SDK local dispatch, or HTTP-invoked endpoints.
+- Handler errors originate in user function code or SDK local dispatch.
 - Engine errors originate in routing, invocation state, RBAC, protocol handling, or worker-reported wire errors.
 - Queue retries only apply to enqueued work. Synchronous failures are returned directly to the caller.
 - Void dispatch does not return handler results, so use logs/observability for failures.

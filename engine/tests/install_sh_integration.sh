@@ -130,14 +130,14 @@ if [ "$pty_works" = false ]; then
 else
   ni_output=$(BIN_DIR="$STUBDIR" run_on_pty sh "$INSTALL_SH" --skip-bin-download --non-interactive </dev/null 2>&1 || true)
   case "$ni_output" in
-    *"Press Enter"*) fail "--non-interactive still prompted — got: $ni_output" ;;
+    *"first iii project?"*) fail "--non-interactive still prompted — got: $ni_output" ;;
     *) pass "--non-interactive does not prompt on a terminal" ;;
   esac
 
   # The environment variable does the same as the flag.
   ni_env_output=$(BIN_DIR="$STUBDIR" III_NON_INTERACTIVE=1 run_on_pty sh "$INSTALL_SH" --skip-bin-download </dev/null 2>&1 || true)
   case "$ni_env_output" in
-    *"Press Enter"*) fail "III_NON_INTERACTIVE still prompted — got: $ni_env_output" ;;
+    *"first iii project?"*) fail "III_NON_INTERACTIVE still prompted — got: $ni_env_output" ;;
     *) pass "III_NON_INTERACTIVE does not prompt on a terminal" ;;
   esac
 
@@ -145,7 +145,7 @@ else
   # and it is the regression that would make the flag meaningless.
   prompt_output=$(BIN_DIR="$STUBDIR" run_on_pty sh "$INSTALL_SH" --skip-bin-download </dev/null 2>&1 || true)
   case "$prompt_output" in
-    *"Press Enter"*) pass "the prompt still appears without the flag" ;;
+    *"first iii project?"*) pass "the prompt still appears without the flag" ;;
     *) fail "no prompt on a terminal without the flag — the flag tests prove nothing" ;;
   esac
 fi

@@ -52,6 +52,10 @@ jobs:
         with:
           node-version: "22"
 
-      # pnpm audit reads pnpm-lock.yaml; no install needed.
+      # Install root-only tooling (including the YAML parser used by the gate).
+      - name: Install audit tooling
+        run: pnpm --filter iii-monorepo install --frozen-lockfile --ignore-scripts
+
+      # pnpm audit reads the complete workspace lockfile.
       - name: Audit SDK packages
         run: node scripts/audit-sdk.mjs

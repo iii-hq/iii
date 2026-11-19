@@ -1,3 +1,6 @@
+# The registry row `iii` is the engine executable (engine/registry), published
+# by _publish-engine-registry.yml. This manifest names that row for the skills
+# in ./skills (_publish-worker-skills.yml); it is not published as a version.
 iii: v1
 name: iii
 type: engine

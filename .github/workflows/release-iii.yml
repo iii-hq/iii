@@ -394,6 +394,24 @@ jobs:
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
   # ──────────────────────────────────────────────────────────────
+  # Publish the engine to the iii registry as the executable `iii`:
+  # this release's binaries and engine/registry/install.sh, under the
+  # registry tag of the release (latest, rc, next...). It installs with
+  #   curl -fsSL https://iii.dev/registry/install/iii/<tag>.sh | sh
+  # ──────────────────────────────────────────────────────────────
+
+  publish-engine-registry:
+    name: Publish iii to the registry
+    needs: [setup, engine-release]
+    if: needs.setup.outputs.dry_run != 'true'
+    uses: ./.github/workflows/_publish-engine-registry.yml
+    with:
+      release_tag: ${{ needs.setup.outputs.tag }}
+      registry_tag: ${{ needs.setup.outputs.npm_tag }}
+    secrets:
+      WORKERS_REGISTRY_API_KEY: ${{ secrets.WORKERS_REGISTRY_API_KEY }}
+
+  # ──────────────────────────────────────────────────────────────
   # Publish builtin (engine) workers to the workers registry.
   # Runs on every release including prereleases; 409 (already
   # published) is treated as a no-op so re-runs are safe.
@@ -417,8 +435,9 @@ jobs:
             worker_dir: engine/src/workers/configuration
           - worker: iii-sandbox
             worker_dir: engine/src/workers/sandbox
-          - worker: iii-engine-functions
-            worker_dir: engine/src/workers/engine_fn
+          # Not iii-engine-functions (engine/src/workers/engine_fn): its registry
+          # name is `iii`, which publish-engine-registry publishes as the engine
+          # executable. Its skills still go to `iii` (publish-worker-skills).
     uses: ./.github/workflows/_publish-engine-workers.yml
     with:
       worker: ${{ matrix.worker }}
@@ -428,7 +447,8 @@ jobs:
 
   publish-worker-skills:
     name: Publish worker skills
-    needs: [setup, publish-builtin-workers]
+    # `iii`'s skills go to the version publish-engine-registry published.
+    needs: [setup, publish-builtin-workers, publish-engine-registry]
     if: needs.setup.outputs.dry_run != 'true'
     uses: ./.github/workflows/_publish-worker-skills.yml
     with:
@@ -606,6 +626,7 @@ jobs:
       - homebrew-engine
       - publish-builtin-workers
       - publish-worker-skills
+      - publish-engine-registry
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -632,6 +653,7 @@ jobs:
           BREW_ENGINE_RESULT: ${{ needs.homebrew-engine.result }}
           BUILTIN_WORKERS_RESULT: ${{ needs.publish-builtin-workers.result }}
           WORKER_SKILLS_RESULT: ${{ needs.publish-worker-skills.result }}
+          ENGINE_REGISTRY_RESULT: ${{ needs.publish-engine-registry.result }}
         run: |
           icon() {
             case "$1" in
@@ -659,13 +681,14 @@ jobs:
           LINES="$LINES$(icon "$FILTER_RUST_RESULT") Filter Rust\n"
           LINES="$LINES$(icon "$BUILTIN_WORKERS_RESULT") Builtin Workers Registry\n"
           LINES="$LINES$(icon "$WORKER_SKILLS_RESULT") Worker Skills Registry\n"
+          LINES="$LINES$(icon "$ENGINE_REGISTRY_RESULT") iii on the Registry\n"
 
           if [[ "$IS_PRERELEASE" != "true" ]]; then
             LINES="$LINES$(icon "$DOCKER_RESULT") Docker\n"
             LINES="$LINES$(icon "$BREW_ENGINE_RESULT") Homebrew (iii)\n"
           fi
 
-          for r in "$ENGINE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$FILTER_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT"; do
+          for r in "$ENGINE_RESULT" "$SDK_NPM_RESULT" "$SDK_NPM_BROWSER_RESULT" "$SDK_PY_RESULT" "$SDK_RUST_RESULT" "$OBS_NPM_RESULT" "$OBS_PY_RESULT" "$OBS_RUST_RESULT" "$HELPERS_NPM_RESULT" "$HELPERS_PY_RESULT" "$HELPERS_RUST_RESULT" "$FILTER_RUST_RESULT" "$BUILTIN_WORKERS_RESULT" "$WORKER_SKILLS_RESULT" "$ENGINE_REGISTRY_RESULT"; do
             [[ "$r" != "success" && "$r" != "skipped" ]] && OVERALL="failure"
           done
 

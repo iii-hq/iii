@@ -57,7 +57,7 @@ fn build_event(
         platform: "iii".to_string(),
         os_name: std::env::consts::OS.to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        time: chrono::Utc::now().timestamp_millis(),
+        time: jiff::Timestamp::now().as_millisecond(),
         insert_id: Some(uuid::Uuid::new_v4().to_string()),
         country: None,
         language: None,

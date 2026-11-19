@@ -34,7 +34,7 @@ go get github.com/iii-hq/iii/sdk/packages/go/iii
 
 | SDK | Package | Best for | Important caveat |
 | --- | --- | --- | --- |
-| Node.js | `iii-sdk` | Server-side TypeScript/JavaScript workers | Supports custom headers, Logger, OpenTelemetry, HTTP-invoked functions |
+| Node.js | `iii-sdk` | Server-side TypeScript/JavaScript workers | Supports custom headers, Logger, OpenTelemetry |
 | Browser | `iii-browser-sdk` | Web apps and interactive UI callbacks | Connect through the `rbac-proxy` worker's public port, never the engine port; keep secrets server-side |
 | Python | `iii-sdk` | Sync or async Python workers | Use `call_async` inside async handlers |
 | Rust | `iii-sdk` | High-performance tokio workers | Handler error type should map into `iii_sdk::Error` |
@@ -85,8 +85,8 @@ iii.registerFunction("users::lookup", async (input) => {
 });
 ```
 
-Node supports custom WebSocket headers, `Logger`, OpenTelemetry options, HTTP-invoked function
-registration, call and observer metadata, channels, observers, and observer hooks. `CallRequest`,
+Node supports custom WebSocket headers, `Logger`, OpenTelemetry options, call and observer
+metadata, channels, observers, and observer hooks. `CallRequest`,
 `CallAction`, `ObserveRejection`, and `EngineSources` are exported from the package root.
 
 ## Browser
@@ -185,8 +185,8 @@ sources.
 ## Observers and local dispatch
 
 - `observe(source, target, options?)` is in every SDK: when the source function runs, the target
-  runs. HTTP routes, cron schedules, and queue topics are observers of `http::on-request`,
-  `cron::on-tick`, and `queue::on-message`. Details and examples per language: `iii-observe`.
+  runs. HTTP routes, database changes, and queue topics are observers of `http::on-request`,
+  `database::on-row-changed`, and `queue::on-message`. Details and examples per language: `iii-observe`.
 - `registerFunction` returns a `FunctionRef` with the hook methods, `isObserved(call?)` and
   `observers()` (Python `is_observed(call=None)`, Rust `is_observed()` / `is_observed_for(&call)`,
   Go `ref.IsObserved()` / `ref.IsObservedFor(call)`). With a call, on a function whose
@@ -199,13 +199,7 @@ sources.
 - Against an engine without `observe.v2`, a function that declares `args_format`, `private`, or
   `observable: false`, or sets `onObservationMatch` or `onObservationDeliver`, stays unregistered and the SDK logs
   `UNSUPPORTED` once; everything else works.
-- Against an engine without `observe.capture` (0.25, or a 0.26 release candidate), observers send
-  the legacy `on` their `capture` implies and the SDK logs a one-time deprecation warning: upgrade
-  the engine. The default `capture` is `[input, output, caller]`; `metadata` is opt-in.
-- `trigger` is a deprecated alias of `call` in every SDK and the CLI (`trigger_async`, `Trigger`,
-  `TriggerRequest`, `TriggerAction`, `iii trigger`): the same function or type, marked deprecated
-  in types (JSDoc `@deprecated`, Rust `#[deprecated]`, Go `// Deprecated:`, Python docstring) with
-  no runtime warning, so code written for 0.25 keeps compiling. Use `call`.
+- The default `capture` is `[input, output, caller]`; `metadata` is opt-in.
 
 ## Channels
 
@@ -232,8 +226,8 @@ registered in.
 
 - `iii.call({ function_id })` resolves in the calling worker's namespace. Calls to your own
   functions and to other workers declared in the same `worker-compose.yaml` need no namespace.
-- Engine-owned functions register in `default`: `engine::*`, `configuration::*`, `stream::*`
-  (from `iii-stream`) and the `observability::*` sources. `engine::*` and `configuration::*` resolve
+- Engine-owned functions register in `default`: `engine::*`, `configuration::*`, and the
+  `observability::*` sources. `engine::*` and `configuration::*` resolve
   there implicitly (since 0.24.5); for the others pass `namespace: "default"` on the call, or on an
   `observe` source, when your worker runs in a Compose namespace.
 - `observe` resolves its source in the worker's namespace, so an observer of `http::on-request`

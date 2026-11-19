@@ -102,7 +102,7 @@ without a warning.
 <Note>
   A registry bundle manifest rejects `scripts.setup` with `W180 BundleManifestRejected`. It accepts
   `scripts.install` and `runtime.base_image`, and it rejects a base image that is not a plausible
-  OCI reference. See [Registry / Bundling workers](./workers-registry#bundle-archives).
+  OCI reference. See [Worker Registry](../using-iii/workers-registry#artifact-types).
 </Note>
 
 ## `env`

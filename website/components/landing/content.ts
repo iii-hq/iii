@@ -15,7 +15,9 @@ export const hero = {
   secondary: { label: 'View GitHub', href: 'https://github.com/iii-hq/iii' },
   updates: 'Release notes and new workers, by email',
   /* The install block replaces the two CTA buttons. Commands and notes come from iii.dev/docs/install.
-     2026-10-05 sync: no `workers` tab, it is internal jargon to a newcomer. 2026-10-09: no `no llm` tab either. */
+     2026-10-05 sync: no `workers` tab, it is internal jargon to a newcomer. 2026-10-09: no `no llm` tab either.
+     2026-11-18: a `powershell` tab for Windows; a tab may name its Shiki `lang` and its `prompt` (default bash, $).
+     Enter, not y, at the prompt: the registry installers ask for Enter, and Enter also takes the [Y/n] default. */
   install: {
     tabs: [
       {
@@ -23,8 +25,21 @@ export const hero = {
         label: 'curl',
         steps: [
           {
-            note: 'Install the engine. Press y at the prompt and the installer sets up the harness for you.',
-            command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh',
+            note: 'Install the engine. Press Enter at the prompt and the installer sets up the harness for you.',
+            command: 'curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh',
+          },
+          { note: 'Then open http://127.0.0.1:3113' },
+        ],
+      },
+      {
+        id: 'powershell',
+        label: 'powershell',
+        lang: 'powershell',
+        prompt: 'PS>',
+        steps: [
+          {
+            note: 'Windows, in PowerShell. Press Enter at the prompt and the installer sets up the harness for you.',
+            command: 'irm https://iii.dev/registry/install/iii/latest.ps1 | iex',
           },
           { note: 'Then open http://127.0.0.1:3113' },
         ],
@@ -35,14 +50,14 @@ export const hero = {
         steps: [
           {
             note: 'Docker builds, CI jobs and scripts: the install only, no questions asked.',
-            command: 'curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive',
+            command: 'curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --non-interactive',
           },
         ],
       },
     ],
     /* Left side of the CTA row; the card sits on the right. */
     title: 'Install iii in one command.',
-    copy: 'The installer sets up the engine and, if you press y, the harness too. Then open http://127.0.0.1:3113.',
+    copy: 'The installer sets up the engine and, if you press Enter, the harness too. Then open http://127.0.0.1:3113.',
     guide: { label: 'Full install guide', href: 'https://iii.dev/docs/install' },
   },
   /* The hero trace: one request fanning through six spans. */

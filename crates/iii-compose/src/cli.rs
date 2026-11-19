@@ -66,7 +66,7 @@ pub struct ComposeCli {
     #[arg(long)]
     pub up: bool,
 
-    /// Require worker-compose.lock to match the compose file and use only its
+    /// Require the selected compose file's lock to match and use only its
     /// exact package resolutions. Missing cache artifacts are downloaded from
     /// the URLs in the lock.
     #[arg(long, requires = "up")]
