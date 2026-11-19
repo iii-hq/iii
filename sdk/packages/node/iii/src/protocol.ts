@@ -1,3 +1,4 @@
+export { ChannelDirection, ChannelItem } from './channels'
 export type {
   ActivationWire,
   CallerWire,
@@ -22,6 +23,7 @@ export type {
   RegisterFunctionFormat,
   RegisterFunctionMessage,
   RegistrationRejectedMessage,
+  StreamChannelRef,
   TriggerRequest,
   UnobserveMessage,
 } from './iii-types'
@@ -34,3 +36,4 @@ export {
   SDK_FEATURES,
 } from './iii-types'
 export type { RegisterFunctionInput, RegisterFunctionOptions } from './types'
+export { extractChannelRefs, isChannelRef } from './utils'

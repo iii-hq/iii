@@ -132,11 +132,15 @@
 // the Go types and advertises them to the engine. It is the Go counterpart of the Rust SDK's
 // JsonSchema derive.
 //
-// # Channels
+// # Streams
 //
-// For bulk or streaming data, [Client.CreateChannel] opens a streaming data channel; see
-// [ChannelWriter] and [ChannelReader]. [Client.OpenReader] and [Client.OpenWriter] open
-// the end of a channel whose [StreamChannelRef] arrived in a payload.
+// For bulk or streaming data, put a stream in a call payload or a handler result: an
+// [InputStream] (bytes the other side reads, from [InputStreamFromReader] or
+// [InputStreamFromBytes]) or an [OutputStream] (a sink the other side writes, from
+// [OutputStreamToWriter]). A stream field of a handler's input or of a call's result
+// unmarshals to one. The SDK makes the engine pipes, moves the bytes, and ends the
+// streams a handler received when it returns; [Client.Pipe] gives both ends of a pipe
+// for the cases it does not cover.
 //
 // The package mirrors the iii Node and Rust SDKs; see the repository README at
 // https://github.com/iii-hq/iii for the engine and the other SDKs.

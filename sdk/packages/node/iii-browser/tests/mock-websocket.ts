@@ -14,6 +14,7 @@ export class MockWebSocket
 
   readyState = MockWebSocket.CONNECTING
   binaryType: BinaryType = 'blob'
+  bufferedAmount = 0
   url: string
 
   onopen: ((this: WebSocket, ev: Event) => void) | null = null
@@ -47,6 +48,16 @@ export class MockWebSocket
   }
 
   close(code?: number, reason?: string): void {
+    // A browser's rules: only 1000 and 3000-4999, and a reason of at most 123 UTF-8 bytes.
+    if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException(
+        `The close code must be either 1000, or between 3000 and 4999. ${code} is neither.`,
+        'InvalidAccessError',
+      )
+    }
+    if (reason !== undefined && new TextEncoder().encode(reason).byteLength > 123) {
+      throw new DOMException('The close reason must not be greater than 123 UTF-8 bytes.', 'SyntaxError')
+    }
     this.closeCode = code
     this.closeReason = reason
     this.readyState = MockWebSocket.CLOSED

@@ -19,6 +19,7 @@
 pub mod build;
 pub mod build_record;
 mod build_step;
+pub mod ci;
 pub mod cli;
 pub mod config;
 pub mod configuration;

@@ -15,7 +15,13 @@ worker runs a function with `call`, and `iii.observe(a, b)` means "when `a` runs
 ## Step 1: Install the Engine
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
 ```
 
 Verify it installed:
@@ -237,7 +243,7 @@ After getting your first worker running:
 ## Pattern Boundaries
 
 - For function registration and calls, worker creation, worker registry access, built-in source
-  functions, invocation modes, and channels, prefer `iii-core-primitives`
+  functions, invocation modes, and streams, prefer `iii-core-primitives`
 - For observers, filters, engine events, event sources, and upgrading 0.25 code, prefer
   `iii-observe`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`

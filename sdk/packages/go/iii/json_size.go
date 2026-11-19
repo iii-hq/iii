@@ -58,7 +58,7 @@ func prepareFrame(frame []byte) ([]byte, error) {
 // payloadTooLargeMessage is the payload_too_large message for a JSON message of size
 // bytes.
 func payloadTooLargeMessage(size int) string {
-	return fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size", size, maxJSONMessageBytes)
+	return fmt.Sprintf("Serialized JSON envelope is %d bytes; limit is %d bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size", size, maxJSONMessageBytes)
 }
 
 func (c *Client) rejectFrame(frame []byte, err error) {

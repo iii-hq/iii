@@ -46,6 +46,8 @@ type InvocationError struct {
 	FunctionID string
 	// Stacktrace is the remote stack trace, when the engine provides one.
 	Stacktrace string
+	// cause is the local error behind it (a sink's own error), for Unwrap.
+	cause error
 }
 
 func (e *InvocationError) Error() string {
@@ -54,6 +56,11 @@ func (e *InvocationError) Error() string {
 	}
 	return fmt.Sprintf("iii: invocation failed: %s: %s", e.Code, e.Message)
 }
+
+// Unwrap is the local error behind e, nil for an error from the engine: for a call
+// whose sink failed (STREAM_ABORTED, "the sink failed: ..."), the sink's own error, so
+// errors.Is and errors.As reach it.
+func (e *InvocationError) Unwrap() error { return e.cause }
 
 // RegistrationRejectedError is the terminal error the engine returns when a
 // worker's registration is refused for good, typically a WORKER_NAMESPACE_CONFLICT,
@@ -85,6 +92,54 @@ func (e *RegistrationRejectedError) Error() string {
 	}
 	return fmt.Sprintf("iii: registration rejected (%s): worker %q in namespace %q already owned by worker %s",
 		e.Code, e.WorkerName, e.Namespace, e.OwnerWorkerID)
+}
+
+// The codes of the stream errors: an [*InvocationError] with one of these Code values,
+// returned by stream operations and by a call whose streams failed. Recover the code
+// with errors.As:
+//
+//	var ie *iii.InvocationError
+//	if errors.As(err, &ie) && ie.Code == iii.CodeStreamAborted {
+//	    // the writer aborted: the data read so far is incomplete
+//	}
+const (
+	// CodeStreamAborted: the stream ended with an abort (its writer called
+	// [OutputStream.Abort], failed, or went away before it closed), or could not be
+	// opened. The data read before it is not the whole stream. A call whose sink
+	// received an aborted stream fails with it too, even when the function succeeded.
+	// Through an engine pipe the Message is the engine's reason (channel writer aborted:
+	// closed with code 1011); in-process it is the writer's own. A call whose own sink
+	// failed (its Write, Flush or Close returned an error) fails with Message "the sink
+	// failed: <its error>", wrapping it (errors.Is and errors.As reach it), whatever the
+	// function returned.
+	CodeStreamAborted = "STREAM_ABORTED"
+	// CodeStreamNotAllowed: a payload holding a stream sent with [EnqueueAction]. A
+	// queued job can run after the pipe expired, and a retry cannot read the stream
+	// again. Nothing was sent.
+	CodeStreamNotAllowed = "STREAM_NOT_ALLOWED"
+	// CodeStreamClosed: a write or a send on a stream already closed or aborted, or
+	// after its reader left.
+	CodeStreamClosed = "STREAM_CLOSED"
+	// CodeStreamInUse: a stream already in use: a second read of an [InputStream], the
+	// same stream twice in one payload, or a stream sent on after it was read to the end
+	// or already sent.
+	CodeStreamInUse = "STREAM_IN_USE"
+)
+
+func streamError(code, message string) *InvocationError {
+	return &InvocationError{Code: code, Message: message}
+}
+
+func streamAbortedError(reason string) *InvocationError {
+	return streamError(CodeStreamAborted, reason)
+}
+
+func streamClosedError(message string) *InvocationError {
+	return streamError(CodeStreamClosed, message)
+}
+
+func streamInUseError(message string) *InvocationError {
+	return streamError(CodeStreamInUse, message)
 }
 
 // newInvocationError builds an InvocationError from a wire ErrorBody and the function

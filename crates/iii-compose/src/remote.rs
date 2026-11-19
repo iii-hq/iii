@@ -1211,7 +1211,7 @@ fn op_description(function_id: &str) -> &'static str {
              Repeated calls leave ready containers running. A container whose \
              effective required value is false is named in \
              not_required_failures when it fails, and the operation still \
-             returns ok. Frozen mode requires worker-compose.lock to match and \
+             returns ok. Frozen mode requires the selected compose file's lock to match and \
              skips package resolution."
         }
         "compose::down" => {

@@ -11,7 +11,7 @@ Go SDK for the [iii engine](https://iii.dev).
 go get github.com/iii-hq/iii/sdk/packages/go/iii
 ```
 
-Requires Go 1.25 or later.
+Requires Go 1.26 or later.
 
 ## Hello World
 
@@ -70,6 +70,9 @@ A complete, runnable version is in the [`iii-example`](../iii-example) module.
 | Observer hooks | `OnObserverAddedFor`, `OnObserverRemovedFor`, `OnObservationMatchFor`, `OnObservationDeliverFor` | Change what observing a function this worker hosts means |
 | Call through an observer | `client.Call(ctx, iii.CallRequest{Observer: obs, Payload: payload})` | Run an observer's target from a deliver hook |
 | Current invocation | `iii.InvocationFromContext(ctx)` | The invocation the running handler serves (caller, activation) |
+| Stream bytes to a function | `iii.InputStreamFromReader(r)`, `iii.InputStreamFromBytes(b)` in a payload or result | The other side reads them as an `*iii.InputStream` |
+| Take a function's bytes | `iii.OutputStreamToWriter(w)` in a payload | The function writes an `*iii.OutputStream`; the call returns once `w` got the whole stream |
+| Pipe | `client.Pipe(ctx)` | Both ends of an engine pipe, for the cases a stream value does not cover |
 | Shut down | `client.Shutdown(ctx)` | Stop gracefully: flush reports and telemetry, cancel pending calls, close the socket |
 
 ### Registering Functions
@@ -252,6 +255,49 @@ A function that sets `ArgsFormat`, `Private: true`, `Observable: &off`, an
 `OnObservationMatch` hook or an `OnObservationDeliver` hook needs an engine that
 advertises `observe.v2`; against an older engine it stays unregistered, and the
 SDK logs `UNSUPPORTED` once for it.
+
+### Streaming Data
+
+For bulk or streaming data, put a stream in the payload instead of passing everything
+through a single invocation result. An `*iii.InputStream` is bytes the other side reads; an
+`*iii.OutputStream` is where it writes. The SDK makes the engine pipes and moves the bytes.
+
+```go
+// Caller: send a file, and take the converted one.
+src, _ := os.Open("report.csv")
+dst, _ := os.Create("report.pdf")
+payload, _ := json.Marshal(map[string]any{
+	"body": iii.InputStreamFromReader(src), // read when the function reads it
+	"out":  iii.OutputStreamToWriter(dst),  // the call returns once dst got the whole stream
+})
+_, err := client.Call(ctx, iii.CallRequest{FunctionID: "files::convert", Payload: payload})
+
+// Function: the fields unmarshal to streams.
+type convertArgs struct {
+	Body *iii.InputStream  `json:"body"`
+	Out  *iii.OutputStream `json:"out"`
+}
+client.RegisterFunction("files::convert", func(ctx context.Context, data json.RawMessage) (any, error) {
+	var args convertArgs
+	if err := json.Unmarshal(data, &args); err != nil {
+		return nil, err
+	}
+	csv, err := args.Body.ReadAll(ctx) // or io.Copy, Lines, Messages, Frames
+	if err != nil {
+		return nil, err
+	}
+	return nil, args.Out.Write(ctx, toPDF(csv)) // closed when the handler returns
+})
+```
+
+Bytes travel as binary frames (`Write`, `Read`) and messages as JSON text frames (`Send`,
+`Messages`). When a handler returns, the SDK ends the streams it received: an
+`OutputStream` it used is closed on success and aborted on failure (`KeepOpen` keeps it
+open), and an `InputStream` it started reading is cancelled. A reader of an aborted stream
+gets an `*iii.InvocationError` with code `iii.CodeStreamAborted`, never a short stream that
+looks whole. A stream has one reader and is sent once (`iii.CodeStreamInUse`), a write after
+the end fails with `iii.CodeStreamClosed`, and an enqueued call refuses streams
+(`iii.CodeStreamNotAllowed`). See https://iii.dev/docs/creating-workers/streaming.
 
 ## Resources
 

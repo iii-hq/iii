@@ -1,5 +1,19 @@
 export type { EnqueueResult } from '@iii-dev/helpers/queue'
-export { InvocationError, type InvocationErrorInit, ObserveRejection, RegistrationRejectedError } from './errors'
+export {
+  InputStream,
+  type InputStreamSource,
+  OutputStream,
+  type OutputStreamSink,
+  type StreamFrame,
+  type StreamInfo,
+} from './call-streams'
+export {
+  InvocationError,
+  type InvocationErrorInit,
+  ObserveRejection,
+  RegistrationRejectedError,
+  StreamAbortedError,
+} from './errors'
 export {
   CallAction,
   DEFAULT_ENGINE_URL,
@@ -35,4 +49,12 @@ export type {
   RemovedHook,
   Target,
 } from './observe-types'
-export type { FunctionRef, IIIClient, RegisterFunctionOptions, StreamRequest, StreamResponse } from './types'
+export type {
+  FunctionRef,
+  IIIClient,
+  Pipe,
+  PipeOptions,
+  RegisterFunctionOptions,
+  StreamRequest,
+  StreamResponse,
+} from './types'

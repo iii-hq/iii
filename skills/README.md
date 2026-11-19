@@ -25,7 +25,7 @@ npx skills add iii-hq/iii/skills --skill iii-core-primitives
 | Skill                                                  | What it does |
 | ------------------------------------------------------ | ------------ |
 | [iii-getting-started](./iii-getting-started)           | Install iii, create a project, write your first worker, and add registry workers |
-| [iii-core-primitives](./iii-core-primitives)           | Functions (call and observe), the workers that host them, invocation modes, built-in source functions, registry access, and channels |
+| [iii-core-primitives](./iii-core-primitives)           | Functions (call and observe), the workers that host them, invocation modes, built-in source functions, registry access, and streams |
 | [iii-observe](./iii-observe)                           | `iii.observe(a, b)` (when `a` runs, `b` runs), HTTP, cron, queue, state, and engine sources, filters, event sources with `onObserverAdded` / `onObserverRemoved` / `onObservationMatch` / `onObservationDeliver`, local dispatch, and upgrading 0.25 code |
 | [iii-sdk-reference](./iii-sdk-reference)               | Node.js, browser, Python, Rust, and Go SDK usage in one place |
 | [iii-engine-config](./iii-engine-config)               | Configure engine ports, engine-owned workers, adapters, and RBAC via rbac-proxy |

@@ -1,9 +1,14 @@
 # Search and AI crawlers
+# Every fetch of a registry installer (/registry/install/<name>/<ref>.sh)
+# counts one download, so no crawler should fetch one. A crawler follows only
+# the group that names it, so each group repeats these lines.
 User-agent: *
 Allow: /
 
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 Disallow: /docs/_next/
 Disallow: /docs/_mintlify/
 Disallow: /docs/0-10-0/
@@ -15,61 +20,85 @@ User-agent: GPTBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: ChatGPT-User
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: OAI-SearchBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: ClaudeBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: anthropic-ai
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: PerplexityBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: Perplexity-User
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: Google-Extended
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: Applebot-Extended
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: Bingbot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: DuckAssistBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 User-agent: CCBot
 Allow: /
 Disallow: /preview
 Disallow: /roadmap
+Disallow: /registry/install/
+Disallow: /registry/api/install/
 
 Sitemap: https://iii.dev/sitemap.xml
 Sitemap: https://iii.dev/docs/sitemap.xml

@@ -315,6 +315,89 @@ a deliver hook (`on_observation_match`, `on_observation_deliver`) need an engine
 that advertises `observe.v2`; against an older one they stay unregistered and
 the SDK logs `UNSUPPORTED` once.
 
+### Streaming Data
+
+`InputStream` and `OutputStream` are values in a call's payload or result. The
+SDK opens an engine pipe for each one and moves the bytes; the other side gets
+a stream, in any SDK.
+
+```rust
+use iii_sdk::{CallRequest, InputStream, OutputStream, RegisterFunction};
+use serde_json::json;
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct Upload {
+    filename: String,
+    body: InputStream,
+}
+
+// The handler reads the stream it receives.
+iii.register_function(
+    "files::process",
+    RegisterFunction::new_async(|upload: Upload| async move {
+        let bytes = upload.body.read_all().await?;
+        Ok::<_, iii_sdk::Error>(json!({ "filename": upload.filename, "size": bytes.len() }))
+    }),
+);
+
+// Send: a local source in the payload.
+let file = tokio::fs::File::open("report.csv").await?;
+iii.call(CallRequest::new(
+    "files::process",
+    json!({ "filename": "report.csv", "body": InputStream::from_reader(file) }),
+))
+.await?;
+
+// Sink: the call resolves once the file holds the whole PDF (within the
+// call's timeout), and fails with STREAM_ABORTED if the function aborted it.
+let out = tokio::fs::File::create("r-42.pdf").await?;
+iii.call(CallRequest::new(
+    "reports::render-pdf",
+    json!({ "report_id": "r-42", "out": OutputStream::to_writer(out) }),
+))
+.await?;
+```
+
+- **Read** an `InputStream` once, one way: as a `Stream` of `Bytes`, an
+  `AsyncRead`, `read_all()`, `text()`, `lines()`, `messages::<T>()` (text
+  frames, JSON decoded) or `frames()` (both, in order). A clone is another
+  reader: a second reader fails with `STREAM_IN_USE`. Build one with
+  `from_reader`, `from_stream` or `from_bytes`, or return one from a handler
+  (read in part, the rest is sent).
+- **Write** an `OutputStream` with `write(&[u8])`, `send(&message)` (a JSON text
+  frame), then `close()`, or `abort(reason)` so the reader gets
+  `STREAM_ABORTED` and not a short stream. A write after `close()` or `abort()`
+  fails with `STREAM_CLOSED`. It is also an `AsyncWrite`. Dropped after a write
+  without `close()`, it is aborted.
+- **Send** a stream once: the same stream twice in one payload, or a stream
+  already sent or read to the end, fails with `STREAM_IN_USE` before anything
+  is sent. A result that holds a stream to write (a sink the function returns)
+  is not waited for: the caller writes it.
+- **In a handler**, the streams it received are ended when it returns, whether
+  it deserialized them or took its input as an untyped `Value` (a ref it passes
+  on as raw JSON is the receiver's): an
+  output it wrote is closed on `Ok` and aborted on `Err`; an output it never
+  used is closed on `Ok` and left as is on `Err`, except in an observer
+  activation (an HTTP route target), where it is closed only when the handler
+  returned `()`/`null` (the HTTP worker reads an untouched response with a
+  value as a buffered response); an input it started reading and did not
+  finish is cancelled. Call `keep_open()` to keep writing after the handler
+  returned.
+- **Forward** a stream by putting it in another call: one not yet read goes as
+  its own ref, so no byte passes through this worker.
+- `iii.pipe()` returns both ends of a pipe (`Pipe { input, output }`) for code
+  that writes and reads around a call itself.
+- A payload with a stream cannot be enqueued: `CallAction::Enqueue` fails with
+  `STREAM_NOT_ALLOWED` before anything is sent. `CallAction::Void` is allowed.
+- An observer's target receives a `StreamInfo { stream, direction, id }` for
+  each stream under the observed call's `input` and `output`, not the stream.
+- A received stream opens its socket on the client of the handler that
+  received it, or else the only `IIIClient` alive; with several clients, call
+  `stream.bind(&iii)` outside a handler.
+
+The wire items (`StreamChannelRef`, `ChannelDirection`, `ChannelItem`,
+`extract_channel_refs`, `is_channel_ref`) are under `iii_sdk::protocol`.
+
 ### Stream Operations
 
 > **Deprecated.** The `stream::*` functions, `IStream`, `iii_sdk::helpers::create_stream` and the legacy

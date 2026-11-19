@@ -89,7 +89,13 @@ console.log(order)
 ## 安装
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
+```
+
+在 Windows 上，使用 PowerShell：
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
 ```
 
 安装程序会询问是否设置你的第一个项目。按 Enter，然后打开 http://127.0.0.1:3113。
@@ -97,7 +103,7 @@ curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
 在 CI、Docker 构建和脚本中，可以不经提示直接安装：
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --non-interactive
 ```
 
 [安装指南](https://iii.dev/docs/install)列出了所有安装选项。

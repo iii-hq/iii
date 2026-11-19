@@ -1098,7 +1098,7 @@ KAN-285.
 | KAN-281 Compose: `.iii/workers/`, `build.json` | agent | `crates/iii-compose/src/{registry,build}.rs`, new `crates/iii-compose/src/build_record.rs`, `crates/iii-compose/tests/project_cache.rs` |
 | KAN-282 CLI | agent | `crates/iii-compose/src/sandbox_cli.rs` (with its unit tests), `engine/src/main.rs`, `docs/next/cli-reference/` |
 | KAN-283 `sandbox-libkrun` | agent | `iii-hq/workers`: `sandbox-libkrun/**` (including iii-init, `src/wire.rs`, fixtures) |
-| KAN-285 docs | agent | `docs/next/**` except the CLI reference and the S-code anchors; the upgrade guide is `docs/next/upgrading/from-0-26-x.mdx` |
+| KAN-285 docs | agent | `docs/next/**` except the CLI reference and the S-code anchors; the upgrade guide is `docs/next/upgrading/explicit-vm-workers.mdx` |
 | KAN-286 templates | agent | `iii-hq/templates` |
 | KAN-284 integration | orchestrator | integration branches, end-to-end runs |
 

@@ -9,17 +9,12 @@ packages:
   - website
 
 overrides:
-  # GHSA-68fv-2mgg-jv7q (high, fixed in 1.2.2): reached from the SDK packages'
-  # dev tree (helpers > @vitest/coverage-v8 > magicast) and gated by
-  # scripts/audit-sdk.mjs. Every dependent declares ^1.2.x.
+  esbuild: ^0.28.1
+  katex: ^0.18.2
+  minimatch: ^11.0.4
   source-map-js: ^1.2.2
-  # GHSA-g3hv-75wg-m249 (moderate, fixed in 11.0.1; no patched 10.x exists):
-  # reached from the SDK packages' dev tree (iii, iii-browser, helpers >
-  # typedoc > minimatch) and gated by scripts/audit-sdk.mjs. typedoc 0.28.20
-  # still declares ^10.2.5 and calls Minimatch#matchOne, which v11 made
-  # internal, so the patch below ports the upstream fix (TypeStrong/typedoc#3151).
-  # Drop the override and the patch once typedoc ships minimatch 11.
-  typedoc>minimatch: ^11.0.1
 
 patchedDependencies:
+  picomatch@2.3.2: patches/picomatch@2.3.2.patch
+  picomatch@4.0.7: patches/picomatch@4.0.7.patch
   typedoc@0.28.20: patches/typedoc@0.28.20.patch

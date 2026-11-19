@@ -800,10 +800,11 @@ plus operation-specific fields.
   </Tab>
 </Tabs>
 
-`sandbox::fs::write` takes a UTF-8 body in `content`, a base64 body in `content_b64`, or a stream
-channel. `sandbox::fs::read` returns `body` inline for a text file under the adapter's 1 MiB cap,
-and always returns a `content` channel for the full bytes, so a large or binary file stays off the
-call payload.
+`sandbox::fs::write` takes a UTF-8 body in `content`, a base64 body in `content_b64`, or a
+[stream](./streaming) in `content`. `sandbox::fs::read` returns `body` inline for a text file under
+the adapter's 1 MiB cap, and always returns `content`, a stream of the full bytes, so a large or
+binary file stays off the call payload. With the TypeScript, Python, and Rust SDKs, `content`
+arrives in the result as an `InputStream`.
 
 ## VM workers
 
@@ -936,7 +937,7 @@ iii sandbox destroy [--prune]
 `iii sandbox destroy` removes the VM's runtime state, its logs, and its claim on the build
 directory, and keeps the data the worker wrote: the data disk, with the `upper.ext4.pre-build` and
 `root.pre-build` copies kept from a 0.26 VM (see
-[Upgrading from 0.26.x](../upgrading/from-0-26-x#keep-the-data-of-migrated-vms)). The next
+[Upgrading VM workers from 0.26.x](../upgrading/explicit-vm-workers#keep-the-data-of-migrated-vms)). The next
 `iii sandbox run` of the same container boots with that disk. It prints where the data stayed:
 
 ```text

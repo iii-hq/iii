@@ -1,10 +1,10 @@
-"""Unit tests for the 10ms delay before WebSocket close frame in ChannelWriter.close_async()."""
+"""Unit tests for the 10ms delay before the WebSocket close frame in the channel writer's close()."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from iii.channels import ChannelWriter
+from iii._channels import ChannelWriter
 from iii.iii_types import StreamChannelRef
 
 
@@ -23,8 +23,8 @@ def _make_writer() -> ChannelWriter:
 
 
 @pytest.mark.asyncio
-async def test_close_async_sleeps_before_ws_close():
-    """close_async() calls asyncio.sleep(0.01) before ws.close() when connected."""
+async def test_close_sleeps_before_ws_close():
+    """close() calls asyncio.sleep(0.01) before ws.close() when connected."""
     writer = _make_writer()
 
     mock_ws = AsyncMock()
@@ -41,8 +41,8 @@ async def test_close_async_sleeps_before_ws_close():
 
     mock_ws.close = AsyncMock(side_effect=fake_ws_close)
 
-    with patch("iii.channels.asyncio.sleep", side_effect=fake_sleep) as mock_sleep:
-        await writer.close_async()
+    with patch("iii._channels.asyncio.sleep", side_effect=fake_sleep) as mock_sleep:
+        await writer.close()
 
     mock_sleep.assert_called_once_with(0.01)
     mock_ws.close.assert_called_once()
@@ -52,8 +52,8 @@ async def test_close_async_sleeps_before_ws_close():
 
 
 @pytest.mark.asyncio
-async def test_close_async_skips_when_not_connected():
-    """close_async() does nothing when _connected is False."""
+async def test_close_skips_a_socket_already_closed():
+    """close() sends no second close frame once the socket is closed (_connected is False)."""
     writer = _make_writer()
 
     mock_ws = AsyncMock()
@@ -61,36 +61,55 @@ async def test_close_async_skips_when_not_connected():
     writer._connected = False
 
     # The delay still runs (a sync call queued before the close may be connecting); no close frame goes out.
-    with patch("iii.channels.asyncio.sleep", new_callable=AsyncMock):
-        await writer.close_async()
+    with patch("iii._channels.asyncio.sleep", new_callable=AsyncMock):
+        await writer.close()
 
     mock_ws.close.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_close_async_skips_when_ws_is_none():
-    """close_async() does nothing when _ws is None."""
+async def test_close_opens_a_writer_that_never_connected_then_closes_it():
+    """close() on a writer that never wrote opens the socket, so the reader sees an empty stream."""
     writer = _make_writer()
+    mock_ws = AsyncMock()
+    mock_ws.transport = MagicMock()
 
-    writer._ws = None
-    writer._connected = True  # even if _connected is True, _ws being None prevents action
+    async def fake_connect(*args: object, **kwargs: object) -> AsyncMock:
+        return mock_ws
 
-    with patch("iii.channels.asyncio.sleep", new_callable=AsyncMock):
-        await writer.close_async()
+    with patch("iii._channels.asyncio.sleep", new_callable=AsyncMock), patch(
+        "iii._channels.websockets.connect", side_effect=fake_connect
+    ):
+        await writer.close()
 
-    assert writer._connected is True
+    mock_ws.close.assert_called_once()
+    assert writer._connected is False
 
 
 @pytest.mark.asyncio
-async def test_close_async_sets_connected_false():
-    """close_async() sets _connected to False after closing the WebSocket."""
+async def test_close_after_a_failed_write_does_not_reconnect():
+    """A writer whose write failed lost data: close() must not open a new socket and end it cleanly."""
+    writer = _make_writer()
+    writer._abort(ConnectionError("lost"))
+
+    with patch("iii._channels.asyncio.sleep", new_callable=AsyncMock), patch(
+        "iii._channels.websockets.connect", new_callable=AsyncMock
+    ) as connect:
+        await writer.close()
+
+    connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_close_sets_connected_false():
+    """close() sets _connected to False after closing the WebSocket."""
     writer = _make_writer()
 
     mock_ws = AsyncMock()
     writer._ws = mock_ws
     writer._connected = True
 
-    with patch("iii.channels.asyncio.sleep", new_callable=AsyncMock):
-        await writer.close_async()
+    with patch("iii._channels.asyncio.sleep", new_callable=AsyncMock):
+        await writer.close()
 
     assert writer._connected is False

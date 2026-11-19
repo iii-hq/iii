@@ -10,6 +10,8 @@ on:
       - 'engine/registry/**'
       - 'engine/tests/registry_install_sh.bats'
       - 'engine/tests/fixtures/registry-preamble.sh'
+      - 'engine/tests/registry_install_ps1.test.mjs'
+      - 'engine/tests/fixtures/registry-preamble.ps1'
       - '.github/workflows/install-sh.yml'
   pull_request:
     branches: [main]
@@ -20,6 +22,8 @@ on:
       - 'engine/registry/**'
       - 'engine/tests/registry_install_sh.bats'
       - 'engine/tests/fixtures/registry-preamble.sh'
+      - 'engine/tests/registry_install_ps1.test.mjs'
+      - 'engine/tests/fixtures/registry-preamble.ps1'
       - '.github/workflows/install-sh.yml'
   workflow_dispatch:
 
@@ -60,6 +64,24 @@ jobs:
         run: bats engine/tests/install_sh_unit.bats
       - name: Run bats tests of the registry installer
         run: bats engine/tests/registry_install_sh.bats
+
+  # engine/registry/install.ps1, the Windows installer, composed with the
+  # registry's PowerShell preamble: under pwsh on Linux, and under Windows
+  # PowerShell 5.1 and PowerShell 7 on Windows.
+  powershell:
+    name: PowerShell installer (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run the tests of the registry's PowerShell installer
+        run: node --test engine/tests/registry_install_ps1.test.mjs
 
   integration:
     name: Integration (${{ matrix.name }})

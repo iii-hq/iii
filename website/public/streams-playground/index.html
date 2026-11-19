@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streams in the iii SDK</title>
+<meta name="description" content="Playground for the iii SDK 0.27 streams API: InputStream, OutputStream, and pipe(), step by step.">
+<meta name="theme-color" content="#0b0b0b">
+<meta name="robots" content="noindex, nofollow">
+<link rel="preload" href="/streams-playground/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/streams-playground/fonts/geist-pixel-circle.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1075.74 1075.74'%3E%3Crect width='1075.74' height='1075.74' fill='%230b0b0b'/%3E%3Cg fill='%23fff' transform='translate(215 215) scale(.6)'%3E%3Crect y='0.05' width='268.94' height='268.94'/%3E%3Crect y='403.45' width='268.94' height='672.24'/%3E%3Crect x='403.4' y='0.05' width='268.94' height='268.94'/%3E%3Crect x='403.4' y='403.45' width='268.94' height='672.24'/%3E%3Crect x='806.81' y='0.05' width='268.94' height='268.94'/%3E%3Crect x='806.81' y='403.45' width='268.94' height='672.24'/%3E%3C/g%3E%3C/svg%3E">
+<script>
+  try { if (localStorage.getItem('theme') === 'light') document.documentElement.classList.remove('dark') } catch {}
+</script>
+<link rel="stylesheet" href="/streams-playground/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a class="brand" href="#top" aria-label="Home">
+      <svg class="logo" viewBox="0 0 1075.74 1075.74" aria-hidden="true"><rect y="0.05" width="268.94" height="268.94"/><rect y="403.45" width="268.94" height="672.24"/><rect x="403.4" y="0.05" width="268.94" height="268.94"/><rect x="403.4" y="403.45" width="268.94" height="672.24"/><rect x="806.81" y="0.05" width="268.94" height="268.94"/><rect x="806.81" y="403.45" width="268.94" height="672.24"/></svg>
+      <span class="brand-sep">/</span>
+      <span class="brand-page">streams</span>
+      <span class="badge">SDK 0.27</span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#idea">How it works</a>
+      <a href="#playground">Playground</a>
+      <a href="#faq">FAQ</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9A7 7 0 0 1 12 3z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero">
+    <div class="container">
+      <p class="eyebrow">SDK 0.27 · Streams</p>
+      <h1 class="pixel hero-title"><span class="print">Streams now go right in the payload.</span></h1>
+      <p class="lede">Before, you created a channel, wired the file into it, and passed the ref along. In 0.27 you put the file in the payload, and the handler gets an <code>InputStream</code> to read. The engine stays the same.</p>
+
+      <div class="hero-graphic" aria-label="The caller puts a file in the payload; the handler gets an InputStream">
+        <figure class="code-card">
+          <figcaption><span class="dot"></span>caller</figcaption>
+          <div class="code" data-snippet="heroCaller"></div>
+        </figure>
+        <div class="hero-wire" aria-hidden="true">
+          <svg viewBox="0 0 120 40" preserveAspectRatio="none"><path class="wire" d="M0 20 H120"/><path class="wire-lit" d="M0 20 H120"/></svg>
+          <span class="hero-wire-label">bytes</span>
+        </div>
+        <figure class="code-card">
+          <figcaption><span class="dot"></span>handler</figcaption>
+          <div class="code" data-snippet="heroHandler"></div>
+        </figure>
+      </div>
+
+      <ul class="chips" aria-label="What changed">
+        <li>no <code>createChannel</code></li>
+        <li>the SDK handles the ref</li>
+        <li>still a plain <code>call</code></li>
+        <li>returning closes the stream</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- IDEA -->
+  <section id="idea" class="section">
+    <div class="container">
+      <p class="eyebrow">How it works</p>
+      <h2 class="pixel section-title"><span class="print">Three new things.</span></h2>
+      <p class="lede">The side that gets the stream <strong>reads</strong> from an <code>InputStream</code> or <strong>writes</strong> to an <code>OutputStream</code>. Creating the pipe, swapping the file for a ref, and closing it at the end are up to the SDK.</p>
+
+      <div class="cards">
+        <article class="card">
+          <div class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><rect x="22" y="10" width="18" height="28" rx="3"/><path d="M4 24h22m-6-6 6 6-6 6"/></svg>
+          </div>
+          <h3><code>InputStream</code></h3>
+          <p class="card-say">The side that reads.</p>
+          <p class="card-text">Your handler gets one when the caller puts a file, a <code>Readable</code>, or a generator in the payload.</p>
+          <div class="code code-sm" data-snippet="cardInput"></div>
+          <details class="more">
+            <summary>Details</summary>
+            <div class="more-body">
+              <h4>What becomes an <code>InputStream</code></h4>
+              <dl class="facts">
+                <dt>TypeScript</dt><dd><code>Readable</code>, <code>ReadableStream</code>, <code>Blob</code> and <code>File</code>, async generator, <code>InputStream.from(...)</code></dd>
+                <dt>Browser</dt><dd><code>ReadableStream</code>, <code>Blob</code> and <code>File</code>, async generator, <code>InputStream.from(...)</code></dd>
+                <dt>Python</dt><dd>async generator, binary file open for reading, <code>InputStream.from_file()</code>, <code>from_iter()</code>, <code>from_bytes()</code></dd>
+                <dt>Rust</dt><dd><code>InputStream::from_reader</code>, <code>from_stream</code>, <code>from_bytes</code></dd>
+                <dt>Go</dt><dd><code>iii.InputStreamFromReader</code>, <code>iii.InputStreamFromBytes</code></dd>
+              </dl>
+              <h4>How to read</h4>
+              <p>In chunks (<code>for await</code>), all at once (<code>bytes()</code>, <code>text()</code>), by line (<code>lines()</code>), or by JSON message (<code>messages()</code>). To hand it to a native API: <code>toReadable()</code> or <code>toWebStream()</code>.</p>
+              <p>A stream has <strong>one reader</strong>. For two copies, call <code>tee()</code> before reading.</p>
+            </div>
+          </details>
+        </article>
+
+        <article class="card">
+          <div class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><rect x="8" y="10" width="18" height="28" rx="3"/><path d="M22 24h22m-6-6 6 6-6 6"/></svg>
+          </div>
+          <h3><code>OutputStream</code></h3>
+          <p class="card-say">The side that writes.</p>
+          <p class="card-text">Your handler gets one when the caller passes a destination: a <code>Writable</code>, a file to create.</p>
+          <div class="code code-sm" data-snippet="cardOutput"></div>
+          <details class="more">
+            <summary>Details</summary>
+            <div class="more-body">
+              <h4>What becomes an <code>OutputStream</code></h4>
+              <dl class="facts">
+                <dt>TypeScript</dt><dd>Node <code>Writable</code>, <code>WritableStream</code></dd>
+                <dt>Browser</dt><dd><code>WritableStream</code></dd>
+                <dt>Python</dt><dd><code>OutputStream.to_file(path)</code>, <code>OutputStream.to(writer)</code></dd>
+                <dt>Rust</dt><dd><code>OutputStream::to_writer</code></dd>
+                <dt>Go</dt><dd><code>iii.OutputStreamToWriter</code></dd>
+              </dl>
+              <h4>How to write</h4>
+              <p><code>write(bytes)</code> for bytes, <code>send(value)</code> for a JSON message, <code>close()</code> to finish, <code>abort(reason)</code> to fail.</p>
+              <p>The receiving side doesn't have to close it: <strong>returning closes</strong>, <strong>throwing aborts</strong>. To keep writing after you answer, use <code>keepOpen()</code>.</p>
+            </div>
+          </details>
+        </article>
+
+        <article class="card">
+          <div class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 48 48"><path d="M6 24h36"/><circle cx="6" cy="24" r="3"/><circle cx="42" cy="24" r="3"/><path d="M16 16h16M16 32h16" opacity=".4"/></svg>
+          </div>
+          <h3><code>pipe()</code></h3>
+          <p class="card-say">When you want both ends.</p>
+          <p class="card-text">Handy when the stream has to exist before the data, or to get progress messages while the call runs.</p>
+          <div class="code code-sm" data-snippet="cardPipe"></div>
+          <details class="more">
+            <summary>Details</summary>
+            <div class="more-body">
+              <p>Put the end the other side uses in the payload and keep the other one. Whoever calls <code>pipe()</code> <strong>owns</strong> the pipe and has to stay connected until the other side connects to its end.</p>
+              <p>The engine holds up to <strong>64 frames</strong> between the ends. In TypeScript and the browser, <code>pipe({ bufferSize })</code> changes that (up to 1024).</p>
+              <dl class="facts">
+                <dt>Python</dt><dd><code>iii.pipe()</code> or <code>await iii.pipe_async()</code>, with <code>.input</code> and <code>.output</code></dd>
+                <dt>Rust</dt><dd><code>let Pipe { input, output } = iii.pipe().await?</code></dd>
+                <dt>Go</dt><dd><code>input, output, err := client.Pipe(ctx)</code></dd>
+              </dl>
+            </div>
+          </details>
+        </article>
+      </div>
+
+      <div class="rule-strip">
+        <div class="rule-item"><span class="rule-k">The call</span><span class="rule-v">coordinates. It carries a small JSON (the ref) where the stream was.</span></div>
+        <div class="rule-item"><span class="rule-k">The pipe</span><span class="rule-v">carries the bytes, with backpressure, while both functions run.</span></div>
+        <div class="rule-item"><span class="rule-k">The engine</span><span class="rule-v">routes both, and it didn't change: a 0.26 engine serves 0.27 SDKs.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PLAYGROUND -->
+  <section id="playground" class="section">
+    <div class="container">
+      <p class="eyebrow">Playground</p>
+      <h2 class="pixel section-title"><span class="print">Four cases.</span></h2>
+      <p class="lede">Pick a case and press play, or step through it with the arrows. Each step highlights the lines of code it's talking about.</p>
+
+      <div class="workspace" id="pg">
+        <div class="pg-toolbar">
+          <div class="seg" role="tablist" aria-label="Case" id="pg-scenarios"></div>
+          <div class="seg seg-sm" role="tablist" aria-label="Language" id="pg-langs"></div>
+        </div>
+
+        <div class="stage bg-dots" id="pg-stage" aria-live="polite"></div>
+
+        <div class="pg-step">
+          <div class="pg-step-text">
+            <p class="pg-step-count" id="pg-count"></p>
+            <h3 class="pg-step-title" id="pg-title"></h3>
+            <p class="pg-step-caption" id="pg-caption"></p>
+            <details class="more more-inline" id="pg-more">
+              <summary>Details</summary>
+              <div class="more-body" id="pg-detail"></div>
+            </details>
+          </div>
+          <div class="pg-controls">
+            <div class="pg-buttons">
+              <button class="btn btn-icon" id="pg-prev" type="button" aria-label="Previous step"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+              <button class="btn btn-primary" id="pg-play" type="button"><svg viewBox="0 0 24 24" class="i-play"><path d="M8 5v14l11-7z"/></svg><svg viewBox="0 0 24 24" class="i-pause"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg><span>Play</span></button>
+              <button class="btn btn-icon" id="pg-next" type="button" aria-label="Next step"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+              <button class="btn btn-ghost" id="pg-reset" type="button">Restart</button>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="pg-deep">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+              <span>Show what the SDK does under the hood</span>
+            </label>
+          </div>
+          <ol class="pg-dots" id="pg-dots" aria-label="Steps"></ol>
+        </div>
+
+        <div class="pg-code">
+          <div class="panel" id="pg-caller">
+            <div class="panel-head"><span class="panel-role">caller</span><span class="panel-file" id="pg-caller-file"></span></div>
+            <div class="code code-lines" id="pg-caller-code"></div>
+          </div>
+          <div class="panel" id="pg-handler">
+            <div class="panel-head"><span class="panel-role">handler</span><span class="panel-file" id="pg-handler-file"></span></div>
+            <div class="code code-lines" id="pg-handler-code"></div>
+          </div>
+        </div>
+        <p class="pg-foot">The two sides can be in different processes and languages. The caller code runs inside an async function (in Go, a function that returns <code>error</code>); <code>iii</code> (Go: <code>client</code>) is the connected worker.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="section">
+    <div class="container">
+      <p class="eyebrow">FAQ</p>
+      <h2 class="pixel section-title"><span class="print">Before you ask.</span></h2>
+      <p class="lede">I put together the questions that tend to come up next, each with a small example to play with. The examples are in TypeScript; the other SDKs work the same way.</p>
+
+      <div class="faq" id="faq-list">
+
+        <details class="faq-item" id="q-json">
+          <summary><span>Why not send everything as JSON?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">A call is a JSON message: it has a <strong>64 MiB</strong> limit, has to be complete before it leaves, and sits whole in the receiver's memory. With a stream, the call carries only a small ref; the bytes go through the pipe.</p>
+            <div class="demo" data-demo="size"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>The limit applies to the whole JSON envelope, measured in UTF-8 bytes. The Node, Python, Rust, and Go SDKs go up to 64 MiB; the browser SDK sends and receives up to 16 MiB. Above that, the call fails with <code>payload_too_large</code>.</p>
+                <p>A stream carries the bytes outside the envelope, so only the ref counts toward the limit.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-channel">
+          <summary><span>Do I still need to create a channel before the call?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">No. <code>createChannel</code>, <code>readerRef</code>, and <code>writerRef</code> are gone. Put the stream straight in the payload.</p>
+            <div class="demo" data-demo="beforeafter"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>It's a breaking change, with no legacy aliases, in all five SDKs. Only workers that upgrade the SDK have to migrate, and only the code that uses channels. The engine doesn't change.</p>
+                <p>The field name stays the same: it's your function's contract. The step-by-step guide is in <a href="https://github.com/iii-hq/iii/blob/feat/sdk-call-native-streams/docs/next/upgrading/from-0-26-x.mdx" target="_blank" rel="noreferrer">Upgrading from 0.26.x</a>.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-what">
+          <summary><span>What becomes a stream and what stays JSON?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">The SDK only turns into a stream what it recognizes as a <strong>source</strong> (becomes an <code>InputStream</code>) or a <strong>destination</strong> (becomes an <code>OutputStream</code>). Strings, buffers, objects, and arrays stay JSON. Tap the values:</p>
+            <div class="demo" data-demo="classify"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>A call can carry as many streams as you want, in any field. The SDK creates the pipes in parallel before sending the call; if a pipe can't be created, the call fails before it leaves.</p>
+                <p>Rust and Go don't detect anything: the payload is a serde value (Rust) or JSON you build (Go). Use the constructors: <code>InputStream::from_reader</code>, <code>iii.InputStreamFromReader</code>, <code>iii.OutputStreamToWriter</code>.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-read">
+          <summary><span>How do I read an <code>InputStream</code>?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">Once, whichever way makes sense. This stream has four frames: three of bytes and one JSON message. See what each way of reading gives you:</p>
+            <div class="demo" data-demo="read"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>A stream carries two kinds of frame, in a single order: <strong>bytes</strong> (you write them with <code>write</code>) and <strong>messages</strong> (you send them with <code>send</code>). Reading bytes skips the messages, <code>messages()</code> skips the bytes, and <code>frames()</code> gives you both.</p>
+                <dl class="facts">
+                  <dt>Python</dt><dd><code>async for chunk in s</code>, <code>await s.read_all()</code>, <code>s.lines()</code>, <code>s.messages()</code></dd>
+                  <dt>Rust</dt><dd>a <code>Stream</code> and an <code>AsyncRead</code>; <code>read_all()</code>, <code>lines()</code>, <code>messages::&lt;T&gt;()</code></dd>
+                  <dt>Go</dt><dd>an <code>io.Reader</code>; <code>ReadAll(ctx)</code>, <code>Lines(ctx)</code>, <code>Messages(ctx)</code></dd>
+                </dl>
+                <p>Leaving the loop before the end cancels the stream. <code>cancel()</code> does the same, on purpose.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-close">
+          <summary><span>Do I need to close the stream?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">In the common case, no. When the handler finishes, the SDK closes, aborts, or cancels the streams it received. Build the case:</p>
+            <div class="demo" data-demo="lifecycle"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>To answer right away and keep writing, call <code>keepOpen()</code> and close (or abort) it yourself:</p>
+                <div class="code code-sm" data-snippet="keepOpen"></div>
+                <p>A received <code>InputStream</code> doesn't stay open after the return: finish reading first. A read that is still running fails with <code>STREAM_CLOSED</code>.</p>
+                <p>Exception: in a call that goes through an observer (like the HTTP worker calling a route), an <code>OutputStream</code> the handler didn't use is only closed if the handler returns nothing. The HTTP worker reads an untouched <code>response</code> with a result as a buffered response.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-abort">
+          <summary><span>What if something fails mid-transfer?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">The reader gets what already arrived and then a <code>STREAM_ABORTED</code> error. A cut stream never looks complete.</p>
+            <div class="demo" data-demo="abort"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>A stream aborts when the source the SDK pumps fails, when a handler throws after using an <code>OutputStream</code>, when someone calls <code>abort(reason)</code>, or when the writing worker goes down.</p>
+                <div class="code code-sm" data-snippet="abort"></div>
+                <p>The engine doesn't pass along the writer's reason: the reader sees the engine's own text. To say why, fail the call or put the cause in the result.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-slow">
+          <summary><span>Does a slow reader fill up memory?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">No. <code>write</code> only resolves when the chunk is accepted, so a slow reader slows the writer down. Change the reader's speed:</p>
+            <div class="demo" data-demo="backpressure"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>The engine holds up to 64 frames between the ends (8 squares here, to fit the screen). With <code>pipe({ bufferSize })</code> you change that, up to 1024.</p>
+                <p>Exception: in the browser, reading has no backpressure, because a page can't pause the socket. Read as it arrives, or cancel.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-twice">
+          <summary><span>Can I read the same stream twice?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">No: a stream has a single reader. The second read fails with <code>STREAM_IN_USE</code>. For two copies, call <code>tee()</code> before the first read.</p>
+            <div class="demo" data-demo="tee"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>The <code>tee()</code> copies share a small buffer (16 frames): read both at the same time. Reading one to the end before starting the other one hangs.</p>
+                <p><code>tee()</code> exists in TypeScript, the browser, and Python. In Go, read once and copy with <code>io.TeeReader</code> or <code>io.MultiWriter</code>.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-forward">
+          <summary><span>Can I pass a stream to another function without reading it?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">Yes. An <code>InputStream</code> nobody has read travels as a ref: the bytes go straight to the destination, without passing through the worker in the middle.</p>
+            <div class="demo" data-demo="forward"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>Forwarding doesn't change the pipe's owner. An <code>OutputStream</code> the handler didn't use is also forwarded as a ref. A stream that was already read, or that the handler created itself, is pumped by the forwarding worker.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-pipe">
+          <summary><span>When do I use <code>pipe()</code> instead of a destination?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">With a <strong>destination</strong>, the call waits for the file to be complete. With <code>pipe()</code>, it resolves when the handler returns, and the messages come through.</p>
+            <div class="demo" data-demo="sinkpipe"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>Use <code>pipe()</code> when the stream has to exist before the data, when it goes to a call made later, or for a two-way conversation (two pipes).</p>
+                <p>A destination only gets bytes: messages (<code>send</code>) are dropped. If the handler fails before writing to a pipe's <code>output</code>, the reader waits until the end expires; observe the call too.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-queue">
+          <summary><span>Does it work with a queue (<code>Enqueue</code>)?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">No. A stream needs a live call: the queue job can run after the pipe has expired, and a retry can't read the stream again.</p>
+            <div class="demo" data-demo="queue"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>Store the data first (in object storage, for example) and enqueue the key:</p>
+                <div class="code code-sm" data-snippet="enqueueFix"></div>
+                <p>In Go, the queue action is <code>iii.EnqueueAction(queue)</code>.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-observe">
+          <summary><span>Can an observer read the stream?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">No. In place of the stream, it gets a <code>StreamInfo</code>: <code>{ stream: true, direction, id }</code>. That way an observer never steals the bytes from the function it observes.</p>
+            <div class="demo" data-demo="observe"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>The other fields arrive as usual and filters keep working. A function called <em>through</em> an observer (like the route the HTTP worker calls with <code>request_body</code> and <code>response</code>) gets live streams.</p>
+                <p>Note: on the wire, the ref with the access key is still in the observed payload. A target on a 0.26 SDK gets that ref; don't open it, or you take the stream away from the observed function.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-browser">
+          <summary><span>What about the browser?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">Same API, with Web streams. A <code>File</code> from an <code>&lt;input type="file"&gt;</code> goes straight in the payload. Pick a file (nothing leaves this page):</p>
+            <div class="demo" data-demo="browser"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>Sources: <code>ReadableStream</code>, <code>Blob</code> and <code>File</code>, async generators, and <code>InputStream</code>. Destinations: <code>WritableStream</code> and <code>OutputStream</code>. The native bridge is <code>toWebStream()</code>.</p>
+                <p>The browser aborts with code 4011 (it can't send 1011); the engine treats it as an abort. <code>write</code> resolves while the socket has up to 1 MiB pending. Reading has no backpressure. JSON messages go up to 16 MiB.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-compat">
+          <summary><span>Do I need to upgrade the engine? What about workers that stay on 0.26?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">The engine doesn't need to change: a 0.26 engine serves 0.27 SDKs. The ref is the same JSON in every SDK, so 0.26 and 0.27 workers talk to each other in the same project. See what each one gets:</p>
+            <div class="demo" data-demo="compat"></div>
+            <details class="more">
+              <summary>Details</summary>
+              <div class="more-body">
+                <p>Only the worker whose SDK you upgrade has to migrate, and in it only the channel code. You can migrate one worker at a time.</p>
+                <p>The 0.27 closing rules apply only on the 0.27 side. A 0.26 handler that gets a writer still has to close it, and a 0.27 caller that passed a destination waits until that happens.</p>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details class="faq-item" id="q-errors">
+          <summary><span>Which errors can I see?</span><i aria-hidden="true"></i></summary>
+          <div class="faq-body">
+            <p class="faq-a">Five codes cover the stream cases. Tap each one:</p>
+            <div class="demo" data-demo="errors"></div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <p>Everything here comes from the docs in PR <a href="https://github.com/iii-hq/iii/pull/2561" target="_blank" rel="noreferrer">#2561</a>. For the full text:
+      <a href="https://github.com/iii-hq/iii/blob/feat/sdk-call-native-streams/docs/next/creating-workers/streaming.mdx" target="_blank" rel="noreferrer">Streaming (how-to)</a> ·
+      <a href="https://github.com/iii-hq/iii/blob/feat/sdk-call-native-streams/docs/next/understanding-iii/streaming.mdx" target="_blank" rel="noreferrer">Streaming (model)</a> ·
+      <a href="https://github.com/iii-hq/iii/blob/feat/sdk-call-native-streams/docs/next/upgrading/from-0-26-x.mdx" target="_blank" rel="noreferrer">Upgrading from 0.26.x</a></p>
+  </div>
+</footer>
+
+<script src="/streams-playground/snippets.js"></script>
+<script src="/streams-playground/app.js"></script>
+</body>
+</html>

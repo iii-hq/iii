@@ -98,5 +98,5 @@ The model is the easy part. The runtime around the model is where reliability li
 iii.dev. Engine, registry, and SDKs are open.
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```

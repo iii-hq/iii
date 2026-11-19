@@ -758,7 +758,8 @@ fn runtime_package_changed_for(
             != selected_artifact(candidates, &next.artifacts)
 }
 
-/// The lock sits beside its compose file and replaces the YAML extension.
+/// The lock sits beside its compose file and replaces only the final extension.
+/// For example, `worker-compose.dev.yaml` uses `worker-compose.dev.lock`.
 pub fn lock_path(compose_path: &Path) -> PathBuf {
     compose_path.with_extension("lock")
 }
@@ -1282,11 +1283,190 @@ mod tests {
     }
 
     #[test]
-    fn lock_path_replaces_the_compose_extension() {
+    fn lock_path_preserves_the_compose_file_name_and_directory() {
+        for (compose, lock) in [
+            ("worker-compose.yaml", "worker-compose.lock"),
+            ("worker-compose.yml", "worker-compose.lock"),
+            ("worker-compose.dev.yaml", "worker-compose.dev.lock"),
+            ("worker-compose.prod.yml", "worker-compose.prod.lock"),
+            ("config/local.yaml", "config/local.lock"),
+            (
+                "config/worker-compose.dev.yaml",
+                "config/worker-compose.dev.lock",
+            ),
+        ] {
+            assert_eq!(
+                lock_path(Path::new(compose)),
+                PathBuf::from(lock),
+                "{compose}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loaded_symlink_uses_the_resolved_compose_files_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path().join("projects");
+        let config = dir.path().join("config");
+        std::fs::create_dir(&projects).unwrap();
+        std::fs::create_dir(&config).unwrap();
+        let target = projects.join("local.yaml");
+        let link = config.join("dev.yaml");
+        std::fs::write(&target, "containers:\n  local:\n    worker: path://.\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let compose = ComposeFile::load(&link).unwrap();
+
         assert_eq!(
-            lock_path(Path::new("config/worker-compose.yaml")),
-            PathBuf::from("config/worker-compose.lock")
+            lock_path(&compose.path),
+            projects.canonicalize().unwrap().join("local.lock")
         );
+    }
+
+    #[tokio::test]
+    async fn metadata_preparation_keeps_sibling_compose_locks_independent() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n";
+        let mut files = Vec::new();
+        for (name, version) in [
+            ("worker-compose.yaml", "0.22.8"),
+            ("worker-compose.dev.yaml", "0.23.0"),
+        ] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, yaml).unwrap();
+            let mut compose = ComposeFile::load(&path).unwrap();
+            let mut resolved = lock().containers.remove("state").unwrap().resolved;
+            resolved.version = version.to_string();
+            let prepared = prepare_metadata_with_resolver(
+                &mut compose,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                |_, _, _, _| std::future::ready(Ok(resolved.clone())),
+            )
+            .await
+            .unwrap();
+            assert_eq!(prepared.resolved_version("state"), Some(version));
+            prepared.write_if_changed().unwrap();
+            files.push(compose);
+        }
+        let default_lock = dir.path().join("worker-compose.lock");
+        let dev_lock = dir.path().join("worker-compose.dev.lock");
+        let default_before = std::fs::read_to_string(&default_lock).unwrap();
+        let dev_before = std::fs::read_to_string(&dev_lock).unwrap();
+
+        // Both declarations use the same selector, but retain their own resolution.
+        for (compose, version) in files.iter_mut().zip(["0.22.8", "0.23.0"]) {
+            let prepared = prepare_metadata_with_resolver(
+                compose,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                |_, _, _, _| async { panic!("an unchanged declaration must use its own lock") },
+            )
+            .await
+            .unwrap();
+            assert!(!prepared.changed());
+            assert_eq!(prepared.resolved_version("state"), Some(version));
+        }
+
+        let mut updated = lock().containers.remove("state").unwrap().resolved;
+        updated.version = "0.24.0".to_string();
+        let prepared = prepare_metadata_with_resolver(
+            &mut files[1],
+            &BTreeSet::from(["state".to_string()]),
+            &BTreeMap::new(),
+            |_, _, _, _| std::future::ready(Ok(updated.clone())),
+        )
+        .await
+        .unwrap();
+        prepared.write_if_changed().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(default_lock).unwrap(),
+            default_before
+        );
+        assert_ne!(std::fs::read_to_string(dev_lock).unwrap(), dev_before);
+        for (file, version) in files.iter().zip(["0.22.8", "0.24.0"]) {
+            let mut compose = ComposeFile::load(&file.path).unwrap();
+            attach(&mut compose).unwrap();
+            assert_eq!(
+                compose.containers["state"]
+                    .resolved_package
+                    .as_ref()
+                    .unwrap()
+                    .version,
+                version
+            );
+            assert_eq!(concrete_versions(&compose).unwrap()["state"], version);
+        }
+    }
+
+    #[tokio::test]
+    async fn frozen_prepare_does_not_fall_back_to_a_sibling_compose_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml =
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n";
+        let default_path = dir.path().join("worker-compose.yaml");
+        let dev_path = dir.path().join("worker-compose.dev.yaml");
+        for path in [&default_path, &dev_path] {
+            std::fs::write(path, yaml).unwrap();
+        }
+        let mut default = ComposeFile::load(&default_path).unwrap();
+        prepare_metadata(&mut default, &BTreeSet::new())
+            .await
+            .unwrap()
+            .write_if_changed()
+            .unwrap();
+        preflight_frozen(&default).unwrap();
+        let default_lock = dir.path().join("worker-compose.lock");
+        let before = std::fs::read_to_string(&default_lock).unwrap();
+        let mut dev = ComposeFile::load(&dev_path).unwrap();
+        // ComposeFile::load canonicalizes symlinked temp roots and Windows prefixes.
+        let expected = dev.path.with_file_name("worker-compose.dev.lock");
+
+        assert!(matches!(
+            preflight_frozen(&dev),
+            Err(ComposeError::FrozenLockMissing { path }) if path == expected
+        ));
+        assert!(matches!(
+            prepare_frozen(&mut dev, &dir.path().join("cache")).await,
+            Err(ComposeError::FrozenLockMissing { path }) if path == expected
+        ));
+        assert!(!expected.exists());
+        assert_eq!(std::fs::read_to_string(default_lock).unwrap(), before);
+    }
+
+    #[test]
+    fn frozen_preflight_validates_only_the_selected_compose_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "containers:\n  state:\n    worker: package://api.workers.iii.dev/state\n    version: next\n";
+        let mut files = Vec::new();
+        for name in ["worker-compose.yaml", "worker-compose.dev.yaml"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, yaml).unwrap();
+            files.push(ComposeFile::load(path).unwrap());
+        }
+        let default_lock = dir.path().join("worker-compose.lock");
+        let dev_lock = files[1].path.with_file_name("worker-compose.dev.lock");
+        let valid = serde_yaml::to_string(&lock()).unwrap();
+        let mut stale = lock();
+        stale.containers.get_mut("state").unwrap().requested = "latest".to_string();
+        let stale = serde_yaml::to_string(&stale).unwrap();
+        std::fs::write(&default_lock, &valid).unwrap();
+        std::fs::write(&dev_lock, &stale).unwrap();
+
+        preflight_frozen(&files[0]).unwrap();
+        assert!(matches!(
+            preflight_frozen(&files[1]),
+            Err(ComposeError::FrozenLockOutOfDate { path, .. }) if path == dev_lock
+        ));
+        assert_eq!(std::fs::read_to_string(&default_lock).unwrap(), valid);
+        assert_eq!(std::fs::read_to_string(&dev_lock).unwrap(), stale);
+
+        // An invalid unrelated lock must not prevent the selected project starting.
+        std::fs::write(&default_lock, "invalid: lock\n").unwrap();
+        std::fs::write(&dev_lock, &valid).unwrap();
+        preflight_frozen(&files[1]).unwrap();
     }
 
     #[test]
