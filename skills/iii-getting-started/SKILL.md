@@ -18,6 +18,12 @@ worker runs a function with `call`, and `iii.observe(a, b)` means "when `a` runs
 curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh
 ```
 
+On Windows, in PowerShell:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
 Verify it installed:
 
 ```bash

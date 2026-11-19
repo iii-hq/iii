@@ -18,6 +18,8 @@ export type InstallCommandLine = {
 export type InstallTab = {
   id: string
   label: string
+  /** The shell prompt before each command: `$`, or `PS>` for PowerShell. */
+  prompt: string
   commands: InstallCommandLine[]
 }
 
@@ -44,7 +46,7 @@ function toWords(tokens: CodeLine): CodeToken[][] {
 /**
  * The hero's call to action: one centred terminal card. A header row carries the terminal mark, a pill tab per
  * install path from iii.dev/docs/install, and one copy control; the selected path's commands sit underneath as
- * `$`-prompted, Shiki-highlighted lines. Nothing else: the command is the whole message.
+ * prompted (`$`, `PS>` for PowerShell), Shiki-highlighted lines. Nothing else: the command is the whole message.
  */
 export function InstallCommand({ tabs, className }: InstallCommandProps) {
   const id = useId()
@@ -188,9 +190,9 @@ export function InstallCommand({ tabs, className }: InstallCommandProps) {
                   <li key={line.command} className="flex min-w-0 items-start gap-2.5 sm:gap-3">
                     <span
                       aria-hidden
-                      className="select-none font-mono text-[13px] text-hero-accent leading-[1.7] sm:text-[15px]"
+                      className="select-none whitespace-nowrap font-mono text-[13px] text-hero-accent leading-[1.7] sm:text-[15px]"
                     >
-                      $
+                      {tab.prompt}
                     </span>
                     {/* Phones: one line, scrolled sideways. Wider: the full command, wrapping at a space onto a
                         second line if it has to, never clipped or split mid-flag. */}
