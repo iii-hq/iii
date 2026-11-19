@@ -43,7 +43,7 @@ pub async fn channel_ws_upgrade(
         ChannelDirection::Read => "read",
         ChannelDirection::Write => "write",
     };
-    tracing::info!(
+    tracing::debug!(
         channel_id = %channel_id,
         dir = %dir_label,
         "Channel WS upgrade requested"
@@ -60,7 +60,7 @@ pub async fn channel_ws_upgrade(
         return (StatusCode::NOT_FOUND, "Channel not found").into_response();
     };
 
-    tracing::info!(
+    tracing::debug!(
         channel_id = %channel_id,
         dir = %dir_label,
         "Channel found, upgrading to WebSocket"
@@ -90,7 +90,7 @@ async fn handle_channel_socket(
             // Holding the channel would keep a sender that never attached alive.
             drop(channel);
             if let Some(mut rx) = rx {
-                tracing::info!(channel_id = %channel_id, "Read: receiver acquired, streaming channel → WS");
+                tracing::debug!(channel_id = %channel_id, "Read: receiver acquired, streaming channel → WS");
                 let mut total_bytes: u64 = 0;
                 let mut msg_count: u64 = 0;
                 let mut peer_left = false;
@@ -140,7 +140,7 @@ async fn handle_channel_socket(
                 // attached writer sees its receiver close.
                 channel_mgr.remove_channel(&channel_id);
                 if peer_left {
-                    tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Read: peer left, releasing channel");
+                    tracing::debug!(channel_id = %channel_id, total_bytes, msg_count, "Read: peer left, releasing channel");
                 } else if let Some(reason) = abort {
                     tracing::warn!(channel_id = %channel_id, total_bytes, msg_count, reason = %reason, "Read: writer aborted, sending WS error close");
                     let frame = CloseFrame {
@@ -149,7 +149,7 @@ async fn handle_channel_socket(
                     };
                     close_reader(&mut socket, Some(frame)).await;
                 } else {
-                    tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Read: stream complete, sending WS close");
+                    tracing::debug!(channel_id = %channel_id, total_bytes, msg_count, "Read: stream complete, sending WS close");
                     close_reader(&mut socket, None).await;
                 }
             } else {
@@ -161,7 +161,7 @@ async fn handle_channel_socket(
             let tx = channel.tx.lock().await.take();
             drop(channel);
             if let Some(tx) = tx {
-                tracing::info!(channel_id = %channel_id, "Write: sender acquired, streaming WS → channel");
+                tracing::debug!(channel_id = %channel_id, "Write: sender acquired, streaming WS → channel");
                 let mut total_bytes: u64 = 0;
                 let mut msg_count: u64 = 0;
                 // Set when the writer ends without a clean close, so its
@@ -173,7 +173,7 @@ async fn handle_channel_socket(
                         // The reader is gone, so nothing will consume what this
                         // writer sends: close now rather than on its next frame.
                         _ = tx.closed() => {
-                            tracing::info!(channel_id = %channel_id, "Write: reader gone, closing");
+                            tracing::debug!(channel_id = %channel_id, "Write: reader gone, closing");
                             let _ = socket.send(WsMessage::Close(None)).await;
                             break;
                         }
@@ -209,7 +209,7 @@ async fn handle_channel_socket(
                             ChannelItem::Binary(Bytes::copy_from_slice(&data))
                         }
                         WsMessage::Close(frame) => {
-                            tracing::info!(channel_id = %channel_id, ?frame, "Write: received WS close frame");
+                            tracing::debug!(channel_id = %channel_id, ?frame, "Write: received WS close frame");
                             // Decided on the frame: a reset or drain error after
                             // a clean close does not make it an abort.
                             abort = frame.filter(|f| f.code != close_code::NORMAL).map(|f| {
@@ -264,7 +264,7 @@ async fn handle_channel_socket(
                     // fails at once when the reader is gone.
                     let _ = tx.send(ChannelItem::Abort(reason)).await;
                 }
-                tracing::info!(channel_id = %channel_id, total_bytes, msg_count, "Write: stream complete, dropping sender");
+                tracing::debug!(channel_id = %channel_id, total_bytes, msg_count, "Write: stream complete, dropping sender");
             } else {
                 tracing::warn!(channel_id = %channel_id, "Write: channel sender already taken or missing");
                 let _ = socket.send(WsMessage::Close(None)).await;
@@ -447,6 +447,46 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("both channel ends should attach");
+    }
+
+    /// Counts events at INFO or above.
+    struct CountLoud(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountLoud {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() <= tracing::Level::INFO {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    // Every HTTP request opens a channel pair, so the per-channel lifecycle
+    // lines must stay below INFO or they fill users' log storage.
+    #[tokio::test]
+    async fn channel_lifecycle_logs_nothing_at_info() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let loud = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(CountLoud(Arc::clone(&loud))),
+        );
+        let (engine, base_url, _shutdown_tx) = spawn_app().await;
+        let (writer_ref, reader_ref) = engine.channel_manager.create_channel(8, None);
+        let mut writer = connect_end(&base_url, &writer_ref).await;
+        let mut reader = connect_end(&base_url, &reader_ref).await;
+        writer
+            .send(Message::Binary(vec![1, 2, 3].into()))
+            .await
+            .unwrap();
+        writer.close(None).await.unwrap();
+        let (data, _) = read_to_close(&mut reader).await;
+        assert_eq!(data, vec![vec![1, 2, 3]]);
+        assert!(wait_until_removed(&engine, &reader_ref.channel_id, &reader_ref.access_key).await);
+
+        assert_eq!(loud.load(std::sync::atomic::Ordering::Relaxed), 0);
     }
 
     // The http worker's response channel for a buffered-return function: the
