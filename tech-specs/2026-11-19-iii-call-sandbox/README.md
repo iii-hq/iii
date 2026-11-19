@@ -1,6 +1,6 @@
 ---
 title: iii call for VM workers — sandbox::build, sandbox::start and a streaming iii call
-tagline: "A VM container's scripts become iii call lines: scripts.build is iii call sandbox::build and scripts.run is iii call sandbox::start. iii call follows the streams a call carries and turns Ctrl+C into a stop, so the iii sandbox CLI goes away."
+tagline: "A VM container's scripts become iii call lines: scripts.build is iii call sandbox::build worker=<container> and scripts.run is iii call sandbox::start worker=<container>. iii call follows the streams a call carries and turns Ctrl+C into a stop, so the iii sandbox CLI goes away."
 date: 2026-11-19
 tags: [compose, sandbox, cli, streams]
 status: draft
@@ -38,19 +38,28 @@ onboarding:
   version: "0.2.0"
   start_after: [sandbox-libkrun]
   scripts:
-    build: iii call sandbox::build --json-env III_SANDBOX_REQUEST
-    run: iii call sandbox::start --json-env III_SANDBOX_REQUEST
+    build: iii call sandbox::build worker=onboarding
+    run: iii call sandbox::start worker=onboarding
 ```
 
 - A `path://` worker that runs its own command in the guest adds it as a field:
-  `iii call sandbox::start --json-env III_SANDBOX_REQUEST command='python main.py'`.
+  `iii call sandbox::start worker=link command='python main.py'`.
 - A container runs in a VM when the first three words of its `scripts.run` are
   `iii call sandbox::start`; `scripts.build` must then start with `iii call sandbox::build`. The
   rules of the explicit VM mode (its section 4.2) apply unchanged to these forms.
+- `worker=` must name the container itself. Compose checks it offline and refuses another name
+  with `SANDBOX_WORKER_MISMATCH`, so a renamed container fails on load, not on a startup timeout.
+  Once `${self.*}` lands (item 4), Compose writes `worker=${self.name}`.
+- Everything else the call needs comes from Compose (4.2), so the line stays this short. Run by
+  hand, outside Compose, the call takes every field as an argument:
+  `iii call sandbox::start --help` lists them.
 - The rewrite of 0.26 files writes these forms, and also rewrites the forms of the explicit VM mode
   (`iii sandbox build`, `iii sandbox run [--command '<c>']`) that the branch wrote before this spec.
 
 ## 3. `iii call`
+
+This section is delivered as its own pull request into `0.27.0`, then merged into the explicit VM
+mode branch.
 
 ### 3.1 Streams
 
@@ -84,31 +93,42 @@ function's own budget applies (`timeout_ms` of `sandbox::build`, for example). W
 
 This is the contract a long-running function relies on: it lasts as long as its caller reads.
 
-### 3.4 Payload from the environment
+### 3.4 Defaults from the environment
 
-`--json-env <VAR>`: the base payload is the JSON object in environment variable `VAR`; `--json`
-and `key=value` pairs override its keys. The values never appear in the process's arguments, so
-`ps` does not show a token or a secret from the worker's environment.
+`III_CALL_DEFAULTS` holds a JSON object keyed by function id:
+
+```json
+{
+  "sandbox::start": { "auth": "...", "state_key": "...", "source": { "kind": "bundle", "...": "..." } },
+  "sandbox::build": { "auth": "...", "state_key": "...", "timeout_ms": 1200000 }
+}
+```
+
+A call to `F` takes `III_CALL_DEFAULTS[F]` as its base payload; `--json` and `key=value` pairs
+override its keys. Only the function the entry names receives it: an `iii call state::get` in the
+same script sees nothing. The values never appear in the process's arguments, so `ps` shows no
+token and no secret from the worker's environment. A variable that is not a JSON object, or an
+entry that is not one, is a usage error. `iii call --help` documents the variable.
 
 ### 3.5 Exit codes
 
-| Code  | When                                                               |
-| ----- | ------------------------------------------------------------------ |
-| `0`   | The call succeeded and every followed stream ended.                |
-| `1`   | The function failed, or a followed stream was aborted.             |
-| `2`   | Usage error.                                                       |
+| Code  | When                                                                  |
+| ----- | --------------------------------------------------------------------- |
+| `0`   | The call succeeded and every followed stream ended.                   |
+| `1`   | The function failed, or a followed stream was aborted.                |
+| `2`   | Usage error.                                                          |
 | `130` | Interrupted by SIGINT with no answer (a second signal, or no stream). |
-| `143` | The same for SIGTERM.                                              |
+| `143` | The same for SIGTERM.                                                 |
 
-### 3.6 New flags
+### 3.6 New flags and variables
 
-| Flag                          | Default                                                 |
-| ----------------------------- | ------------------------------------------------------- |
+| Flag or variable                          | Default                                              |
+| ----------------------------------------- | ---------------------------------------------------- |
 | `--stdout`, `--stderr`, `--stdin <field>` | `stdout`, `stderr`, `stdin` when the schema has them |
-| `--no-bind`                   | off                                                     |
-| `--no-follow`                 | off                                                     |
-| `--print-result`              | off when a stream is bound or followed                  |
-| `--json-env <VAR>`            | none                                                    |
+| `--no-bind`                               | off                                                  |
+| `--no-follow`                             | off                                                  |
+| `--print-result`                          | off when a stream is bound or followed               |
+| `III_CALL_DEFAULTS`                       | unset                                                |
 
 ## 4. `sandbox::build` and `sandbox::start`
 
@@ -126,28 +146,29 @@ run in the project's namespace. Item 3 of KAN-293 later moves them into the adap
 
 ### 4.2 Request
 
-Compose writes the request into `III_SANDBOX_REQUEST` for each VM container's scripts. It
+Compose writes the request of each VM container into the `sandbox::build` and `sandbox::start`
+entries of `III_CALL_DEFAULTS`, in the environment of that container's scripts. The variable
 replaces `III_SANDBOX_TOKEN`, `III_SANDBOX_STATE_KEY`, `III_SANDBOX_ADAPTER`,
 `III_SANDBOX_NAMESPACE`, `III_WORKER_ENV_KEYS`, the `III_BUILD_*` variables and
-`III_PACKAGE_KIND`, never reaches the guest, and is never listed in the worker's environment.
+`III_PACKAGE_KIND`. It never reaches the guest and is never listed in the worker's environment.
 
-| Field          | Used by | Value                                                                        |
-| -------------- | ------- | ---------------------------------------------------------------------------- |
-| `adapter`      | both    | The adapter's name, such as `sandbox-libkrun`.                               |
-| `namespace`    | both    | Where its functions are registered.                                          |
-| `auth`         | both    | The VM's scoped token.                                                       |
-| `state_key`    | both    | The VM's state key.                                                          |
-| `worker_name`  | both    | The container key.                                                           |
-| `source`       | both    | `WorkerSource`: bundle, binary or local, with its host path.                 |
-| `env`          | both    | The worker's own variables, the guest's whole environment.                   |
-| `build_dir`    | both    | `<project>/.iii/build/<container>`.                                          |
-| `base_image`   | build   | The container's `runtime.base_image`, when set.                              |
-| `timeout_ms`   | build   | `scripts.build_timeout`.                                                     |
-| `build_id`     | start   | From `build.json`, which Compose reads before it starts the container.       |
-| `engine_url`   | start   | What the guest connects to.                                                  |
-| `stop_grace_ms`| start   | Compose's stop timeout, minus a margin for the answer.                       |
-| `command`      | start   | The guest command of a `path://` worker; refused on a package.               |
-| `stdout`, `stderr` | both | `OutputStream` sinks, bound by `iii call`.                                 |
+| Field              | Used by | Value                                                                  |
+| ------------------ | ------- | ---------------------------------------------------------------------- |
+| `worker`           | both    | The container key, written on the script's line.                       |
+| `adapter`          | both    | The adapter's name, such as `sandbox-libkrun`.                         |
+| `namespace`        | both    | Where its functions are registered.                                    |
+| `auth`             | both    | The VM's scoped token.                                                 |
+| `state_key`        | both    | The VM's state key.                                                    |
+| `source`           | both    | `WorkerSource`: bundle, binary or local, with its host path.           |
+| `env`              | both    | The worker's own variables, the guest's whole environment.             |
+| `build_dir`        | both    | `<project>/.iii/build/<container>`.                                    |
+| `base_image`       | build   | The container's `runtime.base_image`, when set.                        |
+| `timeout_ms`       | build   | `scripts.build_timeout`.                                               |
+| `build_id`         | start   | From `build.json`, which Compose reads before it starts the container. |
+| `engine_url`       | start   | What the guest connects to.                                            |
+| `stop_grace_ms`    | start   | Compose's stop timeout, minus a margin for the answer.                 |
+| `command`          | start   | The guest command of a `path://` worker; refused on a package.         |
+| `stdout`, `stderr` | both    | `OutputStream` sinks, bound by `iii call`.                             |
 
 ### 4.3 `sandbox::build`
 
@@ -169,9 +190,10 @@ empty frame to them every few seconds, so a reader that left is noticed with a s
 
 - Its sinks closing (Compose's SIGTERM, a Ctrl+C) stops the VM with `worker::stop` and
   `stop_grace_ms`, then answers `{ stopped: true, exit_code }`.
-- The VM exiting with 0 answers `{ exit_code: 0 }`; exiting otherwise fails with
-  `WORKER_EXITED`, its code or signal in the message, so `iii call` exits 1 and Compose's restart
-  policy sees a failure.
+- The VM exiting with 0 answers `{ exit_code: 0 }`. Exiting otherwise fails with
+  `WORKER_EXITED`, its code or signal in the message, so `iii call` exits 1. Compose's restart
+  policy only tells zero from non-zero, so it is unaffected; the VM's own code is in the error, in
+  the container's logs.
 - A `build_id` that does not match `image.id` fails with S508, as today; the message asks for
   `iii call compose::build worker=<container>`.
 
@@ -187,7 +209,7 @@ spawns the script. `SANDBOX_PRUNE_UNSUPPORTED` stays with `compose::remove`.
 
 ### 5.1 Scripts
 
-Compose spawns a VM container's scripts as it spawns any script, with `III_SANDBOX_REQUEST`. It
+Compose spawns a VM container's scripts as it spawns any script, with `III_CALL_DEFAULTS`. It
 reads `BUILD_FAILED` from the call's one-line `Error:` instead of the
 `iii sandbox: build failed:` line.
 
@@ -198,7 +220,9 @@ with the source read before and after the build (`BUILD_INPUT_CHANGED`). `image.
 from `image.id`, `adapter` and `contract` from Compose's own `adapter::info`. The adapter's
 `base_image.reference` and `digest` are in the call's answer, which Compose does not read:
 `reference` records the image that was asked for, the declared one or the manifest's, and `digest`
-is `null` (open question 4).
+is `null`. Nothing reads them: the out-of-date check compares the declared image only. What is lost
+is the record of the digest a moving tag such as `:latest` resolved to; an adapter that writes it
+next to the image (a contract follow-up) would bring it back.
 
 ### 5.3 Operators
 
@@ -214,25 +238,25 @@ is `null` (open question 4).
 The `iii sandbox` subcommand, its CLI reference, its docs, and the CLI half of `sandbox_cli.rs`.
 The rest moves to the router (4.1).
 
-## 6. Delivery in this repository
+## 6. Delivery
 
-1. `iii call`: section 3. Coordinate with @sergiofilhowz, who is working on streaming in `call`.
-2. The router: section 4, a port of `sandbox_cli.rs` with its tests.
-3. Compose: section 5, the rewrite of section 2, and `compose_sandbox_e2e` on the new forms.
+1. `iii call` (section 3): its own pull request into `0.27.0`, then `0.27.0` is merged into the
+   explicit VM mode branch.
+2. The router (section 4): a port of `sandbox_cli.rs` with its tests.
+3. Compose (section 5), the rewrite of section 2, and `compose_sandbox_e2e` on the new forms.
 4. Docs: Compose, sandboxes, the upgrade guide, the CLI reference; the explicit VM mode spec points
    here.
 
 The adapter in `iii-hq/workers` does not change.
 
-## 7. Open questions
+## 7. Decisions
 
-1. **Names.** `sandbox::build` and `sandbox::start`, or `sandbox::worker::build` and
-   `sandbox::worker::run`. r26 writes `sandbox::run`, but that id is the one-shot snippet run.
-2. **Where the request comes from.** `--json-env III_SANDBOX_REQUEST`, as above, or explicit
-   fields once `${self.*}` lands (item 4). Explicit fields still need a way to pass the token and
-   the worker's secrets without putting them in the arguments.
-3. **The VM's exit code.** `WORKER_EXITED` makes `iii call` exit 1 for any failure. A generic
-   `--exit-code <path>` would keep the VM's own code, at the cost of one more flag on the line.
-4. **The base image digest.** `null` in `build.json` until the adapter writes it next to the image
-   (a contract follow-up), or `iii call --output <file>`, which Compose would read.
-5. **The `iii call` part.** Whether the work in flight already covers section 3.
+1. **Names:** `sandbox::build` and `sandbox::start`. `sandbox::run` stays the one-shot snippet
+   run.
+2. **Context:** per-function defaults in `III_CALL_DEFAULTS`, with `worker=` on the line and
+   checked by Compose. No flag on the line, and no secret in the arguments.
+3. **Exit code:** a VM that fails makes `iii call` exit 1 (`WORKER_EXITED`), with no
+   `--exit-code` flag.
+4. **Base image digest:** `null` in `build.json`.
+5. **`iii call`:** the streaming SDK work is in `0.27.0` (#2561); what section 3 adds to the CLI is
+   a separate pull request into `0.27.0`.
