@@ -2,7 +2,7 @@
 title: '8 AI agent observability best practices for tracing tool execution'
 seoTitle: '8 AI Agent Observability Best Practices for Tool Calls'
 description: 'Learn 8 AI agent observability best practices for tracing tool calls, tracking latency and token usage, and protecting sensitive data, with examples in iii.'
-pubDate: 2026-11-16
+pubDate: 2026-11-23
 tags: ['agents', 'observability', 'tracing', 'opentelemetry', 'harness']
 ogImage: ../../assets/blog/ai-agent-observability-best-practices/og.png
 faq:
