@@ -409,13 +409,11 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
 /// waits for its blocking pool when it shuts down, so a read there (as `tokio::io::stdin` does
 /// it) held up the exit of a call that answered without reading a stdin its parent kept open.
 /// The process does not wait for this thread when it exits. A read that fails is recorded in
-/// `unread` before the stream is aborted, so the call learns of it before the function answers.
+/// `unread` by the thread itself, before it is queued and the stream aborted: a function that
+/// answers before this copy takes the failure still leaves the call failing for the lost input.
 async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
-    let fail = |error: String| {
-        *unread
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
-    };
+    let fail = |error: String| record_unread(&unread, error);
+    let read_failures = Arc::clone(&unread);
     let (sender, mut chunks) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
     let reader = std::thread::Builder::new()
         .name("iii-call-stdin".to_string())
@@ -429,7 +427,10 @@ async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
                     Ok(0) => return,
                     Ok(read) => Ok(buffer[..read].to_vec()),
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        record_unread(&read_failures, error.to_string());
+                        Err(error)
+                    }
                 };
                 let failed = chunk.is_err();
                 // The send fails once the copy is gone: nobody wants more of stdin.
@@ -458,6 +459,15 @@ async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
         }
     }
     let _ = output.close().await;
+}
+
+/// Keeps the first stdin failure: the thread that read and the copy that met it can both report
+/// the same one.
+fn record_unread(unread: &Mutex<Option<String>>, error: String) {
+    unread
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(error);
 }
 
 /// SIGINT and SIGTERM. While streams are carried, the first one is a stop request and a second one
