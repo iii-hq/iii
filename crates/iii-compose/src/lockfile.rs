@@ -785,6 +785,19 @@ fn load(path: &Path) -> Result<Option<ComposeLock>> {
     Ok(Some(lock))
 }
 
+/// The package and placement (`true` for a VM) the lock at `path` gives each container, read
+/// and validated as every other reader does: `None` when there is no lock.
+pub(crate) fn locked_packages(
+    path: &Path,
+) -> Result<Option<BTreeMap<String, (ResolvedPackage, bool)>>> {
+    Ok(load(path)?.map(|lock| {
+        lock.containers
+            .into_iter()
+            .map(|(key, entry)| (key, (entry.resolved, entry.vm)))
+            .collect()
+    }))
+}
+
 /// Validates all untrusted lock fields before they reach the cache or runtime.
 fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
     let invalid = |message: String| ComposeError::InvalidLock {

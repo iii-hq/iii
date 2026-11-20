@@ -220,41 +220,20 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
 
 /// Whether the lock at `path` resolves the same containers to the same packages, for the same
 /// platforms, as `prepared`: what this build wrote, in the part `.iii/workers/` is made from.
-/// Compared parsed, so the check does not depend on re-reading the bytes it wrote; a lock that
-/// is missing or does not parse holds nothing.
+/// Read and validated as every reader does, then compared parsed, so the check does not depend
+/// on re-reading the bytes it wrote; a lock that is missing, or that the next Compose would
+/// refuse, holds nothing.
 fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock) -> Result<bool> {
-    let Some(bytes) = read_if_present(path)? else {
-        return Ok(false);
+    let on_disk = match crate::lockfile::locked_packages(path) {
+        Ok(Some(on_disk)) => on_disk,
+        Ok(None) | Err(ComposeError::InvalidLock { .. }) => return Ok(false),
+        Err(error) => return Err(error),
     };
-    let Ok(document) = serde_yaml::from_slice::<serde_yaml::Value>(&bytes) else {
-        return Ok(false);
-    };
-    let Some(containers) = document
-        .get("containers")
-        .and_then(serde_yaml::Value::as_mapping)
-    else {
-        return Ok(false);
-    };
-    let mut on_disk = BTreeMap::new();
-    for (key, entry) in containers {
-        let (Some(key), Some(resolved)) = (key.as_str(), entry.get("resolved")) else {
-            return Ok(false);
-        };
-        let Ok(resolved) = serde_yaml::from_value::<registry::ResolvedPackage>(resolved.clone())
-        else {
-            return Ok(false);
-        };
-        let vm = entry
-            .get("vm")
-            .and_then(serde_yaml::Value::as_bool)
-            .unwrap_or(false);
-        on_disk.insert(key, (resolved, vm));
-    }
     let wrote: BTreeMap<_, _> = prepared
         .packages()
         .map(|(key, resolved)| {
             (
-                key,
+                key.to_string(),
                 (
                     resolved.clone(),
                     prepared.platform(key) == registry::Platform::Vm,
@@ -832,6 +811,16 @@ mod tests {
         std::fs::write(&lock_path, serde_yaml::to_string(&lock(&other)).unwrap()).unwrap();
         assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
         std::fs::write(&lock_path, "containers: [").unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        // The same packages in a lock the next Compose refuses: another version of the format,
+        // or a `vm` that is not a boolean.
+        let mut future = lock(&resolved);
+        future["version"] = 2.into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&future).unwrap()).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        let mut vm = lock(&resolved);
+        vm["containers"]["state"]["vm"] = "no".into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&vm).unwrap()).unwrap();
         assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
         std::fs::remove_file(&lock_path).unwrap();
         assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
