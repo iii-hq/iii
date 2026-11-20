@@ -448,6 +448,27 @@ async fn a_build_prints_its_output_and_answers_with_the_image() {
     assert_eq!(text(&out.stderr), "a warning\n");
 }
 
+/// A binary's executable is found, not declared: the build names the one the guest runs before
+/// the adapter's own output.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_binary_build_says_which_executable_the_guest_runs() {
+    let engine = start().await;
+    let mut defaults: Value = serde_json::from_str(&defaults("build-ok")).unwrap();
+    defaults["sandbox::build"]["source"] = json!({
+        "kind": "binary", "package": "indexer",
+        "host_path": "/srv/project/.iii/workers/api", "executable": "bin/indexer"
+    });
+    let (mut command, _cwd) = iii_call(&engine, "build-ok", &["sandbox::build", "worker=api"]);
+    command.env("III_CALL_DEFAULTS", defaults.to_string());
+    let out = output(command).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        "indexer: the guest runs bin/indexer from /srv/project/.iii/workers/api\n\
+         installing dependencies\n"
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn sigterm_cancels_a_build_and_the_adapter_aborts_it() {

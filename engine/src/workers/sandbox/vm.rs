@@ -458,6 +458,20 @@ pub async fn build(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
     let binary =
         matches!(request.source, WorkerSource::Binary { .. }) || request.base_image.is_some();
     adapter.check(&info, binary)?;
+    // A binary's executable is found, not declared: the build says which one the guest runs.
+    if let WorkerSource::Binary {
+        package,
+        host_path,
+        executable,
+    } = &request.source
+    {
+        sinks
+            .write(
+                &LogStream::Stdout,
+                &format!("{package}: the guest runs {executable} from {host_path}"),
+            )
+            .await;
+    }
 
     let Some((logs, capture)) = Capture::open(engine, &sinks).await else {
         return Err(failure(
