@@ -3552,6 +3552,29 @@ mod adapter_restart_tests {
                 "{status:?}"
             );
         }
+
+        // A `compose::down` of a failed container with nothing left to stop is the operator's
+        // stop all the same: the retry leaves it down.
+        project.inner.lock().await.state.containers.insert(
+            "own".to_string(),
+            crate::state::ChildRecord {
+                pid: None,
+                birth: None,
+                vm: None,
+                status: ChildStatus::Failed,
+                started_at: 0,
+                last_error: None,
+            },
+        );
+        let down = project.down(Some("own"), "down".into()).await;
+        assert_eq!(down.status, OpStatus::Ok, "{down:?}");
+        assert!(
+            !project
+                .pending_rebuilds(&file)
+                .await
+                .contains(&"own".to_string()),
+            "a stopped container is not pending"
+        );
         project.shutdown().await;
     }
 

@@ -1073,12 +1073,14 @@ async fn down_scoped(
             let changed = crate::sandbox::stop_own_vm(ctx, &key).await;
             if changed {
                 let _ = await_name_release(ctx, &key).await;
-                if let Some(record) = records.get_mut(&key) {
-                    record.status = ChildStatus::Stopped;
-                }
                 report::stopped(&key);
             } else {
                 report::unchanged(&key, "not running");
+            }
+            // The operator stopped it, whatever was left to stop: a container that went down
+            // failing is no longer one a retried add or update starts again.
+            if let Some(record) = records.get_mut(&key) {
+                record.status = ChildStatus::Stopped;
             }
             results.push(ContainerResult {
                 container: key,
