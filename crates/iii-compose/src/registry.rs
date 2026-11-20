@@ -535,12 +535,16 @@ fn linux_targets(arch: &str) -> Vec<&'static str> {
 }
 
 /// The triple of the artifact `resolved` installs on `platform`. A bundle has one archive,
-/// recorded under the triple of the host that resolved it, whatever the platform.
-pub(crate) fn artifact_target(resolved: &ResolvedPackage, platform: Platform) -> &'static str {
+/// recorded under the triple of the host that resolved it, whatever the platform: its one key,
+/// whichever host consumes the lock.
+pub(crate) fn artifact_target(resolved: &ResolvedPackage, platform: Platform) -> &str {
     if resolved.kind == "binary" {
-        platform.target(&resolved.artifacts)
-    } else {
-        runnable_target(&resolved.artifacts)
+        return platform.target(&resolved.artifacts);
+    }
+    let mut keys = resolved.artifacts.keys();
+    match (keys.next(), keys.next()) {
+        (Some(only), None) => only,
+        _ => runnable_target(&resolved.artifacts),
     }
 }
 
@@ -3696,6 +3700,28 @@ mod tests {
                 .contains("x86_64-apple-darwin, x86_64-unknown-linux-gnu"),
             "{error}"
         );
+    }
+
+    /// A bundle's one archive is the one to install, whichever host's triple the lock that
+    /// another machine wrote recorded it under.
+    #[test]
+    fn a_bundle_installs_its_one_archive_whatever_host_locked_it() {
+        let foreign = if host_target() == "aarch64-apple-darwin" {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-apple-darwin"
+        };
+        let bundle: ResolvedPackage = serde_yaml::from_str(&format!(
+            "{{name: kit, version: 1.0.0, type: bundle, artifacts: {{{foreign}: {{url: \
+             'https://example.com/kit.tar.gz', sha256: '{}'}}}}}}",
+            "a".repeat(64)
+        ))
+        .unwrap();
+        for platform in [Platform::Host, Platform::Vm] {
+            assert_eq!(artifact_target(&bundle, platform), foreign);
+            let package = ProjectPackage::locked("kit", &bundle, platform).unwrap();
+            assert_eq!(package.sha256, format!("sha256:{}", "a".repeat(64)));
+        }
     }
 
     /// Inside one preparation, a host lookup and a VM lookup of the same range each get the build
