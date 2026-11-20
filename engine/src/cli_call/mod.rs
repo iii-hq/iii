@@ -408,10 +408,16 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     }
     .map_err(CallCliError::Usage)?;
     // A parent process (Compose, for a VM container's scripts) hands the call
-    // fields it must not put in the arguments, where `ps` would show them.
+    // fields it must not put in the arguments, where `ps` would show them: only
+    // for the function in the namespace the call resolves in, `default` without
+    // `-n`, as `exec` routes it.
     let defaults = payload::defaults_from_env(std::env::var(payload::DEFAULTS_ENV))
         .map_err(CallCliError::Usage)?;
-    let payload = payload::apply_defaults(function_path, defaults.as_deref(), payload)
+    let namespace = args
+        .namespace
+        .as_deref()
+        .unwrap_or(iii::protocol::DEFAULT_NAMESPACE);
+    let payload = payload::apply_defaults(function_path, namespace, defaults.as_deref(), payload)
         .map_err(CallCliError::Usage)?;
     let options = exec::Options {
         timeout_ms: args.timeout_ms,

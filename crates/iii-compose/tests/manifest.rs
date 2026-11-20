@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use iii_compose::{ComposeFile, StartSpec, VmSpec};
+use iii_compose::{ComposeFile, StartSpec};
 
 /// Writes a compose file plus optional worker dirs/manifests into a tempdir and
 /// loads it, so path resolution goes through the same code the CLI uses.
@@ -21,10 +21,6 @@ fn project(tmp: &Path, compose: &str, workers: &[(&str, Option<&str>)]) -> Compo
 
 fn start_of(file: &ComposeFile, key: &str) -> Result<StartSpec, iii_compose::ComposeError> {
     iii_compose::manifest::resolve_start(key, &file.containers[key])
-}
-
-fn canonical_worker_dir(tmp: &Path) -> std::path::PathBuf {
-    std::fs::canonicalize(tmp.join("workers/api")).unwrap()
 }
 
 const MANIFEST: &str = r#"
@@ -75,7 +71,7 @@ fn compose_run_wins_over_the_manifest() {
 }
 
 #[test]
-fn base_image_selects_the_local_vm() {
+fn a_base_image_alone_selects_no_vm() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
@@ -85,15 +81,12 @@ fn base_image_selects_the_local_vm() {
 
     assert_eq!(
         start_of(&file, "api").unwrap(),
-        StartSpec::Vm(VmSpec::Local {
-            worker_dir: canonical_worker_dir(tmp.path()),
-            run_override: None,
-        })
+        StartSpec::Shell("python src/main.py".to_string())
     );
 }
 
 #[test]
-fn compose_run_overrides_the_manifest_inside_the_local_vm() {
+fn compose_run_wins_over_a_base_image_manifest() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
@@ -103,15 +96,12 @@ fn compose_run_overrides_the_manifest_inside_the_local_vm() {
 
     assert_eq!(
         start_of(&file, "api").unwrap(),
-        StartSpec::Vm(VmSpec::Local {
-            worker_dir: canonical_worker_dir(tmp.path()),
-            run_override: Some("python src/dev.py".to_string()),
-        })
+        StartSpec::Shell("python src/dev.py".to_string())
     );
 }
 
 #[test]
-fn compose_run_is_enough_for_a_local_vm_without_manifest_start() {
+fn compose_run_is_enough_for_a_base_image_worker_without_manifest_start() {
     let tmp = tempfile::tempdir().unwrap();
     let file = project(
         tmp.path(),
@@ -124,10 +114,7 @@ fn compose_run_is_enough_for_a_local_vm_without_manifest_start() {
 
     assert_eq!(
         start_of(&file, "api").unwrap(),
-        StartSpec::Vm(VmSpec::Local {
-            worker_dir: canonical_worker_dir(tmp.path()),
-            run_override: Some("python src/dev.py".to_string()),
-        })
+        StartSpec::Shell("python src/dev.py".to_string())
     );
 }
 

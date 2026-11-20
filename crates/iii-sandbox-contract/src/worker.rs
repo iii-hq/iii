@@ -58,8 +58,30 @@ pub enum WorkerSource {
     Bundle {
         /// Manifest name, not the container key.
         package: String,
-        /// The bundle in Compose's package cache.
+        /// The container's directory in the project's `.iii/workers/`,
+        /// `<project>/.iii/workers/<container>`. `worker::build` copies it into the image; a
+        /// `worker::start` with `build` does not mount it. Before contract 1.3 it was the bundle
+        /// in Compose's package cache.
         host_path: String,
+    },
+    /// A `binary` package's Linux build, run as the worker in the VM. Since contract 1.4
+    /// ([`FEATURE_BINARY`](crate::FEATURE_BINARY)).
+    ///
+    /// Only `worker::build`, which needs [`WorkerBuildRequest::base_image`], and a
+    /// `worker::start` with `build` take it; `worker::prepare` and a `worker::start` without
+    /// `build` refuse it with `S501`. The guest runs `/workspace/<executable>` with no arguments.
+    Binary {
+        /// Manifest name, not the container key.
+        package: String,
+        /// The container's package directory, as for `Bundle`, where Compose put the binary's
+        /// Linux build for the host's architecture. `worker::build` copies it into the image.
+        /// It may hold an `iii.worker.yaml`; if it does, its name must equal `package`, it may
+        /// not set `scripts.setup`, and its `scripts.install` and `env` apply. A manifest that
+        /// breaks this gets `S501`.
+        host_path: String,
+        /// Path of the executable, relative to `host_path`: normal components only, inside
+        /// `host_path`, not a symlink, and a regular executable file. Any other gets `S501`.
+        executable: String,
     },
     /// Local sources always sync into the VM.
     Local {
@@ -83,6 +105,61 @@ pub struct WorkerPrepareRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerPrepareResponse {}
 
+/// Builds a fresh VM image, pulling its base, without a preceding prepare (contract 1.3).
+/// Publishes `image.erofs` then `image.id` atomically in `output_dir`; running VMs keep their image.
+/// One build per `state_key`: concurrent builds get `S509`; setup/install or write failures get `S507`.
+/// Closing or failing `logs` cancels the build, preserves the previous image and releases the key.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildRequest {
+    /// The project token or the VM's scoped token.
+    pub auth: String,
+    /// The VM the build is for; a scoped token is checked against it.
+    pub state_key: String,
+    /// Container key, for logs and errors.
+    pub worker_name: String,
+    pub source: WorkerSource,
+    /// Absolute host directory of the build: `<project>/.iii/build/<container>`. Must be under the
+    /// adapter's host roots. The adapter writes `image.erofs` there through a temporary file
+    /// and a rename.
+    pub output_dir: String,
+    /// Env of the setup/install steps: `guest_env`, nothing from the host.
+    pub env: BTreeMap<String, String>,
+    /// Writer end of a channel for the build's output, one `LogRecord` JSON per text frame.
+    /// Required: the build lives as long as the caller reads it. When it has had no output to
+    /// write for 5 s, the adapter writes a one-byte binary frame to keep the channel alive;
+    /// readers take records from text frames only.
+    pub logs: StreamChannelRef,
+    /// The image reference the build starts from, instead of the manifest's
+    /// `runtime.base_image`; `None` keeps the manifest's. Required with a
+    /// [`WorkerSource::Binary`], whose package names no base image: a binary build without it
+    /// gets `S001`, and so does an implausible reference with any source. An older adapter
+    /// ignores the field, so a caller sends it only to one that announces
+    /// [`FEATURE_BINARY`](crate::FEATURE_BINARY). Since contract 1.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_image: Option<String>,
+}
+
+/// Reply of `worker::build`, once the image is in place. Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildResponse {
+    /// Digest of the image written, `sha256:<hex>`; passed back on `worker::start`.
+    pub build_id: String,
+    /// The base image the build started from.
+    pub base_image: BaseImageRef,
+    /// When the build finished, in milliseconds since the Unix epoch.
+    pub built_at_ms: u64,
+}
+
+/// The base image a build started from. Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BaseImageRef {
+    /// The image reference the adapter pulled, e.g. `docker.io/iiidev/node:latest`.
+    pub reference: String,
+    /// Resolved digest, `None` when the cached rootfs carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+}
+
 /// Boots the VM. The adapter reads resources from the worker's manifest.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerStartRequest {
@@ -100,6 +177,23 @@ pub struct WorkerStartRequest {
     pub env: BTreeMap<String, String>,
     /// The engine's URL as seen from the host.
     pub engine_url: String,
+    /// Boot the image `worker::build` wrote, without running `scripts.setup`/`scripts.install`.
+    /// With it, the caller does not call `worker::prepare`. An older adapter ignores the field,
+    /// so a caller sends it only to one that announces [`FEATURE_BUILD`](crate::FEATURE_BUILD).
+    /// Since contract 1.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<WorkerBuildRef>,
+}
+
+/// The build `worker::start` boots. The adapter compares `build_id` with `build_dir/image.id`
+/// and refuses a mismatch or a missing file with `S508`; it does not hash the image on start.
+/// Since contract 1.3.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkerBuildRef {
+    /// [`WorkerBuildResponse::build_id`] of the build.
+    pub build_id: String,
+    /// The `output_dir` the build was written to.
+    pub build_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -196,14 +290,28 @@ pub struct WorkerStopRequest {
     pub grace_ms: u64,
 }
 
-/// Refused while the VM is running.
+/// Refused while the VM is running. Deletes the VM's runtime state; `prune` says whether its
+/// data goes too.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyRequest {
     pub auth: String,
     pub state_key: String,
+    /// Delete retained data as well as runtime state. Without `prune`, guest data stays;
+    /// [`WorkerDestroyResponse::kept`] lists it and a later build-backed start can reuse it.
+    /// Omitted when false. Before contract 1.4, adapters delete all data regardless;
+    /// check [`FEATURE_PRUNE`](crate::FEATURE_PRUNE) before relying on preservation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prune: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WorkerDestroyResponse {
+    /// `true` when the destroy removed the VM's runtime state, or, with `prune`, anything;
+    /// `false` when there was nothing to remove. A VM that held only data answers `false` to a
+    /// destroy without `prune`, with [`WorkerDestroyResponse::kept`] listing that data.
     pub destroyed: bool,
+    /// Absolute host paths of the VM's data that stayed: empty with `prune`, or when the VM had
+    /// none. Since contract 1.4; an older adapter sends none, and keeps nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }

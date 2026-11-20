@@ -1,7 +1,8 @@
 // Copyright 2025 Motia LLC. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Prepare every registry package in a compose file without starting anything.
+//! Prepare every registry package in a compose file without starting anything: lock it,
+//! download it into the shared cache, and copy it into the project's `.iii/workers/` (spec 7.5).
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -37,7 +38,11 @@ struct PackageRequest {
 }
 
 /// Lock and download every `package://` container declared by `file` into the
-/// cache shared with `compose::up`.
+/// cache shared with `compose::up`, then copy each into `.iii/workers/<container>/`
+/// beside the file. Not frozen, it first migrates the containers 0.26 ran in a
+/// VM (spec 7.3). Frozen or not, it refuses the scripts `up` would refuse (spec 4.2 of
+/// the explicit VM mode, and `SANDBOX_WORKER_MISMATCH`), before anything downloads, so a
+/// check without an engine catches them. The platform aside: the file may run elsewhere.
 pub async fn build(file: &Path) -> Result<BuildReport> {
     build_with_mode(file, false).await
 }
@@ -49,11 +54,24 @@ pub async fn build_frozen(file: &Path) -> Result<BuildReport> {
 
 async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     let began = Instant::now();
-    let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
+    // Read through the canonical path, once, and parsed from that read: the snapshot the stale
+    // checks compare with. A symlink that changes targets meanwhile, or a second read, could
+    // otherwise pair one project's text with another's directory.
+    let canonical = std::fs::canonicalize(file)
+        .or_else(|_| std::path::absolute(file))
+        .map_err(|source| ComposeError::Io {
+            path: file.to_path_buf(),
+            source,
+        })?;
+    let text = std::fs::read_to_string(&canonical).map_err(|source| ComposeError::Io {
         path: file.to_path_buf(),
         source,
     })?;
-    let mut file = ComposeFile::load(file)?;
+    let mut file = ComposeFile::parse(&text, canonical)?;
+    // The lock as this build found it, before anything read it. Beside the
+    // canonical file, as `prepare` reads it: a symlinked compose file has its
+    // lock beside its target.
+    let found_lock = read_if_present(&crate::lockfile::lock_path(&file.path))?;
     let cache = StateStore::package_cache()?;
     let packages = file
         .containers
@@ -77,10 +95,14 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut file, &cache).await?;
             crate::sandbox::require_declared_adapter(&file, &namespace)?;
+            crate::sandbox::validate_script_rules(&file)?;
             return Ok::<_, ComposeError>(prepared);
         }
         let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()).await?;
         let path = file.path.clone();
+        // Spec 7.2 and 7.3 first, so the adapter check sees the rewritten
+        // containers and re-resolves, or removes, the adapter `migrate` added.
+        crate::sandbox::migrate_offline(&path, &mut edited, &mut file, &mut prepared).await?;
         crate::sandbox::apply_adapter_change(
             &path,
             &mut edited,
@@ -93,6 +115,9 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             false,
         )
         .await?;
+        // As `up` checks them, on the rewritten containers with their packages known.
+        crate::sandbox::validate_script_rules(&file)?;
+        // Resolved first, the adapter included: everything downloads in one batch.
         prepared.install(&cache).await?;
         Ok(prepared)
     }
@@ -108,25 +133,74 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     for (container, reference, canonical) in prepared.aliases() {
         registry::warn_alias(container, reference, Some(canonical), None).await;
     }
-    // The daemon's mutation lock is in its own process: an edit made while
-    // this prepared must not be overwritten from the snapshot. A build that
-    // writes nothing (frozen, or already locked) overwrites nothing.
-    if (edited != text || prepared.changed())
-        && std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+    // The daemon's mutation lock is in its own process: an edit of the file, or
+    // a lock it committed, while this prepared must not be overwritten from the
+    // snapshot. A build that writes nothing (frozen, or already locked)
+    // overwrites nothing.
+    let wrote = edited != text || prepared.changed();
+    if wrote {
+        let stale = if std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
             path: file.path.clone(),
             source,
         })? != text
-    {
-        let error = ComposeError::BuildPlanStale {
-            path: file.path.clone(),
+        {
+            Some(file.path.clone())
+        } else if read_if_present(prepared.path())? != found_lock {
+            Some(prepared.path().to_path_buf())
+        } else {
+            None
         };
-        report::plan_done();
-        report::summary_failed("build", error.code(), began.elapsed());
-        return Err(error);
+        if let Some(path) = stale {
+            let error = ComposeError::BuildPlanStale { path };
+            report::plan_done();
+            report::summary_failed("build", error.code(), began.elapsed());
+            return Err(error);
+        }
     }
     crate::daemon::persist_mutation(&file.path, &text, &edited, &prepared)?;
     if prepared.changed() {
         report::lock_changed(prepared.path(), !prepared.existed());
+    }
+    // `.iii/workers/` follows the lock just written, under `--frozen` too (spec 7.5).
+    // The daemon materializes too, and may have changed the file or the lock
+    // since this build read them: checked again under `.iii/workers/.lock`, every
+    // time, so a stale build never undoes the daemon's newer `.iii/workers/`.
+    // The lock must still be the one this build stands on: the one it found
+    // when it wrote none, or, when it wrote one, a lock resolving every
+    // container to the package it wrote. A build that wrote nothing compares
+    // the lock alone, since `.iii/workers/` follows the lock: an edit of the file
+    // made meanwhile is kept and fails nothing. One that wrote also compares
+    // the file with what it wrote.
+    let unchanged = || {
+        let file_holds = !wrote
+            || std::fs::read_to_string(&file.path).map_err(|source| ComposeError::Io {
+                path: file.path.clone(),
+                source,
+            })? == edited;
+        let lock_holds = if prepared.changed() {
+            locks_the_same_packages(prepared.path(), &prepared)?
+        } else {
+            read_if_present(prepared.path())? == found_lock
+        };
+        if !file_holds {
+            return Err(ComposeError::BuildPlanStale {
+                path: file.path.clone(),
+            });
+        }
+        if !lock_holds {
+            return Err(ComposeError::BuildPlanStale {
+                path: prepared.path().to_path_buf(),
+            });
+        }
+        Ok(())
+    };
+    let compose_dir = crate::build_record::compose_dir(&file.path);
+    if let Err(error) =
+        registry::materialize_project_checked(compose_dir, &cache, &prepared, unchanged).await
+    {
+        report::plan_done();
+        report::summary_failed("build", error.code(), began.elapsed());
+        return Err(error);
     }
 
     let mut downloaded = 0;
@@ -151,6 +225,44 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         downloaded,
         cached,
     })
+}
+
+/// Whether the lock at `path` resolves the same containers to the same packages, for the same
+/// platforms, as `prepared`: what this build wrote, in the part `.iii/workers/` is made from.
+/// Read and validated as every reader does, then compared parsed, so the check does not depend
+/// on re-reading the bytes it wrote; a lock that is missing, or that the next Compose would
+/// refuse, holds nothing.
+fn locks_the_same_packages(path: &Path, prepared: &crate::lockfile::PreparedLock) -> Result<bool> {
+    let on_disk = match crate::lockfile::locked_packages(path) {
+        Ok(Some(on_disk)) => on_disk,
+        Ok(None) | Err(ComposeError::InvalidLock { .. }) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    let wrote: BTreeMap<_, _> = prepared
+        .packages()
+        .map(|(key, resolved)| {
+            (
+                key.to_string(),
+                (
+                    resolved.clone(),
+                    prepared.platform(key) == registry::Platform::Vm,
+                ),
+            )
+        })
+        .collect();
+    Ok(on_disk == wrote)
+}
+
+/// The bytes of the file at `path`; `None` when there is none.
+fn read_if_present(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(ComposeError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -326,5 +438,400 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("container 'first'"));
+    }
+
+    /// The executable of a binary package: `worker`, `worker.exe` on Windows, the only name
+    /// `installed_binary` takes there.
+    fn worker_file() -> String {
+        format!("worker{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// A tar.gz holding `files`: name, mode, body.
+    fn archive(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, mode, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *body).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Answers `/resolve` for `worker` with `node` (the registry's own fields) and serves
+    /// `archive` at `/<worker>`.
+    async fn serve(
+        server: &wiremock::MockServer,
+        worker: &str,
+        mut node: serde_json::Value,
+        archive: Vec<u8>,
+    ) {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let sha256 = hex::encode(sha2::Sha256::digest(&archive));
+        let url = format!("{}/{worker}", server.uri());
+        node["name"] = worker.into();
+        node["version"] = "1.0.0".into();
+        if node["type"] == "bundle" {
+            node["archive_url"] = url.into();
+            node["sha256"] = sha256.into();
+        } else {
+            node["binaries"] = serde_json::json!({
+                (crate::registry::host_targets()[0]): { "sha256": sha256, "url": url }
+            });
+        }
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": worker }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "graph": [node] })),
+            )
+            .mount(server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path(format!("/{worker}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(server)
+            .await;
+    }
+
+    /// `iii compose build` of `file`, not frozen, against the registry at `registry`, with
+    /// `cache` as the package cache.
+    async fn build_against(file: &Path, registry: String, cache: &Path) -> Result<BuildReport> {
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(registry, build(file)),
+            )
+            .await
+    }
+
+    /// [`build_against`], frozen.
+    async fn build_frozen_against(
+        file: &Path,
+        registry: String,
+        cache: &Path,
+    ) -> Result<BuildReport> {
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(registry, build_frozen(file)),
+            )
+            .await
+    }
+
+    fn recorded_containers(project: &Path) -> Vec<String> {
+        let packages: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.join(".iii/workers/.packages.json")).unwrap(),
+        )
+        .unwrap();
+        packages["containers"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn build_locks_and_copies_each_package_into_the_project() {
+        let server = wiremock::MockServer::start().await;
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
+        serve(
+            &server,
+            "state",
+            serde_json::json!({ "type": "binary" }),
+            state,
+        )
+        .await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("local")).unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  local:\n    worker: path://./local\n    scripts: { run: ./start }\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        let report = build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap();
+
+        assert_eq!(report.packages, 1);
+        assert!(project.path().join("worker-compose.lock").is_file());
+        assert!(
+            crate::build_record::package_dir(project.path(), "state")
+                .join(worker_file())
+                .is_file()
+        );
+        assert_eq!(recorded_containers(project.path()), ["state"]);
+    }
+
+    // Spec 11.2: `migrate` adds the adapter a rewritten bundle needs; the build installs it
+    // and copies it beside the bundle.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_migrates_a_vm_bundle_and_copies_it_with_the_adapter() {
+        let adapter = archive(&[("sandbox-libkrun", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let server = crate::sandbox::tests::adapter_registry(&adapter).await;
+        let app = archive(&[(
+            "iii.worker.yaml",
+            0o644,
+            b"name: app\nscripts:\n  start: node index.js\n",
+        )]);
+        serve(&server, "app", serde_json::json!({ "type": "bundle" }), app).await;
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  app:\n    worker: package://app\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap();
+
+        let text = std::fs::read_to_string(&file).unwrap();
+        for written in [
+            "sandbox-libkrun:",
+            "build: iii call sandbox::build",
+            "run: iii call sandbox::start",
+        ] {
+            assert!(text.contains(written), "{written} missing from:\n{text}");
+        }
+        assert_eq!(
+            recorded_containers(project.path()),
+            ["app", "sandbox-libkrun"]
+        );
+        assert!(
+            project
+                .path()
+                .join(".iii/workers/app/iii.worker.yaml")
+                .is_file()
+        );
+        assert!(
+            project
+                .path()
+                .join(".iii/workers/sandbox-libkrun/sandbox-libkrun")
+                .is_file()
+        );
+    }
+
+    /// A `worker=` that names another container is refused by the build, frozen or not, as
+    /// `up` refuses it: a check without an engine catches a renamed container. Nothing is
+    /// written.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_refuses_a_vm_script_that_names_another_container() {
+        let adapter = archive(&[("sandbox-libkrun", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let server = crate::sandbox::tests::adapter_registry(&adapter).await;
+        let app = archive(&[(
+            "iii.worker.yaml",
+            0o644,
+            b"name: app\nscripts:\n  start: node index.js\n",
+        )]);
+        serve(&server, "app", serde_json::json!({ "type": "bundle" }), app).await;
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  app:\n    worker: package://app\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        // The migration writes the container's own key.
+        build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap();
+        let built = std::fs::read_to_string(&file).unwrap();
+        assert!(built.contains("worker=app"), "{built}");
+        let lock_path = project.path().join("worker-compose.lock");
+        let lock = std::fs::read(&lock_path).unwrap();
+
+        // The container renamed in its scripts only.
+        let renamed = built.replace("worker=app", "worker=other");
+        std::fs::write(&file, &renamed).unwrap();
+        for frozen in [false, true] {
+            let error = if frozen {
+                build_frozen_against(&file, server.uri(), cache.path()).await
+            } else {
+                build_against(&file, server.uri(), cache.path()).await
+            }
+            .unwrap_err();
+
+            assert_eq!(
+                error.code(),
+                "SANDBOX_WORKER_MISMATCH",
+                "frozen={frozen}: {error}"
+            );
+            assert!(error.to_string().contains("'other'"), "{error}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), renamed);
+            assert_eq!(std::fs::read(&lock_path).unwrap(), lock);
+        }
+    }
+
+    /// Spec 7.3 on a host that runs no VM (Windows): `iii compose build` still migrates a 0.26
+    /// VM worker, as the file may run elsewhere; `up` there refuses it.
+    #[tokio::test]
+    async fn build_migrates_a_vm_worker_on_a_host_that_runs_no_vm() {
+        let project = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            project.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        crate::sandbox::tests::manifest(
+            project.path(),
+            "link",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  sb:\n    worker: path://./sb\n  link:\n    worker: path://./link\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        crate::sandbox::TEST_NO_VM_HERE
+            .scope(
+                true,
+                build_against(&file, "http://127.0.0.1:1".to_string(), cache.path()),
+            )
+            .await
+            .unwrap();
+
+        let built = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            built.contains("build: iii call sandbox::build worker=link"),
+            "{built}"
+        );
+        let migrated = ComposeFile::load(&file).unwrap();
+        let refused = crate::sandbox::TEST_NO_VM_HERE
+            .sync_scope(true, || crate::sandbox::validate_scripts(&migrated))
+            .unwrap_err();
+        assert_eq!(refused.code(), "SANDBOX_UNSUPPORTED_PLATFORM");
+    }
+
+    /// The daemon's mutation lock is in its own process: a lock it committed while this build
+    /// prepared is not overwritten, and nothing is copied: `BUILD_PLAN_STALE`.
+    #[tokio::test]
+    async fn build_does_not_overwrite_a_lock_written_while_it_prepared() {
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let server = wiremock::MockServer::start().await;
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
+        serve(
+            &server,
+            "state",
+            serde_json::json!({ "type": "binary" }),
+            state.clone(),
+        )
+        .await;
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let lock_path = project.path().join("worker-compose.lock");
+        // The daemon commits its own resolution while the build downloads.
+        let theirs = "version: 1\ncontainers: {}\n";
+        let target = lock_path.clone();
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/state"))
+            .respond_with(move |_: &wiremock::Request| {
+                std::fs::write(&target, theirs).unwrap();
+                ResponseTemplate::new(200).set_body_bytes(state.clone())
+            })
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let cache = tempfile::tempdir().unwrap();
+
+        let error = build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), "BUILD_PLAN_STALE");
+        assert!(error.to_string().contains("worker-compose.lock"), "{error}");
+        assert_eq!(std::fs::read_to_string(&lock_path).unwrap(), theirs);
+        assert!(!crate::build_record::workers_root(project.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn the_late_check_compares_the_lock_parsed_with_what_the_build_wrote() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        let server = wiremock::MockServer::start().await;
+        let state = archive(&[(&worker_file(), 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let resolved = serde_json::json!({
+            "name": "state",
+            "version": "1.0.0",
+            "type": "binary",
+            "artifacts": { (crate::registry::host_targets()[0]): {
+                "sha256": hex::encode(sha2::Sha256::digest(&state)),
+                "url": format!("{}/state", server.uri()),
+            }}
+        });
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/state"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(state))
+            .mount(&server)
+            .await;
+        let lock = |resolved: &serde_json::Value| {
+            serde_json::json!({ "version": 1, "containers": { "state": {
+                "worker": "package://state", "requested": "1.0.0", "resolved": resolved
+            }}})
+        };
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        let lock_path = project.path().join("worker-compose.lock");
+        std::fs::write(
+            &file,
+            "containers:\n  state:\n    worker: package://state\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        std::fs::write(&lock_path, serde_yaml::to_string(&lock(&resolved)).unwrap()).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let mut compose = ComposeFile::load(&file).unwrap();
+        let prepared = crate::lockfile::prepare_frozen(&mut compose, cache.path())
+            .await
+            .unwrap();
+
+        assert!(locks_the_same_packages(&lock_path, &prepared).unwrap());
+        // The same lock in other bytes (JSON is YAML): compared parsed, it still holds.
+        std::fs::write(&lock_path, lock(&resolved).to_string()).unwrap();
+        assert!(locks_the_same_packages(&lock_path, &prepared).unwrap());
+
+        // Another package for the container, as a concurrent writer would leave it.
+        let mut other = resolved.clone();
+        other["version"] = "1.1.0".into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&lock(&other)).unwrap()).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        std::fs::write(&lock_path, "containers: [").unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        // The same packages in a lock the next Compose refuses: another version of the format,
+        // or a `vm` that is not a boolean.
+        let mut future = lock(&resolved);
+        future["version"] = 2.into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&future).unwrap()).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        let mut vm = lock(&resolved);
+        vm["containers"]["state"]["vm"] = "no".into();
+        std::fs::write(&lock_path, serde_yaml::to_string(&vm).unwrap()).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
+        std::fs::remove_file(&lock_path).unwrap();
+        assert!(!locks_the_same_packages(&lock_path, &prepared).unwrap());
     }
 }

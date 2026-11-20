@@ -110,6 +110,16 @@ pub struct ReadinessBaseline {
 }
 
 impl EngineClient {
+    /// A client that never starts a connection thread, for isolated unit tests.
+    #[cfg(test)]
+    pub(crate) fn disconnected() -> Self {
+        Self {
+            client: IIIClient::new("ws://127.0.0.1:1/ws"),
+            namespace: "status-test".to_string(),
+            exited: Default::default(),
+        }
+    }
+
     /// Connects as `daemon_id` in `namespace`, the same one its containers
     /// register in.
     ///

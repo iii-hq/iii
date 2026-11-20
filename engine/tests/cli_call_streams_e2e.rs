@@ -27,6 +27,8 @@ const WAIT: Duration = Duration::from_secs(10);
 struct TestEngine {
     _builder: EngineBuilder,
     _sdk: IIIClient,
+    /// A worker in the `orders` namespace, with a function id `default` has too.
+    _orders: IIIClient,
     _dir: tempfile::TempDir,
     url: String,
     /// Set by `cli-streams::ticks` once a write failed: its caller left.
@@ -182,6 +184,15 @@ async fn start() -> TestEngine {
                 Ok::<_, Error>(json!({}))
             }),
         ),
+        // Reads its stdin and answers success even when the stream was aborted.
+        sdk.register_function(
+            "cli-streams::tolerant",
+            RegisterFunction::new_async(|req: Echo| async move {
+                let text = req.stdin.text().await.unwrap_or_default();
+                req.stdout.write(text.as_bytes()).await?;
+                Ok::<_, Error>(json!({}))
+            }),
+        ),
         sdk.register_function(
             "cli-streams::ignore",
             RegisterFunction::new_async(|req: Ignore| async move {
@@ -195,6 +206,23 @@ async fn start() -> TestEngine {
                 Ok::<_, Error>(Exported {
                     rows: 2,
                     stdout: InputStream::from_bytes("a,1\nb,2\n"),
+                })
+            }),
+        ),
+        // Answers with the payload it got and the namespace it runs in.
+        sdk.register_function(
+            "cli-streams::payload",
+            RegisterFunction::new_async(|req: Value| async move {
+                Ok::<_, Error>(json!({ "namespace": "default", "payload": req }))
+            }),
+        ),
+        // Answers with a result stream far bigger than a pipe holds.
+        sdk.register_function(
+            "cli-streams::flood",
+            RegisterFunction::new_async(|_: Value| async move {
+                Ok::<_, Error>(Exported {
+                    rows: 0,
+                    stdout: InputStream::from_bytes(vec![b'x'; 8 << 20]),
                 })
             }),
         ),
@@ -244,12 +272,39 @@ async fn start() -> TestEngine {
             }
         }),
     ));
+    let orders = register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: "cli-streams-orders".to_string(),
+                ..WorkerMetadata::default()
+            }),
+            otel: Some(OtelConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            namespace: Some("orders".to_string()),
+            identity: WorkerIdentityMode::Explicit,
+            ..Default::default()
+        },
+    );
+    orders
+        .wait_until_registered(WAIT)
+        .await
+        .expect("engine reachable");
+    functions.push(orders.register_function(
+        "cli-streams::payload",
+        RegisterFunction::new_async(|req: Value| async move {
+            Ok::<_, Error>(json!({ "namespace": "orders", "payload": req }))
+        }),
+    ));
     for function in &functions {
         ready(function).await;
     }
     TestEngine {
         _builder: builder,
         _sdk: sdk,
+        _orders: orders,
         _dir: dir,
         url,
         stopped,
@@ -364,6 +419,22 @@ async fn an_unread_stdin_does_not_hold_up_the_exit() {
     assert_eq!(text(&out.stdout), "done\n");
 }
 
+/// Input this process could not read is lost: the call fails, though the function took the
+/// aborted stream and answered success.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_stdin_fails_the_call() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::tolerant"]);
+    // Reading a directory fails (EISDIR).
+    command.stdin(std::fs::File::open(cwd.path()).unwrap());
+    let out = output(command).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("the stdin stream failed"), "{stderr}");
+}
+
 /// A script Compose starts carries its container's `III_WORKER_NAME` and `III_NAMESPACE`. The
 /// call must not take that name: here a live worker holds it, and the call still runs.
 #[tokio::test(flavor = "multi_thread")]
@@ -442,7 +513,8 @@ async fn result_streams_are_followed_unless_asked_not_to() {
 async fn defaults_come_from_the_environment_for_their_function_only() {
     let engine = start().await;
     let cwd = tempfile::tempdir().unwrap();
-    let defaults = r#"{"cli-streams::lines": {"count": 2}, "other::fn": {"count": 9}}"#;
+    let defaults =
+        r#"{"default": {"cli-streams::lines": {"count": 2}, "other::fn": {"count": 9}}}"#;
 
     let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::lines"]);
     command.env("III_CALL_DEFAULTS", defaults);
@@ -467,6 +539,34 @@ async fn defaults_come_from_the_environment_for_their_function_only() {
         "{stderr}"
     );
     assert!(!stderr.contains("secret-token"), "{stderr}");
+}
+
+/// An entry of `III_CALL_DEFAULTS` is for its function id in the namespace it is written under:
+/// the same function id in another namespace, another handler, receives nothing of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn defaults_reach_only_the_namespace_they_are_written_under() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let defaults = r#"{"orders": {"cli-streams::payload": {"token": "orders-token"}}}"#;
+    let call = |args: &[&str]| {
+        let mut command = iii_call(&engine.url, cwd.path(), args);
+        command.env("III_CALL_DEFAULTS", defaults);
+        command
+    };
+
+    // Without `-n` the call resolves in `default`: the token written for `orders` stays out.
+    let out = output(call(&["cli-streams::payload"])).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["namespace"], "default", "{result}");
+    assert!(result["payload"].get("token").is_none(), "{result}");
+
+    // In `orders` it is the entry's own.
+    let out = output(call(&["cli-streams::payload", "-n", "orders"])).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["namespace"], "orders", "{result}");
+    assert_eq!(result["payload"]["token"], "orders-token", "{result}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -584,6 +684,44 @@ async fn the_first_signal_stops_the_function_and_waits_for_its_answer() {
     );
     let rest = rest.join("\n");
     assert!(rest.contains("\"stopped\": true"), "{rest}");
+}
+
+/// The first signal after the answer ends the call with 130 though its output is stuck: a write
+/// into a pipe whose reader stopped reading is not waited for.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signal_after_the_answer_does_not_wait_for_a_stuck_write() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::flood"]);
+    // The stdout pipe stays open and is never read: it fills, and the copy blocks in its write.
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    // One byte read says the answer came and its stream is followed; the rest stays unread.
+    let mut unread = child.stdout.take().unwrap();
+    let mut first = [0u8; 1];
+    tokio::time::timeout(
+        WAIT,
+        tokio::io::AsyncReadExt::read_exact(&mut unread, &mut first),
+    )
+    .await
+    .expect("the result stream was followed")
+    .unwrap();
+    assert_eq!(&first, b"x");
+
+    let pid = child.id().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .expect("iii call waited for the stuck write")
+        .unwrap();
+    assert_eq!(status.code(), Some(130));
 }
 
 /// A result stream that arrives after the first signal is cancelled too: the function answered a

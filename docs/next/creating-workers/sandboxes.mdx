@@ -9,8 +9,8 @@ Sandboxes run untrusted or short-lived code in an isolated microVM and capture i
 for agent tool-calls, REPLs, and one-off jobs. The engine's `iii-sandbox` router serves the
 `sandbox::*` functions and forwards each call to a sandbox adapter. The `sandbox-libkrun` worker is
 the adapter that runs the VMs, and Compose installs it from the registry when a project needs it:
-when the compose file sets `engine.sandbox` for its own namespace, when it declares a worker that
-runs in a VM (a bundle worker, or a `path://` worker with `runtime.base_image`), or when you run
+when the compose file sets `engine.sandbox` for its own namespace, when a container's `scripts.run`
+starts with `iii call sandbox::start` (see [VM workers](#vm-workers)), or when you run
 `iii call compose::add worker=iii-sandbox`. To change which images the adapter allows, set its
 configuration under `containers.sandbox-libkrun.config_override`:
 
@@ -21,7 +21,7 @@ engine:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: "^0.3"
+    version: "^0.5"
     config_override:
       image_allowlist: [python, node]
 ```
@@ -37,13 +37,10 @@ the 0.25 setup.
   [sandbox-libkrun docs](https://workers.iii.dev/workers/sandbox-libkrun).
 </Note>
 
-Sandboxes work through the worker's `sandbox::*` functions, called the same way as any other
+You drive sandboxes by calling the worker's `sandbox::*` functions, the same way you call any
 function (see [Call a function](../using-iii/functions#call-a-function)). Images are catalog names
-such as `python` or `node`, not arbitrary OCI references. You drive sandboxes by calling the
-worker's `sandbox::*` functions, the same way you call any function (see
-[Call a function](../using-iii/functions#call-a-function)). Images are catalog names such as
-`python` or `node`, not arbitrary OCI references. The examples below capture the new sandbox's id
-with `jq` and stop the sandbox when done so nothing keeps running.
+such as `python` or `node`, not arbitrary OCI references. The examples below capture the new
+sandbox's id with `jq` and stop the sandbox when done so nothing keeps running.
 
 ## One-shot run
 
@@ -327,18 +324,8 @@ is split into the binary and its arguments.
 
   </Tab>
 </Tabs>
-For multi-step work, create a sandbox, operate on it with its id, then stop it. Most functions take
-flat `key=value` arguments; only nested payloads need `--json`.
 
-````bash
-# boot a sandbox and capture its id
-SB=$(iii call sandbox::create image=python | jq -r .sandbox_id)
-
-# run a command and print its stdout
-iii call sandbox::exec sandbox_id=$SB cmd='python --version' | jq -r .stdout
-
-# list the active sandbox ids
-iii call sandbox::list | jq -r '.[].sandbox_id'
+Most functions take flat `key=value` arguments; only nested payloads need `--json`.
 
 The adapter caps the `stdout` and `stderr` that `sandbox::exec` and `sandbox::run` return. When it
 cuts one, the reply sets `stdout_truncated` or `stderr_truncated` to `true`. For large output, write
@@ -823,15 +810,357 @@ the adapter's 1 MiB cap, and always returns `content`, a stream of the full byte
 binary file stays off the call payload. With the TypeScript, Python, and Rust SDKs, `content`
 arrives in the result as an `InputStream`.
 
+## VM workers
+
+A Compose container runs in a VM when its compose file says so:
+
+```yaml worker-compose.yaml
+  onboarding:
+    worker: package://api.workers.iii.dev/onboarding
+    version: "0.2.0"
+    start_after: [sandbox-libkrun]
+    scripts:
+      build: iii call sandbox::build worker=onboarding
+      run: iii call sandbox::start worker=onboarding
+```
+
+- `sandbox::build` asks the sandbox adapter to build an image of the worker, locally, and leaves it
+  in `<project>/.iii/build/<container>/`.
+- `sandbox::start` boots that image and stays with the VM until it exits. Nothing is installed at
+  boot.
+- Compose starts both lines as processes, like any other command, and keeps no VM boot path of its
+  own. `iii call` copies each call's output into the container's logs and turns Compose's `SIGTERM`
+  into a stop. See [Streams from the CLI](../using-iii/functions#streams-from-the-cli).
+- `worker=` is the container's own key. Compose refuses another name with `SANDBOX_WORKER_MISMATCH`
+  when it loads the file, and so does `iii compose build`, which needs no engine. The rest of each
+  request comes from Compose in `III_CALL_DEFAULTS` (see
+  [Environment variables](#environment-variables)), so the line stays this short.
+
+The engine's `iii-sandbox` router serves both functions in the `default` namespace, beside the
+ephemeral `sandbox::*` operations, and `iii call` without `-n` resolves them there, inside Compose's
+scripts too. Unlike the ephemeral operations, each call goes to the adapter its request names
+(`adapter` and `namespace`), not to the router's binding, through the adapter's contract 1.4
+functions: `adapter::info`, `worker::build`, `worker::start`, `worker::logs`, `worker::status`, and
+`worker::stop`.
+
+A registry `binary` package runs in a VM the same way when its container names the image to run it
+on, since the package names none. The image holds the package's Linux build for the host's
+architecture:
+
+```yaml worker-compose.yaml
+indexer:
+  worker: package://api.workers.iii.dev/indexer
+  version: "1.2.0"
+  start_after: [sandbox-libkrun]
+  runtime:
+    base_image: docker.io/library/alpine:3.20
+  scripts:
+    build: iii call sandbox::build worker=indexer
+    run: iii call sandbox::start worker=indexer
+```
+
+[Compose / VM workers](../using-iii/compose#vm-workers) covers the compose file side: which
+containers may use these lines, the first build, rebuilds, and the project tree. On Windows, Compose
+refuses these lines when it loads the file, with `SANDBOX_UNSUPPORTED_PLATFORM`. Both functions fail
+with `SANDBOX_BUILD_UNSUPPORTED` when the adapter lacks one of `worker.build`, `worker.scoped_auth`,
+`worker.lease`, and `worker.logs_from_end`, with `SANDBOX_BINARY_UNSUPPORTED`
+for a binary package (and, for a build, a `runtime.base_image` of the container) when it does not
+advertise `worker.binary`, and with `SANDBOX_CONTRACT_UNSUPPORTED` when it implements another major
+version of the contract.
+
+### Build the image
+
+As a container's `scripts.build`, `iii call sandbox::build worker=<container>` builds that
+container's image. It checks that the adapter advertises `worker.build`, calls `worker::build`, and
+writes the build's output to its `stdout` and `stderr` streams. `iii call` binds them to its own,
+and Compose writes each line into the container's logs with the `[build] ` prefix. The answer carries
+`build_id`, `base_image` (`reference` and `digest`), `built_at_ms`, `adapter`, `adapter_version`,
+and `contract`.
+
+The function writes no file, since the engine may run on another machine. Once the line exits `0`,
+Compose records `build.json` (see [`build.json`](../using-iii/compose#buildjson)), with
+`image.build_id` read from the `image.id` the adapter wrote. If the container's package was replaced
+while it built, by an `iii compose build` in another process, Compose records nothing and fails the
+build with `BUILD_INPUT_CHANGED`. Build again.
+
+A failed build fails the call: `iii call` prints the error on one `Error:` line and exits with `1`,
+and Compose reads the code and the message of `BUILD_FAILED` from that line. The code is the
+adapter's S-code, such as [S507](#S507), [S509](#S509), or [S501](#S501) for a source it refuses,
+or one of the [VM worker errors](#vm-worker-errors) below.
+
+- Every call builds anew. Nothing is skipped on unchanged inputs, so a rebuild picks up a moved
+  `:latest` base image.
+- A build can run while the container's VM runs, and the running VM keeps the image it booted until
+  it restarts. One build per VM runs at a time: a second one fails with [S509](#S509).
+- A build runs only as long as its caller reads its output. When the caller leaves (Compose stops
+  the build, or `Ctrl+C` on `iii call`), the adapter aborts it and keeps the previous image, and the
+  call fails with `OPERATION_CANCELLED`.
+- Past `timeout_ms`, which Compose sets to `scripts.build_timeout`, the same abort fails the call
+  with `TIMED_OUT`.
+
+To rebuild a container from a shell, ask Compose, which runs the container's `scripts.build`:
+
+```bash
+iii call compose::build worker=link
+iii compose logs link --follow
+```
+
+`compose::build` is an asynchronous operation: it answers at once, and `iii compose logs --follow` shows
+the build output. See [Compose / Building workers](../using-iii/compose#building-workers). Run by hand,
+outside Compose, `sandbox::build` takes every field of its request as an argument:
+`iii call sandbox::build --help` lists them.
+
+### Boot the image
+
+As a container's `scripts.run`, `iii call sandbox::start worker=<container>` boots the image that
+the container's `build.json` records, with `worker::start` and the build. It skips
+`worker::prepare`, so nothing is installed at boot. When a VM of the same state already runs
+([S502](#S502)), it reattaches to that VM instead and writes
+`sandbox::start: reattached to VM <vm_id> instance <n>` to its `stderr`. It copies the guest's
+output to its `stdout` and `stderr` streams, which Compose writes into the container's logs.
+
+- **The caller leaves.** Compose's `SIGTERM` when it stops the container, or `Ctrl+C` on `iii call`,
+  closes the streams. `sandbox::start` then stops the VM with `worker::stop` within `stop_grace_ms`,
+  9/10 of the compose file's `stop_timeout`, and answers with `stopped: true`. A caller that dies
+  without a word, from a `SIGKILL` or a lost connection, closes the streams too, so its VM is
+  stopped the same way: no VM outlives the call that runs it. When the adapter does not confirm the
+  stop within `stop_grace_ms`, or `stop_grace_ms` is `0`, the call fails with `TIMED_OUT` instead,
+  and the adapter's lease stops the VM.
+- **The VM it reattached to was being stopped.** After a caller died, the next start can find its
+  VM still stopping and reattach to it. When that VM ends as stopped, `sandbox::start` boots the
+  image again in the same call and writes
+  `sandbox::start: VM <vm_id> instance <n> was stopped by an earlier start; booting it again` to
+  its `stderr`, so a crash costs the `restart` policy one attempt.
+- **The VM exits by itself.** With code `0`, the call succeeds. Any other end fails it with
+  `WORKER_EXITED`, the code or the signal in the message
+  (`<container>: VM <vm_id> instance <n> exited with code 3`), and `iii call` exits with `1`.
+  Compose's `restart` policy only tells zero from non-zero, and the VM's own code is in the
+  container's logs.
+- **The image changed.** A `build_id` that does not match `image.id` fails the start with
+  [S508](#S508), and the message asks for `iii call compose::build worker=<container>`.
+
+`command=<cmd>` runs `<cmd>` inside the VM in place of the manifest's `scripts.start`. It is only for
+a `path://` worker: on a package, `sandbox::start` fails with `SANDBOX_INVALID_REQUEST`. Compose
+writes this form when it rewrites a 0.26 `path://` worker whose `scripts.run` ran inside the VM, with
+the whole argument single-quoted:
+
+```yaml worker-compose.yaml
+link:
+  worker: path://./link
+  start_after: [sandbox-libkrun]
+  scripts:
+    build: iii call sandbox::build worker=link
+    run: iii call sandbox::start worker=link 'command=python main.py'
+```
+
+Run by hand, outside Compose, `sandbox::start` takes every field of its request as an argument
+(`iii call sandbox::start --help`). Without `build_id`, which Compose reads from `build.json`, it
+fails with `SANDBOX_INVALID_REQUEST`.
+
+### Remove a VM
+
+```bash
+iii call compose::remove worker=link
+```
+
+`compose::remove` of a VM container stops it and has the adapter destroy the VM's runtime state, its
+logs, and its claim on the build directory. It keeps the data the worker wrote: the data disk, with
+the `upper.ext4.pre-build` and `root.pre-build` copies kept from a 0.26 VM (see
+[Upgrading VM workers from 0.26.x](../upgrading/explicit-vm-workers#keep-the-data-of-migrated-vms)).
+The log says where the data stayed:
+
+```text
+link: removed the VM state of 9f2c1e; kept its data in /home/you/.iii/sandbox/workers/4e0be0.../upper.ext4; a container added again as link boots with it
+```
+
+`prune=true` removes the data too (`<container>: removed the VM state and data of <key>`). Keeping
+the data needs an adapter that advertises `worker.prune`, since an older one deletes everything.
+Without `prune`, on such an adapter, Compose leaves the VM as it is and logs
+`<container>: kept VM <vm_id>: <adapter> <version> cannot keep its data (no worker.prune)`, followed
+by where its state stays. `prune=true` works with any adapter.
+
+The kept data belongs to the VM's state key, which comes from Compose's state directory and the
+container key. A container added again under the same key, with any package, boots on it, and files
+the old worker wrote where the new build also writes hide the image's. To discard it, remove the
+container with `prune=true`, add the container again and remove it with `prune=true`, or delete the
+VM directory containing the printed paths while no VM of that container runs. For example,
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` names a file: delete its parent
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. These paths
+belong to the adapter, which may be on another host; do not infer them from the client's HOME.
+
+`compose::remove` first stops a build of the container that still runs. The adapter refuses to
+destroy a VM while its build runs, with [S509](#S509), so Compose asks again while the build aborts.
+
+### Environment variables
+
+Compose hands each VM container's scripts the requests of their two calls in `III_CALL_DEFAULTS`, a
+JSON object keyed by namespace and function id (see
+[Defaults from the environment](../using-iii/functions#defaults-from-the-environment)). The entries
+are under `default`, the namespace the lines resolve in, as they name none. `iii call` takes the
+entry of the function it calls as its base payload, and the line's own `key=value` arguments
+override its keys. Only `sandbox::build` and `sandbox::start` in `default` receive an entry: an
+`iii call state::get` in the same script, or a `sandbox::start` called in another namespace, gets
+nothing from it. The token and the worker's variables
+never appear in the process's arguments.
+
+| Field              | Used by | Value                                                                                                                         |
+| ------------------ | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `worker`           | both    | The container key, which the line sets too.                                                                                   |
+| `adapter`          | both    | The adapter's name, for example `sandbox-libkrun`.                                                                            |
+| `namespace`        | both    | The namespace the adapter's functions are registered in.                                                                      |
+| `auth`             | both    | The scoped `worker::*` token of the container's own VM.                                                                       |
+| `state_key`        | both    | The VM's state key: the same key boots the same persistent state.                                                             |
+| `source`           | both    | What the VM boots: a `path://` worker's directory (`local`), or the package in `.iii/workers/<container>/` (`bundle` or `binary`). |
+| `env`              | both    | The worker's own variables, the guest's whole environment.                                                                    |
+| `build_dir`        | both    | `<project>/.iii/build/<container>`.                                                                                           |
+| `base_image`       | build   | The container's `runtime.base_image`, when it sets one.                                                                       |
+| `timeout_ms`       | build   | `scripts.build_timeout` in milliseconds.                                                                                      |
+| `build_id`         | start   | The image `build.json` records. The `sandbox::start` entry is left out until the container has one.                         |
+| `engine_url`       | start   | The engine the guest connects to.                                                                                             |
+| `stop_grace_ms`    | start   | 9/10 of the compose file's `stop_timeout`, so the answer fits in it.                                                          |
+| `command`          | start   | Not set by Compose: the line's `command=` sets it.                                                                            |
+| `stdout`, `stderr` | both    | Not set by Compose: `iii call` binds them to its own output.                                                                  |
+
+The scripts of a VM container also get these reserved variables:
+
+| Variable                 | Value                                                          |
+| ------------------------ | -------------------------------------------------------------- |
+| `III_BUILD_DIR`          | `<project>/.iii/build/<container>`.                            |
+| `III_BUILD_COMPOSE_FILE` | The compose file's canonical path, as in `III_COMPOSE_FILE`.   |
+| `III_PACKAGE_DIR`        | `<project>/.iii/workers/<container>`, for a package container. |
+| `III_PACKAGE_NAME`       | The package's name, for a package container.                   |
+
+Compose puts the directory of its own `iii` first in their `PATH`, so the line runs the same `iii`
+as Compose. `III_CALL_DEFAULTS` and these four variables never reach the guest and are not part of
+`env`. Declaring any of them in `environment` or an `env_file` fails with `RESERVED_ENV_OVERRIDE`.
+The guest still sees the compose file's path through `III_COMPOSE_FILE`. The guest, and the VM that
+builds its image, get the container's `environment` and `env_file` variables and the reserved `III_*`
+variables, never the host's environment.
+
+### VM worker errors
+
+`sandbox::build` and `sandbox::start` fail with these codes, and `iii call` prints them on its
+`Error:` line and exits with `1`:
+
+| Code                           | When                                                                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `SANDBOX_INVALID_REQUEST`      | The request does not read, such as a hand-run `sandbox::start` without `build_id`; `command` on a package; or a `stdout` or `stderr` that is not an open pipe. |
+| `SANDBOX_BUILD_UNSUPPORTED`    | The adapter lacks `worker.build`, or another feature a container's VM needs from contract 1.4.                                   |
+| `SANDBOX_BINARY_UNSUPPORTED`   | A binary package, or a build with `base_image`, and the adapter does not advertise `worker.binary`.                               |
+| `SANDBOX_CONTRACT_UNSUPPORTED` | The adapter implements another major version of the sandbox contract.                                                            |
+| `ENGINE_CALL_FAILED`           | The adapter was not reached, or did not answer as it should.                                                                      |
+| `TIMED_OUT`                    | A build ran past its `timeout_ms`. The previous image stays.                                                                      |
+| `OPERATION_CANCELLED`          | A build's caller left before it ended. The previous image stays.                                                                  |
+| `WORKER_EXITED`                | The VM that `sandbox::start` follows exited with another code than `0`, or on a signal.                                          |
+| S-codes                        | The adapter refused, such as [S501](#S501), [S505](#S505), [S507](#S507), [S508](#S508), or [S509](#S509). The S-code is the error's code. |
+
+Compose refuses a file before any call: `SANDBOX_WORKER_MISMATCH` for a `worker=` that is not the
+container's own key, `SANDBOX_UNSUPPORTED_PLATFORM` on Windows, and the rules of
+[Compose / VM worker errors](../using-iii/compose#vm-worker-errors).
+
+### Adapter contract 1.3
+
+An adapter serves VM workers through contract 1.3. All changes are additive: the contract major
+stays 1, the minor becomes 3, and both sides ignore unknown fields. `sandbox-libkrun` implements it
+from 0.4.0.
+
+The adapter advertises the feature `worker.build` in `AdapterInfo.features`, only when it can boot a
+build (overlay mode). `sandbox-libkrun` in legacy mode (`III_ROOTFS_MODE=legacy`, or a build without
+an embedded iii-init) does not advertise it, and the `SANDBOX_BUILD_UNSUPPORTED` message names that
+case.
+
+`worker::build` builds the image of one container's VM. `sandbox::build` calls it as
+`<adapter>::worker::build`, which is not a `sandbox::*` operation of the router.
+
+| Request field | Description                                                                                                                                    |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth`        | The project token or the VM's scoped token.                                                                                                    |
+| `state_key`   | The VM the build is for. A scoped token is checked against it.                                                                                 |
+| `worker_name` | Container key, for logs and errors.                                                                                                            |
+| `source`      | The worker source, as for `worker::start`.                                                                                                     |
+| `output_dir`  | Absolute host directory of the build, `<project>/.iii/build/<container>`. Must be under the adapter's host roots.                              |
+| `env`         | Environment of the setup and install steps: the guest's variables, nothing from the host.                                                      |
+| `logs`        | Writer end of a channel for the build's output, one `LogRecord` JSON per text frame. Required: the build lasts as long as the caller reads it. |
+
+The response carries `build_id`, the digest of the image written (`sha256:<hex>`), passed back on
+`worker::start`; `base_image`, with the `reference` the build started from and its `digest` when
+known; and `built_at_ms`.
+
+- **Always builds.** There is no input-based skip.
+- **Result.** The image is a complete root filesystem for that container: the base image, the
+  worker's code for a bundle or a binary, and what `scripts.setup` and `scripts.install` installed.
+- **Output files.** `image.erofs` and `image.id` (the `build_id`) are written as temporary files and
+  flushed, then the previous `image.id` is removed, `image.erofs` renamed into place and `image.id`
+  renamed last. A crash in between leaves no `image.id`, so a start answers [S508](#S508) until the
+  next build.
+- **The running VM is not touched.** The build uses its own build VM and swaps `image.erofs` by
+  rename, so the running VM keeps the file it booted.
+- **One build per `state_key` at a time.** A second one gets [S509](#S509), and so does a
+  `worker::destroy` of that VM: cancel the build first.
+- **Another VM's build directory.** With a VM's scoped token, an `output_dir` that another VM of the
+  same Compose namespace (the same project token) recorded as its build directory gets [S505](#S505)
+  before any file is written there, and so does that directory as `build_dir` in `worker::start`.
+  The message names the other VM's record and how to free it: destroy that VM, or delete the record.
+- **Timeout and cancel.** The adapter writes to the channel at least every 5 seconds, a one-byte
+  binary frame; readers take records from text frames only. When the channel closes or a write
+  fails, the adapter stops the build VM, deletes the temporary image, keeps the previous
+  `image.erofs` and `image.id`, and releases the `state_key`.
+- **No prepare.** The build pulls its base image itself.
+- **Failure.** [S507](#S507) when `scripts.setup` or `scripts.install` exits non-zero, or the image
+  cannot be written. The message carries the tail of the output.
+
+`worker::start` takes an optional `build`, with `build_id` and `build_dir` (the `output_dir` the
+build was written to). With `build`, the caller does not call `worker::prepare`, and the adapter
+boots the image without running `scripts.setup` or `scripts.install`. It compares `build_id` with
+`build_dir/image.id` and refuses a mismatch or a missing file with [S508](#S508). It does not hash
+the image on start.
+
+`WorkerSource::Bundle.host_path` is the container's directory in `.iii/workers/`, not the global
+package cache. The adapter copies it into the image at build time, and a run does not mount it. What
+a `path://` copy leaves out, and what a boot removes from `/workspace`, are in
+[Compose / What the guest sees](../using-iii/compose#what-the-guest-sees).
+
+The data disk stays as the overlay upper when the image under it changes. overlayfs accepts a
+changed lower under an existing upper only without `index`, `metacopy`, `redirect_dir`, and `xino`,
+so iii-init mounts the root with those off.
+
+### Adapter contract 1.4
+
+Contract 1.4 adds binary workers and a destroy that keeps the data. It is additive like 1.3, except
+that a 1.3 adapter refuses the new `binary` source kind. `sandbox-libkrun` implements it from 0.5.0,
+which advertises two more features:
+
+| Feature         | What the adapter does                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `worker.binary` | Builds a `binary` source with a `base_image`, and boots it with `worker::start` and `build`. Advertised only with `worker.build`. |
+| `worker.prune`  | Keeps the VM's data on `worker::destroy` unless the request sets `prune`.                                                         |
+
+- **Binary source.** `WorkerSource::Binary` has `package`, `host_path` (the container's directory in
+  `.iii/workers/`, holding the package's Linux build), and `executable`, the path of the executable
+  in it: relative, with normal components only, not a symlink, and a regular executable file. A
+  manifest in `host_path` is optional; if present, its name must be `package`, it may not set
+  `scripts.setup`, and its `scripts.install` and `env` apply. The guest runs
+  `/workspace/<executable>` with no arguments. A source that breaks these rules, and a binary source
+  given to `worker::prepare` or to `worker::start` without `build`, get [S501](#S501).
+- **`base_image`.** `worker::build` takes an optional `base_image`, the image to start from instead
+  of the manifest's `runtime.base_image`. A binary source requires it. A binary build without one,
+  or any build with an implausible one, gets [S001](#S001).
+- **`prune`.** `worker::destroy` takes `prune`, sent only when `true`. Without it, the adapter keeps
+  what the guest wrote and removes the VM's runtime state, its logs, and its claim on a build
+  directory; a later `worker::start` of the same `state_key` boots with that data. With it,
+  everything goes, as in 1.3. A 1.3 adapter ignores `prune` and always removes everything.
+- **`kept`.** The `worker::destroy` reply lists in `kept` the absolute paths of the data that
+  stayed. `destroyed` is `true` when the destroy removed runtime state, or anything with `prune`. A
+  VM that held only data answers a destroy without `prune` with `destroyed: false` and `kept` naming
+  the data.
+
 ## Error codes
 
-A failed `sandbox::*` call returns one error shape: a stable `code` (S-code), a `type`, a `message`,
-a `retryable` flag, and a `docs_url` that links to the matching entry below.
 A failed `sandbox::*` call returns the same error shape whichever sandbox adapter serves it: a stable
-`code` (S-code), a `type`, and a `retryable` flag. The codes belong to the engine's sandbox contract,
-not to any one worker: they are part of the public `sandbox::*` API that every caller sees, the
-router returns S301-S303, and every adapter returns the rest. The `docs_url` in the error payload
-links to the matching entry below.
+`code` (S-code), a `type`, a `message`, a `retryable` flag, and a `docs_url` that links to the
+matching entry below. The codes belong to the engine's sandbox contract, not to any one worker: they
+are part of the public `sandbox::*` API that every caller sees. The router returns S301-S303, and
+every adapter returns the rest.
 
 - <a id="S001"></a>**S001** (validation): request payload failed validation (e.g. missing/malformed
   sandbox_id)
@@ -866,8 +1195,9 @@ links to the matching entry below.
 - <a id="S304"></a>**S304** (platform): OperationUnsupported: the adapter does not implement this
   operation
 - <a id="S400"></a>**S400** (config): resource limit exceeded (cpu/memory/concurrency cap)
-- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, or host_path outside the
-  allowed roots
+- <a id="S501"></a>**S501** (validation): SourceRejected: bad manifest, host_path outside the
+  allowed roots, an invalid binary executable, or a binary source outside a build
+  (worker::prepare, worker::start without build)
 - <a id="S502"></a>**S502** (validation): StateBusy: a VM already holds this state key; fix carries
   the live vm_id and instance
 - <a id="S503"></a>**S503** (validation): InstanceMismatch: the request names a different instance
@@ -875,6 +1205,11 @@ links to the matching entry below.
 - <a id="S504"></a>**S504** (validation): VmNotFound: no VM with this vm_id
 - <a id="S505"></a>**S505** (validation): Unauthorized: the request auth token does not match
 - <a id="S506"></a>**S506** (transient): PrepareFailed: worker::prepare failed; retry
+- <a id="S507"></a>**S507** (execution): BuildFailed: scripts.setup or scripts.install exited
+  non-zero, or the image could not be written; the message carries the tail of the output
+- <a id="S508"></a>**S508** (validation): BuildMismatch: worker::start's build.build_id does not
+  match the image in build_dir, or its image.id is missing; build again
+- <a id="S509"></a>**S509** (validation): BuildInProgress: a build for this state_key is already
+  running
 
 <Note>The codes belong to the sandbox contract, not to one worker.</Note>
-````

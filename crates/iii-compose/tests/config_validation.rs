@@ -916,22 +916,95 @@ containers:
     );
 }
 
+/// Which packages may set `scripts` depends on their kind, known once the lock is attached
+/// (spec 4.2): a bundle may, a binary may not. The file alone parses.
 #[test]
-fn rejects_run_on_a_package_worker() {
-    assert_eq!(
-        code(
-            r#"
+fn a_package_worker_may_declare_scripts() {
+    let file = parse(
+        r#"
 namespace: orders
 containers:
   api:
     worker: package://workers.iii.dev/api
     version: "1.0.0"
     scripts:
-      run: cargo run
-"#
-        ),
-        "RUN_NOT_ALLOWED_FOR_PACKAGE"
+      build: npm ci
+      run: node index.js
+"#,
+    )
+    .unwrap();
+    let scripts = &file.containers["api"].scripts;
+    assert_eq!(scripts.build.as_deref(), Some("npm ci"));
+    assert_eq!(scripts.run.as_deref(), Some("node index.js"));
+}
+
+/// Spec 4.1: `scripts.build`, `""` for nothing to build, a `build:` without a value read as
+/// absent, and `scripts.build_timeout`, 20 minutes by default.
+#[test]
+fn scripts_build_and_its_timeout_parse() {
+    let file = parse(
+        r#"
+containers:
+  vm:
+    worker: path://./vm
+    scripts:
+      build: iii call sandbox::build
+      build_timeout: 90s
+      run: iii call sandbox::start
+  none:
+    worker: path://./none
+    scripts:
+      build: ""
+      run: node .
+  bare:
+    worker: path://./bare
+    scripts:
+      build:
+      run: node .
+"#,
+    )
+    .unwrap();
+    let scripts = |key: &str| file.containers[key].scripts.clone();
+    assert_eq!(
+        scripts("vm").build.as_deref(),
+        Some("iii call sandbox::build")
     );
+    assert_eq!(scripts("vm").build_timeout, Duration::from_secs(90));
+    assert_eq!(scripts("none").build.as_deref(), Some(""));
+    assert_eq!(scripts("none").build_command(), None);
+    assert_eq!(scripts("none").build_timeout, Duration::from_secs(20 * 60));
+    assert_eq!(scripts("bare").build, None);
+
+    assert_eq!(
+        code(
+            "containers:\n  vm:\n    worker: path://./vm\n    scripts: {build: make, build_timeout: soon}\n"
+        ),
+        "INVALID_DURATION"
+    );
+}
+
+/// A container key names `.iii/build/<key>` and `.iii/workers/<key>`, so it is one plain directory
+/// name.
+#[test]
+fn rejects_container_keys_that_are_not_plain_directory_names() {
+    for key in [
+        "''",
+        "' '",
+        "a/b",
+        "'a\\b'",
+        "..",
+        ".",
+        ".hidden",
+        "../escape",
+    ] {
+        let text = format!("containers:\n  {key}: {{worker: path://./api, scripts: {{run: x}}}}\n");
+        let error = parse(&text).unwrap_err();
+        assert_eq!(error.code(), "INVALID_CONTAINER_KEY", "{key}: {error}");
+    }
+    for key in ["api", "api.v2", "sandbox-libkrun", "a_b", "API"] {
+        let text = format!("containers:\n  {key}: {{worker: path://./api, scripts: {{run: x}}}}\n");
+        assert!(parse(&text).is_ok(), "{key}");
+    }
 }
 
 #[test]
@@ -1195,7 +1268,7 @@ fn the_pre_0_26_sandbox_block_fails_with_its_replacement() {
     assert_eq!(
         error.to_string(),
         format!(
-            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^0.3'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
+            "{MOVED}\n\ncontainers:\n  sandbox-libkrun:\n    worker: package://sandbox-libkrun\n    version: '^0.5'\n    config_override:\n      image_allowlist:\n      - python\n      default_cpus: 2\n"
         )
     );
 }
@@ -1213,7 +1286,7 @@ fn replacement_yaml_parses_and_keeps_the_old_block() {
         };
         let file = ComposeFile::parse(&replacement, "/tmp/worker-compose.yaml").unwrap();
         let adapter = &file.containers["sandbox-libkrun"];
-        assert_eq!(adapter.version.as_deref(), Some("^0.3"));
+        assert_eq!(adapter.version.as_deref(), Some("^0.5"));
         let old: serde_yaml::Mapping = serde_yaml::from_str(block).unwrap();
         assert_eq!(adapter.config_override.as_ref(), old.values().next());
     }

@@ -110,10 +110,13 @@ keeps the property that reading one file tells you where everything in it lands.
 
 ## Why state belongs to the project
 
-A project's process records, resolved configuration, worker output and VM state are stored in
+A project's process records, resolved configuration and worker output are stored in
 `<project-dir>/.iii/compose/<namespace>/`. Its managed engine uses the same directory for its lock,
 generated configuration and log. The project directory comes from the canonical compose file path,
-so running `iii compose --up --file` from another directory keeps state beside that file.
+so running `iii compose --up --file` from another directory keeps state beside that file. Builds are
+in `<project-dir>/.iii/build/` and package copies in `<project-dir>/.iii/workers/`, and the sandbox
+adapter keeps each VM's data disk in `~/.iii/sandbox/workers/`. See
+[Compose / The project tree](../using-iii/compose#the-project-tree).
 
 The engine lock belongs to the project and namespace together. Two checkouts can each use `default`
 with engines on different ports. A second managed invocation for the same project and namespace is
@@ -124,6 +127,10 @@ For read-only checkouts, `III_COMPOSE_STATE_DIR` moves project state to
 compose path so different checkouts remain separate under a shared root. `compose::status` reports
 the resolved `state_dir` for either layout. The default layout requires a `.iii/compose/` entry in
 the project's ignore rules to exclude generated state from version control.
+
+The variable does not move `.iii/workers/` and `.iii/build/`: Compose still writes them beside the
+compose file when the project locks a package or a container has a non-empty `scripts.build`, a VM
+build included. A read-only checkout therefore works only without packages and builds.
 
 Installed packages remain shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
 The cache is keyed by name, version and target, so projects can reuse downloaded workers.

@@ -24,6 +24,9 @@ to read; put a writable or a file to create there, and it receives an `OutputStr
   the text of its `payload_too_large` errors, which now link to
   [Streaming / Payload size](../creating-workers/streaming#payload-size), as the errors of every
   0.27 SDK do.
+- **VM workers are explicit in `worker-compose.yaml`.** A container that runs in a microVM now says
+  so in its `scripts`, and Compose rewrites a 0.26 file on its next run. A project with a VM worker
+  also follows [Upgrading VM workers from 0.26.x](./explicit-vm-workers).
 
 ## Before you upgrade
 

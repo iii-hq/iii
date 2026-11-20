@@ -49,7 +49,7 @@ pub fn expand_tree(
     path: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<()> {
-    expand_tree_at(value, path, lookup, 0, false)
+    expand_tree_at(value, path, lookup, 0, false, false)
 }
 
 fn expand_tree_at(
@@ -58,12 +58,13 @@ fn expand_tree_at(
     lookup: &dyn Fn(&str) -> Option<String>,
     depth: usize,
     in_engine: bool,
+    in_scripts: bool,
 ) -> Result<()> {
     match value {
         serde_yaml::Value::String(text) => *text = expand(text, path, lookup)?,
         serde_yaml::Value::Sequence(items) => {
             for item in items {
-                expand_tree_at(item, path, lookup, depth + 1, in_engine)?;
+                expand_tree_at(item, path, lookup, depth + 1, in_engine, false)?;
             }
         }
         serde_yaml::Value::Mapping(entries) => {
@@ -75,12 +76,25 @@ fn expand_tree_at(
                 if key == Some(NOT_OURS) || (in_engine && key == Some("workers")) {
                     continue;
                 }
+                if in_scripts
+                    && key == Some("run")
+                    && let Some((worker, guest)) =
+                        entry.as_str().and_then(crate::edit::sandbox_guest_command)
+                {
+                    // Expand the guest payload first, then quote it as one host argument.
+                    *entry = serde_yaml::Value::String(crate::edit::sandbox_run_command(
+                        &worker,
+                        &expand(&guest, path, lookup)?,
+                    ));
+                    continue;
+                }
                 expand_tree_at(
                     entry,
                     path,
                     lookup,
                     depth + 1,
                     depth == 0 && key == Some("engine"),
+                    key == Some("scripts"),
                 )?;
             }
         }

@@ -27,11 +27,14 @@
     {"code": "S303", "type": "config", "retryable": false, "rust_variant": null, "summary": "NoAdapterConfigured: this engine has no sandbox adapter; set sandbox.adapter in its engine config"},
     {"code": "S304", "type": "platform", "retryable": false, "rust_variant": null, "summary": "OperationUnsupported: the adapter does not implement this operation"},
     {"code": "S400", "type": "config", "retryable": false, "rust_variant": "ResourceLimit", "summary": "resource limit exceeded (cpu/memory/concurrency cap)"},
-    {"code": "S501", "type": "validation", "retryable": false, "rust_variant": null, "summary": "SourceRejected: bad manifest, or host_path outside the allowed roots"},
+    {"code": "S501", "type": "validation", "retryable": false, "rust_variant": null, "summary": "SourceRejected: bad manifest, host_path outside the allowed roots, an invalid binary executable, or a binary source outside a build (worker::prepare, worker::start without build)"},
     {"code": "S502", "type": "validation", "retryable": false, "rust_variant": null, "summary": "StateBusy: a VM already holds this state key; fix carries the live vm_id and instance"},
     {"code": "S503", "type": "validation", "retryable": false, "rust_variant": null, "summary": "InstanceMismatch: the request names a different instance than the live VM; fix carries the live vm_id and instance"},
     {"code": "S504", "type": "validation", "retryable": false, "rust_variant": null, "summary": "VmNotFound: no VM with this vm_id"},
     {"code": "S505", "type": "validation", "retryable": false, "rust_variant": null, "summary": "Unauthorized: the request auth token does not match"},
-    {"code": "S506", "type": "transient", "retryable": true, "rust_variant": null, "summary": "PrepareFailed: worker::prepare failed; retry"}
+    {"code": "S506", "type": "transient", "retryable": true, "rust_variant": null, "summary": "PrepareFailed: worker::prepare failed; retry"},
+    {"code": "S507", "type": "execution", "retryable": false, "rust_variant": null, "summary": "BuildFailed: scripts.setup or scripts.install exited non-zero, or the image could not be written; the message carries the tail of the output"},
+    {"code": "S508", "type": "validation", "retryable": false, "rust_variant": null, "summary": "BuildMismatch: worker::start's build.build_id does not match the image in build_dir, or its image.id is missing; build again"},
+    {"code": "S509", "type": "validation", "retryable": false, "rust_variant": null, "summary": "BuildInProgress: a build for this state_key is already running"}
   ]
 }

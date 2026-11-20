@@ -40,15 +40,26 @@ wait_for_port() {
   return 1
 }
 
-# Path workers install their dependencies on first start, so the engine and
-# http ports open long before every worker has registered. Wait for compose to
-# report every container running.
+# VM workers build their image, dependencies included, on their first start
+# (iii call sandbox::build), so the engine and http ports open long before every
+# worker has registered. Wait for compose to report every container running.
+# Fail as soon as one did not start: a container that is not required fails
+# without failing the up, which compose reports as `✗ Containers Running (n/m)`.
+# Compose shows that header whenever a container is failed, so one that fails and
+# would recover through `restart:` also fails the chapter at once; for the
+# tutorial that is acceptable.
 wait_for_containers() {
   local log=$1 tries=${2:-600}
+  local status
   for ((i = 0; i < tries; i++)); do
+    # The latest status decides: a container can fail after an earlier line
+    # reported every one running.
     # LC_ALL=C: BSD grep (macOS) fails a backreference on UTF-8 input in a UTF-8 locale.
-    LC_ALL=C grep -qE 'Containers Running \(([0-9]+)/\1\)' "$log" && return 0
-    LC_ALL=C grep -qE 'Containers (Cancelled|Failed)' "$log" && return 1
+    status="$(LC_ALL=C grep -oE '(✗ )?Containers (Running \([0-9]+/[0-9]+\)|Cancelled|Failed)' "$log" | tail -n 1)"
+    case "$status" in
+      "✗ "* | *Cancelled | *Failed) return 1 ;;
+    esac
+    LC_ALL=C grep -qE '^Containers Running \(([0-9]+)/\1\)$' <<<"$status" && return 0
     sleep 1
   done
   return 1
