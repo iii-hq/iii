@@ -78,32 +78,56 @@ async fn ready(function: &FunctionRef) {
     }
 }
 
-async fn start() -> TestEngine {
-    let dir = tempfile::tempdir().unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+/// Builds the engine and starts its workers, the worker manager on `port`. On a failure, the
+/// workers already started are shut down.
+async fn listen(dir: &std::path::Path, port: u16) -> anyhow::Result<EngineBuilder> {
     let builder = EngineBuilder::new()
         .add_worker(
             "configuration",
-            Some(json!({"adapter":{"name":"fs","config":{"directory":dir.path()}}})),
+            Some(json!({"adapter":{"name":"fs","config":{"directory":dir}}})),
         )
         .add_worker(
             "iii-worker-manager",
             Some(json!({"host":"127.0.0.1","port":port})),
         )
         .build()
-        .await
-        .unwrap();
+        .await?;
     for worker in builder.running() {
-        worker
+        if let Err(error) = worker
             .worker
             .start_background_tasks(worker.shutdown_tx.subscribe(), worker.shutdown_tx.clone())
             .await
-            .unwrap();
+        {
+            for worker in builder.running() {
+                let _ = worker.shutdown_tx.send(true);
+            }
+            return Err(error);
+        }
     }
+    Ok(builder)
+}
+
+async fn start() -> TestEngine {
+    // The port is free when it is picked, not reserved: another test, or another process, can
+    // bind it before the engine does. Losing that race costs a retry on another port, a bounded
+    // number of times, never the test.
+    let mut attempt = 1;
+    let (builder, dir, port) = loop {
+        let dir = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        match listen(dir.path(), port).await {
+            Ok(builder) => break (builder, dir, port),
+            Err(error) if attempt < 5 => {
+                eprintln!("the engine did not start on port {port}, retrying: {error:#}");
+                attempt += 1;
+            }
+            Err(error) => panic!("the engine did not start: {error:#}"),
+        }
+    };
     let url = format!("ws://127.0.0.1:{port}");
     let sdk = register_worker(
         &url,
