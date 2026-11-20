@@ -1127,15 +1127,48 @@ fn shared_anchor(lines: &[&str], from: usize, to: usize) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Whether `line` holds the alias `*name`.
+/// Whether `line` holds the alias node `*name`: a `*` outside quotes where a node starts, at the
+/// line's start or after `: `, `- `, `? `, `[`, `{` or `,`. One inside a scalar, as in
+/// `run: echo *name`, is text.
 fn aliases(line: &str, name: &str) -> bool {
     let alias = format!("*{name}");
-    line.match_indices(&alias).any(|(at, _)| {
-        let before = line[..at].chars().next_back();
-        let after = line[at + alias.len()..].chars().next();
-        before.is_none_or(|c| c.is_whitespace() || "[{,".contains(c))
-            && after.is_none_or(|c| c.is_whitespace() || ",]}".contains(c))
-    })
+    // The last character outside quotes that is not whitespace, and whether whitespace followed.
+    let (mut previous, mut spaced): (Option<char>, bool) = (None, false);
+    let starts_node = |previous: Option<char>, spaced: bool| match previous {
+        None => true,
+        Some(c) if "[{,".contains(c) => true,
+        Some(c) => ":-?".contains(c) && spaced,
+    };
+    let mut chars = line.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\'' | '"' if starts_node(previous, spaced) => {
+                let mut escaped = false;
+                for (_, inner) in chars.by_ref() {
+                    match inner {
+                        '\\' if c == '"' && !escaped => escaped = true,
+                        inner if inner == c && !escaped => break,
+                        _ => escaped = false,
+                    }
+                }
+                (previous, spaced) = (Some(c), false);
+                continue;
+            }
+            '*' if starts_node(previous, spaced) && line[at..].starts_with(&alias) => {
+                let after = line[at + alias.len()..].chars().next();
+                if after.is_none_or(|c| c.is_whitespace() || ",]}".contains(c)) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        if c.is_whitespace() {
+            spaced = true;
+        } else {
+            (previous, spaced) = (Some(c), false);
+        }
+    }
+    false
 }
 
 /// A YAML scalar as the text it holds; another value as its YAML.
@@ -4428,10 +4461,11 @@ containers:
         );
     }
 
-    /// An anchor on a block `scripts` that nothing aliases stays where it was.
+    /// An anchor on a block `scripts` that nothing aliases stays where it was; a `*` inside a
+    /// scalar, quoted or not, is no alias.
     #[test]
     fn an_anchored_block_of_scripts_keeps_its_anchor() {
-        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared # shared\n      run: python main.py\n  other:\n    worker: path://./other\n    scripts: {run: x, note: '*shared'}\n";
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared # shared\n      run: python main.py\n  other:\n    worker: path://./other\n    scripts:\n      run: x\n      note: '*shared'\n      post_run: echo *shared\n";
         let rewrite = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap();
         assert!(
             rewrite.text.contains("    scripts: &shared # shared\n"),
