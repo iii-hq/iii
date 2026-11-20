@@ -595,6 +595,31 @@ impl OpenState {
     }
 }
 
+/// The variable is set and not empty.
+fn env_set(key: &str) -> bool {
+    std::env::var_os(key).is_some_and(|value| !value.is_empty())
+}
+
+/// A terminal reached over SSH: `127.0.0.1` is this host's loopback, not the
+/// user's, so a browser opened here never appears in front of them.
+fn remote_session() -> bool {
+    env_set("SSH_CONNECTION") || env_set("SSH_CLIENT") || env_set("SSH_TTY")
+}
+
+/// Auto-open only where the browser would appear in front of the user and
+/// `c` can still stop the countdown: both ends of the terminal interactive,
+/// not over SSH, not in CI, a display to open on (Linux and the other Unixes
+/// need `DISPLAY` or `WAYLAND_DISPLAY`), and not turned off with
+/// `III_NO_BROWSER`.
+fn can_auto_open() -> bool {
+    use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let has_gui = !cfg!(all(unix, not(target_os = "macos")))
+        || env_set("DISPLAY")
+        || env_set("WAYLAND_DISPLAY");
+    interactive && !remote_session() && !env_set("CI") && !env_set("III_NO_BROWSER") && has_gui
+}
+
 /// Counts down on one line, rewritten in place, then opens `url` in the
 /// browser. `b` opens it at once and `c` stops the countdown; either key is
 /// read by [`open_console_on_request`], which shares `state`.
@@ -738,18 +763,30 @@ async fn announce_console_when_ready(
             url.bold()
         );
 
-        // A blocking read on its own thread, not a blocking task: the process
-        // must be free to exit with compose while this is still parked on stdin.
         let state = std::sync::Arc::new(OpenState::default());
-        let reader = (url.clone(), std::sync::Arc::clone(&state));
-        std::thread::spawn(move || open_console_on_request(&reader.0, &reader.1));
+        let keys = std::io::IsTerminal::is_terminal(&std::io::stdin());
+        if keys {
+            // A blocking read on its own thread, not a blocking task: the
+            // process must be free to exit with compose while this is still
+            // parked on stdin.
+            let reader = (url.clone(), std::sync::Arc::clone(&state));
+            std::thread::spawn(move || open_console_on_request(&reader.0, &reader.1));
+        }
 
-        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        if can_auto_open() {
             open_console_after_countdown(&url, &state).await;
         } else {
-            // Nothing on the other end to show a timer to or stop it.
             state.cancel();
-            eprintln!("    Press {} to open it here.", "b".bold());
+            if remote_session() {
+                // The console listens on this host's loopback; the person at
+                // the keyboard reaches it through a forwarded port.
+                eprintln!(
+                    "    Over SSH, forward the port first: {}",
+                    format!("ssh -L {port}:127.0.0.1:{port} <host>").bold()
+                );
+            } else if keys {
+                eprintln!("    Press {} to open it here.", "b".bold());
+            }
         }
         eprintln!();
     };
