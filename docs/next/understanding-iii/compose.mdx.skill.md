@@ -124,6 +124,10 @@ compose path so different checkouts remain separate under a shared root. `compos
 the resolved `state_dir` for either layout. The default layout requires a `.iii/compose/` entry in
 the project's ignore rules to exclude generated state from version control.
 
+The variable does not move `.iii/workers/` and `.iii/build/`: Compose still writes them beside the
+compose file when the project locks a package or a container has a non-empty `scripts.build`, a VM
+build included. A read-only checkout therefore works only without packages and builds.
+
 Installed packages remain shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
 The cache is keyed by name, version and target, so projects can reuse downloaded workers.
 
