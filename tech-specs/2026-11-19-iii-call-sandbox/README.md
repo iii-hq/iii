@@ -192,18 +192,27 @@ Answers `{ build_id, base_image: { reference, digest }, built_at_ms, adapter, co
 ### 4.4 `sandbox::start`
 
 Boots `build_id` from `build_dir` with `worker::start` and `build`, or reattaches to the live boot
-of the same state (S502), and copies the guest's lines to `stdout` and `stderr`. It writes an
-empty frame to them every few seconds, so a reader that left is noticed with a silent guest too.
+of the same state (S502), and copies the guest's lines to `stdout` and `stderr`. It writes
+nothing of its own to learn that its reader left: it holds the write ends of the caller's pipes and
+waits for them to close. The engine serves each read end over the caller's WebSocket and watches
+that socket while it waits for data, so a reader that closes its stream, or whose connection
+ends, releases the pipe at once, a silent guest included.
 
 - Its sinks closing (Compose's SIGTERM, a Ctrl+C) stops the VM with `worker::stop` and
-  `stop_grace_ms`, then answers `{ stopped: true, exit_code }`. A caller that dies (SIGKILL, a
-  lost connection) closes them too, so its VM is stopped the same way: no VM outlives its call.
+  `stop_grace_ms`, then answers `{ stopped: true, exit_code }`. A caller that dies (SIGKILL) or
+  whose connection closes ends them too, so its VM is stopped the same way: no VM outlives its
+  call.
   A stop the adapter does not confirm within `stop_grace_ms`, none asked with `0` included, fails
   with `TIMED_OUT` instead, and the adapter's lease stops the VM.
 - A boot it reattached to that ends as stopped was being stopped by an earlier start whose caller
   died. That end is not this call's, so it boots once more in the same call and writes
   `sandbox::start: VM <vm_id> instance <n> was stopped by an earlier start; booting it again` to
   `stderr`. A second such end is answered as an exit, below.
+- A connection that drops without closing (the caller's machine gone, or the network cut, with no
+  FIN or RST) is not noticed until the socket fails, and a silent guest writes nothing that would
+  make it fail. Such a VM runs until the guest writes or the TCP stack gives up. The caller
+  Compose starts runs on the engine's machine, over loopback, so it never meets this; a remote
+  `iii call` can. A ping on the engine's read sockets would close the gap (follow-up).
 - The VM exiting with 0 answers `{ exit_code: 0 }`. Exiting otherwise fails with
   `WORKER_EXITED`, its code or signal in the message, so `iii call` exits 1. Compose's restart
   policy only tells zero from non-zero, so it is unaffected; the VM's own code is in the error, in
