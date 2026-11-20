@@ -582,16 +582,20 @@ impl OpenState {
         opened
     }
 
-    /// `b`: opens now from any state but a launch already running (the
-    /// timer's), so a failed one can be retried. True once it opened.
+    /// `b`: opens now while counting, after `c`, or after a failed launch.
+    /// A launch already running or done (the timer's) is left alone, so the
+    /// two never open the URL twice. True once it is open, either way: the
+    /// key reader stops then.
     fn open_on_key(&self, url: &str) -> bool {
-        let claimed = self
+        match self
             .phase
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |phase| {
-                (phase != OPEN_OPENING).then_some(OPEN_OPENING)
-            })
-            .is_ok();
-        claimed && self.launch(url)
+                matches!(phase, OPEN_COUNTING | OPEN_CANCELLED | OPEN_FAILED)
+                    .then_some(OPEN_OPENING)
+            }) {
+            Ok(_) => self.launch(url),
+            Err(phase) => phase == OPEN_OPENED,
+        }
     }
 }
 
