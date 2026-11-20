@@ -2153,9 +2153,10 @@ impl Daemon {
                 ),
             )
             .await??;
-        // Stopped after the VMs that went before it.
+        // Stopped after the VMs that went before it, and before what it starts after: ordered
+        // with everything removed.
         if let Some(crate::sandbox::AdapterChange::Remove(key)) = adapter {
-            removal_order.push(key);
+            removal_order = removal_order_with(&before, &requested, &key)?;
         }
 
         // All names, dependency edits, metadata and adapter changes validated under mutation.
@@ -3092,6 +3093,17 @@ fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Resul
         .rev()
         .filter(|worker| requested.contains(worker.as_str()))
         .collect())
+}
+
+/// [`removal_order`] of `requested` and the adapter `adapter`, which goes with them.
+fn removal_order_with(
+    file: &crate::ComposeFile,
+    requested: &BTreeSet<&str>,
+    adapter: &str,
+) -> Result<Vec<String>> {
+    let mut all = requested.clone();
+    all.insert(adapter);
+    removal_order(file, &all)
 }
 
 /// How a failed rebuild of an add or update is finished: retrying it, which rebuilds the
@@ -7512,11 +7524,22 @@ pub(crate) mod findings_lifecycle_tests {
             &std::collections::BTreeSet::from(["vm", "host", "sb", "web"]),
         )
         .unwrap();
-        let at = |key: &str| order.iter().position(|worker| worker == key).unwrap();
+        let at =
+            |order: &[String], key: &str| order.iter().position(|worker| worker == key).unwrap();
         // The VM before its adapter, and the adapter before what it starts after.
-        assert!(at("vm") < at("sb"), "{order:?}");
-        assert!(at("sb") < at("host"), "{order:?}");
+        assert!(at(&order, "vm") < at(&order, "sb"), "{order:?}");
+        assert!(at(&order, "sb") < at(&order, "host"), "{order:?}");
         assert_eq!(order.len(), 4, "{order:?}");
+        // The same when the adapter goes because its last VM does.
+        let order = super::removal_order_with(
+            &file,
+            &std::collections::BTreeSet::from(["vm", "host"]),
+            "sb",
+        )
+        .unwrap();
+        assert!(at(&order, "vm") < at(&order, "sb"), "{order:?}");
+        assert!(at(&order, "sb") < at(&order, "host"), "{order:?}");
+        assert_eq!(order.len(), 3, "{order:?}");
     }
 
     /// A failed rebuild of an update is finished by retrying it, which restarts the container on
