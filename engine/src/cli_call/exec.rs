@@ -94,10 +94,12 @@ async fn call(
     let mut carried = Carried::default();
     let mut interrupt = None;
     if !bindings.is_empty() {
+        // The bindings were checked before the engine was reached: a stream that cannot be
+        // opened now is the engine's failure, not the arguments'.
         carried
             .bind(iii, &bindings, &mut payload)
             .await
-            .map_err(CallCliError::Usage)?;
+            .map_err(CallCliError::Other)?;
         interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
     }
     let timeout_ms = options.timeout_ms.unwrap_or(if bindings.is_empty() {

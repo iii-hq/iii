@@ -65,6 +65,15 @@ impl Bindings {
         self.stdout.is_none() && self.stderr.is_none() && self.stdin.is_none()
     }
 
+    /// Refuses, before any stream is opened, the bindings no call can carry: a stream bound in a
+    /// payload that is not an object.
+    pub fn check(&self, payload: &Value) -> anyhow::Result<()> {
+        if !self.is_empty() && !payload.is_object() {
+            anyhow::bail!("a stream can only be bound in an object payload");
+        }
+        Ok(())
+    }
+
     fn fields(&self) -> impl Iterator<Item = (Stdio, &str)> {
         [
             (Stdio::Stdout, &self.stdout),
@@ -455,6 +464,21 @@ mod tests {
         };
         bindings.complete_from_schema(&schema(), &json!({}));
         assert_eq!(bindings.stdout, None);
+    }
+
+    #[test]
+    fn a_binding_needs_an_object_payload() {
+        let bindings = Bindings {
+            stdout: Some("out".into()),
+            ..Default::default()
+        };
+        assert!(bindings.check(&json!({})).is_ok());
+        let error = bindings.check(&json!([1])).unwrap_err().to_string();
+        assert!(error.contains("object payload"), "{error}");
+        assert!(
+            Bindings::default().check(&json!([1])).is_ok(),
+            "a call that binds nothing takes any payload"
+        );
     }
 
     #[test]
