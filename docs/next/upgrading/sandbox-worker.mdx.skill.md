@@ -18,7 +18,8 @@ and where their state is kept. Work through the sections that apply to your setu
 
 <Note>
   After 0.26, a VM worker is explicit in `worker-compose.yaml`: `scripts.build` is
-  `iii sandbox build` and `scripts.run` is `iii sandbox run`, and the adapter range is `^0.4`. See
+  `iii call sandbox::build worker=<container>` and `scripts.run` is
+  `iii call sandbox::start worker=<container>`, and the adapter range is `^0.5`. See
   [Compose / VM workers](../using-iii/compose#vm-workers) and
   [Upgrading VM workers from 0.26.x](./explicit-vm-workers).
 </Note>
@@ -159,16 +160,16 @@ Leaving an `iii-sandbox` entry in the list-shaped `config.yaml` fails startup wi
 with a container that Compose would rewrite into the explicit VM mode fails first, with
 `VM_SCRIPTS_MISSING`, even when the adapter is missing. A project that needs the adapter (it sets
 `engine.sandbox` for its own namespace, or a container's `scripts.run` starts with
-`iii sandbox run`) but does not declare it then fails with `SANDBOX_ADAPTER_NOT_DECLARED`. Run
-`iii compose --up` once without `--frozen`, so Compose writes the adapter container and the
+`iii call sandbox::start`) but does not declare it then fails with `SANDBOX_ADAPTER_NOT_DECLARED`.
+Run `iii compose --up` once without `--frozen`, so Compose writes the adapter container and the
 rewritten `scripts` into the file, and the lock. Commit both.
 
 ## VM workers from `path://`
 
 The adapter only mounts host directories under its host roots: the compose file's directory,
 Compose's package cache (`~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`), and the
-directory of each `path://` VM worker (its `scripts.run` is `iii sandbox run`) that the file
-declares when the adapter starts. A declared worker outside the compose directory, such as
+directory of each `path://` VM worker (its `scripts.run` is `iii call sandbox::start`) that the
+file declares when the adapter starts. A declared worker outside the compose directory, such as
 `path://../shared`, is admitted.
 
 The adapter reads its roots only when it starts. A `path://` VM worker outside the compose

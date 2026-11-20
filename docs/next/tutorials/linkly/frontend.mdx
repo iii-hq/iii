@@ -24,8 +24,8 @@ auth:
   start_after: [sandbox-libkrun]
   env_file: ['./.env']
   scripts:
-    build: iii sandbox build
-    run: iii sandbox run
+    build: iii call sandbox::build worker=auth
+    run: iii call sandbox::start worker=auth
 ```
 
 The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`

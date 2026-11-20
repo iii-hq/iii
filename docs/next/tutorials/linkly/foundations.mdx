@@ -62,8 +62,8 @@ containers:
       # Ch. 3: the schema is created at startup, after database is up.
       # - database
     scripts:
-      build: iii sandbox build
-      run: iii sandbox run
+      build: iii call sandbox::build worker=link
+      run: iii call sandbox::start worker=link
 
   # The sandbox adapter: it builds and boots each VM worker's image.
   # added by compose::add
@@ -79,11 +79,12 @@ compose project and the engine with `iii compose --up`.
 For example `http` comes from a remote package, while `link` will be a path from your project
 directory to the local worker.
 
-`link` runs in a microVM, and its `scripts` say so. `iii sandbox build` builds the worker's image
-into `.iii/build/link/` on its first start, and `iii sandbox run` boots that image.
-`sandbox-libkrun` is the adapter that does both, so `link` names it in `start_after`. After you
-change the worker's dependencies, rebuild it with `iii sandbox build link`, then restart it with
-`iii call compose::restart worker=link`. See
+`link` runs in a microVM, and its `scripts` say so. `iii call sandbox::build worker=link` builds the
+worker's image into `.iii/build/link/` on its first start, and `iii call sandbox::start worker=link`
+boots that image. `worker=` is the container's own key. `sandbox-libkrun` is the adapter that does
+both, so `link` names it in `start_after`. After you change the worker's dependencies, rebuild it
+with `iii call compose::build worker=link`, wait for the build to finish in
+`iii compose logs link --follow`, then restart it with `iii call compose::restart worker=link`. See
 [Compose / VM workers](../../using-iii/compose#vm-workers).
 
 `state` uses an in-memory store by default, so every restart starts clean. That's what we want for

@@ -748,7 +748,8 @@ bundled worker. A Compose container can replace the start command with its own `
 `scripts.build`, and add `scripts.pre_run` or `scripts.post_run` lifecycle hooks. The container
 cannot change the manifest's `name` or `runtime.base_image`; those stay as the manifest declares
 them. The container's `scripts` decide where the worker runs: a VM worker has
-`scripts.build: iii sandbox build` and `scripts.run: iii sandbox run`. See
+`scripts.build: iii call sandbox::build worker=<container>` and
+`scripts.run: iii call sandbox::start worker=<container>`. See
 [Compose / VM workers](../using-iii/compose#vm-workers).
 
 ```yaml
@@ -764,7 +765,7 @@ scripts:
 `description` is an optional one-line, human/LLM-readable summary of what the worker does.
 
 `scripts.start` launches the worker. Here, `watchfiles` reloads it whenever you edit a source file.
-For a VM worker, `runtime.base_image` is the base image that `iii sandbox build` starts from. The
+For a VM worker, `runtime.base_image` is the base image that `sandbox::build` starts from. The
 manifest is metadata about starting the worker.
 
 See [Worker manifest](./worker-manifest) for the field reference.

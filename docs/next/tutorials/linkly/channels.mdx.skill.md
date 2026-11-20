@@ -18,8 +18,8 @@ bulk-importer:
   worker: path://./bulk-importer
   start_after: [link, sandbox-libkrun]
   scripts:
-    build: iii sandbox build
-    run: iii sandbox run
+    build: iii call sandbox::build worker=bulk-importer
+    run: iii call sandbox::start worker=bulk-importer
 ```
 
 ## Import a CSV from a stream

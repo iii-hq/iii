@@ -47,7 +47,7 @@ runtime:
   # base_image: ghcr.io/astral-sh/uv:bookworm-slim
 ```
 
-For a VM worker, `runtime.base_image` is the base image that `iii sandbox build` starts from. A
+For a VM worker, `runtime.base_image` is the base image that `sandbox::build` starts from. A
 `path://` worker that sets it runs in a VM unless its container in `worker-compose.yaml` declares
 its own `scripts.build`. See [Compose / VM workers](../using-iii/compose#vm-workers) and
 [Upgrading VM workers from 0.26.x](../upgrading/explicit-vm-workers).
@@ -61,7 +61,7 @@ The images that ship with iii come in two variants:
 
 ## `scripts`
 
-Lifecycle commands. For a VM worker, `setup` and `install` run once, when `iii sandbox build` builds
+Lifecycle commands. For a VM worker, `setup` and `install` run once, when `sandbox::build` builds
 the image: `setup` for the system packages a dependency needs to build, `install` for the
 dependencies. A run never repeats them. `start` runs the worker process, and it is required.
 

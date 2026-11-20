@@ -28,8 +28,8 @@ click-streamer:
   worker: path://./click-streamer
   start_after: [sandbox-libkrun]
   scripts:
-    build: iii sandbox build
-    run: iii sandbox run
+    build: iii call sandbox::build worker=click-streamer
+    run: iii call sandbox::start worker=click-streamer
 ```
 
 ## Host the click feed in `click-streamer`

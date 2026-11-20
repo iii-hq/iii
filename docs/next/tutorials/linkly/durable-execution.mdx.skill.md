@@ -34,8 +34,8 @@ analytics:
   worker: path://./analytics
   start_after: [database, queue, sandbox-libkrun]
   scripts:
-    build: iii sandbox build
-    run: iii sandbox run
+    build: iii call sandbox::build worker=analytics
+    run: iii call sandbox::start worker=analytics
 ```
 
 Also uncomment the `analytics` database in the Ch. 3 `database` block. `analytics` is a second

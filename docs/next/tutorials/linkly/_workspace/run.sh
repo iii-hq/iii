@@ -41,7 +41,7 @@ wait_for_port() {
 }
 
 # VM workers build their image, dependencies included, on their first start
-# (iii sandbox build), so the engine and http ports open long before every
+# (iii call sandbox::build), so the engine and http ports open long before every
 # worker has registered. Wait for compose to report every container running.
 # Fail as soon as one did not start: a container that is not required fails
 # without failing the up, which compose reports as `✗ Containers Running (n/m)`.

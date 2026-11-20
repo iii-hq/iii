@@ -30,8 +30,8 @@ link:
     # Ch. 3: the schema is created at startup, after database is up.
     - database
   scripts:
-    build: iii sandbox build
-    run: iii sandbox run
+    build: iii call sandbox::build worker=link
+    run: iii call sandbox::start worker=link
 
 database:
   worker: package://database
