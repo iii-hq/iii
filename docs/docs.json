@@ -31,6 +31,14 @@
       "destination": "/next/reference/filters"
     },
     {
+      "source": "/next/understanding-iii/channels",
+      "destination": "/next/understanding-iii/streaming"
+    },
+    {
+      "source": "/next/creating-workers/channels",
+      "destination": "/next/creating-workers/streaming"
+    },
+    {
       "source": "/tutorials/build-an-agent/:slug*",
       "destination": "/tutorials/linkly/overview"
     },
@@ -170,7 +178,8 @@
                   "next/using-iii/configuration",
                   "next/using-iii/ade",
                   "next/using-iii/cli",
-                  "next/using-iii/deployment"
+                  "next/using-iii/deployment",
+                  "next/using-iii/streaming"
                 ]
               },
               {
@@ -181,7 +190,7 @@
                   "next/understanding-iii/engine",
                   "next/understanding-iii/compose",
                   "next/understanding-iii/namespaces",
-                  "next/understanding-iii/channels"
+                  "next/understanding-iii/streaming"
                 ]
               },
               {
@@ -204,7 +213,7 @@
                   "next/creating-workers/functions",
                   "next/creating-workers/observable-functions",
                   "next/creating-workers/worker-manifest",
-                  "next/creating-workers/channels",
+                  "next/creating-workers/streaming",
                   {
                     "group": "Patterns",
                     "pages": [
@@ -217,6 +226,8 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "next/upgrading/from-0-26-x",
+                  "next/upgrading/explicit-vm-workers",
                   "next/upgrading/from-0-25-x",
                   "next/upgrading/sandbox-worker",
                   "next/upgrading/from-0-24-x",

@@ -6,6 +6,7 @@
 
 pub mod config;
 mod router;
+pub mod vm;
 pub use router::SandboxRouter;
 
 crate::register_worker!(

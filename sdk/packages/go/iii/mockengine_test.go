@@ -51,6 +51,10 @@ type mockEngine struct {
 
 	// updated under mu; broadcast lets WaitFor wake on every new frame.
 	gotMessage *sync.Cond
+
+	// channels, if set, serves the stream sockets (/ws/channels/...) instead of the
+	// worker handling above (stream_relay_test.go).
+	channels http.Handler
 }
 
 // handshake is what a connection's WebSocket upgrade request carried.
@@ -87,6 +91,11 @@ func newMockEngine(t testing.TB) *mockEngine {
 // reply on the same connection.
 func (m *mockEngine) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
+	if channels := m.channels; channels != nil && strings.HasPrefix(r.URL.Path, "/ws/channels/") {
+		m.mu.Unlock()
+		channels.ServeHTTP(w, r)
+		return
+	}
 	connIndex := len(m.handshakes)
 	m.handshakes = append(m.handshakes, handshake{uri: r.URL.RequestURI(), header: r.Header.Clone()})
 	m.mu.Unlock()

@@ -6,15 +6,15 @@ use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_mai
 use iii::{
     engine::{Engine, EngineTrait, Handler, RegisterFunctionRequest},
     function::FunctionResult,
-    workers::observability::metrics::{MetricsAccumulator, ensure_default_meter},
+    workers::observability::metrics::{
+        InvocationOutcome, MetricsAccumulator, ensure_default_meter,
+    },
 };
 
 fn core_runtime_benchmark(c: &mut Criterion) {
     ensure_default_meter();
-
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
     let engine = Engine::new();
-
     engine.register_function_handler(
         RegisterFunctionRequest {
             function_id: "bench.echo".to_string(),
@@ -25,7 +25,6 @@ fn core_runtime_benchmark(c: &mut Criterion) {
         },
         Handler::new(|input| async move { FunctionResult::Success(Some(input)) }),
     );
-
     let payload = common::benchmark_payload();
     c.bench_function("core_runtime/engine_call_registered_handler", |b| {
         let engine = engine.clone();
@@ -45,19 +44,20 @@ fn core_runtime_benchmark(c: &mut Criterion) {
 }
 
 fn metrics_accumulator_benchmark(c: &mut Criterion) {
+    // This now measures the entire transaction, not a map-only increment.
     let mut group = c.benchmark_group("metrics_accumulator");
     group.sample_size(10);
     group.warm_up_time(Duration::from_millis(100));
     group.measurement_time(Duration::from_millis(200));
-
     let accumulator = MetricsAccumulator::default();
     let function_id = "orders::get";
-    accumulator.increment_function(function_id);
+    accumulator.record_invocation(function_id, InvocationOutcome::Success);
     group.throughput(Throughput::Elements(1));
     group.bench_function("existing_function", |b| {
-        b.iter(|| accumulator.increment_function(black_box(function_id)));
+        b.iter(|| {
+            accumulator.record_invocation(black_box(function_id), InvocationOutcome::Success)
+        });
     });
-
     let function_ids: Vec<_> = (0..128).map(|i| format!("orders::get-{i}")).collect();
     group.throughput(Throughput::Elements(function_ids.len() as u64));
     group.bench_function("first_invocations", |b| {
@@ -65,7 +65,8 @@ fn metrics_accumulator_benchmark(c: &mut Criterion) {
             MetricsAccumulator::default,
             |accumulator| {
                 for function_id in &function_ids {
-                    accumulator.increment_function(black_box(function_id));
+                    accumulator
+                        .record_invocation(black_box(function_id), InvocationOutcome::Success);
                 }
             },
             BatchSize::PerIteration,

@@ -21,7 +21,7 @@ use crate::{
     observer::{HostDelivery, InvocationCtx, ObserverRegistry},
     protocol::ErrorBody,
     worker_connections::WorkerConnection,
-    workers::observability::metrics::get_engine_metrics,
+    workers::observability::metrics::{InvocationOutcome, MetricsAccumulator, get_engine_metrics},
     workers::worker::rbac_session::Session,
 };
 
@@ -111,13 +111,33 @@ pub struct InvocationHandler {
     /// Consulted on every invocation (the routed observer hook). Set once by
     /// `Engine::new`; a handler without it observes nothing.
     observers: std::sync::OnceLock<Arc<ObserverRegistry>>,
+    #[cfg(test)]
+    metrics_for_test: Option<Arc<MetricsAccumulator>>,
 }
 impl InvocationHandler {
     pub fn new() -> Self {
         Self {
             invocations: Arc::new(DashMap::new()),
             observers: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            metrics_for_test: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_metrics_for_test(accumulator: Arc<MetricsAccumulator>) -> Self {
+        Self {
+            metrics_for_test: Some(accumulator),
+            ..Self::default()
+        }
+    }
+
+    fn metrics_accumulator(&self) -> &MetricsAccumulator {
+        #[cfg(test)]
+        if let Some(accumulator) = &self.metrics_for_test {
+            return accumulator;
+        }
+        crate::workers::observability::metrics::get_metrics_accumulator()
     }
 
     pub(crate) fn set_observers(&self, observers: Arc<ObserverRegistry>) {
@@ -511,10 +531,8 @@ impl InvocationHandler {
                     metrics.invocation_duration.record(duration, &attributes);
 
                     // Update accumulator for readable metrics
-                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
-                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_id);
+                    let acc = self.metrics_accumulator();
+                    acc.record_invocation(&function_id, InvocationOutcome::Success);
                     // Copied once, by the first successful user call.
                     if acc.first_user_success_fn.get().is_none()
                         && !crate::workers::telemetry::is_iii_builtin_function_id(&function_id)
@@ -557,10 +575,8 @@ impl InvocationHandler {
                     metrics.invocation_errors_total.add(1, &attributes);
 
                     // Update accumulator for readable metrics
-                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
-                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.invocations_error.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_id);
+                    let acc = self.metrics_accumulator();
+                    acc.record_invocation(&function_id, InvocationOutcome::Error);
                     if !crate::workers::telemetry::is_iii_builtin_function_id(&function_id) {
                         let _ = acc.first_user_failure_fn.set(function_id.clone());
                     }
@@ -580,10 +596,8 @@ impl InvocationHandler {
                     metrics.invocation_duration.record(duration, &attributes);
 
                     // Update accumulator for readable metrics
-                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
-                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.invocations_success.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_id);
+                    let acc = self.metrics_accumulator();
+                    acc.record_invocation(&function_id, InvocationOutcome::Success);
 
                     Ok(Ok(None))
                 }
@@ -601,10 +615,8 @@ impl InvocationHandler {
                     }
 
                     // Update accumulator for readable metrics
-                    let acc = crate::workers::observability::metrics::get_metrics_accumulator();
-                    acc.invocations_total.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.invocations_deferred.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    acc.increment_function(&function_id);
+                    let acc = self.metrics_accumulator();
+                    acc.record_invocation(&function_id, InvocationOutcome::Deferred);
 
                     receiver.await.map(|completion| {
                         delivered = completion.delivered;
@@ -665,6 +677,9 @@ impl InvocationHandler {
         }
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {

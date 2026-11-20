@@ -17,7 +17,11 @@ connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
 ```yaml worker-compose.yaml
 auth:
   worker: path://./auth
-  env_file: ["./.env"]
+  start_after: [sandbox-libkrun]
+  env_file: ['./.env']
+  scripts:
+    build: iii call sandbox::build worker=auth
+    run: iii call sandbox::start worker=auth
 ```
 
 The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`

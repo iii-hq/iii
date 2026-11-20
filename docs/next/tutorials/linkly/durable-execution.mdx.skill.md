@@ -32,7 +32,10 @@ queue:
         concurrency: 5
 analytics:
   worker: path://./analytics
-  start_after: [database, queue]
+  start_after: [database, queue, sandbox-libkrun]
+  scripts:
+    build: iii call sandbox::build worker=analytics
+    run: iii call sandbox::start worker=analytics
 ```
 
 Also uncomment the `analytics` database in the Ch. 3 `database` block. `analytics` is a second

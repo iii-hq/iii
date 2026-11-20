@@ -391,7 +391,12 @@ export type CallRequest<TInput = unknown> =
       payload: TInput
       /** Sets how the call is routed. Omit for a synchronous request/response. Specify for a specific routing scheme (e.g. `CallAction.Enqueue()`, `CallAction.Void()`). */
       action?: CallAction
-      /** Override the default invocation timeout, in milliseconds. */
+      /**
+       * Override the default invocation timeout, in milliseconds. It counts from
+       * the start of the call and also bounds the wait for the call's sinks
+       * (the Writables or OutputStreams in the payload): when it expires first,
+       * the sinks are aborted and the call rejects with `TIMEOUT`.
+       */
       timeoutMs?: number
       /**
        * Per-invocation metadata (any JSON value), supplied to the called handler

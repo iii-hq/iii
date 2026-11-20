@@ -21,7 +21,7 @@ use scaffolder_core::cli::{
 };
 use scaffolder_core::{IiiConfig, TemplateFetcher};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[derive(Args, Debug, Clone)]
 pub struct ProjectArgs {
@@ -522,6 +522,172 @@ const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// Room for compose's startup renderer to print its closing line and stop
 /// repainting before anything else writes to the terminal.
 const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
+/// How long the console link waits before opening itself in the browser.
+const OPEN_COUNTDOWN: std::time::Duration = std::time::Duration::from_secs(3);
+/// How often the countdown checks for a key; the timer redraws once a second.
+const OPEN_TICK: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Where the browser countdown stands, shared by the timer and the key reader.
+const OPEN_COUNTING: u8 = 0;
+/// Stopped with `c`; `b` still opens it.
+const OPEN_CANCELLED: u8 = 1;
+/// A launch is running; nobody else may start one.
+const OPEN_OPENING: u8 = 2;
+const OPEN_OPENED: u8 = 3;
+/// The last launch failed; `b` may try again.
+const OPEN_FAILED: u8 = 4;
+
+/// The countdown's state, shared with the key reader.
+#[derive(Default)]
+struct OpenState {
+    phase: AtomicU8,
+    /// The countdown line is still on screen and reports the outcome itself.
+    countdown_live: AtomicBool,
+}
+
+impl OpenState {
+    /// `c`: stops the countdown only.
+    fn cancel(&self) {
+        let _ = self.phase.compare_exchange(
+            OPEN_COUNTING,
+            OPEN_CANCELLED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
+    /// The timer's claim: only while still counting.
+    fn claim_for_timer(&self) -> bool {
+        self.phase
+            .compare_exchange(
+                OPEN_COUNTING,
+                OPEN_OPENING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    /// Opens `url` and records how it went. A failure is reported here only
+    /// when the countdown line is gone; while it is up, it says so itself.
+    fn launch(&self, url: &str) -> bool {
+        let opened = open::that(url).is_ok();
+        self.phase.store(
+            if opened { OPEN_OPENED } else { OPEN_FAILED },
+            Ordering::SeqCst,
+        );
+        if !opened && !self.countdown_live.load(Ordering::SeqCst) {
+            eprintln!("  could not open a browser, open {url} yourself\r");
+        }
+        opened
+    }
+
+    /// `b`: opens now while counting, after `c`, or after a failed launch.
+    /// A launch already running or done (the timer's) is left alone, so the
+    /// two never open the URL twice. True once it is open, either way: the
+    /// key reader stops then.
+    fn open_on_key(&self, url: &str) -> bool {
+        match self
+            .phase
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |phase| {
+                matches!(phase, OPEN_COUNTING | OPEN_CANCELLED | OPEN_FAILED)
+                    .then_some(OPEN_OPENING)
+            }) {
+            Ok(_) => self.launch(url),
+            Err(phase) => phase == OPEN_OPENED,
+        }
+    }
+}
+
+/// The variable is set and not empty.
+fn env_set(key: &str) -> bool {
+    std::env::var_os(key).is_some_and(|value| !value.is_empty())
+}
+
+/// A terminal reached over SSH: `127.0.0.1` is this host's loopback, not the
+/// user's, so a browser opened here never appears in front of them.
+fn remote_session() -> bool {
+    env_set("SSH_CONNECTION") || env_set("SSH_CLIENT") || env_set("SSH_TTY")
+}
+
+/// Auto-open only where the browser would appear in front of the user and
+/// `c` can still stop the countdown: both ends of the terminal interactive,
+/// not over SSH, not in CI, a display to open on (Linux and the other Unixes
+/// need `DISPLAY` or `WAYLAND_DISPLAY`), and not turned off with
+/// `III_NO_BROWSER`.
+fn can_auto_open() -> bool {
+    use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let has_gui = !cfg!(all(unix, not(target_os = "macos")))
+        || env_set("DISPLAY")
+        || env_set("WAYLAND_DISPLAY");
+    interactive && !remote_session() && !env_set("CI") && !env_set("III_NO_BROWSER") && has_gui
+}
+
+/// Counts down on one line, rewritten in place, then opens `url` in the
+/// browser. `b` opens it at once and `c` stops the countdown; either key is
+/// read by [`open_console_on_request`], which shares `state`.
+///
+/// The launch runs on its own thread: a launcher can block until it exits,
+/// and this future must stay free to notice compose stopping.
+async fn open_console_after_countdown(url: &str, state: &std::sync::Arc<OpenState>) {
+    use std::io::Write;
+
+    // `\r` plus erase-line rewrites the timer where it stands. The line stays
+    // short so it never wraps, since a wrapped line cannot be rewritten.
+    let show = |text: &str, done: bool| {
+        let mut err = std::io::stderr();
+        let _ = write!(err, "\r\x1b[2K    {text}");
+        if done {
+            let _ = writeln!(err);
+        }
+        let _ = err.flush();
+    };
+    let finish = |text: &str| {
+        state.countdown_live.store(false, Ordering::SeqCst);
+        show(text, true);
+    };
+    state.countdown_live.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + OPEN_COUNTDOWN;
+    let mut shown = None;
+    loop {
+        match state.phase.load(Ordering::SeqCst) {
+            OPEN_OPENED => return finish("Opened in your browser."),
+            OPEN_FAILED => return finish("Could not open a browser; open the link yourself."),
+            OPEN_CANCELLED => return finish(&format!("Press {} to open it.", "b".bold())),
+            OPEN_OPENING => {
+                if shown != Some(0) {
+                    shown = Some(0);
+                    show("Opening your browser…", false);
+                }
+            }
+            _ => {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    if state.claim_for_timer() {
+                        let launcher = (url.to_string(), std::sync::Arc::clone(state));
+                        std::thread::spawn(move || launcher.1.launch(&launcher.0));
+                    }
+                    continue;
+                }
+                let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+                if shown != Some(seconds) {
+                    shown = Some(seconds);
+                    show(
+                        &format!(
+                            "Opening in {}  {} open now · {} cancel",
+                            format!("0:{seconds:02}").bold(),
+                            "b".bold(),
+                            "c".bold()
+                        ),
+                        false,
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(OPEN_TICK).await;
+    }
+}
 
 /// The configuration entry the project's console reads.
 ///
@@ -600,12 +766,33 @@ async fn announce_console_when_ready(
             "▶".green(),
             url.bold()
         );
-        eprintln!("    Press {} to open it here.", "b".bold());
-        eprintln!();
 
-        // A blocking read on its own thread, not a blocking task: the process
-        // must be free to exit with compose while this is still parked on stdin.
-        std::thread::spawn(move || open_console_on_request(&url));
+        let state = std::sync::Arc::new(OpenState::default());
+        let keys = std::io::IsTerminal::is_terminal(&std::io::stdin());
+        if keys {
+            // A blocking read on its own thread, not a blocking task: the
+            // process must be free to exit with compose while this is still
+            // parked on stdin.
+            let reader = (url.clone(), std::sync::Arc::clone(&state));
+            std::thread::spawn(move || open_console_on_request(&reader.0, &reader.1));
+        }
+
+        if can_auto_open() {
+            open_console_after_countdown(&url, &state).await;
+        } else {
+            state.cancel();
+            if remote_session() {
+                // The console listens on this host's loopback; the person at
+                // the keyboard reaches it through a forwarded port.
+                eprintln!(
+                    "    Over SSH, forward the port first: {}",
+                    format!("ssh -L {port}:127.0.0.1:{port} <host>").bold()
+                );
+            } else if keys {
+                eprintln!("    Press {} to open it here.", "b".bold());
+            }
+        }
+        eprintln!();
     };
     tokio::select! {
         () = announce => {}
@@ -709,14 +896,15 @@ fn read_progress(containers: &[serde_json::Value]) -> Option<Progress> {
     })
 }
 
-/// Waits for a bare `b` and opens `url` on it.
+/// Waits for a bare `b` and opens `url` on it; a bare `c` stops the
+/// countdown in [`open_console_after_countdown`] without opening anything.
 ///
 /// Cbreak, not raw: only `ICANON` and `ECHO` come off, so the keypress arrives
 /// without Enter while the terminal keeps translating the newlines compose
 /// writes for the rest of the tour, and keeps turning Ctrl+C into SIGINT. A
 /// raw-mode read drops both.
 #[cfg(unix)]
-fn open_console_on_request(url: &str) {
+fn open_console_on_request(url: &str, state: &OpenState) {
     use nix::sys::termios::{LocalFlags, SetArg, SpecialCharacterIndices, tcgetattr, tcsetattr};
     use std::io::Read;
 
@@ -739,27 +927,25 @@ fn open_console_on_request(url: &str) {
 
     let mut key = [0u8; 1];
     while let Ok(1) = stdin.lock().read(&mut key) {
-        if !key[0].eq_ignore_ascii_case(&b'b') {
-            continue;
+        if key[0].eq_ignore_ascii_case(&b'c') {
+            state.cancel();
+        } else if key[0].eq_ignore_ascii_case(&b'b') && state.open_on_key(url) {
+            break;
         }
-        if open::that(url).is_err() {
-            eprintln!("  could not open a browser, open {url} yourself\r");
-        }
-        break;
     }
     restore_terminal_mode();
 }
 
 #[cfg(not(unix))]
-fn open_console_on_request(url: &str) {
+fn open_console_on_request(url: &str, state: &OpenState) {
     // Windows reads console input events, so there is no output mode to
-    // protect and no termios to put back.
-    let term = console::Term::stdout();
+    // protect and no termios to put back. stderr, the terminal the countdown
+    // was checked against.
+    let term = console::Term::stderr();
     while let Ok(key) = term.read_char() {
-        if key.eq_ignore_ascii_case(&'b') {
-            if open::that(url).is_err() {
-                eprintln!("  could not open a browser, open {url} yourself");
-            }
+        if key.eq_ignore_ascii_case(&'c') {
+            state.cancel();
+        } else if key.eq_ignore_ascii_case(&'b') && state.open_on_key(url) {
             break;
         }
     }

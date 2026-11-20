@@ -3,12 +3,7 @@ use std::sync::Arc;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 
-use crate::{
-    channels::{ChannelReader, ChannelWriter, StreamChannelRef},
-    error::Error,
-    observable::FunctionEntry,
-    protocol::RegisterFunctionMessage,
-};
+use crate::{error::Error, observable::FunctionEntry, protocol::RegisterFunctionMessage};
 
 /// A dispatchable function handler. Receives the invocation payload.
 ///
@@ -45,14 +40,6 @@ pub type StreamRequest<T = Value> = iii_helpers::http::HttpRequest<T>;
 ///
 /// Alias of [`iii_helpers::http::HttpResponse`]; added for cross-language parity.
 pub type StreamResponse<T = Value> = iii_helpers::http::HttpResponse<T>;
-
-/// A streaming channel pair for worker-to-worker data transfer.
-pub struct Channel {
-    pub writer: ChannelWriter,
-    pub reader: ChannelReader,
-    pub writer_ref: StreamChannelRef,
-    pub reader_ref: StreamChannelRef,
-}
 
 #[cfg(test)]
 mod tests {

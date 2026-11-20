@@ -920,7 +920,8 @@ mod tests {
             assert!(
                 message.contains(&format!("{size} bytes"))
                     && message.contains(&MAX_JSON_MESSAGE_BYTES.to_string())
-                    && message.contains("channels"),
+                    && message.contains("Use streams for larger payloads")
+                    && message.contains("creating-workers/streaming#payload-size"),
                 "{message}"
             );
             assert!(result["result"].is_null(), "{result}");
