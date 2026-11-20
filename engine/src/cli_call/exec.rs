@@ -10,7 +10,7 @@ use std::time::Instant;
 use iii::protocol::DEFAULT_NAMESPACE;
 use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Error, IIIClient, InitOptions, register_worker};
+use iii_sdk::{Error, IIIClient, InitOptions, WorkerIdentityMode, register_worker};
 use serde_json::{Value, json};
 
 use super::CallCliError;
@@ -83,6 +83,12 @@ pub struct Options<'a> {
     pub print_result: bool,
 }
 
+/// A call is no worker. The `III_WORKER_NAME` and `III_NAMESPACE` of the process that runs it,
+/// such as any script Compose starts, name that process's worker: a call that took them would
+/// hold the name, and the worker the script starts (a VM's guest) would be refused with
+/// `WORKER_NAMESPACE_CONFLICT`. The call keeps its own name, and names its namespace itself.
+pub(crate) const CALL_IDENTITY: WorkerIdentityMode = WorkerIdentityMode::Explicit;
+
 /// Metadata for the call connection. Registering under a marked name is how
 /// the engine counts this command in the heartbeat's CLI aggregate: the CLI
 /// process is too short-lived to report anything itself, and the connection it
@@ -110,6 +116,7 @@ pub async fn invoke(
         &url,
         InitOptions {
             metadata: cli_worker_metadata(),
+            identity: CALL_IDENTITY,
             ..Default::default()
         },
     );

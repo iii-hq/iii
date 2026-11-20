@@ -67,7 +67,13 @@ async fn fetch_fn_meta(
     namespace: Option<&str>,
 ) -> Result<Option<Value>> {
     let url = format!("ws://{}:{}", address, port);
-    let iii = register_worker(&url, InitOptions::default());
+    let iii = register_worker(
+        &url,
+        InitOptions {
+            identity: super::exec::CALL_IDENTITY,
+            ..Default::default()
+        },
+    );
 
     // `engine::functions::info` is the only surface that carries the
     // request/response schemas — `engine::functions::list` returns slim
