@@ -359,6 +359,10 @@ async fn usage_errors_exit_with_2_before_any_call() {
         NOWHERE,
         &["cli-streams::echo", "--stdout", "io", "--stdin", "io"],
         "--stdout and --stdin both bind the field \"io\"",
+    ), (
+        "http://localhost",
+        &["cli-streams::lines"],
+        "must start with ws://",
     )];
     for (engine, args, expected) in cases {
         let out = output(iii_call(engine, cwd.path(), args)).await;

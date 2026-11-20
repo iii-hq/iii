@@ -376,7 +376,9 @@ impl CallArgs {
 
 pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     args.warn_deprecated_endpoint_flags();
-    let (address, port) = args.endpoint()?;
+    // Resolving the endpoint only reads `--engine`, `III_URL` and the compose file, and connects
+    // nowhere: every failure here is an address that cannot be used.
+    let (address, port) = args.endpoint().map_err(CallCliError::Usage)?;
     if args.help {
         help::print(
             args.function_path.as_deref(),
