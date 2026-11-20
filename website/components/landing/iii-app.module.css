@@ -1,0 +1,195 @@
+/* The iii app section: the device stage (a Mac window and two phones drawn in CSS, no device artwork) and the app
+   tiles. Dark only, like the site; the hero accent is spent on the stage's glow and nothing else here. */
+
+/* ---------- Device stage ---------- */
+
+/*
+ * Everything inside is sized in container units, so the composition scales as one picture from a 350px phone column
+ * to the desktop half. Mac window at the back, the iPhone in front of its lower-left corner, the Android phone in
+ * front of its lower-right corner.
+ */
+.stageFrame {
+  container-type: inline-size;
+  width: 100%;
+}
+.stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 100 / 82;
+  isolation: isolate;
+}
+/* A pool of the accent behind the Mac, and the site's dot grid fading out around it. */
+.glow {
+  position: absolute;
+  inset: -6% -4% -2%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 36% at 55% 32%, color-mix(in oklch, var(--hero-accent) 20%, transparent), transparent 72%),
+    radial-gradient(70% 55% at 50% 45%, oklch(1 0 0 / 0.035), transparent 75%);
+}
+.dots {
+  position: absolute;
+  inset: -4% -6%;
+  z-index: -1;
+  pointer-events: none;
+  mask-image: radial-gradient(60% 55% at 50% 45%, #000 20%, transparent 75%);
+}
+/* The floor: a soft shadow the phones stand on. */
+.floor {
+  position: absolute;
+  inset-inline: 2cqw;
+  bottom: -1.5cqw;
+  height: 6cqw;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(50% 50% at 50% 50%, oklch(0 0 0 / 0.7), transparent 70%);
+  filter: blur(8px);
+}
+
+.device {
+  position: absolute;
+}
+.mac {
+  top: 0;
+  left: 10cqw;
+  width: 80cqw;
+}
+.iphone {
+  top: 23cqw;
+  left: 0;
+  width: 25.5cqw;
+  z-index: 2;
+}
+.android {
+  top: 27cqw;
+  right: 0;
+  width: 24cqw;
+  z-index: 1;
+}
+
+/* Phone columns: the phones grow and the Mac steps back, so the screens a reader holds stay big enough to read. */
+@container (max-width: 480px) {
+  .stage {
+    aspect-ratio: 100 / 110;
+  }
+  .mac {
+    left: 5cqw;
+    width: 90cqw;
+  }
+  .iphone {
+    top: 31cqw;
+    width: 34cqw;
+  }
+  .android {
+    top: 37cqw;
+    width: 32cqw;
+  }
+}
+/* Mac: a window with a quiet title bar (neutral lights, the site is black and white) over the screenshot. */
+.window {
+  overflow: hidden;
+  border-radius: 1.3cqw;
+  background: #0b0b0b;
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 0.11),
+    inset 0 1px 0 0 oklch(1 0 0 / 0.07),
+    0 2px 6px oklch(0 0 0 / 0.4),
+    0 40px 90px -36px oklch(0 0 0 / 0.95);
+}
+.titleBar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.75cqw;
+  height: 3.4cqw;
+  padding-inline: 1.4cqw;
+  background: #121212;
+  box-shadow: inset 0 -1px 0 0 oklch(1 0 0 / 0.06);
+}
+.light {
+  width: 0.95cqw;
+  height: 0.95cqw;
+  border-radius: 999px;
+  background: oklch(1 0 0 / 0.16);
+}
+.titleText {
+  position: absolute;
+  inset-inline: 0;
+  text-align: center;
+  font-size: max(9px, 1.25cqw);
+  color: var(--muted-foreground);
+  letter-spacing: 0.01em;
+}
+.screen {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: #0b0b0b;
+}
+.screen img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+/* A faint glare across the top of every screen, so they read as glass rather than flat pictures. */
+.screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(165deg, oklch(1 0 0 / 0.06), transparent 34%);
+}
+.macScreen {
+  aspect-ratio: 1280 / 800;
+}
+
+/* Phones: a dark bezel with a lit edge around a rounded screen; the captures carry their own status bars. */
+.phone {
+  padding: 0.75cqw;
+  border-radius: 4.4cqw;
+  background: linear-gradient(155deg, #2b2b2b, #101010 45%, #1a1a1a);
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.14),
+    0 0 0 1px oklch(0 0 0 / 0.7),
+    0 30px 60px -22px oklch(0 0 0 / 0.95),
+    0 10px 24px -12px oklch(0 0 0 / 0.8);
+}
+.phone .screen {
+  border-radius: 3.7cqw;
+  aspect-ratio: 440 / 957;
+}
+.androidPhone {
+  border-radius: 3.4cqw;
+}
+.androidPhone .screen {
+  border-radius: 2.7cqw;
+  aspect-ratio: 440 / 988;
+}
+
+/* ---------- App tiles ---------- */
+
+/* The app's own shelf tile: a rounded square with a stroke icon, so the cards read as the app's launchers. */
+.tile {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: linear-gradient(180deg, oklch(0.23 0 0), oklch(0.18 0 0));
+  box-shadow:
+    inset 0 0 0 1px oklch(1 0 0 / 0.08),
+    inset 0 1px 0 0 oklch(1 0 0 / 0.06),
+    0 6px 14px -8px oklch(0 0 0 / 0.8);
+  color: var(--foreground);
+}
+/* "Add apps" in the app is a dashed tile; the registry cell borrows it. */
+.tileAdd {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--line-strong);
+  color: var(--muted-foreground);
+}

@@ -1,0 +1,103 @@
+/* The iii app launch pill over the hero headline. The hero accent lights its badge, its border on the badge side
+   and a faint halo; everything else is the site's hairline and card. */
+
+/* A hairline pill whose border is lit from the badge side: the accent fades into the plain hairline. */
+.pill {
+  --pill-edge: color-mix(in oklch, var(--hero-accent) 55%, transparent);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  height: 34px;
+  padding-inline: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(var(--card), var(--card)) padding-box,
+    linear-gradient(90deg, var(--pill-edge), var(--border) 38%, var(--border) 70%, var(--line-strong)) border-box;
+  box-shadow:
+    0 0 0 4px color-mix(in oklch, var(--hero-accent) 5%, transparent),
+    0 12px 32px -16px color-mix(in oklch, var(--hero-accent) 35%, transparent);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--foreground);
+  white-space: nowrap;
+  transition:
+    box-shadow var(--motion-base) var(--motion-ease-out),
+    background var(--motion-base) var(--motion-ease-out);
+}
+.pill:hover {
+  --pill-edge: var(--hero-accent);
+  box-shadow:
+    0 0 0 4px color-mix(in oklch, var(--hero-accent) 9%, transparent),
+    0 14px 36px -14px color-mix(in oklch, var(--hero-accent) 50%, transparent);
+}
+.pill:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 3px;
+}
+.pillBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding-inline: 8px 9px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--hero-accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--hero-accent) 30%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--hero-accent);
+}
+/* The live dot: a steady point with one ring breathing out of it. */
+.pillDot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--hero-accent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .pillDot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: var(--hero-accent);
+    animation: pill-ping 2.4s var(--motion-ease-out) infinite;
+  }
+}
+@keyframes pill-ping {
+  0% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(3);
+  }
+}
+.pillLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.005em;
+}
+.pillArrow {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+  transition:
+    translate var(--motion-fast) var(--motion-ease-out),
+    color var(--motion-fast) var(--motion-ease-out);
+}
+.pill:hover .pillArrow {
+  color: var(--foreground);
+  translate: 2px 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill,
+  .pillArrow {
+    transition: none;
+  }
+}

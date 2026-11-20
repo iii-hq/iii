@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react'
 import {
   IconArrowDown,
   IconBookmark,
+  IconCategory,
   IconDiscord,
   IconDiscovery,
   IconDocument,
@@ -26,10 +27,12 @@ import { links } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import { CountUp } from './count-up'
 import { NavLogo } from './nav-graphics'
+import { NewBadge } from './new-badge'
 
 type Icon = React.ComponentType<{ className?: string }>
-/** `meta` is a short right-aligned detail (a live count); empty when there is nothing worth saying. */
-type MenuLink = { title: string; meta: string; href: string; icon: Icon }
+/** `meta` is a short right-aligned detail (a live count); empty when there is nothing worth saying. `fresh` adds a
+    "New" badge after the title. */
+type MenuLink = { title: string; meta: string; href: string; icon: Icon; fresh?: boolean }
 
 function communityLinks(stats: CommunityStats): MenuLink[] {
   return [
@@ -40,8 +43,10 @@ function communityLinks(stats: CommunityStats): MenuLink[] {
   ]
 }
 
-/** Same destinations, in the same order, as the current iii.dev header. */
+/** Same destinations, in the same order, as the current iii.dev header, after the iii app (launched 2026-11-05),
+    which leads with a "New" badge until the launch is no longer news. */
 const plainLinks = [
+  { label: 'App', href: links.app, icon: IconCategory, external: false, fresh: true },
   { label: 'Manifesto', href: links.manifesto, icon: IconBookmark, external: false },
   { label: 'Docs', href: links.docs, icon: IconDocument, external: false },
   { label: 'Blog', href: links.blog, icon: IconPaper, external: false },
@@ -229,6 +234,7 @@ function DesktopNav({ community }: { community: MenuLink[] }) {
           <NavItem key={item.label} id={item.label} pill={pill} onHover={setHovered}>
             <NavigationMenu.Link href={item.href} className={triggerClass}>
               <span className="relative z-10">{item.label}</span>
+              {item.fresh ? <NewBadge className="relative z-10 ml-0.5" /> : null}
               {item.external ? (
                 <ArrowUpRightIcon className="relative z-10 size-3 opacity-50 transition-transform duration-150 group-hover:translate-x-px group-hover:-translate-y-px" />
               ) : null}
@@ -367,7 +373,10 @@ function MenuButton({ open, onToggle }: { open: boolean; onToggle: () => void })
 
 function MobilePanel({ community, onNavigate }: { community: MenuLink[]; onNavigate: () => void }) {
   const groups: { title: string; items: MenuLink[] }[] = [
-    { title: 'Resources', items: plainLinks.map((l) => ({ title: l.label, meta: '', href: l.href, icon: l.icon })) },
+    {
+      title: 'Resources',
+      items: plainLinks.map((l) => ({ title: l.label, meta: '', href: l.href, icon: l.icon, fresh: l.fresh })),
+    },
     { title: 'Community', items: community },
   ]
   let index = 0
@@ -404,6 +413,7 @@ function MobilePanel({ community, onNavigate }: { community: MenuLink[]; onNavig
                 >
                   <item.icon className="size-[18px] text-foreground/80" />
                   {item.title}
+                  {item.fresh ? <NewBadge /> : null}
                   {item.meta ? (
                     <span className="ml-auto font-sans text-muted-foreground text-xs tabular-nums">{item.meta}</span>
                   ) : null}

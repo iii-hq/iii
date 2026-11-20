@@ -6,9 +6,11 @@ import { IconDiscord, IconGitHub, IconLinkedIn, IconX } from '@/components/icons
 import { askAbout, links } from '@/lib/site'
 import { cn } from '@/lib/utils'
 import { Logo } from './logo'
+import { NewBadge } from './new-badge'
 
 type Icon = ComponentType<{ className?: string }>
-type Item = { label: string; href: string; icon?: Icon; external?: boolean }
+/** `fresh` sets a "New" badge after the label. */
+type Item = { label: string; href: string; icon?: Icon; external?: boolean; fresh?: boolean }
 
 const rowClass =
   'group/link flex min-h-9 items-center gap-2.5 rounded-md text-[14px] text-foreground/75 outline-none transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-foreground focus-visible:outline-offset-4'
@@ -23,6 +25,7 @@ export function Footer({ container }: { container?: string } = {}) {
     {
       title: 'Product',
       items: [
+        { label: 'iii app', href: links.app, fresh: true },
         { label: 'Docs', href: links.docs },
         { label: 'Quickstart', href: links.quickstart },
         { label: 'Worker registry', href: links.registry },
@@ -75,7 +78,10 @@ export function Footer({ container }: { container?: string } = {}) {
                 </h3>
                 <ul className="flex flex-col">
                   {column.items.map((item) => (
-                    <li key={item.label}>
+                    /* A badge sits beside its link, not inside it, so the link's text stays the page's name (the
+                       llms.txt footer reads link labels); it is aria-hidden, so the name is the same for a screen
+                       reader as in the header. */
+                    <li key={item.label} className={item.fresh ? 'flex items-center gap-2.5' : undefined}>
                       <a
                         href={item.href}
                         className={rowClass}
@@ -92,6 +98,7 @@ export function Footer({ container }: { container?: string } = {}) {
                           />
                         ) : null}
                       </a>
+                      {item.fresh ? <NewBadge /> : null}
                     </li>
                   ))}
                 </ul>
