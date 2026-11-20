@@ -215,9 +215,7 @@ async fn call(
         }
         _ => carried.finish().await,
     };
-    if !stopped
-        && let Err(failure) = drained
-    {
+    if !stopped && let Err(failure) = drained {
         return Err(CallCliError::Other(anyhow::anyhow!(failure)));
     }
 

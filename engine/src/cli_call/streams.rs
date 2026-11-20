@@ -614,7 +614,11 @@ mod tests {
         let interrupted =
             tokio::time::timeout(std::time::Duration::from_millis(50), carried.finish()).await;
         assert!(interrupted.is_err(), "the stdout copy is still running");
-        assert_eq!(carried.copies.len(), 2, "the interrupted finish dropped copies");
+        assert_eq!(
+            carried.copies.len(),
+            2,
+            "the interrupted finish dropped copies"
+        );
         release.send(()).unwrap();
         assert_eq!(
             carried.finish().await,
@@ -658,7 +662,8 @@ mod tests {
         )
         .await;
         assert!(
-            full.as_ref().is_err_and(|error| error.contains("could not write it")),
+            full.as_ref()
+                .is_err_and(|error| error.contains("could not write it")),
             "{full:?}"
         );
         let left = copy_out(
