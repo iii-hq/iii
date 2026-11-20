@@ -37,6 +37,10 @@ iii [OPTIONS] [COMMAND]
 
 Call a function on a running iii engine
 
+A `stdout`, `stderr` or `stdin` stream field of the function's request schema is bound to this process's own, and the `stdout` and `stderr` streams of the result are copied out until they end. While a stream is carried, the first Ctrl+C or SIGTERM closes the streams, which asks the function to stop, and waits for its answer; a second one exits at once.
+
+III_CALL_DEFAULTS holds a JSON object keyed by function id: the entry of the called function is the base payload, and `--json` and key=value override its keys. A parent process uses it to hand a call fields that must not appear in its arguments.
+
 Alias: `trigger`, `t`
 
 ```text
@@ -54,8 +58,14 @@ iii call [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--engine <URL>` | Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and the working directory's compose file. The local default is used when none of them supplies a URL. Encrypted (`wss://`) connections are not supported |
 | `--address <ADDRESS>` | DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else `localhost` |
 | `--port <PORT>` | DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else 49134 |
-| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds) [default: 30000] |
-| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
+| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds). Defaults to 30000; a call that binds a stream has no limit unless this is set |
+| `--stdout <FIELD>` | Bind this process's stdout to payload field FIELD, a stream the function writes. Without the flag, a `stdout` stream field in the function's request schema is bound |
+| `--stderr <FIELD>` | Bind this process's stderr to payload field FIELD, a stream the function writes. Without the flag, a `stderr` stream field in the function's request schema is bound |
+| `--stdin <FIELD>` | Bind this process's stdin to payload field FIELD, a stream the function reads. Without the flag, a `stdin` stream field in the function's request schema is bound |
+| `--no-bind` | Bind no stream from the function's request schema; `--stdout`, `--stderr` and `--stdin` still bind theirs |
+| `--no-follow` | Leave the `stdout` and `stderr` streams of the result unread: the result shows them as refs. A call that binds a stream prints that result only with `--print-result` |
+| `--print-result` | Print the result JSON after the streams ended. A call that carries no stream always prints it |
+| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace, also in a process with `III_NAMESPACE` set (a Compose script); routing is strict, so a function registered in another namespace is only reachable with this flag |
 
 <Note>
   `iii call <function> --help` also queries a running engine for the function's description, request schema and observer args, and says when the function is private (observed, not called). That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
