@@ -509,14 +509,16 @@ pub(crate) async fn run(
             };
         }
     };
-    // The script runs where the plan says, so the source it records must be the plan's: one
-    // changed since the plan was made is not built, and the next plan builds it.
+    // The script runs where the plan says, so the source it records must be the plan's. A plan
+    // is the declaration the project holds, which takes an edit of the file on only once `up`
+    // applies it: until then, a changed source is not built.
     if !planned_source(container, &before) {
         return Outcome::Failed {
             code: crate::vm_call::BUILD_INPUT_CHANGED.to_string(),
             message: format!(
-                "the source of {key} changed since this build was planned (now {}), so it did \
-                 not run; build it again",
+                "the source of {key} in the file ({}) is not the one the project holds, so it \
+                 did not run; apply the file with compose::up, which builds it, or build again \
+                 once it is applied",
                 describe_source(&before)
             ),
         };
@@ -1379,8 +1381,9 @@ mod tests {
             outcome,
             Outcome::Failed {
                 code: "BUILD_INPUT_CHANGED".into(),
-                message: "the source of api changed since this build was planned (now ./moved), \
-                          so it did not run; build it again"
+                message: "the source of api in the file (./moved) is not the one the project \
+                          holds, so it did not run; apply the file with compose::up, which \
+                          builds it, or build again once it is applied"
                     .into(),
             }
         );
