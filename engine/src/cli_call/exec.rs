@@ -170,20 +170,7 @@ async fn call(
     };
     // A signal before the answer is a stop: the streams close, the function stops what it runs
     // and answers, and that answer is what this command exits with.
-    let result = match &interrupt {
-        None => call.await,
-        Some(interrupt) => {
-            tokio::pin!(call);
-            tokio::select! {
-                result = &mut call => result,
-                _ = interrupt.requested() => {
-                    carried.cancel().await;
-                    call.await
-                }
-            }
-        }
-    };
-    let answered_after_signal = interrupt.as_ref().and_then(Interrupt::received);
+    let (result, stopped) = answer(call, interrupt.as_ref(), carried.cancel()).await;
 
     let value = match result {
         Ok(value) => value,
@@ -208,7 +195,7 @@ async fn call(
     // The streams drain once the function closed its ends. A signal now, after the answer, has
     // nothing left to wait for.
     let drained = match &interrupt {
-        Some(interrupt) if answered_after_signal.is_none() => {
+        Some(interrupt) if !stopped => {
             let ended = {
                 let finish = carried.finish();
                 tokio::pin!(finish);
@@ -228,7 +215,7 @@ async fn call(
         }
         _ => carried.finish().await,
     };
-    if answered_after_signal.is_none()
+    if !stopped
         && let Err(failure) = drained
     {
         return Err(CallCliError::Other(anyhow::anyhow!(failure)));
@@ -241,6 +228,28 @@ async fn call(
         );
     }
     Ok(())
+}
+
+/// Awaits the answer of `call`. A signal before it runs `stop`, which asks the function to stop,
+/// and the answer is still awaited: it is what the command exits with. Returns the answer and
+/// whether `stop` ran. A signal that comes after the answer is not counted here: the caller still
+/// sees it through `interrupt`, and stops what is left to carry then.
+async fn answer<T>(
+    call: impl Future<Output = T>,
+    interrupt: Option<&Interrupt>,
+    stop: impl Future<Output = ()>,
+) -> (T, bool) {
+    let Some(interrupt) = interrupt else {
+        return (call.await, false);
+    };
+    tokio::pin!(call);
+    tokio::select! {
+        answer = &mut call => (answer, false),
+        _ = interrupt.requested() => {
+            stop.await;
+            (call.await, true)
+        }
+    }
 }
 
 /// The function's request schema from `engine::functions::info`, to bind streams by. `None` when
@@ -360,6 +369,36 @@ mod tests {
         let default = spent(1_000, None);
         assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
         assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
+
+    #[tokio::test]
+    async fn a_signal_after_the_answer_is_left_to_the_drain() {
+        let (signal, interrupt) = Interrupt::manual();
+        let stop_ran = std::sync::atomic::AtomicBool::new(false);
+        let (value, stopped) = answer(async { 7 }, Some(&interrupt), async {
+            stop_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!((value, stopped), (7, false));
+        assert!(!stop_ran.load(std::sync::atomic::Ordering::SeqCst));
+        // The signal lands after the answer: the drain still sees it, and cancels then.
+        signal.send_replace(Some(15));
+        let seen = tokio::time::timeout(Duration::from_secs(1), interrupt.requested()).await;
+        assert_eq!(seen.ok(), Some(15));
+    }
+
+    #[tokio::test]
+    async fn a_signal_before_the_answer_stops_the_function_and_waits_for_it() {
+        let (signal, interrupt) = Interrupt::manual();
+        signal.send_replace(Some(2));
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        // The function answers only once it was asked to stop.
+        let call = async move { stop_rx.await.is_ok().then_some("stopped") };
+        let (value, stopped) = answer(call, Some(&interrupt), async move {
+            let _ = stop_tx.send(());
+        })
+        .await;
+        assert_eq!((value, stopped), (Some("stopped"), true));
     }
 
     #[test]
