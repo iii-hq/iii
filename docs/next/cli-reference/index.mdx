@@ -67,7 +67,7 @@ iii call [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--no-bind` | Bind no stream from the function's request schema; `--stdout`, `--stderr` and `--stdin` still bind theirs |
 | `--no-follow` | Leave the `stdout` and `stderr` streams of the result unread: the result shows them as refs. A call that binds a stream prints that result only with `--print-result` |
 | `--print-result` | Print the result JSON after the streams ended. A call that carries no stream always prints it |
-| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
+| `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace, also in a process with `III_NAMESPACE` set (a Compose script); routing is strict, so a function registered in another namespace is only reachable with this flag |
 
 <Note>
   `iii call <function> --help` also queries a running engine for the function's description, request schema and observer args, and says when the function is private (observed, not called). That output depends on which workers are registered and is not part of this page; see [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).

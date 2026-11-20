@@ -104,6 +104,9 @@ type: "reference"
     payload that never appears on the command line.
   - A function that fails prints its `Error:` JSON on one line when standard error is not a
     terminal; other failures print plain text. Arguments that cannot make a call exit with `2`.
+  - Without `--namespace`, `iii call` resolves in `default`, as its help says, also in a process
+    whose `III_NAMESPACE` names another namespace. Before, a script Compose started reached its
+    project's namespace instead.
 
   ## Removed
 
