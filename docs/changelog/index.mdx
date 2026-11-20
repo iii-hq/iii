@@ -101,8 +101,8 @@ type: "reference"
     only with `--print-result`.
   - `III_CALL_DEFAULTS`, a JSON object keyed by function id, gives the called function a base
     payload that never appears on the command line.
-  - A failed call prints its `Error:` on one line when standard error is not a terminal. Arguments
-    that cannot make a call exit with `2`.
+  - A function that fails prints its `Error:` JSON on one line when standard error is not a
+    terminal; other failures print plain text. Arguments that cannot make a call exit with `2`.
 
   ## Removed
 
