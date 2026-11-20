@@ -609,7 +609,10 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                 .iter()
                 .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
                 .map(|line| leading_whitespace(line).to_string());
-            match child.filter(|_| opens_block(value)) {
+            // A flow map that starts on the next line has no keys of its own lines: it is written
+            // again whole, as an inline one is.
+            let flow = flow_span(entry_lines, head).is_some();
+            match child.filter(|_| opens_block(value) && !flow) {
                 // A block mapping: its other keys and comments stay line for line.
                 Some(child) => {
                     let run_line = field_span(children, &child, "run");
@@ -4335,6 +4338,25 @@ containers:
             Some("iii call sandbox::start worker=vm 'command=python main.py'")
         );
         assert_eq!(&parsed["containers"]["other"]["scripts"], scripts);
+    }
+
+    /// A flow `scripts` map that starts on the line after `scripts:` is written again whole, as
+    /// an inline one is: `build` lands in the map, not after it.
+    #[test]
+    fn a_flow_map_of_scripts_on_the_next_line_gets_its_build() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sb]\n    scripts:\n      {run: iii call sandbox::start worker=vm}\n";
+        let rewrite = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap();
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        let scripts = &parsed["containers"]["vm"]["scripts"];
+        assert_eq!(
+            scripts["build"].as_str(),
+            Some("iii call sandbox::build worker=vm")
+        );
+        assert_eq!(
+            scripts["run"].as_str(),
+            Some("iii call sandbox::start worker=vm")
+        );
+        assert_eq!(explicit_vm_mode(&rewrite.text, "vm", "sb").unwrap(), None);
     }
 
     /// What `sh -c` reads back is the command as it was written.
