@@ -598,6 +598,8 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
             ));
         }
         None => {}
+        // Nothing in them to write: only `start_after` gains the adapter.
+        Some(_) if wanted.is_empty() => {}
         Some((head, end)) => {
             // Edited in place, scripts another container aliases would hand it this container's
             // VM lines: they are split by hand first.
@@ -4406,6 +4408,24 @@ containers:
                 "{other}: {error}"
             );
         }
+    }
+
+    /// Scripts that need nothing written are not checked for aliases: only `start_after` gains
+    /// the adapter, and what aliases the scripts keeps them as they are.
+    #[test]
+    fn aliased_scripts_that_need_nothing_written_are_left_alone() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared\n      build: iii call sandbox::build worker=vm\n      run: iii call sandbox::start worker=vm\n  other:\n    worker: path://./other\n    config_override: *shared\n";
+        let rewrite = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap();
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        assert_eq!(
+            parsed["containers"]["vm"]["start_after"],
+            serde_yaml::from_str::<Value>("[sb]").unwrap()
+        );
+        assert!(
+            rewrite.text.contains("    scripts: &shared\n"),
+            "{}",
+            rewrite.text
+        );
     }
 
     /// An anchor on a block `scripts` that nothing aliases stays where it was.
