@@ -47,9 +47,11 @@ pub fn render_clap_help(target: clap::Command) {
     let mut printer = clap_help::Printer::new(target.clone());
     // Author line is rendered as a useless "by " stub when no author is set.
     printer.set_template("author", "");
-    // Surface the command's `about` text under the title. clap-help 1.x does
-    // not pull `about` from the Command, so inject it manually.
-    if let Some(about) = target.get_about() {
+    // Surface the command's long help under the title, else its `about`: the
+    // paragraphs after a doc comment's summary are `long_about`. clap-help 1.x
+    // pulls neither from the Command, so inject it manually. The Commands
+    // listing keeps each subcommand's short `about`.
+    if let Some(about) = target.get_long_about().or_else(|| target.get_about()) {
         printer.expander_mut().set("about", about.to_string());
         printer.set_template("introduction", "\n${about}\n");
     }
