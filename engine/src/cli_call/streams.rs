@@ -18,6 +18,8 @@ use iii_sdk::{
     protocol::{ChannelDirection, ChannelItem, StreamChannelRef},
 };
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
+
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::watch,
@@ -224,6 +226,9 @@ pub struct Carried {
     writers: Vec<OutputStream>,
     copies: Vec<(&'static str, JoinHandle<Copied>)>,
     stdin: Option<JoinHandle<()>>,
+    /// Why this process's stdin could not be read, once a read failed. Kept apart from the stdin
+    /// task, which `finish` does not wait for, and set before the function learns of it.
+    unread: Arc<Mutex<Option<String>>>,
     /// The copy that failed, kept across a `finish` that was interrupted.
     failure: Option<CopyFailure>,
 }
@@ -258,7 +263,7 @@ impl Carried {
                 Stdio::Stdin => {
                     object.insert(field.to_string(), serde_json::to_value(&pipe.input)?);
                     self.writers.push(pipe.output.clone());
-                    self.stdin = Some(tokio::spawn(copy_in(pipe.output)));
+                    self.stdin = Some(tokio::spawn(copy_in(pipe.output, self.unread.clone())));
                 }
             }
         }
@@ -309,7 +314,8 @@ impl Carried {
 
     /// Waits for every copy into stdout and stderr to end; the copy that failed, by label: the
     /// first that lost output, else the first stream that failed. The stdin copy is not waited
-    /// for: it may sit on a terminal that never ends.
+    /// for: it may sit on a terminal that never ends. Input this process could not read is lost
+    /// like output it could not write, and fails the call the same way.
     ///
     /// Each copy is awaited in place and removed once it ended, so a `finish` dropped half way,
     /// when a signal wins the race, leaves the copies still running here for the next `finish`
@@ -335,6 +341,18 @@ impl Carried {
         }
         if let Some(stdin) = self.stdin.take() {
             stdin.abort();
+        }
+        let unread = self
+            .unread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(error) = unread
+            && !matches!(self.failure, Some(CopyFailure::Output(_)))
+        {
+            self.failure = Some(CopyFailure::Output(format!(
+                "the stdin stream failed: could not read it: {error}"
+            )));
         }
         self.failure.take().map_or(Ok(()), Err)
     }
@@ -376,8 +394,14 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
 /// The reads run on a thread of their own. A blocking read cannot be cancelled, and the runtime
 /// waits for its blocking pool when it shuts down, so a read there (as `tokio::io::stdin` does
 /// it) held up the exit of a call that answered without reading a stdin its parent kept open.
-/// The process does not wait for this thread when it exits.
-async fn copy_in(output: OutputStream) {
+/// The process does not wait for this thread when it exits. A read that fails is recorded in
+/// `unread` before the stream is aborted, so the call learns of it before the function answers.
+async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
+    let fail = |error: String| {
+        *unread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+    };
     let (sender, mut chunks) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
     let reader = std::thread::Builder::new()
         .name("iii-call-stdin".to_string())
@@ -401,6 +425,7 @@ async fn copy_in(output: OutputStream) {
             }
         });
     if let Err(error) = reader {
+        fail(error.to_string());
         let _ = output.abort(error.to_string()).await;
         return;
     }
@@ -412,6 +437,7 @@ async fn copy_in(output: OutputStream) {
                 }
             }
             Err(error) => {
+                fail(error.to_string());
                 let _ = output.abort(error.to_string()).await;
                 return;
             }

@@ -182,6 +182,15 @@ async fn start() -> TestEngine {
                 Ok::<_, Error>(json!({}))
             }),
         ),
+        // Reads its stdin and answers success even when the stream was aborted.
+        sdk.register_function(
+            "cli-streams::tolerant",
+            RegisterFunction::new_async(|req: Echo| async move {
+                let text = req.stdin.text().await.unwrap_or_default();
+                req.stdout.write(text.as_bytes()).await?;
+                Ok::<_, Error>(json!({}))
+            }),
+        ),
         sdk.register_function(
             "cli-streams::ignore",
             RegisterFunction::new_async(|req: Ignore| async move {
@@ -362,6 +371,22 @@ async fn an_unread_stdin_does_not_hold_up_the_exit() {
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), "done\n");
+}
+
+/// Input this process could not read is lost: the call fails, though the function took the
+/// aborted stream and answered success.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_stdin_fails_the_call() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::tolerant"]);
+    // Reading a directory fails (EISDIR).
+    command.stdin(std::fs::File::open(cwd.path()).unwrap());
+    let out = output(command).await;
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("the stdin stream failed"), "{stderr}");
 }
 
 /// A script Compose starts carries its container's `III_WORKER_NAME` and `III_NAMESPACE`. The
