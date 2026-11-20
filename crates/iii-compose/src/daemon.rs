@@ -2358,7 +2358,7 @@ impl Daemon {
                 other => (other.code().to_string(), other.to_string()),
             };
             let finish = format!(
-                "retry the {operation}, or run `iii call sandbox::build {key}` then `iii call \
+                "retry the {operation}, or run `iii call compose::build worker={key}` then `iii call \
                  compose::restart worker={key}`, to finish it."
             );
             let mut retry = if cascaded.contains(key) {
