@@ -700,12 +700,17 @@ async fn a_signal_after_the_answer_does_not_wait_for_a_stuck_write() {
     // The stdout pipe stays open and is never read: it fills, and the copy blocks in its write.
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
-    let _unread = child.stdout.take().unwrap();
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(
-        child.try_wait().unwrap().is_none(),
-        "iii call ended with its output unread"
-    );
+    // One byte read says the answer came and its stream is followed; the rest stays unread.
+    let mut unread = child.stdout.take().unwrap();
+    let mut first = [0u8; 1];
+    tokio::time::timeout(
+        WAIT,
+        tokio::io::AsyncReadExt::read_exact(&mut unread, &mut first),
+    )
+    .await
+    .expect("the result stream was followed")
+    .unwrap();
+    assert_eq!(&first, b"x");
 
     let pid = child.id().unwrap().to_string();
     assert!(
