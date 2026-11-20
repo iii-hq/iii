@@ -24,7 +24,7 @@ use tokio::{
 use crate::build_record as record;
 use crate::{
     build_record::{BuildRecord, BuildSource, Change, SCHEMA},
-    config::Container,
+    config::{Container, WorkerSource},
     error::{ComposeError, Result},
     logs::{LogSink, LogStream},
     manifest::StartSpec,
@@ -509,6 +509,18 @@ pub(crate) async fn run(
             };
         }
     };
+    // The script runs where the plan says, so the source it records must be the plan's: one
+    // changed since the plan was made is not built, and the next plan builds it.
+    if !planned_source(container, &before) {
+        return Outcome::Failed {
+            code: crate::vm_call::BUILD_INPUT_CHANGED.to_string(),
+            message: format!(
+                "the source of {key} changed since this build was planned (now {}), so it did \
+                 not run; build it again",
+                describe_source(&before)
+            ),
+        };
+    }
     let start = StartSpec::Shell(command.to_string());
     let plan = spawn_plan(&SpawnCtx {
         start: &start,
@@ -728,6 +740,18 @@ async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
             path: compose_file.to_path_buf(),
             source: std::io::Error::other(error.to_string()),
         })?
+}
+
+/// Whether `source`, the container's current one, is the one its plan `container` builds from:
+/// the same `path://` directory, or a package, whose copy in `.iii/workers/` is where it builds.
+fn planned_source(container: &Container, source: &BuildSource) -> bool {
+    match (&container.worker, source) {
+        (WorkerSource::Path { declared, .. }, BuildSource::Path { dir }) => {
+            declared.strip_prefix("path://") == Some(dir.as_str())
+        }
+        (WorkerSource::Package { .. }, BuildSource::Package { .. }) => true,
+        _ => false,
+    }
 }
 
 /// The adapter a VM build went through, as `build.json` records it.
@@ -1333,6 +1357,34 @@ mod tests {
                         .into(),
             }
         );
+        assert_eq!(project.record(), None);
+    }
+
+    /// A plan made before its container's source changed does not build: the script would run in
+    /// the old directory and record the new one as built.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_build_planned_before_its_source_changed_does_not_run() {
+        let project = project("scripts: {build: 'touch ../ran', run: x}");
+        std::fs::create_dir(project.dir.path().join("moved")).unwrap();
+        std::fs::write(
+            &project.file.path,
+            "containers:\n  api: {worker: path://./moved, scripts: {build: 'touch ../ran', run: x}}\n",
+        )
+        .unwrap();
+
+        let outcome = project.build(None, None).await;
+
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                code: "BUILD_INPUT_CHANGED".into(),
+                message: "the source of api changed since this build was planned (now ./moved), \
+                          so it did not run; build it again"
+                    .into(),
+            }
+        );
+        assert!(!project.dir.path().join("ran").exists());
         assert_eq!(project.record(), None);
     }
 
