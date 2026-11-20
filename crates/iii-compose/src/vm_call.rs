@@ -47,7 +47,7 @@ pub const BUILD_TIMEOUT_ENV: &str = "III_BUILD_TIMEOUT_MS";
 pub const BUILD_BASE_IMAGE_ENV: &str = "III_BUILD_BASE_IMAGE";
 /// The daemon's resolved worker URI, never re-expanded in the container's environment.
 pub(crate) const BUILD_WORKER_ENV: &str = "III_BUILD_WORKER";
-/// Comma-separated names of the variables that belong to the worker and reach the guest.
+/// The names of the variables that belong to the worker and reach the guest, a JSON list.
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills the process.
 pub const STOP_TIMEOUT_ENV: &str = "III_STOP_TIMEOUT_MS";
@@ -138,15 +138,15 @@ fn millis(vars: &BTreeMap<String, String>, name: &str) -> Result<Option<u64>, St
         .transpose()
 }
 
-/// The variables `III_WORKER_ENV_KEYS` names, without [`NEVER_FORWARDED`]: the guest's whole
-/// environment.
+/// The variables `III_WORKER_ENV_KEYS` names, each name exactly as listed, without
+/// [`NEVER_FORWARDED`]: the guest's whole environment.
 pub(crate) fn worker_env(vars: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     present(vars, WORKER_ENV_KEYS_ENV)
+        .and_then(|keys| serde_json::from_str::<Vec<String>>(keys).ok())
         .into_iter()
-        .flat_map(|keys| keys.split(','))
-        .map(str::trim)
-        .filter(|key| !key.is_empty() && !NEVER_FORWARDED.contains(key))
-        .filter_map(|key| Some((key.to_string(), vars.get(key)?.clone())))
+        .flatten()
+        .filter(|key| !NEVER_FORWARDED.contains(&key.as_str()))
+        .filter_map(|key| Some((key.clone(), vars.get(&key)?.clone())))
         .collect()
 }
 
@@ -303,7 +303,7 @@ mod tests {
                 (STOP_TIMEOUT_ENV, "10000"),
                 (
                     WORKER_ENV_KEYS_ENV,
-                    "KEY,III_WORKER_NAME,III_URL,III_SANDBOX_TOKEN",
+                    r#"["KEY","III_WORKER_NAME","III_URL","III_SANDBOX_TOKEN"]"#,
                 ),
                 ("KEY", "secret"),
                 ("HOST_ONLY", "x"),

@@ -1263,7 +1263,8 @@ pub(crate) fn layer_own_vm_env(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let worker_env_keys = worker_env_keys.join(",");
+    // A JSON list: a name is taken whole, whatever it holds, never split into others.
+    let worker_env_keys = serde_json::Value::from(worker_env_keys).to_string();
     // `iii` in the command is this binary. A PATH that cannot lead with its directory is left as
     // it is.
     // shortcut: a user-set PATH reaches the guest with this host directory first, which matches
@@ -4137,6 +4138,27 @@ pub(crate) mod tests {
         assert!(host_only(vm_call::PACKAGE_KIND_ENV));
     }
 
+    /// A variable's name is forwarded whole: one holding a comma names no other variable, so a
+    /// host variable it seems to list stays out of the guest.
+    #[test]
+    fn a_variable_name_with_a_comma_names_no_other() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(dir.path(), "api", VM_MANIFEST);
+        let file = parse(
+            dir.path(),
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    environment: {'KEY,HOST_ONLY': v}\n    scripts: {build: iii call sandbox::build worker=api, run: iii call sandbox::start worker=api}\n",
+        );
+        let mut env = file.containers["api"].resolve_user_env("api").unwrap();
+        layer_own_vm_env(&file, "api", "p", Path::new("/state"), "orders", &mut env).unwrap();
+        // The process's environment holds the machine's variables beside the container's.
+        env.insert("HOST_ONLY".into(), "host secret".into());
+
+        let guest = vm_call::worker_env(&env);
+
+        assert_eq!(guest.get("KEY,HOST_ONLY").map(String::as_str), Some("v"));
+        assert!(!guest.contains_key("HOST_ONLY"), "{guest:?}");
+    }
+
     /// Spec 8.3 and 9.4: the guest gets the container's own variables, its user's own
     /// `III_SANDBOX_*` included, and the reserved contract, never the inputs of the commands.
     #[test]
@@ -4151,10 +4173,7 @@ pub(crate) mod tests {
         let compose_file = crate::spawn::canonical_compose_file(&file.path);
         let compose_dir = compose_file.parent().unwrap();
         let forwarded = |env: &BTreeMap<String, String>| -> BTreeSet<String> {
-            env[vm_call::WORKER_ENV_KEYS_ENV]
-                .split(',')
-                .map(str::to_string)
-                .collect()
+            serde_json::from_str(&env[vm_call::WORKER_ENV_KEYS_ENV]).unwrap()
         };
         let host_inputs = [
             "III_BUILD_DIR",
