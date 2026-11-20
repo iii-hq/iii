@@ -58,7 +58,15 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         path: file.to_path_buf(),
         source,
     })?;
-    let mut file = ComposeFile::load(file)?;
+    // Parsed from `text`, the snapshot the stale checks compare with: a second read could see an
+    // edit that is reverted before they run.
+    let canonical = std::fs::canonicalize(file)
+        .or_else(|_| std::path::absolute(file))
+        .map_err(|source| ComposeError::Io {
+            path: file.to_path_buf(),
+            source,
+        })?;
+    let mut file = ComposeFile::parse(&text, canonical)?;
     // The lock as this build found it, before anything read it. Beside the
     // canonical file, as `prepare` reads it: a symlinked compose file has its
     // lock beside its target.
