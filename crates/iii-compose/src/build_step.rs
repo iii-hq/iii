@@ -1372,12 +1372,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn output_left_behind_after_the_drain_does_not_reach_the_logs() {
-        let project = project("scripts: {build: '(sleep 3; echo late) & echo built', run: x}");
+        // The process left behind writes only once the test says the build returned, and gives up
+        // after 10 s.
+        let project = project(
+            "scripts: {build: '(i=0; while [ ! -e ../go ] && [ $i -lt 200 ]; do sleep 0.05; \
+             i=$((i+1)); done; echo late) & echo built', run: x}",
+        );
         assert_eq!(
             project.build(None, None).await,
             Outcome::Built { build_id: None }
         );
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        std::fs::write(project.dir.path().join("go"), "").unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let logs = project.logs().await;
         assert!(
             logs.iter().any(|entry| entry.message == "[build] built"),
