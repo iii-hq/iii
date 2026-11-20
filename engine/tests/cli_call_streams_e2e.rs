@@ -56,6 +56,14 @@ struct Echo {
     stdout: OutputStream,
 }
 
+/// Binds stdin and never reads it.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct Ignore {
+    #[serde(rename = "stdin")]
+    _stdin: InputStream,
+    stdout: OutputStream,
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
 struct Exported {
     rows: u32,
@@ -140,6 +148,13 @@ async fn start() -> TestEngine {
             RegisterFunction::new_async(|req: Echo| async move {
                 let text = req.stdin.text().await?;
                 req.stdout.write(text.to_uppercase().as_bytes()).await?;
+                Ok::<_, Error>(json!({}))
+            }),
+        ),
+        sdk.register_function(
+            "cli-streams::ignore",
+            RegisterFunction::new_async(|req: Ignore| async move {
+                req.stdout.write(b"done\n").await?;
                 Ok::<_, Error>(json!({}))
             }),
         ),
@@ -272,6 +287,27 @@ async fn bound_streams_carry_the_output_and_the_input() {
     ))
     .await;
     assert_eq!(out.status.code(), Some(1));
+}
+
+/// A function that answers without reading its stdin ends the call, though the parent keeps the
+/// stdin pipe open: no read of it holds up the exit.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unread_stdin_does_not_hold_up_the_exit() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::ignore"]);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let _open = child.stdin.take().unwrap();
+    let out = tokio::time::timeout(WAIT, child.wait_with_output())
+        .await
+        .expect("iii call exited while its stdin stayed open")
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "done\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]
