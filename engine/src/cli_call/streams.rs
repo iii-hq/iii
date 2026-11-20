@@ -66,10 +66,22 @@ impl Bindings {
     }
 
     /// Refuses, before any stream is opened, the bindings no call can carry: a stream bound in a
-    /// payload that is not an object.
+    /// payload that is not an object, or two descriptors bound to one field, where the second
+    /// ref would overwrite the first after both pipes were opened.
     pub fn check(&self, payload: &Value) -> anyhow::Result<()> {
         if !self.is_empty() && !payload.is_object() {
             anyhow::bail!("a stream can only be bound in an object payload");
+        }
+        let mut seen: Vec<(Stdio, &str)> = Vec::new();
+        for (stdio, field) in self.fields() {
+            if let Some((first, _)) = seen.iter().find(|(_, taken)| *taken == field) {
+                anyhow::bail!(
+                    "--{} and --{} both bind the field {field:?}",
+                    first.default_field(),
+                    stdio.default_field()
+                );
+            }
+            seen.push((stdio, field));
         }
         Ok(())
     }
@@ -479,6 +491,24 @@ mod tests {
             Bindings::default().check(&json!([1])).is_ok(),
             "a call that binds nothing takes any payload"
         );
+    }
+
+    #[test]
+    fn two_descriptors_cannot_bind_one_field() {
+        let bindings = Bindings {
+            stdout: Some("io".into()),
+            stdin: Some("io".into()),
+            ..Default::default()
+        };
+        let error = bindings.check(&json!({})).unwrap_err().to_string();
+        assert_eq!(error, "--stdout and --stdin both bind the field \"io\"");
+        // One descriptor may still replace a value the payload sets.
+        let bindings = Bindings {
+            stdout: Some("io".into()),
+            stdin: Some("input".into()),
+            ..Default::default()
+        };
+        assert!(bindings.check(&json!({ "io": "given" })).is_ok());
     }
 
     #[test]
