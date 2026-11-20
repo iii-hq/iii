@@ -37,6 +37,8 @@ struct Seen {
     instance: AtomicU64,
     /// `worker::start` calls.
     starts: AtomicUsize,
+    /// `worker::stop` calls, counted before they are checked.
+    stop_requests: AtomicUsize,
     stopped: AtomicBool,
     build_aborted: AtomicBool,
     /// The VM exited ("exit-*" modes) or was stopped: `worker::status` says so.
@@ -257,6 +259,7 @@ async fn start() -> TestEngine {
         RegisterFunction::new_async(move |req: Value| {
             let seen = stop_seen.clone();
             async move {
+                seen.stop_requests.fetch_add(1, Ordering::SeqCst);
                 // Only the boot that runs is stopped: an older instance is no longer there.
                 let live = seen.instance.load(Ordering::SeqCst);
                 if req["vm_id"] != "vm-1" || req["instance"].as_u64() != Some(live) {
@@ -503,8 +506,9 @@ async fn an_unconfirmed_stop_fails_the_call_with_timed_out() {
             "{mode}: {stderr}"
         );
         if grace == 0 {
-            assert!(
-                !engine.seen.stopped.load(Ordering::SeqCst),
+            assert_eq!(
+                engine.seen.stop_requests.load(Ordering::SeqCst),
+                0,
                 "no budget, no worker::stop"
             );
         }
