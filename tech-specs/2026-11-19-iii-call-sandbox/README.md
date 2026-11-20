@@ -210,9 +210,11 @@ ends, releases the pipe at once, a silent guest included.
   `stderr`. A second such end is answered as an exit, below.
 - A connection that drops without closing (the caller's machine gone, or the network cut, with no
   FIN or RST) is not noticed until the socket fails, and a silent guest writes nothing that would
-  make it fail. Such a VM runs until the guest writes or the TCP stack gives up. The caller
-  Compose starts runs on the engine's machine, over loopback, so it never meets this; a remote
-  `iii call` can. A ping on the engine's read sockets would close the gap (follow-up).
+  make it fail. Such a VM runs until the guest writes or the TCP stack gives up. Compose spawns
+  its `iii call` on its own machine: with the engine there too (the default), the call connects
+  over loopback and never meets this. A Compose file whose `engine.url` names another host
+  connects over the network and meets it like a remote manual `iii call`. A ping on the
+  engine's read sockets would close the gap (follow-up).
 - The VM exiting with 0 answers `{ exit_code: 0 }`. Exiting otherwise fails with
   `WORKER_EXITED`, its code or signal in the message, so `iii call` exits 1. Compose's restart
   policy only tells zero from non-zero, so it is unaffected; the VM's own code is in the error, in
