@@ -19,7 +19,7 @@ use iii_sdk::{
 };
 use serde_json::Value;
 use tokio::{
-    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncWrite, AsyncWriteExt},
     sync::watch,
     task::JoinHandle,
 };
@@ -338,17 +338,42 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
 }
 
 /// Copies this process's stdin into the stream the function reads, and ends it at EOF.
+///
+/// The reads run on a thread of their own. A blocking read cannot be cancelled, and the runtime
+/// waits for its blocking pool when it shuts down, so a read there (as `tokio::io::stdin` does
+/// it) held up the exit of a call that answered without reading a stdin its parent kept open.
+/// The process does not wait for this thread when it exits.
 async fn copy_in(output: OutputStream) {
-    let mut stdin = tokio::io::stdin();
-    let mut buffer = vec![0u8; 64 * 1024];
-    loop {
-        match stdin.read(&mut buffer).await {
-            Ok(0) => {
-                let _ = output.close().await;
-                return;
+    let (sender, mut chunks) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
+    let reader = std::thread::Builder::new()
+        .name("iii-call-stdin".to_string())
+        .spawn(move || {
+            use std::io::Read;
+            let mut stdin = std::io::stdin().lock();
+            let mut buffer = vec![0u8; 64 * 1024];
+            loop {
+                let chunk = match stdin.read(&mut buffer) {
+                    // EOF: the sender, dropped, ends the copy.
+                    Ok(0) => return,
+                    Ok(read) => Ok(buffer[..read].to_vec()),
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => Err(error),
+                };
+                let failed = chunk.is_err();
+                // The send fails once the copy is gone: nobody wants more of stdin.
+                if sender.blocking_send(chunk).is_err() || failed {
+                    return;
+                }
             }
-            Ok(read) => {
-                if output.write(&buffer[..read]).await.is_err() {
+        });
+    if let Err(error) = reader {
+        let _ = output.abort(error.to_string()).await;
+        return;
+    }
+    while let Some(chunk) = chunks.recv().await {
+        match chunk {
+            Ok(bytes) => {
+                if output.write(&bytes).await.is_err() {
                     return;
                 }
             }
@@ -358,6 +383,7 @@ async fn copy_in(output: OutputStream) {
             }
         }
     }
+    let _ = output.close().await;
 }
 
 /// SIGINT and SIGTERM while streams are carried: the first one is a stop request, a second one
