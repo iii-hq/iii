@@ -7,6 +7,7 @@
 pub mod exec;
 pub mod help;
 pub mod payload;
+pub mod streams;
 
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
@@ -20,6 +21,13 @@ use iii::workers::worker::DEFAULT_PORT;
 pub enum CallCliError {
     #[error("remote function returned an error")]
     RemoteAlreadyReported,
+    /// The arguments or `III_CALL_DEFAULTS` cannot make a call: exit 2.
+    #[error("{0:#}")]
+    Usage(anyhow::Error),
+    /// A signal came after the answer, while streams were still carried: exit 128 plus its
+    /// number.
+    #[error("interrupted by signal {0}")]
+    Interrupted(i32),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -60,13 +68,49 @@ pub struct CallArgs {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Max time to wait for the invocation result (milliseconds).
-    #[arg(long, default_value_t = 30_000)]
-    pub timeout_ms: u64,
+    /// Max time to wait for the invocation result (milliseconds). Defaults to
+    /// 30000; a call that binds a stream has no limit unless this is set.
+    #[arg(long)]
+    pub timeout_ms: Option<u64>,
+
+    /// Bind this process's stdout to payload field FIELD, a stream the
+    /// function writes. Without the flag, a `stdout` stream field in the
+    /// function's request schema is bound.
+    #[arg(long, value_name = "FIELD")]
+    pub stdout: Option<String>,
+
+    /// Bind this process's stderr to payload field FIELD, a stream the
+    /// function writes. Without the flag, a `stderr` stream field in the
+    /// function's request schema is bound.
+    #[arg(long, value_name = "FIELD")]
+    pub stderr: Option<String>,
+
+    /// Bind this process's stdin to payload field FIELD, a stream the function
+    /// reads. Without the flag, a `stdin` stream field in the function's
+    /// request schema is bound.
+    #[arg(long, value_name = "FIELD")]
+    pub stdin: Option<String>,
+
+    /// Bind no stream from the function's request schema; `--stdout`,
+    /// `--stderr` and `--stdin` still bind theirs.
+    #[arg(long)]
+    pub no_bind: bool,
+
+    /// Leave the `stdout` and `stderr` streams of the result unread: the
+    /// result shows them as refs. A call that binds a stream prints that
+    /// result only with `--print-result`.
+    #[arg(long)]
+    pub no_follow: bool,
+
+    /// Print the result JSON after the streams ended. A call that carries no
+    /// stream always prints it.
+    #[arg(long)]
+    pub print_result: bool,
 
     /// Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's
-    /// `default` namespace; routing is strict, so a function registered in
-    /// another namespace is only reachable with this flag.
+    /// `default` namespace, also in a process with `III_NAMESPACE` set (a
+    /// Compose script); routing is strict, so a function registered in another
+    /// namespace is only reachable with this flag.
     #[arg(short = 'n', long, value_name = "NS")]
     pub namespace: Option<String>,
 
@@ -334,39 +378,58 @@ impl CallArgs {
 
 pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     args.warn_deprecated_endpoint_flags();
-    let (address, port) = args.endpoint()?;
+    // Resolving the endpoint only reads `--engine`, `III_URL` and the compose file, and connects
+    // nowhere: every failure here is an address that cannot be used.
+    let (address, port) = args.endpoint().map_err(CallCliError::Usage)?;
     if args.help {
         help::print(
             args.function_path.as_deref(),
             &address,
             port,
-            args.timeout_ms,
+            args.timeout_ms.unwrap_or(exec::DEFAULT_TIMEOUT_MS),
             args.namespace.as_deref(),
         )
         .await?;
         return Ok(());
     }
     let function_path = args.function_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`")
+        CallCliError::Usage(anyhow::anyhow!(
+            "iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`"
+        ))
     })?;
     // `compose::add` has a list in its JSON contract, while the shell form
     // repeats the readable singular key: `worker=database worker=web`.
     // Keep this adaptation scoped to that function so repeated keys for every
     // other function retain their established last-value-wins behaviour.
     let payload = if function_path == "compose::add" {
-        payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")?
+        payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")
     } else {
-        payload::parse(&args.kv, args.json.as_deref())?
+        payload::parse(&args.kv, args.json.as_deref())
+    }
+    .map_err(CallCliError::Usage)?;
+    // A parent process (Compose, for a VM container's scripts) hands the call
+    // fields it must not put in the arguments, where `ps` would show them.
+    let defaults = payload::defaults_from_env(std::env::var(payload::DEFAULTS_ENV))
+        .map_err(CallCliError::Usage)?;
+    let payload = payload::apply_defaults(function_path, defaults.as_deref(), payload)
+        .map_err(CallCliError::Usage)?;
+    let options = exec::Options {
+        timeout_ms: args.timeout_ms,
+        namespace: args.namespace.as_deref(),
+        bindings: streams::Bindings {
+            stdout: args.stdout.clone(),
+            stderr: args.stderr.clone(),
+            stdin: args.stdin.clone(),
+        },
+        auto_bind: !args.no_bind,
+        follow: !args.no_follow,
+        print_result: args.print_result,
     };
-    exec::invoke(
-        function_path,
-        payload,
-        &address,
-        port,
-        args.timeout_ms,
-        args.namespace.as_deref(),
-    )
-    .await
+    options
+        .bindings
+        .check(&payload)
+        .map_err(CallCliError::Usage)?;
+    exec::invoke(function_path, payload, &address, port, &options).await
 }
 
 #[cfg(test)]
@@ -775,9 +838,15 @@ mod tests {
             engine: None,
             address: None,
             port: None,
-            timeout_ms: 800,
+            timeout_ms: Some(800),
             help: false,
             namespace: None,
+            stdout: None,
+            stderr: None,
+            stdin: None,
+            no_bind: false,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         assert!(
@@ -796,9 +865,15 @@ mod tests {
             engine: None,
             address: None,
             port: Some(19999),
-            timeout_ms: 800,
+            timeout_ms: Some(800),
             help: false,
             namespace: None,
+            stdout: None,
+            stderr: None,
+            stdin: None,
+            no_bind: false,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         // The OS may immediately return ECONNREFUSED on closed ports, in which
@@ -824,9 +899,15 @@ mod tests {
             engine: None,
             address: None,
             port: None,
-            timeout_ms: 30_000,
+            timeout_ms: Some(30_000),
             help: false,
             namespace: None,
+            stdout: None,
+            stderr: None,
+            stdin: None,
+            no_bind: false,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         assert!(
