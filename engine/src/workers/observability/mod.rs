@@ -37,6 +37,9 @@ use crate::{
     workers::traits::Worker,
 };
 
+#[cfg(test)]
+mod snapshot_tests;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct TracesListInput {
     /// Filter by specific trace ID
@@ -3239,9 +3242,18 @@ impl ObservabilityWorker {
         &self,
         input: MetricsListInput,
     ) -> FunctionResult<MetricsListResult, ErrorBody> {
-        use std::sync::atomic::Ordering;
+        self.list_metrics_with_accumulator(input, metrics::get_metrics_accumulator())
+            .await
+    }
 
-        let accumulator = metrics::get_metrics_accumulator();
+    // Kept private: only list_metrics registers an API. Tests inject an isolated
+    // accumulator without resetting the global one used by other tests.
+    async fn list_metrics_with_accumulator(
+        &self,
+        input: MetricsListInput,
+        accumulator: &metrics::MetricsAccumulator,
+    ) -> FunctionResult<MetricsListResult, ErrorBody> {
+        use std::sync::atomic::Ordering;
 
         // Get SDK metrics from storage with optional filtering
         let sdk_metrics = if let Some(storage) = metrics::get_metric_storage() {
@@ -3336,10 +3348,9 @@ impl ObservabilityWorker {
         };
 
         // Build response with accumulator data (engine internal metrics)
-        let invocations_total = accumulator.invocations_total.load(Ordering::Relaxed);
-        let invocations_success = accumulator.invocations_success.load(Ordering::Relaxed);
-        let invocations_error = accumulator.invocations_error.load(Ordering::Relaxed);
-        let invocations_deferred = accumulator.invocations_deferred.load(Ordering::Relaxed);
+        // The owned invocation group has one cut; release its lock before
+        // performance calculation, SDK serialization and response assembly.
+        let invocations = accumulator.snapshot_invocations();
         let workers_spawns = accumulator.workers_spawns.load(Ordering::Relaxed);
         let workers_deaths = accumulator.workers_deaths.load(Ordering::Relaxed);
 
@@ -3381,13 +3392,7 @@ impl ObservabilityWorker {
 
         FunctionResult::Success(MetricsListResult {
             engine_metrics: EngineMetricsView {
-                invocations: InvocationsView {
-                    total: invocations_total,
-                    success: invocations_success,
-                    error: invocations_error,
-                    deferred: invocations_deferred,
-                    by_function: accumulator.get_by_function(),
-                },
+                invocations,
                 workers: WorkersView {
                     spawns: workers_spawns,
                     deaths: workers_deaths,

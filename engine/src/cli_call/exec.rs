@@ -57,6 +57,13 @@ impl Budget {
         )
     }
 
+    /// What is left of `--timeout-ms`, `None` without one. Opening the streams spends it too.
+    fn remaining(&self) -> Option<std::time::Duration> {
+        self.limit_ms.map(|limit| {
+            std::time::Duration::from_millis(limit).saturating_sub(self.started.elapsed())
+        })
+    }
+
     /// The timeout of the invocation: what is left of `--timeout-ms`, else of the 30 s default,
     /// or no limit for a call that binds a stream and names none.
     fn call_timeout(&self, binds_stream: bool) -> u64 {
@@ -65,6 +72,27 @@ impl Budget {
             None if binds_stream => NO_TIMEOUT_MS,
             None => self.left_of(DEFAULT_TIMEOUT_MS),
         }
+    }
+}
+
+/// How long a call whose budget ran out while its streams were opened still gives their cleanup.
+/// Aborting a writer whose channel was never dialed dials it first, and a handshake the engine
+/// does not finish must not hold the error; what is left open is closed with the connection when
+/// the process exits, and no function was called to hold it.
+const SETUP_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Runs `cleanup` for at most `grace`.
+async fn clean_up_within(grace: std::time::Duration, cleanup: impl Future<Output = ()>) {
+    let _ = tokio::time::timeout(grace, cleanup).await;
+}
+
+/// Runs `setup` in what is left of `budget`: `None` when the budget ran out first, or had
+/// already, and `setup` was dropped. Without `--timeout-ms`, `setup` runs to its end.
+async fn within<T>(budget: &Budget, setup: impl Future<Output = T>) -> Option<T> {
+    match budget.remaining() {
+        None => Some(setup.await),
+        Some(left) if left.is_zero() => None,
+        Some(left) => tokio::time::timeout(left, setup).await.ok(),
     }
 }
 
@@ -132,6 +160,16 @@ async fn call(
     options: &Options<'_>,
 ) -> Result<(), CallCliError> {
     let budget = Budget::start(options.timeout_ms);
+    // On Windows, a console event no handler takes ends the process with STATUS_CONTROL_C_EXIT
+    // (0xC000013A), not with the 128 plus the signal's number a shell reports on Unix for a
+    // process SIGINT or SIGTERM ended. There the handler is installed for the whole call: until a
+    // stream is carried, Ctrl+C ends it with 130 and Ctrl+Break with 143. A handler that cannot be
+    // installed leaves the default, as before.
+    let mut interrupt = if cfg!(windows) {
+        Interrupt::install().ok()
+    } else {
+        None
+    };
     // Always named: without `-n` the call resolves in `default`, as `--help` says. Left implicit,
     // the SDK would take the namespace of `III_NAMESPACE`, which every process Compose starts
     // has, and a script's `iii call sandbox::build` would look in its project's namespace.
@@ -155,15 +193,26 @@ async fn call(
     }
 
     let mut carried = Carried::default();
-    let mut interrupt = None;
     if !bindings.is_empty() {
         // The bindings were checked before the engine was reached: a stream that cannot be
-        // opened now is the engine's failure, not the arguments'.
-        carried
-            .bind(iii, &bindings, &mut payload)
-            .await
-            .map_err(CallCliError::Other)?;
-        interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
+        // opened now is the engine's failure, not the arguments'. Opening them spends the
+        // call's budget too: once it ran out, the streams already open are closed and the call
+        // is not sent.
+        let bound = within(&budget, carried.bind(iii, &bindings, &mut payload)).await;
+        let spent = budget.remaining().is_some_and(|left| left.is_zero());
+        match bound {
+            Some(bound) if !spent => bound.map_err(CallCliError::Other)?,
+            _ => {
+                clean_up_within(SETUP_CLEANUP_GRACE, carried.cancel()).await;
+                carried.abandon();
+                return Err(CallCliError::Other(anyhow::anyhow!(
+                    "--timeout-ms {} ran out while the call's streams were opened; the call \
+                     was not sent",
+                    budget.limit_ms.unwrap_or_default()
+                )));
+            }
+        }
+        interrupt = Some(armed(interrupt.take())?);
     }
     let timeout_ms = budget.call_timeout(!bindings.is_empty());
     let request = CallRequest {
@@ -189,9 +238,7 @@ async fn call(
     if options.follow {
         let streams = result_streams(&value);
         if !streams.is_empty() {
-            if interrupt.is_none() {
-                interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
-            }
+            interrupt = Some(armed(interrupt.take())?);
             carried.follow(iii, streams).map_err(CallCliError::Other)?;
         }
     }
@@ -212,8 +259,11 @@ async fn call(
             match ended {
                 Ok(drained) => drained,
                 Err(signal) => {
+                    // The copies are not joined again: one may sit in a write into a pipe whose
+                    // reader stopped reading, which never ends. The process exits at once with
+                    // the signal, so nothing waits for that write either.
                     carried.cancel().await;
-                    let _ = carried.finish().await;
+                    carried.abandon();
                     return Err(CallCliError::Interrupted(signal));
                 }
             }
@@ -237,6 +287,17 @@ async fn call(
         );
     }
     Ok(())
+}
+
+/// The interrupt of a call that carries streams: the one installed for the call, or a new one,
+/// armed so that the first signal is a stop.
+fn armed(interrupt: Option<Interrupt>) -> Result<Interrupt, CallCliError> {
+    let interrupt = match interrupt {
+        Some(interrupt) => interrupt,
+        None => Interrupt::install().map_err(|error| anyhow::anyhow!(error))?,
+    };
+    interrupt.arm();
+    Ok(interrupt)
 }
 
 /// What the end of the copies means for the command. A stream that failed fails the call, unless
@@ -390,6 +451,52 @@ mod tests {
         let default = spent(1_000, None);
         assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
         assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
+
+    /// Opening the streams spends what is left of `--timeout-ms`: a spent budget opens nothing,
+    /// a setup that outlasts it is cut at the deadline, and a fast one leaves the rest to the
+    /// call. Without `--timeout-ms` nothing is cut.
+    #[tokio::test]
+    async fn the_streams_are_opened_within_what_is_left_of_the_budget() {
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let opened = within(&spent(600, Some(500)), async {
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert!(opened.is_none());
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        let began = Instant::now();
+        let opened = within(
+            &spent(400, Some(500)),
+            tokio::time::sleep(Duration::from_secs(10)),
+        )
+        .await;
+        assert!(opened.is_none());
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+
+        let budget = spent(0, Some(10_000));
+        assert_eq!(within(&budget, async { 7 }).await, Some(7));
+        assert!(budget.call_timeout(true) > 9_000);
+        assert_eq!(within(&spent(0, None), async { 7 }).await, Some(7));
+    }
+
+    /// The cleanup of a call that ran out of budget while its streams were opened is bounded: a
+    /// writer abort whose channel handshake never finishes does not hold the error.
+    #[tokio::test]
+    async fn the_cleanup_of_an_unsent_call_is_bounded() {
+        let began = Instant::now();
+        clean_up_within(Duration::from_millis(100), std::future::pending()).await;
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(SETUP_CLEANUP_GRACE <= Duration::from_secs(1));
     }
 
     #[tokio::test]

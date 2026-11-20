@@ -350,18 +350,21 @@ reached, print a plain-text `Error:` line instead.
 
 ### Defaults from the environment
 
-`III_CALL_DEFAULTS` holds a JSON object keyed by function id. When you call a function that has an
-entry, the entry is the base payload, and `--json` and `key=value` override its keys. A parent
-process uses it to hand a call values that must not appear on the command line, where `ps` shows
-them, such as a token:
+`III_CALL_DEFAULTS` holds a JSON object keyed by namespace, each holding entries keyed by function
+id. When you call a function that has an entry in the namespace the call resolves in, `default`
+without `--namespace`, the entry is the base payload, and `--json` and `key=value` override its
+keys. A parent process uses it to hand a call values that must not appear on the command line,
+where `ps` shows them, such as a token:
 
 ```bash
-export III_CALL_DEFAULTS='{"reports::export": {"report_id": "r-42"}}'
+export III_CALL_DEFAULTS='{"default": {"reports::export": {"report_id": "r-42"}}}'
 iii call reports::export              # report_id is r-42
 iii call reports::export report_id=r-7
+iii call reports::export -n orders    # no entry in orders: no report_id
 ```
 
-Only the function the entry names receives it. A value that is not a JSON object fails the call
+Only the function the entry names, in the namespace it is written under, receives it. The same
+function id in another namespace is another handler and receives nothing. A value that is not a JSON object fails the call
 with exit code `2`, and the message quotes nothing of the value.
 
 ## Common functions

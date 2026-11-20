@@ -17,12 +17,14 @@ use std::{
 use futures::Future;
 use iii_sandbox_contract::{
     ADAPTER_INFO_SUFFIX, AdapterInfo, AdapterInfoRequest, CONTRACT_MAJOR, ContractVersion,
-    OPERATIONS, ROUTER_INFO_ID, RouterInfo, SandboxErrorCode, adapter_function_id, error_payload,
+    OPERATIONS, ROUTER_INFO_ID, RouterInfo, SANDBOX_BUILD, SANDBOX_START, SandboxBuildRequest,
+    SandboxBuildResponse, SandboxErrorCode, SandboxStartRequest, SandboxStartResponse,
+    adapter_function_id, error_payload,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use super::config::SandboxRouterConfig;
+use super::{config::SandboxRouterConfig, vm};
 use crate::{
     engine::{Engine, EngineTrait, RegisterFunctionRequest},
     function::{FunctionHandler, FunctionResult, HandlerFn},
@@ -75,6 +77,19 @@ impl SandboxRouter {
         input: Value,
         metadata: Option<Arc<Value>>,
     ) -> FunctionResult<Option<Value>, ErrorBody> {
+        // A container's VM goes to the adapter its request names, whatever the binding.
+        let worker_vm = match function_id.as_str() {
+            SANDBOX_BUILD => Some(vm::build(&self.engine, input.clone()).await),
+            SANDBOX_START => Some(vm::start(&self.engine, input.clone()).await),
+            _ => None,
+        };
+        if let Some(answer) = worker_vm {
+            return match answer {
+                Ok(value) => FunctionResult::Success(Some(value)),
+                Err(error) => FunctionResult::Failure(error),
+            };
+        }
+
         if function_id == ROUTER_INFO_ID {
             let info = match &self.binding {
                 Some(b) => tokio::time::timeout(ADAPTER_INFO_WAIT, self.adapter_info(b))
@@ -248,6 +263,31 @@ impl Worker for SandboxRouter {
                     description: Some(op.description.into()),
                     request_format: Some((op.request_schema)()),
                     response_format: Some((op.response_schema)()),
+                    metadata: None,
+                },
+                Box::new(self.clone()),
+            );
+        }
+        for (function_id, description, request_format, response_format) in [
+            (
+                SANDBOX_BUILD,
+                "Builds a Compose container's VM image through the sandbox adapter the request names, writing the build's output to the stdout and stderr streams; a stream that closes cancels the build. A VM container's scripts.build calls it with iii call, and Compose hands the rest of the request in III_CALL_DEFAULTS.",
+                serde_json::to_value(schemars::schema_for!(SandboxBuildRequest)).ok(),
+                serde_json::to_value(schemars::schema_for!(SandboxBuildResponse)).ok(),
+            ),
+            (
+                SANDBOX_START,
+                "Boots a Compose container's last build through the sandbox adapter the request names, or reattaches to its running VM, and copies the guest's output to the stdout and stderr streams until the VM exits; a stream that closes stops the VM. A VM container's scripts.run calls it with iii call, and Compose hands the rest of the request in III_CALL_DEFAULTS.",
+                serde_json::to_value(schemars::schema_for!(SandboxStartRequest)).ok(),
+                serde_json::to_value(schemars::schema_for!(SandboxStartResponse)).ok(),
+            ),
+        ] {
+            engine.register_function(
+                RegisterFunctionRequest {
+                    function_id: function_id.into(),
+                    description: Some(description.into()),
+                    request_format,
+                    response_format,
                     metadata: None,
                 },
                 Box::new(self.clone()),

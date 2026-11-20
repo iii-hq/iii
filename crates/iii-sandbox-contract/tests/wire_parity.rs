@@ -1,8 +1,10 @@
 use iii_sandbox_contract::{
-    AdapterInfo, AdapterInfoRequest, CatalogListRequest, ChannelDirection, ContractVersion,
-    DOCS_BASE, EnvShape, ExecRequest, ExecResponse, FEATURE_LOGS_FROM_END, FEATURE_SCOPED_AUTH,
-    GrepRequest, ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS, ReadResponse,
-    RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State, StopRequest, StreamChannelRef,
+    AdapterInfo, AdapterInfoRequest, BaseImageRef, CONTRACT_MAJOR, CONTRACT_MINOR,
+    CatalogListRequest, ChannelDirection, ContractVersion, DOCS_BASE, EnvShape, ExecRequest,
+    ExecResponse, FEATURE_BINARY, FEATURE_BUILD, FEATURE_LOGS_FROM_END, FEATURE_PRUNE,
+    FEATURE_SCOPED_AUTH, GrepRequest, ListRequest, LogRecord, LogStream, MkdirRequest, OPERATIONS,
+    ReadResponse, RouterInfo, RunResponse, SandboxErrorCode, SedRequest, State, StopRequest,
+    StreamChannelRef, WorkerBuildRef, WorkerBuildRequest, WorkerBuildResponse,
     WorkerDestroyRequest, WorkerDestroyResponse, WorkerLogsRequest, WorkerLogsResponse,
     WorkerPrepareRequest, WorkerPrepareResponse, WorkerSource, WorkerStartRequest,
     WorkerStartResponse, WorkerStatus, WorkerStatusRequest, WorkerStopRequest, WriteContent,
@@ -40,20 +42,21 @@ fn enforce_exhaustive(c: SandboxErrorCode) -> SandboxErrorCode {
     match c {
         S001 | S002 | S003 | S004 | S100 | S101 | S102 | S200 | S210 | S211 | S212 | S213
         | S214 | S215 | S216 | S217 | S218 | S219 | S300 | S301 | S302 | S303 | S304 | S400
-        | S501 | S502 | S503 | S504 | S505 | S506 => c,
+        | S501 | S502 | S503 | S504 | S505 | S506 | S507 | S508 | S509 => c,
     }
 }
 
-const ALL: [SandboxErrorCode; 30] = [
+const ALL: [SandboxErrorCode; 33] = [
     S001, S002, S003, S004, S100, S101, S102, S200, S210, S211, S212, S213, S214, S215, S216, S217,
-    S218, S219, S300, S301, S302, S303, S304, S400, S501, S502, S503, S504, S505, S506,
+    S218, S219, S300, S301, S302, S303, S304, S400, S501, S502, S503, S504, S505, S506, S507, S508,
+    S509,
 ];
 
 #[test]
 fn fixture_rows_match_error_payload() {
     let f = fixture();
     assert_eq!(f.docs_base, DOCS_BASE);
-    assert_eq!(f.codes.len(), 30);
+    assert_eq!(f.codes.len(), ALL.len());
     for row in &f.codes {
         let code: SandboxErrorCode =
             serde_json::from_value(Value::String(row.code.clone())).expect("row code is a variant");
@@ -79,6 +82,21 @@ fn every_code_has_a_fixture_row() {
             "no fixture row for {}",
             c.as_str()
         );
+    }
+}
+
+/// The build codes keep the categories section 6.5 of the explicit VM mode spec gives them.
+#[test]
+fn build_codes_have_their_categories() {
+    for (code, error_type) in [
+        (S507, "execution"),
+        (S508, "validation"),
+        (S509, "validation"),
+    ] {
+        let p = error_payload(code, "x", None, None);
+        assert_eq!(p["type"], error_type, "{}", code.as_str());
+        assert_eq!(p["retryable"], false, "{}", code.as_str());
+        assert_eq!(code_of(&p.to_string()), Some(code));
     }
 }
 
@@ -190,6 +208,22 @@ fn requests_ignore_unknown_fields() {
     from_value::<ListRequest>(json!({"show_all": true})).expect("ListRequest");
     from_value::<CatalogListRequest>(json!({"x": 1})).expect("CatalogListRequest");
     from_value::<StopRequest>(json!({"sandbox_id": "s", "extra": 1})).expect("StopRequest");
+}
+
+/// A field a later minor adds to a `worker::*` request is ignored, as a 1.2 adapter ignores
+/// `build`.
+#[test]
+fn worker_requests_ignore_unknown_fields() {
+    let with_extra = |name: &str| {
+        let mut example = wire_examples().remove(name).unwrap();
+        example
+            .as_object_mut()
+            .unwrap()
+            .insert("added_in_a_later_minor".into(), json!({"x": 1}));
+        example
+    };
+    from_value::<WorkerStartRequest>(with_extra("WorkerStartRequest")).expect("WorkerStartRequest");
+    from_value::<WorkerBuildRequest>(with_extra("WorkerBuildRequest")).expect("WorkerBuildRequest");
 }
 
 #[test]
@@ -346,7 +380,173 @@ fn router_info_unbound_json() {
     };
     assert_eq!(
         to_value(unbound).unwrap(),
-        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 2}, "info": null})
+        json!({"adapter": null, "namespace": null, "contract": {"major": 1, "minor": 4}, "info": null})
+    );
+}
+
+fn wire_examples() -> BTreeMap<String, Value> {
+    serde_json::from_str(include_str!("fixtures/wire_examples.json")).expect("fixture parses")
+}
+
+#[test]
+fn contract_1_4_announces_its_features() {
+    assert_eq!((CONTRACT_MAJOR, CONTRACT_MINOR), (1, 4));
+    assert_eq!(FEATURE_BUILD, "worker.build");
+    assert_eq!(FEATURE_BINARY, "worker.binary");
+    assert_eq!(FEATURE_PRUNE, "worker.prune");
+
+    let examples = wire_examples();
+    let version: ContractVersion = from_value(examples["ContractVersion"].clone()).unwrap();
+    assert_eq!(
+        (version.major, version.minor),
+        (CONTRACT_MAJOR, CONTRACT_MINOR)
+    );
+    let info: AdapterInfo = from_value(examples["AdapterInfo"].clone()).unwrap();
+    assert_eq!(
+        (info.contract.major, info.contract.minor),
+        (CONTRACT_MAJOR, CONTRACT_MINOR)
+    );
+    assert!(info.supports(FEATURE_BUILD));
+    assert!(info.supports(FEATURE_BINARY));
+    assert!(info.supports(FEATURE_PRUNE));
+}
+
+/// A 1.3 peer sends none of the 1.4 fields: a 1.3 request reads as no `base_image` and no
+/// `prune`, and serializes again unchanged. The fixture pins those shapes under `<Type>@1.3`.
+#[test]
+fn fields_added_in_1_4_read_as_absent_from_an_older_peer() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.4.0",
+        "contract": {"major": 1, "minor": 3},
+        "features": [FEATURE_SCOPED_AUTH, FEATURE_LOGS_FROM_END, FEATURE_BUILD]
+    }))
+    .unwrap();
+    assert!(!info.supports(FEATURE_BINARY));
+    assert!(!info.supports(FEATURE_PRUNE));
+
+    let examples = wire_examples();
+    let build_1_3 = &examples["WorkerBuildRequest@1.3"];
+    let build: WorkerBuildRequest = from_value(build_1_3.clone()).unwrap();
+    assert!(build.base_image.is_none());
+    assert_eq!(&to_value(&build).unwrap(), build_1_3);
+
+    let destroy_1_3 = &examples["WorkerDestroyRequest@1.3"];
+    let destroy: WorkerDestroyRequest = from_value(destroy_1_3.clone()).unwrap();
+    assert!(!destroy.prune);
+    assert_eq!(&to_value(&destroy).unwrap(), destroy_1_3);
+
+    let destroyed_1_3 = &examples["WorkerDestroyResponse@1.3"];
+    let destroyed: WorkerDestroyResponse = from_value(destroyed_1_3.clone()).unwrap();
+    assert!(destroyed.kept.is_empty());
+    assert_eq!(&to_value(&destroyed).unwrap(), destroyed_1_3);
+}
+
+/// A destroy that kept data says where; a VM that held only data answers `destroyed: false`.
+#[test]
+fn worker_destroy_response_lists_what_stayed() {
+    let data_only = json!({
+        "destroyed": false,
+        "kept": ["/home/me/.iii/sandbox/workers/vm-1/upper.ext4"]
+    });
+    let reply: WorkerDestroyResponse = from_value(data_only.clone()).unwrap();
+    assert!(!reply.destroyed);
+    assert_eq!(
+        reply.kept,
+        ["/home/me/.iii/sandbox/workers/vm-1/upper.ext4"]
+    );
+    assert_eq!(to_value(&reply).unwrap(), data_only);
+
+    let pruned = WorkerDestroyResponse {
+        destroyed: true,
+        kept: vec![],
+    };
+    assert_eq!(to_value(pruned).unwrap(), json!({"destroyed": true}));
+}
+
+/// `prune` is sent only when set, like `from_end`, so a destroy that keeps the data has the 1.3
+/// shape.
+#[test]
+fn worker_destroy_request_sends_prune_only_when_set() {
+    let destroy = |prune| WorkerDestroyRequest {
+        auth: "tok".into(),
+        state_key: "k".into(),
+        prune,
+    };
+    assert_eq!(
+        to_value(destroy(false)).unwrap(),
+        json!({"auth": "tok", "state_key": "k"})
+    );
+    assert_eq!(
+        to_value(destroy(true)).unwrap(),
+        json!({"auth": "tok", "state_key": "k", "prune": true})
+    );
+}
+
+/// A binary source names its executable; there is no default to fall back on.
+#[test]
+fn binary_source_requires_executable() {
+    let error = from_value::<WorkerSource>(json!({
+        "kind": "binary",
+        "package": "my-binary",
+        "host_path": "/b"
+    }))
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `executable`"),
+        "{error}"
+    );
+}
+
+/// A 1.2 peer sends none of the 1.3 fields; each reads as "not there".
+#[test]
+fn fields_added_in_1_3_read_as_absent_from_an_older_peer() {
+    let info: AdapterInfo = from_value(json!({
+        "adapter": "sandbox-libkrun",
+        "adapter_version": "0.3.0",
+        "contract": {"major": 1, "minor": 2},
+        "features": [FEATURE_SCOPED_AUTH, FEATURE_LOGS_FROM_END]
+    }))
+    .unwrap();
+    assert!(!info.supports(FEATURE_BUILD));
+
+    let start: WorkerStartRequest = from_value(json!({
+        "auth": "tok",
+        "state_key": "k",
+        "worker_name": "w",
+        "source": {"kind": "bundle", "package": "b", "host_path": "/c"},
+        "env": {},
+        "engine_url": "ws://127.0.0.1:49134"
+    }))
+    .unwrap();
+    assert!(start.build.is_none());
+    assert!(to_value(&start).unwrap().get("build").is_none());
+}
+
+/// `logs` is required: a build without a reader would have nothing bounding it.
+#[test]
+fn worker_build_request_requires_logs() {
+    let mut example = wire_examples().remove("WorkerBuildRequest").unwrap();
+    let request: WorkerBuildRequest = from_value(example.clone()).unwrap();
+    assert!(matches!(request.logs.direction, ChannelDirection::Write));
+
+    example.as_object_mut().unwrap().remove("logs");
+    let error = from_value::<WorkerBuildRequest>(example).unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `logs`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn base_image_digest_is_omitted_when_unknown() {
+    let base = BaseImageRef {
+        reference: "docker.io/iiidev/node:latest".into(),
+        digest: None,
+    };
+    assert_eq!(
+        to_value(base).unwrap(),
+        json!({"reference": "docker.io/iiidev/node:latest"})
     );
 }
 
@@ -428,6 +628,15 @@ fn worker_source_is_kind_tagged() {
         to_value(local).unwrap(),
         json!({"kind": "local", "host_path": "/p", "run_override": null})
     );
+    let binary = WorkerSource::Binary {
+        package: "my-binary".into(),
+        host_path: "/b".into(),
+        executable: "bin/my-binary".into(),
+    };
+    assert_eq!(
+        to_value(binary).unwrap(),
+        json!({"kind": "binary", "package": "my-binary", "host_path": "/b", "executable": "bin/my-binary"})
+    );
 }
 
 #[test]
@@ -477,10 +686,15 @@ fn round_trips<T: Serialize + DeserializeOwned>(name: &str, example: &Value) {
     assert_eq!(&to_value(t).unwrap(), example, "{name}");
 }
 
+/// The type a fixture key names: `<Type>`, or `<Type>@<version>` for the shape an older peer sends.
+fn fixture_type(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(ty, _)| ty)
+}
+
 /// Maps a fixture key to its type by name; a key with no arm fails the test.
 macro_rules! round_trip_by_name {
     ($name:expr, $example:expr, $($ty:ident),+ $(,)?) => {
-        match $name {
+        match fixture_type($name) {
             $(stringify!($ty) => round_trips::<$ty>($name, $example),)+
             other => panic!("no round-trip arm for fixture key {other}"),
         }
@@ -489,10 +703,9 @@ macro_rules! round_trip_by_name {
 
 #[test]
 fn wire_examples_round_trip() {
-    let examples: BTreeMap<String, Value> =
-        serde_json::from_str(include_str!("fixtures/wire_examples.json")).expect("fixture parses");
+    let examples = wire_examples();
 
-    // Types declared in info.rs and worker.rs; the fixture needs one example for each.
+    // Types declared in info.rs and worker.rs; the fixture needs an example for each.
     let declared: BTreeSet<String> = [
         include_str!("../src/info.rs"),
         include_str!("../src/worker.rs"),
@@ -505,7 +718,19 @@ fn wire_examples_round_trip() {
     })
     .map(|rest| rest.chars().take_while(|c| c.is_alphanumeric()).collect())
     .collect();
-    assert_eq!(examples.keys().cloned().collect::<BTreeSet<_>>(), declared);
+    let named: BTreeSet<String> = examples
+        .keys()
+        .map(|k| fixture_type(k).to_string())
+        .collect();
+    assert_eq!(named, declared);
+    // Each type has its current example under its own name: an `@<version>` key only adds the
+    // shape an older peer sends, and cannot stand in for it.
+    let current: BTreeSet<String> = examples
+        .keys()
+        .filter(|k| !k.contains('@'))
+        .cloned()
+        .collect();
+    assert_eq!(current, declared, "every type needs an unversioned example");
 
     for (name, example) in &examples {
         round_trip_by_name!(
@@ -517,7 +742,11 @@ fn wire_examples_round_trip() {
             RouterInfo,
             WorkerPrepareRequest,
             WorkerPrepareResponse,
+            WorkerBuildRequest,
+            WorkerBuildResponse,
+            BaseImageRef,
             WorkerStartRequest,
+            WorkerBuildRef,
             WorkerSource,
             WorkerStartResponse,
             WorkerStatusRequest,

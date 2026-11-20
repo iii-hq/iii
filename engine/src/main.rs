@@ -145,10 +145,11 @@ enum Commands {
     /// streams, which asks the function to stop, and waits for its answer; a
     /// second one exits at once.
     ///
-    /// III_CALL_DEFAULTS holds a JSON object keyed by function id: the entry of
-    /// the called function is the base payload, and `--json` and key=value
-    /// override its keys. A parent process uses it to hand a call fields that
-    /// must not appear in its arguments.
+    /// III_CALL_DEFAULTS holds a JSON object keyed by namespace, each holding
+    /// entries keyed by function id: the entry of the called function in the
+    /// namespace the call resolves in (`default` without `-n`) is the base
+    /// payload, and `--json` and key=value override its keys. A parent process
+    /// uses it to hand a call fields that must not appear in its arguments.
     #[command(visible_aliases = ["trigger", "t"])]
     Call(CallArgs),
 
@@ -174,15 +175,6 @@ enum Commands {
     /// engine unless `--engine` selects an existing one.
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
-
-    /// Run one Compose container's VM through its sandbox adapter.
-    ///
-    /// Compose starts `iii sandbox run` as the `scripts.run` of a container
-    /// whose worker sets `runtime.base_image`; stopping it stops the VM.
-    // Hidden from `--help` and the CLI reference until the explicit VM mode is
-    // settled: Compose still runs it for a container that opts in.
-    #[command(hide = true)]
-    Sandbox(iii_compose::sandbox_cli::SandboxCli),
 
     /// List iii processes on this machine: engines, compose daemons and
     /// workers, with the compose project each belongs to
@@ -250,10 +242,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
-        },
-        Some(Commands::Sandbox(args)) => match &args.command {
-            iii_compose::sandbox_cli::SandboxCommand::Run(_) => "sandbox run".to_string(),
-            iii_compose::sandbox_cli::SandboxCommand::Destroy => "sandbox destroy".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),
@@ -562,11 +550,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // Its stdout is the guest's alone; its stderr is the guest's plus its own
-        // `iii sandbox:` lines.
-        Some(Commands::Sandbox(args)) => {
-            std::process::exit(iii_compose::sandbox_cli::run(args.clone()).await)
-        }
         Some(Commands::Ps { json }) => cli::ps::ps(*json),
         Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
@@ -738,22 +721,6 @@ mod tests {
             result.is_err(),
             "--use-default-config should no longer parse"
         );
-    }
-
-    #[test]
-    fn sandbox_run_parses_and_counts_as_its_own_command() {
-        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "--command", "node app.js"])
-            .expect("should parse sandbox run");
-        assert_eq!(cli_usage_command_path(&cli), "sandbox run");
-        match cli.command {
-            Some(Commands::Sandbox(args)) => match args.command {
-                iii_compose::sandbox_cli::SandboxCommand::Run(run) => {
-                    assert_eq!(run.command.as_deref(), Some("node app.js"));
-                }
-                other => panic!("expected run, got {other:?}"),
-            },
-            _ => panic!("expected Sandbox subcommand"),
-        }
     }
 
     #[test]
@@ -936,17 +903,6 @@ mod tests {
         assert!(
             result.is_err(),
             "\"start\" should not be a valid subcommand (engine runs via default serve mode)"
-        );
-    }
-
-    #[test]
-    fn sandbox_is_no_longer_a_valid_subcommand() {
-        // Sandboxes are managed through the iii-sandbox worker's function surface.
-        // Bare `iii sandbox` should now fail to parse.
-        let result = Cli::try_parse_from(["iii", "sandbox"]);
-        assert!(
-            result.is_err(),
-            "\"sandbox\" should no longer be a valid subcommand"
         );
     }
 

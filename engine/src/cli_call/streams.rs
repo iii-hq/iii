@@ -18,6 +18,11 @@ use iii_sdk::{
     protocol::{ChannelDirection, ChannelItem, StreamChannelRef},
 };
 use serde_json::Value;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::watch,
@@ -224,6 +229,9 @@ pub struct Carried {
     writers: Vec<OutputStream>,
     copies: Vec<(&'static str, JoinHandle<Copied>)>,
     stdin: Option<JoinHandle<()>>,
+    /// Why this process's stdin could not be read, once a read failed. Kept apart from the stdin
+    /// task, which `finish` does not wait for, and set before the function learns of it.
+    unread: Arc<Mutex<Option<String>>>,
     /// The copy that failed, kept across a `finish` that was interrupted.
     failure: Option<CopyFailure>,
 }
@@ -258,7 +266,7 @@ impl Carried {
                 Stdio::Stdin => {
                     object.insert(field.to_string(), serde_json::to_value(&pipe.input)?);
                     self.writers.push(pipe.output.clone());
-                    self.stdin = Some(tokio::spawn(copy_in(pipe.output)));
+                    self.stdin = Some(tokio::spawn(copy_in(pipe.output, self.unread.clone())));
                 }
             }
         }
@@ -307,9 +315,21 @@ impl Carried {
         }
     }
 
+    /// Stops every copy without waiting for it, as an interrupted call leaves them: a copy can sit
+    /// in a write into an output whose reader stopped reading, which never ends.
+    pub fn abandon(&mut self) {
+        for (_, task) in self.copies.drain(..) {
+            task.abort();
+        }
+        if let Some(stdin) = self.stdin.take() {
+            stdin.abort();
+        }
+    }
+
     /// Waits for every copy into stdout and stderr to end; the copy that failed, by label: the
     /// first that lost output, else the first stream that failed. The stdin copy is not waited
-    /// for: it may sit on a terminal that never ends.
+    /// for: it may sit on a terminal that never ends. Input this process could not read is lost
+    /// like output it could not write, and fails the call the same way.
     ///
     /// Each copy is awaited in place and removed once it ended, so a `finish` dropped half way,
     /// when a signal wins the race, leaves the copies still running here for the next `finish`
@@ -335,6 +355,18 @@ impl Carried {
         }
         if let Some(stdin) = self.stdin.take() {
             stdin.abort();
+        }
+        let unread = self
+            .unread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(error) = unread
+            && !matches!(self.failure, Some(CopyFailure::Output(_)))
+        {
+            self.failure = Some(CopyFailure::Output(format!(
+                "the stdin stream failed: could not read it: {error}"
+            )));
         }
         self.failure.take().map_or(Ok(()), Err)
     }
@@ -376,8 +408,12 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
 /// The reads run on a thread of their own. A blocking read cannot be cancelled, and the runtime
 /// waits for its blocking pool when it shuts down, so a read there (as `tokio::io::stdin` does
 /// it) held up the exit of a call that answered without reading a stdin its parent kept open.
-/// The process does not wait for this thread when it exits.
-async fn copy_in(output: OutputStream) {
+/// The process does not wait for this thread when it exits. A read that fails is recorded in
+/// `unread` by the thread itself, before it is queued and the stream aborted: a function that
+/// answers before this copy takes the failure still leaves the call failing for the lost input.
+async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
+    let fail = |error: String| record_unread(&unread, error);
+    let read_failures = Arc::clone(&unread);
     let (sender, mut chunks) = tokio::sync::mpsc::channel::<std::io::Result<Vec<u8>>>(4);
     let reader = std::thread::Builder::new()
         .name("iii-call-stdin".to_string())
@@ -391,7 +427,10 @@ async fn copy_in(output: OutputStream) {
                     Ok(0) => return,
                     Ok(read) => Ok(buffer[..read].to_vec()),
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(error) => Err(error),
+                    Err(error) => {
+                        record_unread(&read_failures, error.to_string());
+                        Err(error)
+                    }
                 };
                 let failed = chunk.is_err();
                 // The send fails once the copy is gone: nobody wants more of stdin.
@@ -401,6 +440,7 @@ async fn copy_in(output: OutputStream) {
             }
         });
     if let Err(error) = reader {
+        fail(error.to_string());
         let _ = output.abort(error.to_string()).await;
         return;
     }
@@ -412,6 +452,7 @@ async fn copy_in(output: OutputStream) {
                 }
             }
             Err(error) => {
+                fail(error.to_string());
                 let _ = output.abort(error.to_string()).await;
                 return;
             }
@@ -420,14 +461,31 @@ async fn copy_in(output: OutputStream) {
     let _ = output.close().await;
 }
 
-/// SIGINT and SIGTERM while streams are carried: the first one is a stop request, a second one
-/// ends the process at once, with 128 plus its number. On Windows, Ctrl+C is SIGINT and
+/// Keeps the first stdin failure: the thread that read and the copy that met it can both report
+/// the same one.
+fn record_unread(unread: &Mutex<Option<String>>, error: String) {
+    unread
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(error);
+}
+
+/// SIGINT and SIGTERM. While streams are carried, the first one is a stop request and a second one
+/// ends the process at once, with 128 plus its number. Before [`Interrupt::arm`], nothing can be
+/// stopped, and the first one already ends the process so. On Windows, Ctrl+C is SIGINT and
 /// Ctrl+Break is SIGTERM: the console event a process manager sends to stop a process group.
-pub struct Interrupt(watch::Receiver<Option<i32>>);
+pub struct Interrupt {
+    received: watch::Receiver<Option<i32>>,
+    /// Whether the first signal is a stop request: set once streams are carried.
+    armed: Arc<AtomicBool>,
+}
 
 impl Interrupt {
+    /// Takes SIGINT and SIGTERM from now on. Until [`Interrupt::arm`], a signal ends the process
+    /// at once with 128 plus its number.
     pub fn install() -> std::io::Result<Self> {
         let (sender, received) = watch::channel(None);
+        let armed = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
         let (mut terminate, mut interrupt) = {
             use tokio::signal::unix::{SignalKind, signal};
@@ -441,6 +499,7 @@ impl Interrupt {
             tokio::signal::windows::ctrl_break()?,
             tokio::signal::windows::ctrl_c()?,
         );
+        let stops = Arc::clone(&armed);
         tokio::spawn(async move {
             let mut first = true;
             loop {
@@ -451,31 +510,44 @@ impl Interrupt {
                 let Some(number) = number else {
                     return;
                 };
-                if !first {
+                if ends_at_once(first, stops.load(Ordering::Acquire)) {
                     std::process::exit(128 + number);
                 }
                 first = false;
                 sender.send_replace(Some(number));
             }
         });
-        Ok(Self(received))
+        Ok(Self { received, armed })
     }
 
-    /// An interrupt that takes its signals from the returned sender, for tests.
+    /// Makes the first signal a stop request: streams are carried, and closing them asks the
+    /// function to stop.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// An armed interrupt that takes its signals from the returned sender, for tests.
     #[cfg(test)]
     pub fn manual() -> (watch::Sender<Option<i32>>, Self) {
         let (sender, received) = watch::channel(None);
-        (sender, Self(received))
+        let armed = Arc::new(AtomicBool::new(true));
+        (sender, Self { received, armed })
     }
 
     /// Resolves to the first signal's number; never without one.
     pub async fn requested(&self) -> i32 {
-        let mut received = self.0.clone();
+        let mut received = self.received.clone();
         match received.wait_for(Option::is_some).await {
             Ok(signal) => signal.unwrap_or(2),
             Err(_) => std::future::pending().await,
         }
     }
+}
+
+/// Whether a signal ends the process at once: a second one always does, and a first one does when
+/// no stream is carried, since there is nothing to close to ask the function to stop.
+fn ends_at_once(first: bool, armed: bool) -> bool {
+    !first || !armed
 }
 
 #[cfg(test)]
@@ -736,5 +808,22 @@ mod tests {
         assert_eq!(followed[0].0, Stdio::Stdout);
         assert!(result_streams(&json!({ "stdout": "text" })).is_empty());
         assert!(result_streams(&json!(42)).is_empty());
+    }
+
+    /// Without a carried stream there is nothing to stop: the first signal ends the process, as
+    /// SIGINT and SIGTERM do on Unix, and as Ctrl+C and Ctrl+Break must on Windows.
+    #[test]
+    fn the_first_signal_ends_a_call_that_carries_no_stream() {
+        assert!(ends_at_once(true, false));
+    }
+
+    #[test]
+    fn the_first_signal_is_a_stop_once_streams_are_carried() {
+        assert!(!ends_at_once(true, true));
+    }
+
+    #[test]
+    fn the_second_signal_ends_the_call() {
+        assert!(ends_at_once(false, true));
     }
 }
