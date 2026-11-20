@@ -1085,7 +1085,10 @@ fn is_temporary_copy(name: &str) -> bool {
         .and_then(|rest| rest.rsplit_once('.'))
         .is_some_and(|(container, suffix)| {
             crate::build_record::is_directory_name(container)
-                && (suffix.starts_with("staging-") || suffix.starts_with("replaced-"))
+                && suffix
+                    .strip_prefix("staging-")
+                    .or_else(|| suffix.strip_prefix("replaced-"))
+                    .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
         })
 }
 
@@ -3702,6 +3705,17 @@ mod tests {
         );
     }
 
+    /// Only the names `replace_directory` gives its temporary copies are Compose's to remove: an
+    /// operator's `.api.replaced-notes` is not one.
+    #[test]
+    fn only_generated_temporary_copies_are_temporary() {
+        let id = uuid::Uuid::new_v4();
+        assert!(is_temporary_copy(&format!(".api.staging-{id}")));
+        assert!(is_temporary_copy(&format!(".api.replaced-{id}")));
+        assert!(!is_temporary_copy(".api.replaced-notes"));
+        assert!(!is_temporary_copy(".api.staging-"));
+    }
+
     /// A bundle's one archive is the one to install, whichever host's triple the lock that
     /// another machine wrote recorded it under.
     #[test]
@@ -4667,9 +4681,11 @@ mod tests {
         materialize_project(project.path(), cache.path(), &lock)
             .await
             .unwrap();
-        // What an interrupted copy leaves, and what is not Compose's.
-        std::fs::create_dir(workers.join(".state.staging-interrupted")).unwrap();
-        std::fs::create_dir(workers.join(".queue.replaced-interrupted")).unwrap();
+        // What an interrupted copy leaves, under the names `replace_directory` gives, and what is
+        // not Compose's.
+        let id = uuid::Uuid::new_v4();
+        std::fs::create_dir(workers.join(format!(".state.staging-{id}"))).unwrap();
+        std::fs::create_dir(workers.join(format!(".queue.replaced-{id}"))).unwrap();
         std::fs::create_dir(workers.join("mine")).unwrap();
         std::fs::write(workers.join("notes.txt"), "mine").unwrap();
         std::fs::write(workers.join(".packages.json.tmp-interrupted"), "{").unwrap();
