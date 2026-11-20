@@ -54,18 +54,19 @@ pub async fn build_frozen(file: &Path) -> Result<BuildReport> {
 
 async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
     let began = Instant::now();
-    let text = std::fs::read_to_string(file).map_err(|source| ComposeError::Io {
-        path: file.to_path_buf(),
-        source,
-    })?;
-    // Parsed from `text`, the snapshot the stale checks compare with: a second read could see an
-    // edit that is reverted before they run.
+    // Read through the canonical path, once, and parsed from that read: the snapshot the stale
+    // checks compare with. A symlink that changes targets meanwhile, or a second read, could
+    // otherwise pair one project's text with another's directory.
     let canonical = std::fs::canonicalize(file)
         .or_else(|_| std::path::absolute(file))
         .map_err(|source| ComposeError::Io {
             path: file.to_path_buf(),
             source,
         })?;
+    let text = std::fs::read_to_string(&canonical).map_err(|source| ComposeError::Io {
+        path: file.to_path_buf(),
+        source,
+    })?;
     let mut file = ComposeFile::parse(&text, canonical)?;
     // The lock as this build found it, before anything read it. Beside the
     // canonical file, as `prepare` reads it: a symlinked compose file has its
