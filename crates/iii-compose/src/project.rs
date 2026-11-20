@@ -1382,7 +1382,11 @@ impl Project {
                     result.primary_error = result.primary_error.or(bounced.primary_error);
                 }
             }
-        } else if !vms.is_empty() && !self.shutdown.signal().requested() {
+        } else if !vms.is_empty()
+            && !self.shutdown.signal().requested()
+            // Cancelled before its stop, the adapter still runs, and its VMs with it.
+            && !runs(&inner, key)
+        {
             daemon_line(
                 &self.project_namespace,
                 &format!(
@@ -1400,7 +1404,17 @@ impl Project {
         let _ = self.store.save(&snapshot);
         result
     }
+}
 
+/// Whether container `key` has a process that has not exited.
+fn runs(inner: &Inner, key: &str) -> bool {
+    inner
+        .children
+        .get(key)
+        .is_some_and(|child| !matches!(child.poll(), crate::process::Outcome::Exited(_)))
+}
+
+impl Project {
     async fn fail_vms_of_lost_adapter(
         &self,
         inner: &mut Inner,
@@ -3058,6 +3072,64 @@ mod adapter_restart_tests {
         let own = status.iter().find(|status| status.container == "own");
         assert_eq!(own.unwrap().state, ChildStatus::Failed);
         project.shutdown().await;
+    }
+
+    /// A restart cancelled before it stopped the adapter leaves the adapter running, and its
+    /// VMs with it: none is stopped or marked failed.
+    #[tokio::test]
+    async fn a_restart_cancelled_before_the_adapter_stops_leaves_its_vms_alone() {
+        let (dir, project, _) = own_vm_project("").await;
+        let up = project.up(None, "up".into()).await;
+        assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        let (sb, own) = (
+            own_command_pid_of(dir.path(), "sb").await,
+            own_command_pid(dir.path()).await,
+        );
+
+        // The file held, the restart waits in `vms_hosted_by` until it is cancelled.
+        let held = project.file.write().await;
+        let controller = crate::shutdown::ShutdownController::default();
+        let restart = tokio::spawn({
+            let (project, signal) = (project.clone(), controller.signal());
+            async move {
+                project
+                    .restart_one_until_shutdown("sb", "restart".into(), signal)
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        controller.cancel();
+        drop(held);
+        let result = restart.await.unwrap();
+
+        assert_eq!(
+            result
+                .primary_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("OPERATION_CANCELLED"),
+            "{result:?}"
+        );
+        assert_eq!(alive(dir.path(), "sb"), Some(sb));
+        assert_eq!(alive(dir.path(), "own"), Some(own));
+        let own = own_status(&project).await;
+        assert_eq!(own.state, ChildStatus::Ready, "{:?}", own.last_error);
+        project.shutdown().await;
+    }
+
+    /// The pid `worker`'s running process wrote, once it has written one.
+    async fn own_command_pid_of(dir: &Path, worker: &str) -> u32 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(pid) = alive(dir, worker) {
+                return pid;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{worker} never wrote its pid"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// `status: ok` means every required worker is up, so the reply names the
