@@ -160,6 +160,16 @@ async fn call(
     options: &Options<'_>,
 ) -> Result<(), CallCliError> {
     let budget = Budget::start(options.timeout_ms);
+    // On Windows, a console event no handler takes ends the process with STATUS_CONTROL_C_EXIT
+    // (0xC000013A), not with the 128 plus the signal's number a shell reports on Unix for a
+    // process SIGINT or SIGTERM ended. There the handler is installed for the whole call: until a
+    // stream is carried, Ctrl+C ends it with 130 and Ctrl+Break with 143. A handler that cannot be
+    // installed leaves the default, as before.
+    let mut interrupt = if cfg!(windows) {
+        Interrupt::install().ok()
+    } else {
+        None
+    };
     // Always named: without `-n` the call resolves in `default`, as `--help` says. Left implicit,
     // the SDK would take the namespace of `III_NAMESPACE`, which every process Compose starts
     // has, and a script's `iii call sandbox::build` would look in its project's namespace.
@@ -183,7 +193,6 @@ async fn call(
     }
 
     let mut carried = Carried::default();
-    let mut interrupt = None;
     if !bindings.is_empty() {
         // The bindings were checked before the engine was reached: a stream that cannot be
         // opened now is the engine's failure, not the arguments'. Opening them spends the
@@ -203,7 +212,7 @@ async fn call(
                 )));
             }
         }
-        interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
+        interrupt = Some(armed(interrupt.take())?);
     }
     let timeout_ms = budget.call_timeout(!bindings.is_empty());
     let request = CallRequest {
@@ -229,9 +238,7 @@ async fn call(
     if options.follow {
         let streams = result_streams(&value);
         if !streams.is_empty() {
-            if interrupt.is_none() {
-                interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
-            }
+            interrupt = Some(armed(interrupt.take())?);
             carried.follow(iii, streams).map_err(CallCliError::Other)?;
         }
     }
@@ -280,6 +287,17 @@ async fn call(
         );
     }
     Ok(())
+}
+
+/// The interrupt of a call that carries streams: the one installed for the call, or a new one,
+/// armed so that the first signal is a stop.
+fn armed(interrupt: Option<Interrupt>) -> Result<Interrupt, CallCliError> {
+    let interrupt = match interrupt {
+        Some(interrupt) => interrupt,
+        None => Interrupt::install().map_err(|error| anyhow::anyhow!(error))?,
+    };
+    interrupt.arm();
+    Ok(interrupt)
 }
 
 /// What the end of the copies means for the command. A stream that failed fails the call, unless

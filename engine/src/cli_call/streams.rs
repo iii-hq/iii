@@ -18,7 +18,10 @@ use iii_sdk::{
     protocol::{ChannelDirection, ChannelItem, StreamChannelRef},
 };
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -457,14 +460,22 @@ async fn copy_in(output: OutputStream, unread: Arc<Mutex<Option<String>>>) {
     let _ = output.close().await;
 }
 
-/// SIGINT and SIGTERM while streams are carried: the first one is a stop request, a second one
-/// ends the process at once, with 128 plus its number. On Windows, Ctrl+C is SIGINT and
+/// SIGINT and SIGTERM. While streams are carried, the first one is a stop request and a second one
+/// ends the process at once, with 128 plus its number. Before [`Interrupt::arm`], nothing can be
+/// stopped, and the first one already ends the process so. On Windows, Ctrl+C is SIGINT and
 /// Ctrl+Break is SIGTERM: the console event a process manager sends to stop a process group.
-pub struct Interrupt(watch::Receiver<Option<i32>>);
+pub struct Interrupt {
+    received: watch::Receiver<Option<i32>>,
+    /// Whether the first signal is a stop request: set once streams are carried.
+    armed: Arc<AtomicBool>,
+}
 
 impl Interrupt {
+    /// Takes SIGINT and SIGTERM from now on. Until [`Interrupt::arm`], a signal ends the process
+    /// at once with 128 plus its number.
     pub fn install() -> std::io::Result<Self> {
         let (sender, received) = watch::channel(None);
+        let armed = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
         let (mut terminate, mut interrupt) = {
             use tokio::signal::unix::{SignalKind, signal};
@@ -478,6 +489,7 @@ impl Interrupt {
             tokio::signal::windows::ctrl_break()?,
             tokio::signal::windows::ctrl_c()?,
         );
+        let stops = Arc::clone(&armed);
         tokio::spawn(async move {
             let mut first = true;
             loop {
@@ -488,31 +500,44 @@ impl Interrupt {
                 let Some(number) = number else {
                     return;
                 };
-                if !first {
+                if ends_at_once(first, stops.load(Ordering::Acquire)) {
                     std::process::exit(128 + number);
                 }
                 first = false;
                 sender.send_replace(Some(number));
             }
         });
-        Ok(Self(received))
+        Ok(Self { received, armed })
     }
 
-    /// An interrupt that takes its signals from the returned sender, for tests.
+    /// Makes the first signal a stop request: streams are carried, and closing them asks the
+    /// function to stop.
+    pub fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
+    }
+
+    /// An armed interrupt that takes its signals from the returned sender, for tests.
     #[cfg(test)]
     pub fn manual() -> (watch::Sender<Option<i32>>, Self) {
         let (sender, received) = watch::channel(None);
-        (sender, Self(received))
+        let armed = Arc::new(AtomicBool::new(true));
+        (sender, Self { received, armed })
     }
 
     /// Resolves to the first signal's number; never without one.
     pub async fn requested(&self) -> i32 {
-        let mut received = self.0.clone();
+        let mut received = self.received.clone();
         match received.wait_for(Option::is_some).await {
             Ok(signal) => signal.unwrap_or(2),
             Err(_) => std::future::pending().await,
         }
     }
+}
+
+/// Whether a signal ends the process at once: a second one always does, and a first one does when
+/// no stream is carried, since there is nothing to close to ask the function to stop.
+fn ends_at_once(first: bool, armed: bool) -> bool {
+    !first || !armed
 }
 
 #[cfg(test)]
@@ -773,5 +798,22 @@ mod tests {
         assert_eq!(followed[0].0, Stdio::Stdout);
         assert!(result_streams(&json!({ "stdout": "text" })).is_empty());
         assert!(result_streams(&json!(42)).is_empty());
+    }
+
+    /// Without a carried stream there is nothing to stop: the first signal ends the process, as
+    /// SIGINT and SIGTERM do on Unix, and as Ctrl+C and Ctrl+Break must on Windows.
+    #[test]
+    fn the_first_signal_ends_a_call_that_carries_no_stream() {
+        assert!(ends_at_once(true, false));
+    }
+
+    #[test]
+    fn the_first_signal_is_a_stop_once_streams_are_carried() {
+        assert!(!ends_at_once(true, true));
+    }
+
+    #[test]
+    fn the_second_signal_ends_the_call() {
+        assert!(ends_at_once(false, true));
     }
 }
