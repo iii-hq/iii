@@ -1579,10 +1579,25 @@ impl Project {
         let BuildPlan { file, targets } = plan;
         let operation = crate::operation::active(operation_id);
         let adapter = crate::sandbox::adapter_name(&file);
-        if vm_build
-            && let Ok(Some(adapter_key)) = crate::sandbox::adapter_key(&file, adapter)
-            && !self.is_running(&adapter_key).await
-        {
+        let adapter_key = crate::sandbox::adapter_key(&file, adapter).ok().flatten();
+        // Whether the adapter runs takes the project, which another operation can hold through a
+        // slow first build: the build's cancel reaches this wait too, and a cancelled build ends.
+        let adapter_down = match adapter_key.as_deref().filter(|_| vm_build) {
+            Some(key) => {
+                let shutdown = cancel.clone().or(self.shutdown.signal());
+                match shutdown.run(self.is_running(key)).await {
+                    Some(running) => !running,
+                    None => {
+                        return Ok(lifecycle::BuildRun {
+                            results: Vec::new(),
+                            cancelled: true,
+                        });
+                    }
+                }
+            }
+            None => false,
+        };
+        if adapter_down && let Some(adapter_key) = adapter_key {
             if let Some(operation) = &operation {
                 operation
                     .emit(
@@ -3439,6 +3454,44 @@ mod adapter_restart_tests {
             began.elapsed()
         );
         assert!(!dir.path().join(".iii/build/own").exists());
+        project.shutdown().await;
+    }
+
+    /// The cancel of `compose::build` reaches its check whether the adapter runs too: another
+    /// operation that holds the project, such as the slow first build of an `up`, does not keep a
+    /// cancelled VM build, and the `compose::down` that waits for it, waiting.
+    #[tokio::test]
+    async fn a_cancelled_compose_build_does_not_wait_for_the_project_to_check_its_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(dir.path(), EXPLICIT, &fake_iii());
+        let project = open_small_project(
+            &path,
+            &format!("build-held-{}", uuid::Uuid::new_v4()),
+            |function, _| {
+                (function == "engine::workers::list").then(|| answered(json!({ "workers": [] })))
+            },
+        )
+        .await;
+        let held = project.inner.lock().await;
+        let controller = crate::shutdown::ShutdownController::default();
+        let signal = controller.signal();
+        let (run, ()) = tokio::join!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                project.build(None, "build", &signal)
+            ),
+            async {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                controller.cancel();
+            }
+        );
+        drop(held);
+
+        let run = run
+            .expect("the cancelled build waited for the project")
+            .unwrap();
+        assert!(run.cancelled);
+        assert!(run.results.is_empty(), "{:?}", run.results);
         project.shutdown().await;
     }
 
