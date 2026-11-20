@@ -130,7 +130,8 @@ pub fn build_line(key: &str) -> String {
 
 /// The words of the first command `sh` runs out of `command`, with single and double quotes and
 /// backslashes taken away and comments left out; enough for the `key=value` arguments of an
-/// `iii call` line. An unquoted newline, `;`, `&` or `|` ends that command.
+/// `iii call` line. An unquoted newline, `;`, `&` or `|` ends that command; the `&` of a
+/// redirection does not.
 fn shell_words(command: &str) -> Vec<String> {
     let (mut words, mut word, mut in_word) = (Vec::new(), String::new(), false);
     let mut chars = command.chars();
@@ -158,6 +159,12 @@ fn shell_words(command: &str) -> Vec<String> {
                     word.extend(next);
                 }
             },
+            // A redirection (`2>&1`, `>&2`, `<&0`, `&>file`) is part of the command: its `&`
+            // ends nothing.
+            '&' if word.ends_with(['>', '<']) || chars.clone().next() == Some('>') => {
+                in_word = true;
+                word.push('&');
+            }
             '\n' | ';' | '&' | '|' => break,
             c if c.is_whitespace() => {
                 if std::mem::take(&mut in_word) {
@@ -4354,11 +4361,18 @@ pub(crate) mod tests {
             "iii call sandbox::start worker=other\necho worker=vm",
             "iii call sandbox::start worker=other; echo worker=vm",
             "iii call sandbox::start worker=other && echo worker=vm",
+            // A redirection is part of the command: the `&` in it ends nothing.
+            "iii call sandbox::start 2>&1 worker=other",
+            "iii call sandbox::start >&2 worker=other",
+            "iii call sandbox::start &>log worker=other",
+            "iii call sandbox::start <&0 worker=other",
         ] {
             let refused = check(run).unwrap_or_else(|| panic!("{run:?} passed"));
             assert!(refused.contains("'other'"), "{run:?}: {refused}");
         }
         for run in [
+            "iii call sandbox::start 2>&1 worker=vm",
+            "iii call sandbox::start &>log worker=vm & echo worker=other",
             "iii call sandbox::start worker=vm; echo worker=other",
             "iii call sandbox::start worker=vm | tee out worker=other",
             "iii call sandbox::start \\\n  worker=vm",
