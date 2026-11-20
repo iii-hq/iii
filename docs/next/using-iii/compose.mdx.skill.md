@@ -952,7 +952,9 @@ access to `/dev/kvm`, and `libcap-ng0` must be installed. Every other worker kin
 
 On Windows, a bundle fails with `BUNDLE_NEEDS_A_VM` before anything is downloaded, and Compose
 refuses a container whose `scripts.run` is `iii call sandbox::start` with
-`SANDBOX_UNSUPPORTED_PLATFORM`.
+`SANDBOX_UNSUPPORTED_PLATFORM`. `iii compose build`, frozen or not, cannot build or lock such a
+project there either: the `sandbox-libkrun` package it resolves ships no Windows build, so it
+stops with `UNSUPPORTED_PLATFORM`. Lock and build a project with VM containers on Linux or macOS.
 Run compose under WSL, where the VM still needs `/dev/kvm` and a guest rootfs to boot. Every other
 worker kind runs on windows as it always has.
 
@@ -1226,7 +1228,8 @@ containers:
 
 Compose checks every rule but the last when it loads the file. `iii compose build` checks them too,
 with or without `--frozen`, before it downloads anything, so a CI job catches them without an
-engine. It skips the Windows rule, since the file it locks may run on another machine.
+engine. It skips the Windows rule, but that does not let Windows build a project with VM
+containers: the adapter package has no Windows build (see [Worker kinds](#worker-kinds)).
 
 A line counts as one of these when its first three words are `iii call sandbox::start` or
 `iii call sandbox::build`. Compose checks every rule when it loads the file, before any call.
