@@ -723,6 +723,14 @@ fn wire_examples_round_trip() {
         .map(|k| fixture_type(k).to_string())
         .collect();
     assert_eq!(named, declared);
+    // Each type has its current example under its own name: an `@<version>` key only adds the
+    // shape an older peer sends, and cannot stand in for it.
+    let current: BTreeSet<String> = examples
+        .keys()
+        .filter(|k| !k.contains('@'))
+        .cloned()
+        .collect();
+    assert_eq!(current, declared, "every type needs an unversioned example");
 
     for (name, example) in &examples {
         round_trip_by_name!(
