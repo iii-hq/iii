@@ -212,8 +212,11 @@ async fn call(
             match ended {
                 Ok(drained) => drained,
                 Err(signal) => {
+                    // The copies are not joined again: one may sit in a write into a pipe whose
+                    // reader stopped reading, which never ends. The process exits at once with
+                    // the signal, so nothing waits for that write either.
                     carried.cancel().await;
-                    let _ = carried.finish().await;
+                    carried.abandon();
                     return Err(CallCliError::Interrupted(signal));
                 }
             }

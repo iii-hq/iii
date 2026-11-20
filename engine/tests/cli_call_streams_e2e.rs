@@ -216,6 +216,16 @@ async fn start() -> TestEngine {
                 Ok::<_, Error>(json!({ "namespace": "default", "payload": req }))
             }),
         ),
+        // Answers with a result stream far bigger than a pipe holds.
+        sdk.register_function(
+            "cli-streams::flood",
+            RegisterFunction::new_async(|_: Value| async move {
+                Ok::<_, Error>(Exported {
+                    rows: 0,
+                    stdout: InputStream::from_bytes(vec![b'x'; 8 << 20]),
+                })
+            }),
+        ),
         sdk.register_function(
             "cli-streams::fail",
             RegisterFunction::new_async(|_: Value| async move {
@@ -679,6 +689,39 @@ async fn the_first_signal_stops_the_function_and_waits_for_its_answer() {
 /// A result stream that arrives after the first signal is cancelled too: the function answered a
 /// stop with a stream it never closes, and `iii call` still exits with that answer.
 #[cfg(unix)]
+/// The first signal after the answer ends the call with 130 though its output is stuck: a write
+/// into a pipe whose reader stopped reading is not waited for.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signal_after_the_answer_does_not_wait_for_a_stuck_write() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::flood"]);
+    // The stdout pipe stays open and is never read: it fills, and the copy blocks in its write.
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let _unread = child.stdout.take().unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "iii call ended with its output unread"
+    );
+
+    let pid = child.id().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .expect("iii call waited for the stuck write")
+        .unwrap();
+    assert_eq!(status.code(), Some(130));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn result_streams_after_a_stop_are_cancelled_too() {
     let engine = start().await;

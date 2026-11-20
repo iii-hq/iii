@@ -312,6 +312,17 @@ impl Carried {
         }
     }
 
+    /// Stops every copy without waiting for it, as an interrupted call leaves them: a copy can sit
+    /// in a write into an output whose reader stopped reading, which never ends.
+    pub fn abandon(&mut self) {
+        for (_, task) in self.copies.drain(..) {
+            task.abort();
+        }
+        if let Some(stdin) = self.stdin.take() {
+            stdin.abort();
+        }
+    }
+
     /// Waits for every copy into stdout and stderr to end; the copy that failed, by label: the
     /// first that lost output, else the first stream that failed. The stdin copy is not waited
     /// for: it may sit on a terminal that never ends. Input this process could not read is lost
