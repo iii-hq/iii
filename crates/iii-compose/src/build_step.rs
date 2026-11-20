@@ -581,8 +581,13 @@ pub(crate) async fn run(
         // Stopping `iii call sandbox::build` closes its streams, which aborts the build.
         child.stop(STOP_GRACE).await;
     }
-    for reader in readers {
-        let _ = tokio::time::timeout(DRAIN, reader).await;
+    // A process the build left behind can hold a pipe open: its reader is stopped, so no line
+    // lands in the logs once the build is reported.
+    for mut reader in readers {
+        if tokio::time::timeout(DRAIN, &mut reader).await.is_err() {
+            reader.abort();
+            let _ = reader.await;
+        }
     }
     let tail = std::mem::take(
         &mut *tail
@@ -1360,6 +1365,28 @@ mod tests {
             }
         );
         assert_eq!(project.record(), None);
+    }
+
+    /// A process the build leaves behind holds its pipes: they are no longer read once the build
+    /// is reported, so its later output does not reach the logs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_left_behind_after_the_drain_does_not_reach_the_logs() {
+        let project = project("scripts: {build: '(sleep 3; echo late) & echo built', run: x}");
+        assert_eq!(
+            project.build(None, None).await,
+            Outcome::Built { build_id: None }
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let logs = project.logs().await;
+        assert!(
+            logs.iter().any(|entry| entry.message == "[build] built"),
+            "{logs:?}"
+        );
+        assert!(
+            !logs.iter().any(|entry| entry.message == "[build] late"),
+            "{logs:?}"
+        );
     }
 
     /// A plan made before its container's source changed does not build: the script would run in
