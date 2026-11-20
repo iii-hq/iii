@@ -1386,9 +1386,13 @@ tokio::task_local! {
 
 tokio::task_local! {
     /// The workers [`resolve`] already received inside [`remembering`], by
-    /// `(registry, name, range)`.
-    static RESOLVED: std::sync::Mutex<std::collections::HashMap<(String, String, String), ResolvedWorker>>;
+    /// [`ResolvedKey`].
+    static RESOLVED: std::sync::Mutex<std::collections::HashMap<ResolvedKey, ResolvedWorker>>;
 }
+
+/// `(registry, name, range, targets)`: the targets in order of preference, so a host lookup and
+/// a VM lookup of the same range never answer for each other.
+type ResolvedKey = (String, String, String, Vec<String>);
 
 /// Runs `future` with [`resolve`] answering again from what it already
 /// received in it: the same worker and range, or the exact version an earlier
@@ -2137,7 +2141,14 @@ async fn resolve(
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ResolvedWorker> {
-    let key = |range: &str| (registry.to_string(), name.to_string(), range.to_string());
+    let key = |range: &str| -> ResolvedKey {
+        (
+            registry.to_string(),
+            name.to_string(),
+            range.to_string(),
+            candidates.iter().map(|target| target.to_string()).collect(),
+        )
+    };
     let remembered = RESOLVED
         .try_with(|resolved| {
             resolved
@@ -3685,6 +3696,60 @@ mod tests {
                 .contains("x86_64-apple-darwin, x86_64-unknown-linux-gnu"),
             "{error}"
         );
+    }
+
+    /// Inside one preparation, a host lookup and a VM lookup of the same range each get the build
+    /// of their own targets; the same lookup again is remembered.
+    #[tokio::test]
+    async fn remembered_resolutions_are_kept_apart_by_their_targets() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
+
+        let server = MockServer::start().await;
+        for target in ["x86_64-apple-darwin", "x86_64-unknown-linux-musl"] {
+            Mock::given(matchers::method("POST"))
+                .and(matchers::path("/resolve"))
+                .and(matchers::body_partial_json(
+                    serde_json::json!({ "target": target }),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "graph": [{
+                        "name": "tool",
+                        "version": "1.0.0",
+                        "type": "binary",
+                        "binaries": { target: {
+                            "sha256": "a".repeat(64),
+                            "url": format!("https://example.com/{target}.tar.gz"),
+                        }},
+                    }]
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let lookup = |target: &'static str| {
+            let registry = server.uri();
+            async move {
+                resolve("tool", &registry, "tool", "1.0.0", &[target])
+                    .await
+                    .unwrap()
+                    .binaries
+                    .into_keys()
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let (host, vm, again) = remembering(async {
+            (
+                lookup("x86_64-apple-darwin").await,
+                lookup("x86_64-unknown-linux-musl").await,
+                lookup("x86_64-unknown-linux-musl").await,
+            )
+        })
+        .await;
+
+        assert_eq!(host, ["x86_64-apple-darwin"]);
+        assert_eq!(vm, ["x86_64-unknown-linux-musl"]);
+        assert_eq!(again, vm);
     }
 
     #[test]
