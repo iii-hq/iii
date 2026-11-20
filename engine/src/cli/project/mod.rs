@@ -523,18 +523,18 @@ const READY_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_milli
 /// repainting before anything else writes to the terminal.
 const BLOCK_SETTLE: std::time::Duration = std::time::Duration::from_millis(1_000);
 /// How long the console link waits before opening itself in the browser.
-const OPEN_COUNTDOWN: std::time::Duration = std::time::Duration::from_secs(5);
+const OPEN_COUNTDOWN: std::time::Duration = std::time::Duration::from_secs(3);
 /// How often the countdown checks for a key; the timer redraws once a second.
 const OPEN_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Where the browser countdown stands, shared with the key reader: still
-/// counting, stopped with `n`, or opened (by the timer or by `b`).
+/// counting, stopped with `c`, or opened (by the timer or by `b`).
 const OPEN_COUNTING: u8 = 0;
 const OPEN_CANCELLED: u8 = 1;
 const OPEN_DONE: u8 = 2;
 
 /// Counts down on one line, rewritten in place, then opens `url` in the
-/// browser. `b` opens it at once and `n` stops the countdown; either key is
+/// browser. `b` opens it at once and `c` stops the countdown; either key is
 /// read by [`open_console_on_request`], which shares `state`.
 async fn open_console_after_countdown(url: &str, state: &AtomicU8) {
     use std::io::Write;
@@ -575,10 +575,10 @@ async fn open_console_after_countdown(url: &str, state: &AtomicU8) {
             shown = Some(seconds);
             show(
                 &format!(
-                    "Opening in {}  {} open now · {} stay here",
+                    "Opening in {}  {} open now · {} cancel",
                     format!("0:{seconds:02}").bold(),
                     "b".bold(),
-                    "n".bold()
+                    "c".bold()
                 ),
                 false,
             );
@@ -782,7 +782,7 @@ fn read_progress(containers: &[serde_json::Value]) -> Option<Progress> {
     })
 }
 
-/// Waits for a bare `b` and opens `url` on it; a bare `n` stops the
+/// Waits for a bare `b` and opens `url` on it; a bare `c` stops the
 /// countdown in [`open_console_after_countdown`] without opening anything.
 ///
 /// Cbreak, not raw: only `ICANON` and `ECHO` come off, so the keypress arrives
@@ -813,7 +813,7 @@ fn open_console_on_request(url: &str, state: &AtomicU8) {
 
     let mut key = [0u8; 1];
     while let Ok(1) = stdin.lock().read(&mut key) {
-        if key[0].eq_ignore_ascii_case(&b'n') {
+        if key[0].eq_ignore_ascii_case(&b'c') {
             // Stops the countdown only; `b` still opens it afterwards.
             let _ = state.compare_exchange(
                 OPEN_COUNTING,
@@ -841,7 +841,7 @@ fn open_console_on_request(url: &str, state: &AtomicU8) {
     // protect and no termios to put back.
     let term = console::Term::stdout();
     while let Ok(key) = term.read_char() {
-        if key.eq_ignore_ascii_case(&'n') {
+        if key.eq_ignore_ascii_case(&'c') {
             let _ = state.compare_exchange(
                 OPEN_COUNTING,
                 OPEN_CANCELLED,
