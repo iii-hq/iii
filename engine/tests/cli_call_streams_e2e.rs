@@ -355,6 +355,10 @@ async fn usage_errors_exit_with_2_before_any_call() {
         NOWHERE,
         &["cli-streams::lines", "--json", "[1]", "--stdout", "out"],
         "a stream can only be bound in an object payload",
+    ), (
+        NOWHERE,
+        &["cli-streams::echo", "--stdout", "io", "--stdin", "io"],
+        "--stdout and --stdin both bind the field \"io\"",
     )];
     for (engine, args, expected) in cases {
         let out = output(iii_call(engine, cwd.path(), args)).await;
