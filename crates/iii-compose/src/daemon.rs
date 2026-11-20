@@ -3052,21 +3052,46 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
 /// (`start_after`, spec 7.1), so it goes before the adapter it boots through: removing the VM
 /// still finds the adapter running, never restarting one this removal took.
 fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
-    let mut order: Vec<String> = file
-        .start_order()?
+    // A 0.26 VM need not list its adapter in `start_after`: ordered as if it did, the VM stops
+    // before the adapter, so its cleanup does not find the adapter stopped and start it again,
+    // and the adapter still stops before what it starts after. An edge that would close a cycle
+    // is left out.
+    let mut ordered = file.clone();
+    if let Some(adapter) = crate::sandbox::adapter_key(file, crate::sandbox::adapter_name(file))? {
+        let vms: Vec<String> = file
+            .containers
+            .iter()
+            .filter(|(key, container)| {
+                **key != adapter
+                    && !container.start_after.contains(&adapter)
+                    && (crate::sandbox::runs_in_vm(container)
+                        || crate::sandbox::migration_due(file, container))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for vm in vms {
+            let edges = &mut ordered
+                .containers
+                .get_mut(&vm)
+                .expect("declared")
+                .start_after;
+            edges.push(adapter.clone());
+            if ordered.start_order().is_err() {
+                ordered
+                    .containers
+                    .get_mut(&vm)
+                    .expect("declared")
+                    .start_after
+                    .pop();
+            }
+        }
+    }
+    let order = ordered.start_order()?;
+    Ok(order
         .into_iter()
         .rev()
         .filter(|worker| requested.contains(worker.as_str()))
-        .collect();
-    // A 0.26 VM need not list its adapter in `start_after`: the adapter goes last all the same,
-    // so no VM's cleanup finds it stopped and starts it again.
-    if let Some(adapter) = crate::sandbox::adapter_key(file, crate::sandbox::adapter_name(file))?
-        && let Some(at) = order.iter().position(|key| *key == adapter)
-    {
-        let adapter = order.remove(at);
-        order.push(adapter);
-    }
-    Ok(order)
+        .collect())
 }
 
 /// How a failed rebuild of an add or update is finished: retrying it, which rebuilds the
@@ -7474,19 +7499,24 @@ pub(crate) mod findings_lifecycle_tests {
             "vm",
             "runtime: {base_image: python}\nscripts: {start: run}\n",
         );
+        for key in ["host", "web"] {
+            manifest(dir.path(), key, "scripts: {start: run}\n");
+        }
         let path = compose_path(
             dir.path(),
-            "containers:\n  vm: {worker: path://./vm, scripts: {run: iii sandbox run}}\n  sb: {worker: path://./sb}\n  web: {worker: path://./vm}\n",
+            "containers:\n  vm: {worker: path://./vm, scripts: {run: iii sandbox run}}\n  host: {worker: path://./host}\n  sb: {worker: path://./sb, start_after: [host]}\n  web: {worker: path://./web}\n",
         );
         let file = crate::ComposeFile::load(&path).unwrap();
-        assert_eq!(
-            super::removal_order(
-                &file,
-                &std::collections::BTreeSet::from(["vm", "sb", "web"])
-            )
-            .unwrap(),
-            ["web", "vm", "sb"]
-        );
+        let order = super::removal_order(
+            &file,
+            &std::collections::BTreeSet::from(["vm", "host", "sb", "web"]),
+        )
+        .unwrap();
+        let at = |key: &str| order.iter().position(|worker| worker == key).unwrap();
+        // The VM before its adapter, and the adapter before what it starts after.
+        assert!(at("vm") < at("sb"), "{order:?}");
+        assert!(at("sb") < at("host"), "{order:?}");
+        assert_eq!(order.len(), 4, "{order:?}");
     }
 
     /// A failed rebuild of an update is finished by retrying it, which restarts the container on
