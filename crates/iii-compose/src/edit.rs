@@ -1115,10 +1115,14 @@ fn shared_anchor(lines: &[&str], from: usize, to: usize) -> Option<String> {
         .flat_map(|(line, _)| {
             let body = without_comment(line).trim_start();
             let body = body.strip_prefix("- ").unwrap_or(body);
-            let mut value = body
-                .split_once(':')
-                .map_or("", |(_, value)| value)
-                .trim_start();
+            // A value can start on the line after its key, with its anchor.
+            let mut value = if body.starts_with(['&', '!']) {
+                body
+            } else {
+                body.split_once(':')
+                    .map_or("", |(_, value)| value)
+                    .trim_start()
+            };
             let mut found = Vec::new();
             while value.starts_with(['&', '!']) {
                 let end = value.find(char::is_whitespace).unwrap_or(value.len());
@@ -4359,6 +4363,10 @@ containers:
                 && error.to_string().contains("&deps;"),
             "{error}"
         );
+        // An anchor on the line after the key is the list's too.
+        let next_line = text.replace("start_after: &deps [db]", "start_after:\n      &deps [db]");
+        let error = explicit_vm_mode(&next_line, "vm", "sb").unwrap_err();
+        assert!(error.to_string().contains("&deps;"), "{error}");
         let own = text.replace("start_after: *deps", "start_after: [db]");
         let rewrite = explicit_vm_mode(&own, "vm", "sb").unwrap().unwrap();
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
