@@ -16,13 +16,24 @@ pub(crate) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 /// What opening a [`WsStream`] returns.
 pub(crate) type WsConnectResult = Result<(WsStream, Response), Error>;
 
+/// Read buffer of every socket to the engine. Before each read tungstenite
+/// zero-fills the free part of its read buffer, up to this size (128 KiB by
+/// default), so each open socket kept 128 KiB resident and paid a 128 KiB
+/// `memset` per read. A worker that serves HTTP holds a channel socket per
+/// request in flight. A larger frame still grows the buffer to fit; it is read
+/// in pieces of this size, as the engine's own `WS_READ_BUFFER_BYTES`.
+pub(crate) const READ_BUFFER_BYTES: usize = 8 * 1024;
+
 /// Opens a WebSocket to the engine and negotiates `TCP_NODELAY` with it (see
 /// [`negotiate_nodelay`]). The socket connects with Nagle on.
 pub(crate) async fn connect<R>(request: R, config: Option<WebSocketConfig>) -> WsConnectResult
 where
     R: IntoClientRequest + Unpin,
 {
-    let (stream, response) = connect_async_with_config(request, config, false).await?;
+    let config = config
+        .unwrap_or_default()
+        .read_buffer_size(READ_BUFFER_BYTES);
+    let (stream, response) = connect_async_with_config(request, Some(config), false).await?;
     let tcp_nodelay = negotiate_nodelay(&stream, &response);
     tracing::debug!(tcp_nodelay, "connected to the engine");
     Ok((stream, response))
@@ -128,6 +139,22 @@ mod tests {
     use tokio_tungstenite::tungstenite::http;
 
     use super::*;
+
+    #[tokio::test]
+    async fn every_socket_reads_through_a_small_buffer() {
+        let (address, server) = test_engine::spawn(false).await;
+        let limits = WebSocketConfig::default().max_message_size(Some(64 << 20));
+        let (stream, _) = connect(format!("ws://{address}"), Some(limits))
+            .await
+            .unwrap();
+        assert_eq!(stream.get_config().read_buffer_size, READ_BUFFER_BYTES);
+        assert_eq!(
+            stream.get_config().max_message_size,
+            Some(64 << 20),
+            "the caller's limits stay"
+        );
+        server.await.unwrap();
+    }
 
     fn response_with(values: &[&str]) -> Response {
         let mut builder = http::Response::builder();
