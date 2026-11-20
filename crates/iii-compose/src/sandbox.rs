@@ -92,22 +92,40 @@ pub(crate) fn shell_word(word: &str) -> String {
     }
 }
 
+/// `value` as `iii call` must receive it in `name=value` to read the string `value`: as it is,
+/// unless it decodes as JSON (`123`, `true`, `"api"`), which `iii call` would take instead; that
+/// one is written as a JSON string.
+fn string_value(value: &str) -> std::borrow::Cow<'_, str> {
+    match serde_json::from_str::<serde_json::Value>(value) {
+        Ok(_) => serde_json::Value::from(value).to_string().into(),
+        Err(_) => value.into(),
+    }
+}
+
+/// The `worker=` argument for container `key`, one `sh` word that `iii call` reads as the key.
+fn worker_argument(key: &str) -> String {
+    match string_value(key) {
+        std::borrow::Cow::Borrowed(key) => format!("worker={}", shell_word(key)),
+        std::borrow::Cow::Owned(json) => shell_word(&format!("worker={json}")),
+    }
+}
+
 /// The `scripts.run` Compose writes for container `key`'s VM, with the guest command of a
 /// `path://` worker that runs its own.
 pub fn start_line(key: &str, command: Option<&str>) -> String {
     match command {
-        None => format!("{SANDBOX_RUN} worker={}", shell_word(key)),
+        None => format!("{SANDBOX_RUN} {}", worker_argument(key)),
         Some(command) => format!(
-            "{SANDBOX_RUN} worker={} {}",
-            shell_word(key),
-            shell_word(&format!("command={command}"))
+            "{SANDBOX_RUN} {} {}",
+            worker_argument(key),
+            shell_word(&format!("command={}", string_value(command)))
         ),
     }
 }
 
 /// The `scripts.build` Compose writes for container `key`'s VM.
 pub fn build_line(key: &str) -> String {
-    format!("{SANDBOX_BUILD} worker={}", shell_word(key))
+    format!("{SANDBOX_BUILD} {}", worker_argument(key))
 }
 
 /// The words `sh` splits `command` into, with single and double quotes and backslashes taken
@@ -152,14 +170,45 @@ fn shell_words(command: &str) -> Vec<String> {
     words
 }
 
-/// The value of `key=` among the arguments of an `iii call sandbox::*` line.
+/// A `key=value` value as `iii call` decodes it: JSON when it parses, else the text.
+fn cli_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_string()))
+}
+
+/// The value of `key=` among the arguments of an `iii call sandbox::*` line, as `iii call`
+/// decodes it; `None` when there is none, or it is not a string.
 pub(crate) fn call_argument(command: &str, key: &str) -> Option<String> {
     let prefix = format!("{key}=");
     shell_words(command)
         .into_iter()
         .skip(3)
         .rev()
-        .find_map(|word| word.strip_prefix(&prefix).map(str::to_string))
+        .find_map(|word| word.strip_prefix(&prefix).map(cli_value))
+        .and_then(|value| value.as_str().map(str::to_string))
+}
+
+/// The `worker` of the payload an `iii call sandbox::*` line sends, as `iii call` builds it: the
+/// last `worker=` over the `worker` of `--json`. `None` when the line sets neither, so the
+/// defaults Compose hands it give the container's own.
+fn call_worker(command: &str) -> Option<serde_json::Value> {
+    let (mut worker, mut json) = (None, None);
+    let words = shell_words(command);
+    let mut words = words.iter().skip(3);
+    while let Some(word) = words.next() {
+        if word == "--json" {
+            json = words.next().cloned();
+        } else if let Some(raw) = word.strip_prefix("--json=") {
+            json = Some(raw.to_string());
+        } else if let Some(raw) = word.strip_prefix("worker=") {
+            worker = Some(cli_value(raw));
+        }
+    }
+    worker.or_else(|| {
+        serde_json::from_str::<serde_json::Value>(&json?)
+            .ok()?
+            .get("worker")
+            .cloned()
+    })
 }
 
 /// The guest command of a legacy `iii sandbox run --command '<command>'`, as the rewrite wrote it.
@@ -472,13 +521,16 @@ fn check_scripts(file: &ComposeFile, no_vm_here: bool) -> Result<()> {
         for (script, command) in [("run", &scripts.run), ("build", &scripts.build)] {
             if let Some(worker) = command
                 .as_deref()
-                .and_then(|command| call_argument(command, "worker"))
-                .filter(|worker| worker != key)
+                .and_then(call_worker)
+                .filter(|worker| worker.as_str() != Some(key.as_str()))
             {
                 return Err(ComposeError::SandboxWorkerMismatch {
                     container: key.clone(),
                     script,
-                    worker,
+                    worker: match worker {
+                        serde_json::Value::String(worker) => worker,
+                        other => other.to_string(),
+                    },
                 });
             }
         }
@@ -4144,6 +4196,81 @@ pub(crate) mod tests {
              sandbox build, run: iii sandbox run}}\n  sb: {worker: path://./vm}\n",
         );
         assert!(migration_due(&legacy, &legacy.containers["vm"]));
+    }
+
+    /// A key or a guest command that `iii call` would decode as other JSON (`123`, `true`,
+    /// `"api"`) is written as a JSON string, so the call receives the string; an ordinary one
+    /// keeps its bare form.
+    #[test]
+    fn arguments_iii_call_would_decode_as_json_stay_strings() {
+        assert_eq!(
+            start_line("api", None),
+            "iii call sandbox::start worker=api"
+        );
+        assert_eq!(build_line("api"), "iii call sandbox::build worker=api");
+        for key in ["123", "true", "null", "\"api\"", "1e5", "{}"] {
+            for line in [start_line(key, Some("true")), build_line(key)] {
+                // What `sh` hands `iii call`, decoded as `iii call` decodes `key=value`.
+                for word in &shell_words(&line)[3..] {
+                    let (name, raw) = word.split_once('=').unwrap();
+                    let expected = if name == "worker" { key } else { "true" };
+                    assert_eq!(cli_value(raw), serde_json::json!(expected), "{line}");
+                }
+                assert_eq!(call_worker(&line), Some(serde_json::json!(key)), "{line}");
+            }
+            assert_eq!(
+                crate::edit::sandbox_guest_command(&start_line(key, Some("true"))),
+                Some((key.to_string(), "true".to_string()))
+            );
+        }
+    }
+
+    /// The worker a line sends is checked as `iii call` builds the payload: from `--json` too,
+    /// a `worker=` over it, and a value that decodes as another type than a string is no key.
+    #[test]
+    fn the_worker_a_line_sends_through_json_is_checked_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = |run: &str| {
+            let text = serde_yaml::to_string(&serde_json::json!({ "containers": { "vm": {
+                "worker": "path://./vm",
+                "runtime": { "base_image": "python" },
+                "scripts": { "build": "iii call sandbox::build worker=vm", "run": run },
+            }}}))
+            .unwrap();
+            validate_script_rules(&parse(dir.path(), &text))
+                .err()
+                .map(|error| (error.code(), error.to_string()))
+        };
+        for (run, sent) in [
+            (
+                r#"iii call sandbox::start --json '{"worker":"other"}'"#,
+                Some("'other'"),
+            ),
+            (
+                r#"iii call sandbox::start --json='{"worker":"other"}'"#,
+                Some("'other'"),
+            ),
+            (
+                r#"iii call sandbox::start worker=other --json '{"worker":"vm"}'"#,
+                Some("'other'"),
+            ),
+            ("iii call sandbox::start worker=7", Some("'7'")),
+            (
+                r#"iii call sandbox::start --json '{"worker":"other"}' worker=vm"#,
+                None,
+            ),
+            (r#"iii call sandbox::start --json '{"worker":"vm"}'"#, None),
+            ("iii call sandbox::start", None),
+        ] {
+            match (check(run), sent) {
+                (None, None) => {}
+                (Some((code, message)), Some(sent)) => {
+                    assert_eq!(code, "SANDBOX_WORKER_MISMATCH", "{run}");
+                    assert!(message.contains(sent), "{run}: {message}");
+                }
+                (got, _) => panic!("{run}: {got:?}"),
+            }
+        }
     }
 
     #[test]
