@@ -331,6 +331,40 @@ fn call_help_shows_function_path_positional() {
     );
 }
 
+/// The paragraphs after the summary are the call's long help: `iii call --help` shows the
+/// streams, the signals and `III_CALL_DEFAULTS`, and the root's command list keeps the summary.
+#[test]
+fn call_help_shows_the_long_help() {
+    let output = iii_bin()
+        .args(["call", "--help"])
+        .output()
+        .expect("failed to execute");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for text in [
+        "Call a function on a running iii engine",
+        "SIGTERM",
+        "III_CALL_DEFAULTS",
+    ] {
+        assert!(
+            stdout.contains(text),
+            "call --help should show {text}:\n{stdout}"
+        );
+    }
+
+    let output = iii_bin().arg("--help").output().expect("failed to execute");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Call a function on a running iii engine"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("III_CALL_DEFAULTS"),
+        "the root's command list keeps the summary:\n{stdout}"
+    );
+}
+
 #[test]
 fn call_legacy_function_id_rejected_at_runtime() {
     // Pass a valid FUNCTION_PATH positional so the failure is unambiguously
