@@ -8,6 +8,13 @@ status: draft
 
 # explicit VM mode — Compose runs VM workers through commands it can show
 
+> **Superseded in part.** The `iii sandbox` command of this spec (`build`, `run`, `destroy`;
+> section 8) is superseded by
+> [tech-specs/2026-11-19-iii-call-sandbox](../2026-11-19-iii-call-sandbox/README.md): a VM
+> container's scripts are `iii call sandbox::build worker=<container>` and
+> `iii call sandbox::start worker=<container>`. The rest of this spec stands, and its rules apply to
+> those lines.
+
 In 0.26, Compose picks the VM by itself. A registry `bundle`, or a `path://` worker whose
 `iii.worker.yaml` sets `runtime.base_image`, runs in a microVM. Compose adds the
 `sandbox-libkrun` container, keeps the start order on it in memory, and calls the adapter's
@@ -894,6 +901,14 @@ nothing: its next build or start records the new one and releases the old. Movin
 the whole project changes the build directory too, and nothing gets `S505`.
 
 ## 8. CLI
+
+> **Superseded.** The `iii sandbox` command of this section is removed, superseded by
+> [tech-specs/2026-11-19-iii-call-sandbox](../2026-11-19-iii-call-sandbox/README.md). A VM
+> container's scripts are `iii call sandbox::build worker=<container>` and
+> `iii call sandbox::start worker=<container>`, served by the engine's sandbox router; the variables
+> of 8.3 give way to `III_CALL_DEFAULTS`; an operator rebuilds with
+> `iii call compose::build worker=<container>` and destroys a VM with
+> `iii call compose::remove worker=<container>`.
 
 ### 8.1 `iii sandbox build`
 

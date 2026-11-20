@@ -205,6 +205,13 @@ empty frame to them every few seconds, so a reader that left is noticed with a s
 `WORKER_EXITED` is new. `BUILD_MISSING` moves to Compose, which refuses the start before it
 spawns the script. `SANDBOX_PRUNE_UNSUPPORTED` stays with `compose::remove`.
 
+> **As built.** `BUILD_MISSING` is not raised. Compose builds a container before it starts it, so a
+> start always finds `build.json`, and Compose leaves the `sandbox::start` entry out of
+> `III_CALL_DEFAULTS` until it does. A hand-run `sandbox::start` without `build_id` fails with
+> `SANDBOX_INVALID_REQUEST`. `compose::remove` does not raise `SANDBOX_PRUNE_UNSUPPORTED` either:
+> without `prune`, on an adapter without `worker.prune`, it leaves the VM as it is and logs
+> `<c>: kept VM <vm_id>: <adapter> <version> cannot keep its data (no worker.prune)`.
+
 ## 5. Compose
 
 ### 5.1 Scripts
@@ -232,6 +239,11 @@ next to the image (a contract follow-up) would bring it back.
   `iii sandbox build <container>` outside Compose.
 - **Destroy:** `iii call compose::remove worker=<c>`, with `prune=true` to delete the data. This
   replaces `iii sandbox destroy`.
+
+> **As built: follow-up.** The `output` stream of `compose::build` is not implemented yet. Until it
+> is, `compose::build` stays an asynchronous operation that answers at once: follow the build with
+> `iii compose logs <c> --follow`, where each build line has the `[build] ` prefix, or with the
+> operation's `compose::on-operation-progress` events.
 
 ### 5.4 Removed
 
