@@ -197,6 +197,8 @@ pub struct Carried {
     writers: Vec<OutputStream>,
     copies: Vec<(&'static str, JoinHandle<Copied>)>,
     stdin: Option<JoinHandle<()>>,
+    /// The first copy that failed, kept across a `finish` that was interrupted.
+    failure: Option<String>,
 }
 
 impl Carried {
@@ -280,21 +282,27 @@ impl Carried {
 
     /// Waits for every copy into stdout and stderr to end; the first stream that failed, by
     /// label. The stdin copy is not waited for: it may sit on a terminal that never ends.
+    ///
+    /// Each copy is awaited in place and removed once it ended, so a `finish` dropped half way,
+    /// when a signal wins the race, leaves the copies still running here for the next `finish`
+    /// to join.
     pub async fn finish(&mut self) -> Result<(), String> {
-        let mut failure = None;
-        for (label, task) in self.copies.drain(..) {
+        while let Some((label, task)) = self.copies.first_mut() {
+            let label = *label;
             let ended = match task.await {
                 Ok(ended) => ended,
                 Err(error) => Err(error.to_string()),
             };
+            self.copies.remove(0);
             if let Err(error) = ended {
-                failure.get_or_insert(format!("the {label} stream failed: {error}"));
+                self.failure
+                    .get_or_insert(format!("the {label} stream failed: {error}"));
             }
         }
         if let Some(stdin) = self.stdin.take() {
             stdin.abort();
         }
-        failure.map_or(Ok(()), Err)
+        self.failure.take().map_or(Ok(()), Err)
     }
 }
 
@@ -552,6 +560,32 @@ mod tests {
         let mut bindings = Bindings::default();
         bindings.complete_from_schema(&json!({ "type": "object" }), &json!({}));
         assert!(bindings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_finish_keeps_the_copies_for_the_next() {
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let mut carried = Carried::default();
+        carried.copies.push((
+            "stdout",
+            tokio::spawn(async move {
+                let _ = released.await;
+                Ok(())
+            }),
+        ));
+        carried
+            .copies
+            .push(("stderr", tokio::spawn(async { Err("aborted".to_string()) })));
+        let interrupted =
+            tokio::time::timeout(std::time::Duration::from_millis(50), carried.finish()).await;
+        assert!(interrupted.is_err(), "the stdout copy is still running");
+        assert_eq!(carried.copies.len(), 2, "the interrupted finish dropped copies");
+        release.send(()).unwrap();
+        assert_eq!(
+            carried.finish().await,
+            Err("the stderr stream failed: aborted".to_string())
+        );
+        assert!(carried.is_empty());
     }
 
     #[test]
