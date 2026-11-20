@@ -13,7 +13,7 @@ use iii_sdk::{Error, IIIClient, InitOptions, register_worker};
 use serde_json::{Value, json};
 
 use super::CallCliError;
-use super::streams::{Bindings, Carried, Interrupt, result_streams};
+use super::streams::{Bindings, Carried, CopyFailure, Interrupt, result_streams};
 
 /// The call's timeout when nothing else names one.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -215,9 +215,7 @@ async fn call(
         }
         _ => carried.finish().await,
     };
-    if !stopped && let Err(failure) = drained {
-        return Err(CallCliError::Other(anyhow::anyhow!(failure)));
-    }
+    drain_outcome(drained, stopped)?;
 
     if (!streamed || options.print_result) && !value.is_null() {
         println!(
@@ -226,6 +224,21 @@ async fn call(
         );
     }
     Ok(())
+}
+
+/// What the end of the copies means for the command. A stream that failed fails the call, unless
+/// the call stopped it: a stop cancels the streams, and they end in errors then. Output this
+/// process could not write fails the call either way: it was lost, whatever stopped the stream.
+fn drain_outcome(drained: Result<(), CopyFailure>, stopped: bool) -> Result<(), CallCliError> {
+    match drained {
+        Err(failure @ CopyFailure::Output(_)) => {
+            Err(CallCliError::Other(anyhow::anyhow!(failure.to_string())))
+        }
+        Err(failure @ CopyFailure::Stream(_)) if !stopped => {
+            Err(CallCliError::Other(anyhow::anyhow!(failure.to_string())))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Awaits the answer of `call`. A signal before it runs `stop`, which asks the function to stop,
@@ -397,6 +410,27 @@ mod tests {
         })
         .await;
         assert_eq!((value, stopped), (Some("stopped"), true));
+    }
+
+    #[test]
+    fn lost_output_fails_the_call_even_after_a_stop() {
+        let lost = || Err(CopyFailure::Output("the stdout stream failed: full".into()));
+        let cancelled = || {
+            Err(CopyFailure::Stream(
+                "the stdout stream failed: cancelled".into(),
+            ))
+        };
+        assert!(
+            drain_outcome(lost(), true).is_err(),
+            "a stop does not hide lost output"
+        );
+        assert!(drain_outcome(lost(), false).is_err());
+        assert!(
+            drain_outcome(cancelled(), true).is_ok(),
+            "a stream the stop cancelled ends in an error"
+        );
+        assert!(drain_outcome(cancelled(), false).is_err());
+        assert!(drain_outcome(Ok(()), true).is_ok());
     }
 
     #[test]
