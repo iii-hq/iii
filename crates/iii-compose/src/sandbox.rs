@@ -477,7 +477,22 @@ fn refuse_adapter_out_of_range(
 /// checked for what does not depend on it. A missing `scripts.build`, adapter in `start_after`
 /// or bundle `scripts.run` is [`migration_due`], not refused.
 pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
-    check_scripts(file, cfg!(windows))
+    check_scripts(file, no_vm_here())
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    /// Whether this host runs no VM, in place of the platform's answer.
+    pub(crate) static TEST_NO_VM_HERE: bool;
+}
+
+/// Whether this host runs no VM: Windows.
+fn no_vm_here() -> bool {
+    #[cfg(test)]
+    if let Ok(no_vm_here) = TEST_NO_VM_HERE.try_with(|no_vm_here| *no_vm_here) {
+        return no_vm_here;
+    }
+    cfg!(windows)
 }
 
 /// [`validate_scripts`] without the platform rule. `iii compose build` locks and downloads a
@@ -746,6 +761,25 @@ pub(crate) async fn migrate(
     rewrite_due(path, edited, file, prepared, &BTreeSet::new()).await
 }
 
+/// [`migrate`] for `iii compose build`, which checks the rewritten scripts with
+/// [`validate_script_rules`]: the file may run on another machine than the one that builds it.
+pub(crate) async fn migrate_offline(
+    path: &Path,
+    edited: &mut String,
+    file: &mut ComposeFile,
+    prepared: &mut PreparedLock,
+) -> Result<Option<Migration>> {
+    rewrite_checked(
+        path,
+        edited,
+        file,
+        prepared,
+        &BTreeSet::new(),
+        validate_script_rules,
+    )
+    .await
+}
+
 /// [`migrate`], logging no rewrite of the containers in `quiet`: `compose::add` writes the
 /// explicit mode of the containers it adds the same way, and they were never migrated.
 pub(crate) async fn rewrite_due(
@@ -754,6 +788,18 @@ pub(crate) async fn rewrite_due(
     file: &mut ComposeFile,
     prepared: &mut PreparedLock,
     quiet: &BTreeSet<String>,
+) -> Result<Option<Migration>> {
+    rewrite_checked(path, edited, file, prepared, quiet, validate_scripts).await
+}
+
+/// [`rewrite_due`], checking the rewritten file with `check`.
+async fn rewrite_checked(
+    path: &Path,
+    edited: &mut String,
+    file: &mut ComposeFile,
+    prepared: &mut PreparedLock,
+    quiet: &BTreeSet<String>,
+    check: fn(&ComposeFile) -> Result<()>,
 ) -> Result<Option<Migration>> {
     // What runs in a VM decides, whatever namespace `engine.sandbox` binds: a project with only
     // ephemeral sandboxes keeps its adapter (spec 7.2).
@@ -813,7 +859,7 @@ pub(crate) async fn rewrite_due(
 
     let mut next = ComposeFile::parse(&text, path)?;
     prepared.attach_to(&mut next);
-    validate_scripts(&next)?;
+    check(&next)?;
     crate::dag::validate_dependencies(&next)?;
     *edited = text;
     *file = next;

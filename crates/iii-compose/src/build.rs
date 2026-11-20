@@ -93,7 +93,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         let path = file.path.clone();
         // Spec 7.2 and 7.3 first, so the adapter check sees the rewritten
         // containers and re-resolves, or removes, the adapter `migrate` added.
-        crate::sandbox::migrate(&path, &mut edited, &mut file, &mut prepared).await?;
+        crate::sandbox::migrate_offline(&path, &mut edited, &mut file, &mut prepared).await?;
         crate::sandbox::apply_adapter_change(
             &path,
             &mut edited,
@@ -688,6 +688,49 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&file).unwrap(), renamed);
             assert_eq!(std::fs::read(&lock_path).unwrap(), lock);
         }
+    }
+
+    /// Spec 7.3 on a host that runs no VM (Windows): `iii compose build` still migrates a 0.26
+    /// VM worker, as the file may run elsewhere; `up` there refuses it.
+    #[tokio::test]
+    async fn build_migrates_a_vm_worker_on_a_host_that_runs_no_vm() {
+        let project = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            project.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        crate::sandbox::tests::manifest(
+            project.path(),
+            "link",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  sb:\n    worker: path://./sb\n  link:\n    worker: path://./link\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+
+        crate::sandbox::TEST_NO_VM_HERE
+            .scope(
+                true,
+                build_against(&file, "http://127.0.0.1:1".to_string(), cache.path()),
+            )
+            .await
+            .unwrap();
+
+        let built = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            built.contains("build: iii call sandbox::build worker=link"),
+            "{built}"
+        );
+        let migrated = ComposeFile::load(&file).unwrap();
+        let refused = crate::sandbox::TEST_NO_VM_HERE
+            .sync_scope(true, || crate::sandbox::validate_scripts(&migrated))
+            .unwrap_err();
+        assert_eq!(refused.code(), "SANDBOX_UNSUPPORTED_PLATFORM");
     }
 
     /// The daemon's mutation lock is in its own process: a lock it committed while this build
