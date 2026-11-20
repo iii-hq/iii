@@ -1180,9 +1180,21 @@ fn fake_guest() {
     if std::env::var_os(FAKE_GUEST).is_none() {
         return;
     }
-    let _iii = iii_sdk::register_worker(
+    let iii = iii_sdk::register_worker(
         &std::env::var("III_URL").unwrap(),
         iii_sdk::InitOptions::default(),
+    );
+    // Registered under its container's name, it answers `<container>::alive`. A guest refused
+    // that name (WORKER_NAMESPACE_CONFLICT, as when the `iii call` that boots it held it)
+    // answers nothing.
+    let name = std::env::var("III_WORKER_NAME").unwrap();
+    iii.register_function(
+        format!("{name}::alive"),
+        iii_sdk::RegisterFunction::new(
+            |_: Value, _: Option<Value>| -> Result<Value, iii_sdk::Error> {
+                Ok(json!({ "pid": std::process::id() }))
+            },
+        ),
     );
     let adapter = std::os::unix::process::parent_id();
     while std::os::unix::process::parent_id() == adapter {
@@ -1342,6 +1354,13 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     project.start();
     project.wait_ready("sandbox-libkrun", SHORT);
     project.wait_ready("app", SHORT);
+    // `ready` is the guest's own registration, not that of the `iii call` that boots it.
+    let alive = wait_for(SHORT, "app::alive answered by the guest", || {
+        project
+            .call(Some(NAMESPACE), "app::alive", json!({}), SHORT)
+            .ok()
+    });
+    assert!(alive["pid"].is_u64(), "{alive}");
 
     let started = calls("worker::start");
     assert_eq!(started.len(), 1, "{started:?}");
