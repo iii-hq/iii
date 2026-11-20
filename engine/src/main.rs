@@ -141,8 +141,9 @@ enum Commands {
     /// A `stdout`, `stderr` or `stdin` stream field of the function's request
     /// schema is bound to this process's own, and the `stdout` and `stderr`
     /// streams of the result are copied out until they end. While a stream is
-    /// carried, the first Ctrl+C or SIGTERM closes the streams, which asks the
-    /// function to stop, and waits for its answer; a second one exits at once.
+    /// carried, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows) closes the
+    /// streams, which asks the function to stop, and waits for its answer; a
+    /// second one exits at once.
     ///
     /// III_CALL_DEFAULTS holds a JSON object keyed by function id: the entry of
     /// the called function is the base payload, and `--json` and key=value
