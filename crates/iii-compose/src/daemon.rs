@@ -2670,7 +2670,7 @@ impl Daemon {
     /// loaded, a bare call means `worker-compose.yaml` in the daemon's own
     /// directory; with several, that file when it is one of them, and
     /// otherwise the call has to name one.
-    async fn resolve_file(&self, file: Option<&Path>) -> Result<PathBuf> {
+    pub(crate) async fn resolve_file(&self, file: Option<&Path>) -> Result<PathBuf> {
         static DEFAULT: &str = crate::cli::DEFAULT_COMPOSE_FILE;
         if let Some(file) = file {
             return Ok(file.to_path_buf());

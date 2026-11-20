@@ -701,8 +701,14 @@ async fn dispatch(
         }
         Operation::Build => {
             let worker = build_target(&request).map(str::to_string);
+            // The file is the one admitted: a project loaded before the task starts must not
+            // change which one a call without `file` builds.
+            let file = daemon
+                .resolve_file(file.as_deref())
+                .await
+                .map_err(|err| compose_error(&err))?;
             let requested = daemon
-                .build_targets(file.as_deref(), worker.as_deref())
+                .build_targets(Some(&file), worker.as_deref())
                 .await
                 .map_err(|err| compose_error(&err))?
                 .len();
@@ -718,9 +724,11 @@ async fn dispatch(
             .await?;
             let task_operation_id = accepted.operation_id.clone();
             tokio::spawn(async move {
+                #[cfg(test)]
+                tests::hold_build(&task_operation_id).await;
                 let began = std::time::Instant::now();
                 let result = daemon
-                    .build(file.as_deref(), worker.as_deref(), task_operation_id)
+                    .build(Some(&file), worker.as_deref(), task_operation_id)
                     .await;
                 report_op("build", &build_report(&result), began.elapsed());
                 match result {
@@ -1486,6 +1494,85 @@ fn operation_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds held between admission and their task, by operation id: released when the sender
+    /// is dropped or sends.
+    static BUILD_HOLDS: std::sync::Mutex<
+        std::collections::BTreeMap<String, tokio::sync::oneshot::Receiver<()>>,
+    > = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+    pub(super) async fn hold_build(operation_id: &str) {
+        let hold = BUILD_HOLDS.lock().unwrap().remove(operation_id);
+        if let Some(hold) = hold {
+            let _ = hold.await;
+        }
+    }
+
+    /// A `compose::build` without `file` builds the project its admission resolved, though
+    /// another one is loaded before its task starts.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_build_runs_on_the_file_its_admission_resolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|project| {
+                let dir = tmp.path().join(project);
+                std::fs::create_dir_all(dir.join("api")).unwrap();
+                let file = dir.join("worker-compose.yaml");
+                std::fs::write(
+                    &file,
+                    "containers:\n  api: {worker: path://./api, scripts: {build: 'touch built', run: x}}\n",
+                )
+                .unwrap();
+                file
+            })
+            .collect();
+        let daemon = Daemon::start(
+            "ws://127.0.0.1:1/ws".to_string(),
+            format!("build-admitted-{}", uuid::Uuid::new_v4()),
+            None,
+            crate::daemon::EnginePolicy::External,
+        );
+        daemon.project(&files[0]).await.unwrap();
+        let (release, hold) = tokio::sync::oneshot::channel();
+        BUILD_HOLDS
+            .lock()
+            .unwrap()
+            .insert("build-admitted".to_string(), hold);
+
+        dispatch(
+            Arc::clone(&daemon),
+            Operation::Build,
+            "build".to_string(),
+            ComposeRequest {
+                operation_id: Some("build-admitted".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        daemon.project(&files[1]).await.unwrap();
+        release.send(()).unwrap();
+
+        let operation = daemon.operations.get("build-admitted").await.unwrap();
+        let snapshot = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = operation.snapshot().await;
+                if snapshot.status != crate::operation::OperationStatus::Running {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let snapshot = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(snapshot["status"], "succeeded", "{snapshot}");
+        assert!(tmp.path().join("a/api/built").exists());
+        assert!(!tmp.path().join("b/api/built").exists());
+        daemon.shutdown().await;
+    }
 
     /// A build stopped by `compose::cancel` ends `cancelled`, the build it killed in `results` as
     /// `failed`: the CLI exits 130 only then.
