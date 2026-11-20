@@ -306,6 +306,56 @@ for development and debugging.
   [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
+### Streams from the CLI
+
+When a function's request schema has a `stdout` or `stderr` stream that it writes, or a `stdin`
+stream that it reads, `iii call` binds its own standard output, standard error, or standard input to
+that field. When the result carries a `stdout` or `stderr` stream, `iii call` copies it to the
+matching output until the stream ends.
+
+```bash
+# The function writes into `stdout`: its lines appear as they come.
+iii call reports::export report_id=r-42
+
+# Bind another field, or bind none.
+iii call reports::export report_id=r-42 --stdout csv
+iii call reports::export report_id=r-42 --no-bind
+```
+
+- While a stream is bound, the call has no timeout unless you pass `--timeout-ms`.
+- While a stream is bound or followed, the result JSON is printed only with `--print-result`, after
+  the streams end.
+- The first `Ctrl+C` or `SIGTERM` closes the streams. The function sees its next write fail, stops,
+  and answers, and `iii call` exits with that answer. A second one exits at once.
+- `--no-follow` prints the streams of the result as refs instead of reading them.
+
+| Exit code | When                                                                   |
+| --------- | ---------------------------------------------------------------------- |
+| `0`       | The call succeeded and every stream ended.                             |
+| `1`       | The function failed, or a stream it wrote was aborted.                 |
+| `2`       | The arguments or `III_CALL_DEFAULTS` cannot make a call.               |
+| `130`     | A second `Ctrl+C`, or one after the answer while a stream still runs.  |
+| `143`     | The same for `SIGTERM`.                                                |
+
+A failed call prints `Error: {code, message, stacktrace}` on standard error, on one line when
+standard error is not a terminal, so a script can read it.
+
+### Defaults from the environment
+
+`III_CALL_DEFAULTS` holds a JSON object keyed by function id. When you call a function that has an
+entry, the entry is the base payload, and `--json` and `key=value` override its keys. A parent
+process uses it to hand a call values that must not appear on the command line, where `ps` shows
+them, such as a token:
+
+```bash
+export III_CALL_DEFAULTS='{"reports::export": {"report_id": "r-42"}}'
+iii call reports::export              # report_id is r-42
+iii call reports::export report_id=r-7
+```
+
+Only the function the entry names receives it. A value that is not a JSON object fails the call
+with exit code `2`, and the message quotes nothing of the value.
+
 ## Common functions
 
 A handful of functions ship with the iii engine and the standard workers. You'll likely call them

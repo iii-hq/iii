@@ -86,6 +86,24 @@ type: "reference"
   [Understanding iii / Streaming](/next/understanding-iii/streaming). The Channels pages moved there:
   `/next/understanding-iii/channels` and `/next/creating-workers/channels` redirect to them.
 
+  ## `iii call` follows streams
+
+  `iii call` carries the streams of a call from the command line. See
+  [Streams from the CLI](/next/using-iii/functions#streams-from-the-cli).
+
+  - A `stdout`, `stderr`, or `stdin` stream field of the function's request schema is bound to the
+    process's own; `--stdout`, `--stderr`, and `--stdin` bind other fields, and `--no-bind` binds
+    none. The `stdout` and `stderr` streams of the result are copied out until they end;
+    `--no-follow` prints them as refs.
+  - While a stream is carried, the first `Ctrl+C` or `SIGTERM` closes the streams, which asks the
+    function to stop, and `iii call` waits for its answer. A second one exits at once.
+  - A call that binds a stream has no timeout unless `--timeout-ms` sets one, and prints its result
+    only with `--print-result`.
+  - `III_CALL_DEFAULTS`, a JSON object keyed by function id, gives the called function a base
+    payload that never appears on the command line.
+  - A failed call prints its `Error:` on one line when standard error is not a terminal. Arguments
+    that cannot make a call exit with `2`.
+
   ## Removed
 
   - **TypeScript (`iii-sdk`):** `createChannel` from `iii-sdk/helpers`, the `iii-sdk/channel`
