@@ -57,6 +57,13 @@ impl Budget {
         )
     }
 
+    /// What is left of `--timeout-ms`, `None` without one. Opening the streams spends it too.
+    fn remaining(&self) -> Option<std::time::Duration> {
+        self.limit_ms.map(|limit| {
+            std::time::Duration::from_millis(limit).saturating_sub(self.started.elapsed())
+        })
+    }
+
     /// The timeout of the invocation: what is left of `--timeout-ms`, else of the 30 s default,
     /// or no limit for a call that binds a stream and names none.
     fn call_timeout(&self, binds_stream: bool) -> u64 {
@@ -65,6 +72,16 @@ impl Budget {
             None if binds_stream => NO_TIMEOUT_MS,
             None => self.left_of(DEFAULT_TIMEOUT_MS),
         }
+    }
+}
+
+/// Runs `setup` in what is left of `budget`: `None` when the budget ran out first, or had
+/// already, and `setup` was dropped. Without `--timeout-ms`, `setup` runs to its end.
+async fn within<T>(budget: &Budget, setup: impl Future<Output = T>) -> Option<T> {
+    match budget.remaining() {
+        None => Some(setup.await),
+        Some(left) if left.is_zero() => None,
+        Some(left) => tokio::time::timeout(left, setup).await.ok(),
     }
 }
 
@@ -158,11 +175,23 @@ async fn call(
     let mut interrupt = None;
     if !bindings.is_empty() {
         // The bindings were checked before the engine was reached: a stream that cannot be
-        // opened now is the engine's failure, not the arguments'.
-        carried
-            .bind(iii, &bindings, &mut payload)
-            .await
-            .map_err(CallCliError::Other)?;
+        // opened now is the engine's failure, not the arguments'. Opening them spends the
+        // call's budget too: once it ran out, the streams already open are closed and the call
+        // is not sent.
+        let bound = within(&budget, carried.bind(iii, &bindings, &mut payload)).await;
+        let spent = budget.remaining().is_some_and(|left| left.is_zero());
+        match bound {
+            Some(bound) if !spent => bound.map_err(CallCliError::Other)?,
+            _ => {
+                carried.cancel().await;
+                carried.abandon();
+                return Err(CallCliError::Other(anyhow::anyhow!(
+                    "--timeout-ms {} ran out while the call's streams were opened; the call \
+                     was not sent",
+                    budget.limit_ms.unwrap_or_default()
+                )));
+            }
+        }
         interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
     }
     let timeout_ms = budget.call_timeout(!bindings.is_empty());
@@ -393,6 +422,38 @@ mod tests {
         let default = spent(1_000, None);
         assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
         assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
+
+    /// Opening the streams spends what is left of `--timeout-ms`: a spent budget opens nothing,
+    /// a setup that outlasts it is cut at the deadline, and a fast one leaves the rest to the
+    /// call. Without `--timeout-ms` nothing is cut.
+    #[tokio::test]
+    async fn the_streams_are_opened_within_what_is_left_of_the_budget() {
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let opened = within(&spent(600, Some(500)), async {
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert!(opened.is_none());
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        let began = Instant::now();
+        let opened = within(
+            &spent(400, Some(500)),
+            tokio::time::sleep(Duration::from_secs(10)),
+        )
+        .await;
+        assert!(opened.is_none());
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+
+        let budget = spent(0, Some(10_000));
+        assert_eq!(within(&budget, async { 7 }).await, Some(7));
+        assert!(budget.call_timeout(true) > 9_000);
+        assert_eq!(within(&spent(0, None), async { 7 }).await, Some(7));
     }
 
     #[tokio::test]
