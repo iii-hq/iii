@@ -133,7 +133,9 @@ impl Bindings {
 
 /// The direction of the stream a property's schema describes, `None` when it is no stream. Every
 /// SDK describes a stream as its ref object, whose `direction` is a constant: `write` for an
-/// `OutputStream`, `read` for an `InputStream` (Go also marks it with `x-iii-stream`). Follows
+/// `OutputStream`, `read` for an `InputStream`. A schema marked with `x-iii-stream` (Rust, Go) is
+/// a stream; one without the marker must have the ref's `channel_id` and `access_key` too, so an
+/// ordinary object that only has a constant `direction` is not taken for one. Follows
 /// local `$ref`s and the members of `anyOf`, `oneOf` and `allOf`, as an optional field has them.
 fn stream_direction(root: &Value, schema: &Value, depth: usize) -> Option<ChannelDirection> {
     if depth > 8 {
@@ -156,11 +158,16 @@ fn stream_direction(root: &Value, schema: &Value, depth: usize) -> Option<Channe
             return Some(direction);
         }
     }
-    let marker = schema
-        .get("x-iii-stream")
-        .or_else(|| schema.pointer("/properties/direction/const"))
-        .and_then(Value::as_str)?;
-    match marker {
+    let marker = match schema.get("x-iii-stream") {
+        Some(marker) => marker,
+        None => {
+            let properties = schema.get("properties")?;
+            properties.get("channel_id")?;
+            properties.get("access_key")?;
+            properties.pointer("/direction/const")?
+        }
+    };
+    match marker.as_str()? {
         "read" => Some(ChannelDirection::Read),
         "write" => Some(ChannelDirection::Write),
         _ => None,
@@ -519,6 +526,23 @@ mod tests {
         let mut bindings = Bindings::default();
         bindings.complete_from_schema(&schema, &json!({}));
         assert_eq!(bindings.stdout.as_deref(), Some("stdout"));
+    }
+
+    #[test]
+    fn an_object_that_only_has_a_direction_is_no_stream() {
+        let schema = json!({
+            "properties": { "stdout": {
+                "type": "object",
+                "required": ["path", "direction"],
+                "properties": {
+                    "path": { "type": "string" },
+                    "direction": { "type": "string", "const": "write" }
+                }
+            } }
+        });
+        let mut bindings = Bindings::default();
+        bindings.complete_from_schema(&schema, &json!({}));
+        assert!(bindings.is_empty(), "{bindings:?}");
     }
 
     #[test]
