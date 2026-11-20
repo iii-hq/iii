@@ -923,7 +923,9 @@ output to its `stdout` and `stderr` streams, which Compose writes into the conta
   closes the streams. `sandbox::start` then stops the VM with `worker::stop` within `stop_grace_ms`,
   9/10 of the compose file's `stop_timeout`, and answers with `stopped: true`. A caller that dies
   without a word, from a `SIGKILL` or a lost connection, closes the streams too, so its VM is
-  stopped the same way: no VM outlives the call that runs it.
+  stopped the same way: no VM outlives the call that runs it. When the adapter does not confirm the
+  stop within `stop_grace_ms`, or `stop_grace_ms` is `0`, the call fails with `TIMED_OUT` instead,
+  and the adapter's lease stops the VM.
 - **The VM it reattached to was being stopped.** After a caller died, the next start can find its
   VM still stopping and reattach to it. When that VM ends as stopped, `sandbox::start` boots the
   image again in the same call and writes

@@ -192,6 +192,8 @@ empty frame to them every few seconds, so a reader that left is noticed with a s
 - Its sinks closing (Compose's SIGTERM, a Ctrl+C) stops the VM with `worker::stop` and
   `stop_grace_ms`, then answers `{ stopped: true, exit_code }`. A caller that dies (SIGKILL, a
   lost connection) closes them too, so its VM is stopped the same way: no VM outlives its call.
+  A stop the adapter does not confirm within `stop_grace_ms`, none asked with `0` included, fails
+  with `TIMED_OUT` instead, and the adapter's lease stops the VM.
 - A boot it reattached to that ends as stopped was being stopped by an earlier start whose caller
   died. That end is not this call's, so it boots once more in the same call and writes
   `sandbox::start: VM <vm_id> instance <n> was stopped by an earlier start; booting it again` to

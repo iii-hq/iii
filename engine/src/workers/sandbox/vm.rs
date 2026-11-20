@@ -703,7 +703,17 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             started = &mut call => (started, false),
             () = sinks.closed() => match tokio::time::timeout(grace, &mut call).await {
                 Ok(started) => (started, true),
-                Err(_) => return reply(no_vm()),
+                Err(_) => {
+                    return Err(failure(
+                        TIMED_OUT,
+                        format!(
+                            "the caller left, and {} did not answer worker::start within the \
+                             stop's {}ms: a VM it boots is left to its lease",
+                            request.adapter,
+                            grace.as_millis()
+                        ),
+                    ));
+                }
             },
         };
         let (started, reattached) = match started {
@@ -727,8 +737,7 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             instance: started.instance,
         };
         if gone {
-            let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
-            return reply(stopped(&vm, exit_code, signal));
+            return left(&adapter, &vm, token, grace).await;
         }
         // A reader that left meanwhile is noticed by the follow, which stops the VM.
         if reattached {
@@ -741,10 +750,7 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
         }
 
         match follow_vm(&adapter, &vm, token, &sinks, reattached).await {
-            Followed::CallerLeft => {
-                let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
-                return reply(stopped(&vm, exit_code, signal));
-            }
+            Followed::CallerLeft => return left(&adapter, &vm, token, grace).await,
             Followed::Ended {
                 stopped: true,
                 code,
@@ -881,20 +887,44 @@ async fn poll(
     (outcome_of(status), followed)
 }
 
+/// The answer once the caller left: `vm` stopped, `stopped: true` with how it ended once the
+/// adapter confirms it, else `TIMED_OUT`, the VM left to the adapter's lease.
+async fn left(
+    adapter: &Adapter<'_>,
+    vm: &Vm,
+    token: &str,
+    grace: Duration,
+) -> Result<Value, ErrorBody> {
+    match stop(adapter, vm, token, grace).await {
+        Some((exit_code, signal)) => reply(stopped(vm, exit_code, signal)),
+        None => Err(failure(
+            TIMED_OUT,
+            format!(
+                "{} did not confirm the stop of VM {} instance {} within {}ms: it is left to \
+                 the adapter's lease",
+                adapter.name,
+                vm.id,
+                vm.instance,
+                grace.as_millis()
+            ),
+        )),
+    }
+}
+
 /// `worker::stop`, asked again until the adapter confirms the VM ended or `grace` passes; every
-/// call and its own grace fit in what is left. A stop never confirmed leaves the VM to the
-/// adapter's lease, which stops a VM nobody follows.
+/// call and its own grace fit in what is left. `None` when no answer confirmed it, `grace` of 0
+/// included: the VM is then left to the adapter's lease, which stops a VM nobody follows.
 async fn stop(
     adapter: &Adapter<'_>,
     vm: &Vm,
     token: &str,
     grace: Duration,
-) -> (Option<i32>, Option<i32>) {
+) -> Option<(Option<i32>, Option<i32>)> {
     let deadline = Instant::now() + grace;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return (None, None);
+            return None;
         }
         let request = WorkerStopRequest {
             auth: token.to_string(),
@@ -907,7 +937,7 @@ async fn stop(
             .call::<WorkerStatus>(WORKER_STOP, &request, left)
             .await;
         if let Outcome::Exited { code, signal, .. } = outcome_of(status) {
-            return (code, signal);
+            return Some((code, signal));
         }
         let left = deadline.saturating_duration_since(Instant::now());
         tokio::time::sleep(RETRY_INTERVAL.min(left)).await;

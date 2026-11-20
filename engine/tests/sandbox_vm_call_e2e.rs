@@ -244,6 +244,11 @@ async fn start() -> TestEngine {
         RegisterFunction::new_async(move |_: Value| {
             let seen = stop_seen.clone();
             async move {
+                let started = seen.started.lock().unwrap().clone().unwrap_or_default();
+                if started["state_key"] == "stop-hangs" {
+                    // An adapter that never confirms the stop.
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
                 seen.stopped.store(true, Ordering::SeqCst);
                 *seen.ended.lock().unwrap() = Some(("stopped".into(), 143));
                 Ok::<_, Error>(status(&seen))
@@ -426,6 +431,54 @@ async fn sigterm_stops_the_vm_and_the_call_exits_with_the_stop() {
     );
     let rest = rest.join("\n");
     assert!(rest.contains("\"stopped\": true"), "{rest}");
+}
+
+/// A stop the adapter does not confirm within `stop_grace_ms`, or one never asked with 0, is not
+/// answered as a stop: the call fails `TIMED_OUT`, the VM left to the adapter's lease.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unconfirmed_stop_fails_the_call_with_timed_out() {
+    for (mode, grace) in [("stop-hangs", 300), ("run", 0)] {
+        let engine = start().await;
+        let mut defaults: Value = serde_json::from_str(&defaults(mode)).unwrap();
+        defaults["sandbox::start"]["stop_grace_ms"] = json!(grace);
+        let (mut command, _cwd) = iii_call(&engine, mode, &["sandbox::start", "worker=api"]);
+        command.env("III_CALL_DEFAULTS", defaults.to_string());
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let first = tokio::time::timeout(WAIT, lines.next_line())
+            .await
+            .expect("the guest wrote")
+            .unwrap();
+        assert_eq!(first.as_deref(), Some("hello from the guest"), "{mode}");
+
+        let pid = child.id().unwrap().to_string();
+        assert!(
+            std::process::Command::new("kill")
+                .args(["-TERM", &pid])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let out = tokio::time::timeout(WAIT, child.wait_with_output())
+            .await
+            .expect("iii call exited")
+            .unwrap();
+        let stderr = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{mode}: {stderr}");
+        assert!(stderr.contains("TIMED_OUT"), "{mode}: {stderr}");
+        assert!(
+            stderr.contains("did not confirm the stop of VM vm-1 instance 2"),
+            "{mode}: {stderr}"
+        );
+        if grace == 0 {
+            assert!(
+                !engine.seen.stopped.load(Ordering::SeqCst),
+                "no budget, no worker::stop"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
