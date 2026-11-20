@@ -64,6 +64,13 @@ struct Ignore {
     stdout: OutputStream,
 }
 
+/// What `cli-streams::endless` answers once it was stopped: a stream that never ends.
+#[derive(Serialize, schemars::JsonSchema)]
+struct Endless {
+    stopped: bool,
+    stdout: InputStream,
+}
+
 #[derive(Serialize, schemars::JsonSchema)]
 struct Exported {
     rows: u32,
@@ -212,6 +219,28 @@ async fn start() -> TestEngine {
                         return Ok::<_, Error>(json!({ "stopped": true }));
                     }
                 }
+            }
+        }),
+    ));
+    // Like `ticks`, but once stopped it answers with a result stream it keeps open for good.
+    let client = sdk.clone();
+    let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+    functions.push(sdk.register_function(
+        "cli-streams::endless",
+        RegisterFunction::new_async(move |req: Ticks| {
+            let client = client.clone();
+            let held = held.clone();
+            async move {
+                req.stdout.write(b"ready\n").await?;
+                while req.stdout.write(b"tick\n").await.is_ok() {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                let pipe = client.pipe().await?;
+                held.lock().unwrap().push(pipe.output);
+                Ok::<_, Error>(Endless {
+                    stopped: true,
+                    stdout: pipe.input,
+                })
             }
         }),
     ));
@@ -527,6 +556,51 @@ async fn the_first_signal_stops_the_function_and_waits_for_its_answer() {
         engine.stopped.load(Ordering::SeqCst),
         "the function was not stopped"
     );
+    let rest = rest.join("\n");
+    assert!(rest.contains("\"stopped\": true"), "{rest}");
+}
+
+/// A result stream that arrives after the first signal is cancelled too: the function answered a
+/// stop with a stream it never closes, and `iii call` still exits with that answer.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn result_streams_after_a_stop_are_cancelled_too() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let mut command = iii_call(
+        &engine.url,
+        cwd.path(),
+        &["cli-streams::endless", "--print-result"],
+    );
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let first = tokio::time::timeout(WAIT, lines.next_line())
+        .await
+        .expect("the function wrote")
+        .unwrap();
+    assert_eq!(first.as_deref(), Some("ready"));
+
+    let pid = child.id().unwrap().to_string();
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+
+    let mut rest = Vec::new();
+    while let Some(line) = tokio::time::timeout(WAIT, lines.next_line())
+        .await
+        .expect("iii call kept following a result stream after the stop")
+        .unwrap()
+    {
+        rest.push(line);
+    }
+    let status = tokio::time::timeout(WAIT, child.wait())
+        .await
+        .expect("iii call exited")
+        .unwrap();
+    assert!(status.success(), "exited with {status}");
     let rest = rest.join("\n");
     assert!(rest.contains("\"stopped\": true"), "{rest}");
 }

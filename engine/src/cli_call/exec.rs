@@ -211,7 +211,15 @@ async fn call(
                 }
             }
         }
-        _ => carried.finish().await,
+        _ => {
+            // After a stop, the result streams `follow` just added were not there when the
+            // streams were cancelled: cancel them too, or one the function keeps open is waited
+            // for until a second signal.
+            if stopped {
+                carried.cancel().await;
+            }
+            carried.finish().await
+        }
     };
     drain_outcome(drained, stopped)?;
 
