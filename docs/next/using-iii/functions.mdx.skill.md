@@ -333,7 +333,7 @@ iii call reports::export report_id=r-42 --no-bind
 | --------- | ---------------------------------------------------------------------- |
 | `0`       | The call succeeded and every stream ended.                             |
 | `1`       | The function failed, or a stream it wrote was aborted.                 |
-| `2`       | The arguments or `III_CALL_DEFAULTS` cannot make a call.               |
+| `2`       | The arguments, engine address, or `III_CALL_DEFAULTS` are unusable.   |
 | `130`     | A second `Ctrl+C`, or one after the answer while a stream still runs.  |
 | `143`     | The same for `SIGTERM`.                                                |
 
