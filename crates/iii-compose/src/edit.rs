@@ -1255,6 +1255,9 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
     let mut delimiters = Vec::new();
     let mut quote = None;
     let mut last = None;
+    // The last character outside quotes that is not whitespace: a quote opens a quoted scalar only
+    // where a node starts, and an apostrophe inside a plain scalar is text.
+    let mut significant: Option<char> = None;
     for (row, line) in lines.iter().enumerate().skip(open_row) {
         let mut chars = line.char_indices().peekable();
         let mut previous: Option<char> = None;
@@ -1281,9 +1284,7 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
                 }
                 None => match c {
                     '#' if previous.is_none_or(|c| c.is_whitespace() || ",[{".contains(c)) => break,
-                    '\'' | '"'
-                        if previous.is_none_or(|c| c.is_whitespace() || ":[{,".contains(c)) =>
-                    {
+                    '\'' | '"' if significant.is_none_or(|c| ":[{,".contains(c)) => {
                         quote = Some(c);
                     }
                     '[' => delimiters.push(']'),
@@ -1307,6 +1308,9 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
                 last = Some((row, column));
             }
             previous = Some(c);
+            if !c.is_whitespace() {
+                significant = Some(c);
+            }
         }
     }
     None
@@ -4320,6 +4324,18 @@ containers:
             assert_eq!(rewrite.text, text.replace("    ]\n", "      sb,\n    ]\n"));
             assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
         }
+    }
+
+    /// An apostrophe inside a plain scalar of a flow map is text: the map still closes where its
+    /// brace does. A quote that starts a value still protects its delimiters.
+    #[test]
+    fn an_apostrophe_inside_a_plain_flow_scalar_opens_no_quote() {
+        let lines = ["    config_override: {message: say 'hello}"];
+        assert_eq!(field_span(&lines, "    ", "config_override"), Some((0, 1)));
+        let flow = flow_span(&lines, 0).unwrap();
+        assert_eq!(flow.close, (0, lines[0].len() - 1));
+        let lines = ["    config_override: {message: 'say }'}"];
+        assert_eq!(flow_span(&lines, 0).unwrap().close, (0, lines[0].len() - 1));
     }
 
     #[test]
