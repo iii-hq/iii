@@ -15,6 +15,17 @@ fn decode_value(value: &str) -> Value {
 /// fields it must not put in the arguments.
 pub const DEFAULTS_ENV: &str = "III_CALL_DEFAULTS";
 
+/// The value of [`DEFAULTS_ENV`] from what `std::env::var` read: `None` when it is not set. A value
+/// that is not UTF-8 fails the call instead of reading as unset, which would make the call
+/// without its defaults; the error quotes nothing of it.
+pub fn defaults_from_env(read: Result<String, std::env::VarError>) -> Result<Option<String>> {
+    match read {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => bail!("{DEFAULTS_ENV} is not valid UTF-8"),
+    }
+}
+
 /// Puts the entry of `function_path` in `defaults`, the value of [`DEFAULTS_ENV`], under
 /// `payload`: its keys are the base, and the keys `--json` and `key=value` set override them.
 ///
@@ -164,6 +175,24 @@ mod tests {
                 payload
             );
         }
+    }
+
+    #[test]
+    fn defaults_that_are_not_utf8_fail_instead_of_reading_as_unset() {
+        assert_eq!(
+            defaults_from_env(Ok("{}".to_string())).unwrap(),
+            Some("{}".to_string())
+        );
+        assert_eq!(
+            defaults_from_env(Err(std::env::VarError::NotPresent)).unwrap(),
+            None
+        );
+        let error = defaults_from_env(Err(std::env::VarError::NotUnicode(
+            std::ffi::OsString::from("secret-token"),
+        )))
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, "III_CALL_DEFAULTS is not valid UTF-8");
     }
 
     #[test]

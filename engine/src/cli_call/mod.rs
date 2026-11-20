@@ -407,7 +407,8 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     .map_err(CallCliError::Usage)?;
     // A parent process (Compose, for a VM container's scripts) hands the call
     // fields it must not put in the arguments, where `ps` would show them.
-    let defaults = std::env::var(payload::DEFAULTS_ENV).ok();
+    let defaults = payload::defaults_from_env(std::env::var(payload::DEFAULTS_ENV))
+        .map_err(CallCliError::Usage)?;
     let payload = payload::apply_defaults(function_path, defaults.as_deref(), payload)
         .map_err(CallCliError::Usage)?;
     let options = exec::Options {

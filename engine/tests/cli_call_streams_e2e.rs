@@ -370,6 +370,24 @@ async fn usage_errors_exit_with_2_before_any_call() {
         assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(expected), "{args:?}: {stderr}");
     }
+
+    // Defaults that are not UTF-8 are refused, not read as unset.
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut command = iii_call(NOWHERE, cwd.path(), &["cli-streams::lines"]);
+        command.env(
+            "III_CALL_DEFAULTS",
+            std::ffi::OsStr::from_bytes(b"{\"cli-streams::lines\": {\"count\": 2}}\xff"),
+        );
+        let out = output(command).await;
+        let stderr = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{stderr}");
+        assert!(
+            stderr.contains("III_CALL_DEFAULTS is not valid UTF-8"),
+            "{stderr}"
+        );
+    }
 }
 
 /// The first SIGTERM closes the streams, the function sees its writes fail and answers, and
