@@ -43,7 +43,7 @@ with `SANDBOX_CONFIG_MOVED`. The error prints the replacement with your old bloc
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.4'
+    version: '^0.5'
     config_override:
       image_allowlist:
       - python
@@ -58,12 +58,14 @@ no engine and attaches to whichever one holds its address. Add that container an
 
 In a project without a VM worker, a file that already declares the adapter at `version: '^0.2'`
 stays on 0.2 across `compose::up`, `compose::restart`, and `compose::update worker=sandbox-libkrun`.
-In a project with a VM worker, these calls fail with `SANDBOX_ADAPTER_TOO_OLD` instead. See
-[Upgrading VM workers from 0.26.x](./explicit-vm-workers#update-the-sandbox-adapter). To move it, stop Compose, change
-the range to `'^0.4'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
-which rewrites the range to `^0.4` and
-[updates every other package worker](../using-iii/compose#updating-workers). On 0.2, observers can
-read the project's token.
+On 0.2, observers can read the project's token. To move it, stop Compose, change the range to a
+newer one, such as `'^0.4'`, and run `iii compose --up` again.
+
+In a project with a VM worker, the adapter must be in `^0.5`, the range that builds VM images, and
+these calls fail with `SANDBOX_ADAPTER_TOO_OLD` until it is. Stop Compose, change the range to
+`'^0.5'`, and run `iii compose --up` again, or run a bare `iii call compose::update`, which rewrites
+the range to `^0.5` and [updates every other package worker](../using-iii/compose#updating-workers).
+See [Upgrading VM workers from 0.26.x](./explicit-vm-workers#update-the-sandbox-adapter).
 
 Before 0.3.1, a VM worker whose directory contains the compose file, such as `path://.`, can read the
 project's token, and its disk keeps those bytes after the upgrade. If you ran one, stop Compose and
@@ -141,7 +143,7 @@ one container. Write a `worker-compose.yaml` that declares the adapter:
 containers:
   sandbox-libkrun:
     worker: package://sandbox-libkrun
-    version: '^0.4'
+    version: '^0.5'
 ```
 
 It has no `engine:` section, so Compose attaches to your engine instead of starting one. Start it
