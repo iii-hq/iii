@@ -5197,12 +5197,31 @@ containers:
                     let cancelled = daemon.operations.create(1).await;
                     let building = root.join("building");
 
-                    let (outcome, ()) = tokio::join!(call(cancelled.id().to_string()), async {
-                        while !building.exists() {
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    // The rebuild writes `building`, or the call ends before it does: bounded
+                    // either way, and a call that ended first is reported.
+                    let mutation = call(cancelled.id().to_string());
+                    tokio::pin!(mutation);
+                    let started = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                        tokio::select! {
+                            outcome = &mut mutation => Some(outcome),
+                            () = async {
+                                while !building.exists() {
+                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                }
+                            } => None,
                         }
-                        cancelled.cancel();
-                    });
+                    })
+                    .await;
+                    let outcome = match started {
+                        Ok(None) => {
+                            cancelled.cancel();
+                            mutation.await
+                        }
+                        Ok(Some(outcome)) => {
+                            panic!("{operation} ended before its rebuild started: {outcome:?}")
+                        }
+                        Err(_) => panic!("{operation}'s rebuild never started"),
+                    };
 
                     let Err(error) = outcome else {
                         panic!("{operation} was not cancelled");
