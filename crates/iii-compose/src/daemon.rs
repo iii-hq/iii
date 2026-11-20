@@ -3118,7 +3118,8 @@ fn rebuild_retry(operation: &str, cascaded: bool) -> String {
         format!(
             "The file and the lock already name its new version. It could not stay on its previous \
              build: its adapter restarts in this {operation}, and its VM ends with it, so it starts \
-             again and builds then. To finish it, {finish}"
+             again and builds then, and stays down if that build fails. To finish it, fix its \
+             build, then retry the {operation}, which rebuilds it and starts it on that version."
         )
     } else {
         format!(

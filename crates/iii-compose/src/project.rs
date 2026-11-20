@@ -1868,10 +1868,15 @@ impl Project {
     /// ([`crate::build_step::rebuilt_unrestarted`]). A retried add or update finishes them (spec
     /// 5.3). A build made by `compose::build` or `iii call sandbox::build` is not one: its restart is the
     /// user's (spec 3.3).
+    ///
+    /// A container that runs is one, and so is one that went down failing, which the operator did
+    /// not stop: a VM its adapter's restart took along, whose build then failed, is started by
+    /// the retry. One the operator stopped is left alone.
     pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
         let mut pending = Vec::new();
         for (key, container) in &file.containers {
-            if self.is_running(key).await
+            let reachable = self.is_running(key).await || self.went_down_failing(key).await;
+            if reachable
                 && (crate::build_step::rebuilt_unrestarted(&file.path, key)
                     || crate::build_step::package_changed(&file.path, key, container).await)
             {
@@ -1879,6 +1884,18 @@ impl Project {
             }
         }
         pending
+    }
+
+    /// Whether container `key` is recorded `Failed`: down, and not because the operator stopped
+    /// it.
+    async fn went_down_failing(&self, key: &str) -> bool {
+        self.inner
+            .lock()
+            .await
+            .state
+            .containers
+            .get(key)
+            .is_some_and(|record| record.status == ChildStatus::Failed)
     }
 
     /// The VMs that go down with the adapters among `restart`: a VM ends with its adapter.
@@ -3492,6 +3509,49 @@ mod adapter_restart_tests {
             .unwrap();
         assert!(run.cancelled);
         assert!(run.results.is_empty(), "{:?}", run.results);
+        project.shutdown().await;
+    }
+
+    /// A container that went down failing with a rebuild left to finish, such as a VM its
+    /// adapter's restart took along and whose build then failed, is pending for a retried add or
+    /// update, which starts it. One the operator stopped is left alone.
+    #[tokio::test]
+    async fn a_failed_container_with_a_rebuild_to_finish_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_small_project(
+            dir.path(),
+            "scripts: {build: 'true', run: sh ../sb/run.sh}",
+            &fake_iii(),
+        );
+        let project = open_small_project(
+            &path,
+            &format!("pending-{}", uuid::Uuid::new_v4()),
+            |_, _| None,
+        )
+        .await;
+        let file = ComposeFile::load(&path).unwrap();
+        crate::build_step::mark_rebuilt(&file.path, "own");
+        for (status, pending) in [(ChildStatus::Failed, true), (ChildStatus::Stopped, false)] {
+            project.inner.lock().await.state.containers.insert(
+                "own".to_string(),
+                crate::state::ChildRecord {
+                    pid: None,
+                    birth: None,
+                    vm: None,
+                    status,
+                    started_at: 0,
+                    last_error: None,
+                },
+            );
+            assert_eq!(
+                project
+                    .pending_rebuilds(&file)
+                    .await
+                    .contains(&"own".to_string()),
+                pending,
+                "{status:?}"
+            );
+        }
         project.shutdown().await;
     }
 
