@@ -364,6 +364,32 @@ async fn an_unread_stdin_does_not_hold_up_the_exit() {
     assert_eq!(text(&out.stdout), "done\n");
 }
 
+/// A script Compose starts carries its container's `III_WORKER_NAME` and `III_NAMESPACE`. The
+/// call must not take that name: here a live worker holds it, and the call still runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_call_does_not_take_the_worker_name_of_its_process() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    // The name and namespace the fixture worker holds.
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::lines", "count=1"]);
+    command
+        .env("III_WORKER_NAME", "cli-streams")
+        .env("III_NAMESPACE", "default");
+    let out = output(command).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "line 1\n");
+
+    // `--help` reads the schema through its own connection, which takes no name either.
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::lines", "--help"]);
+    command
+        .env("III_WORKER_NAME", "cli-streams")
+        .env("III_NAMESPACE", "default");
+    let out = output(command).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("count"), "{}", text(&out.stdout));
+}
+
 /// Without `-n` a call resolves in `default`, as `--help` says, also from a process whose
 /// `III_NAMESPACE` names another namespace, as every script Compose starts does.
 #[tokio::test(flavor = "multi_thread")]
