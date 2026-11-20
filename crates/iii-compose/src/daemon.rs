@@ -3067,12 +3067,21 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
 /// (`start_after`, spec 7.1), so it goes before the adapter it boots through: removing the VM
 /// still finds the adapter running, never restarting one this removal took.
 fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Result<Vec<String>> {
-    Ok(file
+    let mut order: Vec<String> = file
         .start_order()?
         .into_iter()
         .rev()
         .filter(|worker| requested.contains(worker.as_str()))
-        .collect())
+        .collect();
+    // A 0.26 VM need not list its adapter in `start_after`: the adapter goes last all the same,
+    // so no VM's cleanup finds it stopped and starts it again.
+    if let Some(adapter) = crate::sandbox::adapter_key(file, crate::sandbox::adapter_name(file))?
+        && let Some(at) = order.iter().position(|key| *key == adapter)
+    {
+        let adapter = order.remove(at);
+        order.push(adapter);
+    }
+    Ok(order)
 }
 
 /// Persists one compose mutation while keeping its YAML and lock consistent.
@@ -7421,6 +7430,36 @@ pub(crate) mod findings_lifecycle_tests {
         assert_eq!(
             super::build_scope(&file, Some("vm")).unwrap(),
             std::collections::BTreeSet::from(["host".into(), "sb".into(), "vm".into()])
+        );
+    }
+
+    /// A 0.26 VM that does not list its adapter in `start_after` is still removed before it: the
+    /// adapter goes last.
+    #[test]
+    fn a_legacy_vm_is_removed_before_its_adapter_without_an_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, scripts: {run: iii sandbox run}}\n  sb: {worker: path://./sb}\n  web: {worker: path://./vm}\n",
+        );
+        let file = crate::ComposeFile::load(&path).unwrap();
+        assert_eq!(
+            super::removal_order(
+                &file,
+                &std::collections::BTreeSet::from(["vm", "sb", "web"])
+            )
+            .unwrap(),
+            ["web", "vm", "sb"]
         );
     }
 
