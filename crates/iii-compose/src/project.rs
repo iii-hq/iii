@@ -3642,7 +3642,7 @@ mod adapter_restart_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_small_project(
             dir.path(),
-            "scripts: {build: 'touch ../building; sleep 1; rm ../building', run: sh ../sb/run.sh}",
+            "scripts: {build: 'touch ../building; i=0; while [ ! -e ../release ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; rm ../building', run: sh ../sb/run.sh}",
             &fake_iii(),
         );
         let project = open_small_project(
@@ -3651,8 +3651,12 @@ mod adapter_restart_tests {
             |_, _| None,
         )
         .await;
+        // The first build, at `up`, runs released.
+        let release = dir.path().join("release");
+        std::fs::write(&release, "").unwrap();
         let up = project.up(Some("own"), "up".into()).await;
         assert_eq!(up.status, OpStatus::Ok, "{up:?}");
+        std::fs::remove_file(&release).unwrap();
         let running = alive(dir.path(), "own").unwrap();
         let build = dir.path().join(".iii/build/own");
         let built = build_record::read(&build).unwrap().unwrap();
@@ -3674,8 +3678,9 @@ mod adapter_restart_tests {
             project.rebuild_changed(&file, &own, "update", &signal),
         );
         tokio::pin!(rebuild);
-        // The script writes `building` while it runs. A rebuild that ends without it, or a marker
-        // that never comes, fails the test instead of leaving it waiting.
+        // The script writes `building`, then waits for the test's `release`, at most 30 s. A rebuild
+        // that ends without the marker, or a marker that never comes, fails the test instead of
+        // leaving it waiting.
         let seen = tokio::time::timeout(Duration::from_secs(30), async {
             tokio::select! {
                 biased;
@@ -3689,7 +3694,11 @@ mod adapter_restart_tests {
         })
         .await;
         let during = match seen {
-            Ok(Ok(during)) => during,
+            // The script waits for `release`: the old process is checked while it builds.
+            Ok(Ok(during)) => {
+                std::fs::write(&release, "").unwrap();
+                during
+            }
             Ok(Err(rebuilt)) => {
                 project.shutdown().await;
                 panic!("the rebuild ended without running its script: {rebuilt:?}");
@@ -3729,7 +3738,7 @@ mod adapter_restart_tests {
         std::fs::write(
             &path,
             std::fs::read_to_string(&path).unwrap().replace(
-                "touch ../building; sleep 1; rm ../building",
+                "touch ../building; i=0; while [ ! -e ../release ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; rm ../building",
                 "echo nope; exit 4",
             ),
         )
