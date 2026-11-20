@@ -128,8 +128,9 @@ pub fn build_line(key: &str) -> String {
     format!("{SANDBOX_BUILD} {}", worker_argument(key))
 }
 
-/// The words `sh` splits `command` into, with single and double quotes and backslashes taken
-/// away and comments left out; enough for the `key=value` arguments of an `iii call` line.
+/// The words of the first command `sh` runs out of `command`, with single and double quotes and
+/// backslashes taken away and comments left out; enough for the `key=value` arguments of an
+/// `iii call` line. An unquoted newline, `;`, `&` or `|` ends that command.
 fn shell_words(command: &str) -> Vec<String> {
     let (mut words, mut word, mut in_word) = (Vec::new(), String::new(), false);
     let mut chars = command.chars();
@@ -149,19 +150,23 @@ fn shell_words(command: &str) -> Vec<String> {
                     }
                 }
             }
-            '\\' => {
-                in_word = true;
-                word.extend(chars.next());
-            }
+            '\\' => match chars.next() {
+                // A line continued: no character, and no word ends.
+                Some('\n') => {}
+                next => {
+                    in_word = true;
+                    word.extend(next);
+                }
+            },
+            '\n' | ';' | '&' | '|' => break,
             c if c.is_whitespace() => {
                 if std::mem::take(&mut in_word) {
                     words.push(std::mem::take(&mut word));
                 }
             }
-            // A `#` that starts a word starts a comment, to the end of its line.
-            '#' if !in_word => {
-                chars.by_ref().find(|c| *c == '\n');
-            }
+            // A `#` that starts a word starts a comment, to the end of its line, which ends the
+            // command.
+            '#' if !in_word => break,
             c => {
                 in_word = true;
                 word.push(c);
@@ -4324,8 +4329,44 @@ pub(crate) mod tests {
         );
         assert_eq!(
             shell_words("iii call sandbox::start 'command=a #b' c#d # e\nf"),
-            ["iii", "call", "sandbox::start", "command=a #b", "c#d", "f"]
+            ["iii", "call", "sandbox::start", "command=a #b", "c#d"]
         );
+    }
+
+    /// Only the arguments of the `iii call` itself are read: the commands after it on other
+    /// lines, or after `;`, `&&` or `|`, are not its arguments. A newline inside quotes, or a
+    /// line continued with a backslash, is.
+    #[test]
+    fn only_the_first_command_of_a_script_names_its_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = |run: &str| {
+            let text = serde_yaml::to_string(&serde_json::json!({ "containers": { "vm": {
+                "worker": "path://./vm",
+                "runtime": { "base_image": "python" },
+                "scripts": { "build": "iii call sandbox::build worker=vm", "run": run },
+            }}}))
+            .unwrap();
+            validate_script_rules(&parse(dir.path(), &text))
+                .err()
+                .map(|error| error.to_string())
+        };
+        for run in [
+            "iii call sandbox::start worker=other\necho worker=vm",
+            "iii call sandbox::start worker=other; echo worker=vm",
+            "iii call sandbox::start worker=other && echo worker=vm",
+        ] {
+            let refused = check(run).unwrap_or_else(|| panic!("{run:?} passed"));
+            assert!(refused.contains("'other'"), "{run:?}: {refused}");
+        }
+        for run in [
+            "iii call sandbox::start worker=vm; echo worker=other",
+            "iii call sandbox::start worker=vm | tee out worker=other",
+            "iii call sandbox::start \\\n  worker=vm",
+        ] {
+            assert_eq!(check(run), None, "{run:?}");
+        }
+        let line = "iii call sandbox::start worker=vm 'command=a\nb' x\ny";
+        assert_eq!(call_argument(line, "command").as_deref(), Some("a\nb"));
     }
 
     /// The worker a line sends is checked as `iii call` builds the payload: from `--json` too,
