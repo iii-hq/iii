@@ -8,7 +8,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -31,6 +31,10 @@ const ADAPTER: &str = "fake-adapter";
 #[derive(Default)]
 struct Seen {
     started: Mutex<Option<Value>>,
+    /// The last `worker::build` request.
+    built: Mutex<Option<Value>>,
+    /// The instance of `vm-1` that runs: the one `worker::start` named last.
+    instance: AtomicU64,
     /// `worker::start` calls.
     starts: AtomicUsize,
     stopped: AtomicBool,
@@ -61,10 +65,12 @@ fn record(stream: &str, line: &str, cursor: u64) -> String {
 
 fn status(seen: &Seen) -> Value {
     let ended = seen.ended.lock().unwrap().clone();
+    let instance = seen.instance.load(Ordering::SeqCst);
     match ended {
-        None => json!({ "vm_id": "vm-1", "instance": 1, "state": "running", "exit_code": null,
-                        "signal": null, "started_at_ms": 0, "ended_at_ms": null }),
-        Some((state, code)) => json!({ "vm_id": "vm-1", "instance": 1, "state": state,
+        None => json!({ "vm_id": "vm-1", "instance": instance, "state": "running",
+                        "exit_code": null, "signal": null, "started_at_ms": 0,
+                        "ended_at_ms": null }),
+        Some((state, code)) => json!({ "vm_id": "vm-1", "instance": instance, "state": state,
                         "exit_code": code, "signal": null, "started_at_ms": 0, "ended_at_ms": 1 }),
     }
 }
@@ -136,6 +142,7 @@ async fn start() -> TestEngine {
         RegisterFunction::new_async(move |req: Value| {
             let seen = build_seen.clone();
             async move {
+                *seen.built.lock().unwrap() = Some(req.clone());
                 let logs: OutputStream = serde_json::from_value(req["logs"].clone())?;
                 logs.send_text(&record("stdout", "installing dependencies", 1))
                     .await?;
@@ -177,6 +184,7 @@ async fn start() -> TestEngine {
                     _ => None,
                 };
                 if let Some((state, code)) = live {
+                    seen.instance.store(1, Ordering::SeqCst);
                     *seen.ended.lock().unwrap() = Some((state.into(), code));
                     let fix = json!({ "vm_id": "vm-1", "instance": 1 });
                     let payload = iii_sandbox_contract::error_payload(
@@ -192,6 +200,7 @@ async fn start() -> TestEngine {
                     "exit-3" => Some(("exited".into(), 3)),
                     _ => None,
                 };
+                seen.instance.store(2, Ordering::SeqCst);
                 Ok::<_, Error>(json!({ "vm_id": "vm-1", "instance": 2 }))
             }
         }),
@@ -241,9 +250,20 @@ async fn start() -> TestEngine {
     let stop_seen = seen.clone();
     functions.push(adapter.register_function(
         id("worker::stop"),
-        RegisterFunction::new_async(move |_: Value| {
+        RegisterFunction::new_async(move |req: Value| {
             let seen = stop_seen.clone();
             async move {
+                // Only the boot that runs is stopped: an older instance is no longer there.
+                let live = seen.instance.load(Ordering::SeqCst);
+                if req["vm_id"] != "vm-1" || req["instance"].as_u64() != Some(live) {
+                    let payload = iii_sandbox_contract::error_payload(
+                        iii_sandbox_contract::SandboxErrorCode::S503,
+                        "no such boot of vm-1",
+                        None,
+                        None,
+                    );
+                    return Err(Error::Handler(payload.to_string()));
+                }
                 let started = seen.started.lock().unwrap().clone().unwrap_or_default();
                 if started["state_key"] == "stop-hangs" {
                     // An adapter that never confirms the stop.
@@ -431,6 +451,9 @@ async fn sigterm_stops_the_vm_and_the_call_exits_with_the_stop() {
     );
     let rest = rest.join("\n");
     assert!(rest.contains("\"stopped\": true"), "{rest}");
+    // The boot `worker::start` named is the one stopped and answered for.
+    assert!(rest.contains("\"instance\": 2"), "{rest}");
+    assert!(rest.contains("\"exit_code\": 143"), "{rest}");
 }
 
 /// A stop the adapter does not confirm within `stop_grace_ms`, or one never asked with 0, is not
@@ -511,6 +534,8 @@ async fn a_binary_build_says_which_executable_the_guest_runs() {
         "kind": "binary", "package": "indexer",
         "host_path": "/srv/project/.iii/workers/api", "executable": "bin/indexer"
     });
+    // A binary has no image of its own: the adapter contract requires the base image.
+    defaults["sandbox::build"]["base_image"] = json!("docker.io/library/alpine:3.20");
     let (mut command, _cwd) = iii_call(&engine, "build-ok", &["sandbox::build", "worker=api"]);
     command.env("III_CALL_DEFAULTS", defaults.to_string());
     let out = output(command).await;
@@ -520,6 +545,10 @@ async fn a_binary_build_says_which_executable_the_guest_runs() {
         "indexer: the guest runs bin/indexer from /srv/project/.iii/workers/api\n\
          installing dependencies\n"
     );
+    let built = engine.seen.built.lock().unwrap().clone().unwrap();
+    assert_eq!(built["base_image"], "docker.io/library/alpine:3.20");
+    assert_eq!(built["source"]["kind"], "binary");
+    assert_eq!(built["source"]["executable"], "bin/indexer");
 }
 
 #[cfg(unix)]
