@@ -172,15 +172,6 @@ enum Commands {
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
-    /// Build and run one Compose container's VM through its sandbox adapter.
-    ///
-    /// A VM container's `scripts.build` is `iii sandbox build` and its
-    /// `scripts.run` is `iii sandbox run`: the build leaves an image of the
-    /// worker in the project, and the run boots it; stopping the run stops the
-    /// VM. Run outside Compose, `iii sandbox build <container>` asks the
-    /// project's Compose daemon for a rebuild.
-    Sandbox(iii_compose::sandbox_cli::SandboxCli),
-
     /// List iii processes on this machine: engines, compose daemons and
     /// workers, with the compose project each belongs to
     Ps {
@@ -247,11 +238,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
-        },
-        Some(Commands::Sandbox(args)) => match &args.command {
-            iii_compose::sandbox_cli::SandboxCommand::Build(_) => "sandbox build".to_string(),
-            iii_compose::sandbox_cli::SandboxCommand::Run(_) => "sandbox run".to_string(),
-            iii_compose::sandbox_cli::SandboxCommand::Destroy(_) => "sandbox destroy".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),
@@ -560,11 +546,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
-        // `run`'s stdout is the guest's alone, `build`'s the build's output; their
-        // stderr adds their own `iii sandbox:` lines.
-        Some(Commands::Sandbox(args)) => {
-            std::process::exit(iii_compose::sandbox_cli::run(args.clone()).await)
-        }
         Some(Commands::Ps { json }) => cli::ps::ps(*json),
         Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
@@ -736,55 +717,6 @@ mod tests {
             result.is_err(),
             "--use-default-config should no longer parse"
         );
-    }
-
-    #[test]
-    fn sandbox_build_parses_and_counts_as_its_own_command() {
-        let cli = Cli::try_parse_from([
-            "iii",
-            "sandbox",
-            "build",
-            "api",
-            "--file",
-            "shop/worker-compose.yaml",
-            "--namespace",
-            "ops",
-            "--engine",
-            "ws://127.0.0.1:49134",
-        ])
-        .expect("should parse sandbox build");
-        assert_eq!(cli_usage_command_path(&cli), "sandbox build");
-        match cli.command {
-            Some(Commands::Sandbox(args)) => match args.command {
-                iii_compose::sandbox_cli::SandboxCommand::Build(build) => {
-                    assert_eq!(build.container.as_deref(), Some("api"));
-                    assert_eq!(
-                        build.file.as_deref(),
-                        Some(std::path::Path::new("shop/worker-compose.yaml"))
-                    );
-                    assert_eq!(build.namespace.as_deref(), Some("ops"));
-                    assert_eq!(build.engine.as_deref(), Some("ws://127.0.0.1:49134"));
-                }
-                other => panic!("expected build, got {other:?}"),
-            },
-            _ => panic!("expected Sandbox subcommand"),
-        }
-    }
-
-    #[test]
-    fn sandbox_run_parses_and_counts_as_its_own_command() {
-        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "--command", "node app.js"])
-            .expect("should parse sandbox run");
-        assert_eq!(cli_usage_command_path(&cli), "sandbox run");
-        match cli.command {
-            Some(Commands::Sandbox(args)) => match args.command {
-                iii_compose::sandbox_cli::SandboxCommand::Run(run) => {
-                    assert_eq!(run.command.as_deref(), Some("node app.js"));
-                }
-                other => panic!("expected run, got {other:?}"),
-            },
-            _ => panic!("expected Sandbox subcommand"),
-        }
     }
 
     #[test]
@@ -967,23 +899,6 @@ mod tests {
         assert!(
             result.is_err(),
             "\"start\" should not be a valid subcommand (engine runs via default serve mode)"
-        );
-    }
-
-    #[test]
-    fn bare_sandbox_needs_a_subcommand() {
-        // `iii sandbox` only builds, runs or destroys a container's VM.
-        let result = Cli::try_parse_from(["iii", "sandbox"]);
-        assert!(result.is_err(), "bare `iii sandbox` should not parse");
-    }
-
-    #[test]
-    fn sandbox_is_listed_in_help() {
-        let help = Cli::command().render_help().to_string();
-        assert!(
-            help.lines()
-                .any(|line| line.trim_start().starts_with("sandbox ")),
-            "{help}"
         );
     }
 

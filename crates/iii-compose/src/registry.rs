@@ -4259,7 +4259,7 @@ mod tests {
                 serde_json::json!({ "worker": worker, "requested": "1.0.0", "resolved": resolved });
             if vm {
                 compose += "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    \
-                            scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n";
+                            scripts:\n      build: iii call sandbox::build\n      run: iii call sandbox::start\n";
                 entry["vm"] = true.into();
             }
             containers.insert(key.to_string(), entry);

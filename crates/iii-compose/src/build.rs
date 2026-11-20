@@ -595,8 +595,8 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         for written in [
             "sandbox-libkrun:",
-            "build: iii sandbox build",
-            "run: iii sandbox run",
+            "build: iii call sandbox::build",
+            "run: iii call sandbox::start",
         ] {
             assert!(text.contains(written), "{written} missing from:\n{text}");
         }

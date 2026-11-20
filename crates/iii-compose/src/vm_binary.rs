@@ -7,7 +7,7 @@
 //! Binary packages in a VM (spec 4.2, 6.7, 7.5).
 //!
 //! A `binary` package runs its host build on the host, as before. It runs in a VM when its
-//! container says so, as every VM container does: `scripts.run: iii sandbox run`, with the image
+//! container says so, as every VM container does: `scripts.run: iii call sandbox::start`, with the image
 //! in `runtime.base_image`, since a binary package names none. Which of the two it is decides
 //! which build the lock resolves and installs, so it has to be known before the lock is, from
 //! the compose declaration alone: [`platform`] is the platform of the build a package installs,
@@ -25,7 +25,7 @@ use crate::{
 };
 
 /// Whether the build `container`'s package installs is a VM's, from its declaration alone: its
-/// `scripts.run` is `iii sandbox run`, or it has none and sets `runtime.base_image` (the explicit
+/// `scripts.run` is `iii call sandbox::start`, or it has none and sets `runtime.base_image` (the explicit
 /// VM mode is still to be written into it). Known before the lock, so it holds for a package
 /// whose kind is not known yet. Not every VM container: a 0.26 bundle with no `scripts.run`
 /// reads `false` here and is still rewritten into a VM, which a bundle's one archive does not
@@ -97,7 +97,7 @@ pub fn check(key: &str, container: &Container) -> Result<()> {
     Ok(())
 }
 
-/// The `WorkerSource::Binary` that `iii sandbox build` and `iii sandbox run` hand the adapter for
+/// The `WorkerSource::Binary` that `iii call sandbox::build` and `iii call sandbox::start` hand the adapter for
 /// binary package `package` of container `key`, copied into `package_dir`
 /// (`.iii/workers/<container>/`): the directory and the [`executable`] in it.
 /// `PACKAGE_ARTIFACT_EMPTY` when it holds none.
@@ -179,8 +179,8 @@ containers:
     runtime:
       base_image: docker.io/library/alpine:3.20
     scripts:
-      build: iii sandbox build
-      run: iii sandbox run
+      build: iii call sandbox::build
+      run: iii call sandbox::start
   vm-to-write:
     worker: package://tool
     version: 1.0.0
@@ -190,8 +190,8 @@ containers:
     worker: package://tool
     version: 1.0.0
     scripts:
-      build: iii sandbox build
-      run: iii sandbox run --stop-timeout 5s
+      build: iii call sandbox::build
+      run: iii call sandbox::start --stop-timeout 5s
 "#;
 
     #[test]

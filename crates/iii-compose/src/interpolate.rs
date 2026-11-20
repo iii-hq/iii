@@ -78,12 +78,14 @@ fn expand_tree_at(
                 }
                 if in_scripts
                     && key == Some("run")
-                    && let Some(guest) = entry.as_str().and_then(crate::edit::sandbox_guest_command)
+                    && let Some((worker, guest)) =
+                        entry.as_str().and_then(crate::edit::sandbox_guest_command)
                 {
                     // Expand the guest payload first, then quote it as one host argument.
-                    *entry = serde_yaml::Value::String(crate::edit::sandbox_run_command(&expand(
-                        &guest, path, lookup,
-                    )?));
+                    *entry = serde_yaml::Value::String(crate::edit::sandbox_run_command(
+                        &worker,
+                        &expand(&guest, path, lookup)?,
+                    ));
                     continue;
                 }
                 expand_tree_at(

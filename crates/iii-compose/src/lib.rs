@@ -49,12 +49,12 @@ pub mod remote;
 pub mod report;
 mod restart;
 pub mod sandbox;
-pub mod sandbox_cli;
 mod shutdown;
 pub mod spawn;
 pub mod state;
 pub mod telemetry;
 pub mod vm_binary;
+pub mod vm_call;
 
 pub use cli::{BuildCli, ComposeCli, ComposeCommand, ComposeLogsCli, ComposeSubcommand};
 pub use config::{ComposeFile, Container, EngineSpec, RestartConfig, RestartPolicy, WorkerSource};
@@ -120,7 +120,7 @@ pub fn resolve_engine_mode(
 }
 
 /// Where a project's daemon is reached: its engine, its namespace and the compose file.
-// Used by `iii compose logs` and by `iii sandbox` (sandbox_cli.rs).
+// Used by `iii compose logs`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectTarget {
     /// The engine URL, resolved as [`resolve_engine_mode`] does.
@@ -132,7 +132,7 @@ pub struct ProjectTarget {
     pub file: Option<std::path::PathBuf>,
 }
 
-/// The discovery `iii compose logs` does today, shared with `iii sandbox build`. Takes the raw
+/// The discovery `iii compose logs` does today, shared with `iii call sandbox::build`. Takes the raw
 /// `--file`, `--namespace` and `--engine`: checks the namespace (`INVALID_NAMESPACE`), ignores a
 /// blank engine, reads `III_URL`, and reads the local file (`--file` or `worker-compose.yaml`)
 /// only for the namespace and the engine.

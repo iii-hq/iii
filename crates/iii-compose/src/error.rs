@@ -148,7 +148,7 @@ pub enum ComposeError {
     /// explicit VM mode written (spec 7.3).
     #[error(
         "{containers}: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and \
-         scripts.run: iii sandbox ...). --frozen does not edit the file: run `iii compose --up` once \
+         scripts.run: iii call sandbox::...). --frozen does not edit the file: run `iii compose --up` once \
          without --frozen to rewrite them"
     )]
     VmScriptsMissing { containers: String },
@@ -159,7 +159,7 @@ pub enum ComposeError {
     #[error(
         "container '{container}' runs in a VM (0.26 ran it in one, or it sets \
          runtime.base_image), and the file does not say so yet (scripts.build and scripts.run: \
-         iii sandbox ...). Run `iii compose --up`, or iii call compose::up, which rewrites it"
+         iii call sandbox::...). Run `iii compose --up`, or iii call compose::up, which rewrites it"
     )]
     VmScriptsNotWritten { container: String },
 
@@ -184,8 +184,8 @@ pub enum ComposeError {
     /// `runtime.base_image` is the image of the container's VM (spec 4.2).
     #[error(
         "container '{container}': runtime.base_image is the image of its VM, but scripts.{script} \
-         '{command}' keeps it on the host. Set scripts.build: iii sandbox build and scripts.run: \
-         iii sandbox run, or remove runtime.base_image"
+         '{command}' keeps it on the host. Set scripts.build: iii call sandbox::build worker={container} and \
+         scripts.run: iii call sandbox::start worker={container}, or remove runtime.base_image"
     )]
     BaseImageWithoutVm {
         container: String,
@@ -195,32 +195,48 @@ pub enum ComposeError {
 
     /// A binary package names no image, so its container says which one its VM runs (spec 4.2).
     #[error(
-        "container '{container}': scripts.run is iii sandbox run, but binary package '{package}' \
+        "container '{container}': scripts.run is iii call sandbox::start, but binary package '{package}' \
          names no image for its VM. Set runtime.base_image, such as docker.io/library/alpine:3.20"
     )]
     SandboxBinaryWithoutBaseImage { container: String, package: String },
 
     #[error(
-        "container '{container}': scripts.run is iii sandbox run, but it is neither a bundle package \
-         nor a path:// worker whose iii.worker.yaml sets runtime.base_image"
+        "container '{container}': scripts.run is iii call sandbox::start, but it is neither a bundle \
+         package, a binary package, nor a path:// worker whose iii.worker.yaml sets runtime.base_image"
     )]
     SandboxRunNotAVmWorker { container: String },
 
     #[error(
-        "container '{container}': scripts.build is iii sandbox build, which only builds for \
-         scripts.run: iii sandbox run"
+        "container '{container}': scripts.build is iii call sandbox::build, which only builds \
+         for scripts.run: iii call sandbox::start"
     )]
     SandboxBuildWithoutRun { container: String },
 
     #[error(
-        "container '{container}': scripts.run is iii sandbox run, which boots what iii sandbox build \
-         built, but scripts.build is '{build}'. Set scripts.build: iii sandbox build, or run the \
-         worker on the host with a scripts.run of its own"
+        "container '{container}': scripts.run is iii call sandbox::start, which boots what \
+         iii call sandbox::build built, but scripts.build is '{build}'. Set scripts.build: iii call \
+         sandbox::build worker={container}, or run the worker on the host with a scripts.run of its \
+         own"
     )]
     SandboxRunWithoutBuild { container: String, build: String },
 
-    #[error("container '{container}': iii sandbox run and iii sandbox build need Linux or macOS")]
+    #[error(
+        "container '{container}': iii call sandbox::start and iii call sandbox::build need Linux or \
+         macOS"
+    )]
     SandboxUnsupportedPlatform { container: String },
+
+    /// `worker=` on an `iii call sandbox::*` line names the VM it builds or boots: its own
+    /// container's (tech-specs/2026-11-19-iii-call-sandbox, section 2).
+    #[error(
+        "container '{container}': scripts.{script} builds or boots the VM of worker '{worker}'. \
+         Set worker={container}, the container's own key"
+    )]
+    SandboxWorkerMismatch {
+        container: String,
+        script: &'static str,
+        worker: String,
+    },
 
     /// The rebuild an add or update ran for a container's new package failed (spec 5.3): the
     /// file and the lock already name the new version, and the container runs its old build.
@@ -776,6 +792,7 @@ impl ComposeError {
             Self::SandboxBuildWithoutRun { .. } => "SANDBOX_BUILD_WITHOUT_RUN",
             Self::SandboxRunWithoutBuild { .. } => "SANDBOX_RUN_WITHOUT_BUILD",
             Self::SandboxUnsupportedPlatform { .. } => "SANDBOX_UNSUPPORTED_PLATFORM",
+            Self::SandboxWorkerMismatch { .. } => "SANDBOX_WORKER_MISMATCH",
             Self::BuildFailed { .. } | Self::PackageRebuildFailed { .. } => "BUILD_FAILED",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",

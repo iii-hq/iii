@@ -494,23 +494,18 @@ pub(crate) struct VmRewrite {
     pub wrapped: bool,
 }
 
-/// The `scripts.run` that runs `command` inside the container's VM, where 0.26 ran it
-/// (spec 7.1): `iii sandbox run --command '<command>'`, each `'` written `'\''`.
-pub(crate) fn sandbox_run_command(command: &str) -> String {
-    format!(
-        "{} --command '{}'",
-        crate::sandbox::SANDBOX_RUN,
-        command.replace('\'', "'\\''")
-    )
+/// The `scripts.run` that runs `command` inside container `worker`'s VM, where 0.26 ran it
+/// (spec 7.1): `iii call sandbox::start worker=<worker> 'command=<command>'`.
+pub(crate) fn sandbox_run_command(worker: &str, command: &str) -> String {
+    crate::sandbox::start_line(worker, Some(command))
 }
 
-/// Decodes only the canonical single-argument wrapper migration writes, not shell syntax.
-pub(crate) fn sandbox_guest_command(command: &str) -> Option<String> {
-    let quoted = command
-        .strip_prefix("iii sandbox run --command '")?
-        .strip_suffix('\'')?;
-    let decoded = quoted.replace("'\\''", "'");
-    (sandbox_run_command(&decoded) == command).then_some(decoded)
+/// Decodes only the canonical line [`sandbox_run_command`] writes, not shell syntax: its worker
+/// and its guest command.
+pub(crate) fn sandbox_guest_command(run: &str) -> Option<(String, String)> {
+    let worker = crate::sandbox::call_argument(run, "worker")?;
+    let command = crate::sandbox::call_argument(run, "command")?;
+    (sandbox_run_command(&worker, &command) == run).then_some((worker, command))
 }
 
 /// Writes the explicit VM mode of container `key` (spec 7.1): `adapter` in `start_after`,
@@ -529,14 +524,22 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
     };
     let declared_run = declared("run").map(scalar_text);
     let (run, wrapped) = match &declared_run {
-        None => (crate::sandbox::SANDBOX_RUN.to_string(), false),
+        None => (crate::sandbox::start_line(key, None), false),
+        // The form written before `iii call` streamed, with its guest command if it had one.
+        Some(run) if crate::sandbox::is_legacy_sandbox(run) => (
+            crate::sandbox::start_line(key, crate::sandbox::legacy_guest_command(run).as_deref()),
+            false,
+        ),
         Some(run) if crate::sandbox::is_sandbox_run(run) => (run.clone(), false),
-        Some(run) => (sandbox_run_command(run), true),
+        Some(run) => (sandbox_run_command(key, run), true),
     };
-    let set_run = declared_run
-        .as_deref()
-        .is_none_or(|run| !crate::sandbox::is_sandbox_run(run));
-    let set_build = declared("build").is_none();
+    let set_run = declared_run.as_deref().is_none_or(|run| {
+        !crate::sandbox::is_sandbox_run(run) || crate::sandbox::is_legacy_sandbox(run)
+    });
+    let set_build = declared("build")
+        .map(scalar_text)
+        .is_none_or(|build| crate::sandbox::is_legacy_sandbox(&build));
+    let build_script = crate::sandbox::build_line(key);
     let add_adapter = !fields
         .get("start_after")
         .and_then(Value::as_sequence)
@@ -581,10 +584,7 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
 
     let mut wanted = Mapping::new();
     if set_build {
-        wanted.insert(
-            Value::from("build"),
-            Value::from(crate::sandbox::SANDBOX_BUILD),
-        );
+        wanted.insert(Value::from("build"), Value::from(build_script.clone()));
     }
     if set_run {
         wanted.insert(Value::from("run"), Value::from(run.clone()));
@@ -624,8 +624,7 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                         }
                     }
                     if set_build {
-                        let line =
-                            render("build", &Value::from(crate::sandbox::SANDBOX_BUILD), &child)?;
+                        let line = render("build", &Value::from(build_script.clone()), &child)?;
                         match (build_line, run_line) {
                             (Some((from, to)), _) => edits.push((at(from), to - from, line)),
                             (None, Some((from, _))) => edits.push((at(from), 0, line)),
@@ -2246,7 +2245,7 @@ mod tests {
         );
         assert_eq!(
             parsed["containers"]["vm"]["scripts"]["run"],
-            "iii sandbox run"
+            "iii call sandbox::start worker=vm"
         );
         assert!(explicit_vm_mode(&out, "vm", "sb").unwrap().is_none());
     }
@@ -4133,7 +4132,7 @@ containers:
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("worker-compose.yaml");
             let text = format!(
-                "containers:\n  db: {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after:{opening}\n        db, # keep dependency\n    ] # keep closing\n    environment: {{TOKEN: '${{TOKEN:-review}}'}}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+                "containers:\n  db: {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after:{opening}\n        db, # keep dependency\n    ] # keep closing\n    environment: {{TOKEN: '${{TOKEN:-review}}'}}\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link\n"
             );
             let before = crate::ComposeFile::parse(&text, &path).expect("valid input Compose");
             assert_eq!(before.containers["link"].start_after, ["db"]);
@@ -4175,7 +4174,7 @@ containers:
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("worker-compose.yaml");
             let text = format!(
-                "containers:\n  db: {{worker: path://./db}}\n  'db#suffix': {{worker: path://./db}}\n  '#notcomment': {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after: {value}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+                "containers:\n  db: {{worker: path://./db}}\n  'db#suffix': {{worker: path://./db}}\n  '#notcomment': {{worker: path://./db}}\n  queue: {{worker: path://./queue}}\n  sb: {{worker: path://./sb}}\n  link:\n    worker: path://./link\n    start_after: {value}\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link\n"
             );
             let before = crate::ComposeFile::parse(&text, &path).expect("valid input Compose");
             assert_eq!(before.containers["link"].start_after, dependencies);
@@ -4251,12 +4250,12 @@ containers:
             ("[] # empty", "[sb] # empty"),
         ] {
             let prefix = "containers:\n  link:\n    worker: path://${APP_DIR:-./link}\n    ";
-            let suffix = "\n    config_override:\n      start_after: [nested]\n      data: {items: [\"raw]#\", {key: '${VAR:-value}'}]}\n    environment: {TOKEN: '${TOKEN}'}\n    scripts: {run: iii sandbox run}\n";
+            let suffix = "\n    config_override:\n      start_after: [nested]\n      data: {items: [\"raw]#\", {key: '${VAR:-value}'}]}\n    environment: {TOKEN: '${TOKEN}'}\n    scripts: {run: iii call sandbox::start worker=link}\n";
             let text = format!("{prefix}\"start_after\": {dependencies}{suffix}");
             let rewrite = explicit_vm_mode(&text, "link", "sb").unwrap().unwrap();
             let expected = format!("{prefix}\"start_after\": {expected}{suffix}").replace(
-                "    scripts: {run: iii sandbox run}\n",
-                "    scripts:\n      run: iii sandbox run\n      build: iii sandbox build\n",
+                "    scripts: {run: iii call sandbox::start worker=link}\n",
+                "    scripts:\n      run: iii call sandbox::start worker=link\n      build: iii call sandbox::build worker=link\n",
             );
             assert_eq!(rewrite.text, expected, "input: {dependencies}");
             let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
@@ -4281,7 +4280,7 @@ containers:
         let rewrite = explicit_vm_mode(text, "onboarding", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
-            "# my project\ncontainers:\n  # the adapter\n  sb:\n    worker: path://./sb\n  # what onboards\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\" # pinned\n    start_after: [sb]\n    environment:\n      KEY: ${KEY}\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n\n  api: {worker: path://./api}\n"
+            "# my project\ncontainers:\n  # the adapter\n  sb:\n    worker: path://./sb\n  # what onboards\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\" # pinned\n    start_after: [sb]\n    environment:\n      KEY: ${KEY}\n    scripts:\n      build: iii call sandbox::build worker=onboarding\n      run: iii call sandbox::start worker=onboarding\n\n  api: {worker: path://./api}\n"
         );
         assert!(!rewrite.wrapped);
         assert_eq!(
@@ -4293,12 +4292,13 @@ containers:
     /// A command 0.26 ran inside the VM keeps running there, quoted for `sh`; the rest of a
     /// block `scripts` and `start_after`, comments included, stays line for line.
     #[test]
-    fn a_command_of_its_own_moves_into_iii_sandbox_run_command() {
+    fn a_command_of_its_own_moves_into_its_sandbox_start_line() {
         let text = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n    scripts:\n      # dev server\n      run: python src/dev.py --name 'x'\n      post_run: echo bye\n  state: {worker: path://./state}\n";
         let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
         assert!(rewrite.wrapped);
-        let run = "iii sandbox run --command 'python src/dev.py --name '\\''x'\\'''";
-        let expected_start = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n      - sb\n    scripts:\n      # dev server\n      build: iii sandbox build\n";
+        let run =
+            "iii call sandbox::start worker=link 'command=python src/dev.py --name '\\''x'\\'''";
+        let expected_start = "containers:\n  link:\n    worker: path://./link\n    start_after:\n      - state  # needs state\n      - sb\n    scripts:\n      # dev server\n      build: iii call sandbox::build worker=link\n";
         assert!(rewrite.text.starts_with(expected_start), "{}", rewrite.text);
         assert!(
             rewrite
@@ -4326,10 +4326,13 @@ containers:
         );
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
         let scripts = &parsed["containers"]["vm"]["scripts"];
-        assert_eq!(scripts["build"].as_str(), Some("iii sandbox build"));
+        assert_eq!(
+            scripts["build"].as_str(),
+            Some("iii call sandbox::build worker=vm")
+        );
         assert_eq!(
             scripts["run"].as_str(),
-            Some("iii sandbox run --command 'python main.py'")
+            Some("iii call sandbox::start worker=vm 'command=python main.py'")
         );
         assert_eq!(&parsed["containers"]["other"]["scripts"], scripts);
     }
@@ -4339,13 +4342,22 @@ containers:
     #[test]
     fn the_wrapped_command_is_single_quoted_for_sh() {
         for command in ["python main.py", "echo 'hi' && echo \"$HOME\"", "a'b''c"] {
-            let wrapped = sandbox_run_command(command);
-            let quoted = wrapped.strip_prefix("iii sandbox run --command ").unwrap();
+            let wrapped = sandbox_run_command("api", command);
+            let quoted = wrapped
+                .strip_prefix("iii call sandbox::start worker=api ")
+                .unwrap();
             let output = std::process::Command::new("sh")
                 .args(["-c", &format!("printf %s {quoted}")])
                 .output()
                 .unwrap();
-            assert_eq!(String::from_utf8(output.stdout).unwrap(), command);
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("command={command}")
+            );
+            assert_eq!(
+                sandbox_guest_command(&wrapped),
+                Some(("api".to_string(), command.to_string()))
+            );
         }
     }
 
@@ -4357,13 +4369,13 @@ containers:
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
-            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii sandbox run\n      build: iii sandbox build\n"
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii call sandbox::start worker=opt\n      build: iii call sandbox::build worker=opt\n"
         );
         let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: []\n    scripts:\n      build:\n      run: iii sandbox run --command 'x'\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
-            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'x'\n"
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=opt\n      run: iii call sandbox::start worker=opt command=x\n"
         );
         assert!(!rewrite.wrapped);
     }
@@ -4376,19 +4388,19 @@ containers:
         let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
-            "containers:\n  link: # the link\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            "containers:\n  link: # the link\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link\n"
         );
 
         let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run} # opt-in\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
-            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: # opt-in\n      run: iii sandbox run\n      build: iii sandbox build\n"
+            "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: # opt-in\n      run: iii call sandbox::start worker=opt\n      build: iii call sandbox::build worker=opt\n"
         );
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
         assert_eq!(
             parsed["containers"]["opt"]["scripts"]["build"].as_str(),
-            Some("iii sandbox build")
+            Some("iii call sandbox::build worker=opt")
         );
     }
 
@@ -4417,7 +4429,7 @@ containers:
         let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
         assert_eq!(
             parsed["containers"]["api"]["scripts"]["run"].as_str(),
-            Some("iii sandbox run --command 'echo it'\\''s ok'")
+            Some("iii call sandbox::start worker=api 'command=echo it'\\''s ok'")
         );
         let text = "containers:\n  api: {worker: path://./api, scripts: {run: \"echo #1\"}}\n";
         let rewrite = explicit_vm_mode(text, "api", "sb").unwrap().unwrap();
@@ -4425,7 +4437,7 @@ containers:
         let scripts = &parsed["containers"]["api"]["scripts"];
         assert_eq!(
             scripts["run"].as_str(),
-            Some("iii sandbox run --command 'echo #1'")
+            Some("iii call sandbox::start worker=api 'command=echo #1'")
         );
         assert!(
             rewrite.text.starts_with("containers:\n  api:\n"),
@@ -4494,7 +4506,7 @@ containers:
                     .output()
                     .unwrap();
                 let expected = [
-                    b"sandbox\0run\0--command\0".as_slice(),
+                    b"call\0sandbox::start\0worker=dev\0command=".as_slice(),
                     expected.as_bytes(),
                     b"\0",
                 ]
@@ -4510,5 +4522,19 @@ containers:
                 );
             }
         }
+    }
+
+    /// The forms written before `iii call` streamed become their `iii call` lines, the guest
+    /// command of a `path://` worker kept; the rewrite then has nothing left to do.
+    #[test]
+    fn the_iii_sandbox_forms_become_iii_call_lines() {
+        let text = "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'node .'\n";
+        let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
+        assert!(!rewrite.wrapped);
+        assert_eq!(
+            rewrite.text,
+            "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link 'command=node .'\n"
+        );
+        assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
     }
 }

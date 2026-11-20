@@ -948,9 +948,9 @@ containers:
   vm:
     worker: path://./vm
     scripts:
-      build: iii sandbox build
+      build: iii call sandbox::build
       build_timeout: 90s
-      run: iii sandbox run
+      run: iii call sandbox::start
   none:
     worker: path://./none
     scripts:
@@ -965,7 +965,10 @@ containers:
     )
     .unwrap();
     let scripts = |key: &str| file.containers[key].scripts.clone();
-    assert_eq!(scripts("vm").build.as_deref(), Some("iii sandbox build"));
+    assert_eq!(
+        scripts("vm").build.as_deref(),
+        Some("iii call sandbox::build")
+    );
     assert_eq!(scripts("vm").build_timeout, Duration::from_secs(90));
     assert_eq!(scripts("none").build.as_deref(), Some(""));
     assert_eq!(scripts("none").build_command(), None);

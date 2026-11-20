@@ -2358,7 +2358,7 @@ impl Daemon {
                 other => (other.code().to_string(), other.to_string()),
             };
             let finish = format!(
-                "retry the {operation}, or run `iii sandbox build {key}` then `iii call \
+                "retry the {operation}, or run `iii call sandbox::build {key}` then `iii call \
                  compose::restart worker={key}`, to finish it."
             );
             let mut retry = if cascaded.contains(key) {
@@ -5467,7 +5467,7 @@ containers:
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.contains(
-                "  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\"\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+                "  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: \"0.2.0\"\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii call sandbox::build worker=onboarding\n      run: iii call sandbox::start worker=onboarding\n"
             ),
             "{text}"
         );
@@ -5513,7 +5513,7 @@ containers:
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(
             bin.join("iii"),
-            "#!/bin/sh\nif [ \"$2\" = build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii sandbox build\",\"dependency_files\":{},\"image\":{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{\"declared\":null,\"reference\":\"python\",\"digest\":null},\"adapter\":{\"name\":\"sandbox-libkrun\",\"version\":\"0.5.0\"},\"contract\":{\"major\":1,\"minor\":3}},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
+            "#!/bin/sh\nif [ \"$2\" = sandbox::build ]; then\nmkdir -p \"$III_BUILD_DIR\" && printf '{\"schema\":1,\"container\":\"app\",\"source\":{\"kind\":\"path\",\"dir\":\"./app\"},\"command\":\"iii call sandbox::build\",\"dependency_files\":{},\"image\":{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{\"declared\":null,\"reference\":\"python\",\"digest\":null},\"adapter\":{\"name\":\"sandbox-libkrun\",\"version\":\"0.5.0\"},\"contract\":{\"major\":1,\"minor\":3}},\"built_at\":\"2026-11-10T00:00:00Z\"}' > \"$III_BUILD_DIR/build.json\" && printf sha256:1 > \"$III_BUILD_DIR/image.id\"\nexit 0\nfi\necho \"$III_WORKER_NAME\" >> ../started\necho $$ > pid\nexec sleep 60\n",
         )
         .unwrap();
         std::fs::set_permissions(
@@ -5525,7 +5525,7 @@ containers:
         std::fs::write(
             &path,
             format!(
-                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{PATH: '{}:/usr/bin:/bin'}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.3.1\"\n",
+                "startup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{PATH: '{}:/usr/bin:/bin'}}\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.3.1\"\n",
                 bin.display()
             ),
         )
@@ -5631,7 +5631,7 @@ containers:
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(
             text.contains(
-                "  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+                "  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii call sandbox::build worker=vm\n      run: iii call sandbox::start worker=vm\n"
             ),
             "{text}"
         );
@@ -5849,7 +5849,7 @@ containers:
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
         // Written in the explicit VM mode, as the build's own migration leaves it.
         let (_dir, path) = vm_project(
-            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii call sandbox::build, run: iii call sandbox::start}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
         );
         // Two private caches: the frozen build starts cold, so it downloads.
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -5891,7 +5891,7 @@ containers:
         let archive = adapter_archive();
         let server = crate::sandbox::tests::adapter_registry(&archive).await;
         let (dir, path) = vm_project(
-            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
+            "containers:\n  vm:\n    worker: path://./vm\n    start_after: [sandbox-libkrun]\n    scripts: {build: iii call sandbox::build, run: iii call sandbox::start}\n  # added by compose::add\n  sandbox-libkrun:\n    worker: package://api.workers.iii.dev/sandbox-libkrun\n    version: \"0.5.0\"\n",
         );
         let (warm, cold) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         TEST_PACKAGE_CACHE

@@ -45,7 +45,7 @@ const NAMESPACE: &str = "sbx-e2e";
 /// The path of a locally built `sandbox-libkrun` that replaces the pinned release.
 const LOCAL_ADAPTER: &str = "III_E2E_SANDBOX_LIBKRUN";
 /// What makes a container run in a VM: its adapter, and both `scripts` (spec 3.1).
-const EXPLICIT: &str = "    start_after: [sandbox-libkrun]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n";
+const EXPLICIT: &str = "    start_after: [sandbox-libkrun]\n    scripts: {build: iii call sandbox::build, run: iii call sandbox::start}\n";
 /// The `stop_timeout` of every project below.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long past `stop_timeout` `compose::down` may take.
@@ -335,7 +335,7 @@ impl Project {
         // Compose runs a script as `sh -c <script>` in a process group of its own. A shell
         // that does not exec its last command (dash, Ubuntu's sh) is the pid compose reports,
         // so SIGKILL the group: the whole command dies at once, as in a crash, rather than
-        // leaving `iii sandbox run` to be stopped gracefully by compose's group SIGTERM.
+        // leaving `iii call sandbox::start` to be stopped gracefully by compose's group SIGTERM.
         nix::sys::signal::killpg(Pid::from_raw(command as i32), Signal::SIGKILL)
             .expect("SIGKILL the command's process group");
         wait_for(SHORT, &format!("{key} to read {state}"), || {
@@ -937,7 +937,7 @@ fn compose_remove_keeps_the_data_disk_unless_prune() {
         json!({ "workers": [{
             "worker": "path://./sandbox-vm-worker",
             "start_after": ["sandbox-libkrun"],
-            "scripts": { "build": "iii sandbox build", "run": "iii sandbox run" },
+            "scripts": { "build": "iii call sandbox::build", "run": "iii call sandbox::start" },
         }] }),
         LONG,
     );
@@ -965,7 +965,7 @@ const FAKE_ADAPTER_CALLS: &str = "calls.jsonl";
 /// The image id the fake adapter's builds report.
 const FAKE_BUILD_ID: &str = "sha256:fake";
 
-/// The build `iii sandbox build` would have left for `guests`, so their run finds one and no
+/// The build `iii call sandbox::build` would have left for `guests`, so their run finds one and no
 /// first build runs (spec 5.2): `build.json` and the image beside it.
 fn seed_builds(root: &std::path::Path, guests: &[&str]) {
     for guest in guests {
@@ -977,7 +977,7 @@ fn seed_builds(root: &std::path::Path, guests: &[&str]) {
             "schema": 1,
             "container": guest,
             "source": { "kind": "path", "dir": format!("./{guest}") },
-            "command": "iii sandbox build",
+            "command": "iii call sandbox::build",
             "dependency_files": {},
             "image": {
                 "file": "image.erofs",
@@ -1227,7 +1227,7 @@ fn fake_adapter_calls(root: &std::path::Path, function: &str) -> Vec<Value> {
 fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
     for policy in ["always", "on-failure"] {
         let mut project = Project::declaring(&format!(
-            "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
+            "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
         ));
         let root = project.dir.path().to_path_buf();
         write_fake_adapter_and_guests(&root, &["app"]);
@@ -1262,7 +1262,7 @@ fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
 #[serial_test::serial(sandbox_vm)]
 fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
     ));
     let root = project.dir.path().to_path_buf();
     write_fake_adapter_and_guests(&root, &["app"]);
@@ -1300,13 +1300,13 @@ fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
     project.shutdown();
 }
 
-/// Every `iii sandbox run` holds its own engine connection, so one does not keep
+/// Every `iii call sandbox::start` holds its own engine connection, so one does not keep
 /// another from registering.
 #[test]
 #[serial_test::serial(sandbox_vm)]
 fn two_path_workers_each_run_their_own_vm() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n  app2:\n    worker: path://./app2\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n  app2:\n    worker: path://./app2\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
     ));
     write_fake_adapter_and_guests(project.dir.path(), &["app", "app2"]);
     seed_builds(project.dir.path(), &["app", "app2"]);
@@ -1323,7 +1323,7 @@ fn two_path_workers_each_run_their_own_vm() {
 #[serial_test::serial(sandbox_vm)]
 fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     let mut project = Project::declaring(&format!(
-        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
+        "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    environment: {{APP_VAR: hello}}\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
     ));
     let root = project.dir.path().to_path_buf();
     write_fake_adapter_and_guests(&root, &["app"]);
@@ -1341,7 +1341,7 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
     assert_eq!(request["worker_name"], "app");
     assert_eq!(request["source"]["kind"], "local");
     // Compose boots no VM of its own, and prepares none (spec 7.6): whatever reaches the
-    // adapter about this VM comes from `iii sandbox run`, with the VM's own token.
+    // adapter about this VM comes from `iii call sandbox::start`, with the VM's own token.
     for prepared in calls("worker::prepare") {
         assert_eq!(prepared["token"], "scoped", "{prepared}");
     }
@@ -1357,7 +1357,7 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
             .unwrap()
             .ends_with("worker-compose.yaml")
     );
-    // What `iii sandbox build` and `iii sandbox run` read never does (spec 8.3).
+    // What `iii call sandbox::build` and `iii call sandbox::start` read never does (spec 8.3).
     for host_only in [
         "III_SANDBOX_TOKEN",
         "III_SANDBOX_WORKER_TOKEN",
@@ -1366,6 +1366,7 @@ fn a_path_worker_runs_its_own_vm_through_iii_sandbox_run() {
         "III_BUILD_DIR",
         "III_BUILD_TIMEOUT_MS",
         "III_BUILD_COMPOSE_FILE",
+        "III_CALL_DEFAULTS",
     ] {
         assert!(
             !env.contains_key(host_only),
@@ -1422,7 +1423,7 @@ fn a_026_project_is_migrated_and_built_on_its_first_up() {
     let file = std::fs::read_to_string(&project.file).unwrap();
     assert!(
         file.contains(
-            "  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n"
+            "  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts:\n      build: iii call sandbox::build worker=app\n      run: iii call sandbox::start worker=app\n"
         ),
         "{file}"
     );

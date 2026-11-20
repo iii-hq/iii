@@ -31,33 +31,142 @@ use crate::{
     lockfile::PreparedLock,
     manifest::read_manifest,
     process::Outcome,
-    sandbox_cli,
     state::{Reconciliation, VmRecord},
+    vm_call,
 };
 
 /// The adapter release range that implements contract major [`contract::CONTRACT_MAJOR`] with
 /// `worker.build`, `worker.binary` and `worker.prune` (spec 6.6, 6.7), changed together with it.
 pub const ADAPTER_RANGE: &str = "^0.5";
 
-/// The `scripts.run` that boots a container's VM.
-pub const SANDBOX_RUN: &str = "iii sandbox run";
-/// The `scripts.build` that builds a container's VM image.
-pub const SANDBOX_BUILD: &str = "iii sandbox build";
+/// The `scripts.run` that boots a container's VM: `iii call sandbox::start worker=<container>`
+/// (tech-specs/2026-11-19-iii-call-sandbox, section 2).
+pub const SANDBOX_RUN: &str = "iii call sandbox::start";
+/// The `scripts.build` that builds a container's VM image:
+/// `iii call sandbox::build worker=<container>`.
+pub const SANDBOX_BUILD: &str = "iii call sandbox::build";
+/// The `scripts.run` of 0.26's opt-in, and of the explicit VM mode before `iii call` streamed:
+/// the rewrite turns it into [`SANDBOX_RUN`].
+const LEGACY_RUN: &str = "iii sandbox run";
+/// The `scripts.build` of the explicit VM mode before `iii call` streamed: the rewrite turns it
+/// into [`SANDBOX_BUILD`].
+const LEGACY_BUILD: &str = "iii sandbox build";
 
-/// Whether `command` is `iii sandbox run`, with or without arguments.
-pub fn is_sandbox_run(command: &str) -> bool {
+/// Whether the first words of `command` are `words`.
+fn starts_with_words(command: &str, words: &str) -> bool {
+    let expected: Vec<&str> = words.split_whitespace().collect();
     command
         .split_whitespace()
-        .take(3)
-        .eq(SANDBOX_RUN.split_whitespace())
+        .take(expected.len())
+        .eq(expected.iter().copied())
 }
 
-/// Whether `command` is `iii sandbox build`, with or without arguments.
+/// Whether `command` boots a container's VM: `iii call sandbox::start`, or the legacy
+/// `iii sandbox run` that the rewrite replaces, with or without arguments.
+pub fn is_sandbox_run(command: &str) -> bool {
+    starts_with_words(command, SANDBOX_RUN) || starts_with_words(command, LEGACY_RUN)
+}
+
+/// Whether `command` builds a container's VM image: `iii call sandbox::build`, or the legacy
+/// `iii sandbox build`, with or without arguments.
 pub fn is_sandbox_build(command: &str) -> bool {
-    command
-        .split_whitespace()
-        .take(3)
-        .eq(SANDBOX_BUILD.split_whitespace())
+    starts_with_words(command, SANDBOX_BUILD) || starts_with_words(command, LEGACY_BUILD)
+}
+
+/// Whether `command` is a legacy `iii sandbox run` or `iii sandbox build`, which the rewrite
+/// turns into its `iii call` form.
+pub fn is_legacy_sandbox(command: &str) -> bool {
+    starts_with_words(command, LEGACY_RUN) || starts_with_words(command, LEGACY_BUILD)
+}
+
+/// `word` as one `sh` word: as it is when it needs no quoting, else single-quoted.
+pub(crate) fn shell_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-:/@%+,=".contains(&byte))
+    {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+/// The `scripts.run` Compose writes for container `key`'s VM, with the guest command of a
+/// `path://` worker that runs its own.
+pub fn start_line(key: &str, command: Option<&str>) -> String {
+    match command {
+        None => format!("{SANDBOX_RUN} worker={}", shell_word(key)),
+        Some(command) => format!(
+            "{SANDBOX_RUN} worker={} {}",
+            shell_word(key),
+            shell_word(&format!("command={command}"))
+        ),
+    }
+}
+
+/// The `scripts.build` Compose writes for container `key`'s VM.
+pub fn build_line(key: &str) -> String {
+    format!("{SANDBOX_BUILD} worker={}", shell_word(key))
+}
+
+/// The words `sh` splits `command` into, with single and double quotes and backslashes taken
+/// away; enough for the `key=value` arguments of an `iii call` line.
+fn shell_words(command: &str) -> Vec<String> {
+    let (mut words, mut word, mut in_word) = (Vec::new(), String::new(), false);
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                word.extend(chars.by_ref().take_while(|c| *c != '\''));
+            }
+            '"' => {
+                in_word = true;
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => word.extend(chars.next()),
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                word.extend(chars.next());
+            }
+            c if c.is_whitespace() => {
+                if std::mem::take(&mut in_word) {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
+}
+
+/// The value of `key=` among the arguments of an `iii call sandbox::*` line.
+pub(crate) fn call_argument(command: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    shell_words(command)
+        .into_iter()
+        .skip(3)
+        .rev()
+        .find_map(|word| word.strip_prefix(&prefix).map(str::to_string))
+}
+
+/// The guest command of a legacy `iii sandbox run --command '<command>'`, as the rewrite wrote it.
+pub(crate) fn legacy_guest_command(command: &str) -> Option<String> {
+    let words = shell_words(command);
+    let at = words.iter().position(|word| word == "--command")?;
+    words.get(at + 1).cloned()
 }
 
 /// Why a project needs the sandbox adapter.
@@ -154,6 +263,14 @@ fn has_base_image(container: &Container) -> bool {
 /// `iii sandbox run` without `scripts.build` or the adapter in `start_after`. Keyed on
 /// `scripts` alone, so a rewritten container is never due again.
 pub(crate) fn migration_due(file: &ComposeFile, container: &Container) -> bool {
+    // The forms written before `iii call` streamed are rewritten into it.
+    if [&container.scripts.run, &container.scripts.build]
+        .into_iter()
+        .flatten()
+        .any(|command| is_legacy_sandbox(command))
+    {
+        return true;
+    }
     if is_bundle(container) && container.scripts.run.is_none() {
         return true;
     }
@@ -340,6 +457,19 @@ pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
             return Err(ComposeError::SandboxRunNotAVmWorker {
                 container: key.clone(),
             });
+        }
+        for (script, command) in [("run", &scripts.run), ("build", &scripts.build)] {
+            if let Some(worker) = command
+                .as_deref()
+                .and_then(|command| call_argument(command, "worker"))
+                .filter(|worker| worker != key)
+            {
+                return Err(ComposeError::SandboxWorkerMismatch {
+                    container: key.clone(),
+                    script,
+                    worker,
+                });
+            }
         }
         if let Some(build) = &scripts.build
             && !is_sandbox_build(build)
@@ -662,15 +792,16 @@ pub(crate) async fn rewrite_due(
         }
         crate::report::daemon_line(
             &format!(
-                "{key}: migrated to the explicit VM mode (scripts.build/scripts.run: iii sandbox ...)"
+                "{key}: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)"
             ),
             false,
         );
         if *wrapped {
             crate::report::daemon_line(
                 &format!(
-                    "{key}: scripts.run now runs inside the VM (iii sandbox run --command); to \
-                     keep it on the host, set scripts.build (\"\" when there is nothing to build)"
+                    "{key}: scripts.run now runs inside the VM (iii call sandbox::start \
+                     command=...); to keep it on the host, set scripts.build (\"\" when there is \
+                     nothing to build)"
                 ),
                 true,
             );
@@ -938,10 +1069,7 @@ pub(crate) fn layer_package_env(
         return Ok(());
     }
     if let Some(package) = &container.resolved_package {
-        user_env.insert(
-            sandbox_cli::PACKAGE_KIND_ENV.to_string(),
-            package.kind.clone(),
-        );
+        user_env.insert(vm_call::PACKAGE_KIND_ENV.to_string(), package.kind.clone());
     }
     let name = match &container.resolved_package {
         Some(package) => package
@@ -954,10 +1082,10 @@ pub(crate) fn layer_package_env(
     let compose_dir = compose_file.parent().unwrap_or(Path::new("."));
     user_env.extend([
         (
-            sandbox_cli::PACKAGE_DIR_ENV.to_string(),
+            vm_call::PACKAGE_DIR_ENV.to_string(),
             utf8_path(key, &crate::build_record::package_dir(compose_dir, key))?,
         ),
-        (sandbox_cli::PACKAGE_NAME_ENV.to_string(), name),
+        (vm_call::PACKAGE_NAME_ENV.to_string(), name),
     ]);
     Ok(())
 }
@@ -969,14 +1097,15 @@ fn host_only(name: &str) -> bool {
         && (name == "III_URL"
             || name.starts_with("III_SANDBOX_")
             || [
-                sandbox_cli::BUILD_DIR_ENV,
-                sandbox_cli::BUILD_TIMEOUT_ENV,
-                sandbox_cli::BUILD_BASE_IMAGE_ENV,
-                sandbox_cli::BUILD_WORKER_ENV,
-                sandbox_cli::BUILD_COMPOSE_FILE_ENV,
-                sandbox_cli::PACKAGE_DIR_ENV,
-                sandbox_cli::PACKAGE_NAME_ENV,
-                sandbox_cli::PACKAGE_KIND_ENV,
+                vm_call::BUILD_DIR_ENV,
+                vm_call::BUILD_TIMEOUT_ENV,
+                vm_call::BUILD_BASE_IMAGE_ENV,
+                vm_call::BUILD_WORKER_ENV,
+                vm_call::BUILD_COMPOSE_FILE_ENV,
+                vm_call::PACKAGE_DIR_ENV,
+                vm_call::PACKAGE_NAME_ENV,
+                vm_call::PACKAGE_KIND_ENV,
+                vm_call::CALL_DEFAULTS_ENV,
             ]
             .contains(&name))
 }
@@ -1001,14 +1130,14 @@ pub(crate) fn layer_own_vm_env(
     };
     let source = match container.worker_dir() {
         Some(worker_dir) => (
-            sandbox_cli::WORKER_DIR_ENV.to_string(),
+            vm_call::WORKER_DIR_ENV.to_string(),
             utf8_path(key, worker_dir)?,
         ),
         None => {
             layer_package_env(file, key, user_env)?;
             (
-                sandbox_cli::PACKAGE_DIR_ENV.to_string(),
-                user_env[sandbox_cli::PACKAGE_DIR_ENV].clone(),
+                vm_call::PACKAGE_DIR_ENV.to_string(),
+                user_env[vm_call::PACKAGE_DIR_ENV].clone(),
             )
         }
     };
@@ -1048,37 +1177,34 @@ pub(crate) fn layer_own_vm_env(
     let state_key = state_key(state_dir, key);
     user_env.extend([
         (
-            sandbox_cli::TOKEN_ENV.to_string(),
+            vm_call::TOKEN_ENV.to_string(),
             contract::scoped_auth_token(project_token, &state_key),
         ),
-        (sandbox_cli::STATE_KEY_ENV.to_string(), state_key),
+        (vm_call::STATE_KEY_ENV.to_string(), state_key),
         (
-            sandbox_cli::ADAPTER_ENV.to_string(),
+            vm_call::ADAPTER_ENV.to_string(),
             adapter_name(file).to_string(),
         ),
         (
-            sandbox_cli::ADAPTER_NAMESPACE_ENV.to_string(),
+            vm_call::ADAPTER_NAMESPACE_ENV.to_string(),
             project_namespace.to_string(),
         ),
         source,
+        (vm_call::WORKER_ENV_KEYS_ENV.to_string(), worker_env_keys),
         (
-            sandbox_cli::WORKER_ENV_KEYS_ENV.to_string(),
-            worker_env_keys,
-        ),
-        (
-            sandbox_cli::STOP_TIMEOUT_ENV.to_string(),
+            vm_call::STOP_TIMEOUT_ENV.to_string(),
             file.stop_timeout.as_millis().to_string(),
         ),
         (
-            sandbox_cli::BUILD_DIR_ENV.to_string(),
+            vm_call::BUILD_DIR_ENV.to_string(),
             utf8_path(key, &crate::build_record::build_dir(compose_dir, key))?,
         ),
         (
-            sandbox_cli::BUILD_BASE_IMAGE_ENV.to_string(),
+            vm_call::BUILD_BASE_IMAGE_ENV.to_string(),
             container.base_image.clone().unwrap_or_default(),
         ),
         (
-            sandbox_cli::BUILD_WORKER_ENV.to_string(),
+            vm_call::BUILD_WORKER_ENV.to_string(),
             crate::build_record::plan_worker(
                 &compose_file,
                 key,
@@ -1089,15 +1215,44 @@ pub(crate) fn layer_own_vm_env(
             )?,
         ),
         (
-            sandbox_cli::BUILD_TIMEOUT_ENV.to_string(),
+            vm_call::BUILD_TIMEOUT_ENV.to_string(),
             container.scripts.build_timeout.as_millis().to_string(),
         ),
         (
-            sandbox_cli::BUILD_COMPOSE_FILE_ENV.to_string(),
+            vm_call::BUILD_COMPOSE_FILE_ENV.to_string(),
             utf8_path(key, &compose_file)?,
         ),
     ]);
     Ok(())
+}
+
+/// What `build.json` records of the project's adapter after a VM build: what `adapter::info` says,
+/// or its name alone when it does not answer.
+pub(crate) async fn vm_adapter(ctx: &LifecycleCtx<'_>, key: &str) -> crate::build_step::VmAdapter {
+    let name = adapter_name(ctx.file);
+    let info = start_call::<contract::AdapterInfo>(
+        ctx.engine,
+        key,
+        name,
+        ctx.project_namespace,
+        contract::ADAPTER_INFO_SUFFIX,
+        &contract::AdapterInfoRequest {},
+        CALL_SLACK,
+        true,
+    )
+    .await;
+    match info {
+        Ok(info) => crate::build_step::VmAdapter {
+            name: info.adapter,
+            version: info.adapter_version,
+            contract: (info.contract.major, info.contract.minor),
+        },
+        Err(_) => crate::build_step::VmAdapter {
+            name: name.to_string(),
+            version: String::new(),
+            contract: (contract::CONTRACT_MAJOR, contract::CONTRACT_MINOR),
+        },
+    }
 }
 
 /// The VM's identity at the adapter: hex SHA-256 over the project's state
@@ -1131,14 +1286,6 @@ const BUILD_ABORT_GRACE: Duration = Duration::from_secs(if cfg!(test) { 2 } else
 const BUILD_ABORT_RETRY: Duration = Duration::from_millis(if cfg!(test) { 100 } else { 500 });
 /// A status call's budget, and what a stop call gets beyond its grace.
 const CALL_SLACK: Duration = Duration::from_secs(10);
-
-/// The ref of a pipe's write end, for an adapter to write a stream into (a VM's log, a build's
-/// output): the same JSON as the SDK's ref.
-pub(crate) fn writer_ref(
-    output: &iii_sdk::OutputStream,
-) -> std::result::Result<contract::StreamChannelRef, serde_json::Error> {
-    serde_json::from_value(serde_json::to_value(output)?)
-}
 
 /// VM container `key` at instance 0, which no boot is: the adapter answers with the one it holds.
 fn boot_probe(ctx: &LifecycleCtx<'_>, key: &str) -> VmRecord {
@@ -3274,7 +3421,7 @@ pub(crate) mod tests {
     const PROJECT_026: &str = "# my project\ncontainers:\n  # the adapter, declared by hand\n  sb:\n    worker: path://./sb\n  # a VM, as 0.26 ran it\n  link:\n    worker: path://./link\n  dev:\n    worker: path://./dev\n    scripts:\n      run: python src/dev.py   # hot reload\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run}\n  host:\n    worker: path://./host\n    scripts:\n      build: \"\"\n      run: node index.js\n  plain:\n    worker: path://./plain\n";
 
     /// [`PROJECT_026`] after its migration: only the three VM containers changed.
-    const PROJECT_MIGRATED: &str = "# my project\ncontainers:\n  # the adapter, declared by hand\n  sb:\n    worker: path://./sb\n  # a VM, as 0.26 ran it\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n  dev:\n    worker: path://./dev\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'python src/dev.py'\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii sandbox run\n      build: iii sandbox build\n  host:\n    worker: path://./host\n    scripts:\n      build: \"\"\n      run: node index.js\n  plain:\n    worker: path://./plain\n";
+    const PROJECT_MIGRATED: &str = "# my project\ncontainers:\n  # the adapter, declared by hand\n  sb:\n    worker: path://./sb\n  # a VM, as 0.26 ran it\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link\n  dev:\n    worker: path://./dev\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=dev\n      run: iii call sandbox::start worker=dev 'command=python src/dev.py'\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii call sandbox::start worker=opt\n      build: iii call sandbox::build worker=opt\n  host:\n    worker: path://./host\n    scripts:\n      build: \"\"\n      run: node index.js\n  plain:\n    worker: path://./plain\n";
 
     /// The workers of [`PROJECT_026`] on disk.
     fn project_026(dir: &Path) -> PathBuf {
@@ -3318,7 +3465,7 @@ pub(crate) mod tests {
         assert_eq!(edited, PROJECT_MIGRATED);
         assert_eq!(
             file.containers["dev"].scripts.run.as_deref(),
-            Some("iii sandbox run --command 'python src/dev.py'")
+            Some("iii call sandbox::start worker=dev 'command=python src/dev.py'")
         );
         assert_eq!(due_migrations(&file), Vec::<String>::new());
         assert_eq!(
@@ -3395,7 +3542,7 @@ pub(crate) mod tests {
         assert_eq!(migration.containers, ["onboarding"]);
         assert_eq!(
             edited,
-            "containers:\n  sb: {worker: path://./sb}\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: 0.2.0\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run\n  web:\n    worker: package://api.workers.iii.dev/web\n    version: 1.0.0\n    scripts: {run: node server.js}\n"
+            "containers:\n  sb: {worker: path://./sb}\n  onboarding:\n    worker: package://api.workers.iii.dev/onboarding\n    version: 0.2.0\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=onboarding\n      run: iii call sandbox::start worker=onboarding\n  web:\n    worker: package://api.workers.iii.dev/web\n    version: 1.0.0\n    scripts: {run: node server.js}\n"
         );
         // Without its lock a package's kind is unknown, so nothing is due.
         std::fs::remove_file(crate::lockfile::lock_path(&path)).unwrap();
@@ -3523,7 +3670,7 @@ pub(crate) mod tests {
         assert!(error.to_string().starts_with("link: "), "{error}");
         assert!(error.to_string().contains("iii compose --up"), "{error}");
 
-        let explicit = "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts: {build: iii sandbox build, run: iii sandbox run}\n";
+        let explicit = "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts: {build: iii call sandbox::build worker=link, run: iii call sandbox::start worker=link}\n";
         let missing = parse(
             dir.path(),
             &explicit.replace("start_after: [sb]", "start_after: []"),
@@ -3828,7 +3975,8 @@ pub(crate) mod tests {
              host: {worker: path://./host, runtime: {base_image: alpine}}\n  \
              plain: {worker: package://plain, version: 1.0.0, scripts: {run: ./plain}}\n  \
              done: {worker: package://done, version: 1.0.0, start_after: [sb], runtime: \
-             {base_image: alpine}, scripts: {build: iii sandbox build, run: iii sandbox run}}\n",
+             {base_image: alpine}, scripts: {build: iii call sandbox::build worker=done, run: iii call \
+             sandbox::start worker=done}}\n",
         );
         for key in ["bin", "plain", "done"] {
             file.containers.get_mut(key).unwrap().resolved_package =
@@ -3865,17 +4013,17 @@ pub(crate) mod tests {
         }
         let mut env = BTreeMap::new();
         layer_package_env(&file, "wrapped", &mut env).unwrap();
-        assert_eq!(env[sandbox_cli::PACKAGE_KIND_ENV], "binary");
-        assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "tool");
+        assert_eq!(env[vm_call::PACKAGE_KIND_ENV], "binary");
+        assert_eq!(env[vm_call::PACKAGE_NAME_ENV], "tool");
         assert!(
-            Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV])
+            Path::new(&env[vm_call::PACKAGE_DIR_ENV])
                 .ends_with(Path::new(".iii").join("workers").join("wrapped")),
             "{env:?}"
         );
         let mut env = BTreeMap::new();
         layer_package_env(&file, "plain", &mut env).unwrap();
         assert!(env.is_empty(), "{env:?}");
-        assert!(host_only(sandbox_cli::PACKAGE_KIND_ENV));
+        assert!(host_only(vm_call::PACKAGE_KIND_ENV));
     }
 
     /// Spec 8.3 and 9.4: the guest gets the container's own variables, its user's own
@@ -3892,7 +4040,7 @@ pub(crate) mod tests {
         let compose_file = crate::spawn::canonical_compose_file(&file.path);
         let compose_dir = compose_file.parent().unwrap();
         let forwarded = |env: &BTreeMap<String, String>| -> BTreeSet<String> {
-            env[sandbox_cli::WORKER_ENV_KEYS_ENV]
+            env[vm_call::WORKER_ENV_KEYS_ENV]
                 .split(',')
                 .map(str::to_string)
                 .collect()
@@ -3925,12 +4073,12 @@ pub(crate) mod tests {
             assert!(!keys.contains(input), "{input}: {keys:?}");
         }
         assert_eq!(
-            Path::new(&env[sandbox_cli::BUILD_DIR_ENV]),
+            Path::new(&env[vm_call::BUILD_DIR_ENV]),
             compose_dir.join(".iii/build/api")
         );
-        assert_eq!(env[sandbox_cli::BUILD_TIMEOUT_ENV], "90000");
+        assert_eq!(env[vm_call::BUILD_TIMEOUT_ENV], "90000");
         assert_eq!(
-            Path::new(&env[sandbox_cli::BUILD_COMPOSE_FILE_ENV]),
+            Path::new(&env[vm_call::BUILD_COMPOSE_FILE_ENV]),
             compose_file
         );
 
@@ -3938,13 +4086,73 @@ pub(crate) mod tests {
         let mut env = BTreeMap::new();
         layer_own_vm_env(&file, "app", "p", Path::new("/state"), "orders", &mut env).unwrap();
         assert_eq!(
-            Path::new(&env[sandbox_cli::PACKAGE_DIR_ENV]),
+            Path::new(&env[vm_call::PACKAGE_DIR_ENV]),
             compose_dir.join(".iii/workers/app")
         );
-        assert_eq!(env[sandbox_cli::PACKAGE_NAME_ENV], "app");
+        assert_eq!(env[vm_call::PACKAGE_NAME_ENV], "app");
         let keys = forwarded(&env);
         for input in host_inputs {
             assert!(!keys.contains(input), "{input}: {keys:?}");
         }
+    }
+
+    /// `worker=` on an `iii call sandbox::*` line names the container's own VM; another name is
+    /// refused on load, and the forms written before `iii call` streamed are due for the rewrite.
+    #[test]
+    fn the_worker_of_an_iii_call_line_is_its_own_container() {
+        let dir = tempfile::tempdir().unwrap();
+        manifest(
+            dir.path(),
+            "vm",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        let own = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, scripts: {build: iii call sandbox::build \
+             worker=vm, run: iii call sandbox::start worker=vm}}\n",
+        );
+        validate_scripts(&own).unwrap();
+        let other = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, scripts: {build: iii call sandbox::build \
+             worker=vm, run: \"iii call sandbox::start 'worker=api'\"}}\n",
+        );
+        let error = validate_scripts(&other).unwrap_err();
+        assert_eq!(error.code(), "SANDBOX_WORKER_MISMATCH");
+        assert!(error.to_string().contains("scripts.run"), "{error}");
+        assert!(error.to_string().contains("'api'"), "{error}");
+
+        let legacy = parse(
+            dir.path(),
+            "containers:\n  vm: {worker: path://./vm, start_after: [sb], scripts: {build: iii \
+             sandbox build, run: iii sandbox run}}\n  sb: {worker: path://./vm}\n",
+        );
+        assert!(migration_due(&legacy, &legacy.containers["vm"]));
+    }
+
+    #[test]
+    fn call_arguments_are_read_as_sh_reads_them() {
+        let line = start_line("my-api", Some("node app.js --name 'x'"));
+        assert_eq!(
+            line,
+            "iii call sandbox::start worker=my-api 'command=node app.js --name '\\''x'\\'''"
+        );
+        assert_eq!(call_argument(&line, "worker").as_deref(), Some("my-api"));
+        assert_eq!(
+            call_argument(&line, "command").as_deref(),
+            Some("node app.js --name 'x'")
+        );
+        assert_eq!(
+            build_line("my-api"),
+            "iii call sandbox::build worker=my-api"
+        );
+        assert_eq!(
+            legacy_guest_command("iii sandbox run --command 'echo it'\\''s ok'").as_deref(),
+            Some("echo it's ok")
+        );
+        assert!(is_sandbox_run("iii call sandbox::start worker=a"));
+        assert!(is_sandbox_run("iii sandbox run") && is_legacy_sandbox("iii sandbox run"));
+        assert!(!is_legacy_sandbox("iii call sandbox::build worker=a"));
+        assert!(!is_sandbox_run("iii call sandbox::run"));
     }
 }

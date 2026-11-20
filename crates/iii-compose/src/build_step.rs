@@ -37,8 +37,8 @@ use crate::{
 const TAIL_LINES: usize = 20;
 /// What every build line starts with in the container's logs.
 pub(crate) const BUILD_LOG_PREFIX: &str = "[build] ";
-/// What a VM build gets beyond `build_timeout`, so `iii sandbox build`, which enforces it, reports
-/// its own `TIMED_OUT` first.
+/// What a VM build gets beyond `build_timeout`, so `sandbox::build`, which enforces it through its
+/// `timeout_ms`, reports its own `TIMED_OUT` first.
 const VM_TIMEOUT_SLACK: Duration = Duration::from_secs(30);
 /// How long the output of a build that ended may take to drain: a process it left behind can hold
 /// the pipes open.
@@ -166,7 +166,7 @@ pub(crate) fn mark_rebuilt(compose_file: &Path, key: &str) {
 }
 
 /// Whether an add or update rebuilt container `key`, and it has not started since. A build made
-/// by `compose::build` or `iii sandbox build` is never this: its restart is the user's.
+/// by `compose::build` or `iii call sandbox::build` is never this: its restart is the user's.
 pub(crate) fn rebuilt_unrestarted(compose_file: &Path, key: &str) -> bool {
     with_entry(&build_dir(compose_file, key), |entry| entry.unrestarted)
 }
@@ -187,7 +187,7 @@ impl Drop for Stopping {
 }
 
 /// Marks container `key` as being removed, then stops the build of it running in this process, if
-/// one is, and waits for it to end: its process stops, so `iii sandbox build` closes its channel
+/// one is, and waits for it to end: its process stops, so `iii call sandbox::build` closes its channel
 /// and the adapter aborts the build (spec 6.2). The build fails with `BUILD_STOPPED`, and so does
 /// any start, rebuild or build that takes the slot while the mark lives: one waiting for it, or
 /// one that had it but had not started its build yet.
@@ -236,7 +236,7 @@ pub(crate) enum Reason {
     /// Its package is not the one `build.json` was made from (spec 5.3).
     PackageChanged { old: String, new: String },
     /// `build.json` records a build of the other kind than `scripts.build` makes (spec 5.2): a
-    /// host build where it is now `iii sandbox build` (`to_vm`), or an image where it is now a
+    /// host build where it is now `iii call sandbox::build` (`to_vm`), or an image where it is now a
     /// host command.
     ModeChanged { to_vm: bool },
 }
@@ -293,7 +293,7 @@ pub(crate) fn input_changed(
 
 /// Spec 5.2, 5.3 and 5.5 before container `key` runs: `Some` when it builds first, because it has
 /// a non-empty `scripts.build` and no `build.json` yet, or one of the other kind (an image for a
-/// host command, or a host build for `iii sandbox build`), or its package changed. Logs the other
+/// host command, or a host build for `iii call sandbox::build`), or its package changed. Logs the other
 /// differences, once per start, and lets it run on its current build. The check only informs: one
 /// that fails is logged and the container runs.
 pub(crate) async fn due(compose_file: &Path, key: &str, container: &Container) -> Option<Reason> {
@@ -399,12 +399,13 @@ async fn assess(
     for change in changes {
         let line = match change {
             Change::Dependencies(files) => format!(
-                "{key}: dependencies changed since the last build ({}); run `iii sandbox build {key}`",
+                "{key}: dependencies changed since the last build ({}); run `iii call compose::build \
+                 worker={key}`",
                 files.join(", ")
             ),
             Change::BaseImage { old, new } => format!(
-                "{key}: base image changed since the last build ({} -> {}); run `iii sandbox build \
-                 {key}`",
+                "{key}: base image changed since the last build ({} -> {}); run `iii call \
+                 compose::build worker={key}`",
                 old.as_deref().unwrap_or("the adapter's default"),
                 new.as_deref().unwrap_or("the adapter's default")
             ),
@@ -469,13 +470,15 @@ enum End {
 /// Runs `container`'s `scripts.build` once (spec 4.1), as `sh -c` with what `spawn` gives its
 /// `scripts.run`: environment and working directory. Its output goes into the container's logs,
 /// each line prefixed with `[build] `. `scripts.build_timeout` bounds it, outside
-/// `startup_timeout`, and `cancel` stops it. A host build records `build.json` once it exits 0;
-/// `iii sandbox build` records its own.
+/// `startup_timeout`, and `cancel` stops it. Once it exits 0, `build.json` records it; a VM build,
+/// `iii call sandbox::build`, with the image `image.id` names and `adapter`, the adapter it went
+/// through.
 pub(crate) async fn run(
     spawn: &SpawnCtx<'_>,
     container: &Container,
     logs: &LogSink,
     cancel: Option<&ShutdownSignal>,
+    adapter: Option<&VmAdapter>,
 ) -> Outcome {
     let Some(command) = container.scripts.build_command() else {
         return Outcome::Built { build_id: None };
@@ -495,19 +498,15 @@ pub(crate) async fn run(
             message: error.to_string(),
         };
     }
-    // A host build is recorded with the source it was built from, read before it runs and again
-    // after (spec 5.4); `iii sandbox build` reads it itself.
-    let before = if vm {
-        None
-    } else {
-        match host_source(spawn.compose_file, key).await {
-            Ok(source) => Some(source),
-            Err(error) => {
-                return Outcome::Failed {
-                    code: error.code().to_string(),
-                    message: format!("the build could not be recorded, so it did not run: {error}"),
-                };
-            }
+    // A build is recorded with the source it was built from, read before it runs and again after
+    // (spec 5.4).
+    let before = match host_source(spawn.compose_file, key).await {
+        Ok(source) => source,
+        Err(error) => {
+            return Outcome::Failed {
+                code: error.code().to_string(),
+                message: format!("the build could not be recorded, so it did not run: {error}"),
+            };
         }
     };
     let start = StartSpec::Shell(command.to_string());
@@ -565,7 +564,7 @@ pub(crate) async fn run(
         None => waited.await,
     };
     if !matches!(end, End::Exited(_)) {
-        // Stopping `iii sandbox build` closes its channel, which aborts the build (spec 6.2).
+        // Stopping `iii call sandbox::build` closes its streams, which aborts the build.
         child.stop(STOP_GRACE).await;
     }
     for reader in readers {
@@ -586,17 +585,35 @@ pub(crate) async fn run(
             message: lines.join("\n"),
         },
         End::Exited(status) if status.success() => {
-            if vm {
-                return Outcome::Built {
-                    build_id: recorded_build_id(dir).await,
-                };
-            }
             let worker = worker_dir(spawn.compose_file, key, container);
-            let before = before.expect("a host build read its source");
-            match record_host_build(spawn.compose_file, key, command, &worker, &dir, before).await {
-                Ok(None) => Outcome::Built { build_id: None },
+            let image = if vm {
+                match vm_image(&dir, &worker, container, adapter).await {
+                    Ok(image) => Some(image),
+                    Err(error) => {
+                        return Outcome::Failed {
+                            code: error.code().to_string(),
+                            message: format!("the build ran, but its image is not there: {error}"),
+                        };
+                    }
+                }
+            } else {
+                None
+            };
+            let build_id = image.as_ref().map(|image| image.build_id.clone());
+            match record_build(
+                spawn.compose_file,
+                key,
+                command,
+                &worker,
+                &dir,
+                before,
+                image,
+            )
+            .await
+            {
+                Ok(None) => Outcome::Built { build_id },
                 Ok(Some(message)) => Outcome::Failed {
-                    code: crate::sandbox_cli::BUILD_INPUT_CHANGED.to_string(),
+                    code: crate::vm_call::BUILD_INPUT_CHANGED.to_string(),
                     message,
                 },
                 Err(error) => Outcome::Failed {
@@ -605,8 +622,8 @@ pub(crate) async fn run(
                 },
             }
         }
-        // The command names its failure on its last line (spec 8.1), whichever stream it went to:
-        // stderr's is asked first, as the other stream's reader may still have queued output.
+        // `iii call` names a failed call on its `Error:` line, whichever stream it went to: stderr's
+        // is asked first, as the other stream's reader may still have queued output.
         End::Exited(status) => match [tail.last_stderr, tail.last_stdout]
             .iter()
             .flatten()
@@ -650,11 +667,10 @@ fn exit_number(status: ExitStatus) -> i32 {
     }
 }
 
-/// The last line `iii sandbox build` prints on failure (spec 8.1):
-/// `iii sandbox: build failed: <code>: <message>`.
+/// The `code` and `message` of the `Error:` line `iii call` prints for a failed
+/// `sandbox::build`.
 fn cli_failure(line: &str) -> Option<(String, String)> {
-    crate::sandbox_cli::parse_build_failure(line)
-        .map(|(code, message)| (code.to_string(), message.to_string()))
+    crate::vm_call::call_failure(line)
 }
 
 /// What a build's output leaves for its failure: its last [`TAIL_LINES`], and the last line of each
@@ -700,16 +716,6 @@ async fn capture(
     }
 }
 
-/// The `build_id` the `build.json` of a VM build names, read without blocking the runtime.
-async fn recorded_build_id(dir: PathBuf) -> Option<String> {
-    tokio::task::spawn_blocking(move || record::read(&dir))
-        .await
-        .ok()?
-        .ok()?
-        .and_then(|record| record.image)
-        .map(|image| image.build_id)
-}
-
 /// Container `key`'s source, as its `build.json` records it.
 async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
     let (file, key) = (
@@ -724,16 +730,87 @@ async fn host_source(compose_file: &Path, key: &str) -> Result<BuildSource> {
         })?
 }
 
-/// Writes the `build.json` of a host build of container `key` made from `before`: the keys of
-/// spec 5.4, without `image`. `Some` with the message of `BUILD_INPUT_CHANGED`, and nothing
+/// The adapter a VM build went through, as `build.json` records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VmAdapter {
+    pub name: String,
+    /// Empty when the adapter did not say.
+    pub version: String,
+    pub contract: (u32, u32),
+}
+
+/// The image a VM build left in `dir`: its `build_id` from `image.id`, which the adapter writes
+/// last, and the base image the build was asked for, the container's or its manifest's. Which
+/// image the adapter resolved is in the build's answer, which Compose does not read: `reference`
+/// is the one asked for, and `digest` is unknown.
+async fn vm_image(
+    dir: &Path,
+    worker_dir: &Path,
+    container: &Container,
+    adapter: Option<&VmAdapter>,
+) -> Result<record::BuildImage> {
+    let (id, worker_dir, base_image) = (
+        dir.join("image.id"),
+        worker_dir.to_path_buf(),
+        container.base_image.clone(),
+    );
+    let (build_id, declared) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let build_id = std::fs::read_to_string(&id)
+            .map_err(|source| ComposeError::Io {
+                path: id.clone(),
+                source,
+            })?
+            .trim()
+            .to_string();
+        let declared = match base_image {
+            Some(image) => Some(image),
+            None => record::declared_base_image(&worker_dir)?,
+        };
+        Ok((build_id, declared))
+    })
+    .await
+    .map_err(|error| ComposeError::Io {
+        path: dir.join("image.id"),
+        source: std::io::Error::other(error.to_string()),
+    })??;
+    let adapter = adapter.cloned().unwrap_or(VmAdapter {
+        name: iii_sandbox_contract::DEFAULT_ADAPTER.to_string(),
+        version: String::new(),
+        contract: (
+            iii_sandbox_contract::CONTRACT_MAJOR,
+            iii_sandbox_contract::CONTRACT_MINOR,
+        ),
+    });
+    Ok(record::BuildImage {
+        file: "image.erofs".to_string(),
+        build_id,
+        base_image: record::BuildBaseImage {
+            reference: declared.clone().unwrap_or_default(),
+            declared,
+            digest: None,
+        },
+        adapter: record::BuildAdapter {
+            name: adapter.name,
+            version: adapter.version,
+        },
+        contract: record::BuildContract {
+            major: adapter.contract.0,
+            minor: adapter.contract.1,
+        },
+    })
+}
+
+/// Writes the `build.json` of a build of container `key` made from `before`: the keys of spec 5.4,
+/// with `image` for a VM build. `Some` with the message of `BUILD_INPUT_CHANGED`, and nothing
 /// written, when its source is no longer that.
-async fn record_host_build(
+async fn record_build(
     compose_file: &Path,
     key: &str,
     command: &str,
     worker_dir: &Path,
     dir: &Path,
     before: BuildSource,
+    image: Option<record::BuildImage>,
 ) -> Result<Option<String>> {
     let (file, key, command, worker_dir, dir) = (
         crate::spawn::canonical_compose_file(compose_file),
@@ -753,7 +830,7 @@ async fn record_host_build(
             container: key,
             command,
             dependency_files: record::dependency_files(&worker_dir)?,
-            image: None,
+            image,
             built_at: format!("{:.0}", jiff::Timestamp::now()),
         };
         record::write(&dir, &record).map(|()| None)
@@ -825,7 +902,7 @@ mod tests {
                 working_dir: &working_dir,
                 user_env: &user_env,
             };
-            run(&spawn, container, &self.logs.sink("api"), cancel).await
+            run(&spawn, container, &self.logs.sink("api"), cancel, None).await
         }
 
         async fn due(&self) -> Option<Reason> {
@@ -925,18 +1002,19 @@ mod tests {
         assert_eq!((cause.code.as_str(), cause.message), ("EXIT_3", expected));
     }
 
-    /// `iii sandbox build` names its failure on its last line (spec 8.1), and Compose records
+    /// `iii call sandbox::build` names its failure on its last line (spec 8.1), and Compose records
     /// nothing: the command writes its own `build.json`.
     // Writes an executable shell script, which needs Unix permissions.
     #[cfg(unix)]
     #[tokio::test]
     async fn iii_sandbox_build_names_its_own_failure() {
-        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let project =
+            project("scripts: {build: iii call sandbox::build, run: iii call sandbox::start}");
         let bin = project.dir.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(
             bin.join("iii"),
-            "#!/bin/sh\necho \"$III_BUILD_DIR\"\necho 'iii sandbox: build failed: S507: setup exited with 1'\nexit 1\n",
+            "#!/bin/sh\necho \"$III_BUILD_DIR\"\necho 'Error: {\"code\":\"S507\",\"message\":\"setup exited with 1\"}'\nexit 1\n",
         )
         .unwrap();
         std::fs::set_permissions(
@@ -1074,7 +1152,7 @@ mod tests {
         for (scripts, image) in [
             ("scripts: {build: 'true', run: x}", None),
             (
-                "scripts: {build: iii sandbox build, run: iii sandbox run}",
+                "scripts: {build: iii call sandbox::build, run: iii call sandbox::start}",
                 Some(image()),
             ),
         ] {
@@ -1206,27 +1284,25 @@ mod tests {
     }
 
     #[test]
-    fn cli_failure_uses_the_source_parser_for_valid_and_malformed_frames() {
-        let prefix = crate::sandbox_cli::BUILD_FAILED_LINE;
+    fn cli_failure_reads_the_error_line_of_iii_call() {
         for (frame, expected) in [
             (
-                format!("{prefix}S507: setup: exited with 1"),
+                r#"Error: {"code":"S507","message":"setup: exited with 1","stacktrace":null}"#,
                 Some(("S507", "setup: exited with 1")),
             ),
             (
-                format!("  {prefix}TIMED_OUT: late  \r\n"),
+                "  Error: {\"code\":\"TIMED_OUT\",\"message\":\"late\"}  \r\n",
                 Some(("TIMED_OUT", "late")),
             ),
-            (format!("{prefix}S507: "), Some(("S507", ""))),
-            (format!("{prefix}: no code"), None),
-            (format!("{prefix}  : no code"), None),
-            (format!("{prefix}S507"), None),
-            ("unrelated output".into(), None),
+            (r#"Error: {"code":"S507"}"#, Some(("S507", ""))),
+            (r#"Error: {"message":"no code"}"#, None),
+            ("Error: not json", None),
+            ("unrelated output", None),
         ] {
-            assert_eq!(crate::sandbox_cli::parse_build_failure(&frame), expected);
             assert_eq!(
-                cli_failure(&frame),
-                expected.map(|(code, message)| (code.into(), message.into()))
+                cli_failure(frame),
+                expected.map(|(code, message)| (code.to_string(), message.to_string())),
+                "{frame}"
             );
         }
     }
@@ -1299,12 +1375,12 @@ mod tests {
     async fn a_build_of_the_other_kind_rebuilds() {
         let host = project("scripts: {build: 'true', run: x}");
         let dir = build_dir(&host.file.path, "api");
-        record::write(&dir, &recorded("iii sandbox build", Some(image()))).unwrap();
+        record::write(&dir, &recorded("iii call sandbox::build", Some(image()))).unwrap();
         assert_eq!(host.due().await, Some(Reason::ModeChanged { to_vm: false }));
         record::write(&dir, &recorded("make", None)).unwrap();
         assert_eq!(host.due().await, None, "another host command rebuilt");
 
-        let vm = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let vm = project("scripts: {build: iii call sandbox::build, run: iii call sandbox::start}");
         let dir = build_dir(&vm.file.path, "api");
         record::write(&dir, &recorded("true", None)).unwrap();
         assert_eq!(vm.due().await, Some(Reason::ModeChanged { to_vm: true }));
@@ -1326,12 +1402,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_failure_line_on_stderr_wins_over_later_stdout() {
-        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let project =
+            project("scripts: {build: iii call sandbox::build, run: iii call sandbox::start}");
         let bin = project.dir.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(
             bin.join("iii"),
-            "#!/bin/sh\necho 'iii sandbox: build failed: S507: setup exited with 1' >&2\nseq 1 200\nexit 1\n",
+            "#!/bin/sh\necho 'Error: {\"code\":\"S507\",\"message\":\"setup exited with 1\"}' >&2\nseq 1 200\nexit 1\n",
         )
         .unwrap();
         std::fs::set_permissions(
@@ -1353,10 +1430,11 @@ mod tests {
     /// container runs on its build.
     #[tokio::test]
     async fn an_out_of_date_build_warns_once_per_kind_and_runs() {
-        let project = project("scripts: {build: iii sandbox build, run: iii sandbox run}");
+        let project =
+            project("scripts: {build: iii call sandbox::build, run: iii call sandbox::start}");
         record::write(
             &build_dir(&project.file.path, "api"),
-            &recorded("iii sandbox build", Some(image())),
+            &recorded("iii call sandbox::build", Some(image())),
         )
         .unwrap();
         std::fs::write(project.dir.path().join("api/package.json"), "{}").unwrap();
@@ -1367,8 +1445,8 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "api: dependencies changed since the last build (package.json); run `iii sandbox build api`",
-                "api: base image changed since the last build (docker.io/iiidev/python -> the adapter's default); run `iii sandbox build api`",
+                "api: dependencies changed since the last build (package.json); run `iii call compose::build worker=api`",
+                "api: base image changed since the last build (docker.io/iiidev/python -> the adapter's default); run `iii call compose::build worker=api`",
             ]
         );
     }

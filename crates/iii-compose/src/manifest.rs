@@ -214,7 +214,7 @@ pub fn resolve_start(key: &str, container: &Container) -> Result<StartSpec> {
         manifest.as_ref(),
         crate::engine_compat::running_engine_version().as_ref(),
     )?;
-    // A VM is the file's to ask for (`scripts.run: iii sandbox run`): Compose runs what it says, on
+    // A VM is the file's to ask for (`scripts.run: iii call sandbox::start`): Compose runs what it says, on
     // the host, and decides nothing from `runtime.base_image` (spec 7.6).
     let Some(start) = container.scripts.run.clone().or_else(|| {
         manifest

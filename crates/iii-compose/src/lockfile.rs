@@ -1655,9 +1655,9 @@ mod tests {
     const PLACED: &str = "containers:\n  host:\n    worker: package://tool\n    version: 1.0.0\n  \
                           vm:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \
                           base_image: docker.io/library/alpine:3.20\n    scripts:\n      build: iii \
-                          sandbox build\n      run: iii sandbox run\n  bundle:\n    worker: \
-                          package://kit\n    version: 1.0.0\n    scripts:\n      build: iii sandbox \
-                          build\n      run: iii sandbox run\n";
+                          call sandbox::build\n      run: iii call sandbox::start\n  bundle:\n    worker: \
+                          package://kit\n    version: 1.0.0\n    scripts:\n      build: iii call \
+                          sandbox::build\n      run: iii call sandbox::start\n";
 
     /// What the registry resolves `key` to: a bundle for `bundle`, else a binary with a host
     /// build and the two Linux builds of the host's architecture.
@@ -1760,7 +1760,7 @@ mod tests {
         let path = dir.path().join("worker-compose.yaml");
         let host_file = PLACED.replace(
             "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
-             build: iii sandbox build\n      run: iii sandbox run\n  bundle:",
+             build: iii call sandbox::build\n      run: iii call sandbox::start\n  bundle:",
             "  bundle:",
         );
         assert_ne!(host_file, PLACED);

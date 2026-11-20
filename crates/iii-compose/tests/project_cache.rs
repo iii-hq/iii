@@ -660,7 +660,7 @@ async fn frozen_up_and_build_refuse_an_undeclared_adapter_and_write_nothing() {
     assert_eq!(err.code(), "VM_SCRIPTS_MISSING");
     assert_eq!(
         err.to_string(),
-        "vm: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and scripts.run: iii sandbox ...). --frozen does not edit the file: run `iii compose --up` once without --frozen to rewrite them"
+        "vm: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and scripts.run: iii call sandbox::...). --frozen does not edit the file: run `iii compose --up` once without --frozen to rewrite them"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(std::fs::read_to_string(&lock).unwrap(), locked);

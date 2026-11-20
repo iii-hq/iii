@@ -1837,7 +1837,7 @@ impl Project {
     /// from a package other than the one locked now (a rebuild an add or update left undone), or
     /// one an add or update rebuilt and did not restart, cancelled or failed
     /// ([`crate::build_step::rebuilt_unrestarted`]). A retried add or update finishes them (spec
-    /// 5.3). A build made by `compose::build` or `iii sandbox build` is not one: its restart is the
+    /// 5.3). A build made by `compose::build` or `iii call sandbox::build` is not one: its restart is the
     /// user's (spec 3.3).
     pub(crate) async fn pending_rebuilds(&self, file: &ComposeFile) -> Vec<String> {
         let mut pending = Vec::new();
@@ -2268,8 +2268,8 @@ mod adapter_restart_tests {
     pub(super) fn fake_iii() -> String {
         format!(
             "#!/bin/sh\n\
-             if [ \"$2\" = build ]; then\n\
-             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii sandbox build\",\"dependency_files\":{{}},\"image\":{{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{{\"declared\":null,\"reference\":\"python\",\"digest\":null}},\"adapter\":{{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"}},\"contract\":{{\"major\":1,\"minor\":3}}}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\"\n\
+             if [ \"$2\" = sandbox::build ]; then\n\
+             mkdir -p \"$III_BUILD_DIR\" && printf '{{\"schema\":1,\"container\":\"%s\",\"source\":{{\"kind\":\"path\",\"dir\":\"./%s\"}},\"command\":\"iii call sandbox::build\",\"dependency_files\":{{}},\"image\":{{\"file\":\"image.erofs\",\"build_id\":\"sha256:1\",\"base_image\":{{\"declared\":null,\"reference\":\"python\",\"digest\":null}},\"adapter\":{{\"name\":\"sandbox-libkrun\",\"version\":\"0.4.0\"}},\"contract\":{{\"major\":1,\"minor\":3}}}},\"built_at\":\"2026-11-10T00:00:00Z\"}}' \"$III_WORKER_NAME\" \"$III_WORKER_NAME\" > \"$III_BUILD_DIR/build.json\" && printf sha256:1 > \"$III_BUILD_DIR/image.id\"\n\
              exit 0\n\
              fi\n\
              test -e ../refuse && exit 125\n\
@@ -2293,7 +2293,7 @@ mod adapter_restart_tests {
             .filter(|pid| crate::process::is_running(*pid))
     }
 
-    /// `sb` is the adapter of `vm` and `web`, which run their VMs through `iii sandbox run`, the
+    /// `sb` is the adapter of `vm` and `web`, which run their VMs through `iii call sandbox::start`, the
     /// latter declared first but started after the former, beside the plain worker `api`. All of
     /// them are up.
     async fn fixture(policy: &str) -> Fixture {
@@ -2322,8 +2322,8 @@ mod adapter_restart_tests {
         )
         .unwrap();
         let vm = format!(
-            "environment: {{PATH: '{}:/usr/bin:/bin'}}, scripts: {{build: iii sandbox build, run: \
-             iii sandbox run}}{policy}",
+            "environment: {{PATH: '{}:/usr/bin:/bin'}}, scripts: {{build: iii call sandbox::build, run: \
+             iii call sandbox::start}}{policy}",
             bin.display()
         );
         let path = dir.path().join("worker-compose.yaml");
@@ -2420,7 +2420,7 @@ mod adapter_restart_tests {
             inner.restarts.attempts.keys().cloned().collect()
         }
 
-        /// The VM containers whose `iii sandbox run` started since the fixture was up.
+        /// The VM containers whose `iii call sandbox::start` started since the fixture was up.
         fn started(&self) -> Vec<String> {
             std::fs::read_to_string(self.dir.path().join("started"))
                 .unwrap_or_default()
@@ -2779,7 +2779,7 @@ mod adapter_restart_tests {
                  sb: {{worker: path://./sb}}\n  \
                  own:\n    worker: path://./own\n    start_after: [sb]\n    {policy}\n    \
                  environment: {{PATH: '{}:/usr/bin:/bin'}}\n    \
-                 scripts: {{build: iii sandbox build, run: iii sandbox run}}\n",
+                 scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
                 bin.display()
             ),
         )
@@ -2840,7 +2840,7 @@ mod adapter_restart_tests {
         (dir, project, vm)
     }
 
-    /// SIGKILLs `own`'s `iii sandbox run` as its VM runs on under the worker's name, and
+    /// SIGKILLs `own`'s `iii call sandbox::start` as its VM runs on under the worker's name, and
     /// lets the supervisor see it. Returns the command's pid.
     async fn kill_own_vm_command(
         dir: &Path,
@@ -3042,7 +3042,7 @@ mod adapter_restart_tests {
         project.shutdown().await;
     }
 
-    /// Its VM ended with the adapter, but its `iii sandbox run` may not have.
+    /// Its VM ended with the adapter, but its `iii call sandbox::start` may not have.
     #[tokio::test]
     async fn a_process_running_its_own_vm_is_stopped_when_the_adapter_does_not_come_back() {
         let (dir, project, _) = own_vm_project("").await;
@@ -3160,8 +3160,7 @@ mod adapter_restart_tests {
         .unwrap()
     }
 
-    const EXPLICIT: &str =
-        "start_after: [sb]\n    scripts: {build: iii sandbox build, run: iii sandbox run}";
+    const EXPLICIT: &str = "start_after: [sb]\n    scripts: {build: iii call sandbox::build, run: iii call sandbox::start}";
 
     /// Spec 7.3, step 2: the VM a 0.26 daemon left running holds the worker's name. Once the
     /// adapter is up it is stopped, before the first build, its record is dropped, and its data
@@ -3438,8 +3437,8 @@ mod adapter_restart_tests {
     async fn remove_stops_a_running_build_before_it_destroys_the_vm() {
         let dir = tempfile::tempdir().unwrap();
         let script = fake_iii().replacen(
-            "if [ \"$2\" = build ]; then\n",
-            "if [ \"$2\" = build ]; then\ntest -e ../slow && echo $$ > ../build.pid && exec sleep 30\n",
+            "if [ \"$2\" = sandbox::build ]; then\n",
+            "if [ \"$2\" = sandbox::build ]; then\ntest -e ../slow && echo $$ > ../build.pid && exec sleep 30\n",
             1,
         );
         let path = write_small_project(dir.path(), EXPLICIT, &script);

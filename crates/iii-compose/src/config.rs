@@ -886,8 +886,8 @@ fn validate_container(
 
 /// `runtime.base_image`, checked offline: an image reference, without the whitespace or control
 /// characters no reference has (the adapter checks the rest, `S001`), on a container that runs
-/// in a VM. A `scripts.run` other than `iii sandbox run`, or a `scripts.build` other than
-/// `iii sandbox build` (`""` included), keeps it on the host, where the image would go unused;
+/// in a VM. A `scripts.run` other than `iii call sandbox::start`, or a `scripts.build` other than
+/// `iii call sandbox::build` (`""` included), keeps it on the host, where the image would go unused;
 /// neither key yet is the explicit VM mode still to be written. Unlike the manifest's key, the
 /// container's never moves a worker to the host (spec 7.3).
 fn validate_base_image(
@@ -1791,7 +1791,7 @@ containers:
         assert_eq!(
             parse(
                 "    runtime:\n      base_image: docker.io/library/alpine:3.20\n    scripts:\n      \
-                 build: iii sandbox build\n      run: iii sandbox run\n"
+                 build: iii call sandbox::build\n      run: iii call sandbox::start\n"
             ),
             Ok(image)
         );
@@ -1814,7 +1814,7 @@ containers:
         for (build, run) in [
             ("npm ci", ""),
             ("''", ""),
-            ("npm ci", "      run: iii sandbox run\n"),
+            ("npm ci", "      run: iii call sandbox::start\n"),
         ] {
             let text = format!(
                 "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime:\n      \

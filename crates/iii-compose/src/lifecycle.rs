@@ -274,7 +274,7 @@ impl From<ComposeError> for StartFailure {
 }
 
 /// One supervised container: a local process group. A VM container is one too: the
-/// `iii sandbox run` that boots its VM (spec 7.6).
+/// `iii call sandbox::start` that boots its VM (spec 7.6).
 pub type Child = Supervised;
 
 /// Containers currently supervised by this daemon, keyed by container id.
@@ -763,7 +763,7 @@ async fn restart_one_scoped(
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
     //
-    // The VM of a dead `iii sandbox run` stays up under the name. A supervised
+    // The VM of a dead `iii call sandbox::start` stays up under the name. A supervised
     // retry has no release to wait for, as its command reattaches; a restart
     // someone asked for, after an edit say, boots that VM anew.
     let released = async {
@@ -1068,7 +1068,7 @@ async fn down_scoped(
     let mut results = Vec::new();
     for key in order {
         if !children.contains_key(&key) {
-            // The VM of a killed `iii sandbox run` stays up until its lease ends, and the
+            // The VM of a killed `iii call sandbox::start` stays up until its lease ends, and the
             // next `up` would reattach to it.
             let changed = crate::sandbox::stop_own_vm(ctx, &key).await;
             if changed {
@@ -1296,7 +1296,7 @@ async fn start_one_until_shutdown(
     // the container would be reported ready in milliseconds while the process
     // we started loses the `(namespace, worker_name)` lease and dies rejected.
     // Refuse instead, and say who is holding the name. The guest of a VM that
-    // outlived its `iii sandbox run` is no stranger: the command started below
+    // outlived its `iii call sandbox::start` is no stranger: the command started below
     // reattaches to it, and that registration is the readiness it is after.
     if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))?
         && wait_or_interrupt!(crate::sandbox::own_vm_running(ctx, key)).is_none()
@@ -1361,7 +1361,7 @@ async fn start_one_until_shutdown(
                     binary_start(key, container, program)?,
                     installed.default_config,
                 ),
-                // A bundle runs what the file says: `iii sandbox run` boots its VM, another
+                // A bundle runs what the file says: `iii call sandbox::start` boots its VM, another
                 // command runs it on the host from `.iii/workers/<container>/` (spec 7.5).
                 crate::registry::Payload::Bundle(_) => {
                     let Some(run) = container.scripts.run.clone() else {
@@ -1427,11 +1427,18 @@ async fn start_one_until_shutdown(
         if let Some(operation) = operation_id.and_then(crate::operation::active) {
             operation.emit(Some(key), "building", detail).await;
         }
+        let adapter = match container.scripts.build_command() {
+            Some(command) if crate::sandbox::is_sandbox_build(command) => {
+                Some(crate::sandbox::vm_adapter(ctx, key).await)
+            }
+            _ => None,
+        };
         let built = Box::pin(crate::build_step::run(
             &spawn_ctx,
             container,
             &ctx.logs.sink(key),
             shutdown.as_ref(),
+            adapter.as_ref(),
         ))
         .await;
         if built == crate::build_step::Outcome::Cancelled {
@@ -1635,8 +1642,8 @@ pub(crate) async fn fail_vms_of_lost_adapter(
 }
 
 /// Container `key`'s own environment, `env_file` and `environment`, with what Compose lays over
-/// it: the adapter's token and roots, a bundle's package directory, and what `iii sandbox run` and
-/// `iii sandbox build` read. `diagnose` reports empty values, as a start does.
+/// it: the adapter's token and roots, a bundle's package directory, and what `iii call sandbox::start` and
+/// `iii call sandbox::build` read. `diagnose` reports empty values, as a start does.
 pub(crate) fn container_env(
     ctx: &LifecycleCtx<'_>,
     key: &str,
@@ -1710,7 +1717,20 @@ pub(crate) async fn build_one(
             working_dir: &working_dir,
             user_env: &user_env,
         };
-        Ok(crate::build_step::run(&spawn_ctx, container, &ctx.logs.sink(key), Some(cancel)).await)
+        let adapter = match container.scripts.build_command() {
+            Some(command) if crate::sandbox::is_sandbox_build(command) => {
+                Some(crate::sandbox::vm_adapter(ctx, key).await)
+            }
+            _ => None,
+        };
+        Ok(crate::build_step::run(
+            &spawn_ctx,
+            container,
+            &ctx.logs.sink(key),
+            Some(cancel),
+            adapter.as_ref(),
+        )
+        .await)
     };
     Some(built.await)
 }
@@ -1908,7 +1928,7 @@ pub(crate) fn failed_op(
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// How binary package container `key` starts, once `program`, its executable, is installed: as
-/// it was published, unless the file says how. `iii sandbox run` boots its Linux build in a VM,
+/// it was published, unless the file says how. `iii call sandbox::start` boots its Linux build in a VM,
 /// another `scripts.run` runs on the host (spec 4.2). A container whose build is the Linux one of
 /// a VM, with no `scripts.run` written yet, fails with `VM_SCRIPTS_MISSING`: the host never
 /// runs that build.
@@ -1975,8 +1995,8 @@ containers:
     runtime:
       base_image: docker.io/library/alpine:3.20
     scripts:
-      build: iii sandbox build
-      run: iii sandbox run
+      build: iii call sandbox::build
+      run: iii call sandbox::start
   vm-to-write:
     worker: package://tool
     version: 1.0.0
@@ -1999,7 +2019,7 @@ containers:
         ));
         assert!(matches!(
             start("in-vm"),
-            Ok(StartSpec::Shell(ref run)) if run == "iii sandbox run"
+            Ok(StartSpec::Shell(ref run)) if run == "iii call sandbox::start"
         ));
         let error = start("vm-to-write").unwrap_err();
         assert!(matches!(error, ComposeError::VmScriptsNotWritten { .. }));

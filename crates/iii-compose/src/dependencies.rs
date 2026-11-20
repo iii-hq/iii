@@ -1159,7 +1159,7 @@ mod tests {
                 .env("KAN292_RAW_REFERENCE_TEST", "1")
                 .env("KAN292_REGISTRY", "registry.example.test")
                 .env("KAN292_LITERAL", "must-not-be-expanded-twice")
-                .env("VM_RUN", "iii sandbox run")
+                .env("VM_RUN", "iii call sandbox::start")
                 .output()
                 .unwrap();
             assert!(
@@ -1199,7 +1199,7 @@ mod tests {
                                 serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
                                     "worker": worker,
                                     "runtime": {"base_image": "alpine:3.20"},
-                                    "scripts": {"build": "iii sandbox build", "run": "${VM_RUN}"}
+                                    "scripts": {"build": "iii call sandbox::build", "run": "${VM_RUN}"}
                                 })).unwrap().parse().unwrap()
                             };
                             let mut asked = vec![request(raw_reference, selector)];
@@ -1310,7 +1310,7 @@ mod tests {
                                 reference: effective_reference.into()
                             });
                             assert_eq!(parsed.containers["tool"].version.as_deref(), Some(selector.unwrap_or("1.2.3")));
-                            assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii sandbox run"));
+                            assert_eq!(parsed.containers["tool"].scripts.run.as_deref(), Some("iii call sandbox::start"));
                             assert_eq!(crate::vm_binary::platform(&parsed.containers["tool"]), Platform::Vm);
                             // Placement is per declaration, not inherited along graph edges.
                             for declaration in &planned.containers {
@@ -1348,7 +1348,7 @@ mod tests {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST, "--nocapture"])
                 .env("KAN292_PLATFORM_TEST", "1")
-                .env("VM_RUN", "iii sandbox run")
+                .env("VM_RUN", "iii call sandbox::start")
                 .env_remove("KAN292_UNDEFINED_RUN")
                 .output()
                 .unwrap();
@@ -1369,7 +1369,7 @@ mod tests {
                 serde_json::from_value::<crate::edit::WorkerInput>(serde_json::json!({
                     "worker": "tool@1.0.0",
                     "runtime": {"base_image": "alpine:3.20"},
-                    "scripts": {"build": "iii sandbox build", "run": run}
+                    "scripts": {"build": "iii call sandbox::build", "run": run}
                 })).unwrap().parse().unwrap()
             };
             let server = MockServer::start().await;
@@ -1401,7 +1401,7 @@ mod tests {
             }).await;
             server.verify().await;
             let existing = ComposeFile::parse(
-                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime: {base_image: 'alpine:3.20'}\n    scripts: {run: '${VM_RUN}', build: iii sandbox build}\n",
+                "containers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    runtime: {base_image: 'alpine:3.20'}\n    scripts: {run: '${VM_RUN}', build: iii call sandbox::build}\n",
                 &path,
             ).unwrap();
             let omitted = crate::edit::parse_worker("tool@1.0.0").unwrap();
@@ -1485,7 +1485,7 @@ mod tests {
         assert_eq!(
             declared(
                 "other",
-                serde_json::json!({"scripts": {"run": "iii sandbox run"}})
+                serde_json::json!({"scripts": {"run": "iii call sandbox::start"}})
             ),
             Platform::Vm
         );
