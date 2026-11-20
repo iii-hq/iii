@@ -2357,22 +2357,7 @@ impl Daemon {
                 ComposeError::BuildFailed { code, message, .. } => (code.clone(), message.clone()),
                 other => (other.code().to_string(), other.to_string()),
             };
-            let finish = format!(
-                "retry the {operation}, or run `iii call compose::build worker={key}` then `iii call \
-                 compose::restart worker={key}`, to finish it."
-            );
-            let mut retry = if cascaded.contains(key) {
-                format!(
-                    "The file and the lock already name its new version. It could not stay on its \
-                     previous build: its adapter restarts in this {operation}, and its VM ends \
-                     with it, so it starts again and builds then. Fix its build, then {finish}"
-                )
-            } else {
-                format!(
-                    "The file and the lock already name its new version, and it keeps running on \
-                     its previous build: {finish}"
-                )
-            };
+            let mut retry = rebuild_retry(operation, cascaded.contains(key));
             if let Some(waiting) = &waiting {
                 retry.push_str(&format!(
                     " Rebuilt, and not restarted because of it: {waiting}."
@@ -3082,6 +3067,28 @@ fn removal_order(file: &crate::ComposeFile, requested: &BTreeSet<&str>) -> Resul
         order.push(adapter);
     }
     Ok(order)
+}
+
+/// How a failed rebuild of an add or update is finished: retrying it, which rebuilds the
+/// container and restarts it on the version the file and the lock name. A build and a restart by
+/// hand would restart it on the declaration the project still holds, the previous version.
+fn rebuild_retry(operation: &str, cascaded: bool) -> String {
+    let finish = format!(
+        "fix its build, then retry the {operation}, which rebuilds it and restarts it on that \
+         version."
+    );
+    if cascaded {
+        format!(
+            "The file and the lock already name its new version. It could not stay on its previous \
+             build: its adapter restarts in this {operation}, and its VM ends with it, so it starts \
+             again and builds then. To finish it, {finish}"
+        )
+    } else {
+        format!(
+            "The file and the lock already name its new version, and it keeps running on its \
+             previous build. To finish it, {finish}"
+        )
+    }
 }
 
 /// Persists one compose mutation while keeping its YAML and lock consistent.
@@ -7461,6 +7468,19 @@ pub(crate) mod findings_lifecycle_tests {
             .unwrap(),
             ["web", "vm", "sb"]
         );
+    }
+
+    /// A failed rebuild of an update is finished by retrying it, which restarts the container on
+    /// the version the file and the lock name; a restart by hand would keep the held, previous
+    /// one.
+    #[test]
+    fn a_failed_rebuild_is_finished_by_retrying_the_update() {
+        for cascaded in [false, true] {
+            let retry = super::rebuild_retry("update", cascaded);
+            assert!(retry.contains("retry the update"), "{retry}");
+            assert!(!retry.contains("compose::restart"), "{retry}");
+            assert!(!retry.contains("compose::build"), "{retry}");
+        }
     }
 
     async fn assert_down_uses_loaded_build_plan(remove_build_declaration: bool) {
