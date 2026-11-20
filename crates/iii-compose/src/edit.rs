@@ -683,6 +683,16 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
                 ));
             }
             Some((head, end)) => {
+                // Edited in place, a list another container aliases would gain the adapter too.
+                if let Some(anchor) = shared_anchor(&lines, entry.start + head, entry.start + end) {
+                    return Err(invalid(
+                        key,
+                        &format!(
+                            "its start_after is shared with another container through the YAML \
+                             anchor &{anchor}; give each its own start_after, then run this again"
+                        ),
+                    ));
+                }
                 if let Some(flow) = flow_span(entry_lines, head) {
                     let (close_line, close_column) = flow.close;
                     let line = entry_lines[close_line];
@@ -4336,6 +4346,26 @@ containers:
         assert_eq!(flow.close, (0, lines[0].len() - 1));
         let lines = ["    config_override: {message: 'say }'}"];
         assert_eq!(flow_span(&lines, 0).unwrap().close, (0, lines[0].len() - 1));
+    }
+
+    /// A `start_after` another container aliases is not edited: that container would gain the
+    /// adapter too.
+    #[test]
+    fn a_start_after_another_container_aliases_is_refused() {
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    start_after: &deps [db]\n    scripts: {build: iii call sandbox::build worker=vm, run: iii call sandbox::start worker=vm}\n  web:\n    worker: path://./web\n    start_after: *deps\n";
+        let error = explicit_vm_mode(text, "vm", "sb").unwrap_err();
+        assert!(
+            error.to_string().contains("start_after is shared")
+                && error.to_string().contains("&deps;"),
+            "{error}"
+        );
+        let own = text.replace("start_after: *deps", "start_after: [db]");
+        let rewrite = explicit_vm_mode(&own, "vm", "sb").unwrap().unwrap();
+        let parsed: Value = serde_yaml::from_str(&rewrite.text).unwrap();
+        assert_eq!(
+            parsed["containers"]["web"]["start_after"],
+            serde_yaml::from_str::<Value>("[db]").unwrap()
+        );
     }
 
     #[test]
