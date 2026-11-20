@@ -1606,13 +1606,24 @@ mod tests {
             )
         };
         request(Operation::Build, "build").await.unwrap();
+        let operation = daemon.operations.get("build-slow").await.unwrap();
+        // Its script starts, or the operation ends before it does: bounded either way.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         while !tmp.path().join("slow/started").exists() {
+            let snapshot = operation.snapshot().await;
+            let ended = snapshot.status != crate::operation::OperationStatus::Running;
+            if ended || tokio::time::Instant::now() >= deadline {
+                daemon.shutdown().await;
+                panic!(
+                    "the build's script never started: {}",
+                    serde_json::to_value(&snapshot).unwrap()
+                );
+            }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
         let cancelled = request(Operation::Cancel, "cancel").await.unwrap();
         assert_eq!(cancelled["cancelled"], true, "{cancelled}");
-        let operation = daemon.operations.get("build-slow").await.unwrap();
         let snapshot = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let snapshot = operation.snapshot().await;

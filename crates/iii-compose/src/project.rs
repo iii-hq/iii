@@ -3549,7 +3549,15 @@ mod adapter_restart_tests {
             let (project, signal) = (project.clone(), controller.signal());
             async move { project.build(Some("own"), "build", &signal).await }
         });
+        // The build writes its pid, or ends before it does: bounded either way.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         while !pid_file.exists() {
+            if building.is_finished() || tokio::time::Instant::now() >= deadline {
+                controller.cancel();
+                let ended = tokio::time::timeout(Duration::from_secs(10), building).await;
+                project.shutdown().await;
+                panic!("the build never wrote its pid: {ended:?}");
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
 
@@ -3733,15 +3741,23 @@ mod adapter_restart_tests {
         let signal = controller.signal();
         let marker = dir.path().join("building");
         let began = std::time::Instant::now();
-        let (rebuilt, ()) = tokio::join!(
+        let (rebuilt, started) = tokio::join!(
             project.rebuild_changed(&file, &own, "update", &signal),
             async {
-                while !marker.exists() {
+                // Cancelled whether the script started or not, so a rebuild that never starts it
+                // ends too, and is reported below.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while !marker.exists() && tokio::time::Instant::now() < deadline {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 controller.cancel();
+                marker.exists()
             }
         );
+        if !started {
+            project.shutdown().await;
+            panic!("the rebuild never started its script: {rebuilt:?}");
+        }
 
         assert!(rebuilt.cancelled, "{rebuilt:?}");
         assert!(
