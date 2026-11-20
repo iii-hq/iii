@@ -208,8 +208,9 @@ names none resolves in the namespace of the calling worker. A miss returns `func
 naming the namespaces where the id does exist.
 
 <Note>
-  `iii call` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
-  from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
+  `iii call` reaches `default` unless you pass `--namespace <NS>`, also from a process whose
+  `III_NAMESPACE` names another namespace, such as a script Compose starts. For calling across
+  namespaces from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
 </Note>
 
 ## Run a function when something happens

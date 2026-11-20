@@ -237,6 +237,7 @@ fn iii_call(url: &str, cwd: &std::path::Path, args: &[&str]) -> Command {
         .current_dir(cwd)
         .env_remove("III_URL")
         .env_remove("III_CALL_DEFAULTS")
+        .env_remove("III_NAMESPACE")
         .env("III_TELEMETRY_ENABLED", "false")
         .kill_on_drop(true);
     command
@@ -332,6 +333,34 @@ async fn an_unread_stdin_does_not_hold_up_the_exit() {
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), "done\n");
+}
+
+/// Without `-n` a call resolves in `default`, as `--help` says, also from a process whose
+/// `III_NAMESPACE` names another namespace, as every script Compose starts does.
+#[tokio::test(flavor = "multi_thread")]
+async fn iii_namespace_does_not_route_a_call_without_n() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+
+    let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::lines", "count=2"]);
+    command.env("III_NAMESPACE", "elsewhere");
+    let out = output(command).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "line 1\nline 2\n");
+
+    // `-n` still routes where it says.
+    let out = output(iii_call(
+        &engine.url,
+        cwd.path(),
+        &["cli-streams::lines", "count=2", "-n", "elsewhere"],
+    ))
+    .await;
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("elsewhere"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

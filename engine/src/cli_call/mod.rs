@@ -108,8 +108,9 @@ pub struct CallArgs {
     pub print_result: bool,
 
     /// Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's
-    /// `default` namespace; routing is strict, so a function registered in
-    /// another namespace is only reachable with this flag.
+    /// `default` namespace, also in a process with `III_NAMESPACE` set (a
+    /// Compose script); routing is strict, so a function registered in another
+    /// namespace is only reachable with this flag.
     #[arg(short = 'n', long, value_name = "NS")]
     pub namespace: Option<String>,
 

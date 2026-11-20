@@ -7,6 +7,7 @@
 use std::io::IsTerminal;
 use std::time::Instant;
 
+use iii::protocol::DEFAULT_NAMESPACE;
 use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::CallRequest;
 use iii_sdk::{Error, IIIClient, InitOptions, register_worker};
@@ -124,10 +125,14 @@ async fn call(
     options: &Options<'_>,
 ) -> Result<(), CallCliError> {
     let budget = Budget::start(options.timeout_ms);
+    // Always named: without `-n` the call resolves in `default`, as `--help` says. Left implicit,
+    // the SDK would take the namespace of `III_NAMESPACE`, which every process Compose starts
+    // has, and a script's `iii call sandbox::build` would look in its project's namespace.
+    let namespace = options.namespace.unwrap_or(DEFAULT_NAMESPACE);
     let mut bindings = options.bindings.clone();
     if options.auto_bind && payload.is_object() {
         let lookup_timeout = budget.lookup_timeout();
-        match request_schema(iii, function_path, options.namespace, lookup_timeout).await {
+        match request_schema(iii, function_path, namespace, lookup_timeout).await {
             Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
             Ok(None) => {}
             Err(error) => {
@@ -160,14 +165,7 @@ async fn call(
         action: None,
         timeout_ms: Some(timeout_ms),
     };
-    // Omitted when absent so the engine keeps resolving in `default`: the
-    // caller's own namespace never influences routing.
-    let call = async {
-        match options.namespace {
-            Some(namespace) => iii.call(request.namespace(namespace)).await,
-            None => iii.call(request).await,
-        }
-    };
+    let call = iii.call(request.namespace(namespace));
     // A signal before the answer is a stop: the streams close, the function stops what it runs
     // and answers, and that answer is what this command exits with.
     let (result, stopped) = answer(call, interrupt.as_ref(), carried.cancel()).await;
@@ -269,13 +267,10 @@ async fn answer<T>(
 async fn request_schema(
     iii: &IIIClient,
     function_path: &str,
-    namespace: Option<&str>,
+    namespace: &str,
     timeout_ms: u64,
 ) -> Result<Option<Value>, Error> {
-    let mut payload = json!({ "function_id": function_path });
-    if let Some(namespace) = namespace {
-        payload["namespace"] = json!(namespace);
-    }
+    let payload = json!({ "function_id": function_path, "namespace": namespace });
     let info = match iii
         .call(CallRequest {
             function_id: "engine::functions::info".to_string(),
