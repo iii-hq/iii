@@ -312,7 +312,13 @@ jobs:
             ### Engine
 
             ```sh
-            curl -fsSL https://install.iii.dev/iii/main/install.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
+            curl -fsSL https://iii.dev/registry/install/iii/${{ needs.prepare.outputs.version }}.sh | III_RELEASE_TAG=${{ needs.prepare.outputs.tag }} sh
+            ```
+
+            The newest alpha:
+
+            ```sh
+            curl -fsSL https://iii.dev/registry/install/iii/alpha.sh | sh
             ```
 
             ### Node.js

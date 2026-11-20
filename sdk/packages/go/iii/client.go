@@ -323,7 +323,7 @@ func WithDescription(description string) Option {
 }
 
 // WithHeaders sets HTTP headers sent on the WebSocket handshake of the main connection
-// and of channels created with [Client.CreateChannel]. The III_TOKEN environment
+// and of the stream sockets of this client (see [InputStream] and [OutputStream]). The III_TOKEN environment
 // variable, when set and not blank, adds "Authorization: Bearer <token>" unless h
 // already carries an Authorization header.
 func WithHeaders(h http.Header) Option {
@@ -413,6 +413,8 @@ func New(url string, opts ...Option) *Client {
 	}
 	c.lifeCtx, c.lifeCancel = context.WithCancel(context.Background())
 	c.reporter = newReporter(c, defaultReporterLimits)
+	// A stream received outside any call binds to the only client alive (streams.go).
+	addLiveClient(c)
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -836,26 +838,53 @@ const maxLocalDepth = 64
 func (c *Client) Call(ctx context.Context, req CallRequest) (json.RawMessage, error) {
 	// JSON null metadata is no metadata, local or routed (decision 54).
 	req.Metadata = presentMetadata(req.Metadata)
-	if req.Observer != nil {
-		return c.callThroughObserver(ctx, req)
-	}
-	if err := refuseBlankCallNamespace(req.Namespace, "CallRequest.Namespace"); err != nil {
+	// Streams: refused in an enqueued call, sent once, never in metadata. Checked the
+	// same way on every path, before anything is sent.
+	if err := checkCallStreams(req); err != nil {
 		return nil, err
 	}
-	switch req.Dispatch {
-	case "", DispatchAuto, DispatchRemote:
-	default:
-		return nil, fmt.Errorf("iii: CallRequest.Dispatch must be %q or %q, got %q", DispatchAuto, DispatchRemote, req.Dispatch)
+	if err := refuseCallRequest(req); err != nil {
+		release(req.payload())
+		return nil, err
+	}
+	// Received refs the payload passes on as raw JSON are the callee's now: their guards
+	// leave them alone. Only a call that passed every check gets them.
+	markTransferred(req.payload())
+	// The call's timeout bounds its wait for the sinks it passes, too.
+	deadline := time.Now().Add(c.callTimeout(req.Timeout))
+	if req.Observer != nil {
+		return c.callThroughObserver(ctx, req, deadline)
 	}
 	namespace := invocationNamespace(req.FunctionID, req.Namespace, c.namespace)
 	if req.Dispatch != DispatchRemote && (req.Action == nil || req.Action.Type != "enqueue") {
 		if parent := invocationFrom(ctx); parent == nil || parent.localDepth < maxLocalDepth {
 			if fn, st, ok := c.localTarget(req.FunctionID, namespace); ok {
-				return c.invokeLocal(ctx, fn, st, req)
+				return c.invokeLocal(ctx, fn, st, req, deadline)
 			}
 		}
 	}
-	return c.invokeRemote(ctx, req, namespace, nil)
+	return c.callRemote(ctx, req, namespace, nil, deadline)
+}
+
+// callRemote is invokeRemote with the streams of the payload: each gets a pipe, its ref
+// takes its place, and the call returns once every sink it passed got its stream, by
+// deadline. A void call does not wait: its pumps run on their own. The refs in the
+// result are tracked, so a stream unmarshalled from it is bound to c.
+func (c *Client) callRemote(ctx context.Context, req CallRequest, namespace string, activation *Activation, deadline time.Time) (json.RawMessage, error) {
+	detach := req.Action != nil && req.Action.Type == "void"
+	payload, started, err := c.prepareStreams(ctx, req.payload())
+	if err != nil {
+		return nil, err
+	}
+	if started != nil {
+		req.Payload, req.Data = payload, nil
+	}
+	res, err := c.invokeRemote(ctx, req, namespace, activation)
+	if res, err = started.settle(ctx, res, err, detach, deadline); err != nil {
+		return nil, err
+	}
+	c.trackResult(res)
+	return res, nil
 }
 
 // Trigger is [Client.Call] under its 0.25 name.
@@ -865,27 +894,40 @@ func (c *Client) Trigger(ctx context.Context, req TriggerRequest) (json.RawMessa
 	return c.Call(ctx, req)
 }
 
+// refuseCallRequest is why req cannot be dispatched, nil when it can: checked before
+// anything is sent, so a refused call keeps its streams.
+func refuseCallRequest(req CallRequest) error {
+	if obs := req.Observer; obs != nil {
+		switch {
+		case obs.owner == nil:
+			return errors.New("iii: CallRequest.Observer is not an observer handed out by the client")
+		case req.FunctionID != "" || req.Namespace != "":
+			return fmt.Errorf("iii: CallRequest.FunctionID and Namespace must be empty with Observer: the call goes to observer %s's target", obs.id)
+		case req.Metadata != nil:
+			// Its target's metadata is the observer's: refused before anything is sent, so
+			// no metadata is lost on the way (decision 53).
+			return errObserverCallMetadata
+		case req.Action != nil && req.Action.Type == "enqueue":
+			return fmt.Errorf("iii: a call through observer %s cannot be enqueued", obs.id)
+		}
+		return nil
+	}
+	if err := refuseBlankCallNamespace(req.Namespace, "CallRequest.Namespace"); err != nil {
+		return err
+	}
+	switch req.Dispatch {
+	case "", DispatchAuto, DispatchRemote:
+		return nil
+	}
+	return fmt.Errorf("iii: CallRequest.Dispatch must be %q or %q, got %q", DispatchAuto, DispatchRemote, req.Dispatch)
+}
+
 // callThroughObserver sends an invokefunction to the observer's target with
 // activation.observer_id and no namespace: the engine routes it to the target it
 // stored for the observer and checks the rest.
-func (c *Client) callThroughObserver(ctx context.Context, req CallRequest) (json.RawMessage, error) {
-	obs := req.Observer
-	if obs.owner == nil {
-		return nil, errors.New("iii: CallRequest.Observer is not an observer handed out by the client")
-	}
-	if req.FunctionID != "" || req.Namespace != "" {
-		return nil, fmt.Errorf("iii: CallRequest.FunctionID and Namespace must be empty with Observer: the call goes to observer %s's target", obs.id)
-	}
-	// Its target's metadata is the observer's: refused before anything is sent, so no
-	// metadata is lost on the way (decision 53).
-	if req.Metadata != nil {
-		return nil, errObserverCallMetadata
-	}
-	if req.Action != nil && req.Action.Type == "enqueue" {
-		return nil, fmt.Errorf("iii: a call through observer %s cannot be enqueued", obs.id)
-	}
-	req.FunctionID = obs.target
-	return c.invokeRemote(ctx, req, "", &Activation{ObserverID: obs.id})
+func (c *Client) callThroughObserver(ctx context.Context, req CallRequest, deadline time.Time) (json.RawMessage, error) {
+	req.FunctionID = req.Observer.target
+	return c.callRemote(ctx, req, "", &Activation{ObserverID: req.Observer.id}, deadline)
 }
 
 // invokeRemote is the routed path: an InvokeFunction through the engine. Inside a
@@ -1729,14 +1771,18 @@ func (c *Client) handleInvoke(ctx context.Context, epoch uint64, msg *InvokeFunc
 	f := fn.observe
 	// the observers active when the call started, and the hooks set then
 	st := f.state.Load()
+	// An observer activation of an engine-built Observed: its captured streams reach the
+	// handler as StreamInfo.
+	data, observed := rewriteObserved(msg.Data, msg.Activation)
+	sc := streamCall{answered: msg.InvocationID != nil, activation: msg.Activation != nil, observed: observed}
 	var routed routedAnswer
-	out := c.runInvocation(hctx, fn.handler, msg.Data, false, func(ctx context.Context, handler outcome) outcome {
+	out := c.runInvocation(hctx, fn.handler, data, false, sc, func(ctx context.Context, handler outcome) outcome {
 		if !runsHooks || !st.hooked() {
 			return handler
 		}
 		answer, how := f.deliverRouted(ctx, &callDelivery{
 			state:   st,
-			call:    handlerCall(st, msg.FunctionID, inv.invocationID, msg.Data, handler, msg.Caller, metadata),
+			call:    handlerCall(st, msg.FunctionID, inv.invocationID, data, handler, msg.Caller, metadata),
 			handler: handler,
 		})
 		routed = how
@@ -1751,6 +1797,9 @@ type outcome struct {
 	result  json.RawMessage
 	errBody *ErrorBody
 	err     error
+	// sent are the pumps of the streams result carries (sendOutcome): whoever drops the
+	// result stops them.
+	sent *pumps
 }
 
 // outcomeOf encodes what a handler or a deliver hook returned: a json.RawMessage is
@@ -1772,11 +1821,34 @@ func outcomeOf(value any, err error, copyRaw bool) outcome {
 // an error, which the caller gets as the InvocationResult's error. copyRaw copies a
 // json.RawMessage the handler returns (any other value is marshaled into a buffer of its
 // own).
-func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, copyRaw bool, deliver func(ctx context.Context, handler outcome) outcome) outcome {
+//
+// sc says how the streams of the call are handled: the guard tracks the streams of the
+// input (unless it is an Observed envelope) and settles them once the handler returned
+// (R2, R3), and the streams of the result get their pipes before the answer goes, or
+// are released when nobody reads it.
+func (c *Client) runInvocation(ctx context.Context, h Handler, data json.RawMessage, copyRaw bool, sc streamCall, deliver func(ctx context.Context, handler outcome) outcome) outcome {
 	ctx, endSpan := c.startInvocationSpan(ctx, data) // otel_client.go: "execute <fn>" span
+	// Every stream the handler receives is its own, unmarshalled or not: the guard
+	// applies to it. An Observed envelope copies another call's.
+	guard := newStreamGuard(sc.activation)
+	if !sc.observed {
+		guard.trackInput(c, data)
+	}
 	value, err := callHandler(ctx, h, data)
-	handler := outcomeOf(value, err, copyRaw)
+	// The streams in the result are sent: they get their pipes (and pumps) first, so the
+	// guard leaves them alone. Nobody reads a void call's.
+	handler := c.sendOutcome(outcomeOf(value, err, copyRaw), sc.answered)
+	// R2, R3: the streams the handler received are closed, aborted or cancelled now,
+	// without delaying the answer.
+	guard.settle(handler)
 	out := deliver(ctx, handler)
+	if out.sent != handler.sent {
+		// A deliver hook's own answer: the streams of the handler's result it does not
+		// carry are not sent, so their pumps stop.
+		out.sent = handler.sent.keep(out)
+	}
+	// A deliver hook's own answer: its streams are sent too.
+	out = c.sendOutcome(out, sc.answered)
 	if out.err != nil {
 		endSpan(nil, out.err)
 	} else if out.errBody != nil {
@@ -1993,6 +2065,7 @@ func (c *Client) terminate(ctx context.Context, graceful bool) error {
 	c.stopTelemetry(ctx) // otel_client.go: stop the worker gauges, flush and stop exporters
 	close(c.shutdown)
 	c.lifeCancel()
+	removeLiveClient(c)
 
 	// Cancel all pending invocations.
 	c.mu.Lock()

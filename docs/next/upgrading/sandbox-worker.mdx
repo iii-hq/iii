@@ -24,7 +24,7 @@ and where their state is kept. Work through the sections that apply to your setu
   After 0.26, a VM worker is explicit in `worker-compose.yaml`: `scripts.build` is
   `iii sandbox build` and `scripts.run` is `iii sandbox run`, and the adapter range is `^0.4`. See
   [Compose / VM workers](../using-iii/compose#vm-workers) and
-  [Upgrading from 0.26.x](./from-0-26-x).
+  [Upgrading VM workers from 0.26.x](./explicit-vm-workers).
 </Note>
 
 ## What moved
@@ -62,7 +62,7 @@ no engine and attaches to whichever one holds its address. Add that container an
 In a project without a VM worker, a file that already declares the adapter at `version: '^0.2'`
 stays on 0.2 across `compose::up`, `compose::restart`, and `compose::update worker=sandbox-libkrun`.
 In a project with a VM worker, these calls fail with `SANDBOX_ADAPTER_TOO_OLD` instead. See
-[Upgrading from 0.26.x](./from-0-26-x#update-the-sandbox-adapter). To move it, stop Compose, change
+[Upgrading VM workers from 0.26.x](./explicit-vm-workers#update-the-sandbox-adapter). To move it, stop Compose, change
 the range to `'^0.4'`, and run `iii compose --up` again, or run a bare `iii call compose::update`,
 which rewrites the range to `^0.4` and
 [updates every other package worker](../using-iii/compose#updating-workers). On 0.2, observers can

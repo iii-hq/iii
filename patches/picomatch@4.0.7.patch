@@ -1,0 +1,69 @@
+diff --git a/lib/parse.js b/lib/parse.js
+index 29207512c60183b4bb9bf5112be3b9b5f4a9a9fd..3f3a7851d57e83f87a8c7dc6f326258ca43f025e 100644
+--- a/lib/parse.js
++++ b/lib/parse.js
+@@ -541,12 +541,55 @@ const parse = (input, options) => {
+     const body = input.slice(token.startIndex + 2, state.index);
+     const analysis = analyzeRepeatedExtglob(body, opts);
+ 
+-    if ((token.type === 'plus' || token.type === 'star') && analysis.risky) {
++    // A repeated single literal followed by a different mandatory literal
++    // has a unique boundary: the inner run cannot consume its delimiter.
++    // Prove only this exact token shape; all other nested repeats stay guarded.
++    const isDelimitedRepeat = () => {
++      const start = token.tokensIndex + 2;
++      if (tokens.length !== start + 5) return false;
++      const repeat = tokens[start];
++      const open = tokens[start + 1];
++      const literal = tokens[start + 2];
++      const close = tokens[start + 3];
++      const delimiter = tokens[start + 4];
++      // Match toRegex's precedence: explicit nonempty flags override nocase.
++      const flags = opts.flags || (opts.nocase ? 'i' : '');
++      const ignoreCase = flags.includes('i');
++      return (repeat.type === 'star' || repeat.type === 'plus') && repeat.output === '' &&
++        open.type === 'paren' && open.extglob && open.output === '(?:' &&
++        literal.type === 'text' && /^[a-zA-Z0-9]$/.test(literal.value) && literal.output === undefined &&
++        close.type === 'paren' && close.extglob && /^\)[*+]$/.test(close.output || '') &&
++        delimiter.type === 'text' && /^[a-zA-Z0-9]$/.test(delimiter.value) &&
++        delimiter.output === undefined &&
++        (ignoreCase ? delimiter.value.toLowerCase() !== literal.value.toLowerCase()
++          : delimiter.value !== literal.value);
++    };
++
++    // GHSA-fc5q-39xc-vjpf: inspect parsed tokens, not raw characters.
++    // Brackets (including POSIX classes), quotes and escaped/literal pluses
++    // are already classified by the parser and must not become quantifiers.
++    let hasUnboundedQuantifier = false;
++    if ((token.type === 'plus' || token.type === 'star') &&
++      opts.maxExtglobRecursion !== false && !isDelimitedRepeat()) {
++      for (let i = token.tokensIndex + 2; i < tokens.length; i++) {
++        const tok = tokens[i];
++        if (tok.unbounded === true ||
++          ((tok.type === 'star' || tok.type === 'globstar') && Boolean(tok.output)) ||
++          (tok.type === 'plus' && tok.value === '+' && tok.output === undefined) ||
++          (tok.type === 'paren' && tok.extglob && /[+*]\)?$/.test(tok.output || ''))) {
++          hasUnboundedQuantifier = true;
++          break;
++        }
++      }
++    }
++
++    if ((token.type === 'plus' || token.type === 'star') && (analysis.risky || hasUnboundedQuantifier)) {
+       const safeOutput = analysis.safeOutput
+         ? (token.output ? '' : ONE_CHAR) + (opts.capture ? `(${analysis.safeOutput})` : analysis.safeOutput)
+         : undefined;
+       const open = tokens[token.tokensIndex];
+ 
++      open.unbounded = Boolean(analysis.safeOutput);
+       open.type = 'text';
+       open.value = literal;
+       open.output = safeOutput || utils.escapeRegex(literal);
+@@ -555,6 +598,7 @@ const parse = (input, options) => {
+         tokens[i].value = '';
+         tokens[i].output = '';
+         delete tokens[i].suffix;
++        delete tokens[i].unbounded;
+       }
+ 
+       state.output = token.output + open.output;

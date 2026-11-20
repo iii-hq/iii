@@ -1,11 +1,18 @@
-export { ChannelReader, ChannelWriter } from './channels'
-
+export {
+  InputStream,
+  type InputStreamSource,
+  OutputStream,
+  type OutputStreamSink,
+  type StreamFrame,
+  type StreamInfo,
+} from './call-streams'
 export {
   InvocationError,
   type InvocationErrorInit,
   ObserveRejection,
   RegistrationRejectedError,
   type RegistrationRejectedInit,
+  StreamAbortedError,
 } from './errors'
 export { CallAction, type InitOptions, registerWorker, TriggerAction } from './iii'
 export type { IIIConnectionState, IIIReconnectionConfig } from './iii-constants'
@@ -23,7 +30,6 @@ export type {
   OpenEnum,
   RegisterFunctionFormat,
   RegisterFunctionMessage,
-  StreamChannelRef,
   TriggerRequest,
 } from './iii-types'
 
@@ -54,9 +60,10 @@ export type {
 export type {
   ApiRequest,
   ApiResponse,
-  Channel,
   FunctionRef,
   ISdk,
+  Pipe,
+  PipeOptions,
   RegisterFunctionInput,
   RegisterFunctionOptions,
   RemoteFunctionHandler,

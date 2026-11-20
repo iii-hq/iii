@@ -682,6 +682,55 @@ onObserverRemoved(functionId: string, hook: RemovedHook | null) => ISdk
 
 ---
 
+### pipe
+
+Creates a pipe: an InputStream and an OutputStream joined
+through the engine; what is written into `output` is read from `input`.
+Put either end in a payload or a result for the other side to use: it
+travels as its ref. This worker owns the pipe and must stay connected until
+the other side attached.
+
+A source or a sink placed in a payload gets its pipe from the SDK, so most
+code does not need this: use it for an end that must exist before its
+source does, a two-way session (two pipes), or a pipe handed to a call
+made later.
+
+**Signature**
+
+```typescript
+pipe(options?: PipeOptions) => Promise<Pipe>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="options" type="PipeOptions">
+  `bufferSize`: frames the engine holds before the reader attached.
+
+  <Expandable title="`PipeOptions` fields">
+    <ParamField body="bufferSize" type="number">
+      Frames the engine holds for the pipe before its reader attached (engine default when omitted).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+const pipe = await worker.pipe()
+const result = worker.call({ function_id: 'files::process', payload: { body: pipe.input } })
+await file.stream().pipeTo(pipe.output.toWebStream())
+await result
+```
+
+
+  </Tab>
+</Tabs>
+
+---
+
 ### shutdown
 
 Gracefully shutdown the iii, cleaning up all resources.
@@ -771,7 +820,8 @@ The `iii-browser-sdk` package provides additional entry points:
 
 | Import path | Contents |
 |---|---|
-| `iii-browser-sdk` | `AddedHook`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Call`, `CallAction`, `CallRequest`, `Caller`, `CallerInfo`, `Capture`, `Channel`, `ChannelReader`, `ChannelWriter`, `DeliverHook`, `EngineFunctions`, `EngineSources`, `EnqueueResult`, `Filter`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `InvocationContext`, `InvocationError`, `InvocationErrorInit`, `Key`, `MatchHook`, `MatchKeys`, `MatchPredicate`, `MessageType`, `MiddlewareFunctionInput`, `ObserveReason`, `ObserveRejection`, `ObserveSource`, `Observed`, `Observer`, `ObserverHandle`, `ObserverOptions`, `ObserverState`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OpenEnum`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `RemoteFunctionHandler`, `RemovedHook`, `StreamChannelRef`, `Target`, `registerWorker` |
+| `iii-browser-sdk` | `AddedHook`, `ApiRequest`, `ApiResponse`, `AuthInput`, `AuthResult`, `Call`, `CallAction`, `CallRequest`, `Caller`, `CallerInfo`, `Capture`, `DeliverHook`, `EngineFunctions`, `EngineSources`, `EnqueueResult`, `Filter`, `FunctionRef`, `IIIConnectionState`, `IIIReconnectionConfig`, `ISdk`, `InitOptions`, `InputStream`, `InputStreamSource`, `InvocationContext`, `InvocationError`, `InvocationErrorInit`, `Key`, `MatchHook`, `MatchKeys`, `MatchPredicate`, `MessageType`, `MiddlewareFunctionInput`, `ObserveReason`, `ObserveRejection`, `ObserveSource`, `Observed`, `Observer`, `ObserverHandle`, `ObserverOptions`, `ObserverState`, `OnFunctionRegistrationInput`, `OnFunctionRegistrationResult`, `OpenEnum`, `OutputStream`, `OutputStreamSink`, `Pipe`, `PipeOptions`, `RegisterFunctionFormat`, `RegisterFunctionInput`, `RegisterFunctionMessage`, `RegisterFunctionOptions`, `RegistrationRejectedError`, `RegistrationRejectedInit`, `RemoteFunctionHandler`, `RemovedHook`, `StreamAbortedError`, `StreamFrame`, `StreamInfo`, `Target`, `registerWorker` |
+| `iii-browser-sdk/protocol` | `ChannelDirection`, `ChannelItem`, `StreamChannelRef`, `extractChannelRefs`, `isChannelRef` |
 | `iii-browser-sdk/state` | `DeleteResult`, `IState`, `StateDeleteInput`, `StateDeleteResult`, `StateEventData`, `StateEventType`, `StateGetInput`, `StateListInput`, `StateSetInput`, `StateSetResult`, `StateUpdateInput`, `StateUpdateResult` |
 | `iii-browser-sdk/stream` | `MergePath`, `UpdateAppend`, `UpdateDecrement`, `UpdateIncrement`, `UpdateMerge`, `UpdateOp`, `UpdateOpError`, `UpdateRemove`, `UpdateSet` |
 
@@ -779,7 +829,7 @@ The `iii-browser-sdk` package provides additional entry points:
 
 ### iii-browser-sdk
 
-[`AddedHook`](#addedhook) · [`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Call`](#call) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallerInfo`](#callerinfo) · [`CallRequest`](#callrequest) · [`Capture`](#capture) · [`Channel`](#channel) · [`ChannelReader`](#channelreader) · [`ChannelWriter`](#channelwriter) · [`DeliverHook`](#deliverhook) · [`EngineFunctions`](#enginefunctions) · [`EngineSources`](#enginesources) · [`EnqueueResult`](#enqueueresult) · [`Filter`](#filter) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`InvocationContext`](#invocationcontext) · [`InvocationError`](#invocationerror) · [`InvocationErrorInit`](#invocationerrorinit) · [`Key`](#key) · [`MatchHook`](#matchhook) · [`MatchKeys`](#matchkeys) · [`MatchPredicate`](#matchpredicate) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserveReason`](#observereason) · [`ObserveRejection`](#observerejection) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverState`](#observerstate) · [`ObserveSource`](#observesource) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OpenEnum`](#openenum) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemovedHook`](#removedhook) · [`StreamChannelRef`](#streamchannelref) · [`Target`](#target)
+[`AddedHook`](#addedhook) · [`ApiRequest`](#apirequest) · [`ApiResponse`](#apiresponse) · [`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`Call`](#call) · [`CallAction`](#callaction) · [`Caller`](#caller) · [`CallerInfo`](#callerinfo) · [`CallRequest`](#callrequest) · [`Capture`](#capture) · [`DeliverHook`](#deliverhook) · [`EngineFunctions`](#enginefunctions) · [`EngineSources`](#enginesources) · [`EnqueueResult`](#enqueueresult) · [`Filter`](#filter) · [`FunctionRef`](#functionref) · [`IIIConnectionState`](#iiiconnectionstate) · [`IIIReconnectionConfig`](#iiireconnectionconfig) · [`InitOptions`](#initoptions) · [`InputStream`](#inputstream) · [`InputStreamSource`](#inputstreamsource) · [`InvocationContext`](#invocationcontext) · [`InvocationError`](#invocationerror) · [`InvocationErrorInit`](#invocationerrorinit) · [`Key`](#key) · [`MatchHook`](#matchhook) · [`MatchKeys`](#matchkeys) · [`MatchPredicate`](#matchpredicate) · [`MessageType`](#messagetype) · [`MiddlewareFunctionInput`](#middlewarefunctioninput) · [`Observed`](#observed) · [`Observer`](#observer) · [`ObserveReason`](#observereason) · [`ObserveRejection`](#observerejection) · [`ObserverHandle`](#observerhandle) · [`ObserverOptions`](#observeroptions) · [`ObserverState`](#observerstate) · [`ObserveSource`](#observesource) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult) · [`OpenEnum`](#openenum) · [`OutputStream`](#outputstream) · [`OutputStreamSink`](#outputstreamsink) · [`Pipe`](#pipe) · [`PipeOptions`](#pipeoptions) · [`RegisterFunctionFormat`](#registerfunctionformat) · [`RegisterFunctionInput`](#registerfunctioninput) · [`RegisterFunctionMessage`](#registerfunctionmessage) · [`RegisterFunctionOptions`](#registerfunctionoptions) · [`RegistrationRejectedError`](#registrationrejectederror) · [`RegistrationRejectedInit`](#registrationrejectedinit) · [`RemoteFunctionHandler`](#remotefunctionhandler) · [`RemovedHook`](#removedhook) · [`StreamAbortedError`](#streamabortederror) · [`StreamFrame`](#streamframe) · [`StreamInfo`](#streaminfo) · [`Target`](#target)
 
 #### AddedHook
 
@@ -928,32 +978,6 @@ type Capture = "input" | "output" | "error" | "caller" | "metadata"
 
 ---
 
-#### Channel
-
-A streaming channel pair for worker-to-worker data transfer. Created via
-the `createChannel` helper from `iii-browser-sdk/helpers`.
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `reader` | [`ChannelReader`](#channelreader) | Yes | Reader end of the channel. |
-| `readerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the reader (can be sent to other workers). |
-| `writer` | [`ChannelWriter`](#channelwriter) | Yes | Writer end of the channel. |
-| `writerRef` | [`StreamChannelRef`](#streamchannelref) | Yes | Serializable reference to the writer (can be sent to other workers). |
-
----
-
-#### ChannelReader
-
-Read end of a streaming channel. Uses native browser WebSocket.
-
----
-
-#### ChannelWriter
-
-Write end of a streaming channel. Uses native browser WebSocket.
-
----
-
 #### DeliverHook
 
 Delivers each call of a function itself (`onObservationDeliver`): it receives
@@ -1086,6 +1110,38 @@ Configuration options passed to registerWorker.
 | `namespace` | `string` | No | Namespace this worker registers under. When omitted the engine applies its<br />`default` namespace. Scopes worker and function registrations so<br />identically-named entries can coexist across namespaces. The browser has no<br />`process.env`, so there is no environment-variable fallback: pass the<br />option explicitly. |
 | `reconnectionConfig` | Partial&lt;[`IIIReconnectionConfig`](#iiireconnectionconfig)&gt; | No | WebSocket reconnection behavior. |
 | `workerName` | `string` | No | Name this worker announces to the engine. Defaults to a unique<br />`browser:<random>` per client: a browser has no pid to disambiguate by, and<br />the engine allows only one live worker per name in a namespace, so two tabs<br />sharing a fixed name would evict each other. |
+
+---
+
+#### InputStream
+
+The read side of a stream. A field of a handler's input or of a call's
+result arrives as one when the sender put a source there (a Web
+`ReadableStream`, a `Blob` or `File`, an async generator, an
+`InputStream`, or a Node `Readable` from a Node worker). Build one yourself
+with InputStream.from.
+
+A stream has one reader: read it once, with one of `for await`,
+bytes, text, lines, messages, frames
+or toWebStream. Call tee first for two. Pass it on unread in
+a payload or a result and its ref travels instead: no bytes go through this
+worker. Inside a handler, a stream the handler started reading and did not
+finish is cancelled when the handler returns.
+
+A stream carries bytes (binary frames) and, separately, JSON messages (text
+frames): byte reads skip the messages, messages skips the bytes, and
+frames yields both in order. An abort surfaces as a
+StreamAbortedError from the read, after the data sent before it.
+
+---
+
+#### InputStreamSource
+
+What InputStream.from reads from.
+
+```typescript
+type InputStreamSource = InputStream | ReadableStream<Uint8Array> | Blob | Uint8Array | ArrayBuffer | string | AsyncIterable<Uint8Array | string> | Iterable<Uint8Array | string>
+```
 
 ---
 
@@ -1401,6 +1457,55 @@ type OpenEnum = T | string & object
 
 ---
 
+#### OutputStream
+
+The write side of a stream. A field of a handler's input arrives as one when
+the caller put a sink there (a Web `WritableStream`, an `OutputStream`, or a
+Node `Writable` from a Node worker); the call resolves once what the handler
+wrote reached the sink. Build one yourself with OutputStream.to.
+
+Inside a handler, a stream the handler wrote to (or bridged) is closed when
+the handler returns and aborted when it throws, unless it was closed,
+aborted, sent on, or kept open with keepOpen. One the handler never
+touched is closed when it returns, whatever it returns. In an observer
+activation (an HTTP route target), it is closed only when the handler returns
+`undefined` or `null`, and left alone otherwise: the HTTP worker reads an
+untouched response and a value as a buffered response.
+
+---
+
+#### OutputStreamSink
+
+What OutputStream.to writes into.
+
+```typescript
+type OutputStreamSink = WritableStream<Uint8Array>
+```
+
+---
+
+#### Pipe
+
+The two ends of a pipe made by ISdk.pipe: what is written into
+`output` is read from `input`. Either end can be put in a payload or a result.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `input` | [`InputStream`](#inputstream) | Yes | The read end. |
+| `output` | [`OutputStream`](#outputstream) | Yes | The write end. |
+
+---
+
+#### PipeOptions
+
+Options of ISdk.pipe.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `bufferSize` | `number` | No | Frames the engine holds for the pipe before its reader attached (engine default when omitted). |
+
+---
+
 #### RegisterFunctionFormat
 
 | Name | Type | Required | Description |
@@ -1525,16 +1630,50 @@ type RemovedHook = (obs: Observer) => void | Promise<void>
 
 ---
 
-#### StreamChannelRef
+#### StreamAbortedError
 
-Serializable reference to one end of a streaming channel. Can be included
-in invocation payloads to pass channel endpoints between workers.
+A stream failed instead of ending: its writer aborted it (a source that
+threw, a handler that threw while writing, `out.abort()`), or its socket was
+lost. Thrown by the reads of an `InputStream` after the data sent before the
+abort, and the error a call rejects with when a sink it passed was aborted
+(`code` is `STREAM_ABORTED` in both cases). Mirrors the Node SDK.
+
+`reason` is what the reader was told. Across the engine that is the
+engine's text (`channel writer aborted: closed with code 4011` for a browser
+writer), not the writer's own reason: the engine does not relay it.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `access_key` | `string` | Yes | Access key for authentication. |
-| `channel_id` | `string` | Yes | Unique channel identifier. |
-| `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
+| `code` | `string` | Yes | - |
+| `function_id` | `string` | No | - |
+| `reason` | `string` | Yes | Why the stream was aborted, as the reader learned it. |
+| `stacktrace` | `string` | No | - |
+
+---
+
+#### StreamFrame
+
+One frame of InputStream.frames: bytes, or a text message.
+
+```typescript
+type StreamFrame = { type: "binary"; value: Uint8Array } | { type: "text"; value: string }
+```
+
+---
+
+#### StreamInfo
+
+What an observer's target sees in place of a stream that the observed call
+carried in its `input` or `output`: that a stream was there, its direction
+and its channel id, without the access key (a stream has one reader, and it
+is the observed function). The engine still sends the key on the wire; the
+SDK drops it.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `direction` | `"read" \| "write"` | Yes | - |
+| `id` | `string` | Yes | - |
+| `stream` | `true` | Yes | - |
 
 ---
 
@@ -1545,6 +1684,45 @@ The right side of `iii.observe`: a registered function.
 ```typescript
 type Target = string | { function_id: string; namespace?: string }
 ```
+
+### iii-browser-sdk/protocol
+
+[`ChannelDirection`](#channeldirection) · [`ChannelItem`](#channelitem) · [`StreamChannelRef`](#streamchannelref)
+
+#### ChannelDirection
+
+Direction of a streaming channel endpoint. Mirrors the Rust SDK's
+`ChannelDirection` enum and matches the literal values used by
+StreamChannelRef.direction.
+
+```typescript
+type ChannelDirection = typeof ChannelDirection[keyof typeof ChannelDirection]
+```
+
+---
+
+#### ChannelItem
+
+One frame of a channel: a binary frame carries bytes, a text frame a
+message. Mirrors the Rust SDK's `ChannelItem` enum (`Text` / `Binary`);
+`InputStream.frames()` yields these.
+
+```typescript
+type ChannelItem = { type: "text"; value: string } | { type: "binary"; value: Uint8Array }
+```
+
+---
+
+#### StreamChannelRef
+
+Serializable reference to one end of a streaming channel. Can be included
+in invocation payloads to pass channel endpoints between workers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `access_key` | `string` | Yes | Access key for authentication. |
+| `channel_id` | `string` | Yes | Unique channel identifier. |
+| `direction` | `"read" \| "write"` | Yes | Whether this ref is for reading or writing. |
 
 ### iii-browser-sdk/state
 

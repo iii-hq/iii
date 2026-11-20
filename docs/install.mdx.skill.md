@@ -3,7 +3,7 @@
 # Install
 
 
-{/* TODO (community feedback): Add a direct binary-download path alongside the curl|sh installer so users who do not want to verify a remote script with a bot, or are on Windows, have an alternative. Link to the GitHub Releases page for the engine and include PATH setup instructions per OS (especially Windows). */}
+{/* TODO (community feedback): Add a direct binary-download path alongside the installers so users who do not want to verify a remote script with a bot have an alternative. Link to the GitHub Releases page for the engine and include PATH setup instructions per OS. */}
 
 ## Start a project
 
@@ -31,7 +31,7 @@ Select **llm** to let the installer set up the harness for you, or select **no l
     <div className="iii-qs-comment"># Install iii</div>
       <div className="iii-qs-cmd">
         <span className="iii-qs-prompt">$</span>
-        <span>curl -fsSL https://install.iii.dev/iii/main/install.sh | sh</span>
+        <span>curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh</span>
       </div>
     <div className="iii-qs-gap" aria-hidden="true" />
     <div className="iii-qs-slot" data-qs="llm">
@@ -64,7 +64,7 @@ Select **llm** to let the installer set up the harness for you, or select **no l
   </div>
 </div>
 
-The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://install.iii.dev/iii/main/install.sh | sh`. The installer then prompts you to set up your first iii project. Press Enter and the installer scaffolds and starts the harness for you. Press Ctrl+C for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser.
+The panel above is one recipe with an llm and a no-llm form. Plain form: install iii with `curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh`. The installer then prompts you to set up your first iii project. Press Enter and the installer scaffolds and starts the harness for you. Press Ctrl+C for no llm, then run `iii project init my-app && cd my-app` and start it with `iii compose --up`. Both forms end at http://127.0.0.1:3113 in your browser.
 
 {/* TODO: re-enable the "## 3. Install the VS Code Extension (Optional)" section once the iii-lsp extension is more thoroughly tested across VS Code, Cursor, Windsurf, and VSCodium. The Frame demo also needs `/images/lsp.mp4` to be captured and committed before the section is re-added. Before re-enabling, move the capability description (what completions/hover/diagnostics the extension provides) to an overview/explanation page for the extension and link to it from a single-sentence description here. ## 3. Install the VS Code Extension (Optional) The iii Language Server extension adds iii-aware editor support. See the extension overview for details. <Frame> <video autoPlay loop muted playsInline src="/images/lsp.mp4" alt="iii Language Server extension" /> </Frame> Open the Extensions panel and search for `iii-lsp`, or install from the terminal: <Tabs> <Tab title="VS Code"> code --install-extension iii-hq.iii-lsp </Tab> <Tab title="Cursor"> cursor --install-extension iii-hq.iii-lsp </Tab> <Tab title="Windsurf"> windsurf --install-extension iii-hq.iii-lsp </Tab> <Tab title="VSCodium"> codium --install-extension iii-hq.iii-lsp </Tab> </Tabs> */}
 
@@ -72,10 +72,14 @@ The panel above is one recipe with an llm and a no-llm form. Plain form: install
 
 ## Installer options
 
+The installer comes from the [iii registry](https://iii.dev/registry). It downloads the engine build
+for your platform and checks it against the SHA-256 the registry recorded for that version, then
+installs it.
+
 The installer takes its options after `sh -s --`. To see them all:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --help
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --help
 ```
 
 ### Run the setup against an installed engine
@@ -87,22 +91,26 @@ does not prompt for the setup.
 on the machine already. Use it to repeat the setup, or when you build the engine yourself:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --skip-bin-download
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --skip-bin-download
 ```
 
-### Install a pre-release
+### Install a pre-release or an exact version
 
-Use `--next` for the latest `next` pre-release, or `--rc` for the latest release candidate:
+The end of the URL picks the version. `latest` is the latest stable release. A release tag picks the
+latest pre-release on that channel: `rc` for release candidates, `next`, or `alpha`:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --rc
+curl -fsSL https://iii.dev/registry/install/iii/rc.sh | sh
 ```
 
-To install one exact version, give the version as the last argument:
+To install one exact version, put the version in the URL:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- 0.23.1
+curl -fsSL https://iii.dev/registry/install/iii/0.26.0.sh | sh
 ```
+
+The `--rc` and `--next` options, and a version as the last argument, still work: the installer then
+fetches the registry's installer for that version and runs it.
 
 ### Install without a prompt
 
@@ -116,26 +124,54 @@ only, for example `docker run -it`, `docker compose run`, or a wrapper that give
 terminal:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | sh -s -- --non-interactive
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | sh -s -- --non-interactive
 ```
 
 A non-empty `III_NON_INTERACTIVE` does the same:
 
 ```bash
-curl -fsSL https://install.iii.dev/iii/main/install.sh | III_NON_INTERACTIVE=1 sh
+curl -fsSL https://iii.dev/registry/install/iii/latest.sh | III_NON_INTERACTIVE=1 sh
 ```
 
 ### Control the install with environment variables
 
 | Variable              | Effect                                                                              |
 | --------------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`             | Engine version to install, for example `0.23.1`.                                    |
+| `VERSION`             | Engine version to install, for example `0.26.0`.                                    |
 | `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
 | `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
 | `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
 | `III_USE_GLIBC`       | Any non-empty value selects the glibc build on Linux x86_64. The default is musl.   |
-| `GITHUB_TOKEN`        | Authenticates the GitHub API calls and raises the rate limit from 60/hr to 5000/hr. |
 | `III_NON_INTERACTIVE` | Any non-empty value does the same as `--non-interactive`.                           |
+
+### Install on Windows
+
+In PowerShell (Windows PowerShell 5.1 or PowerShell 7), run:
+
+```powershell
+irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
+The Windows installer checks the archive against the SHA-256 the registry recorded, installs
+`iii.exe` to `~\.local\bin`, and adds that folder to your user `Path`, so the terminal you run it in
+and every terminal you open later find `iii`. On a fresh install it prompts you to set up your first
+iii project, as the `sh` installer does.
+
+The end of the URL picks the version, as above: `rc.ps1`, `next.ps1`, `alpha.ps1` or `0.26.0.ps1`.
+`irm ... | iex` passes no arguments, so set the options as environment variables before you run it:
+
+```powershell
+$env:III_NON_INTERACTIVE = '1'; irm https://iii.dev/registry/install/iii/latest.ps1 | iex
+```
+
+| Variable              | Effect                                                                              |
+| --------------------- | ----------------------------------------------------------------------------------- |
+| `VERSION`             | Engine version or release tag to install, for example `0.26.0` or `rc`.             |
+| `BIN_DIR`             | Directory for `iii.exe`. Defaults to `$PREFIX\bin`, or `~\.local\bin`.              |
+| `PREFIX`              | Install prefix. Defaults to `~\.local`.                                             |
+| `TARGET`              | Target triple to install, for example `aarch64-pc-windows-msvc`.                    |
+| `III_NON_INTERACTIVE` | Any non-empty value installs only, and prints the setup command.                    |
+| `NO_MODIFY_PATH`      | Any non-empty value leaves your `Path` as it is, and prints the folder to add.      |
 
 ## Next Steps
 

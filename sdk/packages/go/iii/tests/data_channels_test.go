@@ -12,30 +12,31 @@ import (
 )
 
 // Mirrors sdk/packages/rust/iii/tests/data_channels.rs (stream_data_from_sender_to_
-// processor and bidirectional_streaming): create a channel, stream data through the
-// engine to another function, and assert the bytes + interleaved messages arrive.
+// processor): make a pipe, stream data through the engine to another function, and
+// assert the bytes arrive.
 
-// TestChannelStreamSenderToProcessor: a sender writes JSON bytes into a channel and
-// hands the reader ref to a processor function, which reads the whole stream back and
-// returns a count. Exercises CreateChannel, Writer.Write/Close, ref-in-payload travel,
-// ExtractChannelRefs, OpenReader, Reader.ReadAll against the real engine.
+// TestChannelStreamSenderToProcessor: a sender writes JSON bytes into a pipe and hands
+// the reader ref to a processor function, which reads the whole stream back and returns
+// a count. Exercises Client.Pipe, OutputStream.Write/Close, a raw ref in a payload, and
+// a received InputStream against the real engine.
 func TestChannelStreamSenderToProcessor(t *testing.T) {
 	c := connect(t)
 
-	// Processor: pull the reader ref out of its payload, read the full stream, count items.
-	if _, err := c.RegisterFunction("test::chan::go::processor", func(ctx context.Context, data json.RawMessage) (any, error) {
-		refs, err := iii.ExtractChannelRefs(data)
-		if err != nil {
+	// Processor: the reader ref in its payload unmarshals to an InputStream.
+	fn := "test::chan::go::processor-" + uniqueSuffix(t)
+	if _, err := c.RegisterFunction(fn, func(ctx context.Context, data json.RawMessage) (any, error) {
+		var in struct {
+			Reader *iii.InputStream `json:"reader"`
+		}
+		if err := json.Unmarshal(data, &in); err != nil {
 			return nil, err
 		}
-		ref, ok := refs["reader"]
-		if !ok || ref.Direction != iii.ChannelRead {
-			return nil, &iii.InvocationError{Code: "missing_reader", Message: "no reader channel ref in payload"}
+		if in.Reader == nil {
+			return nil, &iii.InvocationError{Code: "missing_reader", Message: "no reader stream in payload"}
 		}
-		reader := iii.OpenReader(c.Address(), ref)
 		readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		raw, err := reader.ReadAll(readCtx)
+		raw, err := in.Reader.ReadAll(readCtx)
 		if err != nil {
 			return nil, err
 		}
@@ -53,31 +54,27 @@ func TestChannelStreamSenderToProcessor(t *testing.T) {
 	}
 	settle()
 
-	// Sender side: create a channel, stream the JSON, close, then call the processor
-	// with the reader ref embedded in the payload.
-	ch, err := c.CreateChannel(ctxFor(t, 5*time.Second), nil)
+	// Sender side: make a pipe, stream the JSON, close, then call the processor with the
+	// reader end embedded in the payload.
+	reader, writer, err := c.Pipe(ctxFor(t, 5*time.Second))
 	if err != nil {
-		t.Fatalf("CreateChannel: %v", err)
+		t.Fatalf("Pipe: %v", err)
 	}
-
 	payload := []byte(`[12,34,56,78,90]`) // count 5, sum 270
 	writeCtx := ctxFor(t, 5*time.Second)
-	if err := ch.Writer.Write(writeCtx, payload); err != nil {
-		t.Fatalf("Writer.Write: %v", err)
+	if err := writer.Write(writeCtx, payload); err != nil {
+		t.Fatalf("Write: %v", err)
 	}
-	if err := ch.Writer.Close(); err != nil {
-		t.Fatalf("Writer.Close: %v", err)
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 
-	// Embed the reader ref in the processor's payload, the way the Rust test does.
-	procPayload, _ := json.Marshal(map[string]any{
-		"label":  "batch",
-		"reader": ch.ReaderRef,
-	})
+	procPayload, _ := json.Marshal(map[string]any{"label": "batch", "reader": reader})
 	res, err := c.Call(ctxFor(t, 15*time.Second), iii.CallRequest{
-		FunctionID: "test::chan::go::processor",
+		FunctionID: fn,
 		Payload:    procPayload,
 		Timeout:    15 * time.Second,
+		Dispatch:   iii.DispatchRemote,
 	})
 	if err != nil {
 		t.Fatalf("Call processor: %v", err)

@@ -2,12 +2,19 @@ name: Publish iii to the registry
 
 # Publishes one iii version on the iii registry as the executable `iii`: the
 # archives of its GitHub release (iii-<target>.tar.gz / .zip, each checked
-# against the release's .sha256) with engine/registry/install.sh as its
-# installer, under a registry tag (latest for a stable release, else rc, next,
-# alpha...). Then installs that version back from the registry. Once
-# published, a version installs with
+# against the release's .sha256) with engine/registry/install.sh and, for
+# Windows, engine/registry/install.ps1 as its installers, under a registry tag
+# (latest for a stable release, else rc, next, alpha...; `none` for an older
+# version that must not move a tag). Then installs that version back from the
+# registry, on Linux and on Windows. Once published, a version installs with
 #
 #   curl -fsSL https://iii.dev/registry/install/iii/<tag or version>.sh | sh
+#   irm https://iii.dev/registry/install/iii/<tag or version>.ps1 | iex
+#
+# The registry held iii's stable versions up to 0.26 without archives (the
+# row was an `engine` worker then). Publishing one of them fills it in, once,
+# and moves no tag: run it by hand with `ref: main`, the tag that already
+# points at the version (`latest` for 0.26.0) or `none` for older ones.
 #
 # A re-run is safe: the registry CLI finds the version already published with
 # the same archives and installer, and says so. A published version never
@@ -25,7 +32,7 @@ on:
         required: true
         type: string
       registry_tag:
-        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha...'
+        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha..., or none (no tag)'
         required: true
         type: string
       ref:
@@ -56,7 +63,7 @@ on:
         required: true
         type: string
       registry_tag:
-        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha...'
+        description: 'Registry tag for the version: latest (stable releases only), rc, next, alpha..., or none (no tag)'
         required: true
         type: string
       ref:
@@ -81,6 +88,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
     concurrency:
       group: publish-engine-registry-${{ inputs.release_tag }}
       cancel-in-progress: false
@@ -104,6 +113,10 @@ jobs:
           fi
           if [[ "$version" == *-dry-run.* ]]; then
             echo "::error::$version is a dry run: nothing is published"
+            exit 1
+          fi
+          if [[ ! "$REGISTRY_TAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::'$REGISTRY_TAG' is not a registry tag (latest, rc, next, alpha..., or none)"
             exit 1
           fi
           # `latest` is the stable lane: semver ranges resolve it.
@@ -157,10 +170,13 @@ jobs:
           curl -fsSL "https://iii.dev/registry/install/registry-cli/${CLI_VERSION}.sh" | sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/registry" --version
-          if ! "$HOME/.local/bin/registry" publish --help | grep -q -- '--install-script'; then
-            echo "::error::registry-cli $CLI_VERSION cannot publish an installer (--install-script): use a newer one"
-            exit 1
-          fi
+          help=$("$HOME/.local/bin/registry" publish --help)
+          for flag in --install-script --install-script-ps1 --no-tag; do
+            if ! grep -q -- "$flag\b" <<<"$help"; then
+              echo "::error::registry-cli $CLI_VERSION has no $flag: use 0.9.0 or newer"
+              exit 1
+            fi
+          done
 
       - name: Publish
         working-directory: engine/registry
@@ -173,11 +189,14 @@ jobs:
             echo "::error::WORKERS_REGISTRY_API_KEY secret is not set"
             exit 1
           fi
+          # `none`: an older version, filled in without moving any tag.
+          if [[ "$REGISTRY_TAG" == none ]]; then tag=(--no-tag); else tag=(--tag "$REGISTRY_TAG"); fi
           registry publish \
             --artifacts "$GITHUB_WORKSPACE/dist" \
             --version "$VERSION" \
-            --tag "$REGISTRY_TAG" \
+            "${tag[@]}" \
             --install-script install.sh \
+            --install-script-ps1 install.ps1 \
             --registry "$API_URL"
 
       # What `curl -fsSL https://iii.dev/registry/install/iii/<version>.sh | sh`
@@ -206,4 +225,42 @@ jobs:
             echo "::error::installed iii $installed, expected $VERSION"
             exit 1
           fi
-          echo "::notice::iii $VERSION installs from the registry: curl -fsSL https://iii.dev/registry/install/iii/$REGISTRY_TAG.sh | sh"
+          ref="$REGISTRY_TAG"
+          if [[ "$ref" == none ]]; then ref="$VERSION"; fi
+          echo "::notice::iii $VERSION installs from the registry: curl -fsSL https://iii.dev/registry/install/iii/$ref.sh | sh"
+
+  # What `irm https://iii.dev/registry/install/iii/<version>.ps1 | iex` runs,
+  # under Windows PowerShell 5.1 (a stock Windows) and PowerShell 7.
+  install-back-windows:
+    name: Install it back on Windows (${{ matrix.shell }})
+    needs: publish
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      VERSION: ${{ needs.publish.outputs.version }}
+      API_URL: ${{ inputs.api_url }}
+      III_TELEMETRY_ENABLED: 'false'
+    steps:
+      - name: Install it back from the registry
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+          $res = Invoke-WebRequest -Uri "$env:API_URL/install/iii?version=$env:VERSION&format=ps1&ci=true" -UseBasicParsing
+          $served = [string]($res.Headers['X-Executable-Version'] | Select-Object -First 1)
+          $installer = [string]($res.Headers['X-Executable-Installer'] | Select-Object -First 1)
+          if ($served -ne $env:VERSION) { throw "the registry served $served for $env:VERSION" }
+          if ($installer -ne 'custom') { throw 'the registry served its generic PowerShell installer, not engine/registry/install.ps1: is the organization that owns iii verified?' }
+          $env:BIN_DIR = Join-Path $env:RUNNER_TEMP 'iii-bin'
+          $env:III_NON_INTERACTIVE = '1'
+          $env:NO_MODIFY_PATH = '1'
+          Invoke-Expression $res.Content
+          $installed = ((& (Join-Path $env:BIN_DIR 'iii.exe') --version) -split '\s+')[-1]
+          if ($installed -ne $env:VERSION) { throw "installed iii $installed, expected $env:VERSION" }
+          Write-Output "::notice::iii $env:VERSION installs on Windows (PowerShell $($PSVersionTable.PSVersion) $($PSVersionTable.PSEdition)) from the registry"

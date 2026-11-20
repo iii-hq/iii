@@ -135,6 +135,17 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Call a function on a running iii engine
+    ///
+    /// A `stdout`, `stderr` or `stdin` stream field of the function's request
+    /// schema is bound to this process's own, and the `stdout` and `stderr`
+    /// streams of the result are copied out until they end. While a stream is
+    /// carried, the first Ctrl+C or SIGTERM closes the streams, which asks the
+    /// function to stop, and waits for its answer; a second one exits at once.
+    ///
+    /// III_CALL_DEFAULTS holds a JSON object keyed by function id: the entry of
+    /// the called function is the base payload, and `--json` and key=value
+    /// override its keys. A parent process uses it to hand a call fields that
+    /// must not appear in its arguments.
     #[command(visible_aliases = ["trigger", "t"])]
     Call(CallArgs),
 
@@ -514,6 +525,11 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             Ok(()) => Ok(()),
             // exec::invoke already printed the structured JSON; exit silently.
             Err(cli_call::CallCliError::RemoteAlreadyReported) => std::process::exit(1),
+            Err(cli_call::CallCliError::Usage(e)) => {
+                eprintln!("Error: {e:#}");
+                std::process::exit(2)
+            }
+            Err(cli_call::CallCliError::Interrupted(signal)) => std::process::exit(128 + signal),
             Err(cli_call::CallCliError::Other(e)) => Err(e),
         },
         Some(Commands::Cloud { args }) => {
@@ -603,7 +619,9 @@ mod tests {
                 // `III_URL` can fill in whichever half no flag named.
                 assert_eq!(args.address, None);
                 assert_eq!(args.port, None);
-                assert_eq!(args.timeout_ms, 30_000);
+                assert_eq!(args.timeout_ms, None);
+                assert_eq!(args.stdout, None);
+                assert!(!args.no_bind && !args.no_follow && !args.print_result);
             }
             _ => panic!("expected Call subcommand"),
         }

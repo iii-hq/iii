@@ -1132,6 +1132,14 @@ const BUILD_ABORT_RETRY: Duration = Duration::from_millis(if cfg!(test) { 100 } 
 /// A status call's budget, and what a stop call gets beyond its grace.
 const CALL_SLACK: Duration = Duration::from_secs(10);
 
+/// The ref of a pipe's write end, for an adapter to write a stream into (a VM's log, a build's
+/// output): the same JSON as the SDK's ref.
+pub(crate) fn writer_ref(
+    output: &iii_sdk::OutputStream,
+) -> std::result::Result<contract::StreamChannelRef, serde_json::Error> {
+    serde_json::from_value(serde_json::to_value(output)?)
+}
+
 /// VM container `key` at instance 0, which no boot is: the adapter answers with the one it holds.
 fn boot_probe(ctx: &LifecycleCtx<'_>, key: &str) -> VmRecord {
     VmRecord {

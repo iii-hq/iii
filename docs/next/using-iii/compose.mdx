@@ -210,7 +210,7 @@ ready stay as they are.
 | ----------- | -------------------------------------------------------------------------------------------- |
 | `file`      | The project to start.                                                                        |
 | `container` | Starts that worker and the workers it depends on, and nothing else.                          |
-| `frozen`    | Requires a current `worker-compose.lock` and does not resolve package selectors when `true`. |
+| `frozen`    | Requires a current lock for the selected compose file and does not resolve package selectors when `true`. |
 
 A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
 build before it runs. The operation reports the build as a `building` step of that container. See
@@ -299,8 +299,8 @@ up to `max_delay`. During `up`, the progress row shows the current attempt and w
 exit, only the named worker bounces: workers that specify it in `start_after` keep running and see
 their connection drop and reconnect. VM workers cannot outlive the sandbox adapter: when it crashes
 and its own policy restarts it, they exit with it and each one follows its own policy, so a VM
-worker with no policy ends `failed` and one with `restart: always` spends an attempt.
-`compose::status` reports the worker as `restarting` while it waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
+worker with no policy ends `failed`. `compose::status` reports the worker as `restarting` while it
+waits for a run-time replacement. Once `max_attempts` is spent, `required` controls whether the
 startup operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and
 `last_error` says the supervisor gave up.
 
@@ -391,9 +391,30 @@ lists which containers run in a VM.
 
 ### Package lock
 
-Compose writes `worker-compose.lock` beside `worker-compose.yaml`. The compose file keeps the
-requested selector. The lock keeps the resolved dependency graph, versions, package types, artifact
-URLs, SHA-256 digests, and default configuration returned by the registry.
+Compose resolves a selected symlink before deriving the lock path. It writes the lock beside the
+resolved compose file, replacing its final `.yaml` or `.yml` extension with `.lock` and preserving
+the rest of the file name. For example, if `config/dev.yaml` links to `projects/local.yaml`, the lock
+is `projects/local.lock`, not `config/dev.lock`.
+
+| Compose file | Lockfile |
+| --- | --- |
+| `worker-compose.yaml` | `worker-compose.lock` |
+| `worker-compose.dev.yaml` | `worker-compose.dev.lock` |
+| `worker-compose.prod.yml` | `worker-compose.prod.lock` |
+| `config/local.yaml` | `config/local.lock` |
+
+Compose files with different stems in the same directory keep independent locks. Files that differ
+only by extension, such as `worker-compose.yaml` and `worker-compose.yml`, share
+`worker-compose.lock`. Use different stems, such as `worker-compose.yaml` and
+`worker-compose.dev.yml`, when you need independent locks.
+
+Selecting a file with `--file` in the CLI or `file` in a `compose::*` call selects its corresponding
+lock for reads, writes, and frozen validation. Compose does not fall back to another compose file's lock. In frozen mode, a missing or
+outdated lock for the selected file is an error, even if another valid lock exists beside it.
+
+The compose file keeps the requested selector. The lock keeps the resolved dependency graph,
+versions, package types, artifact URLs, SHA-256 digests, and default configuration returned by the
+registry.
 
 ```text
 worker-compose.yaml: next
@@ -1510,7 +1531,7 @@ adapter container outside `^0.5` to the newest release in that range, and adds t
 container when the project declares none, so the `start_after` it writes names a declared container.
 An adapter container you declared outside the range fails with `SANDBOX_ADAPTER_TOO_OLD`.
 
-[Upgrading from 0.26.x](../upgrading/from-0-26-x) lists the containers Compose rewrites, what it
+[Upgrading VM workers from 0.26.x](../upgrading/explicit-vm-workers) lists the containers Compose rewrites, what it
 writes, the sandbox adapter update, and what happens to the data of 0.26 VMs.
 
 ### VM worker errors

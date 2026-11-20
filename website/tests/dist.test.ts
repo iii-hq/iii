@@ -48,6 +48,7 @@ test("every surface emits its entry page, generated artifacts and static assets"
     "og-image.png",
     "posthog-consent.js",
     "console-demo/index.html",
+    "streams-playground/index.html",
   ]
   for (const rel of required) {
     assert.ok(has(rel), `missing dist/${rel}`)
@@ -94,6 +95,24 @@ test("console demo entry uses absolute asset paths that exist", async () => {
     const assetPath = path.resolve(DIST, decodeURIComponent(new URL(u, "https://dist.invalid").pathname).slice(1))
     assert.ok(assetPath.startsWith(`${assetsRoot}${path.sep}`), `demo asset URL escapes the asset directory: ${u}`)
     assert.ok(existsSync(assetPath), `demo asset missing from dist: ${u}`)
+  }
+})
+
+test("streams playground loads its files from absolute paths and stays out of search", async () => {
+  const html = await read("streams-playground/index.html")
+  assert.match(html, /<meta name="robots" content="noindex/, "the streams playground is an unlisted page")
+  const local = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+    .map((m) => m[1])
+    .filter((u) => !u.startsWith("#") && !/^(?:https?:|data:)/.test(u))
+  assert.ok(local.length >= 4, "playground references none of its own files")
+  for (const u of local) {
+    // Same cleanUrls trap as the console demo: the page is served without a
+    // trailing slash, so a relative URL resolves against the domain root.
+    assert.ok(
+      u.startsWith("/streams-playground/"),
+      `playground URL must be absolute under /streams-playground/, got ${u}`,
+    )
+    assert.ok(has(u.slice(1)), `playground file missing from dist: ${u}`)
   }
 })
 
@@ -296,6 +315,24 @@ test("sitemap covers the indexable surfaces with the load-bearing URL shapes", a
   assert.doesNotMatch(xml, /\.html</, "no .html URLs leak into the sitemap")
   for (const loc of xml.matchAll(/<loc>([^<]+)<\/loc>/g)) {
     assert.ok(loc[1].startsWith("https://iii.dev/"), `sitemap URL must be absolute: ${loc[1]}`)
+  }
+})
+
+// --- robots.txt -------------------------------------------------------------
+
+test("robots.txt keeps every crawler group off the registry's counted installers", async () => {
+  // A crawler reads only the group that names it, so a group without these
+  // lines would let that crawler count registry downloads.
+  const groups = (await read("robots.txt")).split(/^(?=User-agent:)/m).slice(1)
+  // The wildcard group covers every crawler that no other group names.
+  assert.ok(
+    groups.some((group) => group.split("\n", 1)[0].trim() === "User-agent: *"),
+    "robots.txt has no User-agent: * group",
+  )
+  for (const group of groups) {
+    const agent = group.split("\n", 1)[0]
+    assert.match(group, /^Disallow: \/registry\/install\/$/m, `${agent} may fetch /registry/install/`)
+    assert.match(group, /^Disallow: \/registry\/api\/install\/$/m, `${agent} may fetch /registry/api/install/`)
   }
 })
 

@@ -46,7 +46,7 @@ vi.mock('ws', () => ({
 // setup.ts eagerly imports the SDK (and the real 'ws') before this file's mock
 // takes hold, so drop the cached graph and re-import against the mock.
 vi.resetModules()
-const { registerWorker } = await import('../src/index')
+const { OutputStream, registerWorker } = await import('../src/index')
 const { ChannelReader, ChannelWriter } = await import('../src/channels')
 
 const ref = { channel_id: 'chan', access_key: 'key', direction: 'write' } as const
@@ -114,11 +114,14 @@ describe('III_TOKEN on telemetry', () => {
 })
 
 describe('III_TOKEN on channels', () => {
+  /** Opens the socket of a writer end (the write stays queued: the mock never opens). */
+  const write = (writer: InstanceType<typeof ChannelWriter>) => void writer.writeText('hi').catch(() => undefined)
+
   it('sends the same bearer header from the writer and the reader', () => {
     vi.stubEnv('III_TOKEN', 'secret')
 
-    new ChannelWriter('ws://engine.test', ref).sendMessage('hi')
-    new ChannelReader('ws://engine.test', { ...ref, direction: 'read' }).stream.read()
+    write(new ChannelWriter('ws://engine.test', ref))
+    void new ChannelReader('ws://engine.test', { ...ref, direction: 'read' }).next()
 
     expect(sockets.map((s) => s.opts?.headers)).toEqual([
       { Authorization: 'Bearer secret' },
@@ -129,16 +132,20 @@ describe('III_TOKEN on channels', () => {
   it('sends the explicit headers the worker was given', () => {
     vi.stubEnv('III_TOKEN', 'secret')
 
-    new ChannelWriter('ws://engine.test', ref, { Authorization: 'Bearer explicit' }).sendMessage('hi')
+    write(new ChannelWriter('ws://engine.test', ref, { Authorization: 'Bearer explicit' }))
 
     expect(sockets[0].opts?.headers).toEqual({ Authorization: 'Bearer explicit' })
   })
 
-  it('hands a worker its headers on the channels it resolves from an invocation', async () => {
+  it('hands a worker its headers on the streams it makes from an invocation', async () => {
     const sdk = connect({ 'x-other': 'kept' })
     try {
-      // biome-ignore lint/suspicious/noExplicitAny: reaching the private resolver the invoke path uses
-      ;(sdk as any).resolveChannelValue(ref).sendMessage('hi')
+      // biome-ignore lint/suspicious/noExplicitAny: reaching the private walk the invoke path uses
+      const out = (sdk as any).inbound(ref) as import('../src/index').OutputStream
+      expect(out).toBeInstanceOf(OutputStream)
+      void out.send('hi').catch(() => undefined)
+      // The stream's operations run in order, from the next microtask.
+      await new Promise((resolve) => setImmediate(resolve))
       expect(sockets[1].opts?.headers).toEqual({ 'x-other': 'kept' })
     } finally {
       await sdk.shutdown()
@@ -146,9 +153,9 @@ describe('III_TOKEN on channels', () => {
   })
 
   it('keeps the base query ahead of its own', () => {
-    new ChannelWriter('ws://engine.test/?token=abc', ref).sendMessage('hi')
-    new ChannelWriter('ws://engine.test/prefix/?token=abc&x=1', { ...ref, access_key: 'a b' }).sendMessage('hi')
-    new ChannelWriter('ws://engine.test/', ref).sendMessage('hi')
+    write(new ChannelWriter('ws://engine.test/?token=abc', ref))
+    write(new ChannelWriter('ws://engine.test/prefix/?token=abc&x=1', { ...ref, access_key: 'a b' }))
+    write(new ChannelWriter('ws://engine.test/', ref))
 
     expect(sockets.map((s) => s.url)).toEqual([
       'ws://engine.test/ws/channels/chan?token=abc&key=key&dir=write',

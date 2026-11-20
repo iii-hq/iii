@@ -59,7 +59,8 @@ const users = await iii.call({
 | Observer hooks           | `onObserverAdded`, `onObserverRemoved`, `onObservationMatch`, `onObservationDeliver` | Change what observing a function this page hosts means         |
 | Call through an observer | `await iii.call({ observer, payload })`                                        | Run an observer's target from a deliver hook                   |
 | Current invocation       | `iii.currentInvocation()` / `iii.withInvocation(inv, fn)`                      | The invocation the running handler serves (caller, activation) |
-| Create channel           | `createChannel(iii)` (from `iii-browser-sdk/helpers`)                          | Create a streaming channel pair (writer + reader)              |
+| Stream in a call         | `iii.call({ function_id, payload: { body: file, out: writable } })`            | Pass a `ReadableStream`, `Blob` or `WritableStream` as a value |
+| Create pipe              | `await iii.pipe(options?)`                                                     | An `InputStream` and an `OutputStream` joined by the engine    |
 | Shutdown                 | `iii.shutdown()`                                                               | Gracefully disconnect from the engine                          |
 
 `iii.trigger`, `TriggerAction` and `TriggerRequest` are deprecated aliases of
@@ -110,6 +111,48 @@ A call to a function this worker registered itself runs in-process once the
 engine confirmed it (no frames on the wire unless someone observes it). Pass
 `dispatch: 'remote'` to go through the engine anyway, or register the function
 with `localDispatch: false`.
+
+### Streams
+
+A stream is a value of a call: put a `ReadableStream`, a `Blob` or `File`, an
+async generator or an `InputStream` in the payload, and the handler reads it as
+an `InputStream`. Put a `WritableStream` (or an `OutputStream`) in the payload,
+and the handler writes into it as an `OutputStream`; the call resolves once
+that sink finished. A handler can return streams the same way.
+
+```typescript
+import type { InputStream, OutputStream } from 'iii-browser-sdk'
+
+// Upload a file the user picked: the handler reads it as an InputStream.
+const { bytes } = await iii.call({ function_id: 'files::store', payload: { name: file.name, body: file } })
+
+// Let a backend function write into the page.
+const chunks: string[] = []
+await iii.call({
+  function_id: 'reports::render',
+  payload: {
+    out: new WritableStream<Uint8Array>({ write: (chunk) => void chunks.push(new TextDecoder().decode(chunk)) }),
+  },
+})
+
+// A handler in the page reads and writes streams.
+iii.registerFunction('ui::preview', async ({ body, out }: { body: InputStream; out: OutputStream }) => {
+  for await (const line of body.lines()) await out.write(`${line.toUpperCase()}\n`)
+})
+```
+
+An `InputStream` has one reader (`for await`, `bytes()`, `text()`, `lines()`,
+`messages()`, `frames()`, `toWebStream()`); `tee()` gives two. An
+`OutputStream` has `write()`, `send()` (a JSON message), `close()`, `abort()`
+and `toWebStream()`. A call with `CallAction.Enqueue` cannot carry a stream
+(`STREAM_NOT_ALLOWED`). `iii.pipe()` gives both ends of a pipe, for an end that
+must exist before its data does. The channel refs a stream travels as, and
+helpers that read them, are in `iii-browser-sdk/protocol`.
+
+In the browser, a stream's socket is the page's `WebSocket`: an abort closes it
+with code 4011 (a browser cannot send 1011), writes wait while the socket holds
+more than 1 MiB unsent, and a read cannot pause the socket, so what arrives
+before the page reads it is held in memory.
 
 ### Observing Functions
 

@@ -3,22 +3,11 @@
  * takes the client as its first argument, so `IIIClient` itself keeps to the
  * connection lifecycle, functions, calls and observers.
  */
-import type { Channel, IIIClient } from './types'
 import type { IStream } from './stream'
-
-export { ChannelDirection, ChannelItem } from './channels'
-export { extractChannelRefs, isChannelRef } from './utils'
+import type { IIIClient } from './types'
 
 type IIIWithHelperShims = IIIClient & {
-  __helpers_create_channel(bufferSize?: number): Promise<Channel>
   __helpers_create_stream<T>(name: string, stream: IStream<T>): void
-}
-
-/**
- * Create a streaming channel pair for worker-to-worker data transfer.
- */
-export function createChannel(iii: IIIClient, bufferSize?: number): Promise<Channel> {
-  return (iii as IIIWithHelperShims).__helpers_create_channel(bufferSize)
 }
 
 /**

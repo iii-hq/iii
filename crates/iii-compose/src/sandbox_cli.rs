@@ -26,7 +26,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::ExitStatus,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
@@ -1489,10 +1489,11 @@ impl Logs {
             }
             None => {}
         }
-        let created =
-            tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
-                .await;
-        let Ok(Ok(channel)) = created else {
+        let created = tokio::time::timeout(CALL_TIMEOUT, client.pipe()).await;
+        let Ok(Ok(pipe)) = created else {
+            return;
+        };
+        let Ok(channel) = sandbox::writer_ref(&pipe.output) else {
             return;
         };
         let request = WorkerLogsRequest {
@@ -1500,11 +1501,7 @@ impl Logs {
             vm_id: vm.vm_id.clone(),
             cursor: self.cursor,
             follow: true,
-            channel: contract::StreamChannelRef {
-                channel_id: channel.writer_ref.channel_id,
-                access_key: channel.writer_ref.access_key,
-                direction: contract::ChannelDirection::Write,
-            },
+            channel,
             from_end: self.from_end,
         };
         let reply = sandbox::call::<WorkerLogsResponse>(
@@ -1522,10 +1519,7 @@ impl Logs {
                 self.from_end = false;
                 self.cursor = started.cursor;
             }
-            self.capture = Some(print_records(
-                Arc::new(channel.reader),
-                self.printer.clone(),
-            ));
+            self.capture = Some(print_records(pipe.input, self.printer.clone()));
         }
     }
 
@@ -1553,28 +1547,26 @@ impl Logs {
     }
 }
 
-/// Prints every `LogRecord` text frame on `reader` until the channel closes, then resolves to the
-/// cursor of the last one. Binary frames are keepalives, never records.
-fn print_records(
-    reader: Arc<iii_sdk::channel::ChannelReader>,
-    printer: Printer,
-) -> JoinHandle<Option<u64>> {
+/// Prints every `LogRecord` frame on `reader` until the stream ends, then resolves to the
+/// cursor of the last one.
+fn print_records(reader: iii_sdk::InputStream, printer: Printer) -> JoinHandle<Option<u64>> {
+    use futures::StreamExt;
+    use iii_sdk::protocol::ChannelItem;
+
     tokio::spawn(async move {
-        let last = Arc::new(Mutex::new(None));
-        let seen = last.clone();
-        reader
-            .on_message(move |frame| {
-                let Ok(record) = serde_json::from_str::<LogRecord>(&frame) else {
-                    return;
-                };
-                (printer.0)(&record);
-                if let Ok(mut seen) = seen.lock() {
-                    *seen = Some(record.cursor);
-                }
-            })
-            .await;
-        while let Ok(Some(_)) = reader.next_binary().await {}
-        last.lock().ok().and_then(|last| *last)
+        let mut last = None;
+        let mut frames = std::pin::pin!(reader.frames());
+        while let Some(Ok(frame)) = frames.next().await {
+            let ChannelItem::Text(frame) = frame else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_str::<LogRecord>(&frame) else {
+                continue;
+            };
+            (printer.0)(&record);
+            last = Some(record.cursor);
+        }
+        last
     })
 }
 
@@ -1639,11 +1631,16 @@ pub(crate) async fn build_vm(
         );
     }
 
-    let channel =
-        tokio::time::timeout(CALL_TIMEOUT, iii_sdk::helpers::create_channel(client, None))
-            .await
-            .unwrap_or(Err(iii_sdk::Error::Timeout))
-            .map_err(|error| call_failure("engine::channels::create", &error, target))?;
+    let pipe = tokio::time::timeout(CALL_TIMEOUT, client.pipe())
+        .await
+        .unwrap_or(Err(iii_sdk::Error::Timeout))
+        .map_err(|error| call_failure("engine::channels::create", &error, target))?;
+    let logs = sandbox::writer_ref(&pipe.output).map_err(|error| {
+        Failure::runner(
+            ENGINE_CALL_FAILED,
+            format!("the build output channel has no usable ref: {error}"),
+        )
+    })?;
     let request = WorkerBuildRequest {
         auth: target.token.clone(),
         state_key: target.state_key.clone(),
@@ -1651,15 +1648,11 @@ pub(crate) async fn build_vm(
         source: ctx.source.clone(),
         output_dir: bctx.build_dir.clone(),
         env: ctx.env.clone(),
-        logs: contract::StreamChannelRef {
-            channel_id: channel.writer_ref.channel_id,
-            access_key: channel.writer_ref.access_key,
-            direction: contract::ChannelDirection::Write,
-        },
+        logs,
         base_image: inputs.base_image.clone(),
     };
     // Read from before the call: the build lives as long as its output is read.
-    let reader = Arc::new(channel.reader);
+    let reader = pipe.input;
     let output = print_records(reader.clone(), to_stdout(printer));
     let budget = deadline.saturating_duration_since(Instant::now()) + CALL_TIMEOUT;
     let reply = tokio::select! {
@@ -1674,11 +1667,11 @@ pub(crate) async fn build_vm(
             budget,
         ) => reply,
         (number, _) = shutdown.requested() => {
-            let _ = reader.close().await;
+            reader.cancel().await;
             return Err(Failure::cancelled_by(number));
         }
         () = tokio::time::sleep_until(deadline) => {
-            let _ = reader.close().await;
+            reader.cancel().await;
             return Err(Failure::timed_out(bctx.timeout));
         }
     };
@@ -1688,7 +1681,7 @@ pub(crate) async fn build_vm(
         _ = shutdown.requested() => {}
         _ = tokio::time::timeout(DRAIN_WAIT, output) => {}
     }
-    let _ = reader.close().await;
+    reader.cancel().await;
 
     let built = reply.map_err(|error| build_call_failure(&error, target))?;
     // Read again: the image must be recorded with the package it was built from, and an
@@ -2366,6 +2359,7 @@ mod tests {
     use iii_sandbox_contract::{ContractVersion, State};
     use serde_json::{Value, json};
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[test]
