@@ -3617,17 +3617,36 @@ mod adapter_restart_tests {
 
         let controller = crate::shutdown::ShutdownController::default();
         let signal = controller.signal();
-        let ((rebuilt, lines), during) = tokio::join!(
-            crate::report::capture_daemon_lines(
-                project.rebuild_changed(&file, &own, "update", &signal)
-            ),
-            async {
-                while !marker.exists() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-                alive(dir.path(), "own")
-            }
+        let rebuild = crate::report::capture_daemon_lines(
+            project.rebuild_changed(&file, &own, "update", &signal),
         );
+        tokio::pin!(rebuild);
+        // The script writes `building` while it runs. A rebuild that ends without it, or a marker
+        // that never comes, fails the test instead of leaving it waiting.
+        let seen = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::select! {
+                biased;
+                () = async {
+                    while !marker.exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } => Ok(alive(dir.path(), "own")),
+                (rebuilt, _) = &mut rebuild => Err(rebuilt),
+            }
+        })
+        .await;
+        let during = match seen {
+            Ok(Ok(during)) => during,
+            Ok(Err(rebuilt)) => {
+                project.shutdown().await;
+                panic!("the rebuild ended without running its script: {rebuilt:?}");
+            }
+            Err(_) => {
+                project.shutdown().await;
+                panic!("the rebuild's script never wrote {}", marker.display());
+            }
+        };
+        let (rebuilt, lines) = rebuild.await;
 
         assert!(rebuilt.failed.is_empty(), "{rebuilt:?}");
         assert_eq!(rebuilt.built, own);
