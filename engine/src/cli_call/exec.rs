@@ -45,12 +45,14 @@ impl Budget {
         total_ms.saturating_sub(spent).max(1)
     }
 
-    /// The timeout of the schema lookup.
+    /// The timeout of the schema lookup: at most half the budget, so a lookup that times out
+    /// leaves the other half to the call.
     fn lookup_timeout(&self) -> u64 {
         self.left_of(
             self.limit_ms
                 .unwrap_or(DEFAULT_TIMEOUT_MS)
-                .min(DEFAULT_TIMEOUT_MS),
+                .min(DEFAULT_TIMEOUT_MS)
+                / 2,
         )
     }
 
@@ -128,9 +130,15 @@ async fn call(
         match request_schema(iii, function_path, options.namespace, lookup_timeout).await {
             Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
             Ok(None) => {}
-            // An engine that cannot be reached for the schema cannot be reached for the call:
-            // the same error, once, instead of a second wait.
-            Err(error) => return Err(report_call_error(error)),
+            Err(error) => {
+                if let Err(error) = after_failed_lookup(error) {
+                    return Err(report_call_error(error));
+                }
+                eprintln!(
+                    "warning: the request schema of {function_path} did not arrive in time; \
+                     only the streams --stdout, --stderr and --stdin name are bound"
+                );
+            }
         }
     }
 
@@ -268,6 +276,18 @@ async fn request_schema(
         .cloned())
 }
 
+/// What a failed schema lookup means for the call. A timeout says nothing about the function,
+/// which may answer promptly while the engine's metadata is slow: the call goes ahead with the
+/// streams the flags bound, in the half of the budget the lookup left. Any other failure is the
+/// connection's, which the call could not use either: the same error, once, instead of a second
+/// wait.
+fn after_failed_lookup(error: Error) -> Result<(), Error> {
+    match error {
+        Error::Timeout => Ok(()),
+        error => Err(error),
+    }
+}
+
 /// Prints a failed call and turns it into this command's error. A function's own error goes to
 /// stderr as JSON, on one line when stderr is not a terminal so a caller can read it.
 fn report_call_error(error: Error) -> CallCliError {
@@ -340,6 +360,20 @@ mod tests {
         let default = spent(1_000, None);
         assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
         assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn a_lookup_that_times_out_leaves_the_call_half_its_budget() {
+        assert!(spent(0, Some(1_000)).lookup_timeout() <= 500);
+        assert!(spent(0, None).lookup_timeout() <= DEFAULT_TIMEOUT_MS / 2);
+        assert!(
+            after_failed_lookup(Error::Timeout).is_ok(),
+            "a slow lookup does not make the function uncallable"
+        );
+        assert!(
+            after_failed_lookup(Error::WebSocket("closed".into())).is_err(),
+            "a connection that failed ends the call"
+        );
     }
 
     /// Runs `body` with the process looking like a developer machine whose
