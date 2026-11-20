@@ -86,6 +86,22 @@ const NEVER_FORWARDED: [&str; 18] = [
     CALL_DEFAULTS_ENV,
 ];
 
+/// Whether `name` is one of Compose's own inputs to [`lay_call_defaults`]: never taken from the
+/// machine's environment, where an `III_WORKER_DIR` would boot a local directory in place of a
+/// package, or an `III_SANDBOX_TOKEN` make a VM context of any container.
+pub(crate) fn is_vm_input(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        NEVER_FORWARDED
+            .iter()
+            .any(|key| crate::spawn::windows_env_key_eq(name, key))
+    }
+    #[cfg(not(windows))]
+    {
+        NEVER_FORWARDED.contains(&name)
+    }
+}
+
 /// The variables `III_CALL_DEFAULTS` replaces in the process's environment.
 const REPLACED: [&str; 11] = [
     TOKEN_ENV,

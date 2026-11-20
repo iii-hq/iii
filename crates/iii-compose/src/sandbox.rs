@@ -1243,6 +1243,8 @@ pub(crate) fn layer_own_vm_env(
             utf8_path(key, worker_dir)?,
         ),
         None => {
+            // A local directory the container declares itself is not its package either.
+            user_env.remove(vm_call::WORKER_DIR_ENV);
             layer_package_env(file, key, user_env)?;
             (
                 vm_call::PACKAGE_DIR_ENV.to_string(),

@@ -237,6 +237,8 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     // container only through its own `user_env` (the adapter's), so a host that
     // exports one cannot hand it to another container or to a VM guest.
     env.retain(|name, _| !is_reserved_env(name));
+    // Nor does it supply what Compose hands a VM's `iii call`, which would route it elsewhere.
+    env.retain(|name, _| !crate::vm_call::is_vm_input(name));
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
@@ -779,6 +781,69 @@ mod tests {
         #[cfg(unix)]
         assert!(!inherited.contains_key("NON_UTF8"));
     }
+    /// A package's VM boots its package whatever VM inputs the daemon inherited: Compose's own
+    /// never come from the machine, and a container that runs no VM gets no VM context from it.
+    #[test]
+    fn inherited_vm_inputs_route_no_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n  app:\n    worker: package://app\n    version: 1.0.0\n    start_after: [sb]\n    scripts: {build: iii call sandbox::build worker=app, run: iii call sandbox::start worker=app}\n  plain: {worker: path://./plain}\n",
+        )
+        .unwrap();
+        let mut file = crate::ComposeFile::load(&path).unwrap();
+        file.containers.get_mut("app").unwrap().resolved_package = Some(
+            serde_yaml::from_str("{name: app, version: 1.0.0, type: bundle, artifacts: {}}")
+                .unwrap(),
+        );
+        let inherited = env_of(&[
+            (crate::vm_call::WORKER_DIR_ENV, "/host/checkout"),
+            (crate::vm_call::TOKEN_ENV, "host-token"),
+            (crate::vm_call::STATE_KEY_ENV, "host-state"),
+        ]);
+        let plan = |key: &str, user_env: &BTreeMap<String, String>| {
+            let start = crate::manifest::StartSpec::Shell("x".into());
+            let ctx = SpawnCtx {
+                engine_url: "ws://127.0.0.1:1",
+                namespace: "default",
+                compose_namespace: "default",
+                compose_file: &path,
+                container_key: key,
+                start: &start,
+                config_name: None,
+                working_dir: dir.path(),
+                user_env,
+            };
+            spawn_plan_with_env(&ctx, inherited.clone()).env
+        };
+
+        let mut user_env = file.containers["app"].resolve_user_env("app").unwrap();
+        crate::sandbox::layer_own_vm_env(
+            &file,
+            "app",
+            "token",
+            &dir.path().join("state"),
+            "default",
+            &mut user_env,
+        )
+        .unwrap();
+        let env = plan("app", &user_env);
+        let defaults: serde_json::Value =
+            serde_json::from_str(&env[crate::vm_call::CALL_DEFAULTS_ENV]).unwrap();
+        let build = &defaults["sandbox::build"];
+        assert_eq!(build["source"]["kind"], "bundle", "{build}");
+        assert_ne!(build["state_key"], "host-state");
+        assert!(!env.contains_key(crate::vm_call::WORKER_DIR_ENV), "{env:?}");
+
+        let env = plan("plain", &BTreeMap::new());
+        assert!(
+            !env.contains_key(crate::vm_call::CALL_DEFAULTS_ENV),
+            "{env:?}"
+        );
+        assert!(!env.contains_key(crate::vm_call::TOKEN_ENV), "{env:?}");
+    }
+
     #[test]
     fn f06_the_vm_guest_gets_the_project_device_id() {
         let dir = tempfile::tempdir().unwrap();
