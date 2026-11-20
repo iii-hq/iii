@@ -64,7 +64,7 @@ iii call [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--stderr <FIELD>` | Bind this process's stderr to payload field FIELD, a stream the function writes. Without the flag, a `stderr` stream field in the function's request schema is bound |
 | `--stdin <FIELD>` | Bind this process's stdin to payload field FIELD, a stream the function reads. Without the flag, a `stdin` stream field in the function's request schema is bound |
 | `--no-bind` | Bind no stream from the function's request schema; `--stdout`, `--stderr` and `--stdin` still bind theirs |
-| `--no-follow` | Print the `stdout` and `stderr` streams of the result as refs instead of copying them to this process's stdout and stderr |
+| `--no-follow` | Leave the `stdout` and `stderr` streams of the result unread: the result shows them as refs. A call that binds a stream prints that result only with `--print-result` |
 | `--print-result` | Print the result JSON after the streams ended. A call that carries no stream always prints it |
 | `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace; routing is strict, so a function registered in another namespace is only reachable with this flag |
 

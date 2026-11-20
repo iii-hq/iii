@@ -327,7 +327,8 @@ iii call reports::export report_id=r-42 --no-bind
   the streams end.
 - The first `Ctrl+C` or `SIGTERM` closes the streams. The function sees its next write fail, stops,
   and answers, and `iii call` exits with that answer. A second one exits at once.
-- `--no-follow` prints the streams of the result as refs instead of reading them.
+- `--no-follow` leaves the streams of the result unread, and the result shows them as refs. When
+  the call also binds a stream, add `--print-result` to print that result.
 
 | Exit code | When                                                                   |
 | --------- | ---------------------------------------------------------------------- |

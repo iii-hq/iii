@@ -96,8 +96,9 @@ pub struct CallArgs {
     #[arg(long)]
     pub no_bind: bool,
 
-    /// Print the `stdout` and `stderr` streams of the result as refs instead
-    /// of copying them to this process's stdout and stderr.
+    /// Leave the `stdout` and `stderr` streams of the result unread: the
+    /// result shows them as refs. A call that binds a stream prints that
+    /// result only with `--print-result`.
     #[arg(long)]
     pub no_follow: bool,
 

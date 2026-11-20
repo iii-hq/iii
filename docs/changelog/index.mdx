@@ -94,7 +94,8 @@ type: "reference"
   - A `stdout`, `stderr`, or `stdin` stream field of the function's request schema is bound to the
     process's own; `--stdout`, `--stderr`, and `--stdin` bind other fields, and `--no-bind` binds
     none. The `stdout` and `stderr` streams of the result are copied out until they end;
-    `--no-follow` prints them as refs.
+    `--no-follow` leaves them unread, and the result shows them as refs (with `--print-result`
+    when the call also binds a stream).
   - While a stream is carried, the first `Ctrl+C` or `SIGTERM` closes the streams, which asks the
     function to stop, and `iii call` waits for its answer. A second one exits at once.
   - A call that binds a stream has no timeout unless `--timeout-ms` sets one, and prints its result
