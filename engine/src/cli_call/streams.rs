@@ -6,7 +6,7 @@
 
 //! The streams `iii call` carries: this process's stdio bound to the stream fields of the
 //! payload, the streams of the result followed to stdout and stderr, and the first SIGINT or
-//! SIGTERM turned into a stop.
+//! SIGTERM (Ctrl+C or Ctrl+Break on Windows) turned into a stop.
 //!
 //! A function that streams to its caller lasts as long as the caller reads. Cancelling the
 //! streams is how `iii call` asks it to stop: the engine closes the function's end, its next
@@ -421,48 +421,43 @@ async fn copy_in(output: OutputStream) {
 }
 
 /// SIGINT and SIGTERM while streams are carried: the first one is a stop request, a second one
-/// ends the process at once, with 128 plus its number.
+/// ends the process at once, with 128 plus its number. On Windows, Ctrl+C is SIGINT and
+/// Ctrl+Break is SIGTERM: the console event a process manager sends to stop a process group.
 pub struct Interrupt(watch::Receiver<Option<i32>>);
 
 impl Interrupt {
     pub fn install() -> std::io::Result<Self> {
         let (sender, received) = watch::channel(None);
         #[cfg(unix)]
-        {
+        let (mut terminate, mut interrupt) = {
             use tokio::signal::unix::{SignalKind, signal};
-            let mut terminate = signal(SignalKind::terminate())?;
-            let mut interrupt = signal(SignalKind::interrupt())?;
-            tokio::spawn(async move {
-                let mut first = true;
-                loop {
-                    let number = tokio::select! {
-                        received = terminate.recv() => received.map(|()| 15),
-                        received = interrupt.recv() => received.map(|()| 2),
-                    };
-                    let Some(number) = number else {
-                        return;
-                    };
-                    if !first {
-                        std::process::exit(128 + number);
-                    }
-                    first = false;
-                    sender.send_replace(Some(number));
-                }
-            });
-        }
+            (
+                signal(SignalKind::terminate())?,
+                signal(SignalKind::interrupt())?,
+            )
+        };
         #[cfg(windows)]
-        {
-            let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
-            tokio::spawn(async move {
-                if ctrl_c.recv().await.is_none() {
+        let (mut terminate, mut interrupt) = (
+            tokio::signal::windows::ctrl_break()?,
+            tokio::signal::windows::ctrl_c()?,
+        );
+        tokio::spawn(async move {
+            let mut first = true;
+            loop {
+                let number = tokio::select! {
+                    received = terminate.recv() => received.map(|()| 15),
+                    received = interrupt.recv() => received.map(|()| 2),
+                };
+                let Some(number) = number else {
                     return;
+                };
+                if !first {
+                    std::process::exit(128 + number);
                 }
-                sender.send_replace(Some(2));
-                if ctrl_c.recv().await.is_some() {
-                    std::process::exit(130);
-                }
-            });
-        }
+                first = false;
+                sender.send_replace(Some(number));
+            }
+        });
         Ok(Self(received))
     }
 
