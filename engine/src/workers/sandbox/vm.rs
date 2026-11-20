@@ -303,6 +303,17 @@ impl Sinks {
         }
     }
 
+    /// [`Self::write`] of a line of `sandbox::start`'s own to `stderr`, unless a reader leaves
+    /// first: a full pipe whose other reader is gone must not hold the call that should stop.
+    /// `false` when a reader left.
+    async fn say(&self, line: &str) -> bool {
+        tokio::select! {
+            biased;
+            () = self.closed() => false,
+            () = self.write(&LogStream::Stderr, line) => true,
+        }
+    }
+
     /// Resolves once the reader of a sink left: the caller asks for a stop. Never without a
     /// sink.
     async fn closed(&self) {
@@ -719,15 +730,13 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
             return reply(stopped(&vm, exit_code, signal));
         }
+        // A reader that left meanwhile is noticed by the follow, which stops the VM.
         if reattached {
             sinks
-                .write(
-                    &LogStream::Stderr,
-                    &format!(
-                        "sandbox::start: reattached to VM {} instance {}",
-                        vm.id, vm.instance
-                    ),
-                )
+                .say(&format!(
+                    "sandbox::start: reattached to VM {} instance {}",
+                    vm.id, vm.instance
+                ))
                 .await;
         }
 
@@ -736,18 +745,23 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
                 let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
                 return reply(stopped(&vm, exit_code, signal));
             }
-            Followed::Ended { stopped: true, .. } if reattached && reboots > 0 => {
+            Followed::Ended {
+                stopped: true,
+                code,
+                signal,
+            } if reattached && reboots > 0 => {
                 reboots -= 1;
-                sinks
-                    .write(
-                        &LogStream::Stderr,
-                        &format!(
-                            "sandbox::start: VM {} instance {} was stopped by an earlier start; \
-                             booting it again",
-                            vm.id, vm.instance
-                        ),
-                    )
+                // A caller that left while the line waited gets the stopped VM: nothing boots.
+                let said = sinks
+                    .say(&format!(
+                        "sandbox::start: VM {} instance {} was stopped by an earlier start; \
+                         booting it again",
+                        vm.id, vm.instance
+                    ))
                     .await;
+                if !said {
+                    return reply(stopped(&vm, code, signal));
+                }
             }
             Followed::Ended { code, signal, .. } => {
                 return exited(&request.worker, &vm, code, signal);
@@ -935,4 +949,28 @@ fn exited(
         WORKER_EXITED,
         format!("{worker}: VM {} instance {} {how}", vm.id, vm.instance),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `stderr` full and unread, its other reader gone: `sandbox::start`'s own line gives way
+    /// rather than hold the call that should stop.
+    #[tokio::test]
+    async fn a_line_to_a_full_stderr_gives_way_once_a_reader_left() {
+        let (stdout, stdout_reader) = mpsc::channel(1);
+        let (stderr, _stderr_reader) = mpsc::channel(1);
+        let sinks = Sinks {
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+        };
+        assert!(sinks.say("fills stderr").await);
+        drop(stdout_reader);
+
+        let said = tokio::time::timeout(Duration::from_secs(5), sinks.say("waits"))
+            .await
+            .expect("the line gave way once stdout's reader left");
+        assert!(!said);
+    }
 }
