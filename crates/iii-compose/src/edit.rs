@@ -1272,6 +1272,9 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
     // The last character outside quotes that is not whitespace: a quote opens a quoted scalar only
     // where a node starts, and an apostrophe inside a plain scalar is text.
     let mut significant: Option<char> = None;
+    // Inside a tag or an anchor (`!!str`, `&note`) that starts a node, and right after one: the
+    // node starts after it, so a quote there still opens a quoted scalar.
+    let (mut property, mut after_property) = (false, false);
     for (row, line) in lines.iter().enumerate().skip(open_row) {
         let mut chars = line.char_indices().peekable();
         let mut previous: Option<char> = None;
@@ -1298,8 +1301,17 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
                 }
                 None => match c {
                     '#' if previous.is_none_or(|c| c.is_whitespace() || ",[{".contains(c)) => break,
-                    '\'' | '"' if significant.is_none_or(|c| ":[{,".contains(c)) => {
+                    '\'' | '"'
+                        if after_property || significant.is_none_or(|c| ":[{,".contains(c)) =>
+                    {
                         quote = Some(c);
+                    }
+                    '!' | '&'
+                        if !property
+                            && (after_property
+                                || significant.is_none_or(|c| ":[{,".contains(c))) =>
+                    {
+                        property = true;
                     }
                     '[' => delimiters.push(']'),
                     '{' => delimiters.push('}'),
@@ -1322,7 +1334,14 @@ fn flow_span(lines: &[&str], head: usize) -> Option<FlowSpan> {
                 last = Some((row, column));
             }
             previous = Some(c);
-            if !c.is_whitespace() {
+            if c.is_whitespace() {
+                if std::mem::take(&mut property) {
+                    after_property = true;
+                }
+            } else {
+                if !property {
+                    after_property = false;
+                }
                 significant = Some(c);
             }
         }
@@ -4350,6 +4369,18 @@ containers:
         assert_eq!(flow.close, (0, lines[0].len() - 1));
         let lines = ["    config_override: {message: 'say }'}"];
         assert_eq!(flow_span(&lines, 0).unwrap().close, (0, lines[0].len() - 1));
+        // A tag or an anchor before a quoted value leaves it a quoted value.
+        for line in [
+            "    config_override: {message: !!str 'x]y'}",
+            "    config_override: {message: &note \"x}y\"}",
+            "    config_override: [!!str 'a]b', c]",
+        ] {
+            assert_eq!(
+                flow_span(&[line], 0).unwrap().close,
+                (0, line.len() - 1),
+                "{line}"
+            );
+        }
     }
 
     /// A `start_after` another container aliases is not edited: that container would gain the
