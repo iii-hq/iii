@@ -599,6 +599,17 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
         }
         None => {}
         Some((head, end)) => {
+            // Edited in place, scripts another container aliases would hand it this container's
+            // VM lines: they are split by hand first.
+            if let Some(anchor) = shared_anchor(&lines, entry.start + head, entry.start + end) {
+                return Err(invalid(
+                    key,
+                    &format!(
+                        "its scripts are shared with another container through the YAML anchor \
+                         &{anchor}; give each its own scripts, then run this again"
+                    ),
+                ));
+            }
             let value = without_comment(
                 entry_lines[head][inner.len()..]
                     .split_once(':')
@@ -1079,6 +1090,50 @@ fn opens_block(value: &str) -> bool {
     value
         .split_whitespace()
         .all(|token| token.starts_with('&') || token.starts_with('!'))
+}
+
+/// An anchor that lines `from..to` of `lines` define and a line outside them aliases: the node
+/// is shared, so an edit of it in place edits the other too.
+fn shared_anchor(lines: &[&str], from: usize, to: usize) -> Option<String> {
+    let anchors: Vec<&str> = lines[from..to]
+        .iter()
+        .flat_map(|line| {
+            let body = without_comment(line).trim_start();
+            let body = body.strip_prefix("- ").unwrap_or(body);
+            let mut value = body
+                .split_once(':')
+                .map_or("", |(_, value)| value)
+                .trim_start();
+            let mut found = Vec::new();
+            while value.starts_with(['&', '!']) {
+                let end = value.find(char::is_whitespace).unwrap_or(value.len());
+                found.extend(value[..end].strip_prefix('&'));
+                value = value[end..].trim_start();
+            }
+            found
+        })
+        .collect();
+    anchors
+        .into_iter()
+        .find(|name| {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(at, _)| !(from..to).contains(at))
+                .any(|(_, line)| aliases(without_comment(line), name))
+        })
+        .map(str::to_string)
+}
+
+/// Whether `line` holds the alias `*name`.
+fn aliases(line: &str, name: &str) -> bool {
+    let alias = format!("*{name}");
+    line.match_indices(&alias).any(|(at, _)| {
+        let before = line[..at].chars().next_back();
+        let after = line[at + alias.len()..].chars().next();
+        before.is_none_or(|c| c.is_whitespace() || "[{,".contains(c))
+            && after.is_none_or(|c| c.is_whitespace() || ",]}".contains(c))
+    })
 }
 
 /// A YAML scalar as the text it holds; another value as its YAML.
@@ -4317,10 +4372,46 @@ containers:
         assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
     }
 
-    /// An anchor on a block `scripts` stays where it was, so an alias of it still resolves.
+    /// Scripts another container aliases are not edited: that container would run this one's
+    /// VM. Nothing is written, and the operator is told to split them.
+    #[test]
+    fn scripts_another_container_aliases_are_refused() {
+        for (other, scripts) in [
+            (
+                "scripts: *shared",
+                "scripts: &shared # shared\n      run: python main.py",
+            ),
+            (
+                "scripts: {<<: *shared, post_run: x}",
+                "scripts: &shared\n      run: python main.py",
+            ),
+            (
+                "scripts: {run: *cmd}",
+                "scripts:\n      run: &cmd python main.py",
+            ),
+        ] {
+            let text = format!(
+                "containers:\n  vm:\n    worker: path://./vm\n    {scripts}\n  other:\n    worker: path://./other\n    {other}\n"
+            );
+            let error = explicit_vm_mode(&text, "vm", "sb").unwrap_err();
+            let anchor = if other.contains("*cmd") {
+                "&cmd"
+            } else {
+                "&shared"
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("YAML anchor {anchor};")),
+                "{other}: {error}"
+            );
+        }
+    }
+
+    /// An anchor on a block `scripts` that nothing aliases stays where it was.
     #[test]
     fn an_anchored_block_of_scripts_keeps_its_anchor() {
-        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared # shared\n      run: python main.py\n  other:\n    worker: path://./other\n    scripts: *shared\n";
+        let text = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared # shared\n      run: python main.py\n  other:\n    worker: path://./other\n    scripts: {run: x, note: '*shared'}\n";
         let rewrite = explicit_vm_mode(text, "vm", "sb").unwrap().unwrap();
         assert!(
             rewrite.text.contains("    scripts: &shared # shared\n"),
@@ -4337,7 +4428,10 @@ containers:
             scripts["run"].as_str(),
             Some("iii call sandbox::start worker=vm 'command=python main.py'")
         );
-        assert_eq!(&parsed["containers"]["other"]["scripts"], scripts);
+        assert_eq!(
+            parsed["containers"]["other"]["scripts"]["run"].as_str(),
+            Some("x")
+        );
     }
 
     /// A flow `scripts` map that starts on the line after `scripts:` is written again whole, as
