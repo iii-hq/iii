@@ -143,14 +143,16 @@ mod tests {
     #[tokio::test]
     async fn every_socket_reads_through_a_small_buffer() {
         let (address, server) = test_engine::spawn(false).await;
-        let limits = WebSocketConfig::default().max_message_size(Some(64 << 20));
+        // Not tungstenite's default (64 MiB): a `connect` that dropped the
+        // caller's config would fail the second assertion.
+        let limits = WebSocketConfig::default().max_message_size(Some(1 << 20));
         let (stream, _) = connect(format!("ws://{address}"), Some(limits))
             .await
             .unwrap();
         assert_eq!(stream.get_config().read_buffer_size, READ_BUFFER_BYTES);
         assert_eq!(
             stream.get_config().max_message_size,
-            Some(64 << 20),
+            Some(1 << 20),
             "the caller's limits stay"
         );
         server.await.unwrap();
