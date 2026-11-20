@@ -5,6 +5,7 @@
 // See LICENSE and PATENTS files for details.
 
 use std::io::IsTerminal;
+use std::time::Instant;
 
 use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::CallRequest;
@@ -19,6 +20,50 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// "No timeout" for a call that carries a stream: ten years, which the engine and the SDK still
 /// add to an `Instant` without overflowing.
 const NO_TIMEOUT_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
+
+/// The time a call may take, from the schema lookup to the answer: one deadline, started before
+/// anything is sent, so the lookup and the invocation share `--timeout-ms` instead of each
+/// taking all of it.
+struct Budget {
+    started: Instant,
+    /// `--timeout-ms`; `None` is 30 s, or no limit for a call that binds a stream.
+    limit_ms: Option<u64>,
+}
+
+impl Budget {
+    fn start(limit_ms: Option<u64>) -> Self {
+        Self {
+            started: Instant::now(),
+            limit_ms,
+        }
+    }
+
+    /// What is left of `total_ms`, never less than 1 ms: a call whose time ran out still goes
+    /// out, and times out on its own.
+    fn left_of(&self, total_ms: u64) -> u64 {
+        let spent = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        total_ms.saturating_sub(spent).max(1)
+    }
+
+    /// The timeout of the schema lookup.
+    fn lookup_timeout(&self) -> u64 {
+        self.left_of(
+            self.limit_ms
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .min(DEFAULT_TIMEOUT_MS),
+        )
+    }
+
+    /// The timeout of the invocation: what is left of `--timeout-ms`, else of the 30 s default,
+    /// or no limit for a call that binds a stream and names none.
+    fn call_timeout(&self, binds_stream: bool) -> u64 {
+        match self.limit_ms {
+            Some(limit) => self.left_of(limit),
+            None if binds_stream => NO_TIMEOUT_MS,
+            None => self.left_of(DEFAULT_TIMEOUT_MS),
+        }
+    }
+}
 
 /// How one invocation runs.
 pub struct Options<'a> {
@@ -76,13 +121,11 @@ async fn call(
     mut payload: Value,
     options: &Options<'_>,
 ) -> Result<(), CallCliError> {
+    let budget = Budget::start(options.timeout_ms);
     let mut bindings = options.bindings.clone();
     if options.auto_bind && payload.is_object() {
-        let budget = options
-            .timeout_ms
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .min(DEFAULT_TIMEOUT_MS);
-        match request_schema(iii, function_path, options.namespace, budget).await {
+        let lookup_timeout = budget.lookup_timeout();
+        match request_schema(iii, function_path, options.namespace, lookup_timeout).await {
             Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
             Ok(None) => {}
             // An engine that cannot be reached for the schema cannot be reached for the call:
@@ -102,11 +145,7 @@ async fn call(
             .map_err(CallCliError::Other)?;
         interrupt = Some(Interrupt::install().map_err(|error| anyhow::anyhow!(error))?);
     }
-    let timeout_ms = options.timeout_ms.unwrap_or(if bindings.is_empty() {
-        DEFAULT_TIMEOUT_MS
-    } else {
-        NO_TIMEOUT_MS
-    });
+    let timeout_ms = budget.call_timeout(!bindings.is_empty());
     let request = CallRequest {
         function_id: function_path.to_string(),
         payload,
@@ -274,6 +313,34 @@ mod tests {
     use super::*;
     use iii::workers::telemetry::environment::CI_ENV_VARS;
     use serial_test::serial;
+    use std::time::Duration;
+
+    /// A budget `ms` into its call.
+    fn spent(ms: u64, limit_ms: Option<u64>) -> Budget {
+        Budget {
+            started: Instant::now() - Duration::from_millis(ms),
+            limit_ms,
+        }
+    }
+
+    #[test]
+    fn the_call_gets_what_the_lookup_left_of_the_timeout() {
+        let budget = spent(450, Some(500));
+        let left = budget.call_timeout(false);
+        assert!((1..=50).contains(&left), "{left}");
+        assert!(
+            budget.call_timeout(true) <= 50,
+            "--timeout-ms bounds a call that binds a stream too"
+        );
+        assert_eq!(
+            spent(600, Some(500)).call_timeout(false),
+            1,
+            "a spent budget still sends the call, which then times out"
+        );
+        let default = spent(1_000, None);
+        assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
+        assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
 
     /// Runs `body` with the process looking like a developer machine whose
     /// telemetry setting is `enabled`. `temp_env` restores every variable on the
