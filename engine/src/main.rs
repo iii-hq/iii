@@ -144,10 +144,11 @@ enum Commands {
     /// carried, the first Ctrl+C or SIGTERM closes the streams, which asks the
     /// function to stop, and waits for its answer; a second one exits at once.
     ///
-    /// III_CALL_DEFAULTS holds a JSON object keyed by function id: the entry of
-    /// the called function is the base payload, and `--json` and key=value
-    /// override its keys. A parent process uses it to hand a call fields that
-    /// must not appear in its arguments.
+    /// III_CALL_DEFAULTS holds a JSON object keyed by namespace, each holding
+    /// entries keyed by function id: the entry of the called function in the
+    /// namespace the call resolves in (`default` without `-n`) is the base
+    /// payload, and `--json` and key=value override its keys. A parent process
+    /// uses it to hand a call fields that must not appear in its arguments.
     #[command(visible_aliases = ["trigger", "t"])]
     Call(CallArgs),
 

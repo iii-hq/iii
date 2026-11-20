@@ -11,9 +11,10 @@
 //! `scripts.run` is `iii call sandbox::start worker=<container>`. Everything else those calls
 //! need comes from Compose: `sandbox::layer_own_vm_env` lays the VM's context over the
 //! container's variables, and once the process environment is final, [`lay_call_defaults`]
-//! turns it into the `sandbox::build` and `sandbox::start` entries of `III_CALL_DEFAULTS`, which
-//! `iii call` merges under the line's own arguments. The token and the worker's variables never
-//! reach the process's arguments.
+//! turns it into the `sandbox::build` and `sandbox::start` entries of `III_CALL_DEFAULTS`, under
+//! the `default` namespace the lines resolve in, which `iii call` merges under the line's own
+//! arguments. The token and the worker's variables never reach the process's arguments, nor a
+//! function of the same id in another namespace.
 
 use std::{collections::BTreeMap, path::Path, time::Duration};
 
@@ -51,8 +52,12 @@ pub(crate) const BUILD_WORKER_ENV: &str = "III_BUILD_WORKER";
 pub const WORKER_ENV_KEYS_ENV: &str = "III_WORKER_ENV_KEYS";
 /// How long Compose waits after its SIGTERM before it kills the process.
 pub const STOP_TIMEOUT_ENV: &str = "III_STOP_TIMEOUT_MS";
-/// The default payloads `iii call` takes by function id.
+/// The default payloads `iii call` takes by namespace and function id.
 pub const CALL_DEFAULTS_ENV: &str = "III_CALL_DEFAULTS";
+/// The namespace the `iii call sandbox::*` lines of a VM container's scripts resolve in: they name
+/// none, so `default`, where the engine's sandbox router serves them. Their entries of
+/// `III_CALL_DEFAULTS` are written under it, so a `sandbox::*` of another namespace gets nothing.
+pub const CALL_NAMESPACE: &str = "default";
 /// The source a build started from was replaced before its `build.json` was written: nothing is
 /// recorded, and building again fixes it.
 pub const BUILD_INPUT_CHANGED: &str = "BUILD_INPUT_CHANGED";
@@ -256,7 +261,12 @@ pub(crate) fn lay_call_defaults(env: &mut BTreeMap<String, String>) {
     }
     match call_defaults(env) {
         Ok(defaults) => {
-            env.insert(CALL_DEFAULTS_ENV.to_string(), defaults.to_string());
+            let mut by_namespace = Map::new();
+            by_namespace.insert(CALL_NAMESPACE.to_string(), defaults);
+            env.insert(
+                CALL_DEFAULTS_ENV.to_string(),
+                Value::Object(by_namespace).to_string(),
+            );
         }
         Err(error) => {
             let worker = env.get(WORKER_NAME_ENV).cloned().unwrap_or_default();
@@ -370,7 +380,11 @@ mod tests {
     fn the_defaults_replace_the_vm_variables_in_the_environment() {
         let mut env = compose_vars();
         lay_call_defaults(&mut env);
-        assert!(env.contains_key(CALL_DEFAULTS_ENV));
+        // Under the namespace the scripts' calls resolve in, and no other.
+        let defaults: Value = serde_json::from_str(&env[CALL_DEFAULTS_ENV]).unwrap();
+        let namespaces: Vec<&String> = defaults.as_object().unwrap().keys().collect();
+        assert_eq!(namespaces, ["default"]);
+        assert_eq!(defaults["default"]["sandbox::build"]["worker"], "api");
         for name in REPLACED {
             assert!(!env.contains_key(name), "{name}");
         }

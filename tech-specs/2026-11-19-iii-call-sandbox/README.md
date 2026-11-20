@@ -96,18 +96,24 @@ This is the contract a long-running function relies on: it lasts as long as its 
 
 ### 3.4 Defaults from the environment
 
-`III_CALL_DEFAULTS` holds a JSON object keyed by function id:
+`III_CALL_DEFAULTS` holds a JSON object keyed by namespace, each holding entries keyed by function
+id:
 
 ```json
 {
-  "sandbox::start": { "auth": "...", "state_key": "...", "source": { "kind": "bundle", "...": "..." } },
-  "sandbox::build": { "auth": "...", "state_key": "...", "timeout_ms": 1200000 }
+  "default": {
+    "sandbox::start": { "auth": "...", "state_key": "...", "source": { "kind": "bundle", "...": "..." } },
+    "sandbox::build": { "auth": "...", "state_key": "...", "timeout_ms": 1200000 }
+  }
 }
 ```
 
-A call to `F` takes `III_CALL_DEFAULTS[F]` as its base payload; `--json` and `key=value` pairs
-override its keys. Only the function the entry names receives it: an `iii call state::get` in the
-same script sees nothing. The values never appear in the process's arguments, so `ps` shows no
+A call to `F` that resolves in namespace `N` (`--namespace`, else `default`) takes
+`III_CALL_DEFAULTS[N][F]` as its base payload; `--json` and `key=value` pairs override its keys.
+Only the function the entry names, in the namespace it is written under, receives it: an
+`iii call state::get` in the same script sees nothing, and neither does the same function id in
+another namespace, which is another handler. Compose writes its entries under `default`, where
+the lines of 4.2 resolve. The values never appear in the process's arguments, so `ps` shows no
 token and no secret from the worker's environment. A variable that is not a JSON object, or an
 entry that is not one, is a usage error. `iii call --help` documents the variable.
 

@@ -994,11 +994,13 @@ destroy a VM while its build runs, with [S509](#S509), so Compose asks again whi
 ### Environment variables
 
 Compose hands each VM container's scripts the requests of their two calls in `III_CALL_DEFAULTS`, a
-JSON object keyed by function id (see
-[Defaults from the environment](../using-iii/functions#defaults-from-the-environment)). `iii call`
-takes the entry of the function it calls as its base payload, and the line's own `key=value`
-arguments override its keys. Only `sandbox::build` and `sandbox::start` receive an entry: an
-`iii call state::get` in the same script gets nothing from it. The token and the worker's variables
+JSON object keyed by namespace and function id (see
+[Defaults from the environment](../using-iii/functions#defaults-from-the-environment)). The entries
+are under `default`, the namespace the lines resolve in, as they name none. `iii call` takes the
+entry of the function it calls as its base payload, and the line's own `key=value` arguments
+override its keys. Only `sandbox::build` and `sandbox::start` in `default` receive an entry: an
+`iii call state::get` in the same script, or a `sandbox::start` called in another namespace, gets
+nothing from it. The token and the worker's variables
 never appear in the process's arguments.
 
 | Field              | Used by | Value                                                                                                                         |

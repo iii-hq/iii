@@ -312,7 +312,8 @@ fn defaults(mode: &str) -> String {
     start["stop_grace_ms"] = json!(2000);
     let mut build = common;
     build["timeout_ms"] = json!(60_000);
-    json!({ "sandbox::start": start, "sandbox::build": build }).to_string()
+    // Under the namespace the calls resolve in: they name none, so `default`.
+    json!({ "default": { "sandbox::start": start, "sandbox::build": build } }).to_string()
 }
 
 fn iii_call(engine: &TestEngine, mode: &str, args: &[&str]) -> (Command, tempfile::TempDir) {
@@ -474,7 +475,7 @@ async fn an_unconfirmed_stop_fails_the_call_with_timed_out() {
     for (mode, grace) in [("stop-hangs", 300), ("run", 0)] {
         let engine = start().await;
         let mut defaults: Value = serde_json::from_str(&defaults(mode)).unwrap();
-        defaults["sandbox::start"]["stop_grace_ms"] = json!(grace);
+        defaults["default"]["sandbox::start"]["stop_grace_ms"] = json!(grace);
         let (mut command, _cwd) = iii_call(&engine, mode, &["sandbox::start", "worker=api"]);
         command.env("III_CALL_DEFAULTS", defaults.to_string());
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -581,12 +582,12 @@ async fn a_build_prints_its_output_and_answers_with_the_image() {
 async fn a_binary_build_says_which_executable_the_guest_runs() {
     let engine = start().await;
     let mut defaults: Value = serde_json::from_str(&defaults("build-ok")).unwrap();
-    defaults["sandbox::build"]["source"] = json!({
+    defaults["default"]["sandbox::build"]["source"] = json!({
         "kind": "binary", "package": "indexer",
         "host_path": "/srv/project/.iii/workers/api", "executable": "bin/indexer"
     });
     // A binary has no image of its own: the adapter contract requires the base image.
-    defaults["sandbox::build"]["base_image"] = json!("docker.io/library/alpine:3.20");
+    defaults["default"]["sandbox::build"]["base_image"] = json!("docker.io/library/alpine:3.20");
     let (mut command, _cwd) = iii_call(&engine, "build-ok", &["sandbox::build", "worker=api"]);
     command.env("III_CALL_DEFAULTS", defaults.to_string());
     let out = output(command).await;
@@ -645,7 +646,7 @@ async fn sigterm_cancels_a_build_and_the_adapter_aborts_it() {
 async fn a_command_on_a_package_is_refused() {
     let engine = start().await;
     let mut defaults: Value = serde_json::from_str(&defaults("exit-0")).unwrap();
-    defaults["sandbox::start"]["source"] =
+    defaults["default"]["sandbox::start"]["source"] =
         json!({ "kind": "bundle", "package": "api", "host_path": "/srv/project/.iii/workers/api" });
     let (mut command, _cwd) = iii_call(
         &engine,

@@ -27,6 +27,8 @@ const WAIT: Duration = Duration::from_secs(10);
 struct TestEngine {
     _builder: EngineBuilder,
     _sdk: IIIClient,
+    /// A worker in the `orders` namespace, with a function id `default` has too.
+    _orders: IIIClient,
     _dir: tempfile::TempDir,
     url: String,
     /// Set by `cli-streams::ticks` once a write failed: its caller left.
@@ -207,6 +209,13 @@ async fn start() -> TestEngine {
                 })
             }),
         ),
+        // Answers with the payload it got and the namespace it runs in.
+        sdk.register_function(
+            "cli-streams::payload",
+            RegisterFunction::new_async(|req: Value| async move {
+                Ok::<_, Error>(json!({ "namespace": "default", "payload": req }))
+            }),
+        ),
         sdk.register_function(
             "cli-streams::fail",
             RegisterFunction::new_async(|_: Value| async move {
@@ -253,12 +262,39 @@ async fn start() -> TestEngine {
             }
         }),
     ));
+    let orders = register_worker(
+        &url,
+        InitOptions {
+            metadata: Some(WorkerMetadata {
+                name: "cli-streams-orders".to_string(),
+                ..WorkerMetadata::default()
+            }),
+            otel: Some(OtelConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            namespace: Some("orders".to_string()),
+            identity: WorkerIdentityMode::Explicit,
+            ..Default::default()
+        },
+    );
+    orders
+        .wait_until_registered(WAIT)
+        .await
+        .expect("engine reachable");
+    functions.push(orders.register_function(
+        "cli-streams::payload",
+        RegisterFunction::new_async(|req: Value| async move {
+            Ok::<_, Error>(json!({ "namespace": "orders", "payload": req }))
+        }),
+    ));
     for function in &functions {
         ready(function).await;
     }
     TestEngine {
         _builder: builder,
         _sdk: sdk,
+        _orders: orders,
         _dir: dir,
         url,
         stopped,
@@ -467,7 +503,8 @@ async fn result_streams_are_followed_unless_asked_not_to() {
 async fn defaults_come_from_the_environment_for_their_function_only() {
     let engine = start().await;
     let cwd = tempfile::tempdir().unwrap();
-    let defaults = r#"{"cli-streams::lines": {"count": 2}, "other::fn": {"count": 9}}"#;
+    let defaults =
+        r#"{"default": {"cli-streams::lines": {"count": 2}, "other::fn": {"count": 9}}}"#;
 
     let mut command = iii_call(&engine.url, cwd.path(), &["cli-streams::lines"]);
     command.env("III_CALL_DEFAULTS", defaults);
@@ -492,6 +529,34 @@ async fn defaults_come_from_the_environment_for_their_function_only() {
         "{stderr}"
     );
     assert!(!stderr.contains("secret-token"), "{stderr}");
+}
+
+/// An entry of `III_CALL_DEFAULTS` is for its function id in the namespace it is written under:
+/// the same function id in another namespace, another handler, receives nothing of it.
+#[tokio::test(flavor = "multi_thread")]
+async fn defaults_reach_only_the_namespace_they_are_written_under() {
+    let engine = start().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let defaults = r#"{"orders": {"cli-streams::payload": {"token": "orders-token"}}}"#;
+    let call = |args: &[&str]| {
+        let mut command = iii_call(&engine.url, cwd.path(), args);
+        command.env("III_CALL_DEFAULTS", defaults);
+        command
+    };
+
+    // Without `-n` the call resolves in `default`: the token written for `orders` stays out.
+    let out = output(call(&["cli-streams::payload"])).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["namespace"], "default", "{result}");
+    assert!(result["payload"].get("token").is_none(), "{result}");
+
+    // In `orders` it is the entry's own.
+    let out = output(call(&["cli-streams::payload", "-n", "orders"])).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["namespace"], "orders", "{result}");
+    assert_eq!(result["payload"]["token"], "orders-token", "{result}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

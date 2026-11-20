@@ -830,7 +830,9 @@ mod tests {
         .unwrap();
         let env = plan("app", &user_env);
         let defaults: serde_json::Value =
-            serde_json::from_str(&env[crate::vm_call::CALL_DEFAULTS_ENV]).unwrap();
+            serde_json::from_str::<serde_json::Value>(&env[crate::vm_call::CALL_DEFAULTS_ENV])
+                .unwrap()[crate::vm_call::CALL_NAMESPACE]
+                .clone();
         let build = &defaults["sandbox::build"];
         assert_eq!(build["source"]["kind"], "bundle", "{build}");
         assert_ne!(build["state_key"], "host-state");
@@ -920,7 +922,7 @@ mod tests {
         // The guest's environment is the `env` of the call's defaults.
         let guest = |env: &BTreeMap<String, String>| -> serde_json::Value {
             serde_json::from_str::<serde_json::Value>(&env[crate::vm_call::CALL_DEFAULTS_ENV])
-                .unwrap()["sandbox::build"]["env"]
+                .unwrap()[crate::vm_call::CALL_NAMESPACE]["sandbox::build"]["env"]
                 .clone()
         };
         assert_eq!(guest(&host_env)["III_HOST_USER_ID"], "dev-123");
