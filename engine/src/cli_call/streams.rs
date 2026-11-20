@@ -389,9 +389,11 @@ impl Interrupt {
         Ok(Self(received))
     }
 
-    /// The signal that came, once one did.
-    pub fn received(&self) -> Option<i32> {
-        *self.0.borrow()
+    /// An interrupt that takes its signals from the returned sender, for tests.
+    #[cfg(test)]
+    pub fn manual() -> (watch::Sender<Option<i32>>, Self) {
+        let (sender, received) = watch::channel(None);
+        (sender, Self(received))
     }
 
     /// Resolves to the first signal's number; never without one.
