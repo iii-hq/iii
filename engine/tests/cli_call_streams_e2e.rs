@@ -686,9 +686,6 @@ async fn the_first_signal_stops_the_function_and_waits_for_its_answer() {
     assert!(rest.contains("\"stopped\": true"), "{rest}");
 }
 
-/// A result stream that arrives after the first signal is cancelled too: the function answered a
-/// stop with a stream it never closes, and `iii call` still exits with that answer.
-#[cfg(unix)]
 /// The first signal after the answer ends the call with 130 though its output is stuck: a write
 /// into a pipe whose reader stopped reading is not waited for.
 #[cfg(unix)]
@@ -727,6 +724,9 @@ async fn a_signal_after_the_answer_does_not_wait_for_a_stuck_write() {
     assert_eq!(status.code(), Some(130));
 }
 
+/// A result stream that arrives after the first signal is cancelled too: the function answered a
+/// stop with a stream it never closes, and `iii call` still exits with that answer.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn result_streams_after_a_stop_are_cancelled_too() {
     let engine = start().await;
