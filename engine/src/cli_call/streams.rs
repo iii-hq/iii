@@ -319,10 +319,19 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
                 Err(error) => Err(error),
             },
         };
-        if written.and(out.flush().await).is_err() {
-            // Nobody reads this process's output any more: stop the function's stream too.
+        let written = match written {
+            Ok(()) => out.flush().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = written {
+            // The output cannot take more: stop the function's stream too.
             input.cancel().await;
-            return Ok(());
+            // A reader that left (`| head`) ends the output, as the caller wanted. Any other
+            // failure (a full disk) lost output, and the call must not report success.
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Ok(());
+            }
+            return Err(format!("could not write it: {error}"));
         }
     }
     Ok(())
@@ -586,6 +595,52 @@ mod tests {
             Err("the stderr stream failed: aborted".to_string())
         );
         assert!(carried.is_empty());
+    }
+
+    /// An output whose every write fails with `kind`.
+    struct Failing(std::io::ErrorKind);
+
+    impl AsyncWrite for Failing {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            _: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Err(self.0.into()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_fails_the_copy_unless_the_reader_left() {
+        let full = copy_out(
+            InputStream::from_bytes("data"),
+            Failing(std::io::ErrorKind::StorageFull),
+        )
+        .await;
+        assert!(
+            full.as_ref().is_err_and(|error| error.contains("could not write it")),
+            "{full:?}"
+        );
+        let left = copy_out(
+            InputStream::from_bytes("data"),
+            Failing(std::io::ErrorKind::BrokenPipe),
+        )
+        .await;
+        assert_eq!(left, Ok(()));
     }
 
     #[test]
