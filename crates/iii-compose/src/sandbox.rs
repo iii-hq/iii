@@ -133,16 +133,19 @@ pub fn build_line(key: &str) -> String {
 /// `iii call` line. An unquoted newline, `;`, `&` or `|` ends that command; the `&` of a
 /// redirection does not.
 fn shell_words(command: &str) -> Vec<String> {
-    let (mut words, mut word, mut in_word) = (Vec::new(), String::new(), false);
+    // Each word, and whether any of it was quoted or escaped: only an unquoted word can be a
+    // redirection.
+    let mut tokens: Vec<(String, bool)> = Vec::new();
+    let (mut word, mut in_word, mut quoted) = (String::new(), false, false);
     let mut chars = command.chars();
     while let Some(c) = chars.next() {
         match c {
             '\'' => {
-                in_word = true;
+                (in_word, quoted) = (true, true);
                 word.extend(chars.by_ref().take_while(|c| *c != '\''));
             }
             '"' => {
-                in_word = true;
+                (in_word, quoted) = (true, true);
                 while let Some(c) = chars.next() {
                     match c {
                         '"' => break,
@@ -155,7 +158,7 @@ fn shell_words(command: &str) -> Vec<String> {
                 // A line continued: no character, and no word ends.
                 Some('\n') => {}
                 next => {
-                    in_word = true;
+                    (in_word, quoted) = (true, true);
                     word.extend(next);
                 }
             },
@@ -168,7 +171,7 @@ fn shell_words(command: &str) -> Vec<String> {
             '\n' | ';' | '&' | '|' => break,
             c if c.is_whitespace() => {
                 if std::mem::take(&mut in_word) {
-                    words.push(std::mem::take(&mut word));
+                    tokens.push((std::mem::take(&mut word), std::mem::take(&mut quoted)));
                 }
             }
             // A `#` that starts a word starts a comment, to the end of its line, which ends the
@@ -181,9 +184,35 @@ fn shell_words(command: &str) -> Vec<String> {
         }
     }
     if in_word {
-        words.push(word);
+        tokens.push((word, quoted));
+    }
+    // A redirection and its operand are no arguments: `> worker=log` names a file.
+    let mut words = Vec::with_capacity(tokens.len());
+    let mut tokens = tokens.into_iter();
+    while let Some((word, quoted)) = tokens.next() {
+        match redirection(&word).filter(|_| !quoted) {
+            Some("") => {
+                tokens.next();
+            }
+            Some(_) => {}
+            None => words.push(word),
+        }
     }
     words
+}
+
+/// What follows the operator when `word` starts with a redirection (`>`, `>>`, `<`, `<<`, `&>`,
+/// with a descriptor number before it): the attached operand, `""` when the next word is it.
+fn redirection(word: &str) -> Option<&str> {
+    let rest = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest
+        .strip_prefix('&')
+        .filter(|rest| rest.starts_with('>'))
+        .unwrap_or(rest);
+    let operator = [">>", "<<", ">", "<"]
+        .into_iter()
+        .find(|operator| rest.starts_with(operator))?;
+    Some(&rest[operator.len()..])
 }
 
 /// A `key=value` value as `iii call` decodes it: JSON when it parses, else the text.
@@ -4366,11 +4395,19 @@ pub(crate) mod tests {
             "iii call sandbox::start >&2 worker=other",
             "iii call sandbox::start &>log worker=other",
             "iii call sandbox::start <&0 worker=other",
+            // A quoted `>` is an argument, so the word after it is one too.
+            "iii call sandbox::start worker=vm '>' worker=other",
+            "iii call sandbox::start > log worker=other",
         ] {
             let refused = check(run).unwrap_or_else(|| panic!("{run:?} passed"));
             assert!(refused.contains("'other'"), "{run:?}: {refused}");
         }
         for run in [
+            // A redirection's operand is a file name, not an argument.
+            "iii call sandbox::start worker=vm > worker=log",
+            "iii call sandbox::start worker=vm 2>> worker=log",
+            "iii call sandbox::start worker=vm >worker=log",
+            "iii call sandbox::start worker=vm 2>worker=log < worker=in",
             "iii call sandbox::start 2>&1 worker=vm",
             "iii call sandbox::start &>log worker=vm & echo worker=other",
             "iii call sandbox::start worker=vm; echo worker=other",
