@@ -186,8 +186,35 @@ pub fn result_streams(result: &Value) -> Vec<(Stdio, StreamChannelRef)> {
         .collect()
 }
 
+/// How a copy into stdout or stderr failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyFailure {
+    /// The stream ended in an error. A stream the call cancelled ends this way too.
+    Stream(String),
+    /// This process's output could not take what the stream carried: that output is lost,
+    /// whatever stopped the stream.
+    Output(String),
+}
+
+impl CopyFailure {
+    fn labelled(self, label: &str) -> Self {
+        match self {
+            Self::Stream(error) => Self::Stream(format!("the {label} stream failed: {error}")),
+            Self::Output(error) => Self::Output(format!("the {label} stream failed: {error}")),
+        }
+    }
+}
+
+impl std::fmt::Display for CopyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stream(message) | Self::Output(message) => f.write_str(message),
+        }
+    }
+}
+
 /// How a copy into stdout or stderr ended.
-type Copied = Result<(), String>;
+type Copied = Result<(), CopyFailure>;
 
 /// The streams of one call: the read ends this process copies out, the write end it fills from
 /// stdin, and the tasks doing it.
@@ -197,8 +224,8 @@ pub struct Carried {
     writers: Vec<OutputStream>,
     copies: Vec<(&'static str, JoinHandle<Copied>)>,
     stdin: Option<JoinHandle<()>>,
-    /// The first copy that failed, kept across a `finish` that was interrupted.
-    failure: Option<String>,
+    /// The copy that failed, kept across a `finish` that was interrupted.
+    failure: Option<CopyFailure>,
 }
 
 impl Carried {
@@ -280,23 +307,30 @@ impl Carried {
         }
     }
 
-    /// Waits for every copy into stdout and stderr to end; the first stream that failed, by
-    /// label. The stdin copy is not waited for: it may sit on a terminal that never ends.
+    /// Waits for every copy into stdout and stderr to end; the copy that failed, by label: the
+    /// first that lost output, else the first stream that failed. The stdin copy is not waited
+    /// for: it may sit on a terminal that never ends.
     ///
     /// Each copy is awaited in place and removed once it ended, so a `finish` dropped half way,
     /// when a signal wins the race, leaves the copies still running here for the next `finish`
     /// to join.
-    pub async fn finish(&mut self) -> Result<(), String> {
+    pub async fn finish(&mut self) -> Result<(), CopyFailure> {
         while let Some((label, task)) = self.copies.first_mut() {
             let label = *label;
             let ended = match task.await {
                 Ok(ended) => ended,
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(CopyFailure::Stream(error.to_string())),
             };
             self.copies.remove(0);
-            if let Err(error) = ended {
-                self.failure
-                    .get_or_insert(format!("the {label} stream failed: {error}"));
+            if let Err(failure) = ended {
+                // Lost output outranks a stream that failed: a stop makes every stream fail.
+                let keep = matches!(
+                    (&self.failure, &failure),
+                    (None, _) | (Some(CopyFailure::Stream(_)), CopyFailure::Output(_))
+                );
+                if keep {
+                    self.failure = Some(failure.labelled(label));
+                }
             }
         }
         if let Some(stdin) = self.stdin.take() {
@@ -311,7 +345,7 @@ impl Carried {
 async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copied {
     let mut frames = input.frames();
     while let Some(frame) = frames.next().await {
-        let written = match frame.map_err(|error| error.to_string())? {
+        let written = match frame.map_err(|error| CopyFailure::Stream(error.to_string()))? {
             ChannelItem::Binary(bytes) if bytes.is_empty() => continue,
             ChannelItem::Binary(bytes) => out.write_all(&bytes).await,
             ChannelItem::Text(text) => match out.write_all(text.as_bytes()).await {
@@ -331,7 +365,7 @@ async fn copy_out(input: InputStream, mut out: impl AsyncWrite + Unpin) -> Copie
             if error.kind() == std::io::ErrorKind::BrokenPipe {
                 return Ok(());
             }
-            return Err(format!("could not write it: {error}"));
+            return Err(CopyFailure::Output(format!("could not write it: {error}")));
         }
     }
     Ok(())
@@ -608,9 +642,10 @@ mod tests {
                 Ok(())
             }),
         ));
-        carried
-            .copies
-            .push(("stderr", tokio::spawn(async { Err("aborted".to_string()) })));
+        carried.copies.push((
+            "stderr",
+            tokio::spawn(async { Err(CopyFailure::Stream("aborted".into())) }),
+        ));
         let interrupted =
             tokio::time::timeout(std::time::Duration::from_millis(50), carried.finish()).await;
         assert!(interrupted.is_err(), "the stdout copy is still running");
@@ -622,9 +657,30 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(
             carried.finish().await,
-            Err("the stderr stream failed: aborted".to_string())
+            Err(CopyFailure::Stream(
+                "the stderr stream failed: aborted".into()
+            ))
         );
         assert!(carried.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lost_output_outranks_a_stream_that_failed() {
+        let mut carried = Carried::default();
+        carried.copies.push((
+            "stdout",
+            tokio::spawn(async { Err(CopyFailure::Stream("cancelled".into())) }),
+        ));
+        carried.copies.push((
+            "stderr",
+            tokio::spawn(async { Err(CopyFailure::Output("could not write it: full".into())) }),
+        ));
+        assert_eq!(
+            carried.finish().await,
+            Err(CopyFailure::Output(
+                "the stderr stream failed: could not write it: full".into()
+            ))
+        );
     }
 
     /// An output whose every write fails with `kind`.
@@ -662,8 +718,7 @@ mod tests {
         )
         .await;
         assert!(
-            full.as_ref()
-                .is_err_and(|error| error.contains("could not write it")),
+            matches!(&full, Err(CopyFailure::Output(error)) if error.contains("could not write it")),
             "{full:?}"
         );
         let left = copy_out(
