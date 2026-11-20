@@ -1097,9 +1097,12 @@ fn opens_block(value: &str) -> bool {
 /// An anchor that lines `from..to` of `lines` define and a line outside them aliases: the node
 /// is shared, so an edit of it in place edits the other too.
 fn shared_anchor(lines: &[&str], from: usize, to: usize) -> Option<String> {
+    let text = block_scalar_text(lines);
     let anchors: Vec<&str> = lines[from..to]
         .iter()
-        .flat_map(|line| {
+        .zip(&text[from..to])
+        .filter(|(_, text)| !**text)
+        .flat_map(|(line, _)| {
             let body = without_comment(line).trim_start();
             let body = body.strip_prefix("- ").unwrap_or(body);
             let mut value = body
@@ -1121,10 +1124,42 @@ fn shared_anchor(lines: &[&str], from: usize, to: usize) -> Option<String> {
             lines
                 .iter()
                 .enumerate()
-                .filter(|(at, _)| !(from..to).contains(at))
+                .filter(|(at, _)| !(from..to).contains(at) && !text[*at])
                 .any(|(_, line)| aliases(without_comment(line), name))
         })
         .map(str::to_string)
+}
+
+/// For each of `lines`, whether it is the text of a block scalar (`|` or `>`): a line more indented
+/// than the one that opens it, or a blank one among them. Its `&` and `*` are text.
+fn block_scalar_text(lines: &[&str]) -> Vec<bool> {
+    let mut text = Vec::with_capacity(lines.len());
+    let mut open: Option<usize> = None;
+    for line in lines {
+        let indent = leading_whitespace(line).len();
+        if open.is_some_and(|at| line.trim().is_empty() || indent > at) {
+            text.push(true);
+            continue;
+        }
+        text.push(false);
+        let body = without_comment(line).trim();
+        let body = body.strip_prefix("- ").unwrap_or(body);
+        let mut value = body
+            .split_once(':')
+            .map_or(body, |(_, value)| value)
+            .trim_start();
+        while value.starts_with(['&', '!']) {
+            let end = value.find(char::is_whitespace).unwrap_or(value.len());
+            value = value[end..].trim_start();
+        }
+        let opens = value.strip_prefix(['|', '>']).is_some_and(|indicators| {
+            indicators
+                .chars()
+                .all(|c| c == '+' || c == '-' || c.is_ascii_digit())
+        });
+        open = opens.then_some(indent);
+    }
+    text
 }
 
 /// Whether `line` holds the alias node `*name`: a `*` outside quotes where a node starts, at the
@@ -4441,6 +4476,29 @@ containers:
                 "{other}: {error}"
             );
         }
+    }
+
+    /// The text of a block scalar is no anchor and no alias, `*shared` at its start included; an
+    /// alias after the block ends still is.
+    #[test]
+    fn a_block_scalar_holds_no_alias() {
+        let vm = "containers:\n  vm:\n    worker: path://./vm\n    scripts: &shared\n      run: python main.py\n      post_run: |\n        &other text\n";
+        let text = format!(
+            "{vm}  other:\n    worker: path://./other\n    scripts:\n      run: x\n      post_run: |-\n        *shared\n\n        *other\n      pre_run: >\n        *shared\n"
+        );
+        let rewrite = explicit_vm_mode(&text, "vm", "sb").unwrap().unwrap();
+        assert!(
+            rewrite.text.contains("    scripts: &shared\n"),
+            "{}",
+            rewrite.text
+        );
+
+        let aliased = format!("{text}  third:\n    worker: path://./third\n    scripts: *shared\n");
+        let error = explicit_vm_mode(&aliased, "vm", "sb").unwrap_err();
+        assert!(
+            error.to_string().contains("YAML anchor &shared;"),
+            "{error}"
+        );
     }
 
     /// Scripts that need nothing written are not checked for aliases: only `start_after` gains
