@@ -1232,7 +1232,7 @@ containers:
 
 Compose checks every rule but the last when it loads the file. `iii compose build` checks them too,
 with or without `--frozen`, before it downloads anything, so a CI job catches them without an
-engine.
+engine. It skips the Windows rule, since the file it locks may run on another machine.
 
 A line counts as one of these when its first three words are `iii call sandbox::start` or
 `iii call sandbox::build`. Compose checks every rule when it loads the file, before any call.

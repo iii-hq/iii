@@ -428,6 +428,17 @@ fn refuse_adapter_out_of_range(
 /// checked for what does not depend on it. A missing `scripts.build`, adapter in `start_after`
 /// or bundle `scripts.run` is [`migration_due`], not refused.
 pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
+    check_scripts(file, cfg!(windows))
+}
+
+/// [`validate_scripts`] without the platform rule. `iii compose build` locks and downloads a
+/// file that may run on another machine, so it checks what the file says, not where it runs.
+pub(crate) fn validate_script_rules(file: &ComposeFile) -> Result<()> {
+    check_scripts(file, false)
+}
+
+/// The rules of [`validate_scripts`]; `no_vm_here` refuses any container that runs in a VM.
+fn check_scripts(file: &ComposeFile, no_vm_here: bool) -> Result<()> {
     for (key, container) in &file.containers {
         let scripts = &container.scripts;
         // A binary's scripts run on the host like any other's; one in a VM needs its image.
@@ -442,7 +453,7 @@ pub(crate) fn validate_scripts(file: &ComposeFile) -> Result<()> {
             }
             continue;
         }
-        if cfg!(windows) {
+        if no_vm_here {
             return Err(ComposeError::SandboxUnsupportedPlatform {
                 container: key.clone(),
             });
@@ -4111,13 +4122,18 @@ pub(crate) mod tests {
             "containers:\n  vm: {worker: path://./vm, scripts: {build: iii call sandbox::build \
              worker=vm, run: iii call sandbox::start worker=vm}}\n",
         );
-        validate_scripts(&own).unwrap();
+        validate_script_rules(&own).unwrap();
+        // The build's rules leave the platform out; a host without VMs refuses the same file.
+        assert_eq!(
+            check_scripts(&own, true).unwrap_err().code(),
+            "SANDBOX_UNSUPPORTED_PLATFORM"
+        );
         let other = parse(
             dir.path(),
             "containers:\n  vm: {worker: path://./vm, scripts: {build: iii call sandbox::build \
              worker=vm, run: \"iii call sandbox::start 'worker=api'\"}}\n",
         );
-        let error = validate_scripts(&other).unwrap_err();
+        let error = validate_script_rules(&other).unwrap_err();
         assert_eq!(error.code(), "SANDBOX_WORKER_MISMATCH");
         assert!(error.to_string().contains("scripts.run"), "{error}");
         assert!(error.to_string().contains("'api'"), "{error}");

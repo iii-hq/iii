@@ -42,7 +42,7 @@ struct PackageRequest {
 /// beside the file. Not frozen, it first migrates the containers 0.26 ran in a
 /// VM (spec 7.3). Frozen or not, it refuses the scripts `up` would refuse (spec 4.2 of
 /// the explicit VM mode, and `SANDBOX_WORKER_MISMATCH`), before anything downloads, so a
-/// check without an engine catches them.
+/// check without an engine catches them. The platform aside: the file may run elsewhere.
 pub async fn build(file: &Path) -> Result<BuildReport> {
     build_with_mode(file, false).await
 }
@@ -86,7 +86,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut file, &cache).await?;
             crate::sandbox::require_declared_adapter(&file, &namespace)?;
-            crate::sandbox::validate_scripts(&file)?;
+            crate::sandbox::validate_script_rules(&file)?;
             return Ok::<_, ComposeError>(prepared);
         }
         let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()).await?;
@@ -107,7 +107,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         )
         .await?;
         // As `up` checks them, on the rewritten containers with their packages known.
-        crate::sandbox::validate_scripts(&file)?;
+        crate::sandbox::validate_script_rules(&file)?;
         // Resolved first, the adapter included: everything downloads in one batch.
         prepared.install(&cache).await?;
         Ok(prepared)
