@@ -698,11 +698,15 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
         tokio::pin!(call);
         // A caller that leaves does not abandon the start: its answer names the boot to stop. One
         // that does not come within the stop's budget leaves the VM to the adapter's lease.
+        // `Some` with what is left of the stop's budget when the caller left during the boot: the
+        // wait for its answer and the stop share one budget, from the moment the caller left.
         let (started, gone) = tokio::select! {
             biased;
-            started = &mut call => (started, false),
-            () = sinks.closed() => match tokio::time::timeout(grace, &mut call).await {
-                Ok(started) => (started, true),
+            started = &mut call => (started, None),
+            () = sinks.closed() => {
+                let deadline = Instant::now() + grace;
+                match tokio::time::timeout(grace, &mut call).await {
+                Ok(started) => (started, Some(deadline.saturating_duration_since(Instant::now()))),
                 Err(_) => {
                     return Err(failure(
                         TIMED_OUT,
@@ -714,6 +718,7 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
                         ),
                     ));
                 }
+            }
             },
         };
         let (started, reattached) = match started {
@@ -736,8 +741,8 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             id: started.vm_id,
             instance: started.instance,
         };
-        if gone {
-            return left(&adapter, &vm, token, grace).await;
+        if let Some(budget) = gone {
+            return left(&adapter, &vm, token, budget).await;
         }
         // A reader that left meanwhile is noticed by the follow, which stops the VM.
         if reattached {

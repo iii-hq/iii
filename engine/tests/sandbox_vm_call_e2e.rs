@@ -176,6 +176,10 @@ async fn start() -> TestEngine {
                 let mode = req["state_key"].as_str().unwrap_or_default().to_string();
                 let first = seen.starts.fetch_add(1, Ordering::SeqCst) == 0;
                 *seen.started.lock().unwrap() = Some(req);
+                if mode.starts_with("slow-start") {
+                    // A boot whose answer takes most of the stop's budget.
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
                 // A boot of the same state is live: the adapter names it (S502). It is being
                 // stopped by an earlier start, or it ends by itself.
                 let live = match mode.as_str() {
@@ -265,7 +269,10 @@ async fn start() -> TestEngine {
                     return Err(Error::Handler(payload.to_string()));
                 }
                 let started = seen.started.lock().unwrap().clone().unwrap_or_default();
-                if started["state_key"] == "stop-hangs" {
+                if started["state_key"]
+                    .as_str()
+                    .is_some_and(|mode| mode.ends_with("stop-hangs"))
+                {
                     // An adapter that never confirms the stop.
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
@@ -502,6 +509,46 @@ async fn an_unconfirmed_stop_fails_the_call_with_timed_out() {
             );
         }
     }
+}
+
+/// A caller that leaves during the boot gives the boot's answer and the stop one budget
+/// together: the stop gets only what the answer left of `stop_grace_ms`.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_caller_that_leaves_during_the_boot_gives_the_stop_what_is_left() {
+    let engine = start().await;
+    let mode = "slow-start-stop-hangs";
+    let (mut command, _cwd) = iii_call(&engine, mode, &["sandbox::start", "worker=api"]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = command.spawn().unwrap();
+    let deadline = Instant::now() + WAIT;
+    while engine.seen.starts.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "worker::start was never asked");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let pid = child.id().unwrap().to_string();
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let out = tokio::time::timeout(WAIT, child.wait_with_output())
+        .await
+        .expect("iii call exited")
+        .unwrap();
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    let budget: u64 = stderr
+        .split("did not confirm the stop of VM vm-1 instance 2 within ")
+        .nth(1)
+        .and_then(|rest| rest.split("ms").next())
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("no stop budget in: {stderr}"));
+    // `stop_grace_ms` is 2000 and the answer took about 1500 of it.
+    assert!(budget < 1000, "the stop got {budget}ms: {stderr}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
