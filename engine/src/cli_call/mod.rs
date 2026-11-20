@@ -420,6 +420,10 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
         follow: !args.no_follow,
         print_result: args.print_result,
     };
+    options
+        .bindings
+        .check(&payload)
+        .map_err(CallCliError::Usage)?;
     exec::invoke(function_path, payload, &address, port, &options).await
 }
 
