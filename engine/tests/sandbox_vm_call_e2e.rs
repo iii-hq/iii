@@ -8,7 +8,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -31,6 +31,8 @@ const ADAPTER: &str = "fake-adapter";
 #[derive(Default)]
 struct Seen {
     started: Mutex<Option<Value>>,
+    /// `worker::start` calls.
+    starts: AtomicUsize,
     stopped: AtomicBool,
     build_aborted: AtomicBool,
     /// The VM exited ("exit-*" modes) or was stopped: `worker::status` says so.
@@ -165,13 +167,32 @@ async fn start() -> TestEngine {
             let seen = start_seen.clone();
             async move {
                 let mode = req["state_key"].as_str().unwrap_or_default().to_string();
+                let first = seen.starts.fetch_add(1, Ordering::SeqCst) == 0;
                 *seen.started.lock().unwrap() = Some(req);
+                // A boot of the same state is live: the adapter names it (S502). It is being
+                // stopped by an earlier start, or it ends by itself.
+                let live = match mode.as_str() {
+                    "reattach-stopping" if first => Some(("stopped", 143)),
+                    "reattach-exited" if first => Some(("exited", 3)),
+                    _ => None,
+                };
+                if let Some((state, code)) = live {
+                    *seen.ended.lock().unwrap() = Some((state.into(), code));
+                    let fix = json!({ "vm_id": "vm-1", "instance": 1 });
+                    let payload = iii_sandbox_contract::error_payload(
+                        iii_sandbox_contract::SandboxErrorCode::S502,
+                        "a boot of this state is live",
+                        Some(fix),
+                        None,
+                    );
+                    return Err(Error::Handler(payload.to_string()));
+                }
                 *seen.ended.lock().unwrap() = match mode.as_str() {
-                    "exit-0" => Some(("exited".into(), 0)),
+                    "exit-0" | "reattach-stopping" => Some(("exited".into(), 0)),
                     "exit-3" => Some(("exited".into(), 3)),
                     _ => None,
                 };
-                Ok::<_, Error>(json!({ "vm_id": "vm-1", "instance": 1 }))
+                Ok::<_, Error>(json!({ "vm_id": "vm-1", "instance": 2 }))
             }
         }),
     ));
@@ -305,6 +326,49 @@ async fn a_vm_that_exits_with_0_prints_its_output_and_succeeds() {
     assert_eq!(started["source"]["run_override"], "python main.py");
     assert_eq!(started["build"]["build_id"], "sha256:abc");
     assert_eq!(started["build"]["build_dir"], "/srv/project/.iii/build/api");
+}
+
+/// A boot it reattached to that turns out to be stopped by an earlier start (whose caller died)
+/// is not this call's end: the call boots once more and follows the new boot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reattached_vm_that_was_being_stopped_is_booted_again() {
+    let engine = start().await;
+    let (command, _cwd) = iii_call(
+        &engine,
+        "reattach-stopping",
+        &["sandbox::start", "worker=api"],
+    );
+    let out = output(command).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("reattached to VM vm-1 instance 1"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("was stopped by an earlier start; booting it again"),
+        "{stderr}"
+    );
+    assert_eq!(engine.seen.starts.load(Ordering::SeqCst), 2);
+}
+
+/// A reattached VM that ends by itself is the call's end: no second boot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reattached_vm_that_exits_by_itself_ends_the_call() {
+    let engine = start().await;
+    let (command, _cwd) = iii_call(
+        &engine,
+        "reattach-exited",
+        &["sandbox::start", "worker=api"],
+    );
+    let out = output(command).await;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("WORKER_EXITED"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(engine.seen.starts.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

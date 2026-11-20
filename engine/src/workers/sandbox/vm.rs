@@ -511,6 +511,8 @@ enum Outcome {
     Exited {
         code: Option<i32>,
         signal: Option<i32>,
+        /// Ended by a stop, or gone from the adapter, rather than by itself.
+        stopped: bool,
     },
 }
 
@@ -522,6 +524,7 @@ fn outcome_of(status: Result<WorkerStatus, ErrorBody>) -> Outcome {
             State::Exited | State::Stopped => Outcome::Exited {
                 code: status.exit_code,
                 signal: status.signal,
+                stopped: matches!(status.state, State::Stopped),
             },
         },
         // S503: another boot of the same state replaced this one. S504: the adapter no longer
@@ -530,6 +533,7 @@ fn outcome_of(status: Result<WorkerStatus, ErrorBody>) -> Outcome {
             Some(SandboxErrorCode::S503 | SandboxErrorCode::S504) => Outcome::Exited {
                 code: None,
                 signal: None,
+                stopped: true,
             },
             _ => Outcome::Unknown,
         },
@@ -661,54 +665,107 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             build_dir: request.build_dir.clone(),
         }),
     };
-    let call = adapter.call::<WorkerStartResponse>(WORKER_START, &boot, START_TIMEOUT);
-    tokio::pin!(call);
-    // A caller that leaves does not abandon the start: its answer names the boot to stop. One
-    // that does not come within the stop's budget leaves the VM to the adapter's lease.
-    let (started, gone) = tokio::select! {
-        biased;
-        started = &mut call => (started, false),
-        () = sinks.closed() => match tokio::time::timeout(grace, &mut call).await {
-            Ok(started) => (started, true),
-            Err(_) => return reply(no_vm()),
-        },
-    };
-    let (started, reattached) = match started {
-        Ok(started) => (started, false),
-        Err(error) => match live_instance(&error) {
-            Some(live) => (live, true),
-            None => {
-                let mut failed = adapter.failed("worker::start", error);
-                if failed.code == SandboxErrorCode::S508.as_str() {
-                    failed.message.push_str(&format!(
-                        "; rebuild it with `iii call compose::build worker={}`",
-                        request.worker
-                    ));
+    // A boot this call reattached to (S502) can be one an earlier call is stopping, because its
+    // caller died: that end is not this call's, so it boots once more.
+    let mut reboots = 1;
+    loop {
+        let call = adapter.call::<WorkerStartResponse>(WORKER_START, &boot, START_TIMEOUT);
+        tokio::pin!(call);
+        // A caller that leaves does not abandon the start: its answer names the boot to stop. One
+        // that does not come within the stop's budget leaves the VM to the adapter's lease.
+        let (started, gone) = tokio::select! {
+            biased;
+            started = &mut call => (started, false),
+            () = sinks.closed() => match tokio::time::timeout(grace, &mut call).await {
+                Ok(started) => (started, true),
+                Err(_) => return reply(no_vm()),
+            },
+        };
+        let (started, reattached) = match started {
+            Ok(started) => (started, false),
+            Err(error) => match live_instance(&error) {
+                Some(live) => (live, true),
+                None => {
+                    let mut failed = adapter.failed("worker::start", error);
+                    if failed.code == SandboxErrorCode::S508.as_str() {
+                        failed.message.push_str(&format!(
+                            "; rebuild it with `iii call compose::build worker={}`",
+                            request.worker
+                        ));
+                    }
+                    return Err(failed);
                 }
-                return Err(failed);
-            }
-        },
-    };
-    let vm = Vm {
-        id: started.vm_id,
-        instance: started.instance,
-    };
-    if gone {
-        let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
-        return reply(stopped(&vm, exit_code, signal));
-    }
-    if reattached {
-        sinks
-            .write(
-                &LogStream::Stderr,
-                &format!(
-                    "sandbox::start: reattached to VM {} instance {}",
-                    vm.id, vm.instance
-                ),
-            )
-            .await;
-    }
+            },
+        };
+        let vm = Vm {
+            id: started.vm_id,
+            instance: started.instance,
+        };
+        if gone {
+            let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
+            return reply(stopped(&vm, exit_code, signal));
+        }
+        if reattached {
+            sinks
+                .write(
+                    &LogStream::Stderr,
+                    &format!(
+                        "sandbox::start: reattached to VM {} instance {}",
+                        vm.id, vm.instance
+                    ),
+                )
+                .await;
+        }
 
+        match follow_vm(&adapter, &vm, token, &sinks, reattached).await {
+            Followed::CallerLeft => {
+                let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
+                return reply(stopped(&vm, exit_code, signal));
+            }
+            Followed::Ended { stopped: true, .. } if reattached && reboots > 0 => {
+                reboots -= 1;
+                sinks
+                    .write(
+                        &LogStream::Stderr,
+                        &format!(
+                            "sandbox::start: VM {} instance {} was stopped by an earlier start; \
+                             booting it again",
+                            vm.id, vm.instance
+                        ),
+                    )
+                    .await;
+            }
+            Followed::Ended { code, signal, .. } => {
+                return exited(&request.worker, &vm, code, signal);
+            }
+            Followed::Lost(error) => return Err(error),
+        }
+    }
+}
+
+/// How following one boot ended.
+enum Followed {
+    /// The caller left: the VM is still to be stopped.
+    CallerLeft,
+    /// The VM ended, by itself or (`stopped`) by a stop.
+    Ended {
+        code: Option<i32>,
+        signal: Option<i32>,
+        stopped: bool,
+    },
+    /// The adapter stopped answering about the VM.
+    Lost(ErrorBody),
+}
+
+/// Follows `vm`, copying the guest's lines to the sinks, until it ends, the caller leaves, or the
+/// adapter stops answering about it for [`LOST_AFTER`].
+async fn follow_vm(
+    adapter: &Adapter<'_>,
+    vm: &Vm,
+    token: &str,
+    sinks: &Sinks,
+    reattached: bool,
+) -> Followed {
     let mut follow = Follow {
         from_end: reattached,
         cursor: None,
@@ -721,12 +778,10 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
         let tick = tokio::select! {
             biased;
             () = sinks.closed() => None,
-            tick = poll(&adapter, &vm, token, &sinks, &mut follow, pause) => Some(tick),
+            tick = poll(adapter, vm, token, sinks, &mut follow, pause) => Some(tick),
         };
         let Some((outcome, followed)) = tick else {
-            follow.capture = None;
-            let (exit_code, signal) = stop(&adapter, &vm, token, grace).await;
-            return reply(stopped(&vm, exit_code, signal));
+            return Followed::CallerLeft;
         };
         pause = RETRY_INTERVAL;
         // A stream the adapter kept open is an answer, so the wait for one starts over.
@@ -734,19 +789,27 @@ pub async fn start(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
             unanswered_since = None;
         }
         match outcome {
-            Outcome::Exited { code, signal } => {
+            Outcome::Exited {
+                code,
+                signal,
+                stopped,
+            } => {
                 tokio::select! {
                     biased;
                     () = sinks.closed() => {}
-                    () = follow.finish(&adapter, &vm, token, &sinks) => {}
+                    () = follow.finish(adapter, vm, token, sinks) => {}
                 }
-                return exited(&request.worker, &vm, code, signal);
+                return Followed::Ended {
+                    code,
+                    signal,
+                    stopped,
+                };
             }
             Outcome::Running => unanswered_since = None,
             Outcome::Unknown => {
                 let since = *unanswered_since.get_or_insert_with(Instant::now);
                 if since.elapsed() >= LOST_AFTER {
-                    return Err(failure(
+                    return Followed::Lost(failure(
                         ENGINE_CALL_FAILED,
                         format!(
                             "{} has not answered about VM {} instance {} for {}s; giving it up, \
@@ -815,7 +878,7 @@ async fn stop(
         let status = adapter
             .call::<WorkerStatus>(WORKER_STOP, &request, left)
             .await;
-        if let Outcome::Exited { code, signal } = outcome_of(status) {
+        if let Outcome::Exited { code, signal, .. } = outcome_of(status) {
             return (code, signal);
         }
         let left = deadline.saturating_duration_since(Instant::now());

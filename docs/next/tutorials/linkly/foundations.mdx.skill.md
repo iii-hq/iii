@@ -65,7 +65,7 @@ containers:
   # added by compose::add
   sandbox-libkrun:
     worker: package://api.workers.iii.dev/sandbox-libkrun
-    version: "0.4.0"
+    version: "0.5.0"
 ```
 
 The `engine:` section is where the engine can be configured, this is useful for when starting a

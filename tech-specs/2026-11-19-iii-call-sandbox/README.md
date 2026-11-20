@@ -189,7 +189,12 @@ of the same state (S502), and copies the guest's lines to `stdout` and `stderr`.
 empty frame to them every few seconds, so a reader that left is noticed with a silent guest too.
 
 - Its sinks closing (Compose's SIGTERM, a Ctrl+C) stops the VM with `worker::stop` and
-  `stop_grace_ms`, then answers `{ stopped: true, exit_code }`.
+  `stop_grace_ms`, then answers `{ stopped: true, exit_code }`. A caller that dies (SIGKILL, a
+  lost connection) closes them too, so its VM is stopped the same way: no VM outlives its call.
+- A boot it reattached to that ends as stopped was being stopped by an earlier start whose caller
+  died. That end is not this call's, so it boots once more in the same call and writes
+  `sandbox::start: VM <vm_id> instance <n> was stopped by an earlier start; booting it again` to
+  `stderr`. A second such end is answered as an exit, below.
 - The VM exiting with 0 answers `{ exit_code: 0 }`. Exiting otherwise fails with
   `WORKER_EXITED`, its code or signal in the message, so `iii call` exits 1. Compose's restart
   policy only tells zero from non-zero, so it is unaffected; the VM's own code is in the error, in
@@ -272,3 +277,6 @@ The adapter in `iii-hq/workers` does not change.
 4. **Base image digest:** `null` in `build.json`.
 5. **`iii call`:** the streaming SDK work is in `0.27.0` (#2561); what section 3 adds to the CLI is
    a separate pull request into `0.27.0`.
+6. **A dead caller:** its VM is stopped, as on a SIGTERM, rather than left to the adapter's lease.
+   A restart that reattaches to it while it stops boots it again once, so a crash costs the
+   restart policy one attempt.

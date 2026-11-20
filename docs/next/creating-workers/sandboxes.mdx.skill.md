@@ -916,7 +916,14 @@ output to its `stdout` and `stderr` streams, which Compose writes into the conta
 
 - **The caller leaves.** Compose's `SIGTERM` when it stops the container, or `Ctrl+C` on `iii call`,
   closes the streams. `sandbox::start` then stops the VM with `worker::stop` within `stop_grace_ms`,
-  9/10 of the compose file's `stop_timeout`, and answers with `stopped: true`.
+  9/10 of the compose file's `stop_timeout`, and answers with `stopped: true`. A caller that dies
+  without a word, from a `SIGKILL` or a lost connection, closes the streams too, so its VM is
+  stopped the same way: no VM outlives the call that runs it.
+- **The VM it reattached to was being stopped.** After a caller died, the next start can find its
+  VM still stopping and reattach to it. When that VM ends as stopped, `sandbox::start` boots the
+  image again in the same call and writes
+  `sandbox::start: VM <vm_id> instance <n> was stopped by an earlier start; booting it again` to
+  its `stderr`, so a crash costs the `restart` policy one attempt.
 - **The VM exits by itself.** With code `0`, the call succeeds. Any other end fails it with
   `WORKER_EXITED`, the code or the signal in the message
   (`<container>: VM <vm_id> instance <n> exited with code 3`), and `iii call` exits with `1`.

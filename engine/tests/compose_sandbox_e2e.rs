@@ -1220,11 +1220,12 @@ fn fake_adapter_calls(root: &std::path::Path, function: &str) -> Vec<Value> {
         .collect()
 }
 
-/// A SIGKILL of the command leaves its VM up under the worker's name, so the policy's next
-/// command finds both and reattaches: no second boot, no stop, one attempt per crash.
+/// A SIGKILL of the command ends its `iii call`, so `sandbox::start` sees its caller leave and
+/// stops the VM with the VM's own token; the policy's next command boots it again (or, finding
+/// it still stopping, reattaches and boots again in the same call): one attempt per crash.
 #[test]
 #[serial_test::serial(sandbox_vm)]
-fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
+fn a_killed_iii_call_stops_its_vm_and_the_restart_boots_it_again() {
     for policy in ["always", "on-failure"] {
         let mut project = Project::declaring(&format!(
             "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    restart: {policy}\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
@@ -1238,29 +1239,33 @@ fn a_killed_iii_sandbox_run_comes_back_on_its_vm() {
 
         for crash in 1..=3 {
             project.kill_command("app", "ready");
-            // Refused once per crash, naming the boot the command then follows.
-            wait_for(SHORT, "the command's worker::start", || {
-                (fake_adapter_calls(&root, "worker::start").len() == crash + 1).then_some(())
+            wait_for(SHORT, "the killed command's worker::stop", || {
+                (fake_adapter_calls(&root, "worker::stop").len() == crash).then_some(())
+            });
+            wait_for(SHORT, "the next command's worker::start", || {
+                (fake_adapter_calls(&root, "worker::start").len() > crash).then_some(())
             });
         }
         let log = std::fs::read_to_string(project.home.path().join("compose.log")).unwrap();
         assert!(log.contains("(attempt 3 of 5)"), "{log}");
         assert!(!log.contains("(attempt 4 of 5)"), "{log}");
         assert!(!log.contains("CONTAINER_NAME_TAKEN"), "{log}");
-        assert_eq!(
-            fake_adapter_calls(&root, "worker::stop"),
-            Vec::<Value>::new()
+        let stops = fake_adapter_calls(&root, "worker::stop");
+        assert_eq!(stops.len(), 3, "{stops:?}");
+        assert!(
+            stops.iter().all(|stop| stop["token"] == "scoped"),
+            "{stops:?}"
         );
 
         project.shutdown();
     }
 }
 
-/// With no policy, an operator's `up` inside the lease's grace reattaches, and a `remove`
-/// there still takes the VM's state, stopping the VM its destroy is refused for.
+/// With no policy, a killed command's VM is stopped by its call, an operator's `up` boots it
+/// again, and a `remove` after a second kill finds it stopped and destroys its state at once.
 #[test]
 #[serial_test::serial(sandbox_vm)]
-fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
+fn an_up_or_a_remove_after_a_killed_iii_call_settles_its_vm() {
     let mut project = Project::declaring(&format!(
         "  sandbox-libkrun:\n    worker: path://./adapter\n    environment: {{{FAKE_ADAPTER}: '1'}}\n  app:\n    worker: path://./app\n    start_after: [sandbox-libkrun]\n    scripts: {{build: iii call sandbox::build, run: iii call sandbox::start}}\n",
     ));
@@ -1271,31 +1276,35 @@ fn an_up_or_a_remove_after_a_killed_iii_sandbox_run_settles_its_vm() {
     project.wait_ready("sandbox-libkrun", SHORT);
     project.wait_ready("app", SHORT);
 
+    let stopped = |count: usize| {
+        wait_for(SHORT, "the killed command's worker::stop", || {
+            (fake_adapter_calls(&root, "worker::stop").len() == count).then_some(())
+        })
+    };
     project.kill_command("app", "failed");
+    stopped(1);
     let up = project.compose_call("compose::up", json!({}), SHORT);
     assert_eq!(up["status"], "ok", "{up}");
     assert_eq!(up.get("not_required_failures"), None, "{up}");
     project.wait_ready("app", SHORT);
     wait_for(SHORT, "the command's worker::start", || {
-        (fake_adapter_calls(&root, "worker::start").len() == 2).then_some(())
+        (fake_adapter_calls(&root, "worker::start").len() >= 2).then_some(())
     });
-    assert_eq!(
-        fake_adapter_calls(&root, "worker::stop"),
-        Vec::<Value>::new()
-    );
 
     project.kill_command("app", "failed");
+    stopped(2);
     project.remove("app", true);
     let destroys = fake_adapter_calls(&root, "worker::destroy");
-    assert_eq!(destroys.len(), 2, "{destroys:?}");
-    // Asked to prune, every destroy says so (spec 8.2).
-    assert!(
-        destroys.iter().all(|call| call["request"]["prune"] == true),
-        "{destroys:?}"
-    );
+    assert_eq!(destroys.len(), 1, "{destroys:?}");
+    // Asked to prune, the destroy says so (spec 8.2).
+    assert_eq!(destroys[0]["request"]["prune"], true, "{destroys:?}");
+    // Every stop came from a killed command's own call, with the VM's own token.
     let stops = fake_adapter_calls(&root, "worker::stop");
-    assert_eq!(stops.len(), 1, "{stops:?}");
-    assert_eq!(stops[0]["token"], "project");
+    assert_eq!(stops.len(), 2, "{stops:?}");
+    assert!(
+        stops.iter().all(|stop| stop["token"] == "scoped"),
+        "{stops:?}"
+    );
 
     project.shutdown();
 }
