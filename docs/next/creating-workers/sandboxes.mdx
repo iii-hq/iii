@@ -832,7 +832,8 @@ A Compose container runs in a VM when its compose file says so:
   own. `iii call` copies each call's output into the container's logs and turns Compose's `SIGTERM`
   into a stop. See [Streams from the CLI](../using-iii/functions#streams-from-the-cli).
 - `worker=` is the container's own key. Compose refuses another name with `SANDBOX_WORKER_MISMATCH`
-  when it loads the file. The rest of each request comes from Compose in `III_CALL_DEFAULTS` (see
+  when it loads the file, and so does `iii compose build`, which needs no engine. The rest of each
+  request comes from Compose in `III_CALL_DEFAULTS` (see
   [Environment variables](#environment-variables)), so the line stays this short.
 
 The engine's `iii-sandbox` router serves both functions in the `default` namespace, beside the

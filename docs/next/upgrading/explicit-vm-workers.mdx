@@ -242,7 +242,8 @@ Compose rewrites their lines on the next run, as it rewrites a 0.26 container, a
 | `iii sandbox run --command '<c>'`, rewritten | `iii call sandbox::start worker=<container> 'command=<c>'` |
 
 - `worker=` is the container's own key. A line whose `worker=` names another container fails with
-  `SANDBOX_WORKER_MISMATCH` when Compose loads the file, so a renamed container fails at once.
+  `SANDBOX_WORKER_MISMATCH` when Compose loads the file, and in `iii compose build`, so a renamed
+  container fails at once, in CI too.
 - The rest of each request reaches the call in `III_CALL_DEFAULTS`, which replaces these variables
   in the environment of the container's scripts: `III_SANDBOX_TOKEN`, `III_SANDBOX_STATE_KEY`,
   `III_SANDBOX_ADAPTER`, `III_SANDBOX_NAMESPACE`, `III_WORKER_DIR`, `III_WORKER_ENV_KEYS`,
@@ -422,7 +423,7 @@ See [Keep the data of migrated VMs](#keep-the-data-of-migrated-vms).
 | `INVALID_BASE_IMAGE`                | `runtime.base_image` that is not an image reference. |
 | `SANDBOX_BUILD_WITHOUT_RUN`         | `iii call sandbox::build` without `iii call sandbox::start`. |
 | `SANDBOX_RUN_WITHOUT_BUILD`         | `iii call sandbox::start` with another `scripts.build` command. |
-| `SANDBOX_WORKER_MISMATCH`           | `worker=` on a VM container's `scripts.build` or `scripts.run` that is not the container's own key. Refused when the file loads. |
+| `SANDBOX_WORKER_MISMATCH`           | `worker=` on a VM container's `scripts.build` or `scripts.run` that is not the container's own key. Refused when the file loads and by `iii compose build`. |
 | `SANDBOX_UNSUPPORTED_PLATFORM`      | A container whose `scripts.run` is `iii call sandbox::start`, on Windows. |
 | `SANDBOX_INVALID_REQUEST`           | `sandbox::build` or `sandbox::start` with a request that does not read, such as a hand-run `sandbox::start` without `build_id`, or `command=` on a package. |
 | `SANDBOX_CONTRACT_UNSUPPORTED`      | The adapter implements another major version of the sandbox contract. |

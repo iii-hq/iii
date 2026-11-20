@@ -40,7 +40,9 @@ struct PackageRequest {
 /// Lock and download every `package://` container declared by `file` into the
 /// cache shared with `compose::up`, then copy each into `.iii/workers/<container>/`
 /// beside the file. Not frozen, it first migrates the containers 0.26 ran in a
-/// VM (spec 7.3).
+/// VM (spec 7.3). Frozen or not, it refuses the scripts `up` would refuse (spec 4.2 of
+/// the explicit VM mode, and `SANDBOX_WORKER_MISMATCH`), before anything downloads, so a
+/// check without an engine catches them.
 pub async fn build(file: &Path) -> Result<BuildReport> {
     build_with_mode(file, false).await
 }
@@ -84,6 +86,7 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
         if frozen {
             let prepared = crate::lockfile::prepare_frozen(&mut file, &cache).await?;
             crate::sandbox::require_declared_adapter(&file, &namespace)?;
+            crate::sandbox::validate_scripts(&file)?;
             return Ok::<_, ComposeError>(prepared);
         }
         let mut prepared = crate::lockfile::prepare_metadata(&mut file, &BTreeSet::new()).await?;
@@ -103,6 +106,8 @@ async fn build_with_mode(file: &Path, frozen: bool) -> Result<BuildReport> {
             false,
         )
         .await?;
+        // As `up` checks them, on the rewritten containers with their packages known.
+        crate::sandbox::validate_scripts(&file)?;
         // Resolved first, the adapter included: everything downloads in one batch.
         prepared.install(&cache).await?;
         Ok(prepared)
@@ -518,6 +523,20 @@ mod tests {
             .await
     }
 
+    /// [`build_against`], frozen.
+    async fn build_frozen_against(
+        file: &Path,
+        registry: String,
+        cache: &Path,
+    ) -> Result<BuildReport> {
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(registry, build_frozen(file)),
+            )
+            .await
+    }
+
     fn recorded_containers(project: &Path) -> Vec<String> {
         let packages: serde_json::Value = serde_json::from_slice(
             &std::fs::read(project.join(".iii/workers/.packages.json")).unwrap(),
@@ -616,6 +635,59 @@ mod tests {
                 .join(".iii/workers/sandbox-libkrun/sandbox-libkrun")
                 .is_file()
         );
+    }
+
+    /// A `worker=` that names another container is refused by the build, frozen or not, as
+    /// `up` refuses it: a check without an engine catches a renamed container. Nothing is
+    /// written.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_refuses_a_vm_script_that_names_another_container() {
+        let adapter = archive(&[("sandbox-libkrun", 0o755, b"#!/bin/sh\nexit 0\n")]);
+        let server = crate::sandbox::tests::adapter_registry(&adapter).await;
+        let app = archive(&[(
+            "iii.worker.yaml",
+            0o644,
+            b"name: app\nscripts:\n  start: node index.js\n",
+        )]);
+        serve(&server, "app", serde_json::json!({ "type": "bundle" }), app).await;
+        let project = tempfile::tempdir().unwrap();
+        let file = project.path().join("worker-compose.yaml");
+        std::fs::write(
+            &file,
+            "containers:\n  app:\n    worker: package://app\n    version: 1.0.0\n",
+        )
+        .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        // The migration writes the container's own key.
+        build_against(&file, server.uri(), cache.path())
+            .await
+            .unwrap();
+        let built = std::fs::read_to_string(&file).unwrap();
+        assert!(built.contains("worker=app"), "{built}");
+        let lock_path = project.path().join("worker-compose.lock");
+        let lock = std::fs::read(&lock_path).unwrap();
+
+        // The container renamed in its scripts only.
+        let renamed = built.replace("worker=app", "worker=other");
+        std::fs::write(&file, &renamed).unwrap();
+        for frozen in [false, true] {
+            let error = if frozen {
+                build_frozen_against(&file, server.uri(), cache.path()).await
+            } else {
+                build_against(&file, server.uri(), cache.path()).await
+            }
+            .unwrap_err();
+
+            assert_eq!(
+                error.code(),
+                "SANDBOX_WORKER_MISMATCH",
+                "frozen={frozen}: {error}"
+            );
+            assert!(error.to_string().contains("'other'"), "{error}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), renamed);
+            assert_eq!(std::fs::read(&lock_path).unwrap(), lock);
+        }
     }
 
     /// The daemon's mutation lock is in its own process: a lock it committed while this build

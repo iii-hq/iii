@@ -49,6 +49,7 @@ onboarding:
   rules of the explicit VM mode (its section 4.2) apply unchanged to these forms.
 - `worker=` must name the container itself. Compose checks it offline and refuses another name
   with `SANDBOX_WORKER_MISMATCH`, so a renamed container fails on load, not on a startup timeout.
+  `iii compose build`, frozen or not, checks the scripts too, so CI catches it without an engine.
   Once `${self.*}` lands (item 4), Compose writes `worker=${self.name}`.
 - Everything else the call needs comes from Compose (4.2), so the line stays this short. Run by
   hand, outside Compose, the call takes every field as an argument:
