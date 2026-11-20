@@ -75,6 +75,17 @@ impl Budget {
     }
 }
 
+/// How long a call whose budget ran out while its streams were opened still gives their cleanup.
+/// Aborting a writer whose channel was never dialed dials it first, and a handshake the engine
+/// does not finish must not hold the error; what is left open is closed with the connection when
+/// the process exits, and no function was called to hold it.
+const SETUP_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Runs `cleanup` for at most `grace`.
+async fn clean_up_within(grace: std::time::Duration, cleanup: impl Future<Output = ()>) {
+    let _ = tokio::time::timeout(grace, cleanup).await;
+}
+
 /// Runs `setup` in what is left of `budget`: `None` when the budget ran out first, or had
 /// already, and `setup` was dropped. Without `--timeout-ms`, `setup` runs to its end.
 async fn within<T>(budget: &Budget, setup: impl Future<Output = T>) -> Option<T> {
@@ -183,7 +194,7 @@ async fn call(
         match bound {
             Some(bound) if !spent => bound.map_err(CallCliError::Other)?,
             _ => {
-                carried.cancel().await;
+                clean_up_within(SETUP_CLEANUP_GRACE, carried.cancel()).await;
                 carried.abandon();
                 return Err(CallCliError::Other(anyhow::anyhow!(
                     "--timeout-ms {} ran out while the call's streams were opened; the call \
@@ -454,6 +465,20 @@ mod tests {
         assert_eq!(within(&budget, async { 7 }).await, Some(7));
         assert!(budget.call_timeout(true) > 9_000);
         assert_eq!(within(&spent(0, None), async { 7 }).await, Some(7));
+    }
+
+    /// The cleanup of a call that ran out of budget while its streams were opened is bounded: a
+    /// writer abort whose channel handshake never finishes does not hold the error.
+    #[tokio::test]
+    async fn the_cleanup_of_an_unsent_call_is_bounded() {
+        let began = Instant::now();
+        clean_up_within(Duration::from_millis(100), std::future::pending()).await;
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(SETUP_CLEANUP_GRACE <= Duration::from_secs(1));
     }
 
     #[tokio::test]
