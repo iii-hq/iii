@@ -129,7 +129,7 @@ pub fn build_line(key: &str) -> String {
 }
 
 /// The words `sh` splits `command` into, with single and double quotes and backslashes taken
-/// away; enough for the `key=value` arguments of an `iii call` line.
+/// away and comments left out; enough for the `key=value` arguments of an `iii call` line.
 fn shell_words(command: &str) -> Vec<String> {
     let (mut words, mut word, mut in_word) = (Vec::new(), String::new(), false);
     let mut chars = command.chars();
@@ -157,6 +157,10 @@ fn shell_words(command: &str) -> Vec<String> {
                 if std::mem::take(&mut in_word) {
                     words.push(std::mem::take(&mut word));
                 }
+            }
+            // A `#` that starts a word starts a comment, to the end of its line.
+            '#' if !in_word => {
+                chars.by_ref().find(|c| *c == '\n');
             }
             c => {
                 in_word = true;
@@ -4290,6 +4294,38 @@ pub(crate) mod tests {
                 Some((key.to_string(), "true".to_string()))
             );
         }
+    }
+
+    /// A `#` that starts a word starts a comment, which `sh` drops: a `worker=` in it is no
+    /// argument. Inside a word or in quotes, `#` is text.
+    #[test]
+    fn a_worker_in_a_shell_comment_is_no_argument() {
+        let dir = tempfile::tempdir().unwrap();
+        let check = |run: &str| {
+            let text = serde_yaml::to_string(&serde_json::json!({ "containers": { "vm": {
+                "worker": "path://./vm",
+                "runtime": { "base_image": "python" },
+                "scripts": { "build": "iii call sandbox::build worker=vm", "run": run },
+            }}}))
+            .unwrap();
+            validate_script_rules(&parse(dir.path(), &text))
+                .err()
+                .map(|error| error.to_string())
+        };
+        let refused = check("iii call sandbox::start worker=other # worker=vm").unwrap();
+        assert!(refused.contains("'other'"), "{refused}");
+        assert_eq!(
+            check("iii call sandbox::start worker=vm # worker=other"),
+            None
+        );
+        assert_eq!(
+            check("iii call sandbox::start worker=vm 'command=a # worker=other' x#y"),
+            None
+        );
+        assert_eq!(
+            shell_words("iii call sandbox::start 'command=a #b' c#d # e\nf"),
+            ["iii", "call", "sandbox::start", "command=a #b", "c#d", "f"]
+        );
     }
 
     /// The worker a line sends is checked as `iii call` builds the payload: from `--json` too,
