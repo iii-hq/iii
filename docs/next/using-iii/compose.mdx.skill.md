@@ -839,6 +839,7 @@ containers:
 | `required_default` | boolean | `false` | Fallback for workers that omit `required`. An explicit worker value wins.                     |
 | `engine`           | map     | absent  | Present when this Compose invocation owns and configures the engine.                          |
 | `containers`       | map     | empty   | Project workers. May be empty only when `engine:` is present.                                 |
+| `cloud`            | map     | absent  | Read by iii Cloud when it deploys the project. Compose accepts it and reads nothing in it.    |
 
 ### Engine fields
 
@@ -1141,6 +1142,9 @@ config_override:
 ```
 
 </Warning>
+
+The top-level `cloud` block is not expanded either. iii Cloud reads it when it deploys the project,
+and Compose reads nothing in it, so a `${VAR}` there does not have to be set on your machine.
 
 ## VM workers
 

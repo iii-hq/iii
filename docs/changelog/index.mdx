@@ -108,6 +108,13 @@ type: "reference"
     whose `III_NAMESPACE` names another namespace. Before, a script Compose started reached its
     project's namespace instead.
 
+  ## Compose accepts a `cloud` block
+
+  - `worker-compose.yaml` takes a top-level `cloud` block. iii Cloud reads it when it deploys the
+    project. Compose accepts the block, reads nothing in it, and expands no `${VAR}` there, so the
+    file you deploy is the file you run on your machine. Before, Compose refused the file with
+    `INVALID_COMPOSE_FILE`. Any other unknown top-level key is still refused.
+
   ## Removed
 
   - **TypeScript (`iii-sdk`):** `createChannel` from `iii-sdk/helpers`, the `iii-sdk/channel`

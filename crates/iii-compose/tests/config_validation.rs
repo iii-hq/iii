@@ -462,6 +462,76 @@ containers:
     );
 }
 
+/// `cloud:` is iii Cloud's block: compose accepts it at the top level and reads
+/// nothing in it, so the same file runs here and deploys there. Its content is
+/// not this parser's to judge, and a `${VAR}` in it is left for iii Cloud.
+#[test]
+fn accepts_the_cloud_block_without_reading_it() {
+    let with_block = parse(
+        r#"
+namespace: orders
+cloud:
+  anything: [1, two, { three: 3 }]
+  release:
+    command: migrate --token ${NOT_SET_ON_THIS_MACHINE}
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("the cloud block is part of the compose schema");
+    let empty = parse(
+        r#"
+namespace: orders
+cloud:
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("an empty cloud block is accepted too");
+
+    for file in [&with_block, &empty] {
+        assert_eq!(file.namespace.as_deref(), Some("orders"));
+        assert_eq!(
+            file.containers.keys().collect::<Vec<_>>(),
+            ["api"],
+            "the block adds no container and changes none"
+        );
+    }
+}
+
+/// The exception is the one key, at the top level: a near miss is still a typo,
+/// and `cloud` under a container is still an unknown field.
+#[test]
+fn accepts_cloud_only_as_the_top_level_key() {
+    let near_miss = code(
+        r#"
+namespace: orders
+clouds:
+  release: { command: migrate }
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    );
+    let in_a_container = code(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    cloud:
+      release: { command: migrate }
+"#,
+    );
+
+    assert_eq!(
+        [near_miss.as_str(), in_a_container.as_str()],
+        ["INVALID_COMPOSE_FILE"; 2]
+    );
+}
+
 /// Fields still outside v1. `schema_version` needs a versioning story of its
 /// own, `config` inline duplicates `config_override`, and `image://` waits for
 /// the OCI runtime phase. This is the tripwire that fails the day one of them is

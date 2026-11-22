@@ -10,6 +10,10 @@
 //! scripts). Accepting an unknown key silently is how a typo becomes a
 //! silently-ignored dependency.
 //!
+//! The top-level `cloud:` block is the one exception, and a named one: iii
+//! Cloud reads it when it deploys the project, so the same file can be run
+//! here and deployed there. Compose accepts the key and reads nothing in it.
+//!
 //! Parsing here never touches the filesystem beyond reading the compose file
 //! itself: source existence and manifest resolution live in [`crate::manifest`]
 //! so that schema tests stay hermetic.
@@ -1266,6 +1270,12 @@ struct RawComposeFile {
     #[serde(default, deserialize_with = "deserialize_optional_unique_map")]
     #[schemars(with = "Option<BTreeMap<String, RawContainer>>")]
     containers: Option<IndexMap<String, RawContainer>>,
+    /// Read by iii Cloud when it deploys the project. Compose accepts the
+    /// block and reads nothing in it, so nothing in it is checked here: iii
+    /// Cloud says what it accepts.
+    #[serde(default, rename = "cloud")]
+    #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
+    _cloud: serde::de::IgnoredAny,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1661,6 +1671,10 @@ engine:
         let schema = worker_compose_schema_json();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["engine"].is_object());
+        assert!(
+            schema["properties"]["cloud"].is_object(),
+            "the block iii Cloud reads is part of the file's contract"
+        );
         let container_types = schema["properties"]["containers"]["type"]
             .as_array()
             .expect("containers must accept an object or null");
