@@ -98,7 +98,7 @@ jobs:
       REGISTRY_TAG: ${{ inputs.registry_tag }}
       API_URL: ${{ inputs.api_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || (github.event_name == 'workflow_dispatch' && inputs.release_tag || '') }}
 
