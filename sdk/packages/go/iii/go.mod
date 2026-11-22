@@ -5,7 +5,7 @@ go 1.26.0
 require github.com/google/uuid v1.6.0
 
 require (
-	github.com/coder/websocket v1.8.14
+	github.com/coder/websocket v1.8.15
 	github.com/invopop/jsonschema v0.14.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/log v1.47.0
