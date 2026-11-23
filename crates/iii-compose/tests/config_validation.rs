@@ -501,6 +501,27 @@ containers:
     }
 }
 
+/// A file saved with a byte order mark (editors on Windows write one) reads like the same file
+/// without it. The YAML reader took the mark plus a second top-level key for two documents, so a file
+/// iii Cloud deploys was refused here with "more than one document".
+#[test]
+fn a_leading_byte_order_mark_is_not_content() {
+    let plain = "namespace: orders\ncloud:\n  release:\n    command: migrate\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+    let marked = parse(&format!("\u{feff}{plain}")).expect("a byte order mark is not content");
+    let unmarked = parse(plain).unwrap();
+
+    assert_eq!(marked.namespace, unmarked.namespace);
+    assert_eq!(
+        marked.containers.keys().collect::<Vec<_>>(),
+        unmarked.containers.keys().collect::<Vec<_>>()
+    );
+    // A mark anywhere else is content, and still an error where YAML makes it one.
+    assert_eq!(
+        code("namespace: orders\n\u{feff}containers:\n  api:\n    worker: path://./workers/api\n"),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
 /// The block is a map or absent, as the schema says: anything else under the
 /// key is refused here, where iii Cloud would refuse it at the deployment.
 #[test]

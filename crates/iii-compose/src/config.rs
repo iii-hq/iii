@@ -598,7 +598,7 @@ pub fn sandbox_replacement(old: &serde_yaml::Value) -> String {
 /// default endpoint that belongs to some other engine.
 pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
     let document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
@@ -628,7 +628,7 @@ pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
 /// temporarily invalid.
 pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
@@ -655,9 +655,17 @@ pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec
     raw.engine.map(validate_engine).transpose()
 }
 
+/// `text` without a leading byte order mark. Editors on Windows write one, and YAML says it is not
+/// content, but the YAML reader takes a file that starts with one and has a second top-level key for
+/// two documents and refuses it. Every read of the raw compose text goes through here. The file on
+/// disk keeps its mark: nothing rewrites it for this.
+pub(crate) fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
     let mut document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;

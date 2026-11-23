@@ -1862,7 +1862,10 @@ struct Block {
 fn find_containers(lines: &[&str]) -> Result<Block> {
     let key = lines
         .iter()
-        .position(|line| without_comment(line).trim_end() == "containers:")
+        // The first line may carry the file's byte order mark, which is not part of the key.
+        .position(|line| {
+            without_comment(crate::config::without_bom(line)).trim_end() == "containers:"
+        })
         .ok_or_else(|| ComposeError::InvalidWorkerSpec {
             spec: "containers".to_string(),
             reason: "the compose file has no top-level `containers:` mapping to add to".to_string(),
@@ -2160,6 +2163,21 @@ mod tests {
         );
         let same = parse_worker("package://registry.example/team/tool@next").unwrap();
         assert_eq!(upsert_container(text, &same).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn an_edit_finds_containers_behind_a_byte_order_mark_and_keeps_the_mark() {
+        let text = "\u{feff}containers:\n  api:\n    worker: path://./api\n";
+        let added = changed(
+            text,
+            &parse_worker("package://registry.example/team/tool@1.2.3").unwrap(),
+        );
+        assert!(added.starts_with("\u{feff}containers:\n"), "{added:?}");
+        let parsed = crate::ComposeFile::parse(&added, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            parsed.containers.keys().collect::<Vec<_>>(),
+            ["api", "tool"]
+        );
     }
 
     #[test]
