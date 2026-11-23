@@ -489,8 +489,16 @@ impl ComposeFile {
         let engine = raw.engine.map(validate_engine).transpose()?;
 
         let mut containers = IndexMap::with_capacity(raw_containers.len());
+        // Each key's directories, as a case-insensitive volume names them.
+        let mut folded = std::collections::HashMap::with_capacity(raw_containers.len());
         for (key, raw_container) in &raw_containers {
             check_container_key(key)?;
+            if let Some(first) = folded.insert(key.to_lowercase(), key) {
+                return Err(ComposeError::ContainerKeysDifferOnlyByCase {
+                    first: first.clone(),
+                    second: key.clone(),
+                });
+            }
             containers.insert(
                 key.clone(),
                 validate_container(

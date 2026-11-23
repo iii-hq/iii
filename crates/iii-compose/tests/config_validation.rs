@@ -1011,6 +1011,29 @@ fn rejects_container_keys_that_are_not_plain_directory_names() {
     }
 }
 
+/// On a case-insensitive volume, `api` and `API` would share `.iii/build/api` and
+/// `.iii/workers/api`: one file may not hold both.
+#[test]
+fn rejects_container_keys_that_differ_only_by_letter_case() {
+    let error = parse(
+        "containers:\n  api: {worker: path://./api, scripts: {run: x}}\n  \
+         API: {worker: path://./other, scripts: {run: y}}\n",
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "INVALID_CONTAINER_KEY", "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("'api' and 'API' differ only by letter case"),
+        "{message}"
+    );
+    // Distinct names stay valid together.
+    parse(
+        "containers:\n  api: {worker: path://./api, scripts: {run: x}}\n  \
+         api-2: {worker: path://./other, scripts: {run: y}}\n",
+    )
+    .unwrap();
+}
+
 #[test]
 fn rejects_a_pre_run_timeout_without_a_pre_run() {
     assert_eq!(

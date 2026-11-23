@@ -144,6 +144,15 @@ pub enum ComposeError {
         reason: &'static str,
     },
 
+    /// Two container keys differ only by letter case: on a case-insensitive volume they name the
+    /// same directories under `.iii/build/` and `.iii/workers/` (spec 3.2).
+    #[error(
+        "container keys '{first}' and '{second}' differ only by letter case, so on a \
+         case-insensitive file system they would share their directories under .iii/build/ and \
+         .iii/workers/. Rename one of them"
+    )]
+    ContainerKeysDifferOnlyByCase { first: String, second: String },
+
     /// `--frozen` never edits the file, and these containers 0.26 ran in a VM still need the
     /// explicit VM mode written (spec 7.3).
     #[error(
@@ -783,7 +792,9 @@ impl ComposeError {
             Self::InvalidBaseImage { .. } => "INVALID_BASE_IMAGE",
             Self::BaseImageWithoutVm { .. } => "BASE_IMAGE_WITHOUT_VM",
             Self::SandboxBinaryWithoutBaseImage { .. } => "SANDBOX_BINARY_WITHOUT_BASE_IMAGE",
-            Self::InvalidContainerKey { .. } => "INVALID_CONTAINER_KEY",
+            Self::InvalidContainerKey { .. } | Self::ContainerKeysDifferOnlyByCase { .. } => {
+                "INVALID_CONTAINER_KEY"
+            }
             Self::VmScriptsMissing { .. } | Self::VmScriptsNotWritten { .. } => {
                 "VM_SCRIPTS_MISSING"
             }
