@@ -15,11 +15,7 @@ unmaintained = "workspace"
 # x86_64 external kernel image in `ImageZstd` format, which iii never configures. The fixed
 # releases are zstd 0.14.3 / zstd-safe 8.2.0, and every msb_krun_vmm release (0.1.42 included)
 # requires zstd ^0.13, so no update applies. Drop these once msb_krun moves to zstd 0.14.
-ignore = [
-  { id = "RUSTSEC-2026-0391", reason = "stream with_context reuse; msb_krun_vmm decodes once with read::Decoder::new" },
-  { id = "RUSTSEC-2026-0398", reason = "zstd `seekable` feature, which nothing in the graph enables" },
-  { id = "RUSTSEC-2026-0403", reason = "legacy frames through write::Decoder; msb_krun_vmm reads through read::Decoder" },
-]
+ignore = []
 
 [bans]
 # reqwest 0.12/0.13 and a few proc-macro crates legitimately coexist today.
