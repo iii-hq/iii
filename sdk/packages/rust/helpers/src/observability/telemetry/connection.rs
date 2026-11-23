@@ -274,12 +274,12 @@ async fn connection_loop(
         }
 
         // Check max retries
-        if let Some(max) = config.max_retries
-            && retry_count >= max
-        {
-            error!("Max retries exceeded, giving up");
-            *state.write().await = ConnectionState::Failed;
-            break;
+        if let Some(max) = config.max_retries {
+            if retry_count >= max {
+                error!("Max retries exceeded, giving up");
+                *state.write().await = ConnectionState::Failed;
+                break;
+            }
         }
 
         // Calculate backoff delay with jitter (all math in f64, clamped before cast)

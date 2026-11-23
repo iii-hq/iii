@@ -1520,10 +1520,10 @@ impl Drop for OutputInner {
         if !used {
             // An in-process receiver's handle dropped unused: the call that
             // passed the stream decides what that means.
-            if st.usage == Use::Unused
-                && let OutIo::Bridge(target) = self.io.get_mut()
-            {
-                target.release();
+            if st.usage == Use::Unused {
+                if let OutIo::Bridge(target) = self.io.get_mut() {
+                    target.release();
+                }
             }
             return;
         }
@@ -2029,10 +2029,10 @@ pub(crate) fn mark_transferred(value: &Value) {
         return;
     }
     visit_refs(value, 0, &mut |found| {
-        if let Some(channel) = ref_of(found)
-            && let Some(tracked) = received(&key_of(&channel))
-        {
-            tracked.transfer();
+        if let Some(channel) = ref_of(found) {
+            if let Some(tracked) = received(&key_of(&channel)) {
+                tracked.transfer();
+            }
         }
     });
 }
@@ -2636,10 +2636,10 @@ pub(crate) fn local_sinks(payload: &Value) -> Vec<(String, Arc<OutputInner>)> {
     }
     let mut sinks = Vec::new();
     visit_placeholders(payload, &mut |token, direction| {
-        if direction == ChannelDirection::Write
-            && let Some(Local::Output(sink)) = peek(token)
-        {
-            sinks.push((token.to_string(), sink));
+        if direction == ChannelDirection::Write {
+            if let Some(Local::Output(sink)) = peek(token) {
+                sinks.push((token.to_string(), sink));
+            }
         }
     });
     sinks
@@ -2657,14 +2657,14 @@ pub(crate) fn hand_off_sources(payload: &mut Value) -> Vec<Arc<InputInner>> {
         }
         if let Some((token, ChannelDirection::Read)) = placeholder_of(value) {
             let token = token.to_string();
-            if let Some(Local::Input(inner)) = peek(&token)
-                && let Some(moved) = inner.hand_off()
-            {
-                drop(claim(&token));
-                let next = moved.token().to_string();
-                register(&next, Local::Input(moved.clone()));
-                value["channel_id"] = Value::String(format!("{PLACEHOLDER_PREFIX}{next}"));
-                sources.push(moved);
+            if let Some(Local::Input(inner)) = peek(&token) {
+                if let Some(moved) = inner.hand_off() {
+                    drop(claim(&token));
+                    let next = moved.token().to_string();
+                    register(&next, Local::Input(moved.clone()));
+                    value["channel_id"] = Value::String(format!("{PLACEHOLDER_PREFIX}{next}"));
+                    sources.push(moved);
+                }
             }
             return;
         }
