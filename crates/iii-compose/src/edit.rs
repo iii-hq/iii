@@ -1862,7 +1862,10 @@ struct Block {
 fn find_containers(lines: &[&str]) -> Result<Block> {
     let key = lines
         .iter()
-        .position(|line| without_comment(line).trim_end() == "containers:")
+        // The first line may carry the file's byte order mark, which is not part of the key.
+        .position(|line| {
+            without_comment(crate::config::without_bom(line)).trim_end() == "containers:"
+        })
         .ok_or_else(|| ComposeError::InvalidWorkerSpec {
             spec: "containers".to_string(),
             reason: "the compose file has no top-level `containers:` mapping to add to".to_string(),
@@ -2160,6 +2163,50 @@ mod tests {
         );
         let same = parse_worker("package://registry.example/team/tool@next").unwrap();
         assert_eq!(upsert_container(text, &same).unwrap(), Outcome::Unchanged);
+    }
+
+    #[test]
+    fn an_edit_finds_containers_behind_a_byte_order_mark_and_keeps_the_mark() {
+        let text = "\u{feff}containers:\n  api:\n    worker: path://./api\n";
+        let added = changed(
+            text,
+            &parse_worker("package://registry.example/team/tool@1.2.3").unwrap(),
+        );
+        assert!(added.starts_with("\u{feff}containers:\n"), "{added:?}");
+        let parsed = crate::ComposeFile::parse(&added, "/tmp/worker-compose.yaml").unwrap();
+        assert_eq!(
+            parsed.containers.keys().collect::<Vec<_>>(),
+            ["api", "tool"]
+        );
+    }
+
+    #[test]
+    fn edits_leave_the_cloud_block_as_it_was_written() {
+        // iii Cloud reads the block from the file's text, so an add or a
+        // remove must not move, reindent or split it, wherever it sits.
+        const BLOCK: &str = "cloud:\n  # how the site is served\n  web: { container: api, port: 3000 }\n  release:\n    command: migrate --token ${RELEASE_TOKEN}\n";
+        const CONTAINERS: &str =
+            "containers:\n  api:\n    worker: path://./api\n  old:\n    worker: path://./old\n";
+        let tool = parse_worker("package://registry.example/team/tool@1.2.3").unwrap();
+        for text in [
+            format!("{BLOCK}{CONTAINERS}"),
+            format!("{CONTAINERS}{BLOCK}"),
+            format!("namespace: orders\n{CONTAINERS}\n{BLOCK}"),
+        ] {
+            let added = changed(&text, &tool);
+            let removed = remove_container(&added, "old")
+                .unwrap()
+                .expect("the container is there to remove");
+            for edited in [&added, &removed] {
+                assert!(edited.contains(BLOCK), "the block changed:\n{edited}");
+                assert_eq!(edited.matches("cloud:").count(), 1, "{edited}");
+            }
+            let parsed = crate::ComposeFile::parse(&removed, "/tmp/worker-compose.yaml").unwrap();
+            assert_eq!(
+                parsed.containers.keys().collect::<Vec<_>>(),
+                ["api", "tool"]
+            );
+        }
     }
 
     #[test]

@@ -10,6 +10,11 @@
 //! scripts). Accepting an unknown key silently is how a typo becomes a
 //! silently-ignored dependency.
 //!
+//! The top-level `cloud:` block is the one exception, and a named one: iii
+//! Cloud reads it when it deploys the project, so the same file can be run
+//! here and deployed there. Compose accepts the key, checks only that it holds
+//! a map, and uses nothing in it.
+//!
 //! Parsing here never touches the filesystem beyond reading the compose file
 //! itself: source existence and manifest resolution live in [`crate::manifest`]
 //! so that schema tests stay hermetic.
@@ -601,7 +606,7 @@ pub fn sandbox_replacement(old: &serde_yaml::Value) -> String {
 /// default endpoint that belongs to some other engine.
 pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
     let document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
@@ -631,7 +636,7 @@ pub fn parse_engine_url(text: &str, path: &Path) -> Result<Option<String>> {
 /// temporarily invalid.
 pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec>> {
     let document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
@@ -658,9 +663,17 @@ pub fn parse_engine_section(text: &str, path: &Path) -> Result<Option<EngineSpec
     raw.engine.map(validate_engine).transpose()
 }
 
+/// `text` without a leading byte order mark. Editors on Windows write one, and YAML says it is not
+/// content, but the YAML reader takes a file that starts with one and has a second top-level key for
+/// two documents and refuses it. Every read of the raw compose text goes through here. The file on
+/// disk keeps its mark: nothing rewrites it for this.
+pub(crate) fn without_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
 fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
     let mut document: serde_yaml::Value =
-        serde_yaml::from_str(text).map_err(|err| ComposeError::Yaml {
+        serde_yaml::from_str(without_bom(text)).map_err(|err| ComposeError::Yaml {
             path: path.to_path_buf(),
             message: err.to_string(),
         })?;
@@ -1280,6 +1293,13 @@ struct RawComposeFile {
     #[serde(default, deserialize_with = "deserialize_optional_unique_map")]
     #[schemars(with = "Option<BTreeMap<String, RawContainer>>")]
     containers: Option<IndexMap<String, RawContainer>>,
+    /// Read by iii Cloud when it deploys the project. Compose accepts the
+    /// block and uses nothing in it: iii Cloud says what it accepts. It is a
+    /// map or absent, here as in the schema, so a scalar or a list under the
+    /// key is refused before it reaches a deployment.
+    #[serde(default, rename = "cloud")]
+    #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
+    _cloud: Option<serde_yaml::Mapping>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1675,6 +1695,17 @@ engine:
         let schema = worker_compose_schema_json();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["engine"].is_object());
+        let cloud_types = schema["properties"]["cloud"]["type"]
+            .as_array()
+            .expect("cloud must accept an object or null, as the parser does");
+        assert_eq!(
+            cloud_types
+                .iter()
+                .filter_map(|schema_type| schema_type.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["null", "object"].into(),
+            "the block iii Cloud reads is a map or absent, in the schema and in the parser"
+        );
         let container_types = schema["properties"]["containers"]["type"]
             .as_array()
             .expect("containers must accept an object or null");
