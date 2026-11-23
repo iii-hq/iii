@@ -268,6 +268,15 @@ const UPDATE_HINT: &str = "A package adapter moves to its newest release with: i
                            compose::update worker=<its container key>@latest; if its version does \
                            not change, no release has them yet";
 
+/// Why a build stopped before the adapter answered.
+#[derive(Debug)]
+enum BuildStop {
+    /// A reader of the caller's streams left.
+    Cancelled,
+    /// The build ran past its `timeout_ms`.
+    TimedOut,
+}
+
 /// The caller's `stdout` and `stderr`: the write ends of its pipes, held by this function.
 /// Dropping them ends the streams, so the caller reads to the end.
 #[derive(Clone, Default)]
@@ -311,6 +320,18 @@ impl Sinks {
             biased;
             () = self.closed() => false,
             () = self.write(&LogStream::Stderr, line) => true,
+        }
+    }
+
+    /// [`Self::write`] of a line of `sandbox::build`'s own to `stdout`, unless a reader leaves
+    /// or `deadline` passes first: a full pipe must not hold a build that should stop. Written,
+    /// it is ahead of everything the build writes after it.
+    async fn announce(&self, line: &str, deadline: Option<Instant>) -> Result<(), BuildStop> {
+        tokio::select! {
+            biased;
+            () = self.closed() => Err(BuildStop::Cancelled),
+            () = until(deadline) => Err(BuildStop::TimedOut),
+            () = self.write(&LogStream::Stdout, line) => Ok(()),
         }
     }
 
@@ -476,12 +497,12 @@ pub async fn build(engine: &Engine, input: Value) -> Result<Value, ErrorBody> {
         executable,
     } = &request.source
     {
-        sinks
-            .write(
-                &LogStream::Stdout,
-                &format!("{package}: the guest runs {executable} from {host_path}"),
-            )
-            .await;
+        let line = format!("{package}: the guest runs {executable} from {host_path}");
+        match sinks.announce(&line, deadline).await {
+            Ok(()) => {}
+            Err(BuildStop::Cancelled) => return Err(cancelled()),
+            Err(BuildStop::TimedOut) => return Err(timed_out()),
+        }
     }
 
     let Some((logs, capture)) = Capture::open(engine, &sinks).await else {
@@ -1007,5 +1028,32 @@ mod tests {
             .await
             .expect("the line gave way once stdout's reader left");
         assert!(!said);
+    }
+
+    /// `stdout` full and unread: the binary build's own line gives way once the build's
+    /// deadline passes, or once a reader leaves, rather than hold a build that should stop.
+    #[tokio::test]
+    async fn a_build_line_to_a_full_stdout_gives_way_to_the_deadline_or_a_leaving_reader() {
+        let (stdout, _stdout_reader) = mpsc::channel(1);
+        let (stderr, stderr_reader) = mpsc::channel(1);
+        let sinks = Sinks {
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+        };
+        sinks.write(&LogStream::Stdout, "fills stdout").await;
+
+        let stopped = tokio::time::timeout(
+            Duration::from_secs(5),
+            sinks.announce("waits", Some(Instant::now())),
+        )
+        .await
+        .expect("the line gave way at the deadline");
+        assert!(matches!(stopped, Err(BuildStop::TimedOut)));
+
+        drop(stderr_reader);
+        let stopped = tokio::time::timeout(Duration::from_secs(5), sinks.announce("waits", None))
+            .await
+            .expect("the line gave way once stderr's reader left");
+        assert!(matches!(stopped, Err(BuildStop::Cancelled)));
     }
 }
