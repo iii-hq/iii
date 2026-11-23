@@ -40,7 +40,8 @@ use std::path::Path;
 
 use crate::error::{ComposeError, Result};
 
-/// The one block compose carries without reading. See the module docs.
+/// The block compose carries to the configuration worker without reading.
+/// See the module docs.
 const NOT_OURS: &str = "config_override";
 
 /// The top-level block iii Cloud reads when it deploys the project. Compose
@@ -354,7 +355,7 @@ mod tests {
         // iii Cloud reads the block from the file as written. `RELEASE_TOKEN`
         // is not set here, so expanding it would also be an error.
         let value = tree(
-            "cloud:\n  release:\n    command: migrate --token ${RELEASE_TOKEN}\ncontainers:\n  api:\n    worker: path://${DIR}\n    environment:\n      cloud: ${REGION}\n",
+            "cloud:\n  release:\n    command: migrate --token ${RELEASE_TOKEN}\ncontainers:\n  api:\n    worker: path://${DIR}\n    environment:\n      cloud: ${REGION}\n  cloud:\n    worker: path://${DIR}/cloud\n",
             &[("DIR", "./api"), ("REGION", "us-east-1")],
         )
         .unwrap();
@@ -365,9 +366,14 @@ mod tests {
         );
         assert_eq!(at(&value, &["containers", "api", "worker"]), "path://./api");
         assert_eq!(
+            at(&value, &["containers", "cloud", "worker"]),
+            "path://./api/cloud",
+            "a container named cloud, one level down, is compose's own"
+        );
+        assert_eq!(
             at(&value, &["containers", "api", "environment", "cloud"]),
             "us-east-1",
-            "a key named cloud below the top level is compose's own"
+            "and so is a variable named cloud, deeper"
         );
     }
 

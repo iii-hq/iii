@@ -501,6 +501,18 @@ containers:
     }
 }
 
+/// The block is a map or absent, as the schema says: anything else under the
+/// key is refused here, where iii Cloud would refuse it at the deployment.
+#[test]
+fn refuses_a_cloud_block_that_is_not_a_map() {
+    for value in ["7", "true", "text", "[a, b]", "\n  - a\n  - b"] {
+        let refused = code(&format!(
+            "namespace: orders\ncloud: {value}\ncontainers:\n  api:\n    worker: path://./workers/api\n"
+        ));
+        assert_eq!(refused, "INVALID_COMPOSE_FILE", "cloud: {value}");
+    }
+}
+
 /// The exception is the one key, at the top level: a near miss is still a typo,
 /// and `cloud` under a container is still an unknown field.
 #[test]

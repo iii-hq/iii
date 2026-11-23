@@ -2163,6 +2163,35 @@ mod tests {
     }
 
     #[test]
+    fn edits_leave_the_cloud_block_as_it_was_written() {
+        // iii Cloud reads the block from the file's text, so an add or a
+        // remove must not move, reindent or split it, wherever it sits.
+        const BLOCK: &str = "cloud:\n  # how the site is served\n  web: { container: api, port: 3000 }\n  release:\n    command: migrate --token ${RELEASE_TOKEN}\n";
+        const CONTAINERS: &str =
+            "containers:\n  api:\n    worker: path://./api\n  old:\n    worker: path://./old\n";
+        let tool = parse_worker("package://registry.example/team/tool@1.2.3").unwrap();
+        for text in [
+            format!("{BLOCK}{CONTAINERS}"),
+            format!("{CONTAINERS}{BLOCK}"),
+            format!("namespace: orders\n{CONTAINERS}\n{BLOCK}"),
+        ] {
+            let added = changed(&text, &tool);
+            let removed = remove_container(&added, "old")
+                .unwrap()
+                .expect("the container is there to remove");
+            for edited in [&added, &removed] {
+                assert!(edited.contains(BLOCK), "the block changed:\n{edited}");
+                assert_eq!(edited.matches("cloud:").count(), 1, "{edited}");
+            }
+            let parsed = crate::ComposeFile::parse(&removed, "/tmp/worker-compose.yaml").unwrap();
+            assert_eq!(
+                parsed.containers.keys().collect::<Vec<_>>(),
+                ["api", "tool"]
+            );
+        }
+    }
+
+    #[test]
     fn flow_mapping_upsert_keeps_source_kind_protection() {
         let text = "containers:\n  tool: {worker: path://.}\n";
         let error = upsert_container(text, &parse_worker("tool@1.2.3").unwrap()).unwrap_err();

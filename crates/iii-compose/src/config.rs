@@ -12,7 +12,8 @@
 //!
 //! The top-level `cloud:` block is the one exception, and a named one: iii
 //! Cloud reads it when it deploys the project, so the same file can be run
-//! here and deployed there. Compose accepts the key and reads nothing in it.
+//! here and deployed there. Compose accepts the key, checks only that it holds
+//! a map, and uses nothing in it.
 //!
 //! Parsing here never touches the filesystem beyond reading the compose file
 //! itself: source existence and manifest resolution live in [`crate::manifest`]
@@ -1271,11 +1272,12 @@ struct RawComposeFile {
     #[schemars(with = "Option<BTreeMap<String, RawContainer>>")]
     containers: Option<IndexMap<String, RawContainer>>,
     /// Read by iii Cloud when it deploys the project. Compose accepts the
-    /// block and reads nothing in it, so nothing in it is checked here: iii
-    /// Cloud says what it accepts.
+    /// block and uses nothing in it: iii Cloud says what it accepts. It is a
+    /// map or absent, here as in the schema, so a scalar or a list under the
+    /// key is refused before it reaches a deployment.
     #[serde(default, rename = "cloud")]
     #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
-    _cloud: serde::de::IgnoredAny,
+    _cloud: Option<serde_yaml::Mapping>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1671,9 +1673,16 @@ engine:
         let schema = worker_compose_schema_json();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["engine"].is_object());
-        assert!(
-            schema["properties"]["cloud"].is_object(),
-            "the block iii Cloud reads is part of the file's contract"
+        let cloud_types = schema["properties"]["cloud"]["type"]
+            .as_array()
+            .expect("cloud must accept an object or null, as the parser does");
+        assert_eq!(
+            cloud_types
+                .iter()
+                .filter_map(|schema_type| schema_type.as_str())
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["null", "object"].into(),
+            "the block iii Cloud reads is a map or absent, in the schema and in the parser"
         );
         let container_types = schema["properties"]["containers"]["type"]
             .as_array()

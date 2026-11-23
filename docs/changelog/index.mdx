@@ -111,9 +111,9 @@ type: "reference"
   ## Compose accepts a `cloud` block
 
   - `worker-compose.yaml` takes a top-level `cloud` block. iii Cloud reads it when it deploys the
-    project. Compose accepts the block, reads nothing in it, and expands no `${VAR}` there, so the
-    file you deploy is the file you run on your machine. Before, Compose refused the file with
-    `INVALID_COMPOSE_FILE`. Any other unknown top-level key is still refused.
+    project. Compose checks only that the block is a map, uses nothing in it, and expands no
+    `${VAR}` there, so the file you deploy is the file you run on your machine. Before, Compose
+    refused the file. Any other unknown top-level key is still refused.
 
   ## Removed
 
