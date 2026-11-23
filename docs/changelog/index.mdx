@@ -13,8 +13,9 @@ type: "reference"
   Every SDK (TypeScript for Node and the browser, Python, Rust, and Go) replaces the Channels API
   with call-native streams. A stream is a value of a call: put a file, a readable, or a generator in
   a payload or a result, and the function on the other side receives an `InputStream` to read; put a
-  writable or a file to create there, and it receives an `OutputStream` to write. The engine, its
-  channel functions, and the wire are unchanged, except for the text of `payload_too_large` errors.
+  writable or a file to create there, and it receives an `OutputStream` to write. For streams, the
+  engine, its channel functions, and the wire are unchanged, except for the text of
+  `payload_too_large` errors.
   It is a breaking change for the workers whose SDK you upgrade; workers on 0.26 SDKs need no
   change. See [Upgrading from 0.26.x](/next/upgrading/from-0-26-x).
 
@@ -86,6 +87,44 @@ type: "reference"
   [Understanding iii / Streaming](/next/understanding-iii/streaming). The Channels pages moved there:
   `/next/understanding-iii/channels` and `/next/creating-workers/channels` redirect to them.
 
+  ## VM workers are explicit in `worker-compose.yaml`
+
+  A container that runs in a microVM now says so in its `scripts`:
+  `scripts.build: iii call sandbox::build worker=<container>` builds an image of the worker locally,
+  in `.iii/build/<container>/`, and `scripts.run: iii call sandbox::start worker=<container>` boots
+  it. Compose no longer decides by itself that a `bundle`, or a `path://` worker whose manifest sets
+  `runtime.base_image`, runs in a VM. See
+  [Upgrading VM workers from 0.26.x](/next/upgrading/explicit-vm-workers) and
+  [VM workers](/next/creating-workers/sandboxes#vm-workers).
+
+  - Compose rewrites a 0.26 file on the next `compose::up`, `compose::add`, `compose::update`,
+    `compose::restart`, `compose::build`, or `iii compose build`: each container that 0.26 ran in a
+    VM gets `scripts.build`, `scripts.run`, and the adapter in `start_after`, and Compose logs
+    `<container>: migrated to the explicit VM mode`. A migrated file no longer loads in 0.26, so
+    commit `worker-compose.yaml` and `worker-compose.lock` before the first run.
+  - Build and run are separate. The first start builds, and so does the start after a package
+    update; any other rebuild is explicit, with `iii call compose::build worker=<container>`.
+    `scripts.build_timeout` bounds a build, and a run never installs dependencies.
+  - `scripts.run` is allowed on any package, and a container's own `runtime.base_image` takes
+    precedence over its manifest's. A `binary` package with `runtime.base_image` runs its Linux
+    build in a VM.
+  - The engine's `sandbox::build` and `sandbox::start` serve these lines. `iii call` passes them the
+    rest of the request in `III_CALL_DEFAULTS`, which Compose sets for the container's scripts.
+  - The sandbox adapter must be a `sandbox-libkrun` 0.5 release (`^0.5`, sandbox contract 1.4).
+    Compose updates the adapter container it added. One you declared yourself fails with
+    `SANDBOX_ADAPTER_TOO_OLD` until you set its version to `"^0.5"`.
+  - No VM data is deleted. The data disk a 0.26 VM wrote is kept as `upper.ext4.pre-build`, and
+    `compose::remove` keeps a VM's data unless you pass `prune=true`.
+  - A container key is now also the name of its directories, so a key that is empty or blank, holds
+    `/` or `\`, starts with `.`, or holds a NUL fails with `INVALID_CONTAINER_KEY`, in any project.
+    Rename such keys, and the `start_after` entries that name them, before the first run.
+
+  <Callout type="warning">
+    Commit `worker-compose.yaml` and `worker-compose.lock` before the first run of 0.27: a file
+    Compose migrated no longer loads in 0.26. See
+    [Upgrading from 0.26.x](/next/upgrading/from-0-26-x#upgrade-the-project).
+  </Callout>
+
   ## `iii call` follows streams
 
   `iii call` carries the streams of a call from the command line. See
@@ -100,8 +139,9 @@ type: "reference"
     function to stop, and `iii call` waits for its answer. A second one exits at once.
   - A call that binds a stream has no timeout unless `--timeout-ms` sets one, and prints its result
     only with `--print-result`.
-  - `III_CALL_DEFAULTS`, a JSON object keyed by function id, gives the called function a base
-    payload that never appears on the command line.
+  - `III_CALL_DEFAULTS`, a JSON object keyed by namespace and then by function id
+    (`{"default": {"sandbox::start": {...}}}`), gives the called function a base payload that never
+    appears on the command line.
   - A function that fails prints its `Error:` JSON on one line when standard error is not a
     terminal; other failures print plain text. Arguments that cannot make a call exit with `2`.
   - Without `--namespace`, `iii call` resolves in `default`, as its help says, also in a process
@@ -136,6 +176,10 @@ type: "reference"
     `helpers/http`, `Wrap` takes only the handler, `NewStreamResponse` takes an `*iii.OutputStream`,
     the `RequestBody` and `Response` fields are streams, and `ErrResponseClosed` is removed: a write
     after `Close` fails with `STREAM_CLOSED`.
+  - **`iii sandbox`:** `iii sandbox run`, the 0.26 opt-in for a VM in `scripts.run`, and
+    `iii sandbox destroy`. Compose rewrites `scripts.run: iii sandbox run` into
+    `iii call sandbox::start worker=<container>`. Destroy a VM with
+    `iii call compose::remove worker=<container> prune=true`.
 
   <Callout type="warning">
     A worker you move to a 0.27 SDK must replace its channel code in the same change: the old names

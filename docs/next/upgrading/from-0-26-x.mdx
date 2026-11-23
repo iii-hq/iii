@@ -1,8 +1,9 @@
 ---
 title: "Upgrading from 0.26.x to 0.27.x"
 description:
-  "Every iii SDK replaces the Channels API with streams in call payloads and results. Move each
-  worker's channel code when you upgrade its SDK."
+  "Every iii SDK replaces the Channels API with streams in call payloads and results, VM workers
+  become explicit in worker-compose.yaml, and iii call resolves in default without -n. Upgrade the
+  project once, then move each worker's channel code when you upgrade its SDK."
 owner: "devrel"
 type: "how-to"
 ---
@@ -20,21 +21,45 @@ to read; put a writable or a file to create there, and it receives an `OutputStr
   `ChannelWriter`) give way to `InputStream` and `OutputStream`, and to `iii.pipe()` for an explicit
   pipe. This is a breaking change with no deprecated aliases.
 - **The wire is unchanged.** A 0.26 engine serves 0.27 SDKs, and a ref has the same JSON in every
-  SDK, so workers on 0.26 and 0.27 SDKs work together in one project. The 0.27 engine changes only
-  the text of its `payload_too_large` errors, which now link to
+  SDK, so workers on 0.26 and 0.27 SDKs work together in one project. For streaming, the 0.27 engine
+  changes only the text of its `payload_too_large` errors, which now link to
   [Streaming / Payload size](../creating-workers/streaming#payload-size), as the errors of every
   0.27 SDK do.
 - **VM workers are explicit in `worker-compose.yaml`.** A container that runs in a microVM now says
   so in its `scripts`, and Compose rewrites a 0.26 file on its next run. A project with a VM worker
   also follows [Upgrading VM workers from 0.26.x](./explicit-vm-workers).
+- **Container keys are directory names.** A key that starts with `.` or holds `/`, among others,
+  loaded in 0.26 and now fails with `INVALID_CONTAINER_KEY`.
+- **`iii call` resolves in `default` without `-n`**, also in a script that Compose starts. See
+  [`iii call`](#iii-call).
 
 ## Before you upgrade
 
 ### Who needs to migrate
 
-Only the workers whose SDK you upgrade to 0.27, and in them only the code that uses channels. A
-project that keeps its SDKs on 0.26 needs no change, an engine upgrade alone changes nothing for
-streaming, and you can move one worker at a time.
+Every project, once, for the changes in [Upgrade the project](#upgrade-the-project): the compose
+file and the scripts that run `iii call`. For streaming, only the workers whose SDK you upgrade to
+0.27, and in them only the code that uses channels. A project that keeps its SDKs on 0.26 needs no
+streaming change, an engine upgrade alone changes nothing for streaming, and you can move one worker
+at a time.
+
+### Upgrade the project
+
+Do this once per project, before the first run of the 0.27 `iii`:
+
+1. Stop the project, and commit `worker-compose.yaml` and `worker-compose.lock`. The 0.27 Compose
+   rewrites the containers that 0.26 ran in a VM on its next run, and a rewritten file no longer
+   loads in 0.26: the commit is your way back.
+2. Rename each container key that is empty or blank, holds `/` or `\`, starts with `.`, or holds a
+   NUL, such as `.internal` or `a/b`, and the `start_after` entries that name it. A container key is
+   now also the name of its directories, `.iii/build/<key>/` and `.iii/workers/<key>/`, so such a
+   key fails with `INVALID_CONTAINER_KEY` in any project, with or without a VM worker.
+3. If the project has VM workers, a registry `bundle` or a `path://` worker whose `iii.worker.yaml`
+   sets `runtime.base_image`, follow [Upgrading VM workers from 0.26.x](./explicit-vm-workers). It
+   covers the sandbox adapter, which must be a 0.5 release, and the containers that must stay on the
+   host.
+4. Add `-n <namespace>` to each `iii call` in a script that targets a function of the project's
+   namespace, as in [`iii call`](#iii-call).
 
 ### Compatibility
 
@@ -125,7 +150,8 @@ Then work through the sections below:
 7. [`createChannel` to `iii.pipe()`](#createchannel-to-iiipipe) where a pipe has to exist before its
    data.
 8. [The browser SDK](#the-browser-sdk) for a page that streams.
-9. Check the [behavior changes](#behavior-changes) and the [checklist](#checklist).
+9. Check the [behavior changes](#behavior-changes), [`iii call`](#iii-call), and the
+   [checklist](#checklist).
 
 ## What changed
 
@@ -1762,8 +1788,28 @@ Beyond the renamed API, these rules are new for a worker on a 0.27 SDK:
 - **The `payload_too_large` error links to the new page:**
   `https://iii.dev/docs/creating-workers/streaming#payload-size`.
 
+## `iii call`
+
+The 0.27 `iii call` changes for scripts:
+
+- **Without `-n`, `iii call` resolves in `default`.** In 0.26 it took the namespace of
+  `III_NAMESPACE` when that variable was set, and Compose sets it for every process it starts. A
+  `scripts` line, or a script it runs, reached a function of the project's namespace with a plain
+  `iii call <function>`. In 0.27 that call looks in `default` and does not find the function. Name
+  the namespace with `iii call -n <namespace> <function>`. A project in `default` needs no change,
+  and neither does a call to a function in `default`, such as the engine's `sandbox::build` and
+  `sandbox::start`.
+- **Arguments that cannot make a call exit with `2`.**
+- **A function that fails prints its `Error:` JSON on one line** when standard error is not a
+  terminal, so a script can parse it. Other failures print plain text.
+
 ## Checklist
 
+- [ ] Commit `worker-compose.yaml` and `worker-compose.lock` before the first run of the 0.27 `iii`
+- [ ] Rename each container key that fails with `INVALID_CONTAINER_KEY`, and the `start_after`
+      entries that name it
+- [ ] In a project with VM workers, follow [Upgrading VM workers from 0.26.x](./explicit-vm-workers)
+- [ ] Add `-n <namespace>` to each `iii call` in a script that targets a function outside `default`
 - [ ] Upgrade one worker's SDK at a time; workers on 0.26 SDKs keep working unchanged on the same
       engine
 - [ ] Replace each `createChannel` / `create_channel` / `create_channel_async` whose writer feeds a
