@@ -704,6 +704,23 @@ mod end_of_stream_tests {
         }
     }
 
+    // The socket reads in pieces of `transport::READ_BUFFER_BYTES`: a frame
+    // many times that size still arrives whole.
+    #[tokio::test]
+    async fn a_frame_larger_than_the_read_buffer_arrives_whole() {
+        let (address, server) = test_engine::spawn(false).await;
+        let body: Vec<u8> = (0..1_000_000u32).map(|i| i as u8).collect();
+        let sent = body.clone();
+        let server = tokio::spawn(async move {
+            let mut ws = server.await.unwrap();
+            ws.send(WsMessage::Binary(sent.into())).await.unwrap();
+            ws.close(None).await.unwrap();
+        });
+        let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
+        assert_eq!(reader.read_all().await.unwrap(), body);
+        server.await.unwrap();
+    }
+
     // The engine sends 1011 when the writer aborted: what was read is not the
     // whole stream, and it ends with an abort that carries the reason.
     #[tokio::test]
