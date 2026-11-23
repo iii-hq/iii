@@ -996,6 +996,10 @@ fn rejects_container_keys_that_are_not_plain_directory_names() {
         ".",
         ".hidden",
         "../escape",
+        // A drive-relative path, a drive, and a file stream on Windows, on every platform.
+        "'C:api'",
+        "'C:'",
+        "'api:data'",
     ] {
         let text = format!("containers:\n  {key}: {{worker: path://./api, scripts: {{run: x}}}}\n");
         let error = parse(&text).unwrap_err();

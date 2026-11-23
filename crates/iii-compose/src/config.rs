@@ -661,8 +661,10 @@ fn expanded_document(text: &str, path: &Path) -> Result<serde_yaml::Value> {
 }
 
 /// A container key names directories, `.iii/build/<key>` and `.iii/workers/<key>` beside the
-/// compose file (spec 3.2), so it must be one plain directory name: not empty, no path separator,
-/// no leading `.` (which also rules out `.` and `..`), and no NUL.
+/// compose file (spec 3.2), so it must be one plain directory name on every platform the file
+/// may be used on: not empty, no path separator, no leading `.` (which also rules out `.` and
+/// `..`), no `:` (`C:api` is a drive-relative path on Windows, and `api:x` a stream of `api`),
+/// and no NUL. Checked when the file is read, before a build or a lock reaches the disk.
 fn check_container_key(key: &str) -> Result<()> {
     let reason = if key.trim().is_empty() {
         Some("it is empty")
@@ -670,8 +672,12 @@ fn check_container_key(key: &str) -> Result<()> {
         Some("it holds a path separator")
     } else if key.starts_with('.') {
         Some("it starts with '.'")
+    } else if key.contains(':') {
+        Some("it holds ':', which Windows reads as a drive or a file stream")
     } else if key.contains('\0') {
         Some("it holds a NUL character")
+    } else if !crate::build_record::is_directory_name(key) {
+        Some("it is not one plain path component")
     } else {
         None
     };
