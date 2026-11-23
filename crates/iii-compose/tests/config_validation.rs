@@ -462,6 +462,109 @@ containers:
     );
 }
 
+/// `cloud:` is iii Cloud's block: compose accepts it at the top level and reads
+/// nothing in it, so the same file runs here and deploys there. Its content is
+/// not this parser's to judge, and a `${VAR}` in it is left for iii Cloud.
+#[test]
+fn accepts_the_cloud_block_without_reading_it() {
+    let with_block = parse(
+        r#"
+namespace: orders
+cloud:
+  anything: [1, two, { three: 3 }]
+  release:
+    command: migrate --token ${NOT_SET_ON_THIS_MACHINE}
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("the cloud block is part of the compose schema");
+    let empty = parse(
+        r#"
+namespace: orders
+cloud:
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    )
+    .expect("an empty cloud block is accepted too");
+
+    for file in [&with_block, &empty] {
+        assert_eq!(file.namespace.as_deref(), Some("orders"));
+        assert_eq!(
+            file.containers.keys().collect::<Vec<_>>(),
+            ["api"],
+            "the block adds no container and changes none"
+        );
+    }
+}
+
+/// A file saved with a byte order mark (editors on Windows write one) reads like the same file
+/// without it. The YAML reader took the mark plus a second top-level key for two documents, so a file
+/// iii Cloud deploys was refused here with "more than one document".
+#[test]
+fn a_leading_byte_order_mark_is_not_content() {
+    let plain = "namespace: orders\ncloud:\n  release:\n    command: migrate\ncontainers:\n  api:\n    worker: path://./workers/api\n";
+    let marked = parse(&format!("\u{feff}{plain}")).expect("a byte order mark is not content");
+    let unmarked = parse(plain).unwrap();
+
+    assert_eq!(marked.namespace, unmarked.namespace);
+    assert_eq!(
+        marked.containers.keys().collect::<Vec<_>>(),
+        unmarked.containers.keys().collect::<Vec<_>>()
+    );
+    // A mark anywhere else is content, and still an error where YAML makes it one.
+    assert_eq!(
+        code("namespace: orders\n\u{feff}containers:\n  api:\n    worker: path://./workers/api\n"),
+        "INVALID_COMPOSE_FILE"
+    );
+}
+
+/// The block is a map or absent, as the schema says: anything else under the
+/// key is refused here, where iii Cloud would refuse it at the deployment.
+#[test]
+fn refuses_a_cloud_block_that_is_not_a_map() {
+    for value in ["7", "true", "text", "[a, b]", "\n  - a\n  - b"] {
+        let refused = code(&format!(
+            "namespace: orders\ncloud: {value}\ncontainers:\n  api:\n    worker: path://./workers/api\n"
+        ));
+        assert_eq!(refused, "INVALID_COMPOSE_FILE", "cloud: {value}");
+    }
+}
+
+/// The exception is the one key, at the top level: a near miss is still a typo,
+/// and `cloud` under a container is still an unknown field.
+#[test]
+fn accepts_cloud_only_as_the_top_level_key() {
+    let near_miss = code(
+        r#"
+namespace: orders
+clouds:
+  release: { command: migrate }
+containers:
+  api:
+    worker: path://./workers/api
+"#,
+    );
+    let in_a_container = code(
+        r#"
+namespace: orders
+containers:
+  api:
+    worker: path://./workers/api
+    cloud:
+      release: { command: migrate }
+"#,
+    );
+
+    assert_eq!(
+        [near_miss.as_str(), in_a_container.as_str()],
+        ["INVALID_COMPOSE_FILE"; 2]
+    );
+}
+
 /// Fields still outside v1. `schema_version` needs a versioning story of its
 /// own, `config` inline duplicates `config_override`, and `image://` waits for
 /// the OCI runtime phase. This is the tripwire that fails the day one of them is
