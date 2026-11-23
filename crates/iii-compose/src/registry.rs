@@ -1070,7 +1070,10 @@ fn prune_packages(
         let Some(name) = name.to_str() else {
             continue;
         };
-        if retired.contains(name) || is_temporary_copy(name) || is_temporary_file(name) {
+        // A temporary file is pruned only as a file: a directory of that name is not Compose's.
+        let temporary_file =
+            is_temporary_file(name) && entry.file_type().map_err(io_error(workers))?.is_file();
+        if retired.contains(name) || is_temporary_copy(name) || temporary_file {
             let path = entry.path();
             remove_path(&path).map_err(io_error(&path))?;
         }
@@ -1092,12 +1095,14 @@ fn is_temporary_copy(name: &str) -> bool {
         })
 }
 
-/// `.packages.json.tmp-<id>` or `.gitignore.tmp-<id>`, the temporary files
-/// `build_record::replace_file` writes Compose's own files of `.iii/workers/` through.
+/// `.packages.json.tmp-<id>` or `.gitignore.tmp-<id>`, the names of the temporary files
+/// `build_record::replace_file` writes Compose's own files of `.iii/workers/` through: `<id>` is
+/// the simple form of a UUID. Any other name is not Compose's.
 fn is_temporary_file(name: &str) -> bool {
     [PROJECT_PACKAGES_FILE, ".gitignore"].iter().any(|file| {
         name.strip_prefix(file)
-            .is_some_and(|rest| rest.starts_with(".tmp-"))
+            .and_then(|rest| rest.strip_prefix(".tmp-"))
+            .is_some_and(|id| id.len() == 32 && uuid::Uuid::parse_str(id).is_ok())
     })
 }
 
@@ -4688,8 +4693,18 @@ mod tests {
         std::fs::create_dir(workers.join(format!(".queue.replaced-{id}"))).unwrap();
         std::fs::create_dir(workers.join("mine")).unwrap();
         std::fs::write(workers.join("notes.txt"), "mine").unwrap();
-        std::fs::write(workers.join(".packages.json.tmp-interrupted"), "{").unwrap();
-        std::fs::write(workers.join(".gitignore.tmp-interrupted"), "").unwrap();
+        // The temporary files `replace_file` writes `.packages.json` and `.gitignore` through,
+        // and an operator's entries with similar names: a file without its UUID suffix, and
+        // directories, with or without one.
+        let tmp = uuid::Uuid::new_v4().simple();
+        std::fs::write(workers.join(format!(".packages.json.tmp-{tmp}")), "{").unwrap();
+        std::fs::write(workers.join(format!(".gitignore.tmp-{tmp}")), "").unwrap();
+        std::fs::write(workers.join(".gitignore.tmp-notes"), "mine").unwrap();
+        std::fs::create_dir(workers.join(".packages.json.tmp-notes")).unwrap();
+        std::fs::write(workers.join(".packages.json.tmp-notes/kept"), "mine").unwrap();
+        let directory = ".gitignore.tmp-0123456789abcdef0123456789abcdef";
+        std::fs::create_dir(workers.join(directory)).unwrap();
+        std::fs::write(workers.join(directory).join("kept"), "mine").unwrap();
         // A record edited by hand that names Compose's own lock file, or the `.iii/` that holds
         // `.iii/workers/`: not package directories.
         let mut edited = recorded(project.path());
@@ -4712,13 +4727,18 @@ mod tests {
             names(&workers),
             [
                 ".gitignore",
+                directory,
+                ".gitignore.tmp-notes",
                 ".lock",
                 ".packages.json",
+                ".packages.json.tmp-notes",
                 "mine",
                 "notes.txt",
                 "state"
             ]
         );
+        assert!(workers.join(directory).join("kept").is_file());
+        assert!(workers.join(".packages.json.tmp-notes/kept").is_file());
         assert_eq!(
             recorded(project.path())["containers"],
             serde_json::json!({ "state": { "name": "state", "version": "1.0.0", "sha256": sha256_of(&state) } })
@@ -4731,7 +4751,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             names(&workers),
-            [".gitignore", ".lock", ".packages.json", "mine", "notes.txt"]
+            [
+                ".gitignore",
+                directory,
+                ".gitignore.tmp-notes",
+                ".lock",
+                ".packages.json",
+                ".packages.json.tmp-notes",
+                "mine",
+                "notes.txt"
+            ]
         );
         assert_eq!(
             recorded(project.path()),

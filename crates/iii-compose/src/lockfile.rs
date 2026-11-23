@@ -798,6 +798,16 @@ pub(crate) fn locked_packages(
     }))
 }
 
+/// Whether an entry without a root binding names the package its reference names. A 0.26 lock
+/// of a scoped reference (`registry.example/team/tool`) recorded the last segment, `tool`, and
+/// stays valid; a bound entry is checked against its binding instead.
+fn names_unbound(expected: &str, resolved: &str) -> bool {
+    resolved == expected
+        || expected
+            .rsplit_once('/')
+            .is_some_and(|(_, last)| resolved == last)
+}
+
 /// Validates all untrusted lock fields before they reach the cache or runtime.
 fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
     let invalid = |message: String| ComposeError::InvalidLock {
@@ -833,7 +843,7 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
                     "container '{container}' has an invalid requested-root binding"
                 )));
             }
-        } else if entry.derived_pin || entry.resolved.name != expected_name {
+        } else if entry.derived_pin || !names_unbound(&expected_name, &entry.resolved.name) {
             return Err(invalid(format!(
                 "container '{container}' resolved '{}', expected '{expected_name}'",
                 entry.resolved.name
@@ -1008,6 +1018,41 @@ mod tests {
             validate(&path, &lock).unwrap();
             write_atomically(&path, &serde_yaml::to_string(&lock).unwrap()).unwrap();
             assert_eq!(load(&path).unwrap(), Some(lock));
+        }
+    }
+
+    /// A 0.26 lock of a scoped reference: no root binding, and the name of its last segment.
+    fn legacy_scoped_lock() -> ComposeLock {
+        let mut lock = lock();
+        let entry = lock.containers.get_mut("state").unwrap();
+        entry.worker = "package://registry.example.test/team/tool".into();
+        entry.resolved.registry = "https://registry.example.test".into();
+        entry.resolved.name = "tool".into();
+        lock
+    }
+
+    #[test]
+    fn an_unbound_scoped_lock_written_by_0_26_stays_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        let lock = legacy_scoped_lock();
+        write_atomically(&path, &serde_yaml::to_string(&lock).unwrap()).unwrap();
+        assert_eq!(load(&path).unwrap(), Some(lock));
+    }
+
+    #[test]
+    fn an_unbound_scoped_lock_must_still_name_its_last_segment_without_a_derived_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        let mut other = legacy_scoped_lock();
+        other.containers.get_mut("state").unwrap().resolved.name = "other".into();
+        let mut derived = legacy_scoped_lock();
+        derived.containers.get_mut("state").unwrap().derived_pin = true;
+        for lock in [other, derived] {
+            assert!(matches!(
+                validate(&path, &lock),
+                Err(ComposeError::InvalidLock { .. })
+            ));
         }
     }
 

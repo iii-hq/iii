@@ -318,10 +318,12 @@ pub fn dependency_files(worker_dir: &Path) -> Result<BTreeMap<String, String>> {
 
 /// Every difference of section 5.5 (`compose_file` as for [`source`]); empty when up to date.
 ///
-/// In order: the source, the dependency files (every name added, removed or changed, sorted),
-/// and, for a VM build, the declared base image, the container's own over its manifest's. A host
-/// build records no image, so its base image is not compared. `base_image` is the already-expanded
-/// container override from the Compose plan, never re-read from YAML in a child process.
+/// A new source comes alone: it already asks for a rebuild, so the rest is not read, and a
+/// dependency file of the new source that cannot be read does not hide it. Otherwise, in order:
+/// the dependency files (every name added, removed or changed, sorted), and, for a VM build, the
+/// declared base image, the container's own over its manifest's. A host build records no image,
+/// so its base image is not compared. `base_image` is the already-expanded container override
+/// from the Compose plan, never re-read from YAML in a child process.
 pub fn changes(
     record: &BuildRecord,
     compose_file: &Path,
@@ -333,10 +335,10 @@ pub fn changes(
 
     let current = source(compose_file, container)?;
     if current != record.source {
-        changes.push(Change::Source {
+        return Ok(vec![Change::Source {
             old: record.source.clone(),
             new: current,
-        });
+        }]);
     }
 
     let files = dependency_files(worker_dir)?;
@@ -1031,6 +1033,33 @@ mod tests {
         );
     }
 
+    /// A new package whose dependency files cannot be read is still a source change: the rebuild
+    /// it needs does not wait for them, nor fail on them.
+    #[cfg(unix)]
+    #[test]
+    fn a_source_change_is_reported_before_the_dependency_files_are_read() {
+        let (dir, file) = project();
+        let bundle = package_dir(dir.path(), "onboarding");
+        record_package(dir.path(), "0.2.0", "sha256:8c3406");
+        let record = BuildRecord {
+            container: "onboarding".to_string(),
+            ..vm_record(package_source("0.2.0", "sha256:8c3406"), None)
+        };
+        // A dependency file that links to itself: reading it fails, and not as a missing file.
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::os::unix::fs::symlink("package.json", bundle.join("package.json")).unwrap();
+        assert!(dependency_files(&bundle).is_err());
+
+        record_package(dir.path(), "0.3.0", "sha256:aa11");
+        assert_eq!(
+            changes(&record, &file, "onboarding", &bundle, None).unwrap(),
+            [Change::Source {
+                old: package_source("0.2.0", "sha256:8c3406"),
+                new: package_source("0.3.0", "sha256:aa11"),
+            }]
+        );
+    }
+
     #[test]
     fn added_changed_and_removed_dependency_files_are_named() {
         let (dir, file) = project();
@@ -1104,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn every_change_is_reported_together_in_order() {
+    fn a_new_source_comes_alone_and_the_other_changes_together_in_order() {
         let (dir, file) = project();
         let worker = dir.path().join("link");
         let record = current_link_record(&file);
@@ -1115,13 +1144,19 @@ mod tests {
             &worker.join("iii.worker.yaml"),
             "runtime:\n  base_image: docker.io/iiidev/python\n",
         );
+        // A new source already asks for a rebuild: the rest is not read.
+        assert_eq!(
+            changes(&record, &file, "link", &worker, None).unwrap(),
+            [Change::Source {
+                old: path_source("./link"),
+                new: path_source("./link/"),
+            }]
+        );
+
+        write_file(&file, "containers:\n  link:\n    worker: path://./link\n");
         assert_eq!(
             changes(&record, &file, "link", &worker, None).unwrap(),
             [
-                Change::Source {
-                    old: path_source("./link"),
-                    new: path_source("./link/"),
-                },
                 Change::Dependencies(vec!["package.json".to_string()]),
                 Change::BaseImage {
                     old: Some("docker.io/iiidev/node".to_string()),
