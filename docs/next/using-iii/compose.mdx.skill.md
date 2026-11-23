@@ -1530,8 +1530,7 @@ relative to the compose file. A host build writes the same keys without `image`.
 ### Rewriting files from older releases
 
 There is no implicit VM path. Compose rewrites the containers that 0.26 ran in a VM and that the
-file does not place anywhere else, and the VM lines that earlier builds of this release wrote, and
-logs
+file does not place anywhere else, and logs
 `<container>: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)`.
 The check is per container and idempotent, keyed on `scripts` alone. The rewrite does not change
 the lock format.
@@ -1592,7 +1591,7 @@ The sandbox adapter adds the S-codes [S507](../creating-workers/sandboxes#S507),
 | `<c>: its build is a VM image, and scripts.build now runs on the host; rebuilding`                                                                   | A VM image is rebuilt on the host.                                                                   |
 | ``<c>: dependencies changed since the last build (<files>); run `iii call compose::build worker=<c>` `` | A dependency file changed since the last build. |
 | ``<c>: base image changed since the last build (<old> -> <new>); run `iii call compose::build worker=<c>` `` | `runtime.base_image` changed since the last build. A side without one reads `the adapter's default`. |
-| `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)` | Compose rewrote a container that 0.26 ran in a VM, or the VM lines an earlier build of this release wrote. |
+| `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)` | Compose rewrote a container that 0.26 ran in a VM. |
 | `<c>: scripts.run now runs inside the VM (iii call sandbox::start command=...); to keep it on the host, set scripts.build ("" when there is nothing to build)` | Warning: the rewrite wrapped a `scripts.run` command. |
 | `migration due: <c>, <c>; the next up rewrites them` | Warning from `compose::validate`. |
 | `<c>: kept the pre-build data disk at <path>` | The adapter kept a 0.26 data disk. In the container's logs and the adapter's log. |

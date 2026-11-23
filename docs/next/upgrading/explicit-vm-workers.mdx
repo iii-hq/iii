@@ -30,9 +30,9 @@ In 0.26, Compose decided by itself that a worker ran in a microVM: a registry `b
   only. The first build is automatic. Later rebuilds are explicit, except after a package update.
 - **Compose rewrites 0.26 files on the next run.** Each container that 0.26 ran in a VM gets
   `scripts.build`, `scripts.run`, and the adapter in `start_after`. A migrated file no longer loads
-  in 0.26. Compose also rewrites the `iii sandbox build` and `iii sandbox run` lines of earlier
-  builds of this release, since the `iii sandbox` command is removed. See
-  [Lines written by earlier builds](#lines-written-by-earlier-builds).
+  in 0.26. The `iii sandbox` command is removed, so Compose also rewrites the 0.26 opt-in
+  `scripts.run: iii sandbox run`. See
+  [The `iii sandbox` command is removed](#the-iii-sandbox-command-is-removed).
 - **The sandbox adapter must be a 0.5 release (`^0.5`).** Compose updates the adapter container it
   generated. One you declared yourself fails with `SANDBOX_ADAPTER_TOO_OLD` until you update it.
 - **No VM data is deleted.** The data disk a 0.26 VM wrote is kept as `upper.ext4.pre-build`, and
@@ -175,9 +175,9 @@ change. Compose rewrites:
 - a `bundle` package without `scripts.run` (0.26 refused `scripts.run` on packages);
 - a `path://` whose manifest sets `runtime.base_image` and that has no `scripts.build` (0.26 refused
   the key), whatever its `scripts.run`: none, or a command;
-- a container whose `scripts.run` is the 0.26 opt-in `iii sandbox run`, which is rewritten;
-- a container with the `iii sandbox` lines of an earlier build, which are rewritten as in
-  [Lines written by earlier builds](#lines-written-by-earlier-builds);
+- a container whose `scripts.run` is the 0.26 opt-in `iii sandbox run`, with or without `--command`,
+  which is rewritten as in
+  [The `iii sandbox` command is removed](#the-iii-sandbox-command-is-removed);
 - any container whose `scripts.run` is `iii call sandbox::start` and that lacks `scripts.build` or
   the adapter in `start_after`. Compose adds only those pieces.
 
@@ -229,40 +229,32 @@ The rewrite runs in `compose::up` (and `iii compose --up`), `compose::add`, `com
 Compose also reads a 0.26 `state.json` that holds a `vm` record once: it stops that VM with
 `worker::stop` and drops the record.
 
-### Lines written by earlier builds
+### The `iii sandbox` command is removed
 
-Earlier builds of this release ran VM workers through an `iii sandbox` command, which is removed.
-Compose rewrites their lines on the next run, as it rewrites a 0.26 container, and logs the same
+In 0.26, a container could opt in to a VM with `scripts.run: iii sandbox run`, and
+`iii sandbox destroy` removed a container's VM state. The `iii sandbox` command is removed. Compose
+rewrites its lines on the next run, as it rewrites a 0.26 container, and logs the same
 `migrated to the explicit VM mode` line:
 
-| Line of an earlier build                     | Rewritten into                                             |
-| -------------------------------------------- | ---------------------------------------------------------- |
-| `iii sandbox build`, rewritten               | `iii call sandbox::build worker=<container>`               |
-| `iii sandbox run`, rewritten                 | `iii call sandbox::start worker=<container>`               |
-| `iii sandbox run --command '<c>'`, rewritten | `iii call sandbox::start worker=<container> 'command=<c>'` |
+| 0.26 line                         | Rewritten into                                             |
+| --------------------------------- | ---------------------------------------------------------- |
+| `iii sandbox run`                 | `iii call sandbox::start worker=<container>`               |
+| `iii sandbox run --command '<c>'` | `iii call sandbox::start worker=<container> 'command=<c>'` |
 
 - `worker=` is the container's own key. A line whose `worker=` names another container fails with
   `SANDBOX_WORKER_MISMATCH` when Compose loads the file, and in `iii compose build`, so a renamed
   container fails at once, in CI too.
-- The rest of each request reaches the call in `III_CALL_DEFAULTS`, which replaces these variables
-  in the environment of the container's scripts: `III_SANDBOX_TOKEN`, `III_SANDBOX_STATE_KEY`,
-  `III_SANDBOX_ADAPTER`, `III_SANDBOX_NAMESPACE`, `III_WORKER_DIR`, `III_WORKER_ENV_KEYS`,
-  `III_STOP_TIMEOUT_MS`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_BASE_IMAGE`, and `III_PACKAGE_KIND`.
-  `III_BUILD_DIR`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR`, and `III_PACKAGE_NAME` stay. A
+- The rest of each request reaches the call in `III_CALL_DEFAULTS`, which replaces these 0.26
+  variables in the environment of the container's scripts: `III_SANDBOX_TOKEN`,
+  `III_SANDBOX_STATE_KEY`, `III_SANDBOX_ADAPTER`, `III_SANDBOX_NAMESPACE`, `III_WORKER_DIR`,
+  `III_WORKER_ENV_KEYS`, and `III_STOP_TIMEOUT_MS`. `III_PACKAGE_DIR` and `III_PACKAGE_NAME` stay. A
   script of your own that read the replaced variables reads `III_CALL_DEFAULTS` instead.
-- The removed `iii sandbox build <container>` and `iii sandbox destroy` have replacements: rebuild
-  with `iii call compose::build worker=<container>` and follow it with
-  `iii compose logs <container> --follow`; destroy a VM with
-  `iii call compose::remove worker=<container>`, with `prune=true` to delete its data.
-- A failed build is read from the `Error:` line of `iii call`, which replaces the
-  removed `iii sandbox: build failed:` line. A VM that exits with another code than `0` fails
-  `sandbox::start` with `WORKER_EXITED`, and `iii call` exits with `1`. The VM's code is in the
-  error message, where the removed `iii sandbox run` exited with that code.
-- Removed with the `iii sandbox` command: the codes `SANDBOX_ENV_INVALID` and
-  `SANDBOX_INVALID_ARGUMENTS` (a request that does not read is now `SANDBOX_INVALID_REQUEST`),
-  `SANDBOX_FAILED`, `BUILD_MISSING`, and `SANDBOX_PRUNE_UNSUPPORTED`, and its exit codes `125` and
-  `130`. Compose builds a container before it starts it, and a `compose::remove` without `prune`, on
-  an adapter without `worker.prune`, keeps the VM and logs where its state stays.
+- `iii sandbox destroy` is replaced by `iii call compose::remove worker=<container>`, with
+  `prune=true` to delete the VM's data.
+- A VM that exits with another code than `0` fails `sandbox::start` with `WORKER_EXITED`, and
+  `iii call` exits with `1`. The VM's code is in the error message. `iii sandbox run` exited with
+  that code, with `128+N` when the VM ended on signal N, or with `125` when the command itself
+  failed.
 
 ## Keep a worker on the host
 
