@@ -145,6 +145,21 @@ type: "reference"
   - Without `--namespace`, `iii call` resolves in `default`, as its help says, also in a process
     whose `III_NAMESPACE` names another namespace. Before, a script Compose started reached its
     project's namespace instead.
+  - When a stream is bound, a request field marked `x-iii-terminal` gets what `iii call` knows of
+    its terminal (`stdout`, `stderr`, `columns`, `rows`, `color`), so the function draws for it.
+
+  ## `compose::add` shows its progress
+
+  `iii call compose::add` draws each worker it starts into the caller's standard error, as a spinner
+  on a terminal and as one line per change in a pipe, and answers once the operation finished. See
+  [Progress](/next/using-iii/compose#progress).
+
+  - The call exits with `1` when a required worker failed or the operation was cancelled, and its
+    first `Ctrl+C` cancels the operation.
+  - With the stream, `compose::add` answers `status: "succeeded"` and the operation's `outcome`,
+    which `--print-result` prints. A script that read `operation_id` from the immediate answer of
+    `iii call compose::add` adds `--no-bind`. Callers without a `stderr` stream, such as the SDKs
+    and the ADE, still get `{ operation_id, status: "accepted", requested }` at once.
 
   ## Removed
 

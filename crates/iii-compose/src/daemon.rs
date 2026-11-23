@@ -2964,6 +2964,19 @@ impl MutationOutcome {
         self.status == OpStatus::Failed
     }
 
+    /// Whether the mutation changed the file or a running worker.
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+
+    /// The code and message of the first worker that could not reach its target state, when the
+    /// mutation failed.
+    pub(crate) fn error(&self) -> Option<(&str, &str)> {
+        self.error
+            .as_ref()
+            .map(|error| (error.code.as_str(), error.message.as_str()))
+    }
+
     /// Requested containers that ended in error while the operation still
     /// succeeded — only possible for a container whose effective `required`
     /// is false. A terminal progress event must name these: "every requested

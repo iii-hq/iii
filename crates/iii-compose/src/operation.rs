@@ -21,7 +21,7 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 
 /// The function every progress event is a call of. Observers filter on
 /// `input.operation_id` to follow one operation and on `input.terminal` for
@@ -162,6 +162,10 @@ pub struct Operation {
     state: RwLock<State>,
     cancel: watch::Sender<bool>,
     emitter: ProgressEmitter,
+    /// In-process readers of every event, such as the caller a `compose::add` draws for. Sent
+    /// while the state lock is held, so each reader gets the events in sequence order, and
+    /// dropped after the terminal event, which ends their streams.
+    subscribers: Mutex<Vec<mpsc::UnboundedSender<ProgressEvent>>>,
 }
 
 impl Operation {
@@ -183,11 +187,35 @@ impl Operation {
             }),
             cancel,
             emitter,
+            subscribers: Mutex::new(Vec::new()),
         })
     }
     pub fn id(&self) -> &str {
         &self.id
     }
+    /// Every event emitted from now on, in order, ending after the terminal one. An operation
+    /// that already finished yields nothing.
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<ProgressEvent> {
+        let (sender, events) = mpsc::unbounded_channel();
+        self.subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(sender);
+        events
+    }
+
+    /// Hands `event` to every subscriber still reading; the terminal event is the last.
+    fn deliver(&self, event: &ProgressEvent) {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribers.retain(|subscriber| subscriber.send(event.clone()).is_ok());
+        if event.terminal {
+            subscribers.clear();
+        }
+    }
+
     pub fn cancellation(&self) -> watch::Receiver<bool> {
         self.cancel.subscribe()
     }
@@ -236,6 +264,7 @@ impl Operation {
                 results: None,
             };
             state.last_event = Some(event.clone());
+            self.deliver(&event);
             event
         };
         self.emitter.publish(&event).await;
@@ -288,6 +317,7 @@ impl Operation {
                 results,
             };
             state.last_event = Some(event.clone());
+            self.deliver(&event);
             event
         };
         self.emitter.publish(&event).await;

@@ -143,7 +143,7 @@ iii call compose::stop    --namespace dev
 | `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
 | `compose::list`     | nothing                                                     | The daemon name, namespace, pid, host targets, and every project it holds. |
 | `compose::validate` | `file`                                                      | A validation report.                                                       |
-| `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
+| `compose::add`      | `file`, `workers`, `stderr`                                 | An accepted operation; with `stderr`, its progress, then its outcome.      |
 | `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
 | `compose::restart`  | `file`, `container`                                         | The `down` and the `up`, or one worker's restart.                          |
 | `compose::update`   | `file`, `worker`                                            | The resolved version and a restart when the package content changed.       |
@@ -321,6 +321,31 @@ stays as written in the file. For an existing container, a supplied field replac
 use `{}` or `[]` to clear it. A VM worker gets its `scripts` and `start_after` written for it (see
 [VM workers](#vm-workers)). See
 [How compose::add edits a project](../understanding-iii/compose#how-composeadd-edits-a-project).
+
+#### Progress
+
+From `iii call`, `compose::add` shows its progress and answers once the operation finished.
+`iii call` binds its standard error to the `stderr` stream of the request and says what its terminal
+is in `terminal`, and Compose draws each worker it starts into the stream: a spinner per worker,
+redrawn in place, on a terminal, or one line per change when standard error is a pipe or a file.
+Workers that were already running are not listed.
+
+```text
+$ iii call compose::add worker=state worker=queue
+⠹ adding 2 workers (4.2s)
+  ✓ state ready (1.2s)
+  ⠼ queue waiting for engine registration (3.0s)
+```
+
+- The call exits with `0` once the requested workers are ready, or when a worker that is not
+  required did not start, which the last line names. It exits with `1` when a required worker
+  failed or the operation was cancelled, and `iii call` prints the `Error:` with its code.
+- `--print-result` prints the answer: `status: "succeeded"` and the operation's `outcome`.
+- The first `Ctrl+C` cancels the operation, as `compose::cancel` does, and the call exits once the
+  operation stopped.
+- Without a `stderr` stream, as from an SDK, the ADE, or `iii call --no-bind`, `compose::add`
+  answers `{ operation_id, status: "accepted", requested }` at once and finishes in the background.
+  Follow it with `compose::operation` or by observing `compose::on-operation-progress`.
 
 ### Package lock
 

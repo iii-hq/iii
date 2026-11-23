@@ -23,12 +23,13 @@
 
 use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc};
 
-use iii_sdk::{Error, RegisterFunction};
+use iii_sdk::{Error, OutputStream, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
+    caller_report::{CallerReport, CallerTerminal, Ending},
     daemon::{Daemon, MutationOutcome},
     edit::WorkerInput,
     error::ComposeError,
@@ -90,6 +91,11 @@ pub struct ComposeRequest {
     pub progress_operation_id: Option<String>,
     /// Function or file contract requested by `compose::schema`.
     pub function_id: Option<String>,
+    /// `compose::add`: the stream its progress is drawn into. With it, the call answers once
+    /// the operation finished, and fails when it failed.
+    pub stderr: Option<OutputStream>,
+    /// What `iii call` says of its terminal, so the progress is drawn for it.
+    pub terminal: Option<CallerTerminal>,
 }
 
 /// Request fields used by daemon-wide operations.
@@ -308,8 +314,13 @@ struct CancelOutcome {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct OperationAcceptedOutcome {
     operation_id: String,
+    /// `accepted`. A `compose::add` that drew its progress into `stderr` answers once it
+    /// finished: `succeeded`, with its `outcome`.
     status: String,
     requested: usize,
+    /// What the finished operation did, when the call waited for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<MutationOutcome>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -597,6 +608,8 @@ async fn dispatch(
                 format!("adding {requested} requested workers"),
             )
             .await?;
+            // Subscribed before the mutation runs, so the caller's report misses none of it.
+            let events = request.stderr.is_some().then(|| operation.subscribe());
 
             let daemon_task = Arc::clone(&daemon);
             let task_operation_id = accepted.operation_id.clone();
@@ -609,8 +622,20 @@ async fn dispatch(
                     .add_configured(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(operation, mutation, ADD_DETAILS);
-            Ok(to_value(&accepted))
+            let finished = spawn_mutation(Arc::clone(&operation), mutation, ADD_DETAILS);
+            match (request.stderr, events) {
+                (Some(stderr), Some(events)) => {
+                    let title = format!(
+                        "adding {requested} {}",
+                        if requested == 1 { "worker" } else { "workers" }
+                    );
+                    let report =
+                        CallerReport::start(stderr, request.terminal.unwrap_or_default(), title)
+                            .await;
+                    answer_drawn(report, &operation, events, finished, accepted, ADD_DETAILS).await
+                }
+                _ => Ok(to_value(&accepted)),
+            }
         }
         Operation::Remove => {
             let prune = request.prune.unwrap_or(false);
@@ -947,6 +972,7 @@ async fn admit_mutation(
         operation_id,
         status: "accepted".to_string(),
         requested,
+        outcome: None,
     };
     Ok((operation, accepted))
 }
@@ -988,6 +1014,8 @@ struct MutationDetails {
     partial: &'static str,
     /// A required container did not, so the operation failed.
     failed: &'static str,
+    /// It succeeded without changing anything: the file already said it.
+    unchanged: &'static str,
 }
 
 const ADD_DETAILS: MutationDetails = MutationDetails {
@@ -995,6 +1023,7 @@ const ADD_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers are ready",
     partial: "workers that did not start",
     failed: "one or more workers failed",
+    unchanged: "every requested worker was already declared; nothing changed",
 };
 
 const REMOVE_DETAILS: MutationDetails = MutationDetails {
@@ -1002,6 +1031,7 @@ const REMOVE_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers were removed",
     partial: "workers that could not be removed",
     failed: "one or more workers could not be removed",
+    unchanged: "no requested worker was declared; nothing changed",
 };
 
 const UPDATE_DETAILS: MutationDetails = MutationDetails {
@@ -1009,13 +1039,15 @@ const UPDATE_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers were updated",
     partial: "workers that could not be updated",
     failed: "one or more workers could not be updated",
+    unchanged: "everything already up to date",
 };
 
 fn spawn_mutation<F>(
     operation: Arc<crate::operation::Operation>,
     mutation: F,
     details: MutationDetails,
-) where
+) -> tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>
+where
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
 {
     tokio::spawn(async move {
@@ -1027,12 +1059,14 @@ fn spawn_mutation<F>(
                     "operation cancelled",
                 )
                 .await;
-            return;
+            return Err(ComposeError::OperationCancelled {
+                operation_id: operation.id().to_string(),
+            });
         }
 
         let result = mutation.await;
         report_mutation(details.op, &result, began.elapsed());
-        match result {
+        match &result {
             Ok(outcome) => {
                 let failed = outcome.is_failed();
                 operation
@@ -1068,7 +1102,86 @@ fn spawn_mutation<F>(
                     .await;
             }
         }
-    });
+        result
+    })
+}
+
+/// Draws a mutation into the caller's `stderr` stream until it finished, and answers with how it
+/// ended rather than with its acceptance: a failed or cancelled mutation fails the call, so
+/// `iii call` exits non-zero.
+async fn answer_drawn(
+    mut report: CallerReport,
+    operation: &crate::operation::Operation,
+    events: tokio::sync::mpsc::UnboundedReceiver<crate::operation::ProgressEvent>,
+    finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
+    accepted: OperationAcceptedOutcome,
+    details: MutationDetails,
+) -> Result<Value, Error> {
+    report.follow(operation, events).await;
+    let (ending, answer) = match finished.await {
+        Ok(result) => drawn_answer(result, accepted, details),
+        Err(error) => {
+            let message = format!("the {} operation stopped: {error}", details.op);
+            (
+                Ending::Failed(message.clone()),
+                Err(Error::Handler(message)),
+            )
+        }
+    };
+    report.finish(&ending).await;
+    answer
+}
+
+/// The last line a drawn mutation shows, and the answer of its call.
+fn drawn_answer(
+    result: Result<MutationOutcome, ComposeError>,
+    accepted: OperationAcceptedOutcome,
+    details: MutationDetails,
+) -> (Ending, Result<Value, Error>) {
+    match result {
+        Ok(outcome) if outcome.is_failed() => {
+            let (code, message) = outcome.error().unwrap_or(("OPERATION_FAILED", ""));
+            let message = if message.is_empty() {
+                details.failed.to_string()
+            } else {
+                format!("{}: {message}", details.failed)
+            };
+            (
+                Ending::Failed(details.failed.to_string()),
+                Err(Error::Remote {
+                    code: code.to_string(),
+                    message,
+                    stacktrace: None,
+                }),
+            )
+        }
+        Ok(outcome) => {
+            let ending = match outcome.not_required_failures() {
+                [] if outcome.changed() => Ending::Succeeded(details.success.to_string()),
+                [] => Ending::Succeeded(details.unchanged.to_string()),
+                failures => {
+                    Ending::Partial(format!("{}: {}", details.partial, failures.join(", ")))
+                }
+            };
+            let answer = OperationAcceptedOutcome {
+                status: "succeeded".to_string(),
+                outcome: Some(outcome),
+                ..accepted
+            };
+            (ending, Ok(to_value(&answer)))
+        }
+        Err(
+            error @ (ComposeError::OperationCancelled { .. }
+            | ComposeError::RebuildCancelled { .. }),
+        ) => (
+            Ending::Cancelled(error.to_string()),
+            Err(compose_error(&error)),
+        ),
+        Err(error) => (
+            Ending::Failed(error.to_string()),
+            Err(compose_error(&error)),
+        ),
+    }
 }
 
 /// Reports one mutation that ran in the background after it was accepted.
@@ -1208,7 +1321,54 @@ fn add_worker_options_schema() -> Option<Value> {
     schema["definitions"] = detailed["definitions"].clone();
     schema["definitions"]["WorkerInput"]["anyOf"][0]["pattern"] = json!(r"\S");
     schema["definitions"]["RawContainer"]["properties"]["worker"]["pattern"] = json!(r"\S");
+    let properties = schema.pointer_mut("/properties")?.as_object_mut()?;
+    properties.insert("stderr".to_string(), progress_stream_schema());
+    properties.insert("terminal".to_string(), caller_terminal_schema());
     Some(schema)
+}
+
+/// The `stderr` of a mutation that draws its progress: the write end of an engine pipe, as every
+/// SDK describes an `OutputStream`, so `iii call` binds its own standard error to it.
+fn progress_stream_schema() -> Value {
+    json!({
+        "title": "OutputStream",
+        "description": "A stream the progress is drawn into. With it, the call answers once the \
+                        operation finished, and fails when it failed or was cancelled; a reader \
+                        that leaves cancels the operation. `iii call` binds its own standard \
+                        error to it.",
+        "type": "object",
+        "x-iii-stream": "write",
+        "required": ["access_key", "channel_id", "direction"],
+        "properties": {
+            "channel_id": { "type": "string" },
+            "access_key": { "type": "string" },
+            "direction": { "type": "string", "const": "write" },
+        },
+    })
+}
+
+/// The terminal the progress is drawn for. `iii call` fills a field marked `x-iii-terminal`.
+fn caller_terminal_schema() -> Value {
+    let size = |what: &str| {
+        json!({
+            "description": format!("{what} of the terminal, when known."),
+            "type": ["integer", "null"],
+            "minimum": 0,
+        })
+    };
+    json!({
+        "description": "The caller's terminal: a terminal gets a spinner redrawn in place, \
+                        anything else one line per change. `iii call` fills it.",
+        "type": ["object", "null"],
+        "x-iii-terminal": true,
+        "properties": {
+            "stdout": { "description": "Standard output is a terminal.", "type": "boolean" },
+            "stderr": { "description": "Standard error is a terminal.", "type": "boolean" },
+            "columns": size("Width in columns"),
+            "rows": size("Height in rows"),
+            "color": { "description": "Colour is wanted.", "type": "boolean" },
+        },
+    })
 }
 
 /// One source of truth for function registration and `compose::schema`.
@@ -1261,7 +1421,8 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::add" => {
             "Accept an observable operation that declares one or more workers and their registry \
              dependencies in the compose file, locks resolved packages, then reconciles changed \
-             workers once. Explicit selectors remain in the compose file."
+             workers once. Explicit selectors remain in the compose file. With a `stderr` \
+             stream, draws the progress into it and answers once the operation finished."
         }
         "compose::remove" => {
             "Accept an observable operation that removes one or more declared workers and \
@@ -2542,6 +2703,123 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].1["outcome"], "ok");
         assert!(reports[0].1["error_kind"].is_null());
+    }
+
+    #[test]
+    fn only_add_takes_a_progress_stream_and_the_terminal_it_reaches() {
+        let add = schema_entry("compose::add").1.as_ref().unwrap();
+        assert_eq!(add["properties"]["stderr"]["x-iii-stream"], "write");
+        assert_eq!(
+            add["properties"]["stderr"]["properties"]["direction"]["const"],
+            "write"
+        );
+        assert_eq!(add["properties"]["terminal"]["x-iii-terminal"], true);
+        let mut fields: Vec<&str> = add["properties"]["terminal"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["color", "columns", "rows", "stderr", "stdout"]);
+        // The stream is optional: a caller without one gets the accepted operation, as before.
+        let validator = jsonschema::Validator::new(add).unwrap();
+        assert!(validator.is_valid(&json!({ "worker": "state" })));
+        for function_id in [
+            "compose::update",
+            "compose::remove",
+            "compose::build",
+            "compose::up",
+        ] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            assert!(
+                schema["properties"].get("stderr").is_none(),
+                "{function_id}"
+            );
+            assert!(
+                schema["properties"].get("terminal").is_none(),
+                "{function_id}"
+            );
+        }
+    }
+
+    fn accepted() -> OperationAcceptedOutcome {
+        OperationAcceptedOutcome {
+            operation_id: "compose:test".into(),
+            status: "accepted".into(),
+            requested: 1,
+            outcome: None,
+        }
+    }
+
+    fn outcome(status: crate::lifecycle::OpStatus, changed: bool) -> MutationOutcome {
+        MutationOutcome::from_operations(
+            status,
+            changed,
+            Some("state"),
+            None,
+            None,
+            std::iter::empty::<&crate::lifecycle::OpResult>(),
+        )
+    }
+
+    #[test]
+    fn a_drawn_add_that_succeeded_answers_with_its_outcome() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Ok, true)),
+            accepted(),
+            ADD_DETAILS,
+        );
+        assert_eq!(ending, Ending::Succeeded(ADD_DETAILS.success.into()));
+        let answer = answer.unwrap();
+        assert_eq!(answer["operation_id"], "compose:test");
+        assert_eq!(answer["status"], "succeeded");
+        assert_eq!(answer["outcome"]["worker"], "state");
+        assert_eq!(answer["outcome"]["changed"], true);
+    }
+
+    #[test]
+    fn a_drawn_add_that_changed_nothing_says_so() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Ok, false)),
+            accepted(),
+            ADD_DETAILS,
+        );
+        assert_eq!(ending, Ending::Succeeded(ADD_DETAILS.unchanged.into()));
+        assert!(answer.is_ok());
+    }
+
+    #[test]
+    fn a_drawn_add_that_failed_fails_the_call() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Failed, true)),
+            accepted(),
+            ADD_DETAILS,
+        );
+        assert_eq!(ending, Ending::Failed(ADD_DETAILS.failed.into()));
+        match answer {
+            Err(Error::Remote { code, message, .. }) => {
+                assert_eq!(code, "OPERATION_FAILED");
+                assert_eq!(message, ADD_DETAILS.failed);
+            }
+            other => panic!("expected a remote error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_drawn_add_that_was_cancelled_fails_with_its_code() {
+        let (ending, answer) = drawn_answer(
+            Err(ComposeError::OperationCancelled {
+                operation_id: "compose:test".into(),
+            }),
+            accepted(),
+            ADD_DETAILS,
+        );
+        assert_eq!(ending, Ending::Cancelled("operation cancelled".into()));
+        match answer {
+            Err(Error::Remote { code, .. }) => assert_eq!(code, "OPERATION_CANCELLED"),
+            other => panic!("expected a remote error, got {other:?}"),
+        }
     }
 }
 

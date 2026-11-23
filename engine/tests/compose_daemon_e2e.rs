@@ -748,6 +748,160 @@ containers:
     daemon.shutdown().await;
 }
 
+/// A project whose `existing` worker starts with the first reconciliation, as a project an
+/// operator adds to does: its start marks `workers/existing/started`.
+fn drawn_compose(namespace: &str) -> String {
+    format!(
+        "namespace: {namespace}\nstartup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  existing:\n    worker: path://./workers/existing\n    scripts:\n      run: \"echo started >> started && sleep 30\"\n"
+    )
+}
+
+/// `iii call` with `args`, as an operator runs it against the test engine. Its standard error is a
+/// pipe here, so `compose::add` draws one line per change.
+fn iii_call(port: u16, args: &[&str]) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_iii"));
+    command
+        .arg("call")
+        .args(args)
+        .args(["--engine", &format!("ws://127.0.0.1:{port}")])
+        .env_remove("III_URL")
+        .env_remove("III_CALL_DEFAULTS")
+        .env_remove("III_NAMESPACE")
+        .env("III_TELEMETRY_ENABLED", "false")
+        .kill_on_drop(true);
+    command
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn iii_call_draws_an_add_into_its_stderr_and_answers_once_it_finished() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let existing_started = tmp.path().join("workers/existing/started");
+    let started = tmp.path().join("workers/web/started");
+    let file = project(tmp.path(), &drawn_compose("drawn"), &["existing", "web"]);
+    std::fs::write(
+        tmp.path().join("workers/web/iii.worker.yaml"),
+        "scripts:\n  start: \"echo started >> started && sleep 30\"\n",
+    )
+    .unwrap();
+
+    let file_arg = format!("file={}", file.display());
+    let add = iii_call(port, &["compose::add", &file_arg, "worker=./workers/web"]).output();
+    let ready = async {
+        wait_for_start_markers(&[existing_started.as_path(), started.as_path()]).await;
+        (
+            register_test_worker(port, "drawn", "existing"),
+            register_test_worker(port, "drawn", "web"),
+        )
+    };
+    let (output, (existing, web)) =
+        tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(add, ready) })
+            .await
+            .expect("iii call compose::add ended");
+    let output = output.expect("iii call ran");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "{:?}: {stderr}", output.status);
+    assert!(
+        output.stdout.is_empty(),
+        "the result is printed only with --print-result"
+    );
+    assert!(
+        !stderr.contains('\x1b'),
+        "a pipe gets no escape sequence: {stderr:?}"
+    );
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.first(), Some(&"adding 1 worker"), "{stderr}");
+    assert!(lines.contains(&"web: starting worker"), "{stderr}");
+    assert!(
+        lines.iter().any(|line| line.starts_with("web: ready (")),
+        "{stderr}"
+    );
+    assert!(
+        lines
+            .last()
+            .is_some_and(|line| line.starts_with("✓ all requested workers are ready (")),
+        "{stderr}"
+    );
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains("  web:\n"),
+        "the add edited the file"
+    );
+
+    existing.shutdown_async().await;
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn iii_call_exits_with_1_when_a_drawn_add_fails() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let existing_started = tmp.path().join("workers/existing/started");
+    let file = project(
+        tmp.path(),
+        &drawn_compose("drawn-failure"),
+        &["existing", "broken"],
+    );
+
+    let file_arg = format!("file={}", file.display());
+    let workers = json!({
+        "workers": [{
+            "worker": "./workers/broken",
+            // Required: a worker that is not only leaves the add partial, and exits 0.
+            "required": true,
+            "scripts": { "run": "exit 1" },
+            "startup_timeout": "1s",
+        }]
+    })
+    .to_string();
+    let add = iii_call(port, &["compose::add", &file_arg, "--json", &workers]).output();
+    let ready = async {
+        wait_for_start_markers(&[existing_started.as_path()]).await;
+        register_test_worker(port, "drawn-failure", "existing")
+    };
+    let (output, existing) =
+        tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(add, ready) })
+            .await
+            .expect("iii call compose::add ended");
+    let output = output.expect("iii call ran");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.starts_with("broken: failed: ")),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("✗ one or more workers failed ("),
+        "{stderr}"
+    );
+    let error = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Error: "))
+        .expect("iii call reports the failure");
+    let error: Value = serde_json::from_str(error).expect("one line of JSON in a pipe");
+    assert!(
+        error["code"].as_str().is_some_and(|code| !code.is_empty()),
+        "{error}"
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.starts_with("one or more workers failed")),
+        "{error}"
+    );
+
+    existing.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_starts_a_managed_project_declared_with_null_containers() {
     isolate_state();
