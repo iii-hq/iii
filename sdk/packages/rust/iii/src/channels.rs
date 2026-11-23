@@ -716,9 +716,10 @@ mod end_of_stream_tests {
             ws.send(WsMessage::Binary(sent.into())).await.unwrap();
             ws.close(None).await.unwrap();
         });
-        let reader = ChannelReader::new(&format!("ws://{address}"), &channel_ref());
-        assert_eq!(reader.read_all().await.unwrap(), body);
+        let (bytes, error) = collect(read_frames(url(address), HashMap::new())).await;
         server.await.unwrap();
+        assert!(error.is_none(), "{error:?}");
+        assert_eq!(bytes, body);
     }
 
     // The engine sends 1011 when the writer aborted: what was read is not the
