@@ -299,6 +299,24 @@ test("sitemap covers the indexable surfaces with the load-bearing URL shapes", a
   }
 })
 
+// --- robots.txt -------------------------------------------------------------
+
+test("robots.txt keeps every crawler group off the registry's counted installers", async () => {
+  // A crawler reads only the group that names it, so a group without these
+  // lines would let that crawler count registry downloads.
+  const groups = (await read("robots.txt")).split(/^(?=User-agent:)/m).slice(1)
+  // The wildcard group covers every crawler that no other group names.
+  assert.ok(
+    groups.some((group) => group.split("\n", 1)[0].trim() === "User-agent: *"),
+    "robots.txt has no User-agent: * group",
+  )
+  for (const group of groups) {
+    const agent = group.split("\n", 1)[0]
+    assert.match(group, /^Disallow: \/registry\/install\/$/m, `${agent} may fetch /registry/install/`)
+    assert.match(group, /^Disallow: \/registry\/api\/install\/$/m, `${agent} may fetch /registry/api/install/`)
+  }
+})
+
 test("robots.txt keeps the roadmap out of every crawler block and points at the sitemap", async () => {
   const robots = await read("robots.txt")
   const blocks = robots.split(/\n(?=User-agent:)/).filter((b) => b.startsWith("User-agent:"))

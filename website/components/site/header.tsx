@@ -18,6 +18,7 @@ import {
   IconStar,
   IconX,
 } from '@/components/icons/iconly'
+import { SeasonalLink } from '@/components/seasonal/seasonal-link'
 import { buttonVariants } from '@/components/ui/button'
 import { useLiveCommunityStats } from '@/hooks/use-live-community-stats'
 import type { CommunityStats } from '@/lib/community'
@@ -116,9 +117,15 @@ export function Header({ stats: buildStats }: { stats: CommunityStats }) {
           {/* Phones: a 48px bar, and the logo and the menu icon sit the same 14px in from each end (the icon is 16px
               inside a 36px button, so 4px of padding puts its lines 14px in). Wider screens keep the 56px bar. */}
           <div className="flex h-12 items-center gap-2 pr-1 pl-3.5 sm:h-14 sm:pr-2 sm:pl-4 md:pl-5">
-            <a href="/" aria-label="iii home" className={cn('mr-3 flex items-center rounded-md', focusRing)}>
+            {/* Wears a seasonal mark during its date window (Thanksgiving week), playing on its own every few seconds. */}
+            <SeasonalLink
+              href="/"
+              label="iii home"
+              size={24}
+              className={cn('mr-3 flex items-center rounded-md', focusRing)}
+            >
               <NavLogo />
-            </a>
+            </SeasonalLink>
 
             <DesktopNav community={community} />
 
