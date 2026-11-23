@@ -485,27 +485,9 @@ fn detect_timezone() -> String {
     std::env::var("TZ").unwrap_or_else(|_| "Unknown".to_string())
 }
 
-/// Environment variables that mark a CI runner. Public so a test that needs to
-/// look like a developer machine can clear the whole set instead of keeping its
-/// own copy, which would drift and pass locally while failing on a runner.
-pub const CI_ENV_VARS: &[&str] = &[
-    "CI",
-    "GITHUB_ACTIONS",
-    "GITLAB_CI",
-    "CIRCLECI",
-    "JENKINS_URL",
-    "TRAVIS",
-    "BUILDKITE",
-    "TF_BUILD",
-    "CODEBUILD_BUILD_ID",
-    "BITBUCKET_BUILD_NUMBER",
-    "DRONE",
-    "TEAMCITY_VERSION",
-];
-
-pub fn is_ci_environment() -> bool {
-    CI_ENV_VARS.iter().any(|var| std::env::var(var).is_ok())
-}
+/// The CI runner check lives in compose, which tells the registry that an
+/// install comes from CI; telemetry turns itself off on the same list.
+pub use iii_compose::ci::{CI_ENV_VARS, is_ci_environment};
 
 /// True when `III_TELEMETRY_ENABLED` is set to a value that reads as off.
 /// Accepts `false`, `0`, `no`, or `off` case-insensitively, ignoring
@@ -709,26 +691,11 @@ state:
     #[test]
     #[serial]
     fn test_resolve_execution_context_prefers_explicit_env() {
-        const CI_VARS: &[&str] = &[
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-
         let saved: Vec<(&str, Option<String>)> =
-            CI_VARS.iter().map(|v| (*v, env::var(v).ok())).collect();
+            CI_ENV_VARS.iter().map(|v| (*v, env::var(v).ok())).collect();
 
         unsafe {
-            for var in CI_VARS {
+            for var in CI_ENV_VARS {
                 env::remove_var(var);
             }
             env::set_var(EXECUTION_CONTEXT_ENV, "docker");
@@ -886,21 +853,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_ci_var() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }
@@ -923,21 +876,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_github_actions() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }
@@ -958,21 +897,7 @@ state:
     #[test]
     #[serial]
     fn test_is_ci_environment_detects_gitlab_ci() {
-        let ci_vars = [
-            "CI",
-            "GITHUB_ACTIONS",
-            "GITLAB_CI",
-            "CIRCLECI",
-            "JENKINS_URL",
-            "TRAVIS",
-            "BUILDKITE",
-            "TF_BUILD",
-            "CODEBUILD_BUILD_ID",
-            "BITBUCKET_BUILD_NUMBER",
-            "DRONE",
-            "TEAMCITY_VERSION",
-        ];
-        for var in &ci_vars {
+        for var in CI_ENV_VARS {
             unsafe {
                 env::remove_var(var);
             }

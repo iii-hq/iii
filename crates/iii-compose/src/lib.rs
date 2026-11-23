@@ -17,6 +17,7 @@
 //! they are ready, and adopts whatever survived a restart.
 
 pub mod build;
+pub mod ci;
 pub mod cli;
 pub mod config;
 pub mod configuration;
