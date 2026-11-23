@@ -5769,13 +5769,31 @@ containers:
             tokio::spawn(async move { daemon.build(Some(&path), worker, operation.into()).await })
         };
         let started = dir.path().join("slow/started");
-        let wait_started = || async {
+        /// Waits for `slow/started`, at most 30 s: `false` when the build ended without it.
+        async fn wait_started<T>(
+            started: &std::path::Path,
+            task: &tokio::task::JoinHandle<T>,
+        ) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while !started.exists() {
+                if task.is_finished() {
+                    return false;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the build did not write slow/started within 30s"
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             }
-        };
+            true
+        }
         let task = background("all", None);
-        wait_started().await;
+        if !wait_started(&started, &task).await {
+            panic!(
+                "the build ended before writing slow/started: {:?}",
+                task.await
+            );
+        }
         let began = std::time::Instant::now();
         daemon.down(Some(&path), None, "down".into()).await.unwrap();
         let run = task.await.unwrap().unwrap();
@@ -5790,7 +5808,12 @@ containers:
             .await
             .unwrap();
         let task = background("cancelled", Some("slow"));
-        wait_started().await;
+        if !wait_started(&started, &task).await {
+            panic!(
+                "the build ended before writing slow/started: {:?}",
+                task.await
+            );
+        }
         let began = std::time::Instant::now();
         operation.cancel();
         let run = task.await.unwrap().unwrap();
