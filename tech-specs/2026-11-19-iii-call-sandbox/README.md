@@ -67,8 +67,7 @@ mode branch.
 - **Bound in the payload.** Before the call, `iii call` reads the function's request schema from
   `engine::functions::info`, as `--help` already does. An `OutputStream` field named `stdout` gets
   a sink that writes to this process's stdout, `stderr` to its stderr, and an `InputStream` field
-  named `stdin` reads this process's stdin. `--stdout <field>`, `--stderr <field>` and
-  `--stdin <field>` bind other fields.
+  named `stdin` reads this process's stdin. Only these three names are bound.
 - **Followed in the result.** An `InputStream` at `/stdout` or `/stderr` of the result is copied
   to that descriptor until it ends. `--no-follow` binds no stream and follows none: the call only
   runs, and its result JSON shows the refs, as today.
@@ -132,7 +131,6 @@ entry that is not one, is a usage error. `iii call --help` documents the variabl
 
 | Flag or variable                          | Default                                              |
 | ----------------------------------------- | ---------------------------------------------------- |
-| `--stdout`, `--stderr`, `--stdin <field>` | `stdout`, `stderr`, `stdin` when the schema has them |
 | `--no-follow`                             | off; on, it binds and follows no stream              |
 | `--print-result`                          | off when a stream is bound or followed               |
 | `III_CALL_DEFAULTS`                       | unset                                                |

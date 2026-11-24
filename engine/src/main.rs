@@ -596,11 +596,10 @@ mod tests {
     }
 
     #[test]
-    fn call_no_follow_refuses_a_bound_field_and_no_bind_is_gone() {
+    fn call_binds_streams_by_name_only() {
         for flag in ["--stdout", "--stderr", "--stdin"] {
-            let parsed =
-                Cli::try_parse_from(["iii", "call", "my::fn", "--no-follow", flag, "data"]);
-            assert!(parsed.is_err(), "{flag} with --no-follow parsed");
+            let parsed = Cli::try_parse_from(["iii", "call", "my::fn", flag, "data"]);
+            assert!(parsed.is_err(), "{flag} parsed");
         }
         assert!(Cli::try_parse_from(["iii", "call", "my::fn", "--no-bind"]).is_err());
     }
@@ -619,7 +618,6 @@ mod tests {
                 assert_eq!(args.address, None);
                 assert_eq!(args.port, None);
                 assert_eq!(args.timeout_ms, None);
-                assert_eq!(args.stdout, None);
                 assert!(!args.no_follow && !args.print_result);
             }
             _ => panic!("expected Call subcommand"),
