@@ -874,7 +874,7 @@ and Compose writes each line into the container's logs with the `[build] ` prefi
 and `contract`.
 
 The function writes no file, since the engine may run on another machine. Once the line exits `0`,
-Compose records `build.json` (see [`build.json`](../using-iii/compose#buildjson)), with
+Compose records `build.json` (see [`build.json`](../reference/vm-workers#buildjson)), with
 `image.build_id` read from the `image.id` the adapter wrote. If the container's package was replaced
 while it built, by an `iii compose build` in another process, Compose records nothing and fails the
 build with `BUILD_INPUT_CHANGED`. Build again.
@@ -1052,7 +1052,7 @@ variables, never the host's environment.
 
 Compose refuses a file before any call: `SANDBOX_WORKER_MISMATCH` for a `worker=` that is not the
 container's own key, `SANDBOX_UNSUPPORTED_PLATFORM` on Windows, and the rules of
-[Compose / VM worker errors](../using-iii/compose#vm-worker-errors).
+[VM worker errors](../reference/vm-workers#error-codes).
 
 ### Adapter contract 1.3
 
@@ -1114,7 +1114,7 @@ the image on start.
 `WorkerSource::Bundle.host_path` is the container's directory in `.iii/workers/`, not the global
 package cache. The adapter copies it into the image at build time, and a run does not mount it. What
 a `path://` copy leaves out, and what a boot removes from `/workspace`, are in
-[Compose / What the guest sees](../using-iii/compose#what-the-guest-sees).
+[What the guest sees](../understanding-iii/compose#what-the-guest-sees).
 
 The data disk stays as the overlay upper when the image under it changes. overlayfs accepts a
 changed lower under an existing upper only without `index`, `metacopy`, `redirect_dir`, and `xino`,
