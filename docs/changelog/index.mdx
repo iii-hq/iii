@@ -132,8 +132,7 @@ type: "reference"
 
   - A `stdout`, `stderr`, or `stdin` stream field of the function's request schema is connected to
     the process's own, and the `stdout` and `stderr` streams of the result are printed until they
-    end. `--stdout`, `--stderr`, and `--stdin` name a stream field with another name. `--no-follow`
-    runs the call without its streams and prints the result JSON, with each stream shown as a ref.
+    end. Only fields with these three names are bound. `--no-follow` runs the call without its streams and prints the result JSON, with each stream shown as a ref.
   - While a stream is carried, the first `Ctrl+C` or `SIGTERM` closes the streams, which asks the
     function to stop, and `iii call` waits for its answer. A second one exits at once.
   - A call to a function that takes a stream has no timeout unless `--timeout-ms` sets one. While a

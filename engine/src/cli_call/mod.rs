@@ -74,30 +74,12 @@ pub struct CallArgs {
     #[arg(long)]
     pub timeout_ms: Option<u64>,
 
-    /// Print the stream the function writes in payload field FIELD to stdout.
-    /// Needed only when that field is not named `stdout`: a field named
-    /// `stdout` is printed without this flag.
-    #[arg(long, value_name = "FIELD")]
-    pub stdout: Option<String>,
-
-    /// Print the stream the function writes in payload field FIELD to stderr.
-    /// Needed only when that field is not named `stderr`: a field named
-    /// `stderr` is printed without this flag.
-    #[arg(long, value_name = "FIELD")]
-    pub stderr: Option<String>,
-
-    /// Feed stdin to the stream the function reads in payload field FIELD.
-    /// Needed only when that field is not named `stdin`: a field named `stdin`
-    /// is fed without this flag.
-    #[arg(long, value_name = "FIELD")]
-    pub stdin: Option<String>,
-
     /// Run the call without its streams: stdin, stdout and stderr are not
     /// connected to the function, and the streams in its result are left
     /// unread. The result JSON is printed, with each stream shown as a ref. A
     /// function that takes a stream still runs with no time limit unless
     /// `--timeout-ms` sets one.
-    #[arg(long, conflicts_with_all = ["stdout", "stderr", "stdin"])]
+    #[arg(long)]
     pub no_follow: bool,
 
     /// Also print the result JSON once the streams end. A call that carries no
@@ -428,18 +410,9 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     let options = exec::Options {
         timeout_ms: args.timeout_ms,
         namespace: args.namespace.as_deref(),
-        bindings: streams::Bindings {
-            stdout: args.stdout.clone(),
-            stderr: args.stderr.clone(),
-            stdin: args.stdin.clone(),
-        },
         follow: !args.no_follow,
         print_result: args.print_result,
     };
-    options
-        .bindings
-        .check(&payload)
-        .map_err(CallCliError::Usage)?;
     exec::invoke(function_path, payload, &address, port, &options).await
 }
 
@@ -862,9 +835,6 @@ mod tests {
             timeout_ms: Some(800),
             help: false,
             namespace: None,
-            stdout: None,
-            stderr: None,
-            stdin: None,
             no_follow: false,
             print_result: false,
         };
@@ -888,9 +858,6 @@ mod tests {
             timeout_ms: Some(800),
             help: false,
             namespace: None,
-            stdout: None,
-            stderr: None,
-            stdin: None,
             no_follow: false,
             print_result: false,
         };
@@ -921,9 +888,6 @@ mod tests {
             timeout_ms: Some(30_000),
             help: false,
             namespace: None,
-            stdout: None,
-            stderr: None,
-            stdin: None,
             no_follow: false,
             print_result: false,
         };

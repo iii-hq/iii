@@ -595,23 +595,11 @@ async fn a_failed_call_prints_its_error_on_one_line() {
 async fn usage_errors_exit_with_2_before_any_call() {
     const NOWHERE: &str = "ws://127.0.0.1:9";
     let cwd = tempfile::tempdir().unwrap();
-    let cases: &[(&str, &[&str], &str)] = &[
-        (
-            NOWHERE,
-            &["cli-streams::lines", "--json", "[1]", "--stdout", "out"],
-            "a stream can only be bound in an object payload",
-        ),
-        (
-            NOWHERE,
-            &["cli-streams::echo", "--stdout", "io", "--stdin", "io"],
-            "--stdout and --stdin both bind the field \"io\"",
-        ),
-        (
-            "http://localhost",
-            &["cli-streams::lines"],
-            "must start with ws://",
-        ),
-    ];
+    let cases: &[(&str, &[&str], &str)] = &[(
+        "http://localhost",
+        &["cli-streams::lines"],
+        "must start with ws://",
+    )];
     for (engine, args, expected) in cases {
         let out = output(iii_call(engine, cwd.path(), args)).await;
         let stderr = text(&out.stderr);
