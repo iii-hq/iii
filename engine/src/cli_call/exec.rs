@@ -65,11 +65,11 @@ impl Budget {
     }
 
     /// The timeout of the invocation: what is left of `--timeout-ms`, else of the 30 s default,
-    /// or no limit for a call that binds a stream and names none.
-    fn call_timeout(&self, binds_stream: bool) -> u64 {
+    /// or no limit for a call to a function that takes a stream, when it names none.
+    fn call_timeout(&self, takes_stream: bool) -> u64 {
         match self.limit_ms {
             Some(limit) => self.left_of(limit),
-            None if binds_stream => NO_TIMEOUT_MS,
+            None if takes_stream => NO_TIMEOUT_MS,
             None => self.left_of(DEFAULT_TIMEOUT_MS),
         }
     }
@@ -98,14 +98,13 @@ async fn within<T>(budget: &Budget, setup: impl Future<Output = T>) -> Option<T>
 
 /// How one invocation runs.
 pub struct Options<'a> {
-    /// `--timeout-ms`: `None` is 30 s, or no limit for a call that binds a stream.
+    /// `--timeout-ms`: `None` is 30 s, or no limit for a call to a function that takes a stream.
     pub timeout_ms: Option<u64>,
     pub namespace: Option<&'a str>,
     /// The fields `--stdout`, `--stderr` and `--stdin` bound.
     pub bindings: Bindings,
-    /// Binds the descriptors no flag bound from the function's schema (`--no-bind` turns it off).
-    pub auto_bind: bool,
-    /// Follows the streams of the result (`--no-follow` turns it off).
+    /// Carries the call's streams: binds the descriptors no flag bound from the function's schema
+    /// and follows the streams of the result. `--no-follow` turns both off.
     pub follow: bool,
     /// Prints the result after carried streams ended (`--print-result`).
     pub print_result: bool,
@@ -116,6 +115,18 @@ pub struct Options<'a> {
 /// hold the name, and the worker the script starts (a VM's guest) would be refused with
 /// `WORKER_NAMESPACE_CONFLICT`. The call keeps its own name, and names its namespace itself.
 pub(crate) const CALL_IDENTITY: WorkerIdentityMode = WorkerIdentityMode::Explicit;
+
+/// The streams a call carries, and whether its function takes one. `--no-follow` carries none,
+/// but a function that takes a stream still runs as long as it does.
+fn carried_streams(bindings: Bindings, follow: bool) -> (Bindings, bool) {
+    let takes_stream = !bindings.is_empty();
+    let carried = if follow {
+        bindings
+    } else {
+        Bindings::default()
+    };
+    (carried, takes_stream)
+}
 
 /// Metadata for the call connection. Registering under a marked name is how
 /// the engine counts this command in the heartbeat's CLI aggregate: the CLI
@@ -175,7 +186,9 @@ async fn call(
     // has, and a script's `iii call sandbox::build` would look in its project's namespace.
     let namespace = options.namespace.unwrap_or(DEFAULT_NAMESPACE);
     let mut bindings = options.bindings.clone();
-    if options.auto_bind && payload.is_object() {
+    // Read with `--no-follow` too: a function that takes a stream runs as long as it does, and its
+    // call keeps no default limit even when it carries none.
+    if payload.is_object() {
         let lookup_timeout = budget.lookup_timeout();
         match request_schema(iii, function_path, namespace, lookup_timeout).await {
             Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
@@ -184,13 +197,22 @@ async fn call(
                 if let Err(error) = after_failed_lookup(error) {
                     return Err(report_call_error(error));
                 }
-                eprintln!(
-                    "warning: the request schema of {function_path} did not arrive in time; \
-                     only the streams --stdout, --stderr and --stdin name are bound"
-                );
+                if options.follow {
+                    eprintln!(
+                        "warning: the request schema of {function_path} did not arrive in time; \
+                         only the streams --stdout, --stderr and --stdin name are bound"
+                    );
+                } else if options.timeout_ms.is_none() {
+                    eprintln!(
+                        "warning: the request schema of {function_path} did not arrive in time; \
+                         the call has the default {} s limit",
+                        DEFAULT_TIMEOUT_MS / 1000
+                    );
+                }
             }
         }
     }
+    let (bindings, takes_stream) = carried_streams(bindings, options.follow);
 
     let mut carried = Carried::default();
     if !bindings.is_empty() {
@@ -214,7 +236,7 @@ async fn call(
         }
         interrupt = Some(armed(interrupt.take())?);
     }
-    let timeout_ms = budget.call_timeout(!bindings.is_empty());
+    let timeout_ms = budget.call_timeout(takes_stream);
     let request = CallRequest {
         function_id: function_path.to_string(),
         payload,
@@ -432,6 +454,26 @@ mod tests {
             started: Instant::now() - Duration::from_millis(ms),
             limit_ms,
         }
+    }
+
+    #[test]
+    fn no_follow_carries_no_stream_but_a_streaming_call_keeps_no_limit() {
+        let from_schema = Bindings {
+            stdout: Some("stdout".into()),
+            ..Bindings::default()
+        };
+        assert_eq!(
+            carried_streams(from_schema.clone(), true),
+            (from_schema.clone(), true)
+        );
+        assert_eq!(
+            carried_streams(from_schema, false),
+            (Bindings::default(), true)
+        );
+        assert_eq!(
+            carried_streams(Bindings::default(), false),
+            (Bindings::default(), false)
+        );
     }
 
     #[test]
