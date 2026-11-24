@@ -181,10 +181,6 @@ type: "reference"
     `helpers/http`, `Wrap` takes only the handler, `NewStreamResponse` takes an `*iii.OutputStream`,
     the `RequestBody` and `Response` fields are streams, and `ErrResponseClosed` is removed: a write
     after `Close` fails with `STREAM_CLOSED`.
-  - **`iii sandbox`:** `iii sandbox run`, the 0.26 opt-in for a VM in `scripts.run`, and
-    `iii sandbox destroy`. Compose rewrites `scripts.run: iii sandbox run` into
-    `iii call sandbox::start worker=<container>`. Destroy a VM with
-    `iii call compose::remove worker=<container> prune=true`.
 
   <Callout type="warning">
     A worker you move to a 0.27 SDK must replace its channel code in the same change: the old names
