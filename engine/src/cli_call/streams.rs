@@ -70,27 +70,6 @@ impl Bindings {
         self.stdout.is_none() && self.stderr.is_none() && self.stdin.is_none()
     }
 
-    /// Refuses, before any stream is opened, the bindings no call can carry: a stream bound in a
-    /// payload that is not an object, or two descriptors bound to one field, where the second
-    /// ref would overwrite the first after both pipes were opened.
-    pub fn check(&self, payload: &Value) -> anyhow::Result<()> {
-        if !self.is_empty() && !payload.is_object() {
-            anyhow::bail!("a stream can only be bound in an object payload");
-        }
-        let mut seen: Vec<(Stdio, &str)> = Vec::new();
-        for (stdio, field) in self.fields() {
-            if let Some((first, _)) = seen.iter().find(|(_, taken)| *taken == field) {
-                anyhow::bail!(
-                    "--{} and --{} both bind the field {field:?}",
-                    first.default_field(),
-                    stdio.default_field()
-                );
-            }
-            seen.push((stdio, field));
-        }
-        Ok(())
-    }
-
     fn fields(&self) -> impl Iterator<Item = (Stdio, &str)> {
         [
             (Stdio::Stdout, &self.stdout),
@@ -109,20 +88,16 @@ impl Bindings {
         }
     }
 
-    /// Binds the descriptors no flag bound to the fields the function's request schema declares:
-    /// an `OutputStream` named `stdout` or `stderr`, an `InputStream` named `stdin`. A field the
-    /// payload already sets, or one a flag took, is left alone.
+    /// Binds the fields the function's request schema declares: an `OutputStream` named `stdout`
+    /// or `stderr`, an `InputStream` named `stdin`. A field the payload already sets is left
+    /// alone.
     pub fn complete_from_schema(&mut self, schema: &Value, payload: &Value) {
         let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
             return;
         };
-        let taken: Vec<String> = self.fields().map(|(_, field)| field.to_string()).collect();
         for stdio in [Stdio::Stdout, Stdio::Stderr, Stdio::Stdin] {
             let field = stdio.default_field();
-            if self.slot(stdio).is_some()
-                || taken.iter().any(|taken| taken == field)
-                || payload.get(field).is_some()
-            {
+            if self.slot(stdio).is_some() || payload.get(field).is_some() {
                 continue;
             }
             if properties
@@ -612,56 +587,12 @@ mod tests {
     }
 
     #[test]
-    fn flags_and_payload_fields_win_over_the_schema() {
-        let mut bindings = Bindings {
-            stdout: Some("logs".into()),
-            ..Default::default()
-        };
+    fn a_payload_field_wins_over_the_schema() {
+        let mut bindings = Bindings::default();
         bindings.complete_from_schema(&schema(), &json!({ "stderr": "given" }));
-        assert_eq!(bindings.stdout.as_deref(), Some("logs"));
+        assert_eq!(bindings.stdout.as_deref(), Some("stdout"));
         assert_eq!(bindings.stderr, None, "the payload already sets stderr");
         assert_eq!(bindings.stdin.as_deref(), Some("stdin"));
-
-        // A field one flag took is not bound again to another descriptor.
-        let mut bindings = Bindings {
-            stderr: Some("stdout".into()),
-            ..Default::default()
-        };
-        bindings.complete_from_schema(&schema(), &json!({}));
-        assert_eq!(bindings.stdout, None);
-    }
-
-    #[test]
-    fn a_binding_needs_an_object_payload() {
-        let bindings = Bindings {
-            stdout: Some("out".into()),
-            ..Default::default()
-        };
-        assert!(bindings.check(&json!({})).is_ok());
-        let error = bindings.check(&json!([1])).unwrap_err().to_string();
-        assert!(error.contains("object payload"), "{error}");
-        assert!(
-            Bindings::default().check(&json!([1])).is_ok(),
-            "a call that binds nothing takes any payload"
-        );
-    }
-
-    #[test]
-    fn two_descriptors_cannot_bind_one_field() {
-        let bindings = Bindings {
-            stdout: Some("io".into()),
-            stdin: Some("io".into()),
-            ..Default::default()
-        };
-        let error = bindings.check(&json!({})).unwrap_err().to_string();
-        assert_eq!(error, "--stdout and --stdin both bind the field \"io\"");
-        // One descriptor may still replace a value the payload sets.
-        let bindings = Bindings {
-            stdout: Some("io".into()),
-            stdin: Some("input".into()),
-            ..Default::default()
-        };
-        assert!(bindings.check(&json!({ "io": "given" })).is_ok());
     }
 
     #[test]

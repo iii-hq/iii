@@ -101,10 +101,8 @@ pub struct Options<'a> {
     /// `--timeout-ms`: `None` is 30 s, or no limit for a call to a function that takes a stream.
     pub timeout_ms: Option<u64>,
     pub namespace: Option<&'a str>,
-    /// The fields `--stdout`, `--stderr` and `--stdin` bound.
-    pub bindings: Bindings,
-    /// Carries the call's streams: binds the descriptors no flag bound from the function's schema
-    /// and follows the streams of the result. `--no-follow` turns both off.
+    /// Carries the call's streams: binds the stream fields the function's schema declares and
+    /// follows the streams of the result. `--no-follow` turns both off.
     pub follow: bool,
     /// Prints the result after carried streams ended (`--print-result`).
     pub print_result: bool,
@@ -185,7 +183,7 @@ async fn call(
     // the SDK would take the namespace of `III_NAMESPACE`, which every process Compose starts
     // has, and a script's `iii call sandbox::build` would look in its project's namespace.
     let namespace = options.namespace.unwrap_or(DEFAULT_NAMESPACE);
-    let mut bindings = options.bindings.clone();
+    let mut bindings = Bindings::default();
     // Read with `--no-follow` too: a function that takes a stream runs as long as it does, and its
     // call keeps no default limit even when it carries none.
     if payload.is_object() {
@@ -200,7 +198,7 @@ async fn call(
                 if options.follow {
                     eprintln!(
                         "warning: the request schema of {function_path} did not arrive in time; \
-                         only the streams --stdout, --stderr and --stdin name are bound"
+                         the call binds no stream"
                     );
                 } else if options.timeout_ms.is_none() {
                     eprintln!(
@@ -216,7 +214,7 @@ async fn call(
 
     let mut carried = Carried::default();
     if !bindings.is_empty() {
-        // The bindings were checked before the engine was reached: a stream that cannot be
+        // A stream that cannot be
         // opened now is the engine's failure, not the arguments'. Opening them spends the
         // call's budget too: once it ran out, the streams already open are closed and the call
         // is not sent.
@@ -390,8 +388,8 @@ async fn request_schema(
 }
 
 /// What a failed schema lookup means for the call. A timeout says nothing about the function,
-/// which may answer promptly while the engine's metadata is slow: the call goes ahead with the
-/// streams the flags bound, in the half of the budget the lookup left. Any other failure is the
+/// which may answer promptly while the engine's metadata is slow: the call goes ahead without
+/// streams, in the half of the budget the lookup left. Any other failure is the
 /// connection's, which the call could not use either: the same error, once, instead of a second
 /// wait.
 fn after_failed_lookup(error: Error) -> Result<(), Error> {
