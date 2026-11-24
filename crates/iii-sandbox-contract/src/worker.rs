@@ -1,8 +1,8 @@
 // Copyright Motia LLC and/or licensed to Motia LLC under one or more
 // contributor license agreements. Licensed under the Elastic License 2.0.
 
-//! Request and response types of the `<adapter>::worker::*` operations. `iii sandbox` calls
-//! them to run one Compose container's VM through the adapter.
+//! Request and response types of the `<adapter>::worker::*` operations. `sandbox::build` and
+//! `sandbox::start` call them to run one Compose container's VM through the adapter.
 //!
 //! Every request carries `auth`: the project token, or, with
 //! [`FEATURE_SCOPED_AUTH`](crate::FEATURE_SCOPED_AUTH), the token scoped to the VM's state key

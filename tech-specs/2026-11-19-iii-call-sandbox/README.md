@@ -54,8 +54,7 @@ onboarding:
 - Everything else the call needs comes from Compose (4.2), so the line stays this short. Run by
   hand, outside Compose, the call takes every field as an argument:
   `iii call sandbox::start --help` lists them.
-- The rewrite of 0.26 files writes these forms, and also rewrites the forms of the explicit VM mode
-  (`iii sandbox build`, `iii sandbox run [--command '<c>']`) that the branch wrote before this spec.
+- The rewrite of 0.26 files writes these forms.
 
 ## 3. `iii call`
 

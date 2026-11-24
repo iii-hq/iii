@@ -6504,8 +6504,8 @@ containers:
         .await;
     }
 
-    /// An update that names a generated adapter, as a refusal of `iii sandbox
-    /// run` advises, asks for a version and not for the adapter.
+    /// An update that names a generated adapter, as a refusal of
+    /// `sandbox::start` advises, asks for a version and not for the adapter.
     #[tokio::test]
     async fn an_update_by_name_leaves_a_generated_adapter_generated() {
         let server = crate::sandbox::tests::adapter_registry(&adapter_archive()).await;
@@ -7540,7 +7540,7 @@ pub(crate) mod findings_lifecycle_tests {
         }
         let path = compose_path(
             dir.path(),
-            "containers:\n  vm: {worker: path://./vm, scripts: {run: iii sandbox run}}\n  host: {worker: path://./host}\n  sb: {worker: path://./sb, start_after: [host]}\n  web: {worker: path://./web}\n",
+            "containers:\n  vm: {worker: path://./vm}\n  host: {worker: path://./host}\n  sb: {worker: path://./sb, start_after: [host]}\n  web: {worker: path://./web}\n",
         );
         let file = crate::ComposeFile::load(&path).unwrap();
         let order = super::removal_order(

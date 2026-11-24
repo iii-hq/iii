@@ -490,7 +490,7 @@ pub(crate) fn is_generated_container(text: &str, key: &str) -> Result<bool> {
 pub(crate) struct VmRewrite {
     /// The whole file, rewritten.
     pub text: String,
-    /// Whether a command of the container's own became `iii sandbox run --command`.
+    /// Whether a command of the container's own became the guest command of `sandbox::start`.
     pub wrapped: bool,
 }
 
@@ -509,8 +509,9 @@ pub(crate) fn sandbox_guest_command(run: &str) -> Option<(String, String)> {
 }
 
 /// Writes the explicit VM mode of container `key` (spec 7.1): `adapter` in `start_after`,
-/// `scripts.build: iii sandbox build` when it has no `scripts.build`, and `scripts.run: iii
-/// sandbox run` when it has none, or `iii sandbox run --command` around a command of its own.
+/// `scripts.build: iii call sandbox::build worker=<key>` when it has no `scripts.build`, and
+/// `scripts.run: iii call sandbox::start worker=<key>` when it has none, with `command=` around a
+/// command of its own.
 /// Values are read as written, before interpolation, so no variable is expanded into the file.
 /// Every other key, the comments and the rest of the file stay as they are, except a comment on
 /// an inline `scripts: {...}` line, which is rewritten as a block. `None` when nothing is missing.
@@ -525,20 +526,13 @@ pub(crate) fn explicit_vm_mode(text: &str, key: &str, adapter: &str) -> Result<O
     let declared_run = declared("run").map(scalar_text);
     let (run, wrapped) = match &declared_run {
         None => (crate::sandbox::start_line(key, None), false),
-        // The form written before `iii call` streamed, with its guest command if it had one.
-        Some(run) if crate::sandbox::is_legacy_sandbox(run) => (
-            crate::sandbox::start_line(key, crate::sandbox::legacy_guest_command(run).as_deref()),
-            false,
-        ),
         Some(run) if crate::sandbox::is_sandbox_run(run) => (run.clone(), false),
         Some(run) => (sandbox_run_command(key, run), true),
     };
-    let set_run = declared_run.as_deref().is_none_or(|run| {
-        !crate::sandbox::is_sandbox_run(run) || crate::sandbox::is_legacy_sandbox(run)
-    });
-    let set_build = declared("build")
-        .map(scalar_text)
-        .is_none_or(|build| crate::sandbox::is_legacy_sandbox(&build));
+    let set_run = declared_run
+        .as_deref()
+        .is_none_or(|run| !crate::sandbox::is_sandbox_run(run));
+    let set_build = declared("build").is_none();
     let build_script = crate::sandbox::build_line(key);
     let add_adapter = !fields
         .get("start_after")
@@ -2313,7 +2307,7 @@ mod tests {
         let worker = configured(serde_json::json!({
             "worker": "package://tool@1.0.0",
             "runtime": {"base_image": "docker.io/library/alpine:3.20"},
-            "scripts": {"build": "iii sandbox build", "run": "iii sandbox run"}
+            "scripts": {"build": "iii call sandbox::build worker=tool", "run": "iii call sandbox::start worker=tool"}
         }));
         let out = changed("containers:\n  api:\n    worker: path://./api\n", &worker);
         let file = crate::config::ComposeFile::parse(&out, "/tmp/worker-compose.yaml").unwrap();
@@ -4721,17 +4715,17 @@ containers:
         }
     }
 
-    /// The 0.26 opt-in only gains `scripts.build`; an inline `scripts` becomes a block, and a
-    /// `build:` without a value counts as absent.
+    /// A container that already runs `sandbox::start` only gains `scripts.build`; an inline
+    /// `scripts` becomes a block, and a `build:` without a value counts as absent.
     #[test]
     fn only_the_missing_pieces_are_added() {
-        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run}\n";
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii call sandbox::start worker=opt}\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
             "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts:\n      run: iii call sandbox::start worker=opt\n      build: iii call sandbox::build worker=opt\n"
         );
-        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: []\n    scripts:\n      build:\n      run: iii sandbox run --command 'x'\n";
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: []\n    scripts:\n      build:\n      run: iii call sandbox::start worker=opt command=x\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
@@ -4751,7 +4745,7 @@ containers:
             "containers:\n  link: # the link\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link\n"
         );
 
-        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii sandbox run} # opt-in\n";
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: iii call sandbox::start worker=opt} # opt-in\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert_eq!(
             rewrite.text,
@@ -4805,7 +4799,7 @@ containers:
             rewrite.text
         );
 
-        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: \"iii sandbox run --command 'a #1'\"}\n";
+        let text = "containers:\n  opt:\n    worker: path://./opt\n    start_after: [sb]\n    scripts: {run: \"iii call sandbox::start worker=opt 'command=a #1'\"}\n";
         let rewrite = explicit_vm_mode(text, "opt", "sb").unwrap().unwrap();
         assert!(rewrite.text.contains("    scripts:\n"), "{}", rewrite.text);
         assert!(!rewrite.text.contains("#1\"}"), "{}", rewrite.text);
@@ -4882,19 +4876,5 @@ containers:
                 );
             }
         }
-    }
-
-    /// The forms written before `iii call` streamed become their `iii call` lines, the guest
-    /// command of a `path://` worker kept; the rewrite then has nothing left to do.
-    #[test]
-    fn the_iii_sandbox_forms_become_iii_call_lines() {
-        let text = "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii sandbox build\n      run: iii sandbox run --command 'node .'\n";
-        let rewrite = explicit_vm_mode(text, "link", "sb").unwrap().unwrap();
-        assert!(!rewrite.wrapped);
-        assert_eq!(
-            rewrite.text,
-            "containers:\n  link:\n    worker: path://./link\n    start_after: [sb]\n    scripts:\n      build: iii call sandbox::build worker=link\n      run: iii call sandbox::start worker=link 'command=node .'\n"
-        );
-        assert_eq!(explicit_vm_mode(&rewrite.text, "link", "sb").unwrap(), None);
     }
 }
