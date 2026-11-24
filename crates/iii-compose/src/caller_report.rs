@@ -94,6 +94,65 @@ struct Row {
     began: Instant,
     /// How long it took to finish, once it did.
     took: Option<Duration>,
+    /// What a worker that failed last said, shown under its row once it is final.
+    said: Vec<String>,
+}
+
+/// The most lines of what a failed worker said that its row shows.
+const MAX_SAID: usize = 5;
+
+/// What a failure's row says, and what the worker last said when the error quotes it.
+///
+/// Compose quotes the last lines of a worker that died after `. It last said:`; they are its
+/// reason, so they go under the row. The error of a failed build is the tail of its output, which
+/// the report printed already: its row says the code and the last of those lines.
+fn failure(detail: &str) -> (String, Vec<String>) {
+    if let Some((reason, said)) = detail.split_once(". It last said:") {
+        let said: Vec<String> = said.lines().filter_map(said_line).collect();
+        // The log a tail comes from holds earlier runs too, which repeat their lines: each line is
+        // shown once, where it was last said.
+        let unique: Vec<String> = said
+            .iter()
+            .enumerate()
+            .filter(|(index, line)| !said[index + 1..].contains(line))
+            .map(|(_, line)| line.clone())
+            .collect();
+        let skip = unique.len().saturating_sub(MAX_SAID);
+        return (one_line(reason), unique.into_iter().skip(skip).collect());
+    }
+    let mut lines = detail
+        .lines()
+        .map(printable)
+        .filter(|line| !line.trim().is_empty());
+    let first = lines.next().unwrap_or_default();
+    match (first.split_once(": "), lines.last()) {
+        (Some((code, _)), Some(last)) if is_code(code) => {
+            (format!("{code}: {}", last.trim()), Vec::new())
+        }
+        _ => (one_line(&first), Vec::new()),
+    }
+}
+
+/// One line of a log tail, without the `stdout`/`stderr` record tag the log stores it with.
+fn said_line(line: &str) -> Option<String> {
+    let line = printable(line);
+    let line = line.trim();
+    let line = ["stdout", "stderr"]
+        .iter()
+        .find_map(|tag| {
+            line.strip_prefix(tag)
+                .filter(|rest| rest.starts_with(char::is_whitespace))
+        })
+        .map_or(line, str::trim_start);
+    (!line.is_empty()).then(|| line.to_string())
+}
+
+/// `EXIT_1`, `BUILD_FAILED`: an error code, as a failure's detail starts with one.
+fn is_code(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// The containers of one operation, in the order they started.
@@ -106,16 +165,21 @@ struct Rows {
 
 impl Rows {
     /// Applies one container event. Returns the row when what it says changed.
-    fn apply(&mut self, key: &str, phase: &str, detail: &str, now: Instant) -> Option<&Row> {
-        let detail = one_line(detail);
+    fn apply(&mut self, key: &str, phase: &str, raw: &str, now: Instant) -> Option<&Row> {
+        let detail = one_line(raw);
         let existing = self.rows.iter().position(|row| row.key == key);
+        let mut said = Vec::new();
         let state = match phase {
             // The plan, before anything moves: a row appears once its container does.
             "waiting" => return None,
             "ready" if detail == ALREADY_RUNNING && existing.is_none() => return None,
             "ready" | "stopped" | "removed" => RowState::Done(phase.to_string()),
             "updated" | "unchanged" | "built" | "skipped" => RowState::Done(detail),
-            "failed" => RowState::Failed(detail),
+            "failed" => {
+                let (headline, lines) = failure(raw);
+                said = lines;
+                RowState::Failed(headline)
+            }
             "rolled_back" => RowState::Undone("rolled back".to_string()),
             _ => RowState::Working(detail),
         };
@@ -125,6 +189,7 @@ impl Rows {
                 state: RowState::Working(String::new()),
                 began: now,
                 took: None,
+                said: Vec::new(),
             });
             self.rows.len() - 1
         });
@@ -132,6 +197,7 @@ impl Rows {
         if row.state == state {
             return None;
         }
+        row.said = said;
         row.took = match state {
             RowState::Working(_) => None,
             RowState::Done(_) | RowState::Failed(_) | RowState::Undone(_) => {
@@ -227,7 +293,14 @@ fn plain_line(row: &Row) -> String {
             row.key,
             format_elapsed(row.took.unwrap_or_default())
         ),
-        RowState::Failed(detail) => format!("{}: failed: {detail}", row.key),
+        RowState::Failed(detail) => {
+            let mut line = format!("{}: failed: {detail}", row.key);
+            for said in &row.said {
+                line.push_str("\n    ");
+                line.push_str(said);
+            }
+            line
+        }
         RowState::Undone(detail) => format!("{}: {detail}", row.key),
     }
 }
@@ -375,6 +448,9 @@ impl CallerReport {
             for row in &self.rows.rows {
                 out.push_str(&row_line(row, paint, None, now));
                 out.push('\n');
+                for said in &row.said {
+                    out.push_str(&format!("    {}\n", paint.dim(said)));
+                }
             }
         }
         let (mark, text) = match ending {
@@ -777,6 +853,45 @@ mod tests {
     #[test]
     fn a_detail_is_one_line_without_escape_sequences() {
         assert_eq!(one_line("boom \x1b[2J\nIt last said: secret"), "boom  [2J");
+    }
+
+    #[test]
+    fn a_worker_that_died_shows_what_it_last_said_under_its_row() {
+        // As the log stores it, with the lines of an earlier run before this one's.
+        let detail = "container 'api' exited with 1 before it registered. It last said:\n  \
+                      stdout\tapi: loading settings\n  stderr\tapi: DATABASE_URL is not set\n  \
+                      stdout\tapi: loading settings\n  stderr\tapi: DATABASE_URL is not set";
+        let (headline, said) = failure(detail);
+        assert_eq!(
+            headline,
+            "container 'api' exited with 1 before it registered"
+        );
+        assert_eq!(
+            said,
+            ["api: loading settings", "api: DATABASE_URL is not set"]
+        );
+
+        let now = Instant::now();
+        let mut rows = Rows::default();
+        rows.apply("api", "starting", "starting worker", now);
+        let failed = rows.apply("api", "failed", detail, now).unwrap();
+        assert_eq!(
+            plain_line(failed),
+            "api: failed: container 'api' exited with 1 before it registered\n    \
+             api: loading settings\n    api: DATABASE_URL is not set"
+        );
+    }
+
+    #[test]
+    fn a_failed_build_says_its_code_and_its_last_line() {
+        let (headline, said) =
+            failure("EXIT_1: installing dependencies\ncompiling routes\nbuild failed: 1 error");
+        assert_eq!(headline, "EXIT_1: build failed: 1 error");
+        assert!(said.is_empty(), "the build printed its lines already");
+        assert_eq!(
+            failure("startup timed out after 30s"),
+            ("startup timed out after 30s".to_string(), Vec::new())
+        );
     }
 
     #[tokio::test]

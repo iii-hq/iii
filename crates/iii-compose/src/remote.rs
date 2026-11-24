@@ -1466,8 +1466,17 @@ async fn finish_build(
                 operation
                     .finish_with_results(OperationStatus::Failed, detail.clone(), Some(value))
                     .await;
+                // The last line names each failure by its code: the build's own lines, printed
+                // above, say the rest, and the call's error carries all of it.
+                let named: Vec<String> = results
+                    .iter()
+                    .filter_map(|result| {
+                        let error = result.error.as_ref()?;
+                        Some(format!("{} ({})", result.worker, error.code))
+                    })
+                    .collect();
                 return (
-                    Ending::Failed(detail.clone()),
+                    Ending::Failed(format!("builds failed: {}", named.join(", "))),
                     Err(Error::Remote {
                         code,
                         message: detail,
