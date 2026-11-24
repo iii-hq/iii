@@ -318,14 +318,15 @@ well. The call ends once the function answered and its streams ended.
 # The function writes into `stdout`: its lines appear as they come.
 iii call reports::export report_id=r-42
 
-# The function writes its data into a field named `csv`: print that one instead.
-iii call reports::export report_id=r-42 --stdout csv > report.csv
+# Save the output to a file. It is written as it arrives, not at the end.
+iii call reports::export report_id=r-42 > report.csv
 
 # Run the call without its streams and print the result JSON.
 iii call reports::export report_id=r-42 --no-follow
 ```
 
-- `--stdout`, `--stderr`, and `--stdin` are needed only for a stream field with another name.
+- A stream field with another name is bound with `--stdout`, `--stderr`, or `--stdin`. See the
+  [CLI reference](../cli-reference/index#iii-call).
 - A call to a function that takes a stream has no timeout unless you pass `--timeout-ms`, also
   with `--no-follow`.
 - While a stream runs, the result JSON is printed only with `--print-result`, after the streams
