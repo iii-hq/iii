@@ -5,6 +5,11 @@ export const links = {
   manifesto: '/manifesto',
   docs: 'https://iii.dev/docs',
   registry: 'https://iii.dev/registry',
+  /* The iii app (Mac, iPhone, iPad, Android): its launch page lives in the registry app. The Mac link is the
+     registry's counted download of the latest universal DMG, and sends people back to the launch page until the
+     first release is published. */
+  app: 'https://iii.dev/registry/app',
+  appDownloadMac: 'https://iii.dev/registry/app/download/mac',
   blog: '/blog',
   roadmap: '/roadmap',
   benchmarks: '/benchmarks',
