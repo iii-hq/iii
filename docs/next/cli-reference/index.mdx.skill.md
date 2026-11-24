@@ -37,7 +37,9 @@ iii [OPTIONS] [COMMAND]
 
 Call a function on a running iii engine
 
-A `stdout`, `stderr` or `stdin` stream field of the function's request schema is bound to this process's own, and the `stdout` and `stderr` streams of the result are copied out until they end. While a stream is carried, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows) closes the streams, which asks the function to stop, and waits for its answer; a second one exits at once.
+When the function's request schema has a stream field named `stdout` or `stderr` that the function writes, or `stdin` that it reads, the call connects it to its own stdout, stderr or stdin. Streams named `stdout` or `stderr` in the result are printed as well. The call ends once the function answered and its streams ended. `--no-follow` turns all of this off and prints the result JSON instead.
+
+While streams run, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows) asks the function to stop and waits for its answer; a second one exits at once.
 
 III_CALL_DEFAULTS holds a JSON object keyed by namespace, each holding entries keyed by function id: the entry of the called function in the namespace the call resolves in (`default` without `-n`) is the base payload, and `--json` and key=value override its keys. A parent process uses it to hand a call fields that must not appear in its arguments.
 
@@ -58,13 +60,12 @@ iii call [OPTIONS] [FUNCTION_PATH] [KV]...
 | `--engine <URL>` | Engine WebSocket address (`ws://host:port`). Overrides `III_URL` and the working directory's compose file. The local default is used when none of them supplies a URL. Encrypted (`wss://`) connections are not supported |
 | `--address <ADDRESS>` | DEPRECATED: use `--engine ws://host:port`. Engine host address. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else `localhost` |
 | `--port <PORT>` | DEPRECATED: use `--engine ws://host:port`. Engine WebSocket port. Taken from `--engine`, `III_URL` or the working directory's compose file when omitted, else 49134 |
-| `--timeout-ms <TIMEOUT_MS>` | Max time to wait for the invocation result (milliseconds). Defaults to 30000; a call that binds a stream has no limit unless this is set |
-| `--stdout <FIELD>` | Bind this process's stdout to payload field FIELD, a stream the function writes. Without the flag, a `stdout` stream field in the function's request schema is bound |
-| `--stderr <FIELD>` | Bind this process's stderr to payload field FIELD, a stream the function writes. Without the flag, a `stderr` stream field in the function's request schema is bound |
-| `--stdin <FIELD>` | Bind this process's stdin to payload field FIELD, a stream the function reads. Without the flag, a `stdin` stream field in the function's request schema is bound |
-| `--no-bind` | Bind no stream from the function's request schema; `--stdout`, `--stderr` and `--stdin` still bind theirs |
-| `--no-follow` | Leave the `stdout` and `stderr` streams of the result unread: the result shows them as refs. A call that binds a stream prints that result only with `--print-result` |
-| `--print-result` | Print the result JSON after the streams ended. A call that carries no stream always prints it |
+| `--timeout-ms <TIMEOUT_MS>` | How long to wait for the function's answer, in milliseconds. Defaults to 30000. A call to a function that takes a stream has no limit unless this is set: it lasts as long as the function runs |
+| `--stdout <FIELD>` | Print the stream the function writes in payload field FIELD to stdout. Needed only when that field is not named `stdout`: a field named `stdout` is printed without this flag |
+| `--stderr <FIELD>` | Print the stream the function writes in payload field FIELD to stderr. Needed only when that field is not named `stderr`: a field named `stderr` is printed without this flag |
+| `--stdin <FIELD>` | Feed stdin to the stream the function reads in payload field FIELD. Needed only when that field is not named `stdin`: a field named `stdin` is fed without this flag |
+| `--no-follow` | Run the call without its streams: stdin, stdout and stderr are not connected to the function, and the streams in its result are left unread. The result JSON is printed, with each stream shown as a ref. A function that takes a stream still runs with no time limit unless `--timeout-ms` sets one |
+| `--print-result` | Also print the result JSON once the streams end. A call that carries no stream, or runs with `--no-follow`, always prints it |
 | `-n, --namespace <NS>` | Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's `default` namespace, also in a process with `III_NAMESPACE` set (a Compose script); routing is strict, so a function registered in another namespace is only reachable with this flag |
 
 <Note>

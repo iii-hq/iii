@@ -388,11 +388,11 @@ async fn bound_streams_carry_the_output_and_the_input() {
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), "HELLO");
 
-    // `--no-bind` sends no stream, and the function refuses the payload.
+    // `--no-follow` sends no stream, and the function, which needs one, refuses the payload.
     let out = output(iii_call(
         &engine.url,
         cwd.path(),
-        &["cli-streams::lines", "count=1", "--no-bind"],
+        &["cli-streams::lines", "count=1", "--no-follow"],
     ))
     .await;
     assert_eq!(out.status.code(), Some(1));

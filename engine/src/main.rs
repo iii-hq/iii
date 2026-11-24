@@ -138,12 +138,16 @@ struct Cli {
 enum Commands {
     /// Call a function on a running iii engine
     ///
-    /// A `stdout`, `stderr` or `stdin` stream field of the function's request
-    /// schema is bound to this process's own, and the `stdout` and `stderr`
-    /// streams of the result are copied out until they end. While a stream is
-    /// carried, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows) closes the
-    /// streams, which asks the function to stop, and waits for its answer; a
-    /// second one exits at once.
+    /// When the function's request schema has a stream field named `stdout` or
+    /// `stderr` that the function writes, or `stdin` that it reads, the call
+    /// connects it to its own stdout, stderr or stdin. Streams named `stdout`
+    /// or `stderr` in the result are printed as well. The call ends once the
+    /// function answered and its streams ended. `--no-follow` turns all of
+    /// this off and prints the result JSON instead.
+    ///
+    /// While streams run, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows)
+    /// asks the function to stop and waits for its answer; a second one exits
+    /// at once.
     ///
     /// III_CALL_DEFAULTS holds a JSON object keyed by namespace, each holding
     /// entries keyed by function id: the entry of the called function in the
@@ -592,6 +596,16 @@ mod tests {
     }
 
     #[test]
+    fn call_no_follow_refuses_a_bound_field_and_no_bind_is_gone() {
+        for flag in ["--stdout", "--stderr", "--stdin"] {
+            let parsed =
+                Cli::try_parse_from(["iii", "call", "my::fn", "--no-follow", flag, "data"]);
+            assert!(parsed.is_err(), "{flag} with --no-follow parsed");
+        }
+        assert!(Cli::try_parse_from(["iii", "call", "my::fn", "--no-bind"]).is_err());
+    }
+
+    #[test]
     fn call_parses_with_positional_fn_path_only() {
         let cli = Cli::try_parse_from(["iii", "call", "my::fn"])
             .expect("should parse call with fn path only");
@@ -606,7 +620,7 @@ mod tests {
                 assert_eq!(args.port, None);
                 assert_eq!(args.timeout_ms, None);
                 assert_eq!(args.stdout, None);
-                assert!(!args.no_bind && !args.no_follow && !args.print_result);
+                assert!(!args.no_follow && !args.print_result);
             }
             _ => panic!("expected Call subcommand"),
         }

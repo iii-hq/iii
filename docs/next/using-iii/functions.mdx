@@ -314,26 +314,31 @@ for development and debugging.
 ### Streams from the CLI
 
 When a function's request schema has a `stdout` or `stderr` stream that it writes, or a `stdin`
-stream that it reads, `iii call` binds its own standard output, standard error, or standard input to
-that field. When the result carries a `stdout` or `stderr` stream, `iii call` copies it to the
-matching output until the stream ends.
+stream that it reads, `iii call` connects it to its own standard output, standard error, or
+standard input. When the result carries a `stdout` or `stderr` stream, `iii call` prints it as
+well. The call ends once the function answered and its streams ended.
 
 ```bash
 # The function writes into `stdout`: its lines appear as they come.
 iii call reports::export report_id=r-42
 
-# Bind another field, or bind none.
-iii call reports::export report_id=r-42 --stdout csv
-iii call reports::export report_id=r-42 --no-bind
+# The function writes its data into a field named `csv`: print that one instead.
+iii call reports::export report_id=r-42 --stdout csv > report.csv
+
+# Run the call without its streams and print the result JSON.
+iii call reports::export report_id=r-42 --no-follow
 ```
 
-- While a stream is bound, the call has no timeout unless you pass `--timeout-ms`.
-- While a stream is bound or followed, the result JSON is printed only with `--print-result`, after
-  the streams end.
+- `--stdout`, `--stderr`, and `--stdin` are needed only for a stream field with another name.
+- A call to a function that takes a stream has no timeout unless you pass `--timeout-ms`, also
+  with `--no-follow`.
+- While a stream runs, the result JSON is printed only with `--print-result`, after the streams
+  end.
 - The first `Ctrl+C` or `SIGTERM` closes the streams. The function sees its next write fail, stops,
   and answers, and `iii call` exits with that answer. A second one exits at once.
-- `--no-follow` leaves the streams of the result unread, and the result shows them as refs. When
-  the call also binds a stream, add `--print-result` to print that result.
+- `--no-follow` connects no stream and leaves the streams of the result unread. The call only
+  runs, and the result JSON is printed with each stream shown as a ref. A function that needs its
+  stream answers with an error.
 
 | Exit code | When                                                                   |
 | --------- | ---------------------------------------------------------------------- |
