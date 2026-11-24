@@ -68,9 +68,10 @@ mode branch.
   `engine::functions::info`, as `--help` already does. An `OutputStream` field named `stdout` gets
   a sink that writes to this process's stdout, `stderr` to its stderr, and an `InputStream` field
   named `stdin` reads this process's stdin. `--stdout <field>`, `--stderr <field>` and
-  `--stdin <field>` bind other fields; `--no-bind` binds none.
+  `--stdin <field>` bind other fields.
 - **Followed in the result.** An `InputStream` at `/stdout` or `/stderr` of the result is copied
-  to that descriptor until it ends. `--no-follow` prints the refs and exits, as today.
+  to that descriptor until it ends. `--no-follow` binds no stream and follows none: the call only
+  runs, and its result JSON shows the refs, as today.
 - **The result.** With no stream bound or followed, the result JSON goes to stdout, as today.
   With one, it is printed only with `--print-result`, after every stream ended, so it never mixes
   with the streamed output.
@@ -80,8 +81,8 @@ mode branch.
 
 ### 3.2 Timeout
 
-With a bound or followed stream, the call has no timeout unless `--timeout-ms` sets one: the
-function's own budget applies (`timeout_ms` of `sandbox::build`, for example). Without one, the
+A call to a function that takes a stream has no timeout unless `--timeout-ms` sets one, with
+`--no-follow` too: the function's own budget applies (`timeout_ms` of `sandbox::build`, for example). Without one, the
 30 s default stays.
 
 ### 3.3 Interrupt as stop
@@ -132,8 +133,7 @@ entry that is not one, is a usage error. `iii call --help` documents the variabl
 | Flag or variable                          | Default                                              |
 | ----------------------------------------- | ---------------------------------------------------- |
 | `--stdout`, `--stderr`, `--stdin <field>` | `stdout`, `stderr`, `stdin` when the schema has them |
-| `--no-bind`                               | off                                                  |
-| `--no-follow`                             | off                                                  |
+| `--no-follow`                             | off; on, it binds and follows no stream              |
 | `--print-result`                          | off when a stream is bound or followed               |
 | `III_CALL_DEFAULTS`                       | unset                                                |
 

@@ -68,42 +68,40 @@ pub struct CallArgs {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Max time to wait for the invocation result (milliseconds). Defaults to
-    /// 30000; a call that binds a stream has no limit unless this is set.
+    /// How long to wait for the function's answer, in milliseconds. Defaults
+    /// to 30000. A call to a function that takes a stream has no limit unless
+    /// this is set: it lasts as long as the function runs.
     #[arg(long)]
     pub timeout_ms: Option<u64>,
 
-    /// Bind this process's stdout to payload field FIELD, a stream the
-    /// function writes. Without the flag, a `stdout` stream field in the
-    /// function's request schema is bound.
+    /// Print the stream the function writes in payload field FIELD to stdout.
+    /// Needed only when that field is not named `stdout`: a field named
+    /// `stdout` is printed without this flag.
     #[arg(long, value_name = "FIELD")]
     pub stdout: Option<String>,
 
-    /// Bind this process's stderr to payload field FIELD, a stream the
-    /// function writes. Without the flag, a `stderr` stream field in the
-    /// function's request schema is bound.
+    /// Print the stream the function writes in payload field FIELD to stderr.
+    /// Needed only when that field is not named `stderr`: a field named
+    /// `stderr` is printed without this flag.
     #[arg(long, value_name = "FIELD")]
     pub stderr: Option<String>,
 
-    /// Bind this process's stdin to payload field FIELD, a stream the function
-    /// reads. Without the flag, a `stdin` stream field in the function's
-    /// request schema is bound.
+    /// Feed stdin to the stream the function reads in payload field FIELD.
+    /// Needed only when that field is not named `stdin`: a field named `stdin`
+    /// is fed without this flag.
     #[arg(long, value_name = "FIELD")]
     pub stdin: Option<String>,
 
-    /// Bind no stream from the function's request schema; `--stdout`,
-    /// `--stderr` and `--stdin` still bind theirs.
-    #[arg(long)]
-    pub no_bind: bool,
-
-    /// Leave the `stdout` and `stderr` streams of the result unread: the
-    /// result shows them as refs. A call that binds a stream prints that
-    /// result only with `--print-result`.
-    #[arg(long)]
+    /// Run the call without its streams: stdin, stdout and stderr are not
+    /// connected to the function, and the streams in its result are left
+    /// unread. The result JSON is printed, with each stream shown as a ref. A
+    /// function that takes a stream still runs with no time limit unless
+    /// `--timeout-ms` sets one.
+    #[arg(long, conflicts_with_all = ["stdout", "stderr", "stdin"])]
     pub no_follow: bool,
 
-    /// Print the result JSON after the streams ended. A call that carries no
-    /// stream always prints it.
+    /// Also print the result JSON once the streams end. A call that carries no
+    /// stream, or runs with `--no-follow`, always prints it.
     #[arg(long)]
     pub print_result: bool,
 
@@ -427,7 +425,6 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
             stderr: args.stderr.clone(),
             stdin: args.stdin.clone(),
         },
-        auto_bind: !args.no_bind,
         follow: !args.no_follow,
         print_result: args.print_result,
     };
@@ -850,7 +847,6 @@ mod tests {
             stdout: None,
             stderr: None,
             stdin: None,
-            no_bind: false,
             no_follow: false,
             print_result: false,
         };
@@ -877,7 +873,6 @@ mod tests {
             stdout: None,
             stderr: None,
             stdin: None,
-            no_bind: false,
             no_follow: false,
             print_result: false,
         };
@@ -911,7 +906,6 @@ mod tests {
             stdout: None,
             stderr: None,
             stdin: None,
-            no_bind: false,
             no_follow: false,
             print_result: false,
         };
