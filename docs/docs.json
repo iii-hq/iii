@@ -269,6 +269,12 @@
                 ]
               },
               {
+                "group": "Compose",
+                "pages": [
+                  "next/reference/vm-workers"
+                ]
+              },
+              {
                 "group": "Language SDKs",
                 "expanded": true,
                 "pages": [

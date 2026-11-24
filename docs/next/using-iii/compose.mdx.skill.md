@@ -208,7 +208,7 @@ ready stay as they are.
 
 A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
 build before it runs. The operation reports the build as a `building` step of that container. See
-[The first build](#the-first-build).
+[The first build](../understanding-iii/compose#the-first-build).
 
 #### compose::up failures
 
@@ -427,114 +427,86 @@ extracted cache contents before reuse. A changed cache entry is downloaded again
 URL.
 
 Each project also gets a copy of every locked package in `.iii/workers/<container>/`. See
-[The project tree](#the-project-tree). The entry of a `binary` package that runs in a VM also has
+[The project tree](../reference/vm-workers#the-project-tree). The entry of a `binary` package that runs in a VM also has
 `vm: true`: that container gets the Linux build of the host's architecture instead of the host's
-build. See [Binary packages in a VM](#binary-packages-in-a-vm).
+build. See [Binary packages in a VM](../reference/vm-workers#binary-packages).
 
 Use `iii compose build --frozen` in CI to require the compose file and lock to match. Use
 `iii compose --up --frozen` or `compose::up frozen=true` to apply the same rule during startup.
 Frozen mode never resolves selectors, changes the lock, or edits the compose file. It can download a
 missing artifact only from the URL already in the lock. A file with a container that Compose would
 rewrite into the explicit VM mode fails under frozen mode with `VM_SCRIPTS_MISSING`. See
-[Rewriting files from older releases](#rewriting-files-from-older-releases). Commit the lock so
+[Rewriting files from older releases](../upgrading/explicit-vm-workers). Commit the lock so
 development, CI, and deployments use the same package content.
 
 ### Removing a worker
 
-`compose::remove worker=state` removes the named worker and every reference to it. The changes are
-validated before a worker is removed. Compose then stops only that worker and runs an idempotent
-`up`.
-
-Compose first stops a build of that container that is still running, from `compose::build` or a
-first build. Until the remove ends, a start or rebuild of that container gives up. Removing a
-container also deletes its `.iii/build/<container>/` and `.iii/workers/<container>/` directories.
-For a VM worker, Compose has the sandbox adapter destroy the VM's runtime state and keep its data:
-the data disk, and the disks of 0.26 VMs it kept. The log says where the data stayed. Add
-`prune=true` to delete the data too. Keeping the data needs an adapter with `worker.prune`; with an
-older one, Compose leaves the VM's state where it is and says so.
-
-The kept data belongs to the container key. A container added again under the same key, with any
-package, boots on that data disk, and files the old worker wrote where the new build also writes
-hide the image's. To discard the data, remove the container with `prune=true` in the first place,
-add it again and remove it with `prune=true`, or delete the VM directory containing the printed
-paths while no VM of that container runs. For example, a kept path
-`/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` is a file: delete its parent
-`/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. Use the
-adapter's reported paths, not the client's HOME; the adapter may be on another host.
-
-| Field    | Description                                                   |
-| -------- | ------------------------------------------------------------- |
-| `file`   | The project to edit.                                          |
-| `worker` | The worker to remove.                                         |
-| `prune`  | Also delete the data of the worker's VM. Defaults to `false`. |
+`compose::remove` removes a worker from the compose file and stops it. The other workers keep
+running.
 
 ```bash
 iii call compose::remove worker=onboarding
+
+# Remove two workers at once.
+iii call compose::remove worker=onboarding worker=link
+
+# Also delete the data of a VM worker.
 iii call compose::remove worker=onboarding prune=true
 ```
 
-Removal does not resolve the registry graph or remove other workers that were added with this
-worker. Those remain declared until they are removed explicitly.
+| Field     | Description                                                       |
+| --------- | ----------------------------------------------------------------- |
+| `file`    | The project to edit.                                              |
+| `worker`  | The worker to remove.                                             |
+| `workers` | Optional non-empty list of workers. Takes precedence over `worker`. |
+| `prune`   | Also delete the data of the worker's VM. Defaults to `false`.     |
+
+Removing a worker does not remove the workers that were added with it. Remove them explicitly.
+
+A VM worker keeps its data unless you pass `prune=true`, and a container added again under the same
+key boots with that data. See
+[Removing a VM worker](../understanding-iii/compose#removing-a-vm-worker).
 
 ### Restarting one worker
 
-`compose::restart worker=state` stops that specified worker and starts it again. All other workers,
-including dependencies, are left unchanged. A restart never runs `scripts.build`.
+`compose::restart` stops a worker and starts it again. The other workers, its dependencies
+included, keep running. A restart never runs `scripts.build`.
 
-The sandbox adapter is the one exception, because a VM worker ends with the adapter that hosts it.
-A VM worker is a container whose `scripts.run` is `iii call sandbox::start`.
-`compose::restart worker=sandbox-libkrun` restarts the adapter and then each VM worker it was
-running, dependencies first, without spending any of their `restart` attempts. The response names
-those workers in `affected_workers`. A `required` VM worker that does not come back fails the
-operation. Otherwise, one that does not come back is listed in `not_required_failures`. If the
-adapter itself does not come back, no VM worker is started and those same rules apply to each one it
-was running, which `compose::status` then reports as `failed`, with a `last_error` that names the
-adapter. Once the adapter is fixed, `compose::up` starts them all again. A sandbox that was running
-under the adapter does not come back.
+```bash
+# Restart one worker.
+iii call compose::restart worker=state
 
-`compose::restart` without a worker argument restarts the entire compose project. It is
-approximately the equivalent of `compose::down` followed by `compose::up`.
+# Restart the whole project, about the same as compose::down followed by compose::up.
+iii call compose::restart
+```
 
 | Field    | Description             |
 | -------- | ----------------------- |
 | `file`   | The project to restart. |
 | `worker` | The worker to restart.  |
 
+Restarting the sandbox adapter (`worker=sandbox-libkrun`) also restarts every VM worker it runs.
+See [Restarting the sandbox adapter](../understanding-iii/compose#restarting-the-sandbox-adapter).
+
 ### Updating workers
 
-`compose::update` without `worker` or `workers` updates every declared `package://` worker to its
-registry's latest version. It keeps each worker's registry reference and skips `path://` workers.
-The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
-names) moves only to the newest release in `^0.5`, the releases that implement sandbox contract 1.4
-with `worker.build`, `worker.binary`, and `worker.prune`.
+`compose::update` moves declared registry workers to newer versions, together with their
+dependencies. To add a worker, use [`compose::add`](#adding-workers).
 
 ```bash
+# Update every registry worker to its latest version.
 iii call compose::update
-iii call compose::update file=worker-compose.yaml
+
+# Update one worker within the selector the file declares: a tag, a range, or a version.
+iii call compose::update worker=state
+
+# Update two workers.
+iii call compose::update worker=state worker=queue
+
+# Move a worker to a version or a tag. This is also how you downgrade.
+iii call compose::update worker=state@0.21.4
+iii call compose::update worker=state@latest
 ```
-
-`compose::update worker=state` resolves the selector already in the compose file. A tag such as
-`next`, a range, and an exact version all remain unchanged in the file. Use
-`worker=state@<selector>` to change the selector. For example, use `worker=state@latest` to move an
-exact version to the registry's latest channel.
-
-Update resolves the complete dependency graph. It adds new dependencies, updates changed
-dependencies, and removes stale dependencies that Compose generated and no remaining package root
-uses. Manually declared workers are not removed.
-
-Compose downloads and verifies the new artifact before it changes the lock or stops a worker. A
-failed resolve or download leaves the prior lock and running workers unchanged. If the resolved
-artifact and default configuration did not change, Compose updates lock metadata when needed and
-does not restart the project.
-
-An update that changes the package of a container with a non-empty `scripts.build` rebuilds it
-before restarting it, and logs `<container>: package changed (<old> -> <new>); rebuilding`.
-`compose::add` does the same when it changes a container's package. See [Rebuilds](#rebuilds) for a
-rebuild that fails or is cancelled.
-
-If all selected workers already use the requested versions, the operation leaves the file and
-running processes unchanged, unless an earlier add or update left a rebuild unfinished. See
-[Rebuilds](#rebuilds). A project with only `path://` workers also stays unchanged.
 
 | Field     | Description                                                       |
 | --------- | ----------------------------------------------------------------- |
@@ -542,47 +514,37 @@ running processes unchanged, unless an earlier add or update left a rebuild unfi
 | `worker`  | Optional worker spec: `name` or `name@version`.                   |
 | `workers` | Optional non-empty list of specs. Takes precedence over `worker`. |
 
-```text
-worker=state            resolve the selector already declared in the compose file
-worker=state@0.21.4     that version, which is also how a downgrade is spelled
-worker=state@next       the version currently selected by the next tag
-worker=state@latest     the version currently selected by the latest tag
-```
-
-The worker has to be declared already in order to be updated, and it has to be a `package://`. Use
-[`compose::add`](#adding-workers) to add new workers.
-
-Workers specified with `path://` are not versioned, any updates to these workers will be reflected
-the next time the worker is restarted.
+`path://` workers have no version: an update skips them, and a restart picks up their changes.
 
 <Note>
   An update that changes package content or graph topology restarts the whole project once.
 </Note>
 
+For what an update resolves, downloads, and rebuilds, see
+[Updating packages](../understanding-iii/compose#updating-packages).
+
 ### Building workers
 
-`compose::build` runs `scripts.build` for one container, or for every container that declares
-one. It is a mutation, like `compose::restart`.
+`compose::build` runs `scripts.build` again for one container, or for every container that declares
+one. The running container keeps its current build until it restarts, so restart it once the build
+is done:
 
-```text
-iii call compose::build [file=<path>] [worker=<container>]
+```bash
+iii call compose::build worker=link
+iii compose logs link --follow
+iii call compose::restart worker=link
 ```
 
-| Field          | Description                                                                 |
-| -------------- | --------------------------------------------------------------------------- |
-| `file`         | The project to build.                                                       |
-| `worker`       | A container key. Omitted, every container that declares `scripts.build`.    |
-| `operation_id` | Optional, as for other mutations.                                           |
+| Field          | Description                                                              |
+| -------------- | ------------------------------------------------------------------------ |
+| `file`         | The project to build.                                                    |
+| `worker`       | A container key. Omitted, every container that declares `scripts.build`. |
+| `operation_id` | Optional, as for other mutations.                                        |
 
-- It is asynchronous. It answers `{ operation_id, status: "accepted", requested }`, holds the
-  project's mutation lock while it runs, and reports progress per container (`building`, `built`,
-  `failed`) through `compose::on-operation-progress`.
-- A container whose `scripts.build` is `""` is reported as `skipped`, named or not.
-- It starts the adapter first when the project is down, as `compose::remove` does.
-- It never restarts a container. A running container keeps its current build until it restarts.
-- `compose::cancel` of the operation and `compose::down` stop it, and `compose::remove` stops the
-  build of the containers it removes. Compose stops the `iii call sandbox::build` processes, which
-  aborts their builds. `down` cancels a running `compose::build` first, then takes the lock.
+- The call answers at once with an `operation_id`. The container's logs show the build, each line
+  with the `[build] ` prefix.
+- A container whose `scripts.build` is `""` is reported as `skipped`.
+- `compose::cancel` with the operation id, or `compose::down`, stops the build.
 
 The finished operation carries one result per container:
 
@@ -590,9 +552,8 @@ The finished operation carries one result per container:
 results: [{ worker, status: "built" | "failed" | "skipped", build_id?, error?: { code, message } }]
 ```
 
-From a shell, `iii call compose::build worker=<container>` answers with the accepted operation at
-once. Follow the build with `iii compose logs <container> --follow`, where each build line has the
-`[build] ` prefix. See [Sandboxes / Build the image](../creating-workers/sandboxes#build-the-image).
+For what a failed or cancelled build leaves, see
+[Rebuilds](../understanding-iii/compose#rebuilds).
 
 ### Checking status
 
@@ -905,7 +866,7 @@ key that is empty, holds `/` or `\`, starts with `.`, or holds a NUL fails with
 | `required`        | boolean        | `false`              | Whether a failed start fails the operation. `false` reports the failure and lets the operation carry on.   |
 | `restart`         | string         | `no`                 | What happens after a failed start or a run-time exit. `no`, `on-failure`, or `always`.                     |
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
-| `runtime`         | mapping        | absent               | `base_image`: the image of the worker's VM. See [Binary packages in a VM](#binary-packages-in-a-vm).       |
+| `runtime`         | mapping        | absent               | `base_image`: the image of the worker's VM. See [Binary packages in a VM](../reference/vm-workers#binary-packages).       |
 
 `path://` directories resolve against the compose file's directory. A missing directory fails with
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
@@ -993,7 +954,7 @@ worker's own `iii.worker.yaml` when `run` is absent. A worker with neither fails
 | Output            | Captured into the container's logs (`compose::logs`), each line prefixed with `[build] `.                                                                                            |
 | Nothing to build  | `scripts.build: ""` declares that there is no build step: nothing runs and no `build.json` is written.                                                                               |
 | Failure           | `BUILD_FAILED`. From `iii call sandbox::build`: the code and message of its `Error:` line. From any other command: code `EXIT_<status>` (or `TIMED_OUT`), message the last 20 lines of output. |
-| When              | The [first build](#the-first-build), [`compose::build`](#building-workers), and a [package update](#rebuilds).                                                                       |
+| When              | The [first build](../understanding-iii/compose#the-first-build), [`compose::build`](#building-workers), and a [package update](../understanding-iii/compose#rebuilds).                                                                       |
 
 ### Configuration precedence
 
@@ -1153,15 +1114,16 @@ commit. A value aliased from the block into another part of the file is expanded
 
 ## VM workers
 
-A VM worker says so in `worker-compose.yaml`: `scripts.build` is
-`iii call sandbox::build worker=<container>` and `scripts.run` is
-`iii call sandbox::start worker=<container>`, where `<container>` is the container's own key. The
-build runs locally in the sandbox adapter and leaves an image in the project. The run boots that
-image, and nothing is installed at boot. Compose starts both as processes, like any other command,
-and hands them the rest of each request in `III_CALL_DEFAULTS`. The sandbox adapter is a container
-like any other, reached through `start_after`. Moving a worker between a VM, the host, and Docker is
-an edit of `scripts`. For the two functions, see
-[Sandboxes](../creating-workers/sandboxes#vm-workers).
+A VM worker runs in a microVM. Its `scripts.build` builds an image in the sandbox adapter, and its
+`scripts.run` boots that image. Both lines name the container's own key:
+
+```yaml
+scripts:
+  build: iii call sandbox::build worker=<container>
+  run: iii call sandbox::start worker=<container>
+```
+
+A project with VM workers, and one worker that stays on the host:
 
 ```yaml worker-compose.yaml
 namespace: default
@@ -1218,51 +1180,28 @@ containers:
       run: node dist/index.js
 ```
 
-`sandbox-libkrun` 0.5.0 is the first release with sandbox contract 1.4: `worker.build`,
-`worker.binary`, and `worker.prune`.
+The sandbox adapter (`sandbox-libkrun`) is a container like any other: Compose adds it when a
+container needs it. For how builds and runs behave, see
+[Understanding iii / Compose](../understanding-iii/compose#vm-workers). For the rules, the files
+Compose writes, and the error codes, see [Reference / VM workers](../reference/vm-workers).
 
-### Which containers run in a VM
+### Run a worker in a VM
 
-| Rule | Error |
-| ---- | ----- |
-| `scripts.run: iii call sandbox::start` only on a `bundle` package, a `binary` package, or a `path://` with `runtime.base_image` | `SANDBOX_RUN_NOT_A_VM_WORKER` |
-| `scripts.run: iii call sandbox::start` on a `binary` package without `runtime.base_image` in its container | `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` |
-| `runtime.base_image` with a `scripts.run` other than `iii call sandbox::start`, or a `scripts.build` other than `iii call sandbox::build` (`""` included) | `BASE_IMAGE_WITHOUT_VM` |
-| `runtime.base_image` that is not an image reference | `INVALID_BASE_IMAGE` |
-| `scripts.build: iii call sandbox::build` only together with `scripts.run: iii call sandbox::start` | `SANDBOX_BUILD_WITHOUT_RUN` |
-| `scripts.run: iii call sandbox::start` with a `scripts.build` other than `iii call sandbox::build` | `SANDBOX_RUN_WITHOUT_BUILD` |
-| `worker=` on either line names the container's own key | `SANDBOX_WORKER_MISMATCH` |
-| `iii call sandbox::start` on Windows | `SANDBOX_UNSUPPORTED_PLATFORM` (a bundle already fails at install with `BUNDLE_NEEDS_A_VM`) |
-| `command=<cmd>` on a bundle or a binary | Refused by `sandbox::start` with `SANDBOX_INVALID_REQUEST` |
+```bash
+# A registry bundle: compose::add writes its scripts and start_after.
+iii call compose::add worker=onboarding
 
-Compose checks every rule but the last when it loads the file. `iii compose build` checks them too,
-with or without `--frozen`, before it downloads anything, so a CI job catches them without an
-engine. It skips the Windows rule, but that does not let Windows build a project with VM
-containers: the adapter package has no Windows build (see [Worker kinds](#worker-kinds)).
+# A registry binary: name the image its VM starts from.
+iii call compose::add 'workers=[{"worker":"indexer","runtime":{"base_image":"docker.io/library/alpine:3.20"}}]'
+```
 
-A line counts as one of these when its first three words are `iii call sandbox::start` or
-`iii call sandbox::build`. Compose checks every rule when it loads the file, before any call.
+A local worker whose `iii.worker.yaml` sets `runtime.base_image` runs in a VM: when its container
+declares no `scripts.build`, Compose writes the two lines for it.
 
-A project needs the adapter when a container's `scripts.run` starts with `iii call sandbox::start`,
-or when `engine.sandbox` names the project's own namespace. Compose then adds the generated adapter
-container, marked `# added by compose::add`, when the file does not declare one. The start order on
-the adapter is in `start_after`, in the file.
+### Keep a worker on the host
 
-These rules apply after the rewrite of older files: a missing `scripts.build`, a missing adapter in
-`start_after`, a bundle without `scripts.run`, or a container with `runtime.base_image` and no
-`scripts.run` is rewritten, not refused. See
-[Rewriting files from older releases](#rewriting-files-from-older-releases).
-
-`compose::add`, and the rewrite, append the adapter's container key to `start_after`, after the keys
-already there, which keep their order and comments. Adding `onboarding`, which already starts after
-`state`, in a project whose adapter container is `sandbox-libkrun`, writes
-`start_after: [state, sandbox-libkrun]`. An adapter in a container named `vm-adapter` is written as
-`vm-adapter`: a container is named by its key, never by the package it runs.
-
-### Keeping a worker on the host
-
-A `path://` whose manifest sets `runtime.base_image` runs on the host only when it declares
-`scripts.build`, `""` when there is nothing to build:
+A local worker whose manifest sets `runtime.base_image` stays on the host when its container
+declares `scripts.build`, `""` when there is nothing to build:
 
 ```yaml
   link:
@@ -1272,146 +1211,12 @@ A `path://` whose manifest sets `runtime.base_image` runs on the host only when 
       run: node index.js
 ```
 
-Without `scripts.build`, Compose rewrites it into the VM. A `build:` key without a value counts as
-absent.
+A registry bundle stays on the host when its `scripts.run` is a host command. Moving a worker
+between the host and a VM is an edit of its `scripts`.
 
-A bundle runs on the host when its `scripts.run` is a host command. It runs `scripts.build` and
-`scripts.run` in `.iii/workers/<container>/`, and gets `III_PACKAGE_DIR` and `III_PACKAGE_NAME`.
-Binary packages keep their working directory. Both moves are edits of `scripts`, and later runs
-leave them alone, with or without a lock.
+### Rebuild a VM worker
 
-### Binary packages in a VM
-
-A `binary` package runs its host build as a child process. It runs in a VM when its container sets
-`runtime.base_image`, the image the VM build starts from, since a binary package names none.
-`compose::add` with `runtime` writes the VM scripts too:
-
-```bash
-iii call compose::add 'workers=[{"worker":"indexer","runtime":{"base_image":"docker.io/library/alpine:3.20"}}]'
-```
-
-- **Build.** The container gets the Linux build of the host's architecture,
-  `<arch>-unknown-linux-musl`, or `<arch>-unknown-linux-gnu` when the package publishes no musl
-  build. A package with neither fails with `UNSUPPORTED_PLATFORM`. A static musl build runs on any
-  base image; a glibc build needs a glibc image, such as Debian.
-- **Lock.** Its `worker-compose.lock` entry has `vm: true`. The entry already lists every build the
-  registry published, and each machine picks the Linux build of its own architecture, so one lock
-  serves every machine. Moving the worker between the host and a VM resolves it again, and fails
-  under `--frozen` with `COMPOSE_LOCK_OUT_OF_DATE`.
-- **Run.** `.iii/workers/<container>/` holds the Linux build. The guest runs its executable, the
-  first regular executable file in it, root first and in name order, with no arguments.
-- **Host scripts.** On the host, a binary package may set `scripts` like any worker. `scripts.run`
-  replaces the published executable, in the worker's usual working directory.
-- **Not on the host.** Unlike the manifest's key, the container's `runtime.base_image` never keeps a
-  worker on the host: with a `scripts.run` other than `iii call sandbox::start`, or a `scripts.build`
-  other than `iii call sandbox::build` (`""` included), it fails with `BASE_IMAGE_WITHOUT_VM`.
-
-### The project tree
-
-```text
-my-project/
-├── worker-compose.yaml
-├── worker-compose.lock
-├── .iii/                    # hidden from VMs by name
-│   ├── project.ini          # the project's id, written by iii project init
-│   ├── compose/             # Compose state and the project token; III_COMPOSE_STATE_DIR moves it
-│   ├── workers/             # packages, one directory per container; like node_modules
-│   │   ├── .gitignore       # "*", written by Compose
-│   │   ├── .packages.json   # container -> { name, version, sha256 }
-│   │   ├── .lock            # held while Compose copies packages
-│   │   ├── onboarding/
-│   │   ├── sandbox-libkrun/
-│   │   └── state/
-│   └── build/               # one directory per container that has a build
-│       ├── .gitignore       # "*", written by Compose
-│       ├── onboarding/
-│       │   ├── image.erofs  # the image the run boots (VM containers)
-│       │   ├── image.id     # its build_id, written by the adapter
-│       │   └── build.json
-│       ├── link/
-│       └── api/
-│           └── build.json   # host builds record build.json without an image
-└── link/                    # a path:// worker, as today
-
-~/.iii/cache/                # global: base images (docker.io/iiidev/node, .../python, ...)
-~/.iii/compose/packages/     # global: extracted packages, unchanged; the source of .iii/workers/
-~/.iii/sandbox/workers/      # adapter-owned: each VM's persistent data disk
-```
-
-- `.iii/workers/` and `.iii/build/` are always in the `.iii/` beside the compose file, also when
-  `III_COMPOSE_STATE_DIR` moves Compose's state: the sandbox adapter reads only under the compose
-  file's directory and the package cache. Nothing of Compose's lands at the project root, and a VM
-  never sees either directory, `path://.` included.
-- `.iii/workers/` is rebuilt from `worker-compose.lock`, and `.iii/build/` by a build. Both stay out
-  of git like `node_modules`. Compose writes a `.gitignore` containing `*` in each, so a migrated
-  project is covered without editing its own `.gitignore`, which keeps the rest of `.iii/`, such as
-  `project.ini`.
-- `.iii/workers/<container>/` is a copy of the extracted package from the global cache, which keeps
-  its own layout. `.iii/workers/.packages.json` records which artifact each directory holds. It is
-  stored outside the package directories, so no guest can write it.
-- One copy runs at a time: the daemon and `iii compose build` both hold `.iii/workers/.lock` while
-  they copy packages. A directory whose record matches the lock stays as it is, with what a host
-  build wrote into it. Compose removes only what it made: the directories of containers no longer
-  locked, the trees an earlier run replaced, and the temporary copies an interrupted run left.
-- A directory is replaced through a copy made beside it. Its entry leaves `.packages.json` before
-  the directory changes and comes back once the copy is in place, so an interrupted copy is made
-  again by the next run.
-- The replaced tree stays aside, as `.<container>.replaced-<id>`, until the next run removes it,
-  whether its process still runs or not. A host bundle that runs through the swap keeps what it
-  reads relative to its working directory. What it resolves through an absolute path
-  (`III_PACKAGE_DIR`, Node's `require`, Python's `sys.path`) comes from the new tree until the
-  container restarts.
-- When Compose copies a container's package directory again because it was missing or its record
-  could not be read, it deletes that container's host-build `build.json`, so the next start runs
-  the first build again. A package update keeps the record and rebuilds. A VM build keeps its
-  record: its image holds its own copy of the package.
-- The image is one file, `image.erofs`, never a directory tree: a Linux tree on a case-insensitive
-  filesystem (APFS) would be corrupted.
-
-```json .iii/workers/.packages.json
-{ "schema": 1, "containers": { "onboarding": { "name": "onboarding", "version": "0.2.0", "sha256": "sha256:8c3406..." } } }
-```
-
-### The flow
-
-1. `iii call compose::add worker=onboarding` resolves the package, writes the container with
-   `start_after` and `scripts`, and reconciles.
-2. A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
-   build when it starts, then runs.
-3. `scripts.run` starts the worker. For a VM container, `iii call sandbox::start` boots
-   `.iii/build/<container>/image.erofs` and stays with the VM.
-4. A restart, or an adapter restart, repeats `scripts.run` only.
-5. A rebuild is explicit (`iii call compose::build worker=<container>`), followed by a restart of
-   that container. `compose::update` of a package rebuilds it.
-6. `compose::remove` stops the container, has the adapter destroy the VM's runtime state while it
-   keeps the data disk (`prune=true` deletes that too), and deletes `.iii/build/<container>/` and
-   `.iii/workers/<container>/`.
-
-### The first build
-
-A container gets its first build when it starts, after its `start_after` containers are ready, if
-`scripts.build` is set and non-empty and `.iii/build/<container>/build.json` is missing. This covers
-`compose::add`, `up`, and a migrated container.
-
-A `build.json` of the other kind than `scripts.build` makes is rebuilt the same way: a host build
-where `scripts.build` is now `iii call sandbox::build`, or an image where it is now a host command.
-Only the kind is compared, not the command's text. The log line names the change, for example
-`<container>: its build is a host build, and scripts.build now builds a VM image; rebuilding`.
-
-- The build runs within `scripts.build_timeout`. The container's `startup_timeout` then starts for
-  the run.
-- The container's logs show `<container>: no build yet; running scripts.build`, then the build
-  output.
-- `compose::add` and `compose::up` report the build as a progress step of the container
-  (`building`). Their operation finishes after the run started or failed.
-- A failed build fails the container with `BUILD_FAILED`, carrying `{ code, message }` as
-  [`scripts.build`](#scriptsbuild) defines them. Nothing is rolled back, as for any failed start.
-
-### Rebuilds
-
-`iii call compose::build worker=<container>` rebuilds. It is an asynchronous operation: follow the
-build with `iii compose logs <container> --follow`. The running container keeps its current image
-until it restarts, so restart it once the build is done:
+The running worker keeps its current image until it restarts. Build, then restart:
 
 ```bash
 iii call compose::build worker=link
@@ -1419,196 +1224,25 @@ iii compose logs link --follow
 iii call compose::restart worker=link
 ```
 
-`compose::add` or `compose::update` that changes a container's package (`source` in `build.json` no
-longer matches the lock) rebuilds it before restarting it, and logs
-`<container>: package changed (<old> -> <new>); rebuilding`. The container keeps running on its old
-build while the new one builds, so the restart that follows only runs the new build.
+Rebuild after you add a dependency: dependencies come from the build, so edit `package.json`, or the
+worker's other dependency file, then build and restart. When the dependency files or the base image
+changed since the last build, the worker's logs say so and name this command. Compose rebuilds by
+itself when `compose::add` or `compose::update` changes a worker's package.
 
-- **A failed rebuild** keeps the container running on its old build, and Compose does not restart
-  it. The operation fails with `BUILD_FAILED`. The file and the lock already name the new version:
-  retry the add or update, or run `iii call compose::build worker=<container>` and, once it built,
-  `iii call compose::restart worker=<container>`, to finish it.
-- **A retried add or update** finishes what an earlier one left: it rebuilds a container still on
-  the build of its old package, and restarts one it rebuilt but did not restart.
-- **An explicit build**, from `compose::build`, does not make a later add, or a retried add or
-  update, restart its container: that restart is yours. An update that changes a
-  package still restarts the whole project, this container included.
-- **A cancel** of the add or update (`compose::cancel`) builds nothing more and restarts nothing. It
-  fails with `OPERATION_CANCELLED` and, when it already rebuilt some, the message lists them
-  (`rebuilt and not yet restarted: <container>`). Retry the add or update to restart them.
-- **A VM whose adapter restarts** in the same operation cannot stay on its old build: it ends with
-  the adapter, starts again, and builds then.
+### Reset a VM worker's data
 
-### Builds that are out of date
+A VM worker's data disk keeps what the worker writes across restarts and rebuilds. To start again
+from empty data, remove the worker with `prune=true` and add it again:
 
-Before `scripts.run` (on `up`, a restart, or a crash replacement), Compose compares the container's
-current inputs with `build.json`: `source`, `dependency_files`, and `image.base_image.declared`. A
-container without `build.json` is not checked. A difference in `dependency_files` or
-`base_image.declared` only logs, once per start, one line per kind of change:
-
-```text
-link: dependencies changed since the last build (package.json); run `iii call compose::build worker=link`
-link: base image changed since the last build (docker.io/iiidev/node -> docker.io/iiidev/python); run `iii call compose::build worker=link`
+```bash
+iii call compose::remove worker=onboarding prune=true
+iii call compose::add worker=onboarding
 ```
 
-When one side declares no `runtime.base_image`, the line names `the adapter's default` for it. The
-container then runs on its current build. A change of `source` is a package update and rebuilds (see
-[Rebuilds](#rebuilds)). A change of code alone, outside the dependency files, is not a change: a
-`path://` worker's code keeps syncing live into the guest.
+### Upgrade a project from an older release
 
-### `build.json`
-
-```json .iii/build/onboarding/build.json
-{
-  "schema": 1,
-  "container": "onboarding",
-  "source": { "kind": "package", "name": "onboarding", "version": "0.2.0", "sha256": "sha256:8c3406..." },
-  "command": "iii call sandbox::build worker=onboarding",
-  "dependency_files": { "package.json": "sha256:2f1c...", "package-lock.json": "sha256:9a07..." },
-  "image": {
-    "file": "image.erofs",
-    "build_id": "sha256:7d41...",
-    "base_image": { "declared": "docker.io/iiidev/node:latest", "reference": "docker.io/iiidev/node:latest", "digest": null },
-    "adapter": { "name": "sandbox-libkrun", "version": "0.5.0" },
-    "contract": { "major": 1, "minor": 4 }
-  },
-  "built_at": "2026-11-10T14:03:22Z"
-}
-```
-
-A `path://` container records `"source": { "kind": "path", "dir": "./link" }`: the declared path,
-relative to the compose file. A host build writes the same keys without `image`.
-
-- Every hash is written `sha256:<hex>`. Times are RFC 3339 UTC.
-- `dependency_files` holds the hash of each of these files that exists at the root of the worker
-  directory: `package.json`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`,
-  `requirements.txt`, `pyproject.toml`, `uv.lock`, `poetry.lock`, `Cargo.toml`, `Cargo.lock`,
-  `go.mod`, `go.sum`.
-- `image.build_id` is what the adapter wrote in `image.id`. `adapter` and `contract` are what
-  Compose's own `adapter::info` reports.
-- `image.base_image.declared` is the container's `runtime.base_image`, else the manifest's, or
-  `null` when the adapter chose the image. `reference` is the image the build asked for, the
-  declared one, empty when there is none. `digest` is `null`: the image the adapter resolved is in
-  the answer of `sandbox::build`, which Compose does not read. The out-of-date check compares
-  `declared` only.
-- Compose writes `build.json` once `scripts.build` exited 0, for a VM build as for a host build. For
-  a VM build, the adapter has renamed the new image into place by then.
-- Compose reads the container's `source` before the build and again before it writes `build.json`.
-  If an `iii compose build` in another process replaced the package meanwhile, the build records
-  nothing and fails with `BUILD_INPUT_CHANGED`. Build again to record the new package.
-- Writes are atomic: a temporary file beside `build.json`, then a rename. Leftover temporary files
-  are swept. A `build.json` whose `build_id` does not match the image fails the run with
-  [S508](../creating-workers/sandboxes#S508). The fix is a rebuild.
-
-### What the guest sees
-
-- **Data.** The VM's data disk is persistent and independent of the build. It keeps whatever the
-  worker writes (its home, databases, caches, and the files it writes in `/workspace`) across
-  restarts, rebuilds, and a `compose::remove` without `prune`. Only `compose::remove prune=true`
-  resets it. It stays adapter-owned under
-  `~/.iii/sandbox/workers/<vm_id>/`.
-- **Root filesystem.** The guest's root is the build image, read-only, with the data disk on top. A
-  file the worker modified inside a directory the build also writes, for example under
-  `node_modules`, keeps the worker's copy after a rebuild. `compose::remove prune=true` clears it.
-- **Code.** A bundle's code is in the image, and so is a binary's Linux build. Its
-  `.iii/workers/<container>/` is the build's input only. A `path://` worker's code keeps syncing
-  live into `/workspace`. One list of names decides what a run neither copies nor syncs, including
-  for `path://.`: the adapter's ignore list plus `.iii`, which also keeps Compose's `.iii/build/`
-  and `.iii/workers/` out. The list holds dependency, cache, build-output, VCS, and editor
-  directories, such as `node_modules`, `.venv`, `vendor`, `target`, `dist`, and `.git`.
-  `sandbox-libkrun` 0.4 and later also skip directories named `.build` and `.workers`, at any depth,
-  so a worker's own directory of either name stays on the host.
-  - `build`, `out`, `obj`, `coverage`, and `deps` match only a directory at the worker's root:
-    projects also keep source under these names deeper down. Every other name, `target` and `dist`
-    included, matches at any depth.
-  - The build's input copy uses the same list except `vendor`, which goes into the build: Go keeps
-    vendored source there.
-- **Boot cleanup.** A boot never deletes what the build installed or what the worker wrote in
-  `/workspace`. Each copy records what it extracted in a manifest on the data disk, outside
-  `/workspace`, and the next boot removes only the entries the host no longer has. The cleanup
-  never removes through a symlink, never touches a name the copy leaves out (a run keeps the
-  build's `vendor/` until the next build), and skips names with a newline or a backslash. A disk
-  that an older adapter wrote has no manifest: its first boot skips the cleanup and logs it.
-- **Dependencies.** They come from the build. To add one, edit `package.json`, run
-  `iii call compose::build worker=<container>`, and restart the container.
-- **Environment.** The guest gets the container's `environment` and `env_file` variables and the
-  reserved `III_*` variables, except `III_CALL_DEFAULTS` and the build and package variables of
-  [The worker environment](#the-worker-environment). It never gets the host's environment. The
-  build VM gets the same set.
-
-### Rewriting files from older releases
-
-There is no implicit VM path. Compose rewrites the containers that 0.26 ran in a VM and that the
-file does not place anywhere else, and logs
-`<container>: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)`.
-The check is per container and idempotent, keyed on `scripts` alone. The rewrite does not change
-the lock format.
-
-The rewrite runs in `compose::up` (and `iii compose --up`), `compose::add`, `compose::update`,
-`compose::restart`, `compose::build`, and `iii compose build`. `compose::validate`, `compose::ps`,
-`compose::status`, `iii compose logs`, `compose::down`, and `compose::remove` never edit the file.
-`--frozen` never edits the file either: a file with a container to rewrite fails with
-`VM_SCRIPTS_MISSING`, naming the containers and asking for one `iii compose --up` without
-`--frozen`. That check comes first: a file with a container to rewrite and no adapter fails with
-`VM_SCRIPTS_MISSING`, not `SANDBOX_ADAPTER_NOT_DECLARED`, and the `up` it asks for adds the adapter
-too.
-
-Before it rewrites, Compose brings the adapter in line, with the lock. It updates a generated
-adapter container outside `^0.5` to the newest release in that range, and adds the generated adapter
-container when the project declares none, so the `start_after` it writes names a declared container.
-An adapter container you declared outside the range fails with `SANDBOX_ADAPTER_TOO_OLD`.
-
-[Upgrading VM workers from 0.26.x](../upgrading/explicit-vm-workers) lists the containers Compose rewrites, what it
-writes, the sandbox adapter update, and what happens to the data of 0.26 VMs.
-
-### VM worker errors
-
-| Code                                | When                                                                                                                                                                               |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VM_SCRIPTS_MISSING`                | `--frozen` on a file with containers to rewrite, or a start that reaches a container not rewritten yet. |
-| `SANDBOX_ADAPTER_NOT_DECLARED`      | `--frozen` on a project that needs the adapter and declares none. |
-| `SANDBOX_ADAPTER_TOO_OLD`           | The adapter is outside `^0.5` and Compose may not update it. |
-| `SANDBOX_BUILD_UNSUPPORTED`         | `sandbox::build` or `sandbox::start` with an adapter that does not advertise `worker.build`, or another feature a VM needs from contract 1.4. |
-| `SANDBOX_BINARY_UNSUPPORTED`        | `sandbox::build` or `sandbox::start` of a binary package, with an adapter that does not advertise `worker.binary`. |
-| `SANDBOX_RUN_NOT_A_VM_WORKER`       | `iii call sandbox::start` on a container that is not a bundle, a binary, or a `path://` with `runtime.base_image`. |
-| `SANDBOX_BINARY_WITHOUT_BASE_IMAGE` | `iii call sandbox::start` on a binary package whose container sets no `runtime.base_image`. |
-| `BASE_IMAGE_WITHOUT_VM`             | `runtime.base_image` on a container whose `scripts.run` or `scripts.build` keeps it on the host. |
-| `INVALID_BASE_IMAGE`                | `runtime.base_image` that is not an image reference. |
-| `SANDBOX_BUILD_WITHOUT_RUN`         | `iii call sandbox::build` without `iii call sandbox::start`. |
-| `SANDBOX_RUN_WITHOUT_BUILD`         | `iii call sandbox::start` with another `scripts.build` command. |
-| `SANDBOX_WORKER_MISMATCH`           | `worker=` on a VM container's `scripts.build` or `scripts.run` that is not the container's own key. Refused when the file loads and by `iii compose build`. |
-| `SANDBOX_UNSUPPORTED_PLATFORM`      | A container whose `scripts.run` is `iii call sandbox::start`, on Windows. |
-| `SANDBOX_INVALID_REQUEST`           | `sandbox::build` or `sandbox::start` with a request that does not read, such as a hand-run `sandbox::start` without `build_id`, or `command=` on a package. |
-| `SANDBOX_CONTRACT_UNSUPPORTED`      | The adapter implements another major version of the sandbox contract. |
-| `WORKER_EXITED`                     | The VM that `sandbox::start` follows exited with another code than `0`, or on a signal. `iii call` exits with `1`, and the container's `restart` policy applies. |
-| `BUILD_FAILED`                      | A first build or a package rebuild failed. Carries `{ code, message }`. |
-| `BUILD_INPUT_CHANGED`               | A build whose source was replaced while it built. Nothing is recorded. Build again. |
-| `TIMED_OUT`                         | A build that ran past `scripts.build_timeout`. The previous image stays. |
-| `OPERATION_CANCELLED`               | A cancelled `compose::build`, add, or update, or a VM build whose caller left: Compose stopped it, or `Ctrl+C` on a hand-run `iii call sandbox::build`. |
-| `INVALID_CONTAINER_KEY`             | A container key that cannot name `.iii/build/<key>/` and `.iii/workers/<key>/`.                                                                                                    |
-
-The sandbox adapter adds the S-codes [S507](../creating-workers/sandboxes#S507),
-[S508](../creating-workers/sandboxes#S508), and [S509](../creating-workers/sandboxes#S509).
-
-### Log lines
-
-| Line                                                                                                                                                 | When                                                                                                 |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `<c>: no build yet; running scripts.build`                                                                                                           | A first build starts.                                                                                |
-| `<c>: package changed (<old> -> <new>); rebuilding`                                                                                                  | A package update rebuilds the container.                                                             |
-| `<c>: its build is a host build, and scripts.build now builds a VM image; rebuilding`                                                                | A host build is rebuilt as a VM image.                                                               |
-| `<c>: its build is a VM image, and scripts.build now runs on the host; rebuilding`                                                                   | A VM image is rebuilt on the host.                                                                   |
-| ``<c>: dependencies changed since the last build (<files>); run `iii call compose::build worker=<c>` `` | A dependency file changed since the last build. |
-| ``<c>: base image changed since the last build (<old> -> <new>); run `iii call compose::build worker=<c>` `` | `runtime.base_image` changed since the last build. A side without one reads `the adapter's default`. |
-| `<c>: migrated to the explicit VM mode (scripts.build/scripts.run: iii call sandbox::...)` | Compose rewrote a container that 0.26 ran in a VM. |
-| `<c>: scripts.run now runs inside the VM (iii call sandbox::start command=...); to keep it on the host, set scripts.build ("" when there is nothing to build)` | Warning: the rewrite wrapped a `scripts.run` command. |
-| `migration due: <c>, <c>; the next up rewrites them` | Warning from `compose::validate`. |
-| `<c>: kept the pre-build data disk at <path>` | The adapter kept a 0.26 data disk. In the container's logs and the adapter's log. |
-| `sandbox::start: reattached to VM <vm_id> instance <n>` | `sandbox::start` found the VM of the same state running, and follows it. |
-| `<c>: removed the VM state of <key>; kept its data in <paths>; a container added again as <c> boots with it` | `compose::remove` without `prune`. |
-| `<package>: the guest runs <executable> from <dir>` | The executable chosen for a binary package, in its build output. |
-| `<c>: removed the VM state and data of <key>` | `compose::remove prune=true`. |
-| `<c>: kept VM <vm_id>: <adapter> <version> cannot keep its data (no worker.prune); its state stays in ~/.iii/sandbox/workers/<vm_id>, and a container added again as <c> boots with it` | `compose::remove` without `prune`, with an adapter lacking `worker.prune`. Nothing is deleted. |
+On its first `up`, Compose rewrites the VM containers of a compose file from an older release. See
+[Upgrading / VM workers](../upgrading/explicit-vm-workers).
 
 ## Build registry packages
 
@@ -1627,7 +1261,7 @@ iii compose build [-f, --file <PATH>] [--frozen]
 hooks. Local `path://` workers and engine-managed workers need no registry download and are skipped.
 
 Before it installs, `build` updates or adds the generated sandbox adapter and rewrites the
-containers that 0.26 ran in a VM, as `compose::up` does, then writes the file and the lock. It then
+VM containers of a file from an older release, as `compose::up` does, then writes the file and the lock. It then
 copies each package into `.iii/workers/<container>/`, from the lock, under `--frozen` too. Under
 `--frozen` it edits nothing: a container to rewrite fails with `VM_SCRIPTS_MISSING`, then a missing
 adapter with `SANDBOX_ADAPTER_NOT_DECLARED`, then, in a project with a VM worker, an adapter outside
@@ -1692,10 +1326,11 @@ working directory or follows a symbolic link. `<namespace>` is the daemon's name
 | `logs/`              | Rotating stdout and stderr for project workers.               |
 
 VM workers keep their data disk outside this directory: the sandbox adapter stores it in
-`~/.iii/sandbox/workers/<vm_id>/`, and Compose has it deleted when you remove the container. Builds
+`~/.iii/sandbox/workers/<vm_id>/`, and Compose has it deleted when you remove the container with `prune=true`. Builds
 and package copies are in `.iii/build/` and `.iii/workers/` beside the compose file, even when
-`III_COMPOSE_STATE_DIR` moves this directory. See [The project tree](#the-project-tree). Compose
-reads a 0.26 `state.json` that holds a `vm` record once: it stops that VM and drops the record.
+`III_COMPOSE_STATE_DIR` moves this directory. See [The project tree](../reference/vm-workers#the-project-tree).
+Compose reads a `state.json` from an older release that holds a `vm` record once: it stops that VM
+and drops the record.
 
 Two projects can use `default` with separate engines on different ports. Starting the same project
 and namespace twice is refused. Two daemons on the same engine must use different namespaces. With

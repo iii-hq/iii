@@ -91,7 +91,7 @@ git commit -m "Compose project before the explicit VM mode"
 
 The project gains two directories, `.iii/workers/` (a copy of each package) and `.iii/build/` (one
 directory per container that has a build). See
-[The project tree](../using-iii/compose#the-project-tree). Each VM's data disk stays under
+[The project tree](../reference/vm-workers#the-project-tree). Each VM's data disk stays under
 `~/.iii/sandbox/workers/<vm_id>/`.
 
 ## Upgrade a project
@@ -215,7 +215,7 @@ When the rewrite wraps a `scripts.run` command, Compose also logs a warning:
 Compose validates the result before it writes. A rewrite that would break a rule, such as a bundle
 whose `scripts.build` is not `iii call sandbox::build`, or `iii call sandbox::start` on a container
 that cannot run in a VM, is refused with that rule's code, and the file is left untouched. The
-rules are in [Which containers run in a VM](../using-iii/compose#which-containers-run-in-a-vm).
+rules are in [Which containers run in a VM](../reference/vm-workers#which-containers-run-in-a-vm).
 
 The rewrite runs in `compose::up` (and `iii compose --up`), `compose::add`, `compose::update`,
 `compose::restart`, `compose::build`, and `iii compose build`. `compose::validate`, `compose::ps`,
@@ -367,11 +367,11 @@ it.
 - **Dependencies.** A run no longer installs them. Edit `package.json`, run
   `iii call compose::build worker=<container>`, and restart the container once it built. On each
   start, Compose logs a line when a dependency file or the base image changed since the last build.
-  See [Builds that are out of date](../using-iii/compose#builds-that-are-out-of-date).
+  See [Builds that are out of date](../understanding-iii/compose#builds-that-are-out-of-date).
 - **Code.** A `path://` worker's code keeps syncing live into the guest.
 - **Package updates.** `compose::update` that changes a package rebuilds the container before
   restarting it. A failed rebuild keeps the old build running, and retrying the update finishes it.
-  See [Compose / Rebuilds](../using-iii/compose#rebuilds).
+  See [Rebuilds](../understanding-iii/compose#rebuilds).
 - **Project directories.** Compose writes a `.gitignore` containing `*` in `.iii/workers/` and in
   `.iii/build/`, so your own `.gitignore` needs no edit.
 - **Removing a container.** `compose::remove` stops a build of the container that is still running,
@@ -423,7 +423,7 @@ See [Keep the data of migrated VMs](#keep-the-data-of-migrated-vms).
 
 The sandbox adapter adds [S507](../creating-workers/sandboxes#S507),
 [S508](../creating-workers/sandboxes#S508), and [S509](../creating-workers/sandboxes#S509). Every
-log line Compose writes for VM workers is in [Compose / Log lines](../using-iii/compose#log-lines).
+log line Compose writes for VM workers is in [Log lines](../reference/vm-workers#log-lines).
 
 ## Checklist
 

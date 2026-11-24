@@ -374,6 +374,18 @@ impl CallArgs {
     }
 }
 
+/// Whether repeated `worker=` tokens become one `workers` list. `compose::add`,
+/// `compose::update` and `compose::remove` take that list in their JSON contract,
+/// while the shell form repeats the readable singular key: `worker=database
+/// worker=web`. The adaptation stays scoped to them so repeated keys for every
+/// other function keep their established last-value-wins behaviour.
+fn collects_workers(function_path: &str) -> bool {
+    matches!(
+        function_path,
+        "compose::add" | "compose::update" | "compose::remove"
+    )
+}
+
 pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     args.warn_deprecated_endpoint_flags();
     // Resolving the endpoint only reads `--engine`, `III_URL` and the compose file, and connects
@@ -395,11 +407,7 @@ pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
             "iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`"
         ))
     })?;
-    // `compose::add` has a list in its JSON contract, while the shell form
-    // repeats the readable singular key: `worker=database worker=web`.
-    // Keep this adaptation scoped to that function so repeated keys for every
-    // other function retain their established last-value-wins behaviour.
-    let payload = if function_path == "compose::add" {
+    let payload = if collects_workers(function_path) {
         payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")
     } else {
         payload::parse(&args.kv, args.json.as_deref())
@@ -829,6 +837,16 @@ mod tests {
                 err.contains("expected ws://host or ws://host:port"),
                 "unexpected error for {url:?}: {err}"
             );
+        }
+    }
+
+    #[test]
+    fn repeated_workers_are_collected_for_the_compose_worker_mutations_only() {
+        for function in ["compose::add", "compose::update", "compose::remove"] {
+            assert!(collects_workers(function), "{function}");
+        }
+        for function in ["compose::restart", "compose::build", "my::fn"] {
+            assert!(!collects_workers(function), "{function}");
         }
     }
 
