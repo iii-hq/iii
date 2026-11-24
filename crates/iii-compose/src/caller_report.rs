@@ -83,6 +83,8 @@ enum RowState {
     Working(String),
     Done(String),
     Failed(String),
+    /// Started, then stopped again because the operation failed.
+    Undone(String),
 }
 
 #[derive(Debug, Clone)]
@@ -111,9 +113,10 @@ impl Rows {
             // The plan, before anything moves: a row appears once its container does.
             "waiting" => return None,
             "ready" if detail == ALREADY_RUNNING && existing.is_none() => return None,
-            "ready" => RowState::Done("ready".to_string()),
+            "ready" | "stopped" | "removed" => RowState::Done(phase.to_string()),
             "updated" | "unchanged" | "built" | "skipped" => RowState::Done(detail),
             "failed" => RowState::Failed(detail),
+            "rolled_back" => RowState::Undone("rolled back".to_string()),
             _ => RowState::Working(detail),
         };
         let index = existing.unwrap_or_else(|| {
@@ -131,7 +134,7 @@ impl Rows {
         }
         row.took = match state {
             RowState::Working(_) => None,
-            RowState::Done(_) | RowState::Failed(_) => {
+            RowState::Done(_) | RowState::Failed(_) | RowState::Undone(_) => {
                 Some(now.saturating_duration_since(row.began))
             }
         };
@@ -211,6 +214,7 @@ fn row_line(row: &Row, paint: Paint, frame: Option<usize>, now: Instant) -> Stri
             ))
         ),
         RowState::Failed(detail) => format!("  {} {key} {}", paint.red("✗"), paint.red(detail)),
+        RowState::Undone(detail) => format!("  {} {key} {}", paint.amber("·"), paint.dim(detail)),
     }
 }
 
@@ -224,7 +228,23 @@ fn plain_line(row: &Row) -> String {
             format_elapsed(row.took.unwrap_or_default())
         ),
         RowState::Failed(detail) => format!("{}: failed: {detail}", row.key),
+        RowState::Undone(detail) => format!("{}: {detail}", row.key),
     }
+}
+
+/// `container │`, dim when `color`: how a line of output names the worker it comes from.
+pub fn label(container: &str, color: bool) -> String {
+    Paint(color).dim(&format!("{container} │"))
+}
+
+/// A line of output as it can be printed above a block: control characters, escape sequences
+/// among them, become spaces, so the line cannot move the cursor the block is drawn from.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// Draws one operation into the caller's `stderr` stream.
@@ -277,7 +297,18 @@ impl CallerReport {
     pub async fn follow(
         &mut self,
         operation: &Operation,
+        events: UnboundedReceiver<ProgressEvent>,
+    ) {
+        self.follow_with(operation, events, None).await;
+    }
+
+    /// [`Self::follow`], printing each `(container, line)` of `output` as it comes: above the
+    /// block on a terminal, as a line of its own in a pipe.
+    pub async fn follow_with(
+        &mut self,
+        operation: &Operation,
         mut events: UnboundedReceiver<ProgressEvent>,
+        mut output: Option<&mut UnboundedReceiver<(String, String)>>,
     ) {
         let mut ticks = tokio::time::interval(if self.animated() {
             FRAME_INTERVAL
@@ -288,9 +319,22 @@ impl CallerReport {
         let mut cancelled = false;
         loop {
             tokio::select! {
+                // Events first when a line is ready too: the ending is never held up by output,
+                // and what is left of it is printed after, by `print_rest`.
+                biased;
                 event = events.recv() => match event {
                     Some(event) if !event.terminal => self.apply(event).await,
                     _ => break,
+                },
+                line = async {
+                    match output.as_mut() {
+                        Some(output) => output.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => match line {
+                    Some((container, line)) => self.print(&container, &line).await,
+                    // Its source ended: nothing more comes from it.
+                    None => output = None,
                 },
                 _ = ticks.tick() => self.tick().await,
             }
@@ -299,6 +343,19 @@ impl CallerReport {
                 cancelled = true;
             }
         }
+    }
+
+    /// Prints what is left of `output`, once its source ended.
+    pub async fn print_rest(&mut self, output: &mut UnboundedReceiver<(String, String)>) {
+        while let Some((container, line)) = output.recv().await {
+            self.print(&container, &line).await;
+        }
+    }
+
+    /// Prints one line of `container`'s output, labelled with it.
+    async fn print(&mut self, container: &str, line: &str) {
+        let label = label(container, self.paint().0);
+        self.say(&format!("{label} {}", printable(line))).await;
     }
 
     /// Ends the drawing with the line of `ending`, and closes the stream.
@@ -627,6 +684,88 @@ mod tests {
         assert_eq!(ready.state, RowState::Done("ready".into()));
         assert_eq!(ready.took, Some(Duration::from_millis(1200)));
         assert_eq!(plain_line(ready), "state: ready (1.2s)");
+    }
+
+    #[test]
+    fn stopping_removing_and_rolling_back_end_a_row() {
+        let now = Instant::now();
+        let mut rows = Rows::default();
+        rows.apply("api", "stopping", "stopping", now);
+        let stopped = rows.apply("api", "stopped", "stopped", now).unwrap();
+        assert_eq!(stopped.state, RowState::Done("stopped".into()));
+        let removed = rows.apply("api", "removed", "removed", now).unwrap();
+        assert_eq!(plain_line(removed), "api: removed (0ms)");
+
+        rows.apply("web", "ready", "registered with engine", now);
+        let undone = rows
+            .apply("web", "rolled_back", "rolled back", now)
+            .unwrap();
+        assert_eq!(undone.state, RowState::Undone("rolled back".into()));
+        assert_eq!(plain_line(undone), "web: rolled back");
+    }
+
+    #[tokio::test]
+    async fn output_lines_are_labelled_and_printed_above_the_progress() {
+        let (client, operation) = operation().await;
+        let events = operation.subscribe();
+        let sink = Sink::default();
+        let mut report = CallerReport::start(
+            OutputStream::to_writer(sink.clone()),
+            CallerTerminal::default(),
+            "building web",
+        )
+        .await;
+        let (lines, mut output) = tokio::sync::mpsc::unbounded_channel();
+        let emitted = async {
+            operation
+                .emit(Some("web"), "building", "running scripts.build")
+                .await;
+            // Apart, so the report reads them in this order.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            lines
+                .send(("web".to_string(), "compiling \x1b[1mweb\x1b[0m".to_string()))
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            operation
+                .emit(Some("web"), "built", "scripts.build finished")
+                .await;
+            operation
+                .finish(OperationStatus::Succeeded, "every requested build finished")
+                .await;
+            // Logged before the build ended, read after: still printed, before the last line.
+            lines.send(("web".to_string(), "done".to_string())).unwrap();
+            drop(lines);
+        };
+        tokio::join!(
+            report.follow_with(&operation, events, Some(&mut output)),
+            emitted
+        );
+        report.print_rest(&mut output).await;
+        report
+            .finish(&Ending::Succeeded("every requested build finished".into()))
+            .await;
+        client.shutdown_async().await;
+
+        let text = sink.text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[..3],
+            [
+                "building web",
+                "web: running scripts.build",
+                "web │ compiling  [1mweb [0m"
+            ],
+            "{text}"
+        );
+        assert!(
+            lines[3].starts_with("web: scripts.build finished ("),
+            "{text}"
+        );
+        assert_eq!(lines[4], "web │ done", "{text}");
+        assert!(
+            lines[5].starts_with("✓ every requested build finished ("),
+            "{text}"
+        );
     }
 
     #[test]

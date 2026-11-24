@@ -388,7 +388,15 @@ async fn up_scoped(
     for wave in dag::waves(ctx.file, &order) {
         if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
             report::plan_done();
-            rollback(ctx, children, records, &started, &mut results).await;
+            rollback(
+                ctx,
+                children,
+                records,
+                &started,
+                &mut results,
+                &operation_id,
+            )
+            .await;
             return None;
         }
 
@@ -505,13 +513,29 @@ async fn up_scoped(
 
         if interrupted {
             report::plan_done();
-            rollback(ctx, children, records, &started, &mut results).await;
+            rollback(
+                ctx,
+                children,
+                records,
+                &started,
+                &mut results,
+                &operation_id,
+            )
+            .await;
             return None;
         }
 
         if let Some((_, error)) = failure {
             report::plan_done();
-            rollback(ctx, children, records, &started, &mut results).await;
+            rollback(
+                ctx,
+                children,
+                records,
+                &started,
+                &mut results,
+                &operation_id,
+            )
+            .await;
             report::summary_failed("up", error.code(), began.elapsed());
             return Some(OpResult {
                 operation_id,
@@ -755,6 +779,7 @@ async fn restart_one_scoped(
     } else {
         report::plan_labeled(&[(key.to_string(), 0)], &version_labels(ctx.file, [key]));
     }
+    emit(&operation_id, key, "stopping", "stopping").await;
     let stopped = stop_one(ctx, children, records, key).await;
 
     // The child is gone, but the engine learns that from a socket closing and
@@ -790,6 +815,7 @@ async fn restart_one_scoped(
     }
 
     report::starting(key, "starting");
+    emit(&operation_id, key, "starting", "starting worker").await;
     let started = Instant::now();
     // Public individual restarts finish their replacement. Preparation's explicit signal
     // instead drains the replacement, as daemon shutdown does, without dropping ownership.
@@ -808,6 +834,7 @@ async fn restart_one_scoped(
             } else {
                 report::ready(key, took);
             }
+            emit(&operation_id, key, "ready", "registered with engine").await;
             records.insert(key.to_string(), record);
             children.insert(key.to_string(), *child);
             ContainerResult {
@@ -823,6 +850,7 @@ async fn restart_one_scoped(
                 error.code(),
                 &strip_container_prefix(&error.to_string(), key),
             );
+            emit(&operation_id, key, "failed", &error.to_string()).await;
             if retry.is_some() {
                 // A supervisor attempt: it retries, or marks the container
                 // Failed only after its dependents are down.
@@ -921,11 +949,13 @@ async fn remove_one_scoped(
     let changed = children.contains_key(key);
     if changed {
         report::starting(key, "stopping");
+        emit(&operation_id, key, "stopping", "stopping").await;
         stop_one(ctx, children, records, key).await;
         report::stopped(key);
     } else {
         report::unchanged(key, "not running");
     }
+    emit(&operation_id, key, "removing", "removing").await;
     // A removed VM container takes its state with it, whatever its record
     // holds: a first boot that failed left no VM in it, a new daemon no record
     // at all. A failure only leaves the state behind, so the removal succeeds.
@@ -978,6 +1008,7 @@ async fn remove_one_scoped(
     }
     report::plan_done();
     report::summary_ok("remove", usize::from(changed), 1, began.elapsed());
+    emit(&operation_id, key, "removed", "removed").await;
 
     OpResult {
         operation_id,
@@ -1074,6 +1105,7 @@ async fn down_scoped(
             if changed {
                 let _ = await_name_release(ctx, &key).await;
                 report::stopped(&key);
+                emit(&operation_id, &key, "stopped", "stopped").await;
             } else {
                 report::unchanged(&key, "not running");
             }
@@ -1091,8 +1123,10 @@ async fn down_scoped(
             continue;
         }
         report::starting(&key, "stopping");
+        emit(&operation_id, &key, "stopping", "stopping").await;
         stop_one(ctx, children, records, &key).await;
         report::stopped(&key);
+        emit(&operation_id, &key, "stopped", "stopped").await;
         results.push(ContainerResult {
             container: key,
             state: ChildStatus::Stopped,
@@ -1753,6 +1787,13 @@ pub(crate) async fn materialize_packages(
     crate::registry::materialize_project(compose_dir, package_cache, lock).await
 }
 
+/// Tells the operation `operation_id` belongs to, when one is followed, what `key` is doing.
+async fn emit(operation_id: &str, key: &str, phase: &str, detail: &str) {
+    if let Some(operation) = crate::operation::active(operation_id) {
+        operation.emit(Some(key), phase, detail).await;
+    }
+}
+
 /// Undoes one failed `up`: stops what this operation started, in reverse.
 async fn rollback(
     ctx: &LifecycleCtx<'_>,
@@ -1760,10 +1801,12 @@ async fn rollback(
     records: &mut BTreeMap<String, ChildRecord>,
     started: &[String],
     results: &mut [ContainerResult],
+    operation_id: &str,
 ) {
     for key in started.iter().rev() {
         stop_one(ctx, children, records, key).await;
         report::rolled_back(key);
+        emit(operation_id, key, "rolled_back", "rolled back").await;
         if let Some(result) = results.iter_mut().find(|r| &r.container == key) {
             result.state = ChildStatus::Stopped;
             result.changed = false;

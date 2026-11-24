@@ -902,6 +902,142 @@ async fn iii_call_exits_with_1_when_a_drawn_add_fails() {
     daemon.shutdown().await;
 }
 
+/// Runs `iii call` and returns its output, within the time an e2e allows.
+async fn run(mut command: tokio::process::Command) -> std::process::Output {
+    tokio::time::timeout(Duration::from_secs(60), command.output())
+        .await
+        .expect("iii call ended")
+        .expect("iii call ran")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
+    isolate_state();
+    let port = spawn_engine().await;
+    let daemon = start_daemon(port).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let started = tmp.path().join("workers/web/started");
+    let file = project(
+        tmp.path(),
+        "namespace: drawn-lifecycle\nstartup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  web:\n    worker: path://./workers/web\n    scripts:\n      build: \"echo compiling web\"\n      run: \"echo hello from web && echo started >> started && sleep 30\"\n",
+        &["web"],
+    );
+    let file_arg = format!("file={}", file.display());
+
+    let up = iii_call(port, &["compose::up", &file_arg]).output();
+    let ready = async {
+        wait_for_start_markers(&[started.as_path()]).await;
+        register_test_worker(port, "drawn-lifecycle", "web")
+    };
+    let (up, web) =
+        tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(up, ready) })
+            .await
+            .expect("iii call compose::up ended");
+    let up = up.expect("iii call ran");
+    let stderr = String::from_utf8_lossy(&up.stderr);
+    assert!(up.status.success(), "{stderr}");
+    assert!(up.stdout.is_empty(), "{stderr}");
+    assert!(
+        stderr.lines().any(|line| line == "web: starting worker"),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("✓ every container is ready (")),
+        "{stderr}"
+    );
+
+    // One worker: its lines as they were written. Every worker: each labelled with its own.
+    let logs = run(iii_call(port, &["compose::logs", &file_arg, "worker=web"])).await;
+    let stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(logs.status.success(), "{stdout}");
+    assert!(
+        stdout.lines().any(|line| line == "hello from web"),
+        "{stdout}"
+    );
+    let logs = run(iii_call(port, &["compose::logs", &file_arg])).await;
+    let stdout = String::from_utf8_lossy(&logs.stdout);
+    assert!(
+        stdout.lines().any(|line| line == "web │ hello from web"),
+        "{stdout}"
+    );
+
+    // Followed: the lines come until the caller leaves, and its Ctrl+C ends the call cleanly.
+    if cfg!(unix) {
+        use tokio::io::AsyncBufReadExt;
+        let mut follow = iii_call(
+            port,
+            &["compose::logs", &file_arg, "worker=web", "follow=true"],
+        );
+        follow
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = follow.spawn().expect("iii call ran");
+        let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while let Some(line) = lines.next_line().await.unwrap() {
+                if line == "hello from web" {
+                    return;
+                }
+            }
+            panic!("the followed logs ended");
+        })
+        .await
+        .expect("the followed logs printed the worker's line");
+        let pid = child.id().expect("still running").to_string();
+        std::process::Command::new("kill")
+            .args(["-INT", &pid])
+            .status()
+            .expect("kill ran");
+        let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
+            .await
+            .expect("a Ctrl+C ends a followed read")
+            .expect("iii call ended");
+        assert!(status.success(), "{status:?}");
+    }
+
+    let build = run(iii_call(port, &["compose::build", &file_arg, "worker=web"])).await;
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(build.status.success(), "{stderr}");
+    assert!(
+        stderr.lines().any(|line| line == "web │ compiling web"),
+        "the build's own lines are printed: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("✓ every requested build finished (")),
+        "{stderr}"
+    );
+
+    let down = run(iii_call(port, &["compose::down", &file_arg])).await;
+    let stderr = String::from_utf8_lossy(&down.stderr);
+    assert!(down.status.success(), "{stderr}");
+    assert!(
+        stderr.lines().any(|line| line == "web: stopping"),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.starts_with("web: stopped (")),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with("✓ every container stopped (")),
+        "{stderr}"
+    );
+
+    web.shutdown_async().await;
+    daemon.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn add_starts_a_managed_project_declared_with_null_containers() {
     isolate_state();

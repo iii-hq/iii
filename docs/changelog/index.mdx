@@ -148,18 +148,22 @@ type: "reference"
   - When a stream is bound, a request field marked `x-iii-terminal` gets what `iii call` knows of
     its terminal (`stdout`, `stderr`, `columns`, `rows`, `color`), so the function draws for it.
 
-  ## `compose::add` shows its progress
+  ## `compose::*` shows its progress in `iii call`
 
-  `iii call compose::add` draws each worker it starts into the caller's standard error, as a spinner
-  on a terminal and as one line per change in a pipe, and answers once the operation finished. See
-  [Progress](/next/using-iii/compose#progress).
+  `iii call compose::up`, `down`, `restart`, `add`, `update`, `remove`, and `build` draw each worker
+  they move into the caller's standard error, as a spinner on a terminal and as one line per change
+  in a pipe, and answer once the operation finished. `compose::build` also prints its build lines.
+  See [Progress from `iii call`](/next/using-iii/compose#progress-from-iii-call).
 
   - The call exits with `1` when a required worker failed or the operation was cancelled, and its
     first `Ctrl+C` cancels the operation.
-  - With the stream, `compose::add` answers `status: "succeeded"` and the operation's `outcome`,
-    which `--print-result` prints. A script that read `operation_id` from the immediate answer of
-    `iii call compose::add` adds `--no-bind`. Callers without a `stderr` stream, such as the SDKs
-    and the ADE, still get `{ operation_id, status: "accepted", requested }` at once.
+  - With the stream, `add`, `update`, `remove`, and `build` answer `status: "succeeded"` with the
+    operation's `outcome` or `results`, which `--print-result` prints. A script that read
+    `operation_id` from the immediate answer of `iii call` adds `--no-bind`. Callers without a
+    `stderr` stream, such as the SDKs and the ADE, still get
+    `{ operation_id, status: "accepted", requested }` at once.
+  - `iii call compose::logs` writes the lines as text, labelled with their worker, and
+    `follow=true` keeps writing until `Ctrl+C`. `--no-bind` gives the JSON response.
 
   ## Removed
 
