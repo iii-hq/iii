@@ -268,11 +268,16 @@ impl CallerReport {
         terminal: CallerTerminal,
         title: impl Into<String>,
     ) -> Self {
+        let title = one_line(&title.into());
         let mut report = Self {
             stream,
             terminal,
-            title: one_line(&title.into()),
-            rows: Rows::default(),
+            // A phase that only says the title again is not printed twice.
+            rows: Rows {
+                phase: Some(title.clone()),
+                ..Rows::default()
+            },
+            title,
             began: Instant::now(),
             frame: 0,
             drawn: 0,
@@ -480,6 +485,7 @@ impl CallerReport {
         );
         if self.rows.rows.is_empty()
             && let Some(phase) = &self.rows.phase
+            && phase != &self.title
         {
             let _ = write!(header, " {}", paint.dim(&format!("· {phase}")));
         }

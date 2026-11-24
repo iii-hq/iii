@@ -713,7 +713,11 @@ async fn dispatch(
             let task_operation = Arc::clone(&operation);
             let mutation = async move {
                 task_operation
-                    .emit(None, "removing", format!("removing {requested} workers"))
+                    .emit(
+                        None,
+                        "removing",
+                        format!("removing {}", count(requested, "worker")),
+                    )
                     .await;
                 daemon_task
                     .remove(file.as_deref(), &workers, task_operation_id, prune)
