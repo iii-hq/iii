@@ -615,7 +615,7 @@ Turn a browser tab into a worker.
   the tab's user::confirm_destructive_op in the `browser-${session}` namespace, which it builds from
   the session id the caller passes.
 - Create a Vite React app in frontend/ with `npm create vite@latest frontend -- --template
-  react-ts --no-interactive`, install iii-browser-sdk@0.26.0, and write frontend/src/iii.ts and
+  react-ts --no-interactive`, install iii-browser-sdk@0.27.0, and write frontend/src/iii.ts and
   frontend/src/App.tsx that connect in a per-tab `browser-<session>` namespace, call link::create
   in the default namespace, and register user::confirm_destructive_op. For a live click counter,
   observe click-streamer::on-click (namespace "default", deliver "output") with ui::on_click as the
