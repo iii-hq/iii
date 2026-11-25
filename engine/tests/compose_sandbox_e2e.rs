@@ -283,6 +283,11 @@ impl Project {
             .arg(format!("ws://127.0.0.1:{}", self.port))
             .args(["--timeout-ms", &timeout.as_millis().to_string()])
             .args(["--json", &payload.to_string()]);
+        // The answer as JSON, as a script reads it: with its streams, `compose::*` draws its
+        // progress into stderr and prints its answer only with `--print-result`.
+        if function.starts_with("compose::") {
+            command.arg("--no-follow");
+        }
         if let Some(namespace) = namespace {
             command.args(["--namespace", namespace]);
         }
