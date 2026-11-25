@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,10 @@ import (
 // engine for in-process calls, runs here without touching the wire, and is delivered
 // here: this worker evaluates its observers' capture and filters, which the engine never
 // sees. Nobody observing it means zero frames; matched observers mean one report item.
+
+// lateResultReason is the reason the streams of a result that came after its caller
+// stopped waiting are aborted with.
+const lateResultReason = "the caller stopped waiting for the result that held the stream"
 
 // localTarget returns the function Call may run in-process, with the call state it
 // starts with: registered here, the engine confirmed it with local_dispatch, the
@@ -39,7 +44,12 @@ func (c *Client) localTarget(functionID, namespace string) (registeredFunction, 
 // the wire), except for a private function, whose payload and result pass by
 // reference. Timeouts and errors have the remote path's shape: ErrTimeout, and an
 // *InvocationError carrying the error body.
-func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest) (json.RawMessage, error) {
+//
+// Streams pass with no pipe: the handler reads the rest of the caller's source, which
+// counts as sent, or writes into the caller's sink. The call returns once the sinks it
+// passed ended, by deadline (R4); a call that fails aborts the sources it passed, as a
+// remote one stops their pumps.
+func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *callState, req CallRequest, deadline time.Time) (json.RawMessage, error) {
 	data := req.payload()
 	if data == nil {
 		data = json.RawMessage("{}")
@@ -95,9 +105,16 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 	// The caller's trace context does reach it (otel.go), so its span joins the trace.
 	hctx := withInvocation(withMetadata(injectTraceContext(c.lifeCtx, extractTraceContext(ctx)), copyOf(inv.metadata)), inv)
 
+	// The caller's sources are the handler's now.
+	sources, err := handOverLocal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	void := req.Action != nil && req.Action.Type == "void"
 	run := func() outcome {
 		started := time.Now()
-		return c.runInvocation(hctx, fn.handler, input, !private, func(ctx context.Context, handler outcome) outcome {
+		return c.runInvocation(hctx, fn.handler, input, !private, streamCall{answered: !void}, func(ctx context.Context, handler outcome) outcome {
 			duration := time.Since(started)
 			c.reporter.recordLocal(functionID, handler.errBody == nil, float64(duration)/float64(time.Millisecond))
 			if !delivering {
@@ -116,7 +133,7 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		})
 	}
 
-	if req.Action != nil && req.Action.Type == "void" {
+	if void {
 		go func() {
 			if out := run(); out.errBody != nil {
 				log.Printf("iii: error invoking function %q: %s: %s", functionID, out.errBody.Code, out.errBody.Message)
@@ -125,21 +142,65 @@ func (c *Client) invokeLocal(ctx context.Context, fn registeredFunction, st *cal
 		return nil, nil
 	}
 
+	// The sinks the caller passes: the call returns once they ended.
+	sinks := localSinks(data)
 	done := make(chan outcome, 1)
-	go func() { done <- run() }()
+	// left: the caller stopped waiting. A result that comes after is dropped, and so are
+	// its streams: nobody reads them.
+	var handoff sync.Mutex
+	left := false
+	go func() {
+		out := run()
+		handoff.Lock()
+		defer handoff.Unlock()
+		if left {
+			out.sent.stop(lateResultReason)
+			return
+		}
+		done <- out
+	}()
 	timer := time.NewTimer(c.callTimeout(req.Timeout))
 	defer timer.Stop()
+	var result json.RawMessage
+	// sent are the pumps of the result's streams: a call that fails on its sinks drops
+	// the result, and stops them.
+	var sent *pumps
+	answered := false
 	select {
 	case out := <-done:
+		answered = true
 		if out.errBody != nil {
-			return nil, newInvocationError(out.errBody, functionID)
+			err = newInvocationError(out.errBody, functionID)
+		} else {
+			result, sent = out.result, out.sent
 		}
-		return out.result, nil
 	case <-timer.C:
-		return nil, ErrTimeout
+		err = ErrTimeout
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		err = ctx.Err()
 	case <-c.shutdown:
-		return nil, ErrNotConnected
+		err = ErrNotConnected
 	}
+	if !answered {
+		handoff.Lock()
+		left = true
+		handoff.Unlock()
+		select {
+		case out := <-done: // it came as the wait ended
+			out.sent.stop(lateResultReason)
+		default:
+		}
+	}
+	if err != nil {
+		abortLocalSources(sources, err)
+	}
+	if result, err = settleLocalSinks(ctx, sinks, result, err, deadline); err != nil {
+		// Failed on its sinks (the handler succeeded): its sources are aborted too, and
+		// the streams of the result nobody gets stop.
+		abortLocalSources(sources, err)
+		sent.stop(abortReason(err))
+		return nil, err
+	}
+	c.trackResult(result)
+	return result, nil
 }

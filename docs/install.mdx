@@ -108,7 +108,7 @@ curl -fsSL https://iii.dev/registry/install/iii/rc.sh | sh
 To install one exact version, put the version in the URL:
 
 ```bash
-curl -fsSL https://iii.dev/registry/install/iii/0.26.0.sh | sh
+curl -fsSL https://iii.dev/registry/install/iii/0.27.0.sh | sh
 ```
 
 The `--rc` and `--next` options, and a version as the last argument, still work: the installer then
@@ -139,7 +139,7 @@ curl -fsSL https://iii.dev/registry/install/iii/latest.sh | III_NON_INTERACTIVE=
 
 | Variable              | Effect                                                                              |
 | --------------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`             | Engine version to install, for example `0.26.0`.                                    |
+| `VERSION`             | Engine version to install, for example `0.27.0`.                                    |
 | `BIN_DIR`             | Directory for the engine binary. Defaults to `$PREFIX/bin`, or `$HOME/.local/bin`.  |
 | `PREFIX`              | Install prefix. Defaults to `$HOME/.local`.                                         |
 | `TARGET`              | Target triple to install, for example `aarch64-unknown-linux-gnu`.                  |
@@ -159,7 +159,7 @@ The Windows installer checks the archive against the SHA-256 the registry record
 and every terminal you open later find `iii`. On a fresh install it prompts you to set up your first
 iii project, as the `sh` installer does.
 
-The end of the URL picks the version, as above: `rc.ps1`, `next.ps1`, `alpha.ps1` or `0.26.0.ps1`.
+The end of the URL picks the version, as above: `rc.ps1`, `next.ps1`, `alpha.ps1` or `0.27.0.ps1`.
 `irm ... | iex` passes no arguments, so set the options as environment variables before you run it:
 
 ```powershell
@@ -168,7 +168,7 @@ $env:III_NON_INTERACTIVE = '1'; irm https://iii.dev/registry/install/iii/latest.
 
 | Variable              | Effect                                                                              |
 | --------------------- | ----------------------------------------------------------------------------------- |
-| `VERSION`             | Engine version or release tag to install, for example `0.26.0` or `rc`.             |
+| `VERSION`             | Engine version or release tag to install, for example `0.27.0` or `rc`.             |
 | `BIN_DIR`             | Directory for `iii.exe`. Defaults to `$PREFIX\bin`, or `~\.local\bin`.              |
 | `PREFIX`              | Install prefix. Defaults to `~\.local`.                                             |
 | `TARGET`              | Target triple to install, for example `aarch64-pc-windows-msvc`.                    |

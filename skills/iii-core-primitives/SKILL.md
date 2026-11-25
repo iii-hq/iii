@@ -3,7 +3,7 @@ name: iii-core-primitives
 description: >-
   Use when registering iii functions, calling them (call with sync, void, or enqueue), observing
   functions and event sources, creating workers, inspecting the live worker registry, installing
-  registry workers, or moving channel data across TypeScript, Python, and Rust.
+  registry workers, or streaming data between functions across TypeScript, Python, and Rust.
 ---
 
 # Core Primitive: the Function
@@ -235,8 +235,12 @@ iii.observe(
   overrides iii's defaults with `onObserverAdded` (set up from `obs.args`), `onObserverRemoved`
   (tear down), `onObservationMatch` (which observers want each call), and `onObservationDeliver`
   (deliver each call itself and return what the caller gets). See `iii-observe`.
-- **Channels**: use `createChannel()` for binary or streaming data that should not be serialized into
-  JSON payloads. Pass `readerRef` or `writerRef` through a function payload.
+- **Streams**: for binary or streaming data that should not be serialized into JSON, put a stream in
+  the payload or the result (a Node `Readable`, a browser `File` or `ReadableStream`, a Python async
+  generator or `InputStream.from_file()`, a Rust `InputStream::from_reader()`, a Go
+  `iii.InputStreamFromReader()`). The other side receives an `InputStream` to read, or an
+  `OutputStream` for a sink. Use `iii.pipe()` (Go `client.Pipe(ctx)`) only when the stream must
+  exist before its data.
 - **External HTTP services**: for third-party endpoints or services you cannot change, register a
   handler that makes the HTTP call and keeps its secrets in the worker's environment.
 - **Schemas**: Rust can derive request/response schemas with `schemars::JsonSchema`; Python can use
@@ -245,7 +249,7 @@ iii.observe(
 ## When to Use
 
 - Use this skill for function registration, calling functions, invocation mode decisions, worker
-  creation, worker registry access, the built-in source functions and their args, and channels.
+  creation, worker registry access, the built-in source functions and their args, and streams.
 - Use this when a task spans TypeScript, Python, or Rust examples for the same iii primitive.
 
 ## Boundaries

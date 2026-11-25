@@ -2579,11 +2579,27 @@ impl ObserverRegistry {
         functions: &[LocalFunctionStats],
         dropped_reports: &[DroppedReportStats],
     ) {
+        self.local_stats_with_accumulator(
+            connection,
+            connection_namespace,
+            functions,
+            dropped_reports,
+            crate::workers::observability::metrics::get_metrics_accumulator(),
+        );
+    }
+
+    fn local_stats_with_accumulator(
+        &self,
+        connection: Uuid,
+        connection_namespace: &str,
+        functions: &[LocalFunctionStats],
+        dropped_reports: &[DroppedReportStats],
+        acc: &crate::workers::observability::metrics::MetricsAccumulator,
+    ) {
         let owns = |function_id: &str| {
             let key = (connection_namespace.to_string(), function_id.to_string());
             self.owner_of(&key).map(|owner| owner.connection) == Some(connection)
         };
-        let acc = crate::workers::observability::metrics::get_metrics_accumulator();
         for stats in functions {
             if !owns(&stats.function_id) {
                 tracing::debug!(
@@ -2609,14 +2625,7 @@ impl ObserverRegistry {
                     }
                 }
             }
-            for (counter, count) in [
-                (&acc.invocations_total, stats.count),
-                (&acc.invocations_success, ok),
-                (&acc.invocations_error, errors),
-            ] {
-                saturating_add(counter, count);
-            }
-            acc.add_function_invocations(&stats.function_id, stats.count);
+            acc.record_local_invocations(&stats.function_id, stats.count, errors);
         }
         for dropped in dropped_reports {
             if owns(&dropped.function_id) {
@@ -2654,12 +2663,6 @@ fn sdk_drop_reason(reason: &str) -> &'static str {
     .into_iter()
     .find(|known| reason.eq_ignore_ascii_case(known))
     .unwrap_or("OTHER")
-}
-
-fn saturating_add(counter: &std::sync::atomic::AtomicU64, count: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |total| {
-        Some(total.saturating_add(count))
-    });
 }
 
 /// Counts one fire against `max_fires`; `None` (and a `MAX_FIRES` drop) when
@@ -3145,6 +3148,9 @@ mod legacy_matrix_tests;
 mod metadata_tests;
 
 #[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use std::sync::{
         Arc,
@@ -3372,9 +3378,11 @@ mod tests {
         assert_eq!(super::sdk_drop_reason("TOO_LARGE"), "TOO_LARGE");
         assert_eq!(super::sdk_drop_reason("disconnected"), "DISCONNECTED");
         assert_eq!(super::sdk_drop_reason("a-label-of-my-own"), "OTHER");
-        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
-        super::saturating_add(&counter, 5);
-        assert_eq!(counter.load(Ordering::SeqCst), u64::MAX);
+        let acc = crate::workers::observability::metrics::MetricsAccumulator::default();
+        acc.record_local_invocations("saturating", u64::MAX - 1, 0);
+        acc.record_local_invocations("saturating", 5, 0);
+        assert_eq!(acc.invocation_counts().total, u64::MAX);
+        assert_eq!(acc.get_function_count("saturating"), Some(u64::MAX));
     }
 
     /// Past the evaluator queue's capacity a completion is not evaluated and

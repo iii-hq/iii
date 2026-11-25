@@ -403,82 +403,193 @@ pub fn get_engine_metrics() -> &'static EngineMetrics {
     ENGINE_METRICS.get_or_init(EngineMetrics::default)
 }
 
+/// The dispatch outcome counted before a deferred response is awaited.
+#[derive(Debug, Clone, Copy)]
+pub enum InvocationOutcome {
+    Success,
+    Error,
+    Deferred,
+}
+
+/// An owned, allocation-free copy for consumers that do not need the map.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct InvocationCounts {
+    pub total: u64,
+    pub success: u64,
+    pub error: u64,
+    pub deferred: u64,
+}
+
+#[derive(Default)]
+struct InvocationState {
+    counts: InvocationCounts,
+    by_function: std::collections::HashMap<String, u64>,
+}
+
 /// Metrics accumulator for real-time readable metrics.
-/// This complements OTEL metrics which are write-only.
+///
+/// Invocation updates and snapshots share one synchronous lock. Only the
+/// invocation group has a common cut, not workers, spans, SDK storage or time.
+/// Public atomic fields and map-only writers were intentionally removed: they
+/// would allow callers to bypass the transaction (a Rust source API break).
+#[derive(Default)]
 pub struct MetricsAccumulator {
-    pub invocations_total: std::sync::atomic::AtomicU64,
-    pub invocations_success: std::sync::atomic::AtomicU64,
-    pub invocations_error: std::sync::atomic::AtomicU64,
-    pub invocations_deferred: std::sync::atomic::AtomicU64,
-    pub invocations_by_function: dashmap::DashMap<String, u64>,
+    invocations: std::sync::Mutex<InvocationState>,
     pub workers_spawns: std::sync::atomic::AtomicU64,
     pub workers_deaths: std::sync::atomic::AtomicU64,
     /// Set once on the first successful invocation of a user-defined function.
     pub first_user_success_fn: std::sync::OnceLock<String>,
     /// Set once on the first failed invocation of a user-defined function.
     pub first_user_failure_fn: std::sync::OnceLock<String>,
-}
-
-impl Default for MetricsAccumulator {
-    fn default() -> Self {
-        Self {
-            invocations_total: std::sync::atomic::AtomicU64::new(0),
-            invocations_success: std::sync::atomic::AtomicU64::new(0),
-            invocations_error: std::sync::atomic::AtomicU64::new(0),
-            invocations_deferred: std::sync::atomic::AtomicU64::new(0),
-            invocations_by_function: dashmap::DashMap::new(),
-            workers_spawns: std::sync::atomic::AtomicU64::new(0),
-            workers_deaths: std::sync::atomic::AtomicU64::new(0),
-            first_user_success_fn: std::sync::OnceLock::new(),
-            first_user_failure_fn: std::sync::OnceLock::new(),
-        }
-    }
+    #[cfg(test)]
+    test_sync: snapshot_tests::TestSync,
 }
 
 impl MetricsAccumulator {
-    /// Get invocations for a specific function.
-    /// More efficient than get_by_function() when only one function's count is needed.
-    pub fn get_function_count(&self, function_id: &str) -> Option<u64> {
-        self.invocations_by_function.get(function_id).map(|v| *v)
+    fn invocation_state(&self) -> std::sync::MutexGuard<'_, InvocationState> {
+        // Every possible unwinding operation precedes the numeric commit, or
+        // only reads state. String hashing uses no caller code. No callback,
+        // checked arithmetic, allocation, or assertion may interrupt a commit.
+        // Thus poison still contains a complete state; never reset or repair it.
+        #[cfg(test)]
+        match self.invocations.try_lock() {
+            Ok(state) => return state,
+            Err(std::sync::TryLockError::Poisoned(error)) => return error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => self.test_sync.blocked(),
+        }
+        self.invocations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
-    /// Get invocations grouped by function as a HashMap.
-    /// Note: This clones all entries. For single-function lookups, use get_function_count() instead.
-    pub fn get_by_function(&self) -> std::collections::HashMap<String, u64> {
-        self.invocations_by_function
-            .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
-            .collect()
+    /// Record one dispatcher outcome atomically with its function count.
+    /// Dispatcher aggregates wrap, as AtomicU64::fetch_add did; map counts
+    /// saturate. Equality and monotonicity require a history without overflow.
+    pub fn record_invocation(&self, function_id: &str, outcome: InvocationOutcome) {
+        let delta = match outcome {
+            InvocationOutcome::Success => InvocationCounts {
+                success: 1,
+                ..Default::default()
+            },
+            InvocationOutcome::Error => InvocationCounts {
+                error: 1,
+                ..Default::default()
+            },
+            InvocationOutcome::Deferred => InvocationCounts {
+                deferred: 1,
+                ..Default::default()
+            },
+        };
+        self.record(function_id, 1, delta, false);
     }
 
-    /// Get an iterator over function invocation counts.
-    /// More efficient than get_by_function() when you don't need to own the data.
-    pub fn iter_function_counts(&self) -> impl Iterator<Item = (String, u64)> + '_ {
-        self.invocations_by_function
-            .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
+    /// Commit one already owner-validated SDK row, including a zero-count key.
+    /// SDK aggregates and map counts retain their independent saturating policy.
+    pub fn record_local_invocations(&self, function_id: &str, count: u64, errors: u64) {
+        let errors = errors.min(count);
+        self.record(
+            function_id,
+            count,
+            InvocationCounts {
+                success: count - errors,
+                error: errors,
+                ..Default::default()
+            },
+            true,
+        );
     }
 
-    /// Increment invocation count for a specific function
-    pub fn increment_function(&self, function_id: &str) {
-        self.add_function_invocations(function_id, 1);
-    }
-
-    /// Adds `count` invocations of `function_id` at once (local invocations
-    /// an SDK reports in `localinvocationstats`).
-    pub fn add_function_invocations(&self, function_id: &str, count: u64) {
-        if let Some(mut total) = self.invocations_by_function.get_mut(function_id) {
-            *total = total.saturating_add(count);
+    fn record(&self, function_id: &str, total: u64, delta: InvocationCounts, saturating: bool) {
+        let mut state = self.invocation_state();
+        let InvocationState {
+            counts,
+            by_function,
+        } = &mut *state;
+        // Existing keys need no String allocation. Allocate a missing entry
+        // before changing any numbers. OOM abort is not recoverable.
+        if let Some(function_count) = by_function.get_mut(function_id) {
+            self.commit(counts, function_count, total, delta, saturating);
             return;
         }
+        let function_count = by_function.entry(function_id.to_owned()).or_insert(0);
+        self.commit(counts, function_count, total, delta, saturating);
+    }
 
-        // Another invocation may insert the function after the lookup misses.
-        self.invocations_by_function
-            .entry(function_id.to_string())
-            .and_modify(|total| *total = total.saturating_add(count))
-            .or_insert(count);
+    fn commit(
+        &self,
+        counts: &mut InvocationCounts,
+        function_count: &mut u64,
+        total: u64,
+        delta: InvocationCounts,
+        saturating: bool,
+    ) {
+        if saturating {
+            counts.total = counts.total.saturating_add(total);
+            counts.success = counts.success.saturating_add(delta.success);
+            counts.error = counts.error.saturating_add(delta.error);
+            counts.deferred = counts.deferred.saturating_add(delta.deferred);
+        } else {
+            counts.total = counts.total.wrapping_add(total);
+            counts.success = counts.success.wrapping_add(delta.success);
+            counts.error = counts.error.wrapping_add(delta.error);
+            counts.deferred = counts.deferred.wrapping_add(delta.deferred);
+        }
+        // Test-only barriers, never caller callbacks or panicking assertions.
+        #[cfg(test)]
+        self.test_sync.writer_pause();
+        *function_count = function_count.saturating_add(total);
+    }
+
+    /// Copy all four aggregates and the complete map under the same lock.
+    /// The returned view owns its data; no lock survives this call. Cloning
+    /// can allocate, but cannot modify the accumulator even if it unwinds.
+    pub fn snapshot_invocations(&self) -> super::InvocationsView {
+        let state = self.invocation_state();
+        let counts = state.counts;
+        #[cfg(test)]
+        self.test_sync.reader_pause();
+        super::InvocationsView {
+            total: counts.total,
+            success: counts.success,
+            error: counts.error,
+            deferred: counts.deferred,
+            by_function: state.by_function.clone(),
+        }
+    }
+
+    /// Copy counters without cloning the map (for alert evaluation).
+    pub fn invocation_counts(&self) -> InvocationCounts {
+        self.invocation_state().counts
+    }
+
+    /// Read a single function count without exposing a guard.
+    pub fn get_function_count(&self, function_id: &str) -> Option<u64> {
+        self.invocation_state()
+            .by_function
+            .get(function_id)
+            .copied()
+    }
+
+    /// Copy all function counts. Use snapshot_invocations for a common cut
+    /// with aggregates, not separate calls to this method and invocation_counts.
+    pub fn get_by_function(&self) -> std::collections::HashMap<String, u64> {
+        self.invocation_state().by_function.clone()
+    }
+
+    /// Iterate an owned copy: iteration and drop never hold the metrics lock.
+    pub fn iter_function_counts(&self) -> std::collections::hash_map::IntoIter<String, u64> {
+        self.get_by_function().into_iter()
+    }
+
+    /// Test fixtures must replace the entire invocation group, not one counter.
+    #[cfg(test)]
+    pub(crate) fn reset_invocations_for_test(&self) {
+        *self.invocation_state() = InvocationState::default();
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests;
 
 /// Global metrics accumulator instance
 static METRICS_ACCUMULATOR: OnceLock<MetricsAccumulator> = OnceLock::new();
@@ -1645,18 +1756,10 @@ impl AlertManager {
 
         // Check engine metrics first - these are cumulative counters, window doesn't apply
         match metric_name {
-            "iii.invocations.total" => {
-                Some(accumulator.invocations_total.load(Ordering::Relaxed) as f64)
-            }
-            "iii.invocations.success" => {
-                Some(accumulator.invocations_success.load(Ordering::Relaxed) as f64)
-            }
-            "iii.invocations.error" => {
-                Some(accumulator.invocations_error.load(Ordering::Relaxed) as f64)
-            }
-            "iii.invocations.deferred" => {
-                Some(accumulator.invocations_deferred.load(Ordering::Relaxed) as f64)
-            }
+            "iii.invocations.total" => Some(accumulator.invocation_counts().total as f64),
+            "iii.invocations.success" => Some(accumulator.invocation_counts().success as f64),
+            "iii.invocations.error" => Some(accumulator.invocation_counts().error as f64),
+            "iii.invocations.deferred" => Some(accumulator.invocation_counts().deferred as f64),
             "iii.workers.spawns" => Some(accumulator.workers_spawns.load(Ordering::Relaxed) as f64),
             "iii.workers.deaths" => Some(accumulator.workers_deaths.load(Ordering::Relaxed) as f64),
             "iii.workers.active" => {
@@ -2236,10 +2339,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn alert_manager_fires_then_prunes_state_on_rule_removal() {
-        use std::sync::atomic::Ordering;
-        get_metrics_accumulator()
-            .invocations_total
-            .store(100, Ordering::Relaxed);
+        get_metrics_accumulator().reset_invocations_for_test();
+        get_metrics_accumulator().record_local_invocations("alert-fixture", 100, 0);
 
         let manager = AlertManager::new(vec![engine_metric_rule("too-many", 10.0)]);
         let events = manager.evaluate().await;
@@ -2256,9 +2357,7 @@ mod tests {
         );
         assert!(manager.get_firing_alerts().is_empty());
 
-        get_metrics_accumulator()
-            .invocations_total
-            .store(0, Ordering::Relaxed);
+        get_metrics_accumulator().reset_invocations_for_test();
     }
 
     #[test]
@@ -2286,10 +2385,8 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn alert_manager_resurrection_filter_hides_removed_rule() {
-        use std::sync::atomic::Ordering;
-        get_metrics_accumulator()
-            .invocations_total
-            .store(100, Ordering::Relaxed);
+        get_metrics_accumulator().reset_invocations_for_test();
+        get_metrics_accumulator().record_local_invocations("alert-fixture", 100, 0);
 
         let manager = AlertManager::new(vec![
             engine_metric_rule("keep", 10.0),
@@ -2310,9 +2407,7 @@ mod tests {
             "removed rule's state must not surface"
         );
 
-        get_metrics_accumulator()
-            .invocations_total
-            .store(0, Ordering::Relaxed);
+        get_metrics_accumulator().reset_invocations_for_test();
     }
 
     #[test]
@@ -2651,12 +2746,12 @@ mod tests {
     fn test_accumulator_increment_function() {
         let acc = MetricsAccumulator::default();
 
-        acc.increment_function("myFunc");
+        acc.record_invocation("myFunc", InvocationOutcome::Success);
 
         assert_eq!(acc.get_function_count("myFunc"), Some(1));
 
-        acc.increment_function("myFunc");
-        acc.increment_function("myFunc");
+        acc.record_invocation("myFunc", InvocationOutcome::Success);
+        acc.record_invocation("myFunc", InvocationOutcome::Success);
 
         assert_eq!(acc.get_function_count("myFunc"), Some(3));
     }
@@ -2676,7 +2771,7 @@ mod tests {
                         let function_id = format!("concurrent::{index}");
                         barrier.wait();
                         for _ in 0..INCREMENTS {
-                            acc.increment_function(&function_id);
+                            acc.record_invocation(&function_id, InvocationOutcome::Success);
                         }
                     }
                 });
@@ -2686,16 +2781,27 @@ mod tests {
         let expected: std::collections::HashMap<_, _> = (0..FUNCTIONS)
             .map(|index| (format!("concurrent::{index}"), THREADS as u64 * INCREMENTS))
             .collect();
-        assert_eq!(acc.get_by_function(), expected);
+        let snapshot = acc.snapshot_invocations();
+        let total = THREADS as u64 * FUNCTIONS as u64 * INCREMENTS;
+        assert_eq!(
+            (
+                snapshot.total,
+                snapshot.success,
+                snapshot.error,
+                snapshot.deferred
+            ),
+            (total, total, 0, 0)
+        );
+        assert_eq!(snapshot.by_function, expected);
     }
 
     #[test]
     fn test_accumulator_get_function_count() {
         let acc = MetricsAccumulator::default();
 
-        acc.increment_function("alpha");
-        acc.increment_function("alpha");
-        acc.increment_function("beta");
+        acc.record_invocation("alpha", InvocationOutcome::Success);
+        acc.record_invocation("alpha", InvocationOutcome::Success);
+        acc.record_invocation("beta", InvocationOutcome::Success);
 
         assert_eq!(acc.get_function_count("alpha"), Some(2));
         assert_eq!(acc.get_function_count("beta"), Some(1));
@@ -2713,9 +2819,9 @@ mod tests {
     fn test_accumulator_get_by_function() {
         let acc = MetricsAccumulator::default();
 
-        acc.increment_function("fn_a");
-        acc.increment_function("fn_a");
-        acc.increment_function("fn_b");
+        acc.record_invocation("fn_a", InvocationOutcome::Success);
+        acc.record_invocation("fn_a", InvocationOutcome::Success);
+        acc.record_invocation("fn_b", InvocationOutcome::Success);
 
         let by_func = acc.get_by_function();
         assert_eq!(by_func.len(), 2);
@@ -2727,12 +2833,12 @@ mod tests {
     fn test_accumulator_iter_function_counts() {
         let acc = MetricsAccumulator::default();
 
-        acc.increment_function("x");
-        acc.increment_function("x");
-        acc.increment_function("y");
-        acc.increment_function("z");
-        acc.increment_function("z");
-        acc.increment_function("z");
+        acc.record_invocation("x", InvocationOutcome::Success);
+        acc.record_invocation("x", InvocationOutcome::Success);
+        acc.record_invocation("y", InvocationOutcome::Success);
+        acc.record_invocation("z", InvocationOutcome::Success);
+        acc.record_invocation("z", InvocationOutcome::Success);
+        acc.record_invocation("z", InvocationOutcome::Success);
 
         let mut counts: std::collections::HashMap<String, u64> =
             acc.iter_function_counts().collect();
@@ -2750,7 +2856,7 @@ mod tests {
         let functions = ["login", "logout", "register", "profile", "settings"];
         for (i, func) in functions.iter().enumerate() {
             for _ in 0..=(i as u64) {
-                acc.increment_function(func);
+                acc.record_invocation(func, InvocationOutcome::Success);
             }
         }
 
@@ -3996,9 +4102,9 @@ mod tests {
         let acc = MetricsAccumulator::default();
         assert!(acc.get_function_count("unknown").is_none());
 
-        acc.increment_function("func_a");
-        acc.increment_function("func_a");
-        acc.increment_function("func_b");
+        acc.record_invocation("func_a", InvocationOutcome::Success);
+        acc.record_invocation("func_a", InvocationOutcome::Success);
+        acc.record_invocation("func_b", InvocationOutcome::Success);
 
         assert_eq!(acc.get_function_count("func_a"), Some(2));
         assert_eq!(acc.get_function_count("func_b"), Some(1));
@@ -4009,9 +4115,9 @@ mod tests {
     fn test_metrics_accumulator_iter_function_counts() {
         let acc = MetricsAccumulator::default();
 
-        acc.increment_function("func_x");
-        acc.increment_function("func_x");
-        acc.increment_function("func_y");
+        acc.record_invocation("func_x", InvocationOutcome::Success);
+        acc.record_invocation("func_x", InvocationOutcome::Success);
+        acc.record_invocation("func_y", InvocationOutcome::Success);
 
         let counts: std::collections::HashMap<String, u64> = acc.iter_function_counts().collect();
 

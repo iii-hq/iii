@@ -243,7 +243,7 @@ After getting your first worker running:
 ## Pattern Boundaries
 
 - For function registration and calls, worker creation, worker registry access, built-in source
-  functions, invocation modes, and channels, prefer `iii-core-primitives`
+  functions, invocation modes, and streams, prefer `iii-core-primitives`
 - For observers, filters, engine events, event sources, and upgrading 0.25 code, prefer
   `iii-observe`
 - For language-specific SDK APIs, prefer `iii-sdk-reference`

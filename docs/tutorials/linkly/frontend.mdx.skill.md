@@ -17,7 +17,11 @@ connections. Uncomment the Ch. 7 block in `worker-compose.yaml`:
 ```yaml worker-compose.yaml
 auth:
   worker: path://./auth
-  env_file: ["./.env"]
+  start_after: [sandbox-libkrun]
+  env_file: ['./.env']
+  scripts:
+    build: iii call sandbox::build worker=auth
+    run: iii call sandbox::start worker=auth
 ```
 
 The `env_file` gives the worker `LINKLY_BROWSER_TOKEN` from `.env`; the scaffold ships `dev-token`
@@ -199,11 +203,11 @@ Now install the dependencies:
 ```bash
 cd frontend
 npm install
-npm install iii-browser-sdk@0.26.0
+npm install iii-browser-sdk@0.27.0
 ```
 
-`iii-browser-sdk` is pinned to 0.26.0, the same version as the `iii-sdk` the backend workers pin:
-the tab uses the 0.26 `observe` and `call` API. Each one connects to the engine, never to the other.
+`iii-browser-sdk` is pinned to 0.27.0, the same version as the `iii-sdk` the backend workers pin:
+the tab uses the 0.27 `observe` and `call` API. Each one connects to the engine, never to the other.
 
 Then tell the app where the proxy is and which token to send. Create `frontend/.env.local`; Vite
 reads it at startup. `VITE_LINKLY_TOKEN` must equal `LINKLY_BROWSER_TOKEN` in the project's `.env`,

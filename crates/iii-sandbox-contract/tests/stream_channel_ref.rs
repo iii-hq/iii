@@ -1,5 +1,5 @@
 use iii_sandbox_contract::{ChannelDirection, StreamChannelRef};
-use iii_sdk::channels as sdk;
+use iii_sdk::protocol as sdk;
 use serde_json::{from_value, json, to_value};
 
 #[test]

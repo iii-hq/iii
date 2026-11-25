@@ -1,0 +1,826 @@
+---
+title: "Functions"
+description: "Author the functions a new worker contributes to an iii system."
+owner: "devrel"
+type: "how-to"
+---
+
+## What "writing a function" means
+
+A worker contributes capabilities to an iii system by registering functions. Each function has an
+`id` of the form `service::name`, a handler that receives the payload and returns a result, and
+optional JSON Schemas that describe the request and response shape.
+
+The `function_id` is the contract. Callers invoke the function, and observers run a target on each
+call; see [Using iii / Functions](../using-iii/functions).
+
+## Register a function
+
+Inside the worker, register the function with the SDK. The `id` is what callers and observers use as
+a `function_id`.
+
+<Note>
+  A function that is an observer's target receives what the observed function's documentation
+  describes. For example, a target of `cron::on-tick` receives the tick as its payload's `input`, and
+  a target of `http::on-request` receives an HTTP request with `body`, `headers`, and other
+  properties. Each worker's page at [workers.iii.dev](https://workers.iii.dev/) lists its functions,
+  their input, and their `args`.
+</Note>
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
+      return { c: payload.a + payload.b };
+    });
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function("math::add", add_handler)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddInput {
+        a: f64,
+        b: f64,
+    }
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        worker.register_function(
+            "math::add",
+            RegisterFunction::new(|input: AddInput| {
+                Ok(serde_json::json!({ "c": input.a + input.b }))
+            }),
+        );
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	_, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var payload struct {
+    			A float64 `json:"a"`
+    			B float64 `json:"b"`
+    		}
+    		if err := json.Unmarshal(data, &payload); err != nil {
+    			return nil, err
+    		}
+    		return map[string]float64{"c": payload.A + payload.B}, nil
+    	})
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+## Attach request and response schemas
+
+Attach JSON Schemas to the registration so the request and response shape are documented alongside
+the function. The schemas are stored with the function and surface in the iii console,
+`iii call <function_id> --help`, and elsewhere.
+
+<Note>
+  Runtime validation is not yet supported. Attached schemas are metadata only; the engine does not
+  enforce a specific schema, reject payloads, nor handler return values that don't match the
+  schemas. Treat the schemas as contract documentation for function invocations, agents, and the
+  console.
+</Note>
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    worker.registerFunction(
+      "math::add",
+      async (payload: { a: number; b: number }) => ({ c: payload.a + payload.b }),
+      {
+        request_format: {
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        },
+        response_format: {
+          type: "object",
+          properties: { c: { type: "number" } },
+          required: ["c"],
+        },
+      },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function(
+        "math::add",
+        add_handler,
+        request_format={
+            "type": "object",
+            "properties": {"a": {"type": "number"}, "b": {"type": "number"}},
+            "required": ["a", "b"],
+        },
+        response_format={
+            "type": "object",
+            "properties": {"c": {"type": "number"}},
+            "required": ["c"],
+        },
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddInput {
+        a: f64,
+        b: f64,
+    }
+
+    #[derive(Serialize, JsonSchema)]
+    struct AddOutput {
+        c: f64,
+    }
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        // The closure's input and output types give the schemas: schemars derives
+        // `request_format` from `AddInput` and `response_format` from `AddOutput`.
+        // No builder methods are needed.
+        worker.register_function(
+            "math::add",
+            RegisterFunction::new(|input: AddInput| -> Result<AddOutput, iii_sdk::Error> {
+                Ok(AddOutput { c: input.a + input.b })
+            }),
+        );
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"context"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    type AddInput struct {
+    	A float64 `json:"a" jsonschema:"required"`
+    	B float64 `json:"b" jsonschema:"required"`
+    }
+
+    type AddOutput struct {
+    	C float64 `json:"c" jsonschema:"required"`
+    }
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	// The schemas are reflected from AddInput and AddOutput at registration;
+    	// shape them with `json` and `jsonschema` struct tags.
+    	if _, err := iii.RegisterFunctionTyped(client, "math::add", func(ctx context.Context, input AddInput) (AddOutput, error) {
+    		return AddOutput{C: input.A + input.B}, nil
+    	}); err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+## Attach metadata
+
+`metadata` is an arbitrary JSON object stored with the function at registration. The engine never
+interprets it, it's stored with the function so other parts of the system can act on it. It surfaces
+in `engine::functions::info`, the iii console, and is commonly used with `iii-worker-manager` / Role
+based access control.
+
+Because the shape is entirely yours, metadata is a facility that can enable and enhance other
+functionality. For example,
+[worker-manager RBAC allowlists](./worker-manager#trusted-and-rbac-listeners) can expose functions
+by a `metadata:` selector, so tagging a function `{ public: true }` or `{ tier: "premium" }` lets
+you gate access on the fields you define.
+
+<Warning>
+  All access should be gated system-side. You should never rely on an untrusted worker to define
+  what they can or can't have access to.
+</Warning>
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    worker.registerFunction(
+      "math::add",
+      async (payload: { a: number; b: number }) => ({ c: payload.a + payload.b }),
+      { metadata: { owner: "math-team", public: true } },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    worker.register_function(
+        "math::add",
+        add_handler,
+        metadata={"owner": "math-team", "public": True},
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddInput {
+        a: f64,
+        b: f64,
+    }
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        worker.register_function(
+            "math::add",
+            RegisterFunction::new(|input: AddInput| {
+                Ok(json!({ "c": input.a + input.b }))
+            })
+            .metadata(json!({ "owner": "math-team", "public": true })),
+        );
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	_, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var payload struct {
+    			A float64 `json:"a"`
+    			B float64 `json:"b"`
+    		}
+    		if err := json.Unmarshal(data, &payload); err != nil {
+    			return nil, err
+    		}
+    		return map[string]float64{"c": payload.A + payload.B}, nil
+    	}, iii.RegisterFunctionOptions{
+    		Metadata: json.RawMessage(`{"owner":"math-team","public":true}`),
+    	})
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+## Receive per-invocation metadata
+
+Each function can also receive optional per-invocation `metadata`: any JSON value. A caller sets it
+on the call, and an observer sets it once for every activation of its target, to give the receiving
+function execution context (see [Policy and metadata](../using-iii/observers#policy-and-metadata)).
+A call through an observer takes no metadata of its own: its target receives the observer's.
+
+`null` is the same as no metadata. A call that carries no metadata reaches the handler with none,
+whether it runs in the same worker or goes through the engine.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    // The second argument is `undefined` when the call carries no metadata.
+    worker.registerFunction(
+      "math::add",
+      async (payload: { a: number; b: number }, metadata) => ({
+        c: payload.a + payload.b,
+        metadata,
+      }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    # Metadata reaches a handler only when it declares a parameter named `metadata`
+    # (positional or keyword-only); other signatures are called as before. The
+    # parameter is `None` when the call carries no metadata.
+    def add_handler(payload: dict, metadata=None) -> dict:
+        return {"c": payload["a"] + payload["b"], "metadata": metadata}
+
+    worker.register_function("math::add", add_handler)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use serde_json::{json, Value};
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        // A two-argument closure receives the metadata as `Option<Value>`;
+        // one-argument closures keep working unchanged.
+        worker.register_function(
+            "math::add",
+            RegisterFunction::new_async(|input: Value, metadata: Option<Value>| async move {
+                let a = input["a"].as_f64().unwrap_or(0.0);
+                let b = input["b"].as_f64().unwrap_or(0.0);
+                Ok(json!({ "c": a + b, "metadata": metadata }))
+            }),
+        );
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	// MetadataFromContext reports false when the call carries none.
+    	_, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var payload struct {
+    			A float64 `json:"a"`
+    			B float64 `json:"b"`
+    		}
+    		if err := json.Unmarshal(data, &payload); err != nil {
+    			return nil, err
+    		}
+    		metadata, _ := iii.MetadataFromContext(ctx)
+    		return map[string]any{"c": payload.A + payload.B, "metadata": metadata}, nil
+    	})
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+<Note>
+  Registration metadata is a different field from per-invocation metadata. It is set once on the
+  registration and the engine stores it with the function; the per-invocation value travels on each
+  call and reaches the handler.
+</Note>
+
+## HTTP-invoked functions
+
+A worker can register a function that the engine invokes over HTTP. The registration carries an
+`HttpInvocationConfig` instead of a handler: the engine makes the HTTP call whenever the function is
+invoked, and the worker declares only the endpoint.
+
+This is the mechanism that surfaces an existing API gateway, webhook, serverless platform (Lambda,
+Azure Functions, Google Cloud Functions), or third-party API as a regular iii function.
+
+`iii-http-functions` is one worker that uses this mechanism; its
+[Worker Docs](https://workers.iii.dev/workers/iii-http-functions) describe its configuration and
+security controls.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    worker.registerFunction(
+      "math::multiply",
+      {
+        url: "https://math.example.com/multiply",
+        method: "POST",
+        timeout_ms: 5000,
+        headers: { "X-Service": "iii-worker" },
+        auth: { type: "bearer", token_key: "MATH_API_TOKEN" },
+      },
+      { description: "Multiply two numbers in the math service" },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+    from iii_helpers.http import HttpAuthBearer, HttpInvocationConfig
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    worker.register_function(
+        "math::multiply",
+        HttpInvocationConfig(
+            url="https://math.example.com/multiply",
+            method="POST",
+            timeout_ms=5000,
+            headers={"X-Service": "iii-worker"},
+            auth=HttpAuthBearer(token_key="MATH_API_TOKEN"),
+        ),
+        description="Multiply two numbers in the math service",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_helpers::http::{HttpAuthConfig, HttpInvocationConfig, HttpMethod};
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use std::collections::HashMap;
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        let mut headers = HashMap::new();
+        headers.insert("X-Service".to_string(), "iii-worker".to_string());
+
+        let config = HttpInvocationConfig {
+            url: "https://math.example.com/multiply".to_string(),
+            method: HttpMethod::Post,
+            timeout_ms: Some(5000),
+            headers,
+            auth: Some(HttpAuthConfig::Bearer {
+                token_key: "MATH_API_TOKEN".to_string(),
+            }),
+        };
+
+        worker.register_function(
+            "math::multiply",
+            RegisterFunction::http(config).description("Multiply two numbers in the math service"),
+        );
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	timeoutMs := uint64(5000)
+    	_, err := client.RegisterHTTPFunction(
+    		"math::multiply",
+    		iii.HTTPInvocationRef{
+    			URL:       "https://math.example.com/multiply",
+    			Method:    "POST",
+    			TimeoutMs: &timeoutMs,
+    			Headers:   map[string]string{"X-Service": "iii-worker"},
+    			Auth:      iii.BearerAuth("MATH_API_TOKEN"),
+    		},
+    		iii.RegisterFunctionOptions{Description: "Multiply two numbers in the math service"},
+    	)
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+### `HttpInvocationConfig` fields
+
+A handler function takes an `id` and a handler. An HTTP-invoked function takes an `id` and an
+`HttpInvocationConfig`, and no handler runs in the worker.
+
+| Field        | Type                                              | Default    | Description                                                                                                  |
+| ------------ | ------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `url`        | `string`                                          | (required) | Endpoint the engine calls when the function is invoked.                                                      |
+| `method`     | `"GET" \| "POST" \| "PUT" \| "PATCH" \| "DELETE"` | `"POST"`   | HTTP method.                                                                                                 |
+| `timeout_ms` | `number`                                          | `30000`    | Per-request timeout in milliseconds.                                                                         |
+| `headers`    | `Record<string, string>`                          | `{}`       | Headers added to every invocation.                                                                           |
+| `auth`       | `HttpAuthConfig`                                  | (none)     | `{ type: "bearer", token_key }`, `{ type: "hmac", secret_key }`, or `{ type: "api_key", header, value_key }` |
+
+<Note>
+  Auth fields (`token_key`, `secret_key`, `value_key`) are specified as the **names of environment
+  variables**, not the secrets themselves. The engine resolves them from its own process environment
+  at registration time, so secrets stay on the engine host and never travel over the SDK WebSocket.
+</Note>
+
+### HTTP error handling
+
+The engine sends the invocation payload as the JSON request body. It treats every response with a
+status below 400 as a success, and every other response, or a network error, as an invocation
+failure that propagates back to the caller. A 1xx or 3xx response is a success with no function
+result.
+
+HTTP-invoked functions appear in
+[`engine::functions::list`](../using-iii/functions#engine-functions-engine) and are discoverable
+through the console exactly like in-process handlers.
+
+## Return values and errors
+
+A handler returns a value that matches its documented
+[response schema](#attach-request-and-response-schemas), or an error. An error raised in the handler
+reaches the caller as an invocation error, with the handler's `error.stack` attached in Node. The
+engine does not swallow it.
+
+Return a structured value for an expected failure, and throw for an unexpected one.
+
+## Observers of a function
+
+Every registered function is observable unless the registration sets `observable: false`, which
+makes the engine refuse every observer with `NOT_OBSERVABLE`; the function stays callable.
+`private: true` allows calls only from the connection that hosts the function, and other workers can
+still observe it. `args_format` is the JSON Schema of the args an observer passes.
+
+See [Observable functions](./observable-functions) for the hooks that run around observation.
+
+## Unregister a function
+
+`registerFunction` returns a handle with an `unregister()` method that removes the function from the
+engine at runtime. When the worker disconnects, all of its functions are removed automatically and
+pending invocations error out.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker } from "iii-sdk";
+
+    const url = process.env.III_URL;
+    if (!url) throw new Error("III_URL must be set");
+    const worker = registerWorker(url, { namespace: "orders" });
+
+    const add = worker.registerFunction("math::add", async (payload: { a: number; b: number }) => {
+      return { c: payload.a + payload.b };
+    });
+
+    add.unregister();
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InitOptions, register_worker
+
+    worker = register_worker(
+        os.environ["III_URL"],
+        InitOptions(worker_name="math-worker", namespace="orders"),
+    )
+
+    def add_handler(payload: dict) -> dict:
+        return {"c": payload["a"] + payload["b"]}
+
+    add = worker.register_function("math::add", add_handler)
+
+    add.unregister()
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{register_worker, InitOptions, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct AddInput {
+        a: f64,
+        b: f64,
+    }
+
+    fn main() {
+        let url = std::env::var("III_URL").expect("III_URL must be set");
+        let worker = register_worker(
+            &url,
+            InitOptions {
+                namespace: Some("orders".into()),
+                ..Default::default()
+            },
+        );
+
+        let add = worker.register_function(
+            "math::add",
+            RegisterFunction::new(|input: AddInput| {
+                Ok(serde_json::json!({ "c": input.a + input.b }))
+            }),
+        );
+
+        add.unregister();
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+    	"context"
+    	"encoding/json"
+    	"log"
+    	"os"
+
+    	iii "github.com/iii-hq/iii/sdk/packages/go/iii"
+    )
+
+    func main() {
+    	client := iii.RegisterWorker(os.Getenv("III_URL"), iii.WithNamespace("orders"))
+
+    	add, err := client.RegisterFunction("math::add", func(ctx context.Context, data json.RawMessage) (any, error) {
+    		var payload struct {
+    			A float64 `json:"a"`
+    			B float64 `json:"b"`
+    		}
+    		if err := json.Unmarshal(data, &payload); err != nil {
+    			return nil, err
+    		}
+    		return map[string]float64{"c": payload.A + payload.B}, nil
+    	})
+    	if err != nil {
+    		log.Fatal(err)
+    	}
+
+    	if err := add.Unregister(); err != nil {
+    		log.Fatal(err)
+    	}
+    }
+    ```
+
+  </Tab>
+</Tabs>

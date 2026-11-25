@@ -7,6 +7,7 @@
 pub mod exec;
 pub mod help;
 pub mod payload;
+pub mod streams;
 
 use clap::Parser;
 use iii::workers::worker::DEFAULT_PORT;
@@ -20,6 +21,13 @@ use iii::workers::worker::DEFAULT_PORT;
 pub enum CallCliError {
     #[error("remote function returned an error")]
     RemoteAlreadyReported,
+    /// The arguments or `III_CALL_DEFAULTS` cannot make a call: exit 2.
+    #[error("{0:#}")]
+    Usage(anyhow::Error),
+    /// A signal came after the answer, while streams were still carried: exit 128 plus its
+    /// number.
+    #[error("interrupted by signal {0}")]
+    Interrupted(i32),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -60,13 +68,29 @@ pub struct CallArgs {
     #[arg(long)]
     pub port: Option<u16>,
 
-    /// Max time to wait for the invocation result (milliseconds).
-    #[arg(long, default_value_t = 30_000)]
-    pub timeout_ms: u64,
+    /// How long to wait for the function's answer, in milliseconds. Defaults
+    /// to 30000. A call to a function that takes a stream has no limit unless
+    /// this is set: it lasts as long as the function runs.
+    #[arg(long)]
+    pub timeout_ms: Option<u64>,
+
+    /// Run the call without its streams: stdin, stdout and stderr are not
+    /// connected to the function, and the streams in its result are left
+    /// unread. The result JSON is printed, with each stream shown as a ref. A
+    /// function that takes a stream still runs with no time limit unless
+    /// `--timeout-ms` sets one.
+    #[arg(long)]
+    pub no_follow: bool,
+
+    /// Also print the result JSON once the streams end. A call that carries no
+    /// stream, or runs with `--no-follow`, always prints it.
+    #[arg(long)]
+    pub print_result: bool,
 
     /// Namespace to resolve FUNCTION_PATH in. Omit to resolve in the engine's
-    /// `default` namespace; routing is strict, so a function registered in
-    /// another namespace is only reachable with this flag.
+    /// `default` namespace, also in a process with `III_NAMESPACE` set (a
+    /// Compose script); routing is strict, so a function registered in another
+    /// namespace is only reachable with this flag.
     #[arg(short = 'n', long, value_name = "NS")]
     pub namespace: Option<String>,
 
@@ -332,41 +356,64 @@ impl CallArgs {
     }
 }
 
+/// Whether repeated `worker=` tokens become one `workers` list. `compose::add`,
+/// `compose::update` and `compose::remove` take that list in their JSON contract,
+/// while the shell form repeats the readable singular key: `worker=database
+/// worker=web`. The adaptation stays scoped to them so repeated keys for every
+/// other function keep their established last-value-wins behaviour.
+fn collects_workers(function_path: &str) -> bool {
+    matches!(
+        function_path,
+        "compose::add" | "compose::update" | "compose::remove"
+    )
+}
+
 pub async fn run_call(args: &CallArgs) -> Result<(), CallCliError> {
     args.warn_deprecated_endpoint_flags();
-    let (address, port) = args.endpoint()?;
+    // Resolving the endpoint only reads `--engine`, `III_URL` and the compose file, and connects
+    // nowhere: every failure here is an address that cannot be used.
+    let (address, port) = args.endpoint().map_err(CallCliError::Usage)?;
     if args.help {
         help::print(
             args.function_path.as_deref(),
             &address,
             port,
-            args.timeout_ms,
+            args.timeout_ms.unwrap_or(exec::DEFAULT_TIMEOUT_MS),
             args.namespace.as_deref(),
         )
         .await?;
         return Ok(());
     }
     let function_path = args.function_path.as_deref().ok_or_else(|| {
-        anyhow::anyhow!("iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`")
+        CallCliError::Usage(anyhow::anyhow!(
+            "iii call: missing FUNCTION_PATH. Try: `iii call <fn-path> [args]`"
+        ))
     })?;
-    // `compose::add` has a list in its JSON contract, while the shell form
-    // repeats the readable singular key: `worker=database worker=web`.
-    // Keep this adaptation scoped to that function so repeated keys for every
-    // other function retain their established last-value-wins behaviour.
-    let payload = if function_path == "compose::add" {
-        payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")?
+    let payload = if collects_workers(function_path) {
+        payload::parse_collecting(&args.kv, args.json.as_deref(), "worker", "workers")
     } else {
-        payload::parse(&args.kv, args.json.as_deref())?
+        payload::parse(&args.kv, args.json.as_deref())
+    }
+    .map_err(CallCliError::Usage)?;
+    // A parent process (Compose, for a VM container's scripts) hands the call
+    // fields it must not put in the arguments, where `ps` would show them: only
+    // for the function in the namespace the call resolves in, `default` without
+    // `-n`, as `exec` routes it.
+    let defaults = payload::defaults_from_env(std::env::var(payload::DEFAULTS_ENV))
+        .map_err(CallCliError::Usage)?;
+    let namespace = args
+        .namespace
+        .as_deref()
+        .unwrap_or(iii::protocol::DEFAULT_NAMESPACE);
+    let payload = payload::apply_defaults(function_path, namespace, defaults.as_deref(), payload)
+        .map_err(CallCliError::Usage)?;
+    let options = exec::Options {
+        timeout_ms: args.timeout_ms,
+        namespace: args.namespace.as_deref(),
+        follow: !args.no_follow,
+        print_result: args.print_result,
     };
-    exec::invoke(
-        function_path,
-        payload,
-        &address,
-        port,
-        args.timeout_ms,
-        args.namespace.as_deref(),
-    )
-    .await
+    exec::invoke(function_path, payload, &address, port, &options).await
 }
 
 #[cfg(test)]
@@ -766,6 +813,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn repeated_workers_are_collected_for_the_compose_worker_mutations_only() {
+        for function in ["compose::add", "compose::update", "compose::remove"] {
+            assert!(collects_workers(function), "{function}");
+        }
+        for function in ["compose::restart", "compose::build", "my::fn"] {
+            assert!(!collects_workers(function), "{function}");
+        }
+    }
+
     #[tokio::test]
     async fn run_call_missing_fn_path_errors() {
         let args = CallArgs {
@@ -775,9 +832,11 @@ mod tests {
             engine: None,
             address: None,
             port: None,
-            timeout_ms: 800,
+            timeout_ms: Some(800),
             help: false,
             namespace: None,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         assert!(
@@ -796,9 +855,11 @@ mod tests {
             engine: None,
             address: None,
             port: Some(19999),
-            timeout_ms: 800,
+            timeout_ms: Some(800),
             help: false,
             namespace: None,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         // The OS may immediately return ECONNREFUSED on closed ports, in which
@@ -824,9 +885,11 @@ mod tests {
             engine: None,
             address: None,
             port: None,
-            timeout_ms: 30_000,
+            timeout_ms: Some(30_000),
             help: false,
             namespace: None,
+            no_follow: false,
+            print_result: false,
         };
         let err = run_call(&args).await.unwrap_err().to_string();
         assert!(

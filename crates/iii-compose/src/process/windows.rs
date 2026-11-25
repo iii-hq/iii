@@ -221,6 +221,17 @@ fn kill_and_reap(mut child: tokio::process::Child, setup_error: std::io::Error) 
 }
 
 impl Supervised {
+    /// An inert handle using the real reaped-child poll path. Never stop it.
+    #[cfg(test)]
+    pub(crate) fn with_test_exit(pid: u32, exit: watch::Receiver<Option<ExitStatus>>) -> Self {
+        Self {
+            pid,
+            birth: BirthIdentity::Unavailable,
+            job: None,
+            exit: ExitSource::Reaped(exit),
+        }
+    }
+
     /// Takes over a process a previous daemon left running.
     ///
     /// Returns `None` unless the PID still carries the identity recorded for

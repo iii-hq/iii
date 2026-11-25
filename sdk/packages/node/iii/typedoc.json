@@ -3,7 +3,6 @@
     "src/index.ts",
     "src/stream.ts",
     "src/state.ts",
-    "src/channel.ts",
     "src/runtime.ts",
     "src/errors.ts",
     "src/engine.ts",

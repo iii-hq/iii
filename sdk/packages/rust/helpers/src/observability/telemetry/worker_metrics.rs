@@ -50,10 +50,10 @@ impl WorkerMetricsCollector {
         const CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(500);
 
         let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((ts, ref metrics)) = *cached
-            && ts.elapsed() < CACHE_TTL
-        {
-            return metrics.clone();
+        if let Some((ts, ref metrics)) = *cached {
+            if ts.elapsed() < CACHE_TTL {
+                return metrics.clone();
+            }
         }
 
         let metrics = self.collect();

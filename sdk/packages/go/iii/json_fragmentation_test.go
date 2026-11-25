@@ -242,7 +242,7 @@ func TestJSONWebSocketFrameFragmentationAndBoundaries(t *testing.T) {
 	if !errors.As(err, &invocationErr) || invocationErr.Code != "payload_too_large" {
 		t.Fatalf("64 MiB + 1 byte error = %v", err)
 	}
-	wantError := "Serialized JSON envelope is 67108865 bytes; limit is 67108864 bytes. Use channels for larger payloads: https://iii.dev/docs/creating-workers/channels#payload-size"
+	wantError := "Serialized JSON envelope is 67108865 bytes; limit is 67108864 bytes. Use streams for larger payloads: https://iii.dev/docs/creating-workers/streaming#payload-size"
 	if invocationErr.Message != wantError {
 		t.Fatalf("error message = %q, want %q", invocationErr.Message, wantError)
 	}

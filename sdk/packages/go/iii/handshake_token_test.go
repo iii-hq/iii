@@ -54,10 +54,10 @@ func TestHandshakeKeepsTheCallersHeaders(t *testing.T) {
 	}
 }
 
-// TestChannelsSendTheHandshakeHeaders covers both ways to get a channel end: from
-// CreateChannel (the client's WithHeaders ride along) and OpenReader/OpenWriter
-// (III_TOKEN only).
-func TestChannelsSendTheHandshakeHeaders(t *testing.T) {
+// TestStreamsSendTheHandshakeHeaders covers both ways a stream gets its engine: the
+// ends of a Pipe (the client's WithHeaders ride along, and the pipe is created in the
+// default namespace) and a stream bound by hand to a client whose address carries a query.
+func TestStreamsSendTheHandshakeHeaders(t *testing.T) {
 	setToken(t, ptr("secret"))
 	ref := func(dir ChannelDirection) StreamChannelRef {
 		return StreamChannelRef{ChannelID: "chan", AccessKey: "key", Direction: dir}
@@ -65,29 +65,34 @@ func TestChannelsSendTheHandshakeHeaders(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	t.Run("CreateChannel", func(t *testing.T) {
+	t.Run("Pipe", func(t *testing.T) {
 		m := newMockEngine(t)
+		namespace := make(chan string, 1)
 		m.onReceive = func(conn *websocket.Conn, msg map[string]json.RawMessage) {
 			var id uuid.UUID
 			if stringField(msg, "function_id") != FnCreateChannel || json.Unmarshal(msg["invocation_id"], &id) != nil {
 				return
 			}
+			namespace <- stringField(msg, "namespace")
 			result, _ := json.Marshal(map[string]StreamChannelRef{"writer": ref(ChannelWrite), "reader": ref(ChannelRead)})
 			_ = m.send(ctx, conn, &InvocationResultMessage{InvocationID: id, FunctionID: FnCreateChannel, Result: result})
 		}
-		c := connectClient(t, m, WithHeaders(http.Header{"X-Other": {"kept"}}))
+		c := connectClient(t, m, WithHeaders(http.Header{"X-Other": {"kept"}}), WithNamespace("orders"))
 
-		ch, err := c.CreateChannel(ctx, nil)
+		in, out, err := c.Pipe(ctx)
 		if err != nil {
-			t.Fatalf("CreateChannel: %v", err)
+			t.Fatalf("Pipe: %v", err)
 		}
-		t.Cleanup(func() { _ = ch.Writer.Close(); _ = ch.Reader.Close() })
-		if err := ch.Writer.SendMessage(ctx, "hi"); err != nil {
-			t.Fatalf("SendMessage: %v", err)
+		if ns := <-namespace; ns != "default" {
+			t.Errorf("engine::channels::create namespace = %q, want default", ns)
 		}
-		if _, err := ch.Reader.ensureConnected(ctx); err != nil {
-			t.Fatalf("reader connect: %v", err)
+		if err := out.Send(ctx, "hi"); err != nil {
+			t.Fatalf("Send: %v", err)
 		}
+		t.Cleanup(func() { _ = out.Close() })
+		readCtx, cancelRead := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancelRead()
+		_, _ = in.ReadAll(readCtx)
 
 		for i, dir := range []string{"write", "read"} {
 			h := m.handshakeAt(i + 1) // 0 is the main connection
@@ -103,17 +108,19 @@ func TestChannelsSendTheHandshakeHeaders(t *testing.T) {
 		}
 	})
 
-	t.Run("OpenWriter and OpenReader", func(t *testing.T) {
+	t.Run("Bind", func(t *testing.T) {
 		m := newMockEngine(t)
-		w := OpenWriter(m.url+"/?token=abc", ref(ChannelWrite))
-		r := OpenReader(m.url+"/?token=abc", ref(ChannelRead))
-		t.Cleanup(func() { _ = w.Close(); _ = r.Close() })
-		if err := w.SendMessage(ctx, "hi"); err != nil {
-			t.Fatalf("SendMessage: %v", err)
+		c := New(m.url + "/?token=abc")
+		t.Cleanup(func() { _ = c.Close() })
+		w := (&OutputStream{inner: newOutput(ptrRef(ref(ChannelWrite)), nil, nil)}).Bind(c)
+		r := (&InputStream{inner: newInput(ptrRef(ref(ChannelRead)), nil, nil)}).Bind(c)
+		if err := w.Send(ctx, "hi"); err != nil {
+			t.Fatalf("Send: %v", err)
 		}
-		if _, err := r.ensureConnected(ctx); err != nil {
-			t.Fatalf("reader connect: %v", err)
-		}
+		t.Cleanup(func() { _ = w.Close() })
+		readCtx, cancelRead := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancelRead()
+		_, _ = r.ReadAll(readCtx)
 
 		for i, dir := range []string{"write", "read"} {
 			h := m.handshakeAt(i)
@@ -126,6 +133,8 @@ func TestChannelsSendTheHandshakeHeaders(t *testing.T) {
 		}
 	})
 }
+
+func ptrRef(ref StreamChannelRef) *StreamChannelRef { return &ref }
 
 func ptr(s string) *string { return &s }
 

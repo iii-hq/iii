@@ -32,7 +32,11 @@ import { ... } from '@iii-dev/helpers/http'
 ### http
 
 Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
-into the function handler format expected by the SDK.
+into the function handler format expected by the SDK. `res.status()` and
+`res.headers()` send the `set_status` / `set_headers` messages the HTTP
+worker reads; the body goes through `res.write()` or `res.stream`. The SDK
+closes a response the handler used when it returns, and aborts it when it
+throws; return an `HttpResponse` instead for a buffered response.
 
 **Signature**
 
@@ -57,10 +61,9 @@ import { http } from '@iii-dev/helpers/http'
 worker.registerFunction(
   'my-api',
   http(async (req, res) => {
-    res.status(200)
-    res.headers({ 'content-type': 'application/json' })
-    res.stream.end(JSON.stringify({ hello: 'world' }))
-    res.close()
+    await res.status(200)
+    await res.headers({ 'content-type': 'application/json' })
+    await res.write(JSON.stringify({ hello: 'world' }))
   }),
 )
 ```
@@ -71,7 +74,7 @@ worker.registerFunction(
 
 ### Types
 
-[`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpMethod`](#httpmethod) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
+[`HttpAuthConfig`](#httpauthconfig) · [`HttpMethod`](#httpmethod) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
 
 ### HttpAuthConfig
 
@@ -84,20 +87,6 @@ Authentication configuration for HTTP-invoked functions.
 ```typescript
 type HttpAuthConfig = { secret_key: string; type: "hmac" } | { token_key: string; type: "bearer" } | { header: string; type: "api_key"; value_key: string }
 ```
-
----
-
-### HttpInvocationConfig
-
-Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
-
-| Name | Type | Required | Description |
-| --- | --- | --- | --- |
-| `auth` | [`HttpAuthConfig`](#httpauthconfig) | No | Authentication configuration. |
-| `headers` | `Record<string, string>` | No | Custom headers to send with the request. |
-| `method` | [`HttpMethod`](#httpmethod) | No | HTTP method. Defaults to `POST`. |
-| `timeout_ms` | `number` | No | Timeout in milliseconds. |
-| `url` | `string` | Yes | URL to invoke. |
 
 ---
 
@@ -123,7 +112,7 @@ Incoming buffered HTTP request received by a function handler.
 | `method` | `string` | Yes | HTTP method of the request (e.g. `GET`, `POST`). |
 | `path_params` | `Record<string, string>` | Yes | Path parameters extracted from the matched route. |
 | `query_params` | `Record<string, string \| string[]>` | Yes | Query-string parameters from the request URL. |
-| `request_body` | `HttpStreamReader` | Yes | Streaming reader for the raw request body. |
+| `request_body` | `HttpInputStream` | Yes | The raw request body, as an `InputStream` of `iii-sdk`: read it, or pass it on unread. |
 
 ---
 

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use serial_test::serial;
 use tokio::sync::Mutex;
 
-use iii_sdk::{Error, RegisterFunction, Source};
+use iii_sdk::{Error, InputStream, OutputStream, RegisterFunction, Source};
 use tokio::time::sleep;
 
 // The standalone HTTP worker accepts request bodies up to 16 MiB. Keep upload
@@ -103,75 +103,48 @@ async fn raw_json_request_body() {
     let iii = common::shared_iii();
     let raw_json = r#"{"z":2, "a":1}"#;
 
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::json::raw::rs",
-        RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
-            async move {
-                let parsed_body = input.get("body").cloned().unwrap_or(Value::Null);
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
-
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k.contains("request_body")
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader ref");
-
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-                let raw = reader
-                    .read_all()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {"content-type": "application/json"}
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let response_body = serde_json::to_vec(&json!({
-                    "parsed_body": parsed_body,
-                    "raw_body": String::from_utf8(raw)
-                        .map_err(|e| Error::Handler(e.to_string()))?,
-                }))
+        RegisterFunction::new_async(move |input: Value| async move {
+            let parsed_body = input.get("body").cloned().unwrap_or(Value::Null);
+            let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
+            let reader: InputStream = serde_json::from_value(input["request_body"].clone())?;
+            let raw = reader
+                .read_all()
+                .await
                 .map_err(|e| Error::Handler(e.to_string()))?;
 
-                writer
-                    .write(&response_body)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                writer
-                    .close()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+            writer
+                .send(&json!({
+                    "type": "set_status", "status_code": 200
+                }))
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
 
-                Ok(Value::Null)
-            }
+            writer
+                .send(&json!({
+                    "type": "set_headers", "headers": {"content-type": "application/json"}
+                }))
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            let response_body = serde_json::to_vec(&json!({
+                "parsed_body": parsed_body,
+                "raw_body": String::from_utf8(raw)
+                    .map_err(|e| Error::Handler(e.to_string()))?,
+            }))
+            .map_err(|e| Error::Handler(e.to_string()))?;
+
+            writer
+                .write(&response_body)
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+            writer
+                .close()
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            Ok(Value::Null)
         }),
     );
 
@@ -355,39 +328,24 @@ async fn download_pdf_streaming() {
     let iii = common::shared_iii();
 
     let pdf_data = original_pdf.clone();
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::download::pdf::rs",
         RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
             let pdf_data = pdf_data.clone();
             async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
-
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_status", "status_code": 200
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {"content-type": "application/pdf"}
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_headers", "headers": {"content-type": "application/pdf"}
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
@@ -456,50 +414,25 @@ async fn upload_pdf_streaming() {
     let received: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let received_clone = received.clone();
 
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::upload::pdf::rs",
         RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
             let received = received_clone.clone();
             async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
-
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k.contains("request_body")
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader ref");
-
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
+                let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
+                let reader: InputStream = serde_json::from_value(input["request_body"].clone())?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_status", "status_code": 200
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {"content-type": "application/json"}
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_headers", "headers": {"content-type": "application/json"}
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
@@ -567,43 +500,28 @@ async fn sse_streaming() {
     ];
 
     let events_clone = events.clone();
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::sse::rs",
         RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
             let events = events_clone.clone();
             async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
-
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
+                let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_status", "status_code": 200
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
                 writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {
-                                "content-type": "text/event-stream",
-                                "cache-control": "no-cache",
-                                "connection": "keep-alive",
-                            }
-                        }))
-                        .unwrap(),
-                    )
+                    .send(&json!({
+                        "type": "set_headers", "headers": {
+                            "content-type": "text/event-stream",
+                            "cache-control": "no-cache",
+                            "connection": "keep-alive",
+                        }
+                    }))
                     .await
                     .map_err(|e| Error::Handler(e.to_string()))?;
 
@@ -688,88 +606,61 @@ async fn sse_streaming() {
 async fn urlencoded_form_data() {
     let iii = common::shared_iii();
 
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::form::urlencoded::rs",
-        RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
-            async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
+        RegisterFunction::new_async(move |input: Value| async move {
+            let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
+            let reader: InputStream = serde_json::from_value(input["request_body"].clone())?;
 
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
+            let raw = reader
+                .read_all()
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+            let body = String::from_utf8_lossy(&raw);
 
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k.contains("request_body")
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader ref");
+            let params: std::collections::HashMap<String, String> = body
+                .split('&')
+                .filter_map(|pair| {
+                    let mut parts = pair.splitn(2, '=');
+                    let key = parts.next()?.to_string();
+                    let value = parts.next().unwrap_or("").to_string();
+                    let key = urlencoding_decode(&key);
+                    let value = urlencoding_decode(&value);
+                    Some((key, value))
+                })
+                .collect();
 
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-
-                let raw = reader
-                    .read_all()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                let body = String::from_utf8_lossy(&raw);
-
-                let params: std::collections::HashMap<String, String> = body
-                    .split('&')
-                    .filter_map(|pair| {
-                        let mut parts = pair.splitn(2, '=');
-                        let key = parts.next()?.to_string();
-                        let value = parts.next().unwrap_or("").to_string();
-                        let key = urlencoding_decode(&key);
-                        let value = urlencoding_decode(&value);
-                        Some((key, value))
-                    })
-                    .collect();
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {"content-type": "application/json"}
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let result = serde_json::to_vec(&json!({
-                    "name": params.get("name"),
-                    "email": params.get("email"),
-                    "age": params.get("age"),
+            writer
+                .send(&json!({
+                    "type": "set_status", "status_code": 200
                 }))
+                .await
                 .map_err(|e| Error::Handler(e.to_string()))?;
 
-                writer
-                    .write(&result)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                writer
-                    .close()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+            writer
+                .send(&json!({
+                    "type": "set_headers", "headers": {"content-type": "application/json"}
+                }))
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
 
-                Ok(Value::Null)
-            }
+            let result = serde_json::to_vec(&json!({
+                "name": params.get("name"),
+                "email": params.get("email"),
+                "age": params.get("age"),
+            }))
+            .map_err(|e| Error::Handler(e.to_string()))?;
+
+            writer
+                .write(&result)
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+            writer
+                .close()
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            Ok(Value::Null)
         }),
     );
 
@@ -836,92 +727,65 @@ async fn multipart_form_data() {
 
     let iii = common::shared_iii();
 
-    let iii_for_handler = iii.clone();
     iii.register_function(
         "test::api::form::multipart::rs",
-        RegisterFunction::new_async(move |input: Value| {
-            let iii = iii_for_handler.clone();
-            async move {
-                let refs = iii_sdk::helpers::extract_channel_refs(&input);
+        RegisterFunction::new_async(move |input: Value| async move {
+            let writer: OutputStream = serde_json::from_value(input["response"].clone())?;
+            let reader: InputStream = serde_json::from_value(input["request_body"].clone())?;
 
-                let writer_ref = refs
-                    .iter()
-                    .find(|(_, r)| matches!(r.direction, iii_sdk::helpers::ChannelDirection::Write))
-                    .map(|(_, r)| r.clone())
-                    .expect("missing writer ref");
-
-                let reader_ref = refs
-                    .iter()
-                    .find(|(k, r)| {
-                        k.contains("request_body")
-                            && matches!(r.direction, iii_sdk::helpers::ChannelDirection::Read)
-                    })
-                    .map(|(_, r)| r.clone())
-                    .expect("missing reader ref");
-
-                let writer = iii_sdk::channel::ChannelWriter::new(iii.address(), &writer_ref);
-                let reader = iii_sdk::channel::ChannelReader::new(iii.address(), &reader_ref);
-
-                let raw = reader
-                    .read_all()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let content_type = input
-                    .get("headers")
-                    .and_then(|h| h.get("content-type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let has_boundary = content_type
-                    .split(';')
-                    .any(|part| part.trim().starts_with("boundary="));
-
-                let body_text = String::from_utf8_lossy(&raw);
-                let has_title = body_text.contains("Test Document");
-                let has_description = body_text.contains("A test upload");
-                let has_filename = body_text.contains("filename=\"handbook.pdf\"");
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_status", "status_code": 200
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                writer
-                    .send_message(
-                        &serde_json::to_string(&json!({
-                            "type": "set_headers", "headers": {"content-type": "application/json"}
-                        }))
-                        .unwrap(),
-                    )
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-
-                let result = serde_json::to_vec(&json!({
-                    "has_boundary": has_boundary,
-                    "has_title": has_title,
-                    "has_description": has_description,
-                    "has_filename": has_filename,
-                    "body_size": raw.len(),
-                }))
+            let raw = reader
+                .read_all()
+                .await
                 .map_err(|e| Error::Handler(e.to_string()))?;
 
-                writer
-                    .write(&result)
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
-                writer
-                    .close()
-                    .await
-                    .map_err(|e| Error::Handler(e.to_string()))?;
+            let content_type = input
+                .get("headers")
+                .and_then(|h| h.get("content-type"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
-                Ok(Value::Null)
-            }
+            let has_boundary = content_type
+                .split(';')
+                .any(|part| part.trim().starts_with("boundary="));
+
+            let body_text = String::from_utf8_lossy(&raw);
+            let has_title = body_text.contains("Test Document");
+            let has_description = body_text.contains("A test upload");
+            let has_filename = body_text.contains("filename=\"handbook.pdf\"");
+
+            writer
+                .send(&json!({
+                    "type": "set_status", "status_code": 200
+                }))
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            writer
+                .send(&json!({
+                    "type": "set_headers", "headers": {"content-type": "application/json"}
+                }))
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            let result = serde_json::to_vec(&json!({
+                "has_boundary": has_boundary,
+                "has_title": has_title,
+                "has_description": has_description,
+                "has_filename": has_filename,
+                "body_size": raw.len(),
+            }))
+            .map_err(|e| Error::Handler(e.to_string()))?;
+
+            writer
+                .write(&result)
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+            writer
+                .close()
+                .await
+                .map_err(|e| Error::Handler(e.to_string()))?;
+
+            Ok(Value::Null)
         }),
     );
 

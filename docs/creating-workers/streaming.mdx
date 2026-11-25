@@ -1,0 +1,883 @@
+---
+title: "Streaming"
+description: "Receive, write, return, and forward streams in the functions a worker registers."
+owner: "devrel"
+type: "how-to"
+---
+
+A typical handler receives a JSON payload and returns a JSON result. A handler can also receive and
+return streams. Use a stream for data that is too large for one JSON message, or for data that the
+sender makes over time.
+
+A stream that the handler receives is an `InputStream` to read or an `OutputStream` to write. A
+stream that the handler returns is a value in its result. When the handler returns or throws, the
+SDK closes, aborts, or cancels each stream that the handler received. See
+[Manage the Stream lifecycle](#manage-the-stream-lifecycle).
+
+<Note>
+  To call functions with streams, read streams, and create pipes, see [Using iii /
+  Streaming](../using-iii/streaming). For how a stream works, see [Understanding iii /
+  Streaming](../understanding-iii/streaming). To move code from the channel API, see [Upgrading from
+  0.26.x](../upgrading/from-0-26-x).
+</Note>
+
+## Receive a stream
+
+When the caller sends a stream in a field of the payload, the handler receives an `InputStream` in
+that field. The payload does not contain the data. The handler reads the data from the stream.
+
+A stream has one reader, so read each `InputStream` one time only. For the read operations, see
+[Read a stream from a result](../using-iii/streaming#read-a-stream-from-a-result).
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import { registerWorker, type InputStream } from "iii-sdk";
+
+    const worker = registerWorker(process.env.III_URL ?? "ws://localhost:49134");
+
+    worker.registerFunction(
+      "files::process",
+      async ({ filename, body }: { filename: string; body: InputStream }) => {
+        let bytes = 0;
+        for await (const chunk of body) bytes += chunk.length;
+        return { filename, bytes };
+      },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import os
+
+    from iii import InputStream, register_worker
+
+    worker = register_worker(os.environ.get("III_URL", "ws://localhost:49134"))
+
+
+    async def process(payload: dict) -> dict:
+        body: InputStream = payload["body"]
+        total = 0
+        async for chunk in body:
+            total += len(chunk)
+        return {"filename": payload["filename"], "bytes": total}
+
+
+    worker.register_function("files::process", process)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use iii_sdk::{Error, InputStream, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    // A typed field: the stream binds to this worker on first read
+    #[derive(Deserialize, JsonSchema)]
+    struct Upload {
+        filename: String,
+        body: InputStream,
+    }
+
+    worker.register_function(
+        "files::process",
+        RegisterFunction::new_async(|upload: Upload| async move {
+            let bytes = upload.body.read_all().await?.len();
+            Ok::<_, Error>(json!({ "filename": upload.filename, "bytes": bytes }))
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // The payload unmarshals into a struct, and the field into an *iii.InputStream
+    type upload struct {
+    	Filename string           `json:"filename"`
+    	Body     *iii.InputStream `json:"body"`
+    }
+
+    iii.RegisterFunctionTyped(worker, "files::process", func(ctx context.Context, in upload) (map[string]any, error) {
+    	bytes, err := io.Copy(io.Discard, in.Body) // an InputStream is an io.Reader
+    	if err != nil {
+    		return nil, err
+    	}
+    	return map[string]any{"filename": in.Filename, "bytes": bytes}, nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+Finish each read before the handler returns. When the handler returns, the SDK cancels an
+`InputStream` that the handler started to read and did not finish. See
+[Manage the Stream lifecycle](#manage-the-stream-lifecycle).
+
+## Return a stream
+
+To return data as a stream, put the stream in the result. The caller receives an `InputStream` in
+the same field. The handler's SDK sends the result first, and then writes the data into the pipe.
+
+The SDK sends the same values as streams in a result and in a payload. For these values, see
+[Send a stream in a call](../using-iii/streaming#send-a-stream-in-a-call).
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    async function* csvLines(reportId: string) {
+      yield "id,total\n";
+      for await (const row of db.rows(reportId)) yield `${row.id},${row.total}\n`;
+    }
+
+    worker.registerFunction("reports::export", async ({ report_id }: { report_id: string }) => ({
+      report_id,
+      csv: csvLines(report_id), // an async generator, a Readable, or a Web ReadableStream
+    }));
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    async def csv_lines(report_id: str):
+        yield b"id,total\n"
+        async for row in db.rows(report_id):
+            yield f"{row.id},{row.total}\n".encode()
+
+    async def export(payload: dict) -> dict:
+        return {"report_id": payload["report_id"], "csv": csv_lines(payload["report_id"])}
+
+
+    worker.register_function("reports::export", export)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use bytes::Bytes;
+    use futures::TryStreamExt;
+    use iii_sdk::{Error, InputStream, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, JsonSchema)]
+    struct ExportRequest {
+        report_id: String,
+    }
+
+    #[derive(Serialize, JsonSchema)]
+    struct Export {
+        report_id: String,
+        csv: InputStream,
+    }
+
+    worker.register_function(
+        "reports::export",
+        RegisterFunction::new_async(|req: ExportRequest| async move {
+            let lines = db
+                .rows(req.report_id.clone())
+                .map_ok(|row| Bytes::from(format!("{},{}\n", row.id, row.total)));
+            Ok::<_, Error>(Export { report_id: req.report_id, csv: InputStream::from_stream(lines) })
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type exportRequest struct {
+    	ReportID string `json:"report_id"`
+    }
+
+    type export struct {
+    	ReportID string           `json:"report_id"`
+    	CSV      *iii.InputStream `json:"csv"`
+    }
+
+    iii.RegisterFunctionTyped(worker, "reports::export", func(ctx context.Context, req exportRequest) (export, error) {
+    	pr, pw := io.Pipe()
+    	go func() {
+    		// nil ends the stream, an error aborts it
+    		pw.CloseWithError(writeCSV(pw, req.ReportID))
+    	}()
+    	return export{ReportID: req.ReportID, CSV: iii.InputStreamFromReader(pr)}, nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+Keep the worker connected until the caller has read the stream. The worker that returns a stream
+owns the pipe of that stream. See [Pipe ownership](../understanding-iii/streaming#pipe-ownership).
+
+## Write to a received OutputStream
+
+A caller can pass a sink, which is a destination of its own for the data. The handler receives the
+sink as an `OutputStream` and writes the data to it. A sink receives bytes only, so write the data
+with `write`. The caller's call resolves after the sink has received all the data.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { OutputStream } from "iii-sdk";
+
+    worker.registerFunction(
+      "reports::render-pdf",
+      async ({ report_id, out }: { report_id: string; out: OutputStream }) => {
+        for await (const page of renderPages(report_id)) await out.write(page);
+        // Returning closes `out`. Throwing aborts it, so the caller gets an error, not a short file.
+      },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import OutputStream
+
+    async def render_pdf(payload: dict) -> None:
+        out: OutputStream = payload["out"]
+        async for page in render_pages(payload["report_id"]):
+            await out.write(page)
+        # Returning closes `out`. Raising aborts it, so the caller gets an error, not a short file.
+
+
+    worker.register_function("reports::render-pdf", render_pdf)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use futures::TryStreamExt;
+    use iii_sdk::{Error, OutputStream, RegisterFunction};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct RenderPdf {
+        report_id: String,
+        out: OutputStream,
+    }
+
+    worker.register_function(
+        "reports::render-pdf",
+        RegisterFunction::new_async(|req: RenderPdf| async move {
+            let mut pages = render_pages(&req.report_id);
+            while let Some(page) = pages.try_next().await? {
+                req.out.write(&page).await?;
+            }
+            // Ok closes `out`. Err aborts it, so the caller gets an error, not a short file.
+            Ok::<_, Error>(())
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type renderPDF struct {
+    	ReportID string            `json:"report_id"`
+    	Out      *iii.OutputStream `json:"out"`
+    }
+
+    worker.RegisterFunction("reports::render-pdf", func(ctx context.Context, data json.RawMessage) (any, error) {
+    	var req renderPDF
+    	if err := json.Unmarshal(data, &req); err != nil {
+    		return nil, err
+    	}
+    	for _, page := range renderPages(req.ReportID) {
+    		if err := req.Out.Write(ctx, page); err != nil {
+    			return nil, err
+    		}
+    	}
+    	// Returning closes Out. An error aborts it, so the caller gets an error, not a short file.
+    	return nil, nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+If the caller's sink fails, the handler's next `write` fails with `STREAM_CLOSED`. The sink can
+receive no more data, so let the error stop the handler.
+
+## Send messages
+
+An `OutputStream` carries bytes and messages. `write` sends bytes. `send` serializes one value to
+JSON and sends it as one message, in one text frame. Use a message for a value that is not part of
+the byte data.
+
+One stream can carry both. For example, a route that the HTTP worker calls sends the status and the
+headers of its `response` as messages, and the body as bytes. For the two types of frames, see
+[Bytes and messages](../understanding-iii/streaming#bytes-and-messages).
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { OutputStream } from "iii-sdk";
+
+    type Download = { path_params: { id: string }; response: OutputStream };
+
+    worker.registerFunction("reports::download", async ({ path_params, response }: Download) => {
+      // Messages: the HTTP worker reads the status and the headers from text frames
+      await response.send({ type: "set_status", status_code: 200 });
+      await response.send({ type: "set_headers", headers: { "content-type": "text/csv" } });
+      // Bytes: the body
+      for await (const line of csvLines(path_params.id)) await response.write(line);
+      // Returning closes the response, which ends the body.
+    });
+
+    worker.observe(
+      { function_id: "http::on-request", args: { method: "GET", path: "/reports/:id/csv" } },
+      "reports::download",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from iii import OutputStream
+
+    async def download(req: dict) -> None:
+        response: OutputStream = req["response"]
+        # Messages: the HTTP worker reads the status and the headers from text frames
+        await response.send({"type": "set_status", "status_code": 200})
+        await response.send({"type": "set_headers", "headers": {"content-type": "text/csv"}})
+        # Bytes: the body
+        async for line in csv_lines(req["path_params"]["id"]):
+            await response.write(line)
+        # Returning closes the response, which ends the body.
+
+
+    worker.register_function("reports::download", download)
+    worker.observe(
+        {"function_id": "http::on-request", "args": {"method": "GET", "path": "/reports/:id/csv"}},
+        "reports::download",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+
+    use iii_sdk::{Error, OutputStream, RegisterFunction, Source};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct Download {
+        path_params: HashMap<String, String>,
+        response: OutputStream,
+    }
+
+    worker.register_function(
+        "reports::download",
+        RegisterFunction::new_async(|req: Download| async move {
+            // Messages: the HTTP worker reads the status and the headers from text frames
+            req.response.send(&json!({ "type": "set_status", "status_code": 200 })).await?;
+            req.response
+                .send(&json!({ "type": "set_headers", "headers": { "content-type": "text/csv" } }))
+                .await?;
+            // Bytes: the body
+            let csv = render_csv(&req.path_params["id"]).await?;
+            req.response.write(csv.as_bytes()).await?;
+            // Ok closes the response, which ends the body.
+            Ok::<_, Error>(())
+        }),
+    );
+
+    worker.observe(
+        Source::function("http::on-request").args(json!({ "method": "GET", "path": "/reports/:id/csv" })),
+        "reports::download",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type download struct {
+    	PathParams map[string]string `json:"path_params"`
+    	Response   *iii.OutputStream `json:"response"`
+    }
+
+    worker.RegisterFunction("reports::download", func(ctx context.Context, data json.RawMessage) (any, error) {
+    	var req download
+    	if err := json.Unmarshal(data, &req); err != nil {
+    		return nil, err
+    	}
+    	// Messages: the HTTP worker reads the status and the headers from text frames
+    	if err := req.Response.Send(ctx, map[string]any{"type": "set_status", "status_code": 200}); err != nil {
+    		return nil, err
+    	}
+    	headers := map[string]any{"type": "set_headers", "headers": map[string]string{"content-type": "text/csv"}}
+    	if err := req.Response.Send(ctx, headers); err != nil {
+    		return nil, err
+    	}
+    	// Bytes: the body
+    	for _, line := range csvLines(req.PathParams["id"]) {
+    		if err := req.Response.Write(ctx, []byte(line)); err != nil {
+    			return nil, err
+    		}
+    	}
+    	// Returning closes the response, which ends the body.
+    	return nil, nil
+    })
+
+    worker.Observe(iii.Source{
+    	FunctionID: "http::on-request",
+    	Args:       iii.Args{"method": "GET", "path": "/reports/:id/csv"},
+    }, "reports::download")
+    ```
+
+  </Tab>
+</Tabs>
+
+A route can also return a value and not use `response`. See
+[Calls through an observer](#calls-through-an-observer).
+
+## Forward a stream
+
+A handler can pass a stream that it received to another function. Put the stream in the payload of
+the other call, and do not read it first. The SDK then sends the ref of the stream, so the data does
+not go through the worker that forwards it.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { HttpRequest } from "@iii-dev/helpers/http";
+
+    worker.registerFunction("files::upload", async (req: HttpRequest) => {
+      // request_body is an InputStream: pass it on without reading it
+      const result = await worker.call({
+        function_id: "files::process",
+        payload: { filename: req.path_params.name, body: req.request_body },
+      });
+      return { status_code: 200, body: result };
+    });
+
+    worker.observe(
+      { function_id: "http::on-request", args: { method: "PUT", path: "/files/:name" } },
+      "files::upload",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    async def upload(req: dict) -> dict:
+        # request_body is an InputStream: pass it on without reading it
+        result = await worker.call_async(
+            {
+                "function_id": "files::process",
+                "payload": {"filename": req["path_params"]["name"], "body": req["request_body"]},
+            }
+        )
+        return {"status_code": 200, "body": result}
+
+    worker.register_function("files::upload", upload)
+    worker.observe(
+        {"function_id": "http::on-request", "args": {"method": "PUT", "path": "/files/:name"}},
+        "files::upload",
+    )
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    use std::collections::HashMap;
+
+    use iii_sdk::{CallRequest, Error, InputStream, RegisterFunction, Source};
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Deserialize, JsonSchema)]
+    struct PutFile {
+        path_params: HashMap<String, String>,
+        request_body: InputStream,
+    }
+
+    let client = worker.clone();
+    worker.register_function(
+        "files::upload",
+        RegisterFunction::new_async(move |req: PutFile| {
+            let client = client.clone();
+            async move {
+                // request_body is an InputStream: pass it on without reading it
+                let result = client
+                    .call(CallRequest::new(
+                        "files::process",
+                        json!({ "filename": req.path_params["name"], "body": req.request_body }),
+                    ))
+                    .await?;
+                Ok::<_, Error>(json!({ "status_code": 200, "body": result }))
+            }
+        }),
+    );
+
+    worker.observe(
+        Source::function("http::on-request").args(json!({ "method": "PUT", "path": "/files/:name" })),
+        "files::upload",
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // iiihttp is github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http
+    iii.RegisterFunctionTyped(worker, "files::upload", func(ctx context.Context, req iiihttp.Request[json.RawMessage]) (map[string]any, error) {
+    	// RequestBody is an *iii.InputStream: pass it on without reading it
+    	payload, err := json.Marshal(map[string]any{
+    		"filename": req.PathParams["name"],
+    		"body":     req.RequestBody,
+    	})
+    	if err != nil {
+    		return nil, err
+    	}
+    	result, err := worker.Call(ctx, iii.CallRequest{FunctionID: "files::process", Payload: payload})
+    	if err != nil {
+    		return nil, err
+    	}
+    	return map[string]any{"status_code": 200, "body": result}, nil
+    })
+
+    worker.Observe(iii.Source{
+    	FunctionID: "http::on-request",
+    	Args:       iii.Args{"method": "PUT", "path": "/files/:name"},
+    }, "files::upload")
+    ```
+
+  </Tab>
+</Tabs>
+
+An `OutputStream` that the handler has not used also travels as its ref. When the handler has
+started to read the stream, or has built the stream itself, the SDK creates a new pipe, and the data
+goes through the forwarding worker.
+
+A forwarded pipe keeps its owner. See
+[Pipe ownership](../understanding-iii/streaming#pipe-ownership).
+
+## Abort a stream
+
+Abort a stream when the handler cannot send all of its data. The reader then receives the data sent
+before the abort, and then an error with the code `STREAM_ABORTED`. The error shows that the data is
+incomplete.
+
+A stream aborts in these cases:
+
+- The handler calls `abort(reason)` on an `OutputStream`. If the socket of the stream is not open,
+  `abort` opens it first, so the reader always gets the error.
+- The handler throws after it used an `OutputStream` that it received. The SDK aborts the stream.
+- A source that the handler gave to the SDK throws while the SDK reads it, for example a generator
+  that fails. The SDK aborts the stream.
+- The worker crashes or loses its connection. The engine aborts the stream.
+
+The reader does not receive the `reason`. The engine sends its own text in place of it: see
+[Close and abort](../understanding-iii/streaming#close-and-abort). Only a call that the SDK runs in
+the same process keeps the reason. To tell the caller the cause, fail the call or put the cause in
+the result. The result reaches a caller that reads the stream through a pipe. A caller that passed
+a sink does not get it: the abort fails that call with `STREAM_ABORTED`, also when the function
+returns a result. See [Sink errors](../using-iii/streaming#sink-errors).
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    // Fail the stream, and still answer the call with the cause
+    try {
+      for await (const page of renderPages(report_id)) await out.write(page);
+    } catch (err) {
+      await out.abort(`render failed: ${String(err)}`);
+      return { ok: false, error: String(err) };
+    }
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    # Fail the stream, and still answer the call with the cause
+    try:
+        async for page in render_pages(report_id):
+            await out.write(page)
+    except Exception as err:
+        await out.abort(f"render failed: {err}")
+        return {"ok": False, "error": str(err)}
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    // Fail the stream, and still answer the call with the cause
+    if let Err(err) = render_into(&req.out).await {
+        req.out.abort(format!("render failed: {err}")).await?;
+        return Ok(json!({ "ok": false, "error": err.to_string() }));
+    }
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Fail the stream, and still answer the call with the cause
+    if err := renderInto(ctx, req.Out); err != nil {
+    	_ = req.Out.Abort("render failed: " + err.Error())
+    	return map[string]any{"ok": false, "error": err.Error()}, nil
+    }
+    ```
+
+  </Tab>
+</Tabs>
+
+For the errors that a reader gets, see
+[Handle aborts and errors](../using-iii/streaming#handle-aborts-and-errors).
+
+## Manage the Stream lifecycle
+
+When the handler returns or throws, the SDK ends the streams that the handler received. The table
+shows what the SDK does with each stream. Most handlers need no cleanup code.
+
+| When the handler                    | An `OutputStream` that it received                                            | An `InputStream` that it received                          |
+| ----------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| returns, after it used the stream   | The SDK closes it.                                                            | The SDK cancels it if the handler did not finish the read. |
+| throws, after it used the stream    | The SDK aborts it.                                                            | The SDK cancels it if the handler did not finish the read. |
+| returns, and did not use the stream | The SDK closes it, so the caller's sink ends with no data.                    | The SDK does not change it.                                |
+| throws, and did not use the stream  | The SDK does not change it.                                                   | The SDK does not change it.                                |
+| put the stream in another call      | The SDK does not change it. The rules apply in the function that receives it. | The SDK does not change it.                                |
+
+A handler uses an `OutputStream` when it writes to it, sends a message on it, or takes its native
+API with `toWritable()` or `toWebStream()`. A handler uses an `InputStream` when it starts a read.
+
+A cancelled `InputStream` cannot be read, and the engine closes the writer of the stream. A read
+that still runs after the handler returns, for example in a task that the handler started, fails
+with `STREAM_CLOSED`. An `InputStream` has no `keepOpen()`, so finish each read before the handler
+returns.
+
+The same rules apply when the SDK runs a call to a function of the same worker in the process,
+without a pipe.
+
+### Calls through an observer
+
+One rule is different when a worker calls the handler through an observer. The SDK closes an
+`OutputStream` that the handler did not use only when the handler returns no value (`null` or
+`undefined`). When the handler returns a value, the SDK does not change the stream.
+
+The worker that makes the call sets what it means when the handler returns a value and does not use
+the stream. For example, the HTTP worker calls a route through an observer. When the route returns a
+value and does not use `response`, the HTTP worker sends the value as a buffered response.
+
+If the caller passed its own sink, a handler that returns a value must use or close the sink. If the
+handler does not, the sink stays open, and the caller's call fails with `TIMEOUT` when its timeout
+expires.
+
+### Keep writing after the handler returns
+
+A handler can return its result first and write to an `OutputStream` later. Call `keepOpen()` on the
+stream before the handler returns. The SDK then does not close or abort the stream when the handler
+returns or throws. Your code must close or abort the stream when the work ends.
+
+<Tabs>
+  <Tab title="Node / TypeScript">
+    ```typescript
+    import type { OutputStream } from "iii-sdk";
+
+    worker.registerFunction(
+      "jobs::start",
+      async ({ job_id, log }: { job_id: string; log: OutputStream }) => {
+        log.keepOpen(); // this handler answers now and keeps writing
+        void (async () => {
+          try {
+            for await (const line of runJob(job_id)) await log.write(`${line}\n`);
+            await log.close();
+          } catch (err) {
+            await log.abort(String(err));
+          }
+        })();
+        return { started: true };
+      },
+    );
+    ```
+
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import asyncio
+
+    from iii import OutputStream
+
+    running: set[asyncio.Task] = set()
+
+
+    async def start(payload: dict) -> dict:
+        log: OutputStream = payload["log"]
+        log.keep_open()  # this handler answers now and keeps writing
+
+        async def write_log() -> None:
+            async with log:  # closes on exit, aborts on an exception
+                async for line in run_job(payload["job_id"]):
+                    await log.write(f"{line}\n")
+
+        task = asyncio.create_task(write_log())
+        running.add(task)
+        task.add_done_callback(running.discard)
+        return {"started": True}
+
+
+    worker.register_function("jobs::start", start)
+    ```
+
+  </Tab>
+  <Tab title="Rust">
+    ```rust
+    #[derive(Deserialize, JsonSchema)]
+    struct StartJob {
+        job_id: String,
+        log: OutputStream,
+    }
+
+    worker.register_function(
+        "jobs::start",
+        RegisterFunction::new_async(|req: StartJob| async move {
+            req.log.keep_open(); // this handler answers now and keeps writing
+            tokio::spawn(async move {
+                match run_job(&req.job_id, &req.log).await {
+                    Ok(()) => req.log.close().await,
+                    Err(err) => req.log.abort(err.to_string()).await,
+                }
+            });
+            Ok::<_, Error>(json!({ "started": true }))
+        }),
+    );
+    ```
+
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type startJob struct {
+    	JobID string            `json:"job_id"`
+    	Log   *iii.OutputStream `json:"log"`
+    }
+
+    iii.RegisterFunctionTyped(worker, "jobs::start", func(ctx context.Context, req startJob) (map[string]bool, error) {
+    	req.Log.KeepOpen() // this handler answers now and keeps writing
+    	// ctx is cancelled when the worker's engine connection drops, which would cut the job short
+    	jobCtx := context.WithoutCancel(ctx)
+    	go func() {
+    		if err := runJob(jobCtx, req.JobID, req.Log); err != nil {
+    			_ = req.Log.Abort(err.Error())
+    			return
+    		}
+    		_ = req.Log.Close()
+    	}()
+    	return map[string]bool{"started": true}, nil
+    })
+    ```
+
+  </Tab>
+</Tabs>
+
+`keepOpen()` changes only what the SDK does with the stream when the handler returns. It does not
+change when the caller's call resolves: when the caller passed a sink, the call resolves only after
+the stream ends.
+
+## Payload size
+
+A call without a stream sends its payload in one JSON message and receives its result in another.
+Each JSON message has a size limit. The limit applies to the envelope: the complete JSON message,
+with the payload or the result inside it. The size is the number of bytes of the serialized UTF-8
+JSON.
+
+To send more data, use a stream. Only the ref of the stream counts toward the limit. See
+[Send a stream in a call](../using-iii/streaming#send-a-stream-in-a-call).
+
+### Limits
+
+| Sender or receiver                | Limit                                     |
+| --------------------------------- | ----------------------------------------- |
+| Rust, Node, Python, and Go SDKs   | **64 MiB**                                |
+| Browser SDK                       | **16 MiB** to send, **16 MiB** to receive |
+| Engine, per message from a worker | **64 MiB**                                |
+
+A large message crosses the connection in WebSocket frames:
+
+- The Rust, Node, Python, and Go SDKs send a message of **16 MiB** or less as one text frame. They
+  send a larger message, up to and including 64 MiB, as one fragmented WebSocket text message.
+- The browser SDK does not fragment messages, because the browser WebSocket API gives no control of
+  frames.
+- The engine sends each message larger than **1 MiB** to a worker as one fragmented text message
+  with frames of 1 MiB, so that no frame is larger than the frame size limit of a worker.
+- The engine accepts a message as one frame or as fragments.
+
+Fragments do not change the function APIs.
+
+### Receive limit of a worker
+
+Before the engine sends a message to a worker, it compares the size of the message with the receive
+limit of that worker. If the message is larger, the engine does not send it, and the caller gets the
+error `payload_too_large`.
+
+The engine sets the receive limit when the worker registers:
+
+- A browser worker gets **16 MiB**.
+- A worker that declares the `large-messages.v1` protocol feature gets **64 MiB**. The version that
+  the worker reports has no effect. The Rust, Node, Python, and Go SDKs declare the feature. The
+  browser SDK does not declare it.
+- Each other worker gets **64 MiB** or **16 MiB**. The engine sets this limit from the SDK version
+  that the worker reports. A worker that reports no version, or a version that the engine cannot
+  read, gets **16 MiB**. Other features, such as `observe.v1`, do not change the limit.
+
+For the rules that apply to older SDKs and older engines, see
+[Payload size with older SDKs and engines](../upgrading/from-0-26-x#payload-size-with-older-sdks-and-engines).
+
+### Messages over the limit
+
+- The Rust, Node, Python, and Go SDKs do not send a message over **64 MiB**. The SDK refuses the
+  message with the error `payload_too_large`, and the error message links to this section. The
+  browser SDK does the same over **16 MiB**.
+- The engine drops a message over **64 MiB** that a worker sends. The connection stays open, and the
+  other calls on the connection continue. For a call, the worker that sent the call gets
+  `payload_too_large` as the result. For a result, the caller that waits for the result gets
+  `payload_too_large`. The engine cannot answer other messages, such as a call that expects no
+  result, so it logs them.
+
+The same limits apply to the events that the engine sends to the target of an observer. The engine
+also keeps at most **64 MiB** of one observed event. This size includes each field that the
+observers of the event capture, and `input` and `output` both count. The engine does not deliver an
+event that is over a limit: the observer counts a `TOO_LARGE` drop, and the engine logs a warning.
+See [Observers / Observed call size](../using-iii/observers#observed-call-size).
+
+## Go and the browser SDK
+
+The Go SDK and the browser SDK use the same stream model as the TypeScript SDK. Their APIs differ in
+these points.
+
+In Go:
+
+- Each read method takes a `context.Context`. `Read` is the exception: it takes no context, so an
+  `InputStream` is an `io.Reader`.
+- `Lines`, `Messages`, and `Frames` return iterators. An early exit from the loop cancels the
+  stream.
+- After a read fails, each later read returns the same error.
+- The package `github.com/iii-hq/iii/sdk/packages/go/iii/helpers/http` wraps the streams of an HTTP
+  route. `iiihttp.Wrap(fn)` calls `fn` with a `StreamRequest`, which is an `io.Reader` over
+  `request_body`, and a `StreamResponse` with `Status`, `Headers`, and `Write`. The SDK closes or
+  aborts the response by the rules in [Manage the Stream lifecycle](#manage-the-stream-lifecycle).
+
+In the browser:
+
+- The API is the TypeScript API with Web streams only. A source is a `ReadableStream`, a `Blob`, a
+  `File`, an async generator, or an `InputStream`. A sink is a `WritableStream` or an
+  `OutputStream`. The only native API is `toWebStream()`.
+- The ref helpers are in `iii-browser-sdk/protocol`.
+- An abort closes the socket of the stream with code 4011, because a browser can send only code 1000
+  or a code from 3000 to 4999. The engine treats 4011 as an abort. The `reason` that the reader gets
+  is `channel writer aborted: closed with code 4011`.
+- `write` resolves when the socket holds 1 MiB or less of unsent data. `close()` waits until the
+  socket has sent all the data.
+- Reads have no backpressure. A page cannot pause its socket, so the frames that arrive before the
+  page reads them stay in memory. Read a stream as it arrives, or cancel it.
+- The URL of a stream's socket keeps the query string of the engine URL, such as `?token=`.
+
+Workers on different SDKs can send streams to each other. For workers on different SDK versions, see
+[Mixed fleets](../upgrading/from-0-26-x#mixed-fleets).

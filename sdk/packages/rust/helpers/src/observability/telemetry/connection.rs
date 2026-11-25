@@ -5,8 +5,16 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue, Request};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{Message, protocol::WebSocketConfig},
+};
 use tracing::{debug, error, info, warn};
+
+/// Read buffer of the telemetry socket. tungstenite zero-fills the free part of
+/// its read buffer before every read, up to this size (128 KiB by default), and
+/// the engine sends this socket little (as the SDK's `transport::READ_BUFFER_BYTES`).
+const READ_BUFFER_BYTES: usize = 8 * 1024;
 
 /// Message to send over the shared WebSocket connection
 /// <!-- docs:internal -->
@@ -181,7 +189,11 @@ async fn connection_loop(
 
         // Try to connect, racing against shutdown signal
         let ws_result = tokio::select! {
-            result = async { connect_async(handshake_request(&ws_url, headers.as_ref())?).await } => result,
+            result = async {
+                let request = handshake_request(&ws_url, headers.as_ref())?;
+                let config = WebSocketConfig::default().read_buffer_size(READ_BUFFER_BYTES);
+                connect_async_with_config(request, Some(config), false).await
+            } => result,
             _ = shutdown_rx.recv() => {
                 info!("Shutting down OTEL connection during connect");
                 *state.write().await = ConnectionState::Disconnected;
@@ -274,12 +286,12 @@ async fn connection_loop(
         }
 
         // Check max retries
-        if let Some(max) = config.max_retries
-            && retry_count >= max
-        {
-            error!("Max retries exceeded, giving up");
-            *state.write().await = ConnectionState::Failed;
-            break;
+        if let Some(max) = config.max_retries {
+            if retry_count >= max {
+                error!("Max retries exceeded, giving up");
+                *state.write().await = ConnectionState::Failed;
+                break;
+            }
         }
 
         // Calculate backoff delay with jitter (all math in f64, clamped before cast)

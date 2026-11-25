@@ -160,6 +160,17 @@ fn spawn_retrying_text_file_busy(
 }
 
 impl Supervised {
+    /// An inert handle using the real reaped-child poll path. Never stop it.
+    #[cfg(test)]
+    pub(crate) fn with_test_exit(pid: u32, exit: watch::Receiver<Option<ExitStatus>>) -> Self {
+        Self {
+            pid,
+            pgid: pid as i32,
+            birth: BirthIdentity::Unavailable,
+            exit: ExitSource::Reaped(exit),
+        }
+    }
+
     /// Takes over a process a previous daemon left running.
     ///
     /// Returns `None` unless the PID still carries the identity recorded for

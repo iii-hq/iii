@@ -21,7 +21,6 @@
 
 use std::{
     collections::BTreeMap,
-    process::ExitStatus,
     time::{Duration, Instant},
 };
 
@@ -36,7 +35,7 @@ use crate::{
     error::{ComposeError, Result},
     hooks,
     logs::LogStore,
-    manifest::{StartSpec, VmSpec},
+    manifest::StartSpec,
     process::{Outcome, Supervised, spawn_supervised_piped},
     report, restart,
     spawn::{SpawnCtx, resolve_working_dir, spawn_plan},
@@ -78,13 +77,115 @@ pub struct ContainerResult {
 pub struct OpError {
     pub code: String,
     pub message: String,
+    /// What a `BUILD_FAILED` carries: the build's own error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<OpErrorCause>,
+}
+
+/// The error under a `BUILD_FAILED`: the build's own code and message (spec 4.1).
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct OpErrorCause {
+    pub code: String,
+    pub message: String,
 }
 
 impl From<&ComposeError> for OpError {
     fn from(error: &ComposeError) -> Self {
+        let cause = match error {
+            ComposeError::BuildFailed { code, message, .. }
+            | ComposeError::PackageRebuildFailed { code, message, .. } => Some(OpErrorCause {
+                code: code.clone(),
+                message: message.clone(),
+            }),
+            _ => None,
+        };
         Self {
             code: error.code().to_string(),
             message: error.to_string(),
+            cause,
+        }
+    }
+}
+
+impl OpError {
+    /// An error that is not a [`ComposeError`], such as a build's own.
+    pub(crate) fn from_parts(code: String, message: String) -> Self {
+        Self {
+            code,
+            message,
+            cause: None,
+        }
+    }
+}
+
+/// How one container's build ended in `compose::build` (spec 7.4).
+#[derive(Debug, Clone, Copy, Serialize, schemars::JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildStatus {
+    Built,
+    Failed,
+    /// No `scripts.build`, or `""`: nothing to build.
+    Skipped,
+}
+
+/// What one `compose::build` did: a result per container it reached, and whether a
+/// `compose::cancel` or a `down` stopped it, which makes the operation `cancelled` whatever its
+/// results say (a build its stop killed shows as `failed`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildRun {
+    pub results: Vec<BuildResult>,
+    pub cancelled: bool,
+}
+
+/// What [`Project::rebuild_changed`](crate::project::Project::rebuild_changed) did.
+#[derive(Debug, Default)]
+pub(crate) struct Rebuilt {
+    /// Rebuilt for their new package: their restart runs it.
+    pub built: Vec<String>,
+    /// Whose rebuild failed: they keep running on their old build.
+    pub failed: Vec<(String, ComposeError)>,
+    /// The operation was cancelled, and nothing more was built.
+    pub cancelled: bool,
+}
+
+/// One container's entry in the `results` of a finished `compose::build`.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema, PartialEq, Eq)]
+pub struct BuildResult {
+    pub worker: String,
+    pub status: BuildStatus,
+    /// The image a VM build wrote.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// The build's own `{ code, message }` (spec 4.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<OpError>,
+}
+
+impl BuildResult {
+    pub(crate) fn built(worker: &str, build_id: Option<String>) -> Self {
+        Self {
+            worker: worker.to_string(),
+            status: BuildStatus::Built,
+            build_id,
+            error: None,
+        }
+    }
+
+    pub(crate) fn failed(worker: &str, error: OpError) -> Self {
+        Self {
+            worker: worker.to_string(),
+            status: BuildStatus::Failed,
+            build_id: None,
+            error: Some(error),
+        }
+    }
+
+    pub(crate) fn skipped(worker: &str) -> Self {
+        Self {
+            worker: worker.to_string(),
+            status: BuildStatus::Skipped,
+            build_id: None,
+            error: None,
         }
     }
 }
@@ -119,6 +220,28 @@ pub struct LifecycleCtx<'a> {
     /// is started with and what a call to its `worker::*` functions carries.
     pub sandbox_token: &'a str,
     pub(crate) empty_env_diagnostics: &'a crate::config::EmptyEnvDiagnostics,
+    /// The VMs a 0.26 daemon left running, by container: each is stopped when its container
+    /// next starts (spec 7.3, step 2).
+    pub(crate) legacy_vms: &'a std::sync::Mutex<BTreeMap<String, crate::state::VmRecord>>,
+}
+
+impl LifecycleCtx<'_> {
+    /// The VM a 0.26 daemon left running for container `key`, if one is still to be stopped.
+    pub(crate) fn legacy_vm(&self, key: &str) -> Option<crate::state::VmRecord> {
+        self.legacy_vms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    /// Forgets the VM [`Self::legacy_vm`] named, once it is stopped.
+    pub(crate) fn forget_legacy_vm(&self, key: &str) {
+        self.legacy_vms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+    }
 }
 
 /// What one container's start produced: which one, how long it took, and
@@ -150,42 +273,9 @@ impl From<ComposeError> for StartFailure {
     }
 }
 
-/// One supervised container: a local process group, or a VM its adapter runs.
-pub enum Child {
-    Process(Supervised),
-    Vm(crate::sandbox::RemoteVm),
-}
-
-impl Child {
-    pub fn poll(&self) -> Outcome {
-        match self {
-            Self::Process(process) => process.poll(),
-            Self::Vm(vm) => vm.poll(),
-        }
-    }
-
-    pub async fn wait(&self) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.wait().await,
-            Self::Vm(vm) => vm.wait().await,
-        }
-    }
-
-    pub async fn stop(&self, grace: Duration) -> ExitStatus {
-        match self {
-            Self::Process(process) => process.stop(grace).await,
-            Self::Vm(vm) => vm.stop(grace).await,
-        }
-    }
-
-    /// Inherited from an earlier daemon rather than started here.
-    pub fn is_adopted(&self) -> bool {
-        match self {
-            Self::Process(process) => process.is_adopted(),
-            Self::Vm(vm) => vm.is_adopted(),
-        }
-    }
-}
+/// One supervised container: a local process group. A VM container is one too: the
+/// `iii call sandbox::start` that boots its VM (spec 7.6).
+pub type Child = Supervised;
 
 /// Containers currently supervised by this daemon, keyed by container id.
 pub type Children = BTreeMap<String, Child>;
@@ -385,7 +475,7 @@ async fn up_scoped(
                         error.code(),
                         &strip_container_prefix(&error.to_string(), key),
                     );
-                    record_start_failure(records, key, &error);
+                    record_start_failure(ctx, records, key, &error);
                     results.push(ContainerResult {
                         container: key.clone(),
                         state: ChildStatus::Failed,
@@ -458,34 +548,6 @@ async fn up_scoped(
     })
 }
 
-/// Starts `key` alone, ahead of the `up` it belongs to, and supervises it as
-/// that `up` would. `Some(true)` when it started it, `Some(false)` when it was
-/// running already, `None` when it did not come up or was interrupted: the `up`
-/// that follows starts it again and reports why.
-pub(crate) async fn start_ahead(
-    ctx: &LifecycleCtx<'_>,
-    children: &mut Children,
-    records: &mut BTreeMap<String, ChildRecord>,
-    key: &str,
-    shutdown: crate::shutdown::ShutdownSignal,
-) -> Option<bool> {
-    if is_running(children, key) {
-        return Some(false);
-    }
-    report::plan_labeled(&[(key.to_string(), 0)], &version_labels(ctx.file, [key]));
-    report::starting(key, "starting");
-    let began = Instant::now();
-    match start_one_with_retries(ctx, key, Some(shutdown), None).await {
-        StartAttempt::Ready { record, child, .. } => {
-            report::ready(key, began.elapsed());
-            records.insert(key.to_string(), record);
-            children.insert(key.to_string(), *child);
-            Some(true)
-        }
-        StartAttempt::Failed(_) | StartAttempt::Interrupted => None,
-    }
-}
-
 /// Whether this container's failure fails the operation. A container the file
 /// no longer declares is treated as required: the strict rule is the one that
 /// refuses rather than the one that carries on.
@@ -505,6 +567,7 @@ fn strip_container_prefix(message: &str, container: &str) -> String {
 /// A start that never registered leaves no child, so only its record keeps
 /// `compose::status` from reading the failure as a stop.
 fn record_start_failure(
+    ctx: &LifecycleCtx<'_>,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     error: &ComposeError,
@@ -521,6 +584,8 @@ fn record_start_failure(
         });
     record.status = ChildStatus::Failed;
     record.last_error = Some(error.to_string());
+    // A 0.26 VM this start stopped is forgotten; one it could not stop is asked again next time.
+    record.vm = ctx.legacy_vm(key);
 }
 
 /// Stops one container and starts it again, touching nothing else.
@@ -554,6 +619,7 @@ pub async fn restart_one(
         operation_id.clone(),
         None,
         None,
+        false,
     )
     .await
     .unwrap_or_else(|| cancelled_op(operation_id))
@@ -576,6 +642,7 @@ pub(crate) async fn restart_one_supervised(
         operation_id.clone(),
         None,
         Some((attempt, total_attempts)),
+        false,
     )
     .await
     .unwrap_or_else(|| cancelled_op(operation_id))
@@ -597,10 +664,37 @@ pub(crate) async fn restart_one_until_shutdown(
         operation_id,
         Some(shutdown),
         None,
+        false,
     )
     .await
 }
 
+/// Preparation cancellation targets stopped, unlike a committed operator restart.
+pub(crate) async fn restart_prepared_until_shutdown(
+    ctx: &LifecycleCtx<'_>,
+    children: &mut Children,
+    records: &mut BTreeMap<String, ChildRecord>,
+    key: &str,
+    operation_id: String,
+    shutdown: crate::shutdown::ShutdownSignal,
+) -> Option<OpResult> {
+    restart_one_inner(
+        ctx,
+        children,
+        records,
+        key,
+        operation_id,
+        Some(shutdown),
+        None,
+        true,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_inner(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -609,14 +703,28 @@ async fn restart_one_inner(
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
     retry: Option<(u32, u32)>,
+    cancel_replacement: bool,
 ) -> Option<OpResult> {
     report::in_project_scope(
         &ctx.file.path,
-        restart_one_scoped(ctx, children, records, key, operation_id, shutdown, retry),
+        restart_one_scoped(
+            ctx,
+            children,
+            records,
+            key,
+            operation_id,
+            shutdown,
+            retry,
+            cancel_replacement,
+        ),
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep restart cancellation policy separate from lifecycle state and retry metadata"
+)]
 async fn restart_one_scoped(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
@@ -625,6 +733,7 @@ async fn restart_one_scoped(
     operation_id: String,
     shutdown: Option<crate::shutdown::ShutdownSignal>,
     retry: Option<(u32, u32)>,
+    cancel_replacement: bool,
 ) -> Option<OpResult> {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -654,7 +763,7 @@ async fn restart_one_scoped(
     // is the honest answer to the wrong question. `down` then `up` never saw
     // this because re-reading the project happened to take long enough.
     //
-    // The VM of a dead `iii sandbox run` stays up under the name. A supervised
+    // The VM of a dead `iii call sandbox::start` stays up under the name. A supervised
     // retry has no release to wait for, as its command reattaches; a restart
     // someone asked for, after an edit say, boots that VM anew.
     let released = async {
@@ -665,7 +774,11 @@ async fn restart_one_scoped(
         }
         await_name_release(ctx, key).await
     };
-    let Some(released) = ctx.shutdown.signal().run(released).await else {
+    let replacement_shutdown = match shutdown.filter(|_| cancel_replacement) {
+        Some(signal) => signal.or(ctx.shutdown.signal()),
+        None => ctx.shutdown.signal(),
+    };
+    let Some(released) = replacement_shutdown.run(released).await else {
         report::plan_done();
         return None;
     };
@@ -678,11 +791,10 @@ async fn restart_one_scoped(
 
     report::starting(key, "starting");
     let started = Instant::now();
-    // An individual operation cancellation still finishes its replacement.
-    // Daemon shutdown is different: the target state is stopped, so interrupt
-    // preparation/readiness and reap any child already started by this attempt.
+    // Public individual restarts finish their replacement. Preparation's explicit signal
+    // instead drains the replacement, as daemon shutdown does, without dropping ownership.
     let outcome =
-        start_one_attempt(ctx, key, Some(ctx.shutdown.signal()), Some(&operation_id)).await;
+        start_one_attempt(ctx, key, Some(replacement_shutdown), Some(&operation_id)).await;
     let took = started.elapsed();
 
     let result = match outcome {
@@ -718,7 +830,7 @@ async fn restart_one_scoped(
                     record.last_error = Some(error.to_string());
                 }
             } else {
-                record_start_failure(records, key, &error);
+                record_start_failure(ctx, records, key, &error);
             }
             report::plan_done();
             let required = is_required(ctx.file, key);
@@ -771,16 +883,19 @@ async fn restart_one_scoped(
 /// dependents would discard healthy processes that the following idempotent
 /// `up` is expected to preserve. The old declaration remains available here so
 /// the removed container can still run its `post_run` hook.
+///
+/// A VM container's VM is destroyed: with `prune`, its data too (spec 8.2).
 pub async fn remove_one(
     ctx: &LifecycleCtx<'_>,
     children: &mut Children,
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     report::in_project_scope(
         &ctx.file.path,
-        remove_one_scoped(ctx, children, records, key, operation_id),
+        remove_one_scoped(ctx, children, records, key, operation_id, prune),
     )
     .await
 }
@@ -791,6 +906,7 @@ async fn remove_one_scoped(
     records: &mut BTreeMap<String, ChildRecord>,
     key: &str,
     operation_id: String,
+    prune: bool,
 ) -> OpResult {
     let began = Instant::now();
     if !ctx.file.containers.contains_key(key) {
@@ -813,11 +929,19 @@ async fn remove_one_scoped(
     // A removed VM container takes its state with it, whatever its record
     // holds: a first boot that failed left no VM in it, a new daemon no record
     // at all. A failure only leaves the state behind, so the removal succeeds.
-    let vm = records.remove(key).and_then(|record| record.vm);
-    if vm.is_some()
-        || crate::sandbox::is_vm(ctx.file, key)
-        || crate::sandbox::runs_own_vm(ctx.file, key)
-    {
+    // A build of it still running would keep its VM from being destroyed (S509), and write
+    // into the build directory removed below.
+    // Held to the end of the remove: a start or rebuild of it that takes the slot gives up.
+    let _stopping = crate::build_step::stop(&ctx.file.path, key).await;
+    let vm = records
+        .remove(key)
+        .and_then(|record| record.vm)
+        .or_else(|| ctx.legacy_vm(key));
+    ctx.forget_legacy_vm(key);
+    let runs_in_vm = ctx.file.containers.get(key).is_some_and(|container| {
+        crate::sandbox::runs_in_vm(container) || crate::sandbox::migration_due(ctx.file, container)
+    });
+    if vm.is_some() || runs_in_vm {
         let (adapter, namespace) = vm.map_or_else(
             || {
                 let adapter = crate::sandbox::adapter_name(ctx.file);
@@ -840,7 +964,17 @@ async fn remove_one_scoped(
             )
             .await;
         }
-        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace).await;
+        crate::sandbox::destroy_vm(ctx, key, &adapter, &namespace, prune).await;
+    }
+    // Its build goes with it (spec 3.3); `.iii/workers/` follows the lock.
+    let build = crate::build_step::build_dir(&ctx.file.path, key);
+    if let Err(error) = std::fs::remove_dir_all(&build)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        report::daemon_line(
+            &format!("{key}: could not remove {}: {error}", build.display()),
+            true,
+        );
     }
     report::plan_done();
     report::summary_ok("remove", usize::from(changed), 1, began.elapsed());
@@ -934,17 +1068,19 @@ async fn down_scoped(
     let mut results = Vec::new();
     for key in order {
         if !children.contains_key(&key) {
-            // The VM of a killed `iii sandbox run` stays up until its lease ends, and the
+            // The VM of a killed `iii call sandbox::start` stays up until its lease ends, and the
             // next `up` would reattach to it.
             let changed = crate::sandbox::stop_own_vm(ctx, &key).await;
             if changed {
                 let _ = await_name_release(ctx, &key).await;
-                if let Some(record) = records.get_mut(&key) {
-                    record.status = ChildStatus::Stopped;
-                }
                 report::stopped(&key);
             } else {
                 report::unchanged(&key, "not running");
+            }
+            // The operator stopped it, whatever was left to stop: a container that went down
+            // failing is no longer one a retried add or update starts again.
+            if let Some(record) = records.get_mut(&key) {
+                record.status = ChildStatus::Stopped;
             }
             results.push(ContainerResult {
                 container: key,
@@ -1142,12 +1278,27 @@ async fn start_one_until_shutdown(
             container: key.to_string(),
         })?;
 
+    // Nothing 0.26 ran in a VM starts anywhere until the file says where (spec 7.3): every
+    // operation that starts containers rewrites it first, so this is a file read without one.
+    if crate::sandbox::migration_due(ctx.file, container) {
+        return Err(ComposeError::VmScriptsNotWritten {
+            container: key.to_string(),
+        }
+        .into());
+    }
+    // A VM a 0.26 daemon left running still holds the worker's name. It goes now that the
+    // adapter is up (its `start_after`), before any build (spec 7.3, step 2).
+    if ctx.legacy_vm(key).is_some() {
+        wait_or_interrupt!(crate::sandbox::stop_legacy_vm(ctx, key))?;
+        let _ = wait_or_interrupt!(await_name_release(ctx, key));
+    }
+
     // Readiness is "a worker named `key` is registered in this namespace". If
     // one already is before we spawn, that check would pass on the *stranger*:
     // the container would be reported ready in milliseconds while the process
     // we started loses the `(namespace, worker_name)` lease and dies rejected.
     // Refuse instead, and say who is holding the name. The guest of a VM that
-    // outlived its `iii sandbox run` is no stranger: the command started below
+    // outlived its `iii call sandbox::start` is no stranger: the command started below
     // reattaches to it, and that registration is the readiness it is after.
     if wait_or_interrupt!(ctx.engine.is_registered(ctx.project_namespace, key))?
         && wait_or_interrupt!(crate::sandbox::own_vm_running(ctx, key)).is_none()
@@ -1181,15 +1332,17 @@ async fn start_one_until_shutdown(
                     .await;
             }
             let installed = match &container.resolved_package {
-                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved(
+                Some(resolved) => wait_or_interrupt!(crate::registry::install_resolved_on(
                     key,
                     resolved,
+                    crate::vm_binary::platform(container),
                     ctx.package_cache,
                 ))?,
-                None => wait_or_interrupt!(crate::registry::install(
+                None => wait_or_interrupt!(crate::registry::install_on(
                     key,
                     reference,
                     range,
+                    crate::vm_binary::platform(container),
                     ctx.package_cache,
                 ))?,
             };
@@ -1207,28 +1360,25 @@ async fn start_one_until_shutdown(
             );
             match installed.payload {
                 crate::registry::Payload::Binary(program) => (
-                    StartSpec::Exec {
-                        program,
-                        args: Vec::new(),
-                    },
+                    binary_start(key, container, program)?,
                     installed.default_config,
                 ),
-                // The start command is the bundle's own, read from its manifest
-                // inside the VM. Nothing on the host runs it. The manifest is
-                // named after the package an alias stands for.
-                crate::registry::Payload::Bundle(install_dir) => (
-                    StartSpec::Vm(VmSpec::Bundle {
-                        package: installed.alias_of.unwrap_or(installed.name),
-                        install_dir,
-                    }),
-                    installed.default_config,
-                ),
+                // A bundle runs what the file says: `iii call sandbox::start` boots its VM, another
+                // command runs it on the host from `.iii/workers/<container>/` (spec 7.5).
+                crate::registry::Payload::Bundle(_) => {
+                    let Some(run) = container.scripts.run.clone() else {
+                        return Err(ComposeError::VmScriptsNotWritten {
+                            container: key.to_string(),
+                        }
+                        .into());
+                    };
+                    (StartSpec::Shell(run), installed.default_config)
+                }
             }
         }
-        crate::config::WorkerSource::Path { .. } => (
-            crate::sandbox::resolve_start(ctx.file, key, container)?,
-            None,
-        ),
+        crate::config::WorkerSource::Path { .. } => {
+            (crate::manifest::resolve_start(key, container)?, None)
+        }
     };
 
     report::starting(key, "configuring");
@@ -1238,30 +1388,9 @@ async fn start_one_until_shutdown(
             .await;
     }
 
-    let mut user_env =
-        container.resolve_user_env_with_diagnostics(key, Some((key, ctx.empty_env_diagnostics)))?;
-    crate::sandbox::layer_adapter_env(
-        ctx.file,
-        key,
-        ctx.sandbox_token,
-        ctx.package_cache,
-        &mut user_env,
-    )?;
-    crate::sandbox::layer_own_vm_env(
-        ctx.file,
-        key,
-        ctx.sandbox_token,
-        ctx.state_dir,
-        ctx.project_namespace,
-        &mut user_env,
-    )?;
+    let user_env = container_env(ctx, key, container, true)?;
     let config = wait_or_interrupt!(resolve_config(ctx, container, key, shipped_config))?;
-    let worker_dir = container.worker_dir();
-    let working_dir = resolve_working_dir(
-        container.working_dir.as_deref(),
-        worker_dir,
-        &ctx.file.base_dir,
-    );
+    let working_dir = container_working_dir(ctx, key, container);
 
     let spawn_ctx = SpawnCtx {
         engine_url: ctx.engine_url,
@@ -1274,6 +1403,54 @@ async fn start_one_until_shutdown(
         working_dir: &working_dir,
         user_env: &user_env,
     };
+
+    // Its first build, or a rebuild for a new package (spec 5.2, 5.3), with its own timeout:
+    // `startup_timeout` starts with the run. `pre_run` still runs after it.
+    // Held to the end of the build: a build of it already running (a rebuild for a new package,
+    // say) ends first and decides what is left to build, and none starts beside this one.
+    let slot = wait_or_interrupt!(crate::build_step::slot(&ctx.file.path, key));
+    if slot.stopping() {
+        // Its remove is under way: it neither builds nor starts.
+        return Err(crate::build_step::Outcome::stopped()
+            .into_error(key)
+            .expect("a stopped build failed")
+            .into());
+    }
+    slot.starting();
+    if let Some(reason) = crate::build_step::due(&ctx.file.path, key, container).await {
+        let detail = reason.describe();
+        report::daemon_line(&format!("{key}: {detail}"), false);
+        // Before the build's own output in the container's logs (spec 5.2).
+        ctx.logs
+            .sink(key)
+            .write_line(crate::logs::LogStream::Stdout, &format!("{key}: {detail}"))
+            .await;
+        report::starting(key, "building");
+        if let Some(operation) = operation_id.and_then(crate::operation::active) {
+            operation.emit(Some(key), "building", detail).await;
+        }
+        let adapter = match container.scripts.build_command() {
+            Some(command) if crate::sandbox::is_sandbox_build(command) => {
+                Some(crate::sandbox::vm_adapter(ctx, key).await)
+            }
+            _ => None,
+        };
+        let built = Box::pin(crate::build_step::run(
+            &spawn_ctx,
+            container,
+            &ctx.logs.sink(key),
+            shutdown.as_ref(),
+            adapter.as_ref(),
+        ))
+        .await;
+        if built == crate::build_step::Outcome::Cancelled {
+            return Err(StartFailure::Interrupted);
+        }
+        if let Some(error) = built.into_error(key) {
+            return Err(error.into());
+        }
+    }
+    drop(slot);
 
     if let Some(script) = &container.scripts.pre_run {
         report::starting(key, "running pre-run hook");
@@ -1295,57 +1472,24 @@ async fn start_one_until_shutdown(
     }
 
     let plan = spawn_plan(&spawn_ctx);
-    let child = match plan.command() {
-        Some(command) => {
-            // Its image pull stays out of the startup timeout, which starts with the process, as
-            // it does for a VM booted below.
-            if crate::sandbox::runs_own_vm(ctx.file, key) {
-                report::starting(key, "preparing VM runtime");
-                if let Some(operation) = operation_id.and_then(crate::operation::active) {
-                    operation
-                        .emit(Some(key), "preparing", "preparing VM runtime")
-                        .await;
-                }
-                wait_or_interrupt!(crate::sandbox::prepare_own_vm(ctx, key))?;
-            }
-            if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
-                return Err(StartFailure::Interrupted);
-            }
-            let (child, output) =
-                spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
-                    container: key.to_string(),
-                    message: err.to_string(),
-                })?;
-            // Capture before waiting on readiness: whatever the child prints
-            // while starting is exactly what an operator needs when it does not.
-            ctx.logs.capture(key, output.stdout, output.stderr);
-            Child::Process(child)
+    let Some(command) = plan.command() else {
+        return Err(ComposeError::SpawnFailed {
+            container: key.to_string(),
+            message: "it has no command to run".to_string(),
         }
-        // A VM worker is booted by its adapter instead of run here. The handle
-        // that comes back is an ordinary child, so readiness, stop and crash
-        // cascade below are unchanged; its poller streams the VM's logs. The
-        // guest boots with `guest_env`, not this machine's environment.
-        None => {
-            report::starting(key, "preparing VM runtime");
-            if let Some(operation) = operation_id.and_then(crate::operation::active) {
-                operation
-                    .emit(Some(key), "preparing", "preparing VM runtime")
-                    .await;
-            }
-            let Some(started) = crate::sandbox::start_vm_until(
-                ctx,
-                key,
-                &start,
-                crate::spawn::guest_env(&spawn_ctx),
-                shutdown.as_ref(),
-            )
-            .await
-            else {
-                return Err(StartFailure::Interrupted);
-            };
-            Child::Vm(started?)
-        }
+        .into());
     };
+    if shutdown.as_ref().is_some_and(|signal| signal.requested()) {
+        return Err(StartFailure::Interrupted);
+    }
+    let (child, output) =
+        spawn_supervised_piped(command).map_err(|err| ComposeError::SpawnFailed {
+            container: key.to_string(),
+            message: err.to_string(),
+        })?;
+    // Capture before waiting on readiness: whatever the child prints while starting is exactly
+    // what an operator needs when it does not.
+    ctx.logs.capture(key, output.stdout, output.stderr);
     report::starting(key, "waiting for engine registration");
     if let Some(operation) = operation_id.and_then(crate::operation::active) {
         operation
@@ -1395,14 +1539,9 @@ async fn start_one_until_shutdown(
     Ok((record, child))
 }
 
-/// Stops a child whose start did not finish. A VM is not asked over the bus of
-/// an engine that exited, which would wait out STOP_RETRY: it is in its
-/// adapter's process group, so stopping the adapter takes it, as in
-/// [`stop_one`].
+/// Stops a child whose start did not finish.
 async fn stop_attempt(ctx: &LifecycleCtx<'_>, child: &Child) {
-    if !matches!(child, Child::Vm(_) if ctx.engine.has_exited()) {
-        child.stop(ctx.file.stop_timeout).await;
-    }
+    child.stop(ctx.file.stop_timeout).await;
 }
 
 async fn stop_one(
@@ -1414,14 +1553,7 @@ async fn stop_one(
     let Some(child) = children.remove(key) else {
         return false;
     };
-    // Asking an adapter that is gone, or over the bus of an engine that exited,
-    // would wait out STOP_RETRY. The VM is in its adapter's process group, so
-    // stopping a declared adapter takes it.
-    if !matches!(&child, Child::Vm(vm) if ctx.engine.has_exited()
-        || crate::sandbox::adapter_gone(ctx.file, &vm.record.adapter, children))
-    {
-        child.stop(ctx.file.stop_timeout).await;
-    }
+    child.stop(ctx.file.stop_timeout).await;
 
     // post_run fires after the exit is confirmed, on every path out. Any step
     // that cannot be rebuilt (a container that vanished from the file, an
@@ -1435,14 +1567,12 @@ async fn stop_one(
     // post_run never fired for the containers most likely to need it.
     if let Some(container) = ctx.file.containers.get(key)
         && let Some(script) = container.scripts.post_run.clone()
-        && let Ok(user_env) = container.resolve_user_env(key)
+        && let Ok(user_env) = container_env(ctx, key, container, false)
     {
         let start = StartSpec::Shell(script);
-        let working_dir = resolve_working_dir(
-            container.working_dir.as_deref(),
-            container.worker_dir(),
-            &ctx.file.base_dir,
-        );
+        // Where the container ran, as its start and `pre_run` had it: a bundle's
+        // `.iii/workers/<container>/` included.
+        let working_dir = container_working_dir(ctx, key, container);
         let spawn_ctx = SpawnCtx {
             engine_url: ctx.engine_url,
             namespace: ctx.project_namespace,
@@ -1497,7 +1627,7 @@ pub(crate) async fn fail_vms_of_lost_adapter(
             container: vm.clone(),
             message: format!("its sandbox adapter '{adapter}' did not come back"),
         };
-        record_start_failure(records, vm, &error);
+        record_start_failure(ctx, records, vm, &error);
         let error = OpError::from(&error);
         if is_required(ctx.file, vm) {
             result.status = OpStatus::Failed;
@@ -1511,6 +1641,116 @@ pub(crate) async fn fail_vms_of_lost_adapter(
         });
     }
     result.changed = true;
+}
+
+/// Container `key`'s own environment, `env_file` and `environment`, with what Compose lays over
+/// it: the adapter's token and roots, a bundle's package directory, and what `iii call sandbox::start` and
+/// `iii call sandbox::build` read. `diagnose` reports empty values, as a start does.
+pub(crate) fn container_env(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    container: &Container,
+    diagnose: bool,
+) -> Result<BTreeMap<String, String>> {
+    let mut user_env = if diagnose {
+        container.resolve_user_env_with_diagnostics(key, Some((key, ctx.empty_env_diagnostics)))?
+    } else {
+        container.resolve_user_env(key)?
+    };
+    crate::sandbox::layer_adapter_env(
+        ctx.file,
+        key,
+        ctx.sandbox_token,
+        ctx.package_cache,
+        &mut user_env,
+    )?;
+    crate::sandbox::layer_package_env(ctx.file, key, &mut user_env)?;
+    crate::sandbox::layer_own_vm_env(
+        ctx.file,
+        key,
+        ctx.sandbox_token,
+        ctx.state_dir,
+        ctx.project_namespace,
+        &mut user_env,
+    )?;
+    Ok(user_env)
+}
+
+/// Where container `key` runs: its `working_dir`, else its worker's directory, which for a bundle
+/// is `.iii/workers/<container>/` once it is there (spec 7.5), else the compose file's.
+pub(crate) fn container_working_dir(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    container: &Container,
+) -> std::path::PathBuf {
+    let package = crate::sandbox::is_bundle(container)
+        .then(|| crate::build_step::worker_dir(&ctx.file.path, key, container))
+        .filter(|dir| dir.is_dir());
+    resolve_working_dir(
+        container.working_dir.as_deref(),
+        container.worker_dir().or(package.as_deref()),
+        &ctx.file.base_dir,
+    )
+}
+
+/// Runs container `key`'s `scripts.build` once for `compose::build` (spec 7.4), with the
+/// environment and working directory of its run. `cancel` stops it. A container without a
+/// non-empty `scripts.build` is `None`: skipped.
+pub(crate) async fn build_one(
+    ctx: &LifecycleCtx<'_>,
+    key: &str,
+    cancel: &crate::shutdown::ShutdownSignal,
+) -> Option<Result<crate::build_step::Outcome>> {
+    let container = ctx.file.containers.get(key)?;
+    container.scripts.build_command()?;
+    let built = async {
+        let user_env = container_env(ctx, key, container, false)?;
+        let config_name = container.resolved_config_name(ctx.project_namespace, key)?;
+        let working_dir = container_working_dir(ctx, key, container);
+        let start = StartSpec::Shell(String::new());
+        let spawn_ctx = SpawnCtx {
+            engine_url: ctx.engine_url,
+            namespace: ctx.project_namespace,
+            compose_namespace: ctx.compose_namespace,
+            compose_file: &ctx.file.path,
+            container_key: key,
+            start: &start,
+            config_name: Some(&config_name),
+            working_dir: &working_dir,
+            user_env: &user_env,
+        };
+        let adapter = match container.scripts.build_command() {
+            Some(command) if crate::sandbox::is_sandbox_build(command) => {
+                Some(crate::sandbox::vm_adapter(ctx, key).await)
+            }
+            _ => None,
+        };
+        Ok(crate::build_step::run(
+            &spawn_ctx,
+            container,
+            &ctx.logs.sink(key),
+            Some(cancel),
+            adapter.as_ref(),
+        )
+        .await)
+    };
+    Some(built.await)
+}
+
+/// Makes `.iii/workers/` match the lock after a package install (spec 7.5, 11.2). A project that
+/// locks no package and has no `.iii/workers/` has nothing to match.
+pub(crate) async fn materialize_packages(
+    compose_file: &std::path::Path,
+    package_cache: &std::path::Path,
+    lock: &crate::lockfile::PreparedLock,
+) -> Result<()> {
+    let compose_file = crate::spawn::canonical_compose_file(compose_file);
+    let compose_dir = compose_file.parent().unwrap_or(std::path::Path::new("."));
+    let workers = crate::build_record::workers_root(compose_dir);
+    if lock.packages().next().is_none() && !workers.exists() {
+        return Ok(());
+    }
+    crate::registry::materialize_project(compose_dir, package_cache, lock).await
 }
 
 /// Undoes one failed `up`: stops what this operation started, in reverse.
@@ -1667,7 +1907,11 @@ fn version_labels<'a>(
         .collect()
 }
 
-fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -> OpResult {
+pub(crate) fn failed_op(
+    operation_id: String,
+    target: Option<&str>,
+    error: &ComposeError,
+) -> OpResult {
     OpResult {
         operation_id,
         status: OpStatus::Failed,
@@ -1684,6 +1928,30 @@ fn failed_op(operation_id: String, target: Option<&str>, error: &ComposeError) -
 
 /// Grace used when the daemon itself is going down.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// How binary package container `key` starts, once `program`, its executable, is installed: as
+/// it was published, unless the file says how. `iii call sandbox::start` boots its Linux build in a VM,
+/// another `scripts.run` runs on the host (spec 4.2). A container whose build is the Linux one of
+/// a VM, with no `scripts.run` written yet, fails with `VM_SCRIPTS_MISSING`: the host never
+/// runs that build.
+fn binary_start(
+    key: &str,
+    container: &crate::config::Container,
+    program: std::path::PathBuf,
+) -> std::result::Result<StartSpec, ComposeError> {
+    match container.scripts.run.clone() {
+        Some(run) => Ok(StartSpec::Shell(run)),
+        None if crate::vm_binary::declares_vm(container) => {
+            Err(ComposeError::VmScriptsNotWritten {
+                container: key.to_string(),
+            })
+        }
+        None => Ok(StartSpec::Exec {
+            program,
+            args: Vec::new(),
+        }),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1706,6 +1974,58 @@ containers:
 
     fn file() -> ComposeFile {
         ComposeFile::parse(PROJECT, "/srv/app/worker-compose.yaml").expect("fixture should parse")
+    }
+
+    /// A binary package starts its `scripts.run` when it has one; one whose build is a VM's and
+    /// that has none yet fails, and never runs that build on the host.
+    #[test]
+    fn a_binary_starts_its_scripts_and_never_runs_a_vm_build_on_the_host() {
+        let file = ComposeFile::parse(
+            r#"
+containers:
+  plain:
+    worker: package://tool
+    version: 1.0.0
+  wrapped:
+    worker: package://tool
+    version: 1.0.0
+    scripts:
+      run: ./tool --port 3000
+  in-vm:
+    worker: package://tool
+    version: 1.0.0
+    runtime:
+      base_image: docker.io/library/alpine:3.20
+    scripts:
+      build: iii call sandbox::build
+      run: iii call sandbox::start
+  vm-to-write:
+    worker: package://tool
+    version: 1.0.0
+    runtime:
+      base_image: docker.io/library/alpine:3.20
+"#,
+            "/srv/app/worker-compose.yaml",
+        )
+        .unwrap();
+        let program = std::path::PathBuf::from("/cache/tool/tool");
+        let start = |key: &str| binary_start(key, &file.containers[key], program.clone());
+        assert!(matches!(
+            start("plain"),
+            Ok(StartSpec::Exec { ref program, ref args })
+                if program == std::path::Path::new("/cache/tool/tool") && args.is_empty()
+        ));
+        assert!(matches!(
+            start("wrapped"),
+            Ok(StartSpec::Shell(ref run)) if run == "./tool --port 3000"
+        ));
+        assert!(matches!(
+            start("in-vm"),
+            Ok(StartSpec::Shell(ref run)) if run == "iii call sandbox::start"
+        ));
+        let error = start("vm-to-write").unwrap_err();
+        assert!(matches!(error, ComposeError::VmScriptsNotWritten { .. }));
+        assert_eq!(error.code(), "VM_SCRIPTS_MISSING");
     }
 
     #[test]
@@ -1887,66 +2207,6 @@ containers:
             "the internal primary error must not be serialized"
         )
     }
-
-    /// With the managed engine gone, no `worker::stop` can be answered, so a
-    /// VM's stop must not wait out STOP_RETRY on the dead bus.
-    #[tokio::test]
-    async fn a_vm_stop_after_the_engine_exited_does_not_ask_the_adapter() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = ComposeFile::parse(
-            "containers:\n  vm: {worker: path://./vm}\n",
-            dir.path().join("worker-compose.yaml"),
-        )
-        .unwrap();
-        let engine = EngineClient::connect("ws://127.0.0.1:1", "t", "t");
-        engine.mark_exited();
-        let (shutdown, post_runs, diagnostics) = Default::default();
-        let logs = LogStore::open(dir.path().join("logs")).unwrap();
-        let ctx = LifecycleCtx {
-            shutdown: &shutdown,
-            file: &file,
-            engine: &engine,
-            post_runs: &post_runs,
-            compose_namespace: "t",
-            project_namespace: "t",
-            engine_url: "ws://127.0.0.1:1",
-            package_cache: dir.path(),
-            logs: &logs,
-            state_dir: dir.path(),
-            sandbox_token: "t",
-            empty_env_diagnostics: &diagnostics,
-        };
-        let vm = || {
-            Child::Vm(crate::sandbox::RemoteVm::spawn(
-                engine.client().clone(),
-                crate::state::VmRecord {
-                    adapter: "sandbox-libkrun".into(),
-                    namespace: "t".into(),
-                    vm_id: "v".into(),
-                    instance: 1,
-                },
-                "t".into(),
-                None,
-            ))
-        };
-        let mut children = Children::from([("vm".to_string(), vm())]);
-        let began = Instant::now();
-        assert!(stop_one(&ctx, &mut children, &mut BTreeMap::new(), "vm").await);
-        assert!(
-            began.elapsed() < Duration::from_secs(1),
-            "{:?}",
-            began.elapsed()
-        );
-
-        // Nor when the engine died during the VM's own start.
-        let began = Instant::now();
-        stop_attempt(&ctx, &vm()).await;
-        assert!(
-            began.elapsed() < Duration::from_secs(1),
-            "{:?}",
-            began.elapsed()
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2033,5 +2293,173 @@ containers:
             at("api") < at("database") && at("reports") < at("database"),
             "the target stops last: {order:?}"
         );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod findings_package_hook_tests {
+    use crate::ComposeFile;
+    use std::path::{Path, PathBuf};
+    fn compose_path(dir: &Path, text: &str) -> PathBuf {
+        let path = dir.join("worker-compose.yaml");
+        std::fs::write(&path, text).unwrap();
+        path
+    }
+    /// A tar.gz holding `files`: name, mode, body.
+    fn tar_gz(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, mode, body) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            archive.append_data(&mut header, name, *body).unwrap();
+        }
+        archive.into_inner().unwrap().finish().unwrap()
+    }
+
+    /// Finding 3: a package's `scripts.run` gets `III_PACKAGE_DIR`; its `post_run`, fired by the stop,
+    /// must get it too.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn f03_post_run_of_a_package_gets_its_package_dir() {
+        use sha2::Digest;
+        use wiremock::{Mock, ResponseTemplate, matchers};
+
+        use crate::sandbox::tests::{answered, fake_engine_url, not_found};
+
+        let server = wiremock::MockServer::start().await;
+        let archive = tar_gz(&[("worker", 0o755, b"#!/bin/sh\nexec sleep 60\n")]);
+        let sha256 = hex::encode(sha2::Sha256::digest(&archive));
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/resolve"))
+            .and(matchers::body_partial_json(
+                serde_json::json!({ "worker": "tool" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "graph": [{
+                    "name": "tool", "version": "1.0.0", "type": "binary",
+                    "binaries": { (crate::registry::host_targets()[0]): {
+                        "sha256": sha256, "url": format!("{}/tool", server.uri())
+                    }},
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/tool"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let out = dir.path().join("hooks.out");
+        let pid = dir.path().join("pid");
+        let _cleanup = crate::daemon::findings_lifecycle_tests::ProcessCleanup(vec![pid.clone()]);
+        std::fs::write(dir.path().join("hook.env"), "HOOK_VALUE=from-file\n").unwrap();
+        std::fs::create_dir(dir.path().join("hook-cwd")).unwrap();
+        let path = compose_path(
+            dir.path(),
+            &format!(
+                "startup_timeout: 5s\nstop_timeout: 500ms\ncontainers:\n  tool:\n    worker: package://tool\n    version: 1.0.0\n    env_file: [hook.env]\n    working_dir: ./hook-cwd\n    environment: {{HOOK_VALUE: from-environment}}\n    scripts:\n      run: 'echo \"run      III_PACKAGE_DIR=[$III_PACKAGE_DIR|$III_PACKAGE_NAME|$III_PACKAGE_KIND|$HOOK_VALUE|$PWD]\" >> {out}; echo $$$$ > {pid}; exec sleep 60'\n      post_run: 'echo \"post_run III_PACKAGE_DIR=[$III_PACKAGE_DIR|$III_PACKAGE_NAME|$III_PACKAGE_KIND|$HOOK_VALUE|$PWD]\" >> {out}'\n",
+                out = out.display(),
+                pid = pid.display(),
+            ),
+        );
+        // Lock and copy the package into the project, as `iii compose build` does.
+        crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                crate::registry::TEST_REGISTRY.scope(server.uri(), crate::build::build(&path)),
+            )
+            .await
+            .unwrap();
+        let mut file = ComposeFile::load(&path).unwrap();
+        crate::lockfile::attach(&mut file).unwrap();
+
+        let pid_file = pid.clone();
+        let (url, _called) = fake_engine_url(move |function, _| match function {
+            "engine::workers::list" => {
+                let alive = std::fs::read_to_string(&pid_file)
+                    .ok()
+                    .and_then(|pid| pid.trim().parse::<u32>().ok())
+                    .is_some_and(crate::process::is_running);
+                let workers: Vec<serde_json::Value> = alive
+                    .then(|| serde_json::json!({ "name": "tool", "namespace": "shop" }))
+                    .into_iter()
+                    .collect();
+                answered(serde_json::json!({ "workers": workers }))
+            }
+            "engine::functions::list" => answered(serde_json::json!({ "functions": [] })),
+            "configuration::get" => {
+                serde_json::json!({ "error": { "code": "NOT_FOUND", "message": "none" } })
+            }
+            "configuration::migration-capabilities" => {
+                answered(serde_json::json!({ "source_priority_archive_revision": 1 }))
+            }
+            "configuration::migrate" => answered(serde_json::json!({ "action": "missing" })),
+            _ => not_found(),
+        })
+        .await;
+        let engine = std::sync::Arc::new(crate::engine::EngineClient::connect(&url, "t", "shop"));
+        while !engine.is_connected() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let project = crate::project::Project::open(
+            &format!("repro-f03-{}", uuid::Uuid::new_v4()),
+            "shop".into(),
+            file,
+            engine,
+            url,
+        )
+        .await
+        .unwrap();
+        let up = crate::state::TEST_PACKAGE_CACHE
+            .scope(cache.path().to_path_buf(), project.up(None, "up".into()))
+            .await;
+        assert_eq!(up.status, crate::lifecycle::OpStatus::Ok, "{up:?}");
+        let down = crate::state::TEST_PACKAGE_CACHE
+            .scope(
+                cache.path().to_path_buf(),
+                project.down(None, "down".into()),
+            )
+            .await;
+        assert_eq!(down.status, crate::lifecycle::OpStatus::Ok, "{down:?}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let lines = loop {
+            let text = std::fs::read_to_string(&out).unwrap_or_default();
+            if text.contains("post_run") || std::time::Instant::now() > deadline {
+                break text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        let value = |hook: &str| {
+            lines
+                .lines()
+                .find(|line| line.starts_with(hook))
+                .and_then(|line| line.split_once("=["))
+                .map(|(_, value)| value.trim_end_matches(']').to_string())
+        };
+        project.shutdown().await;
+        let run = value("run").expect("run never ran");
+        // Both directories exist; resolve temp-directory symlinks such as /var on macOS.
+        let expected = format!(
+            "{}|tool|binary|from-environment|{}",
+            dir.path()
+                .join(".iii/workers/tool")
+                .canonicalize()
+                .unwrap()
+                .display(),
+            dir.path()
+                .join("hook-cwd")
+                .canonicalize()
+                .unwrap()
+                .display()
+        );
+        assert_eq!(run, expected, "{lines}");
+        assert_eq!(value("post_run"), Some(run), "hook output:\n{lines}");
     }
 }
