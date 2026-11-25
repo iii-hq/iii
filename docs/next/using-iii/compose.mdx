@@ -738,8 +738,9 @@ only an address.
 
 Each key under `containers` is the name the worker registers under. It also names the container's
 directories, `.iii/build/<key>/` and `.iii/workers/<key>/`, so it must be a plain directory name: a
-key that is empty, holds `/` or `\`, starts with `.`, or holds a NUL fails with
-`INVALID_CONTAINER_KEY`.
+key that is empty, holds `/`, `\` or `:`, starts with `.`, or holds a NUL fails with
+`INVALID_CONTAINER_KEY`. Two keys that differ only by letter case, such as `api` and `API`, fail with
+the same code, because a case-insensitive file system gives them the same directories.
 
 | Field             | Type           | Default              | Description                                                                                                |
 | ----------------- | -------------- | -------------------- | ---------------------------------------------------------------------------------------------------------- |
