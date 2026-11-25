@@ -36,7 +36,7 @@ def assert_pattern(value: object, size: int, marker: str) -> None:
 def check_limit_message(message: str) -> None:
     match = re.fullmatch(
         r"Serialized JSON envelope is (\d+) bytes; limit is 67108864 bytes\. "
-        r"Use channels for larger payloads: https://iii\.dev/docs/creating-workers/channels#payload-size",
+        r"Use streams for larger payloads: https://iii\.dev/docs/creating-workers/streaming#payload-size",
         message,
     )
     assert match, message

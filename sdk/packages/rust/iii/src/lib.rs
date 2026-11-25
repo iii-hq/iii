@@ -1,4 +1,4 @@
-pub mod channels;
+mod channels;
 pub mod context;
 mod dispatch;
 pub mod engine;
@@ -18,6 +18,7 @@ mod process_marker;
 pub mod protocol;
 mod reporter;
 pub mod stream_provider;
+mod streams;
 pub mod structs;
 mod transport;
 pub mod types;
@@ -28,12 +29,6 @@ pub mod runtime {
         FunctionInfo, FunctionRef, IIIConnectionState, WorkerIdentityMode, WorkerInfo,
         WorkerMetadata,
     };
-}
-
-/// Public channel types. (Stage 1 submodule grouping.)
-pub mod channel {
-    pub use crate::channels::{ChannelReader, ChannelWriter, StreamChannelRef};
-    pub use crate::types::Channel;
 }
 
 /// Public error types. (Stage 1 submodule grouping.)
@@ -71,6 +66,7 @@ pub use protocol::{
 };
 #[allow(deprecated)]
 pub use stream_provider::IStream;
+pub use streams::{InputStream, OutputStream, Pipe, StreamInfo};
 pub use structs::MiddlewareFunctionInput;
 pub use types::{StreamRequest, StreamResponse};
 
@@ -88,8 +84,9 @@ pub struct InitOptions {
     /// mode, process-wide identity variables override matching fields.
     pub metadata: Option<iii::WorkerMetadata>,
     /// Custom HTTP headers sent during the WebSocket handshake, on the main
-    /// connection and on channels from `create_channel`. `Authorization: Bearer
-    /// $III_TOKEN` is added unless you set `Authorization` here.
+    /// connection and on the sockets of the streams bound to this client.
+    /// `Authorization: Bearer $III_TOKEN` is added unless you set
+    /// `Authorization` here.
     pub headers: Option<std::collections::HashMap<String, String>>,
     /// OpenTelemetry configuration.
     pub otel: Option<iii_helpers::observability::OtelConfig>,
@@ -203,9 +200,10 @@ pub fn register_worker(address: &str, options: InitOptions) -> IIIClient {
 }
 
 // ---------------------------------------------------------------------------
-// Compile-fail doctests: these enforce that the four channel items relocated
-// to `helpers` are NOT reachable at the crate root. They live here (not in
-// `tests/`) because `cargo test --doc` only picks up doctests inside `src/`.
+// Compile-fail doctests: these enforce that the four low-level channel items
+// (now under `protocol`) are NOT reachable at the crate root. They live here
+// (not in `tests/`) because `cargo test --doc` only picks up doctests inside
+// `src/`.
 // ---------------------------------------------------------------------------
 
 /// ```compile_fail
@@ -264,15 +262,46 @@ fn _ensure_runtime_submodule_path() {}
 fn _ensure_connection_state_not_top_level() {}
 
 // ---------------------------------------------------------------------------
-// Stage 1 channel submodule: channel types are reachable at their new
-// canonical path `iii_sdk::channel`.
+// Call-native streams (0.27): `InputStream`, `OutputStream`, `StreamInfo` and
+// `Pipe` are at the crate root; the low-level wire items are under
+// `protocol`; the channel API is gone.
 // ---------------------------------------------------------------------------
 
 /// ```rust,no_run
-/// use iii_sdk::channel::{Channel, ChannelReader, ChannelWriter, StreamChannelRef};
+/// use iii_sdk::{InputStream, OutputStream, Pipe, StreamInfo};
+/// use iii_sdk::protocol::{
+///     ChannelDirection, ChannelItem, StreamChannelRef, extract_channel_refs, is_channel_ref,
+/// };
+/// # async fn demo(iii: &iii_sdk::IIIClient) -> Result<(), iii_sdk::Error> {
+/// let Pipe { input, output } = iii.pipe().await?;
+/// # Ok(()) }
 /// ```
 #[allow(dead_code)]
-fn _ensure_channel_submodule_path() {}
+fn _ensure_stream_types_paths() {}
+
+/// ```compile_fail
+/// use iii_sdk::channel::{ChannelReader, ChannelWriter};
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_submodule_removed() {}
+
+/// ```compile_fail
+/// use iii_sdk::channels::StreamChannelRef;
+/// ```
+#[allow(dead_code)]
+fn _ensure_channels_module_private() {}
+
+/// ```compile_fail
+/// use iii_sdk::helpers::create_channel;
+/// ```
+#[allow(dead_code)]
+fn _ensure_create_channel_removed() {}
+
+/// ```compile_fail
+/// use iii_sdk::helpers::{ChannelDirection, extract_channel_refs};
+/// ```
+#[allow(dead_code)]
+fn _ensure_channel_helpers_moved_to_protocol() {}
 
 // ---------------------------------------------------------------------------
 // Stage 1 errors submodule: the renamed error type is reachable at its new
@@ -289,8 +318,8 @@ fn _ensure_errors_submodule_path() {}
 // ---------------------------------------------------------------------------
 // 0.20 clean break: the deprecated crate-root re-exports and renamed aliases
 // are removed. The relocated types live under their canonical submodule paths
-// (`iii_sdk::{channel,runtime}`) and the renamed types use their new
-// names (`IIIClient`, `Error`, `TelemetryOptions`).
+// (`iii_sdk::runtime`) and the renamed types use their new names
+// (`IIIClient`, `Error`, `TelemetryOptions`).
 // ---------------------------------------------------------------------------
 
 /// ```compile_fail

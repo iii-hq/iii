@@ -133,8 +133,141 @@ pub enum ComposeError {
         source_uri: String,
     },
 
-    #[error("container '{container}': 'run' is only valid for path:// workers")]
-    RunNotAllowedForPackage { container: String },
+    /// A container key is also a directory name, under `.iii/build/` and `.iii/workers/` (spec
+    /// 3.2).
+    #[error(
+        "container key '{container}' cannot name its directories under .iii/build/ and \
+         .iii/workers/: {reason}. Use a plain name such as 'api'"
+    )]
+    InvalidContainerKey {
+        container: String,
+        reason: &'static str,
+    },
+
+    /// Two container keys differ only by letter case: on a case-insensitive volume they name the
+    /// same directories under `.iii/build/` and `.iii/workers/` (spec 3.2).
+    #[error(
+        "container keys '{first}' and '{second}' differ only by letter case, so on a \
+         case-insensitive file system they would share their directories under .iii/build/ and \
+         .iii/workers/. Rename one of them"
+    )]
+    ContainerKeysDifferOnlyByCase { first: String, second: String },
+
+    /// `--frozen` never edits the file, and these containers 0.26 ran in a VM still need the
+    /// explicit VM mode written (spec 7.3).
+    #[error(
+        "{containers}: 0.26 ran these in a VM, and the file does not say so yet (scripts.build and \
+         scripts.run: iii call sandbox::...). --frozen does not edit the file: run `iii compose --up` once \
+         without --frozen to rewrite them"
+    )]
+    VmScriptsMissing { containers: String },
+
+    /// A container that runs in a VM (0.26 ran it in one, or it sets `runtime.base_image`) reached
+    /// a start the file does not place anywhere yet: it was read without the rewrite every `up`
+    /// makes (spec 7.3).
+    #[error(
+        "container '{container}' runs in a VM (0.26 ran it in one, or it sets \
+         runtime.base_image), and the file does not say so yet (scripts.build and scripts.run: \
+         iii call sandbox::...). Run `iii compose --up`, or iii call compose::up, which rewrites it"
+    )]
+    VmScriptsNotWritten { container: String },
+
+    /// The adapter lacks `worker.build` (spec 7.2) and Compose may not update it.
+    #[error(
+        "container '{container}' runs the sandbox adapter at {version}, outside {range}, which the \
+         explicit VM mode needs. Run: iii call compose::update worker={container}@latest, or edit \
+         its version"
+    )]
+    SandboxAdapterTooOld {
+        container: String,
+        version: String,
+        range: String,
+    },
+
+    #[error(
+        "container '{container}': runtime.base_image '{value}' is not an image reference, such as \
+         docker.io/library/alpine:3.20"
+    )]
+    InvalidBaseImage { container: String, value: String },
+
+    /// `runtime.base_image` is the image of the container's VM (spec 4.2).
+    #[error(
+        "container '{container}': runtime.base_image is the image of its VM, but scripts.{script} \
+         '{command}' keeps it on the host. Set scripts.build: iii call sandbox::build worker={container} and \
+         scripts.run: iii call sandbox::start worker={container}, or remove runtime.base_image"
+    )]
+    BaseImageWithoutVm {
+        container: String,
+        script: &'static str,
+        command: String,
+    },
+
+    /// A binary package names no image, so its container says which one its VM runs (spec 4.2).
+    #[error(
+        "container '{container}': scripts.run is iii call sandbox::start, but binary package '{package}' \
+         names no image for its VM. Set runtime.base_image, such as docker.io/library/alpine:3.20"
+    )]
+    SandboxBinaryWithoutBaseImage { container: String, package: String },
+
+    #[error(
+        "container '{container}': scripts.run is iii call sandbox::start, but it is neither a bundle \
+         package, a binary package, nor a path:// worker whose iii.worker.yaml sets runtime.base_image"
+    )]
+    SandboxRunNotAVmWorker { container: String },
+
+    #[error(
+        "container '{container}': scripts.build is iii call sandbox::build, which only builds \
+         for scripts.run: iii call sandbox::start"
+    )]
+    SandboxBuildWithoutRun { container: String },
+
+    #[error(
+        "container '{container}': scripts.run is iii call sandbox::start, which boots what \
+         iii call sandbox::build built, but scripts.build is '{build}'. Set scripts.build: iii call \
+         sandbox::build worker={container}, or run the worker on the host with a scripts.run of its \
+         own"
+    )]
+    SandboxRunWithoutBuild { container: String, build: String },
+
+    #[error(
+        "container '{container}': iii call sandbox::start and iii call sandbox::build need Linux or \
+         macOS"
+    )]
+    SandboxUnsupportedPlatform { container: String },
+
+    /// `worker=` on an `iii call sandbox::*` line names the VM it builds or boots: its own
+    /// container's (tech-specs/2026-11-19-iii-call-sandbox, section 2).
+    #[error(
+        "container '{container}': scripts.{script} builds or boots the VM of worker '{worker}'. \
+         Set worker={container}, the container's own key"
+    )]
+    SandboxWorkerMismatch {
+        container: String,
+        script: &'static str,
+        worker: String,
+    },
+
+    /// The rebuild an add or update ran for a container's new package failed (spec 5.3): the
+    /// file and the lock already name the new version, and the container runs its old build.
+    /// `code` and `message` are the build's own; `retry` says how to finish.
+    #[error(
+        "container '{container}': scripts.build failed for its new package: {code}: {message}. {retry}"
+    )]
+    PackageRebuildFailed {
+        container: String,
+        code: String,
+        message: String,
+        retry: String,
+    },
+
+    /// A first build or a package rebuild failed: `code` and `message` are the build's own
+    /// (spec 4.1).
+    #[error("container '{container}': scripts.build failed: {code}: {message}")]
+    BuildFailed {
+        container: String,
+        code: String,
+        message: String,
+    },
 
     #[error("container '{container}': 'pre_run_timeout' requires 'pre_run'")]
     PreRunTimeoutWithoutPreRun { container: String },
@@ -526,6 +659,19 @@ pub enum ComposeError {
     #[error("operation cancelled")]
     OperationCancelled { operation_id: String },
 
+    /// An add or update cancelled after it rebuilt containers that still run their previous
+    /// build: a retry restarts them (spec 5.3).
+    #[error(
+        "operation cancelled; rebuilt and not yet restarted: {}. Retry the {operation} to restart \
+         them.",
+        rebuilt.join(", ")
+    )]
+    RebuildCancelled {
+        operation_id: String,
+        operation: String,
+        rebuilt: Vec<String>,
+    },
+
     /// `compose::add` plans (graph expansion, artifact acquisition) against a
     /// snapshot of the file, unlocked, and only edits the file it planned
     /// against. A file that keeps changing underneath is not edited from a
@@ -535,9 +681,20 @@ pub enum ComposeError {
     )]
     AddPlanStale { path: PathBuf, replans: u32 },
 
-    /// `build` runs outside the daemon's mutation lock, so a file edited while
-    /// it prepared is not overwritten from its stale snapshot.
-    #[error("{} changed while build was preparing it; nothing was written. Run the build again.", .path.display())]
+    /// `build` runs outside the daemon's mutation lock, so a file edited, or a
+    /// lock the daemon committed, while it prepared is not overwritten from its
+    /// stale snapshot; `path` names the one that changed. The check runs
+    /// before the file and the lock are written and again before the packages
+    /// are materialized, so the message claims nothing about what was written:
+    /// each write is atomic, and the next build starts from what is on disk.
+    /// The check and the write are not atomic across processes: a lock the
+    /// daemon commits between them is still overwritten, and the late check,
+    /// which compares with the lock this build wrote, then passes.
+    #[error(
+        "{} changed while build was preparing it, so the build stopped instead of working from \
+         a stale plan. Run the build again.",
+        .path.display()
+    )]
     BuildPlanStale { path: PathBuf },
 
     /// A relative `file=` that missed. The path is resolved by the daemon, in
@@ -632,7 +789,22 @@ impl ComposeError {
             Self::StopTakesNoContainer { .. } => "STOP_TAKES_NO_CONTAINER",
             Self::DependencyCycle { .. } => "DEPENDENCY_CYCLE",
             Self::UnsupportedWorkerSource { .. } => "UNSUPPORTED_WORKER_SOURCE",
-            Self::RunNotAllowedForPackage { .. } => "RUN_NOT_ALLOWED_FOR_PACKAGE",
+            Self::InvalidBaseImage { .. } => "INVALID_BASE_IMAGE",
+            Self::BaseImageWithoutVm { .. } => "BASE_IMAGE_WITHOUT_VM",
+            Self::SandboxBinaryWithoutBaseImage { .. } => "SANDBOX_BINARY_WITHOUT_BASE_IMAGE",
+            Self::InvalidContainerKey { .. } | Self::ContainerKeysDifferOnlyByCase { .. } => {
+                "INVALID_CONTAINER_KEY"
+            }
+            Self::VmScriptsMissing { .. } | Self::VmScriptsNotWritten { .. } => {
+                "VM_SCRIPTS_MISSING"
+            }
+            Self::SandboxAdapterTooOld { .. } => "SANDBOX_ADAPTER_TOO_OLD",
+            Self::SandboxRunNotAVmWorker { .. } => "SANDBOX_RUN_NOT_A_VM_WORKER",
+            Self::SandboxBuildWithoutRun { .. } => "SANDBOX_BUILD_WITHOUT_RUN",
+            Self::SandboxRunWithoutBuild { .. } => "SANDBOX_RUN_WITHOUT_BUILD",
+            Self::SandboxUnsupportedPlatform { .. } => "SANDBOX_UNSUPPORTED_PLATFORM",
+            Self::SandboxWorkerMismatch { .. } => "SANDBOX_WORKER_MISMATCH",
+            Self::BuildFailed { .. } | Self::PackageRebuildFailed { .. } => "BUILD_FAILED",
             Self::PreRunTimeoutWithoutPreRun { .. } => "PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN",
             Self::InvalidDuration { .. } => "INVALID_DURATION",
             Self::MissingVersionForPackage { .. } => "MISSING_VERSION_FOR_PACKAGE",
@@ -685,7 +857,9 @@ impl ComposeError {
             Self::ContainerNameTaken { .. } => "CONTAINER_NAME_TAKEN",
             Self::InvalidState { .. } => "INVALID_STATE_FILE",
             Self::UnknownProject { .. } => "UNKNOWN_PROJECT",
-            Self::OperationCancelled { .. } => "OPERATION_CANCELLED",
+            Self::OperationCancelled { .. } | Self::RebuildCancelled { .. } => {
+                "OPERATION_CANCELLED"
+            }
             Self::AddPlanStale { .. } => "ADD_PLAN_STALE",
             Self::BuildPlanStale { .. } => "BUILD_PLAN_STALE",
             Self::RelativeFileMissing { .. } => "COMPOSE_FILE_UNREADABLE",

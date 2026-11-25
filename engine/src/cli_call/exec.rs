@@ -4,12 +4,127 @@
 // This software is patent protected. We welcome discussions - reach out at team@iii.dev
 // See LICENSE and PATENTS files for details.
 
+use std::io::IsTerminal;
+use std::time::Instant;
+
+use iii::protocol::DEFAULT_NAMESPACE;
 use iii::workers::telemetry::collector::CLI_WORKER_NAME_PREFIX;
 use iii_sdk::protocol::CallRequest;
-use iii_sdk::{Error, InitOptions, register_worker};
-use serde_json::Value;
+use iii_sdk::{Error, IIIClient, InitOptions, WorkerIdentityMode, register_worker};
+use serde_json::{Value, json};
 
 use super::CallCliError;
+use super::streams::{Bindings, Carried, CopyFailure, Interrupt, result_streams};
+
+/// The call's timeout when nothing else names one.
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// "No timeout" for a call that carries a stream: ten years, which the engine and the SDK still
+/// add to an `Instant` without overflowing.
+const NO_TIMEOUT_MS: u64 = 10 * 365 * 24 * 60 * 60 * 1000;
+
+/// The time a call may take, from the schema lookup to the answer: one deadline, started before
+/// anything is sent, so the lookup and the invocation share `--timeout-ms` instead of each
+/// taking all of it.
+struct Budget {
+    started: Instant,
+    /// `--timeout-ms`; `None` is 30 s, or no limit for a call that binds a stream.
+    limit_ms: Option<u64>,
+}
+
+impl Budget {
+    fn start(limit_ms: Option<u64>) -> Self {
+        Self {
+            started: Instant::now(),
+            limit_ms,
+        }
+    }
+
+    /// What is left of `total_ms`, never less than 1 ms: a call whose time ran out still goes
+    /// out, and times out on its own.
+    fn left_of(&self, total_ms: u64) -> u64 {
+        let spent = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        total_ms.saturating_sub(spent).max(1)
+    }
+
+    /// The timeout of the schema lookup: at most half the budget, so a lookup that times out
+    /// leaves the other half to the call.
+    fn lookup_timeout(&self) -> u64 {
+        self.left_of(
+            self.limit_ms
+                .unwrap_or(DEFAULT_TIMEOUT_MS)
+                .min(DEFAULT_TIMEOUT_MS)
+                / 2,
+        )
+    }
+
+    /// What is left of `--timeout-ms`, `None` without one. Opening the streams spends it too.
+    fn remaining(&self) -> Option<std::time::Duration> {
+        self.limit_ms.map(|limit| {
+            std::time::Duration::from_millis(limit).saturating_sub(self.started.elapsed())
+        })
+    }
+
+    /// The timeout of the invocation: what is left of `--timeout-ms`, else of the 30 s default,
+    /// or no limit for a call to a function that takes a stream, when it names none.
+    fn call_timeout(&self, takes_stream: bool) -> u64 {
+        match self.limit_ms {
+            Some(limit) => self.left_of(limit),
+            None if takes_stream => NO_TIMEOUT_MS,
+            None => self.left_of(DEFAULT_TIMEOUT_MS),
+        }
+    }
+}
+
+/// How long a call whose budget ran out while its streams were opened still gives their cleanup.
+/// Aborting a writer whose channel was never dialed dials it first, and a handshake the engine
+/// does not finish must not hold the error; what is left open is closed with the connection when
+/// the process exits, and no function was called to hold it.
+const SETUP_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Runs `cleanup` for at most `grace`.
+async fn clean_up_within(grace: std::time::Duration, cleanup: impl Future<Output = ()>) {
+    let _ = tokio::time::timeout(grace, cleanup).await;
+}
+
+/// Runs `setup` in what is left of `budget`: `None` when the budget ran out first, or had
+/// already, and `setup` was dropped. Without `--timeout-ms`, `setup` runs to its end.
+async fn within<T>(budget: &Budget, setup: impl Future<Output = T>) -> Option<T> {
+    match budget.remaining() {
+        None => Some(setup.await),
+        Some(left) if left.is_zero() => None,
+        Some(left) => tokio::time::timeout(left, setup).await.ok(),
+    }
+}
+
+/// How one invocation runs.
+pub struct Options<'a> {
+    /// `--timeout-ms`: `None` is 30 s, or no limit for a call to a function that takes a stream.
+    pub timeout_ms: Option<u64>,
+    pub namespace: Option<&'a str>,
+    /// Carries the call's streams: binds the stream fields the function's schema declares and
+    /// follows the streams of the result. `--no-follow` turns both off.
+    pub follow: bool,
+    /// Prints the result after carried streams ended (`--print-result`).
+    pub print_result: bool,
+}
+
+/// A call is no worker. The `III_WORKER_NAME` and `III_NAMESPACE` of the process that runs it,
+/// such as any script Compose starts, name that process's worker: a call that took them would
+/// hold the name, and the worker the script starts (a VM's guest) would be refused with
+/// `WORKER_NAMESPACE_CONFLICT`. The call keeps its own name, and names its namespace itself.
+pub(crate) const CALL_IDENTITY: WorkerIdentityMode = WorkerIdentityMode::Explicit;
+
+/// The streams a call carries, and whether its function takes one. `--no-follow` carries none,
+/// but a function that takes a stream still runs as long as it does.
+fn carried_streams(bindings: Bindings, follow: bool) -> (Bindings, bool) {
+    let takes_stream = !bindings.is_empty();
+    let carried = if follow {
+        bindings
+    } else {
+        Bindings::default()
+    };
+    (carried, takes_stream)
+}
 
 /// Metadata for the call connection. Registering under a marked name is how
 /// the engine counts this command in the heartbeat's CLI aggregate: the CLI
@@ -31,64 +146,286 @@ pub async fn invoke(
     payload: Value,
     address: &str,
     port: u16,
-    timeout_ms: u64,
-    namespace: Option<&str>,
+    options: &Options<'_>,
 ) -> Result<(), CallCliError> {
     let url = format!("ws://{}:{}", address, port);
     let iii = register_worker(
         &url,
         InitOptions {
             metadata: cli_worker_metadata(),
+            identity: CALL_IDENTITY,
             ..Default::default()
         },
     );
+    let outcome = call(&iii, function_path, payload, options).await;
+    iii.shutdown_async().await;
+    outcome
+}
 
+async fn call(
+    iii: &IIIClient,
+    function_path: &str,
+    mut payload: Value,
+    options: &Options<'_>,
+) -> Result<(), CallCliError> {
+    let budget = Budget::start(options.timeout_ms);
+    // On Windows, a console event no handler takes ends the process with STATUS_CONTROL_C_EXIT
+    // (0xC000013A), not with the 128 plus the signal's number a shell reports on Unix for a
+    // process SIGINT or SIGTERM ended. There the handler is installed for the whole call: until a
+    // stream is carried, Ctrl+C ends it with 130 and Ctrl+Break with 143. A handler that cannot be
+    // installed leaves the default, as before.
+    let mut interrupt = if cfg!(windows) {
+        Interrupt::install().ok()
+    } else {
+        None
+    };
+    // Always named: without `-n` the call resolves in `default`, as `--help` says. Left implicit,
+    // the SDK would take the namespace of `III_NAMESPACE`, which every process Compose starts
+    // has, and a script's `iii call sandbox::build` would look in its project's namespace.
+    let namespace = options.namespace.unwrap_or(DEFAULT_NAMESPACE);
+    let mut bindings = Bindings::default();
+    // Read with `--no-follow` too: a function that takes a stream runs as long as it does, and its
+    // call keeps no default limit even when it carries none.
+    if payload.is_object() {
+        let lookup_timeout = budget.lookup_timeout();
+        match request_schema(iii, function_path, namespace, lookup_timeout).await {
+            Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
+            Ok(None) => {}
+            Err(error) => {
+                if let Err(error) = after_failed_lookup(error) {
+                    return Err(report_call_error(error));
+                }
+                if options.follow {
+                    eprintln!(
+                        "warning: the request schema of {function_path} did not arrive in time; \
+                         the call binds no stream"
+                    );
+                } else if options.timeout_ms.is_none() {
+                    eprintln!(
+                        "warning: the request schema of {function_path} did not arrive in time; \
+                         the call has the default {} s limit",
+                        DEFAULT_TIMEOUT_MS / 1000
+                    );
+                }
+            }
+        }
+    }
+    let (bindings, takes_stream) = carried_streams(bindings, options.follow);
+
+    let mut carried = Carried::default();
+    if !bindings.is_empty() {
+        // A stream that cannot be
+        // opened now is the engine's failure, not the arguments'. Opening them spends the
+        // call's budget too: once it ran out, the streams already open are closed and the call
+        // is not sent.
+        let bound = within(&budget, carried.bind(iii, &bindings, &mut payload)).await;
+        let spent = budget.remaining().is_some_and(|left| left.is_zero());
+        match bound {
+            Some(bound) if !spent => bound.map_err(CallCliError::Other)?,
+            _ => {
+                clean_up_within(SETUP_CLEANUP_GRACE, carried.cancel()).await;
+                carried.abandon();
+                return Err(CallCliError::Other(anyhow::anyhow!(
+                    "--timeout-ms {} ran out while the call's streams were opened; the call \
+                     was not sent",
+                    budget.limit_ms.unwrap_or_default()
+                )));
+            }
+        }
+        interrupt = Some(armed(interrupt.take())?);
+    }
+    let timeout_ms = budget.call_timeout(takes_stream);
     let request = CallRequest {
         function_id: function_path.to_string(),
         payload,
         action: None,
         timeout_ms: Some(timeout_ms),
     };
+    let call = iii.call(request.namespace(namespace));
+    // A signal before the answer is a stop: the streams close, the function stops what it runs
+    // and answers, and that answer is what this command exits with.
+    let (result, stopped) = answer(call, interrupt.as_ref(), carried.cancel()).await;
 
-    // Omitted when absent so the engine keeps resolving in `default`: the
-    // caller's own namespace never influences routing.
-    let result = match namespace {
-        Some(namespace) => iii.call(request.namespace(namespace)).await,
-        None => iii.call(request).await,
+    let value = match result {
+        Ok(value) => value,
+        Err(error) => {
+            carried.cancel().await;
+            let _ = carried.finish().await;
+            return Err(report_call_error(error));
+        }
     };
 
-    iii.shutdown_async().await;
-
-    match result {
-        Ok(value) => {
-            if !value.is_null() {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?
-                );
-            }
-            Ok(())
+    if options.follow {
+        let streams = result_streams(&value);
+        if !streams.is_empty() {
+            interrupt = Some(armed(interrupt.take())?);
+            carried.follow(iii, streams).map_err(CallCliError::Other)?;
         }
-        Err(Error::Remote {
+    }
+    let streamed = !carried.is_empty();
+
+    // The streams drain once the function closed its ends. A signal now, after the answer, has
+    // nothing left to wait for.
+    let drained = match &interrupt {
+        Some(interrupt) if !stopped => {
+            let ended = {
+                let finish = carried.finish();
+                tokio::pin!(finish);
+                tokio::select! {
+                    drained = &mut finish => Ok(drained),
+                    signal = interrupt.requested() => Err(signal),
+                }
+            };
+            match ended {
+                Ok(drained) => drained,
+                Err(signal) => {
+                    // The copies are not joined again: one may sit in a write into a pipe whose
+                    // reader stopped reading, which never ends. The process exits at once with
+                    // the signal, so nothing waits for that write either.
+                    carried.cancel().await;
+                    carried.abandon();
+                    return Err(CallCliError::Interrupted(signal));
+                }
+            }
+        }
+        _ => {
+            // After a stop, the result streams `follow` just added were not there when the
+            // streams were cancelled: cancel them too, or one the function keeps open is waited
+            // for until a second signal.
+            if stopped {
+                carried.cancel().await;
+            }
+            carried.finish().await
+        }
+    };
+    drain_outcome(drained, stopped)?;
+
+    if (!streamed || options.print_result) && !value.is_null() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?
+        );
+    }
+    Ok(())
+}
+
+/// The interrupt of a call that carries streams: the one installed for the call, or a new one,
+/// armed so that the first signal is a stop.
+fn armed(interrupt: Option<Interrupt>) -> Result<Interrupt, CallCliError> {
+    let interrupt = match interrupt {
+        Some(interrupt) => interrupt,
+        None => Interrupt::install().map_err(|error| anyhow::anyhow!(error))?,
+    };
+    interrupt.arm();
+    Ok(interrupt)
+}
+
+/// What the end of the copies means for the command. A stream that failed fails the call, unless
+/// the call stopped it: a stop cancels the streams, and they end in errors then. Output this
+/// process could not write fails the call either way: it was lost, whatever stopped the stream.
+fn drain_outcome(drained: Result<(), CopyFailure>, stopped: bool) -> Result<(), CallCliError> {
+    match drained {
+        Err(failure @ CopyFailure::Output(_)) => {
+            Err(CallCliError::Other(anyhow::anyhow!(failure.to_string())))
+        }
+        Err(failure @ CopyFailure::Stream(_)) if !stopped => {
+            Err(CallCliError::Other(anyhow::anyhow!(failure.to_string())))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Awaits the answer of `call`. A signal before it runs `stop`, which asks the function to stop,
+/// and the answer is still awaited: it is what the command exits with. Returns the answer and
+/// whether `stop` ran. A signal that comes after the answer is not counted here: the caller still
+/// sees it through `interrupt`, and stops what is left to carry then.
+async fn answer<T>(
+    call: impl Future<Output = T>,
+    interrupt: Option<&Interrupt>,
+    stop: impl Future<Output = ()>,
+) -> (T, bool) {
+    let Some(interrupt) = interrupt else {
+        return (call.await, false);
+    };
+    tokio::pin!(call);
+    tokio::select! {
+        answer = &mut call => (answer, false),
+        _ = interrupt.requested() => {
+            stop.await;
+            (call.await, true)
+        }
+    }
+}
+
+/// The function's request schema from `engine::functions::info`, to bind streams by. `None` when
+/// the engine answers without one (an unknown function, an engine without the function): the
+/// call itself then says what is wrong. An engine that does not answer is an error.
+async fn request_schema(
+    iii: &IIIClient,
+    function_path: &str,
+    namespace: &str,
+    timeout_ms: u64,
+) -> Result<Option<Value>, Error> {
+    let payload = json!({ "function_id": function_path, "namespace": namespace });
+    let info = match iii
+        .call(CallRequest {
+            function_id: "engine::functions::info".to_string(),
+            payload,
+            action: None,
+            timeout_ms: Some(timeout_ms),
+        })
+        .await
+    {
+        Ok(info) => info,
+        Err(Error::Remote { .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    Ok(info
+        .get("request_schema")
+        .or_else(|| info.get("request_format"))
+        .filter(|schema| schema.is_object())
+        .cloned())
+}
+
+/// What a failed schema lookup means for the call. A timeout says nothing about the function,
+/// which may answer promptly while the engine's metadata is slow: the call goes ahead without
+/// streams, in the half of the budget the lookup left. Any other failure is the
+/// connection's, which the call could not use either: the same error, once, instead of a second
+/// wait.
+fn after_failed_lookup(error: Error) -> Result<(), Error> {
+    match error {
+        Error::Timeout => Ok(()),
+        error => Err(error),
+    }
+}
+
+/// Prints a failed call and turns it into this command's error. A function's own error goes to
+/// stderr as JSON, on one line when stderr is not a terminal so a caller can read it.
+fn report_call_error(error: Error) -> CallCliError {
+    match error {
+        Error::Remote {
             code,
             message,
             stacktrace,
-        }) => {
+        } => {
             let err_obj = serde_json::json!({
                 "code": code,
                 "message": message,
                 "stacktrace": stacktrace,
             });
-            // Print structured JSON to stderr; main.rs translates the
-            // RemoteAlreadyReported variant into a silent exit(1).
+            let rendered = if std::io::stderr().is_terminal() {
+                serde_json::to_string_pretty(&err_obj)
+            } else {
+                serde_json::to_string(&err_obj)
+            };
+            // main.rs translates RemoteAlreadyReported into a silent exit(1).
             eprintln!(
                 "Error: {}",
-                serde_json::to_string_pretty(&err_obj)
-                    .unwrap_or_else(|_| "(unserializable error body)".to_string())
+                rendered.unwrap_or_else(|_| "(unserializable error body)".to_string())
             );
-            Err(CallCliError::RemoteAlreadyReported)
+            CallCliError::RemoteAlreadyReported
         }
-        Err(e) => Err(CallCliError::Other(map_call_error(e))),
+        error => CallCliError::Other(map_call_error(error)),
     }
 }
 
@@ -107,6 +444,165 @@ mod tests {
     use super::*;
     use iii::workers::telemetry::environment::CI_ENV_VARS;
     use serial_test::serial;
+    use std::time::Duration;
+
+    /// A budget `ms` into its call.
+    fn spent(ms: u64, limit_ms: Option<u64>) -> Budget {
+        Budget {
+            started: Instant::now() - Duration::from_millis(ms),
+            limit_ms,
+        }
+    }
+
+    #[test]
+    fn no_follow_carries_no_stream_but_a_streaming_call_keeps_no_limit() {
+        let from_schema = Bindings {
+            stdout: Some("stdout".into()),
+            ..Bindings::default()
+        };
+        assert_eq!(
+            carried_streams(from_schema.clone(), true),
+            (from_schema.clone(), true)
+        );
+        assert_eq!(
+            carried_streams(from_schema, false),
+            (Bindings::default(), true)
+        );
+        assert_eq!(
+            carried_streams(Bindings::default(), false),
+            (Bindings::default(), false)
+        );
+    }
+
+    #[test]
+    fn the_call_gets_what_the_lookup_left_of_the_timeout() {
+        let budget = spent(450, Some(500));
+        let left = budget.call_timeout(false);
+        assert!((1..=50).contains(&left), "{left}");
+        assert!(
+            budget.call_timeout(true) <= 50,
+            "--timeout-ms bounds a call that binds a stream too"
+        );
+        assert_eq!(
+            spent(600, Some(500)).call_timeout(false),
+            1,
+            "a spent budget still sends the call, which then times out"
+        );
+        let default = spent(1_000, None);
+        assert!(default.call_timeout(false) <= DEFAULT_TIMEOUT_MS - 1_000);
+        assert_eq!(default.call_timeout(true), NO_TIMEOUT_MS);
+    }
+
+    /// Opening the streams spends what is left of `--timeout-ms`: a spent budget opens nothing,
+    /// a setup that outlasts it is cut at the deadline, and a fast one leaves the rest to the
+    /// call. Without `--timeout-ms` nothing is cut.
+    #[tokio::test]
+    async fn the_streams_are_opened_within_what_is_left_of_the_budget() {
+        let ran = std::sync::atomic::AtomicBool::new(false);
+        let opened = within(&spent(600, Some(500)), async {
+            ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert!(opened.is_none());
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        let began = Instant::now();
+        let opened = within(
+            &spent(400, Some(500)),
+            tokio::time::sleep(Duration::from_secs(10)),
+        )
+        .await;
+        assert!(opened.is_none());
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+
+        let budget = spent(0, Some(10_000));
+        assert_eq!(within(&budget, async { 7 }).await, Some(7));
+        assert!(budget.call_timeout(true) > 9_000);
+        assert_eq!(within(&spent(0, None), async { 7 }).await, Some(7));
+    }
+
+    /// The cleanup of a call that ran out of budget while its streams were opened is bounded: a
+    /// writer abort whose channel handshake never finishes does not hold the error.
+    #[tokio::test]
+    async fn the_cleanup_of_an_unsent_call_is_bounded() {
+        let began = Instant::now();
+        clean_up_within(Duration::from_millis(100), std::future::pending()).await;
+        assert!(
+            began.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            began.elapsed()
+        );
+        assert!(SETUP_CLEANUP_GRACE <= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_signal_after_the_answer_is_left_to_the_drain() {
+        let (signal, interrupt) = Interrupt::manual();
+        let stop_ran = std::sync::atomic::AtomicBool::new(false);
+        let (value, stopped) = answer(async { 7 }, Some(&interrupt), async {
+            stop_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        })
+        .await;
+        assert_eq!((value, stopped), (7, false));
+        assert!(!stop_ran.load(std::sync::atomic::Ordering::SeqCst));
+        // The signal lands after the answer: the drain still sees it, and cancels then.
+        signal.send_replace(Some(15));
+        let seen = tokio::time::timeout(Duration::from_secs(1), interrupt.requested()).await;
+        assert_eq!(seen.ok(), Some(15));
+    }
+
+    #[tokio::test]
+    async fn a_signal_before_the_answer_stops_the_function_and_waits_for_it() {
+        let (signal, interrupt) = Interrupt::manual();
+        signal.send_replace(Some(2));
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        // The function answers only once it was asked to stop.
+        let call = async move { stop_rx.await.is_ok().then_some("stopped") };
+        let (value, stopped) = answer(call, Some(&interrupt), async move {
+            let _ = stop_tx.send(());
+        })
+        .await;
+        assert_eq!((value, stopped), (Some("stopped"), true));
+    }
+
+    #[test]
+    fn lost_output_fails_the_call_even_after_a_stop() {
+        let lost = || Err(CopyFailure::Output("the stdout stream failed: full".into()));
+        let cancelled = || {
+            Err(CopyFailure::Stream(
+                "the stdout stream failed: cancelled".into(),
+            ))
+        };
+        assert!(
+            drain_outcome(lost(), true).is_err(),
+            "a stop does not hide lost output"
+        );
+        assert!(drain_outcome(lost(), false).is_err());
+        assert!(
+            drain_outcome(cancelled(), true).is_ok(),
+            "a stream the stop cancelled ends in an error"
+        );
+        assert!(drain_outcome(cancelled(), false).is_err());
+        assert!(drain_outcome(Ok(()), true).is_ok());
+    }
+
+    #[test]
+    fn a_lookup_that_times_out_leaves_the_call_half_its_budget() {
+        assert!(spent(0, Some(1_000)).lookup_timeout() <= 500);
+        assert!(spent(0, None).lookup_timeout() <= DEFAULT_TIMEOUT_MS / 2);
+        assert!(
+            after_failed_lookup(Error::Timeout).is_ok(),
+            "a slow lookup does not make the function uncallable"
+        );
+        assert!(
+            after_failed_lookup(Error::WebSocket("closed".into())).is_err(),
+            "a connection that failed ends the call"
+        );
+    }
 
     /// Runs `body` with the process looking like a developer machine whose
     /// telemetry setting is `enabled`. `temp_env` restores every variable on the

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use iii::engine::Engine;
 use iii::function::{Function, FunctionResult};
 use iii::workers::reload::WorkerRegistrations;
+use iii_sandbox_contract::{CONTRACT_MAJOR, CONTRACT_MINOR};
 use serial_test::serial;
 
 fn make_dummy_function(id: &str) -> Function {
@@ -233,7 +234,7 @@ async fn engine_config_binds_the_mandatory_router_on_build() {
             .await
             .unwrap(),
         Some(
-            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": 1, "minor": 2}, "info": null})
+            json!({"adapter": "fake", "namespace": "fake-ns", "contract": {"major": CONTRACT_MAJOR, "minor": CONTRACT_MINOR}, "info": null})
         )
     );
     builder.destroy().await.unwrap();

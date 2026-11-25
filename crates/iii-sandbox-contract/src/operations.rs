@@ -15,6 +15,9 @@ pub const ROUTER_INFO_ID: &str = "sandbox::adapter::info";
 
 /// Worker-VM suffixes: Compose calls `adapter_function_id(adapter, WORKER_START)` etc.
 pub const WORKER_PREPARE: &str = "worker::prepare";
+/// Called directly as `<adapter>::worker::build`. Not in [`OPERATIONS`]: the router does not
+/// publish `sandbox::worker::build`. Since contract 1.3 ([`FEATURE_BUILD`](crate::FEATURE_BUILD)).
+pub const WORKER_BUILD: &str = "worker::build";
 pub const WORKER_START: &str = "worker::start";
 pub const WORKER_STATUS: &str = "worker::status";
 pub const WORKER_LOGS: &str = "worker::logs";
@@ -228,6 +231,7 @@ mod tests {
         assert_eq!(
             [
                 WORKER_PREPARE,
+                WORKER_BUILD,
                 WORKER_START,
                 WORKER_STATUS,
                 WORKER_LOGS,
@@ -236,6 +240,7 @@ mod tests {
             ],
             [
                 "worker::prepare",
+                "worker::build",
                 "worker::start",
                 "worker::status",
                 "worker::logs",
@@ -243,6 +248,22 @@ mod tests {
                 "worker::destroy"
             ]
         );
+    }
+
+    /// The worker-VM suffixes are called on the adapter directly; the router publishes none.
+    #[test]
+    fn worker_suffixes_are_not_router_operations() {
+        for worker in [
+            WORKER_PREPARE,
+            WORKER_BUILD,
+            WORKER_START,
+            WORKER_STATUS,
+            WORKER_LOGS,
+            WORKER_STOP,
+            WORKER_DESTROY,
+        ] {
+            assert!(OPERATIONS.iter().all(|o| o.suffix != worker), "{worker}");
+        }
     }
 
     #[test]

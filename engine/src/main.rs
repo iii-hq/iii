@@ -47,9 +47,11 @@ pub fn render_clap_help(target: clap::Command) {
     let mut printer = clap_help::Printer::new(target.clone());
     // Author line is rendered as a useless "by " stub when no author is set.
     printer.set_template("author", "");
-    // Surface the command's `about` text under the title. clap-help 1.x does
-    // not pull `about` from the Command, so inject it manually.
-    if let Some(about) = target.get_about() {
+    // Surface the command's long help under the title, else its `about`: the
+    // paragraphs after a doc comment's summary are `long_about`. clap-help 1.x
+    // pulls neither from the Command, so inject it manually. The Commands
+    // listing keeps each subcommand's short `about`.
+    if let Some(about) = target.get_long_about().or_else(|| target.get_about()) {
         printer.expander_mut().set("about", about.to_string());
         printer.set_template("introduction", "\n${about}\n");
     }
@@ -135,6 +137,23 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Call a function on a running iii engine
+    ///
+    /// When the function's request schema has a stream field named `stdout` or
+    /// `stderr` that the function writes, or `stdin` that it reads, the call
+    /// connects it to its own stdout, stderr or stdin. Streams named `stdout`
+    /// or `stderr` in the result are printed as well. The call ends once the
+    /// function answered and its streams ended. `--no-follow` turns all of
+    /// this off and prints the result JSON instead.
+    ///
+    /// While streams run, the first Ctrl+C or SIGTERM (Ctrl+Break on Windows)
+    /// asks the function to stop and waits for its answer; a second one exits
+    /// at once.
+    ///
+    /// III_CALL_DEFAULTS holds a JSON object keyed by namespace, each holding
+    /// entries keyed by function id: the entry of the called function in the
+    /// namespace the call resolves in (`default` without `-n`) is the base
+    /// payload, and `--json` and key=value override its keys. A parent process
+    /// uses it to hand a call fields that must not appear in its arguments.
     #[command(visible_aliases = ["trigger", "t"])]
     Call(CallArgs),
 
@@ -160,15 +179,6 @@ enum Commands {
     /// engine unless `--engine` selects an existing one.
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
-
-    /// Run one Compose container's VM through its sandbox adapter.
-    ///
-    /// Compose starts `iii sandbox run` as the `scripts.run` of a container
-    /// whose worker sets `runtime.base_image`; stopping it stops the VM.
-    // Hidden from `--help` and the CLI reference until the explicit VM mode is
-    // settled: Compose still runs it for a container that opts in.
-    #[command(hide = true)]
-    Sandbox(iii_compose::sandbox_cli::SandboxCli),
 
     /// List iii processes on this machine: engines, compose daemons and
     /// workers, with the compose project each belongs to
@@ -236,10 +246,6 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Build(_)) => "compose build".to_string(),
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
-        },
-        Some(Commands::Sandbox(args)) => match &args.command {
-            iii_compose::sandbox_cli::SandboxCommand::Run(_) => "sandbox run".to_string(),
-            iii_compose::sandbox_cli::SandboxCommand::Destroy => "sandbox destroy".to_string(),
         },
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),
@@ -513,6 +519,11 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             Ok(()) => Ok(()),
             // exec::invoke already printed the structured JSON; exit silently.
             Err(cli_call::CallCliError::RemoteAlreadyReported) => std::process::exit(1),
+            Err(cli_call::CallCliError::Usage(e)) => {
+                eprintln!("Error: {e:#}");
+                std::process::exit(2)
+            }
+            Err(cli_call::CallCliError::Interrupted(signal)) => std::process::exit(128 + signal),
             Err(cli_call::CallCliError::Other(e)) => Err(e),
         },
         Some(Commands::Cloud { args }) => {
@@ -542,11 +553,6 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             }
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
-        }
-        // Its stdout is the guest's alone; its stderr is the guest's plus its own
-        // `iii sandbox:` lines.
-        Some(Commands::Sandbox(args)) => {
-            std::process::exit(iii_compose::sandbox_cli::run(args.clone()).await)
         }
         Some(Commands::Ps { json }) => cli::ps::ps(*json),
         Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
@@ -590,6 +596,15 @@ mod tests {
     }
 
     #[test]
+    fn call_binds_streams_by_name_only() {
+        for flag in ["--stdout", "--stderr", "--stdin"] {
+            let parsed = Cli::try_parse_from(["iii", "call", "my::fn", flag, "data"]);
+            assert!(parsed.is_err(), "{flag} parsed");
+        }
+        assert!(Cli::try_parse_from(["iii", "call", "my::fn", "--no-bind"]).is_err());
+    }
+
+    #[test]
     fn call_parses_with_positional_fn_path_only() {
         let cli = Cli::try_parse_from(["iii", "call", "my::fn"])
             .expect("should parse call with fn path only");
@@ -602,7 +617,8 @@ mod tests {
                 // `III_URL` can fill in whichever half no flag named.
                 assert_eq!(args.address, None);
                 assert_eq!(args.port, None);
-                assert_eq!(args.timeout_ms, 30_000);
+                assert_eq!(args.timeout_ms, None);
+                assert!(!args.no_follow && !args.print_result);
             }
             _ => panic!("expected Call subcommand"),
         }
@@ -717,22 +733,6 @@ mod tests {
             result.is_err(),
             "--use-default-config should no longer parse"
         );
-    }
-
-    #[test]
-    fn sandbox_run_parses_and_counts_as_its_own_command() {
-        let cli = Cli::try_parse_from(["iii", "sandbox", "run", "--command", "node app.js"])
-            .expect("should parse sandbox run");
-        assert_eq!(cli_usage_command_path(&cli), "sandbox run");
-        match cli.command {
-            Some(Commands::Sandbox(args)) => match args.command {
-                iii_compose::sandbox_cli::SandboxCommand::Run(run) => {
-                    assert_eq!(run.command.as_deref(), Some("node app.js"));
-                }
-                other => panic!("expected run, got {other:?}"),
-            },
-            _ => panic!("expected Sandbox subcommand"),
-        }
     }
 
     #[test]
@@ -915,17 +915,6 @@ mod tests {
         assert!(
             result.is_err(),
             "\"start\" should not be a valid subcommand (engine runs via default serve mode)"
-        );
-    }
-
-    #[test]
-    fn sandbox_is_no_longer_a_valid_subcommand() {
-        // Sandboxes are managed through the iii-sandbox worker's function surface.
-        // Bare `iii sandbox` should now fail to parse.
-        let result = Cli::try_parse_from(["iii", "sandbox"]);
-        assert!(
-            result.is_err(),
-            "\"sandbox\" should no longer be a valid subcommand"
         );
     }
 

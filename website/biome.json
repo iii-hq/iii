@@ -13,6 +13,7 @@
       "!.next",
       "!dist",
       "!public/console-demo",
+      "!public/streams-playground",
       "!content/benchmarks/snapshot.json",
       "!public/posthog-consent.js"
     ]

@@ -141,10 +141,11 @@ func (f *functionObservers) runDeliverHook(ctx context.Context, hook DeliverHook
 // reportInit is the report item of a local call iii delivered to selected.
 func (f *functionObservers) reportInit(d *callDelivery, selected []*Observer) (reportInit, []Capture) {
 	call := d.call
-	values := reportValues{input: call.Input, caller: reportCaller(call.Caller), metadata: call.Metadata}
+	// A local stream is reported as a StreamInfo: its placeholder must not reach the wire.
+	values := reportValues{input: reportForm(call.Input), caller: reportCaller(call.Caller), metadata: call.Metadata}
 	status := "success"
 	if call.succeeded() {
-		values.output = call.Output
+		values.output = reportForm(call.Output)
 	} else {
 		status = "error"
 		values.errBody, _ = json.Marshal(call.Error)

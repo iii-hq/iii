@@ -97,8 +97,13 @@ correct: do not flag it.
   functions, called with `iii call compose::<verb>`.
 - `iii console`, which only printed a notice pointing to the console in ADE. Replacement: the ADE
   worker (`ade` in the registry), added with `iii call compose::add worker=ade`.
-- Top-level `iii sandbox <verb>` and `iii worker sandbox <verb>`. Replacement:
-  `iii call sandbox::<verb>`.
+- Top-level `iii sandbox <verb>` and `iii worker sandbox <verb>`, including the `iii sandbox build`,
+  `iii sandbox run`, and `iii sandbox destroy` that VM workers used. Replacement:
+  `iii call sandbox::<verb>`. A VM container's scripts are
+  `scripts.build: iii call sandbox::build worker=<container>` and
+  `scripts.run: iii call sandbox::start worker=<container>`; an operator rebuilds with
+  `iii call compose::build worker=<container>` and destroys a VM with
+  `iii call compose::remove worker=<container>`.
 
 When you encounter another command that doesn't follow `iii noun verb` and is not exempt above,
 flag it on *convention* grounds — either the command name should change, or the doc should clarify

@@ -53,74 +53,71 @@ def _patch_ws(monkeypatch: pytest.MonkeyPatch) -> FakeWebSocket:
 def test_helpers_module_exports_expected_names() -> None:
     from iii import helpers
 
-    expected = {
-        "ChannelDirection",
-        "ChannelItem",
-        "create_channel",
-        "create_channel_async",
-        "create_stream",
-        "extract_channel_refs",
-        "is_channel_ref",
-    }
-    actual = set(helpers.__all__)
-    missing = expected - actual
-    assert not missing, f"missing from helpers.__all__: {missing}"
-    for name in expected:
-        assert hasattr(helpers, name), f"helpers module missing attribute: {name}"
+    assert set(helpers.__all__) == {"create_stream"}
+    assert hasattr(helpers, "create_stream")
 
 
 def test_helpers_free_functions_take_iii_first() -> None:
     from iii import helpers
 
+    sig = inspect.signature(helpers.create_stream)
+    params = list(sig.parameters)
+    assert params and params[0] == "iii", f"create_stream signature: {sig}"
+
+
+def test_channel_helpers_are_removed_from_helpers() -> None:
+    from iii import helpers
+
     for name in (
         "create_channel",
         "create_channel_async",
-        "create_stream",
+        "ChannelDirection",
+        "ChannelItem",
+        "extract_channel_refs",
+        "is_channel_ref",
     ):
-        sig = inspect.signature(getattr(helpers, name))
-        params = list(sig.parameters)
-        assert params and params[0] == "iii", f"{name} signature: {sig}"
+        assert not hasattr(helpers, name), f"iii.helpers still has {name}"
 
 
-def test_is_channel_ref_works_via_helpers() -> None:
-    from iii import helpers
+def test_is_channel_ref_works_via_protocol() -> None:
+    from iii import protocol
 
-    assert helpers.is_channel_ref({}) is False
-    assert helpers.is_channel_ref(
+    assert protocol.is_channel_ref({}) is False
+    assert protocol.is_channel_ref(
         {"channel_id": "c", "access_key": "k", "direction": "read"}
     ) is True
-    assert helpers.is_channel_ref(
+    assert protocol.is_channel_ref(
         {"channel_id": "c", "access_key": "k", "direction": "garbage"}
     ) is False
 
 
 def test_extract_channel_refs_walks_nested_structures() -> None:
-    from iii import helpers
+    from iii import protocol
 
-    assert helpers.extract_channel_refs({}) == []
+    assert protocol.extract_channel_refs({}) == []
 
     ref = {"channel_id": "c1", "access_key": "k1", "direction": "read"}
-    refs = helpers.extract_channel_refs({"input": ref})
+    refs = protocol.extract_channel_refs({"input": ref})
     assert len(refs) == 1
     path, channel_ref = refs[0]
     assert path == "input"
     assert channel_ref.channel_id == "c1"
 
-    nested = helpers.extract_channel_refs(
+    nested = protocol.extract_channel_refs(
         {"items": [{"writer": ref}, {"writer": ref}]}
     )
     assert {p for p, _ in nested} == {"items[0].writer", "items[1].writer"}
 
 
 def test_channel_direction_string_values() -> None:
-    from iii.helpers import ChannelDirection
+    from iii.protocol import ChannelDirection
 
     assert ChannelDirection.READ.value == "read"
     assert ChannelDirection.WRITE.value == "write"
 
 
 def test_channel_item_constructors() -> None:
-    from iii.helpers import ChannelItem
+    from iii.protocol import ChannelItem
 
     text = ChannelItem.text_item("hi")
     assert text.is_text and not text.is_binary
@@ -139,6 +136,8 @@ def test_iii_no_longer_exposes_relocated_methods(monkeypatch: pytest.MonkeyPatch
         for name in (
             "create_channel",
             "create_channel_async",
+            "_helpers_create_channel",
+            "_helpers_create_channel_async",
             "create_stream",
         ):
             assert not hasattr(client, name), f"client still has {name}"
@@ -152,6 +151,7 @@ def test_iii_client_protocol_no_longer_declares_relocated_methods() -> None:
 
     for name in (
         "create_channel",
+        "create_channel_async",
         "create_stream",
     ):
         assert name not in IIIClient.__dict__, (
@@ -167,6 +167,11 @@ def test_init_no_longer_exports_relocated_channel_items() -> None:
         "is_channel_ref",
         "ChannelDirection",
         "ChannelItem",
+        "Channel",
+        "ChannelReader",
+        "ChannelWriter",
+        "StreamChannelRef",
     ):
         assert name not in iii.__all__, f"{name} still in iii.__all__"
+        assert not hasattr(iii, name), f"iii still has {name}"
 

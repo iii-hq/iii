@@ -190,8 +190,7 @@ Workers can provide their own `CallAction`s. Check each
 
 <Note>
   In Python, every blocking method has an awaitable twin (`call_async`, `shutdown_async`,
-  `create_channel_async`) for use inside `asyncio`. See the [Python SDK
-  reference](../reference/sdk-python).
+  `pipe_async`) for use inside `asyncio`. See the [Python SDK reference](../reference/sdk-python).
 </Note>
 
 ### Routing to a namespace
@@ -205,8 +204,9 @@ names none resolves in the namespace of the calling worker. A miss returns `func
 naming the namespaces where the id does exist.
 
 <Note>
-  `iii call` reaches `default` unless you pass `--namespace <NS>`. For calling across namespaces
-  from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
+  `iii call` reaches `default` unless you pass `--namespace <NS>`, also from a process whose
+  `III_NAMESPACE` names another namespace, such as a script Compose starts. For calling across
+  namespaces from worker code, see [Use namespaces](./namespaces#call-a-function-in-a-namespace).
 </Note>
 
 ## Run a function when something happens
@@ -307,6 +307,68 @@ for development and debugging.
   [Creating Workers / Functions](../creating-workers/functions#attach-request-and-response-schemas).
 </Note>
 
+### Streams from the CLI
+
+When a function's request schema has a `stdout` or `stderr` stream that it writes, or a `stdin`
+stream that it reads, `iii call` connects it to its own standard output, standard error, or
+standard input. When the result carries a `stdout` or `stderr` stream, `iii call` prints it as
+well. The call ends once the function answered and its streams ended.
+
+```bash
+# The function writes into `stdout`: its lines appear as they come.
+iii call reports::export report_id=r-42
+
+# Save the output to a file. It is written as it arrives, not at the end.
+iii call reports::export report_id=r-42 > report.csv
+
+# Run the call without its streams and print the result JSON.
+iii call reports::export report_id=r-42 --no-follow
+```
+
+- Only fields named `stdout`, `stderr`, and `stdin` are bound. A function meant for the command
+  line names its streams that way.
+- A call to a function that takes a stream has no timeout unless you pass `--timeout-ms`, also
+  with `--no-follow`.
+- While a stream runs, the result JSON is printed only with `--print-result`, after the streams
+  end.
+- The first `Ctrl+C` or `SIGTERM` closes the streams. The function sees its next write fail, stops,
+  and answers, and `iii call` exits with that answer. A second one exits at once.
+- `--no-follow` connects no stream and leaves the streams of the result unread. The call only
+  runs, and the result JSON is printed with each stream shown as a ref. A function that needs its
+  stream answers with an error.
+
+| Exit code | When                                                                   |
+| --------- | ---------------------------------------------------------------------- |
+| `0`       | The call succeeded and every stream ended.                             |
+| `1`       | The function failed, or a stream it wrote was aborted.                 |
+| `2`       | The arguments, engine address, or `III_CALL_DEFAULTS` are unusable.    |
+| `130`     | A second `Ctrl+C`, or one after the answer while a stream still runs.  |
+| `143`     | The same for `SIGTERM`.                                                |
+
+When the function fails, `iii call` prints `Error: {code, message, stacktrace}` on standard error,
+on one line when standard error is not a terminal, so a script can read `code` and `message`. Other
+failures, such as arguments that cannot make a call (exit code `2`) or an engine that cannot be
+reached, print a plain-text `Error:` line instead.
+
+### Defaults from the environment
+
+`III_CALL_DEFAULTS` holds a JSON object keyed by namespace, each holding entries keyed by function
+id. When you call a function that has an entry in the namespace the call resolves in, `default`
+without `--namespace`, the entry is the base payload, and `--json` and `key=value` override its
+keys. A parent process uses it to hand a call values that must not appear on the command line,
+where `ps` shows them, such as a token:
+
+```bash
+export III_CALL_DEFAULTS='{"default": {"reports::export": {"report_id": "r-42"}}}'
+iii call reports::export              # report_id is r-42
+iii call reports::export report_id=r-7
+iii call reports::export -n orders    # no entry in orders: no report_id
+```
+
+Only the function the entry names, in the namespace it is written under, receives it. The same
+function id in another namespace is another handler and receives nothing. A value that is not a JSON object fails the call
+with exit code `2`, and the message quotes nothing of the value.
+
 ## Common functions
 
 A handful of functions ship with the iii engine and the standard workers. You'll likely call them
@@ -324,7 +386,7 @@ response schemas are in the
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `engine::functions::list`    | List every registered function with its `args_format`, `private`, `observable`, and observer count. Pass `{ include_internal: true }` to include engine internals. |
 | `engine::workers::list`      | List every connected worker with its metrics. Pass `{ worker_id: "<uuid>" }` to look one up.                                                                       |
-| `engine::channels::create`   | Allocate a streaming channel reader / writer pair. The SDK wraps this as the `createChannel` helper in `iii-sdk/helpers`; rarely called directly.                  |
+| `engine::channels::create`   | Allocate a pipe and return its writer and reader refs. The SDK calls it for each [stream](../creating-workers/streaming) in a call, and for `iii.pipe()`.          |
 | `engine::workers::register`  | Publish the calling worker's metadata (runtime, version, OS, PID, optional `namespace`, optional `description`). The SDK calls this automatically on connect.      |
 | `engine::observers::list`    | List observers. Pass `{ function_id, namespace, worker }` to narrow the list. See [Inspect observers](./observers#inspect-observers).                              |
 | `engine::observers::get`     | Read one observer by `{ id }`.                                                                                                                                     |
@@ -361,7 +423,7 @@ behaviour are in the worker's own docs at [workers.iii.dev](https://workers.iii.
 - **Stream** (deprecated): Real-time push to connected clients over WebSocket. See
   [iii-stream](https://workers.iii.dev/workers/iii-stream). Use
   [observable functions](../creating-workers/observable-functions) or
-  [channels](../creating-workers/channels) for new work.
+  [streams](../using-iii/streaming) for new work.
 - **Queue**: Durable, ordered job processing with retries, concurrency limits, and a dead-letter
   queue. Observe `queue::on-message` to consume a topic. See
   [queue](https://workers.iii.dev/workers/queue).

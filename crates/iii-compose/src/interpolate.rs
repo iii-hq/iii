@@ -27,6 +27,11 @@
 //! is stored as a reference rather than as a value. Expanding one here would
 //! write the value down, permanently, in the entry that existed to avoid it.
 //!
+//! The top-level `cloud:` block is not expanded either. iii Cloud reads it when
+//! it deploys the project, from the file as it was written, and nothing on
+//! this machine reads it: a reference there to a variable this shell does not
+//! set is not this run's problem.
+//!
 //! `$${VAR}` still writes a literal `${VAR}`, for a reference that has to sit
 //! somewhere else. It should be rare: the block that carries them is already
 //! left alone.
@@ -35,11 +40,16 @@ use std::path::Path;
 
 use crate::error::{ComposeError, Result};
 
-/// The one block compose carries without reading. See the module docs.
+/// The block compose carries to the configuration worker without reading.
+/// See the module docs.
 const NOT_OURS: &str = "config_override";
 
+/// The top-level block iii Cloud reads when it deploys the project. Compose
+/// accepts it and reads nothing in it. See the module docs.
+const CLOUD: &str = "cloud";
+
 /// Expands every string in a parsed compose document, except under
-/// [`NOT_OURS`].
+/// [`NOT_OURS`] and the top-level [`CLOUD`] block.
 ///
 /// Walking the parsed document rather than the text is what makes that
 /// exception possible: `${VAR}` and the block it sits in are only
@@ -49,7 +59,7 @@ pub fn expand_tree(
     path: &Path,
     lookup: &dyn Fn(&str) -> Option<String>,
 ) -> Result<()> {
-    expand_tree_at(value, path, lookup, 0, false)
+    expand_tree_at(value, path, lookup, 0, false, false)
 }
 
 fn expand_tree_at(
@@ -58,12 +68,13 @@ fn expand_tree_at(
     lookup: &dyn Fn(&str) -> Option<String>,
     depth: usize,
     in_engine: bool,
+    in_scripts: bool,
 ) -> Result<()> {
     match value {
         serde_yaml::Value::String(text) => *text = expand(text, path, lookup)?,
         serde_yaml::Value::Sequence(items) => {
             for item in items {
-                expand_tree_at(item, path, lookup, depth + 1, in_engine)?;
+                expand_tree_at(item, path, lookup, depth + 1, in_engine, false)?;
             }
         }
         serde_yaml::Value::Mapping(entries) => {
@@ -72,7 +83,22 @@ fn expand_tree_at(
                 // an operator naming one from the environment is not a thing
                 // compose supports.
                 let key = key.as_str();
-                if key == Some(NOT_OURS) || (in_engine && key == Some("workers")) {
+                if key == Some(NOT_OURS)
+                    || (in_engine && key == Some("workers"))
+                    || (depth == 0 && key == Some(CLOUD))
+                {
+                    continue;
+                }
+                if in_scripts
+                    && key == Some("run")
+                    && let Some((worker, guest)) =
+                        entry.as_str().and_then(crate::edit::sandbox_guest_command)
+                {
+                    // Expand the guest payload first, then quote it as one host argument.
+                    *entry = serde_yaml::Value::String(crate::edit::sandbox_run_command(
+                        &worker,
+                        &expand(&guest, path, lookup)?,
+                    ));
                     continue;
                 }
                 expand_tree_at(
@@ -81,6 +107,7 @@ fn expand_tree_at(
                     lookup,
                     depth + 1,
                     depth == 0 && key == Some("engine"),
+                    key == Some("scripts"),
                 )?;
             }
         }
@@ -320,6 +347,33 @@ mod tests {
             ),
             "${ALSO_LEFT}",
             "including below the first level"
+        );
+    }
+
+    #[test]
+    fn the_cloud_block_keeps_its_references_at_the_top_level_only() {
+        // iii Cloud reads the block from the file as written. `RELEASE_TOKEN`
+        // is not set here, so expanding it would also be an error.
+        let value = tree(
+            "cloud:\n  release:\n    command: migrate --token ${RELEASE_TOKEN}\ncontainers:\n  api:\n    worker: path://${DIR}\n    environment:\n      cloud: ${REGION}\n  cloud:\n    worker: path://${DIR}/cloud\n",
+            &[("DIR", "./api"), ("REGION", "us-east-1")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            at(&value, &["cloud", "release", "command"]),
+            "migrate --token ${RELEASE_TOKEN}"
+        );
+        assert_eq!(at(&value, &["containers", "api", "worker"]), "path://./api");
+        assert_eq!(
+            at(&value, &["containers", "cloud", "worker"]),
+            "path://./api/cloud",
+            "a container named cloud, one level down, is compose's own"
+        );
+        assert_eq!(
+            at(&value, &["containers", "api", "environment", "cloud"]),
+            "us-east-1",
+            "and so is a variable named cloud, deeper"
         );
     }
 

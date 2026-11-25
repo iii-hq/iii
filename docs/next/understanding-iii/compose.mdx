@@ -27,6 +27,62 @@ project runs and makes a reviewer able to see the whole contract in one place.
 Strictness in the compose file serves the same end and ensures that an incomplete "system" cannot be
 started accidentally.
 
+## The daemon and its processes
+
+The daemon is itself a worker. It registers under the name `compose` and exposes the `compose::*`
+functions, so every project operation is a standard function call. Bare `iii compose` reads
+`worker-compose.yaml` in the working directory and starts only the compose worker. `iii compose --up`
+also starts the iii engine and the declared workers. It combines engine and project startup for
+development; independent `iii` and `iii compose` daemons give separate lifecycle control for
+production deployments.
+
+The engine that `--up` starts is tied to the Compose process. If Compose exits for any reason,
+including an abrupt kill such as `SIGKILL` during startup, the managed engine is terminated too, and
+the next `iii compose --up` starts a fresh engine.
+
+Workers are tied to the Compose process in the same way. Compose starts a small reaper process next
+to its workers. When Compose exits without stopping them, whether from `SIGKILL`, a crash, or a
+second `Ctrl^C`, the reaper sends each worker `SIGTERM`, waits up to 10 seconds, then sends
+`SIGKILL`. A worker's child processes stop with it. A worker that is still running when Compose
+starts again, left by a Compose that is gone, is stopped and started fresh rather than reused. The
+reaper runs on Linux and macOS.
+
+### Signals and shutdown
+
+`Ctrl^C`, `SIGINT`, `SIGTERM` and `SIGHUP` all gracefully stop the daemon, every worker run by the
+daemon, and the iii engine if compose was started with `--up`. When `--up` has started the engine,
+every project and worker stops before the engine process is stopped. `compose::stop` is the function
+equivalent of this operation.
+
+A second signal during that shutdown makes Compose exit at once, and the reaper stops the remaining
+workers. Signals that arrive within 200 milliseconds of the first count as the same request: a
+wrapper such as `dotenv` or a package-manager script forwards the terminal's `Ctrl^C` to Compose,
+which already received it, and one key press must not skip the orderly shutdown.
+
+Compose only stops an engine it started itself. An external engine, selected with `--engine`,
+`III_URL`, or an external engine in the compose file, keeps running when Compose exits. If the
+engine's listener port is already in use, `--up` fails. Compose never adopts or kills an unrelated
+engine.
+
+### Process names
+
+Compose includes its resolved namespace in the process label on Linux. The namespace comes from
+`--namespace`, then `namespace:` in the compose file, then `default`. The `args` field retains the
+full namespace and the original command arguments. Linux limits `comm` to 15 bytes, so namespaces
+longer than nine characters use their first two characters, `~`, and six hexadecimal hash characters
+in that field.
+
+The daemon sets its command label through an early re-exec with the same PID, before starting the
+runtime or any children. Existing external engines keep their names. On other operating systems,
+process names are unchanged.
+
+### Log files
+
+Compose writes the stdout and stderr of started workers to `logs/` in the state directory, and the
+managed engine to `engine.log` there. Logs are rotated every 10 MiB, and Compose keeps up to 40 MiB
+of logs. Compose strips terminal control sequences before persisting the engine output. On a
+terminal, `iii compose logs` prints stderr lines with a bold prefix.
+
 ## Three names, three jobs
 
 A compose call names three things, and confusing any two of them is the mistake worth naming up
@@ -66,6 +122,24 @@ reports a duplicate for every other worker as well.
   For the routing dimension itself and how the engine handles a contested name, see
   [Namespaces](./namespaces).
 </Note>
+
+### Which project a call reaches
+
+`file` is not required in a `compose::*` call. Left out, it names the project the daemon serves when
+it holds exactly one, such as the file it was started with by
+`iii compose --up -f worker-compose.dev.yaml`. A daemon that holds no project falls back to a
+`worker-compose.yaml` in its own working directory, and fails with `NO_COMPOSE_FILE` without one. A
+daemon that holds several projects uses that `worker-compose.yaml` when it is one of them, and
+otherwise fails with `COMPOSE_FILE_AMBIGUOUS`, which lists them. A relative `file` path is relative
+to the daemon's directory, not the caller's working directory.
+
+### Namespace rules
+
+The compose file usually declares `namespace`, and `--namespace` overrides it when the daemon starts.
+Compose's own `compose::*` functions live in that same namespace. There is no coercion of an invalid
+namespace to a valid one, so that two spellings can never land in the same place. Two compose
+daemons with different namespaces can share an engine, but a second daemon claiming a namespace
+that is already served is refused at registration.
 
 ## Why the daemon owns seven variables
 
@@ -108,12 +182,27 @@ namespace is declared per file, and a project is its file, so a container that r
 else is describing a different project. Declaring it in a second compose file says exactly that, and
 keeps the property that reading one file tells you where everything in it lands.
 
+## Where a worker's environment comes from
+
+The machine environment visible to the Compose daemon is inherited even when neither `env_file` nor
+`environment` is declared. It is read when the daemon starts, so changing another shell's
+environment does not update an already-running daemon. Workers and hooks inherit the daemon's
+Unicode machine variables, including credentials, subject to the daemon-owned values and the
+project identity exception below.
+
+`III_HOST_USER_ID` is not inherited from the machine: it comes from the current project's
+`.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
+`environment` value can still override it, including an empty value.
+
 ## Why state belongs to the project
 
-A project's process records, resolved configuration, worker output and VM state are stored in
+A project's process records, resolved configuration and worker output are stored in
 `<project-dir>/.iii/compose/<namespace>/`. Its managed engine uses the same directory for its lock,
 generated configuration and log. The project directory comes from the canonical compose file path,
-so running `iii compose --up --file` from another directory keeps state beside that file.
+so running `iii compose --up --file` from another directory keeps state beside that file. Builds are
+in `<project-dir>/.iii/build/` and package copies in `<project-dir>/.iii/workers/`, and the sandbox
+adapter keeps each VM's data disk in `~/.iii/sandbox/workers/`. See
+[The project tree](../reference/vm-workers#the-project-tree).
 
 The engine lock belongs to the project and namespace together. Two checkouts can each use `default`
 with engines on different ports. A second managed invocation for the same project and namespace is
@@ -125,8 +214,25 @@ compose path so different checkouts remain separate under a shared root. `compos
 the resolved `state_dir` for either layout. The default layout requires a `.iii/compose/` entry in
 the project's ignore rules to exclude generated state from version control.
 
+The variable does not move `.iii/workers/` and `.iii/build/`: Compose still writes them beside the
+compose file when the project locks a package or a container has a non-empty `scripts.build`, a VM
+build included. A read-only checkout therefore works only without packages and builds.
+
 Installed packages remain shared at `~/.iii/compose/packages`, or `$III_COMPOSE_STATE_DIR/packages`.
 The cache is keyed by name, version and target, so projects can reuse downloaded workers.
+
+Compose state includes a `state.json` from an older release that holds a `vm` record: Compose reads
+it once, stops that VM, and drops the record.
+
+With the default state layout, two compose files in the same directory must use different
+namespaces. With `III_COMPOSE_STATE_DIR`, they have separate state directories and can use the same
+namespace on separate engines. A pattern such as `**/.iii/compose/` also excludes the state of
+nested projects.
+
+Before upgrading from the shared namespace layout, stop existing Compose daemons with the old
+version and confirm that their engines and workers have stopped. The new layout does not migrate
+old process records or logs. Previous state remains under `~/.iii/compose/<namespace>/` (or the old
+`III_COMPOSE_STATE_DIR` layout); keep any logs or VM data you need before removing it.
 
 ## Engine observed readiness
 
@@ -137,6 +243,34 @@ use the `database` dependency from boot. A check on the process alone would guar
 something was launched.
 
 The engine's view is also detailed enough to report clear statuses to the user.
+
+Compose polls `engine::workers::list` every 200 ms until the worker's `startup_timeout` runs out.
+After a worker is ready, the daemon checks it every 250 ms. Its restart policy determines what
+happens after it exits: an eligible retry keeps its dependents running and reports `restarting`
+between attempts, a successful exit without an eligible retry is recorded as `stopped`, and an
+unsuccessful exit without one, or one that exhausts its retries, is recorded as `failed`. When no
+retry remains, its transitive dependents stop. When the engine connection drops and comes back,
+every running worker gets its `startup_timeout` to register again. Which workers a failure takes
+down depends on when it happens; see
+[The blast radius depends on the clock](#the-blast-radius-depends-on-the-clock).
+
+## What compose::status reports
+
+`requested` is the `version` a `package://` worker declares in `worker-compose.yaml`, after variable
+expansion: a tag such as `latest`, a semver range, or an exact version. It is the selector that
+`compose::update worker=<name>` resolves again, so the release it selects now is the version that
+call moves to; a release outside it needs `worker=<name>@<selector>`. A `compose::update` without
+`worker` or `workers` resolves `latest` for every package instead. `version` is present only while
+the lock holds a result for that selector, so a worker whose selector changed in the file reports no
+`version` until Compose resolves it. A `path://` worker reports no `requested`.
+
+The response also carries the platform Compose resolves packages for. `target` is the target triple
+the daemon sends first as `target` to the registry's `POST /resolve`. `targets` lists every triple
+the host runs, preferred first: a static musl build of iii on a glibc Linux host lists
+`x86_64-unknown-linux-musl`, then `x86_64-unknown-linux-gnu`, and Compose resolves for the second
+only when the registry answers `unsupported_platform` and lists it as available. A client that
+checks the registry for updates itself can follow the same order to find a build Compose would
+install. Both fields are absent when iii has no target triple for the platform it was built for.
 
 ## Scoped shutdown
 
@@ -248,10 +382,309 @@ keeping: `restart` changes how many times compose tries, and never what happens 
 not given up on it. It has no PID until the next process starts. During `up`, the active progress
 row shows the retry attempt, its wait, and the successful recovery.
 
+When `max_attempts` is spent during a start, `required` controls whether the operation fails. At run time, the worker is marked `failed`, its dependents are stopped, and `last_error` says the supervisor gave up.
+
+## How compose::add edits a project
+
+`compose::add` declares one or more workers in the compose file and reconciles the project once. A
+package without a version pins to the latest available version, for example `0.23.1`. An explicit
+selector such as `state@next` stays as `next` in `worker-compose.yaml`. Unknown fields and invalid
+field types are rejected. Compose validates the complete edited file before it writes any changes.
+
+For an existing container, omitted fields other than `version` keep their values. A supplied field
+replaces that entire field, including maps such as `scripts`, `environment`, and `config_override`.
+An omitted `start_after` keeps existing dependencies; a supplied list replaces them and includes any
+required package dependencies.
+
+Workers whose declarations did not change remain running. Existing workers whose source, version,
+dependencies, or settings changed restart in place. Newly declared workers start through the normal
+dependency plan. If the resolved declaration already matches the file, the call makes no file
+changes and causes no restart.
+
+For a VM worker, `compose::add` writes the explicit VM mode into the file: the adapter's container
+key in `start_after`, `scripts.build: iii call sandbox::build worker=<container>`, and
+`scripts.run: iii call sandbox::start worker=<container>`, with the container's own key. Other keys
+you set are kept. The container gets its first build when it starts.
+
+## The package lock
+
+The compose file keeps the requested selector. The lock keeps the resolved dependency graph,
+versions, package types, artifact URLs, SHA-256 digests, and default configuration returned by the
+registry.
+
+```text
+worker-compose.yaml: next
+          |
+          v
+worker-compose.lock: 0.22.8 + SHA-256
+          |
+          v
+package cache: verified artifact
+```
+
+Normal starts and restarts use the lock without resolving `next` again. If the cache is empty,
+Compose downloads the URL in the lock and verifies its SHA-256 digest. Compose also verifies the
+extracted cache contents before reuse. A changed cache entry is downloaded again from the locked
+URL.
+
+Compose resolves a selected symlink before deriving the lock path. It writes the lock beside the
+resolved compose file, replacing its final `.yaml` or `.yml` extension with `.lock` and preserving
+the rest of the file name. If `config/dev.yaml` links to `projects/local.yaml`, the lock is
+`projects/local.lock`, not `config/dev.lock`. Compose files with different stems in the same
+directory keep independent locks.
+
+Selecting a file with `--file` in the CLI or `file` in a `compose::*` call selects its corresponding
+lock for reads, writes, and frozen validation. Compose does not fall back to another compose file's
+lock. In frozen mode, a missing or outdated lock for the selected file is an error, even if another
+valid lock exists beside it.
+
+Frozen mode never resolves selectors, changes the lock, or edits the compose file. It can download a
+missing artifact only from the URL already in the lock. A file with a container that Compose would
+rewrite into the explicit VM mode fails under frozen mode with `VM_SCRIPTS_MISSING`. See
+[Rewriting files from older releases](../upgrading/explicit-vm-workers).
+
+Each project also gets a copy of every locked package in `.iii/workers/<container>/`. See
+[The project tree](../reference/vm-workers#the-project-tree). The entry of a `binary` package that
+runs in a VM also has `vm: true`: that container gets the Linux build of the host's architecture
+instead of the host's build. See [Binary packages in a VM](../reference/vm-workers#binary-packages).
+
+`compose::validate` reads the lock to know which packages are bundles, so its warning about
+containers the next `up` rewrites does not name a package the lock does not record yet.
+
+## How iii compose build prepares packages
+
+`iii compose build` reads and validates the compose file, prepares the lock, then downloads every
+`package://` worker into the same cache used by `compose::up`. It does not connect to an engine,
+start a worker, or run lifecycle hooks. Local `path://` workers and engine-managed workers need no
+registry download and are skipped.
+
+Before it installs, it updates or adds the generated sandbox adapter and rewrites the VM containers
+of a file from an older release, as `compose::up` does, then writes the file and the lock. It then
+copies each package into `.iii/workers/<container>/`, from the lock, with `--frozen` too. With
+`--frozen` it edits nothing: a container to rewrite fails with `VM_SCRIPTS_MISSING`, then a missing
+adapter with `SANDBOX_ADAPTER_NOT_DECLARED`, then, in a project with a VM worker, an adapter outside
+`^0.5` with `SANDBOX_ADAPTER_TOO_OLD`.
+
+It runs outside the daemon's mutation lock. If the compose file or the lock changed while it
+prepared, for example because the daemon committed an update, it writes nothing and fails with
+`BUILD_PLAN_STALE`. It checks again before it copies packages into `.iii/workers/`. The check is not
+atomic with the write, so a lock the daemon commits in between is still overwritten.
+
+The cache is shared under `~/.iii/compose/packages`, or under `$III_COMPOSE_STATE_DIR/packages` when
+that variable is set. A later `compose::up` reuses a valid cached artifact if it exists.
+
+## Updating packages
+
+`compose::update worker=state` resolves the selector already in the compose file. A tag such as
+`next`, a range, and an exact version all stay unchanged in the file; `worker=state@<selector>`
+changes the selector, for example `worker=state@latest` moves an exact version to the registry's
+latest channel.
+
+Update resolves the complete dependency graph. It adds new dependencies, updates changed
+dependencies, and removes stale dependencies that Compose generated and no remaining package root
+uses. Manually declared workers are not removed.
+
+Compose downloads and verifies the new artifact before it changes the lock or stops a worker. A
+failed resolve or download leaves the prior lock and running workers unchanged. If the resolved
+artifact and default configuration did not change, Compose updates lock metadata when needed and
+does not restart the project.
+
+If all selected workers already use the requested versions, the operation leaves the file and
+running processes unchanged, unless an earlier add or update left a rebuild unfinished. See
+[Rebuilds](#rebuilds). A project with only `path://` workers also stays unchanged.
+
+An update that changes the package of a container with a non-empty `scripts.build` rebuilds it
+before restarting it. See [Rebuilds](#rebuilds).
+
+The container that runs the sandbox adapter (`sandbox-libkrun`, or the one `engine.sandbox.adapter`
+names) moves only to the newest release in `^0.5`, the releases that implement sandbox contract 1.4
+with `worker.build`, `worker.binary`, and `worker.prune`.
+
+## VM workers
+
+A VM worker's build and run are two calls that Compose starts like any other command.
+`scripts.build` (`iii call sandbox::build`) runs in the sandbox adapter and leaves an image in the
+project. `scripts.run` (`iii call sandbox::start`) boots that image and installs nothing at boot.
+The run lasts as long as the VM: when the call ends, the VM stops, and when the VM stops, the call
+ends. Compose hands both calls the rest of each request in `III_CALL_DEFAULTS`, and the sandbox
+adapter is a container like any other, reached through `start_after`. Moving a worker between a VM,
+the host, and Docker is therefore an edit of `scripts`. For the rules and the files involved, see
+[Reference / VM workers](../reference/vm-workers).
+
+### The flow
+
+1. `iii call compose::add worker=onboarding` resolves the package, writes the container with
+   `start_after` and `scripts`, and reconciles.
+2. A container whose `scripts.build` has no `.iii/build/<container>/build.json` yet gets its first
+   build when it starts, then runs.
+3. `scripts.run` starts the worker. For a VM container, `iii call sandbox::start` boots
+   `.iii/build/<container>/image.erofs` and stays with the VM.
+4. A restart, or an adapter restart, repeats `scripts.run` only.
+5. A rebuild is explicit (`iii call compose::build worker=<container>`), followed by a restart of
+   that container. `compose::update` of a package rebuilds it.
+6. `compose::remove` stops the container, has the adapter destroy the VM's runtime state while it
+   keeps the data disk (`prune=true` deletes that too), and deletes `.iii/build/<container>/` and
+   `.iii/workers/<container>/`.
+
+### The first build
+
+A container gets its first build when it starts, after its `start_after` containers are ready, if
+`scripts.build` is set and non-empty and `.iii/build/<container>/build.json` is missing. This covers
+`compose::add`, `up`, and a migrated container.
+
+A `build.json` of the other kind than `scripts.build` makes is rebuilt the same way: a host build
+where `scripts.build` is now `iii call sandbox::build`, or an image where it is now a host command.
+Only the kind is compared, not the command's text. The log line names the change, for example
+`<container>: its build is a host build, and scripts.build now builds a VM image; rebuilding`.
+
+- The build runs within `scripts.build_timeout`. The container's `startup_timeout` then starts for
+  the run.
+- The container's logs show `<container>: no build yet; running scripts.build`, then the build
+  output.
+- `compose::add` and `compose::up` report the build as a progress step of the container
+  (`building`). Their operation finishes after the run started or failed.
+- A failed build fails the container with `BUILD_FAILED`, carrying `{ code, message }` as
+  [`scripts.build`](../using-iii/compose#scriptsbuild) defines them. Nothing is rolled back, as for any failed start.
+
+### Rebuilds
+
+A rebuild is explicit: `iii call compose::build worker=<container>`, then a restart of that
+container, since the running container keeps its current image until it restarts. See
+[Using iii / Compose](../using-iii/compose#rebuild-a-vm-worker) for the commands.
+
+`compose::add` or `compose::update` that changes a container's package (`source` in `build.json` no
+longer matches the lock) rebuilds it before restarting it, and logs
+`<container>: package changed (<old> -> <new>); rebuilding`. The container keeps running on its old
+build while the new one builds, so the restart that follows only runs the new build.
+
+- **A failed rebuild** keeps the container running on its old build, and Compose does not restart
+  it. The operation fails with `BUILD_FAILED`. The file and the lock already name the new version:
+  retry the add or update, or run `iii call compose::build worker=<container>` and, once it built,
+  `iii call compose::restart worker=<container>`, to finish it.
+- **A retried add or update** finishes what an earlier one left: it rebuilds a container still on
+  the build of its old package, and restarts one it rebuilt but did not restart.
+- **An explicit build**, from `compose::build`, does not make a later add, or a retried add or
+  update, restart its container: that restart is yours. An update that changes a
+  package still restarts the whole project, this container included.
+- **A cancel** of the add or update (`compose::cancel`) builds nothing more and restarts nothing. It
+  fails with `OPERATION_CANCELLED` and, when it already rebuilt some, the message lists them
+  (`rebuilt and not yet restarted: <container>`). Retry the add or update to restart them.
+- **A VM whose adapter restarts** in the same operation cannot stay on its old build: it ends with
+  the adapter, starts again, and builds then.
+
+### Builds that are out of date
+
+Before `scripts.run` (on `up`, a restart, or a crash replacement), Compose compares the container's
+current inputs with `build.json`: `source`, `dependency_files`, and `image.base_image.declared`. A
+container without `build.json` is not checked. A difference in `dependency_files` or
+`base_image.declared` only logs, once per start, one line per kind of change:
+
+```text
+link: dependencies changed since the last build (package.json); run `iii call compose::build worker=link`
+link: base image changed since the last build (docker.io/iiidev/node -> docker.io/iiidev/python); run `iii call compose::build worker=link`
+```
+
+When one side declares no `runtime.base_image`, the line names `the adapter's default` for it. The
+container then runs on its current build. A change of `source` is a package update and rebuilds (see
+[Rebuilds](#rebuilds)). A change of code alone, outside the dependency files, is not a change: a
+`path://` worker's code keeps syncing live into the guest.
+
+### What the guest sees
+
+- **Data.** The VM's data disk is persistent and independent of the build. It keeps whatever the
+  worker writes (its home, databases, caches, and the files it writes in `/workspace`) across
+  restarts, rebuilds, and a `compose::remove` without `prune`. Only `compose::remove prune=true`
+  resets it. It stays adapter-owned under
+  `~/.iii/sandbox/workers/<vm_id>/`.
+- **Root filesystem.** The guest's root is the build image, read-only, with the data disk on top. A
+  file the worker modified inside a directory the build also writes, for example under
+  `node_modules`, keeps the worker's copy after a rebuild. `compose::remove prune=true` clears it.
+- **Code.** A bundle's code is in the image, and so is a binary's Linux build. Its
+  `.iii/workers/<container>/` is the build's input only. A `path://` worker's code keeps syncing
+  live into `/workspace`. One list of names decides what a run neither copies nor syncs, including
+  for `path://.`: the adapter's ignore list plus `.iii`, which also keeps Compose's `.iii/build/`
+  and `.iii/workers/` out. The list holds dependency, cache, build-output, VCS, and editor
+  directories, such as `node_modules`, `.venv`, `vendor`, `target`, `dist`, and `.git`.
+  `sandbox-libkrun` 0.4 and later also skip directories named `.build` and `.workers`, at any depth,
+  so a worker's own directory of either name stays on the host.
+  - `build`, `out`, `obj`, `coverage`, and `deps` match only a directory at the worker's root:
+    projects also keep source under these names deeper down. Every other name, `target` and `dist`
+    included, matches at any depth.
+  - The build's input copy uses the same list except `vendor`, which goes into the build: Go keeps
+    vendored source there.
+- **Boot cleanup.** A boot never deletes what the build installed or what the worker wrote in
+  `/workspace`. Each copy records what it extracted in a manifest on the data disk, outside
+  `/workspace`, and the next boot removes only the entries the host no longer has. The cleanup
+  never removes through a symlink, never touches a name the copy leaves out (a run keeps the
+  build's `vendor/` until the next build), and skips names with a newline or a backslash. A disk
+  that an older adapter wrote has no manifest: its first boot skips the cleanup and logs it.
+- **Dependencies.** They come from the build. To add one, edit `package.json`, run
+  `iii call compose::build worker=<container>`, and restart the container.
+- **Environment.** The guest gets the container's `environment` and `env_file` variables and the
+  reserved `III_*` variables, except `III_CALL_DEFAULTS` and the build and package variables of
+  [The worker environment](../using-iii/compose#the-worker-environment). It never gets the host's environment. The
+  build VM gets the same set.
+
+### How `compose::build` runs
+
+- It is asynchronous. It answers `{ operation_id, status: "accepted", requested }`, holds the
+  project's mutation lock while it runs, and reports progress per container (`building`, `built`,
+  `failed`) through `compose::on-operation-progress`.
+- A container whose `scripts.build` is `""` is reported as `skipped`, named or not.
+- It starts the adapter first when the project is down, as `compose::remove` does.
+- It never restarts a container. A running container keeps its current build until it restarts.
+- `compose::cancel` of the operation and `compose::down` stop it, and `compose::remove` stops the
+  build of the containers it removes. Compose stops the `iii call sandbox::build` processes, which
+  aborts their builds. `down` cancels a running `compose::build` first, then takes the lock.
+
+### Removing a VM worker
+
+Compose first stops a build of that container that is still running, from `compose::build` or a
+first build. Until the remove ends, a start or rebuild of that container gives up. Removing a
+container also deletes its `.iii/build/<container>/` and `.iii/workers/<container>/` directories.
+For a VM worker, Compose has the sandbox adapter destroy the VM's runtime state and keep its data:
+the data disk. The log says where the data stayed. Add
+`prune=true` to delete the data too. Keeping the data needs an adapter with `worker.prune`; with an
+older one, Compose leaves the VM's state where it is and says so.
+
+The kept data belongs to the container key. A container added again under the same key, with any
+package, boots on that data disk, and files the old worker wrote where the new build also writes
+hide the image's. To discard the data, remove the container with `prune=true` in the first place,
+add it again and remove it with `prune=true`, or delete the VM directory containing the printed
+paths while no VM of that container runs. For example, a kept path
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/upper.ext4` is a file: delete its parent
+`/srv/adapter/.iii/sandbox/workers/<vm_id>/`, including the seal and pre-build copies. Use the
+adapter's reported paths, not the client's HOME; the adapter may be on another host.
+
+### Restarting the sandbox adapter
+
+A VM worker ends with the adapter that hosts it, so restarting the adapter restarts its VM workers
+too.
+`compose::restart worker=sandbox-libkrun` restarts the adapter and then each VM worker it was
+running, dependencies first, without spending any of their `restart` attempts. The response names
+those workers in `affected_workers`. A `required` VM worker that does not come back fails the
+operation. Otherwise, one that does not come back is listed in `not_required_failures`. If the
+adapter itself does not come back, no VM worker is started and those same rules apply to each one it
+was running, which `compose::status` then reports as `failed`, with a `last_error` that names the
+adapter. Once the adapter is fixed, `compose::up` starts them all again. A sandbox that was running
+under the adapter does not come back.
+
+## How iii ps and iii kill find processes
+
+`iii ps` lists every iii process the current user runs: engines with the ports they listen on,
+Compose daemons, and workers with the project each belongs to. Compose marks each worker through
+its environment (`III_COMPOSE_FILE`, `III_WORKER_NAME`, `III_URL`), which identifies it whichever
+SDK version it was built with. Engines and SDK workers started outside Compose write a marker file,
+`~/.iii/run/<kind>-<pid>.json`, while they run. `iii ps` deletes markers whose process is gone.
+
+`iii kill` sends Compose daemons `SIGTERM` first, so each one stops its project in reverse
+dependency order. The remaining processes then receive `SIGTERM`, and `SIGKILL` after 15 seconds.
+
 ## Related
 
 <Note>
   For the function surface, the compose file schema, and the error codes, see [Using iii /
-  Compose](../using-iii/compose). For how workers reach each other once compose has started them,
+  Compose](../using-iii/compose). For the rules and files of VM workers, see [Reference / VM
+  workers](../reference/vm-workers). For how workers reach each other once compose has started them,
   see [Using iii / Functions](../using-iii/functions).
 </Note>

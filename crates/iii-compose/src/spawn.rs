@@ -53,7 +53,10 @@ use crate::manifest::StartSpec;
 ///   host directories a VM may mount. A value from the machine or from
 ///   `environment` would put the token in another container, or in a VM guest
 ///   whose environment starts from the host's, or widen the roots.
-pub const RESERVED_ENV: [&str; 9] = [
+/// - `III_BUILD_DIR`, `III_BUILD_TIMEOUT_MS`, `III_BUILD_COMPOSE_FILE`, `III_PACKAGE_DIR` and
+///   `III_PACKAGE_NAME` are what `iii call sandbox::build` and `iii call sandbox::start` read (spec 8.3), and
+///   what a bundle on the host is handed (spec 7.5): Compose sets them, never the file.
+pub const RESERVED_ENV: [&str; 18] = [
     "III_URL",
     "III_NAMESPACE",
     "III_COMPOSE_NAMESPACE",
@@ -63,7 +66,23 @@ pub const RESERVED_ENV: [&str; 9] = [
     "III_WORKER_NAME",
     "III_SANDBOX_WORKER_TOKEN",
     "III_SANDBOX_HOST_ROOTS",
+    crate::vm_call::BUILD_DIR_ENV,
+    crate::vm_call::BUILD_TIMEOUT_ENV,
+    crate::vm_call::BUILD_BASE_IMAGE_ENV,
+    crate::vm_call::BUILD_WORKER_ENV,
+    crate::vm_call::BUILD_COMPOSE_FILE_ENV,
+    crate::vm_call::PACKAGE_DIR_ENV,
+    crate::vm_call::PACKAGE_NAME_ENV,
+    crate::vm_call::PACKAGE_KIND_ENV,
+    crate::vm_call::CALL_DEFAULTS_ENV,
 ];
+
+/// The compose file as `III_COMPOSE_FILE` names it: canonical, else absolute, else as given.
+pub(crate) fn canonical_compose_file(path: &Path) -> PathBuf {
+    path.canonicalize()
+        .or_else(|_| std::path::absolute(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// Whether a key claims a daemon-owned variable under the host OS's rules.
 pub(crate) fn is_reserved_env(name: &str) -> bool {
@@ -128,7 +147,7 @@ pub struct SpawnPlan {
 ///
 /// Its own small parse rather than a shared one: `iii-compose` does not depend
 /// on the engine crate that owns telemetry, and this is four lines of INI.
-const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
+pub(crate) const HOST_USER_ID_ENV: &str = "III_HOST_USER_ID";
 
 /// Identify the project-scoped telemetry key using the host's naming rules.
 pub(crate) fn is_host_user_id(name: &str) -> bool {
@@ -178,7 +197,7 @@ pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
 /// `environment` and the reserved contract, never this machine's. A process
 /// Compose spawns runs here and inherits the machine environment; a guest is
 /// another machine, and the host's variables (provider keys among them) are not
-/// its to read. `iii sandbox run` hands its guest the same set.
+/// its to read. `iii call sandbox::start` hands its guest the same set.
 pub fn guest_env(ctx: &SpawnCtx<'_>) -> BTreeMap<String, String> {
     spawn_plan_with_env(ctx, BTreeMap::new()).env
 }
@@ -218,6 +237,8 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     // container only through its own `user_env` (the adapter's), so a host that
     // exports one cannot hand it to another container or to a VM guest.
     env.retain(|name, _| !is_reserved_env(name));
+    // Nor does it supply what Compose hands a VM's `iii call`, which would route it elsewhere.
+    env.retain(|name, _| !crate::vm_call::is_vm_input(name));
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
@@ -231,11 +252,7 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
         "III_COMPOSE_NAMESPACE".to_string(),
         ctx.compose_namespace.to_string(),
     );
-    let compose_file = ctx
-        .compose_file
-        .canonicalize()
-        .or_else(|_| std::path::absolute(ctx.compose_file))
-        .unwrap_or_else(|_| ctx.compose_file.to_path_buf());
+    let compose_file = canonical_compose_file(ctx.compose_file);
     env.insert(
         "III_COMPOSE_FILE".to_string(),
         compose_file.to_string_lossy().to_string(),
@@ -270,13 +287,13 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
         }
     }
 
+    // A VM container's scripts are `iii call sandbox::*` lines: the VM's context reaches them in
+    // `III_CALL_DEFAULTS`, built from the final environment.
+    crate::vm_call::lay_call_defaults(&mut env);
+
     let (program, args) = match ctx.start {
         StartSpec::Shell(command) => shell_invocation(command),
         StartSpec::Exec { program, args } => (program.to_string_lossy().to_string(), args.clone()),
-        // The host execs nothing for a VM container: the start command runs
-        // inside the guest. Only the environment and the working directory
-        // computed above carry over.
-        StartSpec::Vm(_) => (String::new(), Vec::new()),
     };
 
     SpawnPlan {
@@ -307,9 +324,7 @@ impl SpawnPlan {
     /// Turns the plan into a runnable command. Process-group placement and exit
     /// watching are the supervisor's job and are not applied here.
     ///
-    /// `None` when the container runs in a VM. There is no host program then,
-    /// and `env` is not this command's environment either: it belongs to the
-    /// guest, and goes to the sandbox adapter in the `worker::start` request.
+    /// `None` for a plan with no program.
     pub fn command(&self) -> Option<tokio::process::Command> {
         if self.program.is_empty() {
             return None;
@@ -353,7 +368,6 @@ pub fn resolve_working_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::VmSpec;
 
     fn ctx<'a>(
         start: &'a StartSpec,
@@ -643,10 +657,10 @@ mod tests {
         let no_env = BTreeMap::new();
         for start in [
             StartSpec::Shell("cargo run".to_string()),
-            StartSpec::Vm(VmSpec::Bundle {
-                package: "bundle".to_string(),
-                install_dir: PathBuf::from("/srv/app/bundle"),
-            }),
+            StartSpec::Exec {
+                program: PathBuf::from("/srv/app/bundle"),
+                args: Vec::new(),
+            },
         ] {
             let plan = spawn_plan_with_env(&ctx(&start, None, &no_env), host.clone());
             assert!(!plan.env.contains_key("III_SANDBOX_WORKER_TOKEN"));
@@ -766,5 +780,165 @@ mod tests {
         assert!(!inherited.contains_key(HOST_USER_ID_ENV));
         #[cfg(unix)]
         assert!(!inherited.contains_key("NON_UTF8"));
+    }
+    /// A package's VM boots its package whatever VM inputs the daemon inherited: Compose's own
+    /// never come from the machine, and a container that runs no VM gets no VM context from it.
+    #[test]
+    fn inherited_vm_inputs_route_no_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.yaml");
+        std::fs::write(
+            &path,
+            "containers:\n  sb: {worker: package://sandbox-libkrun, version: 0.5.0}\n  app:\n    worker: package://app\n    version: 1.0.0\n    start_after: [sb]\n    scripts: {build: iii call sandbox::build worker=app, run: iii call sandbox::start worker=app}\n  plain: {worker: path://./plain}\n",
+        )
+        .unwrap();
+        let mut file = crate::ComposeFile::load(&path).unwrap();
+        file.containers.get_mut("app").unwrap().resolved_package = Some(
+            serde_yaml::from_str("{name: app, version: 1.0.0, type: bundle, artifacts: {}}")
+                .unwrap(),
+        );
+        let inherited = env_of(&[
+            (crate::vm_call::WORKER_DIR_ENV, "/host/checkout"),
+            (crate::vm_call::TOKEN_ENV, "host-token"),
+            (crate::vm_call::STATE_KEY_ENV, "host-state"),
+        ]);
+        let plan = |key: &str, user_env: &BTreeMap<String, String>| {
+            let start = crate::manifest::StartSpec::Shell("x".into());
+            let ctx = SpawnCtx {
+                engine_url: "ws://127.0.0.1:1",
+                namespace: "default",
+                compose_namespace: "default",
+                compose_file: &path,
+                container_key: key,
+                start: &start,
+                config_name: None,
+                working_dir: dir.path(),
+                user_env,
+            };
+            spawn_plan_with_env(&ctx, inherited.clone()).env
+        };
+
+        let mut user_env = file.containers["app"].resolve_user_env("app").unwrap();
+        crate::sandbox::layer_own_vm_env(
+            &file,
+            "app",
+            "token",
+            &dir.path().join("state"),
+            "default",
+            &mut user_env,
+        )
+        .unwrap();
+        let env = plan("app", &user_env);
+        let defaults: serde_json::Value =
+            serde_json::from_str::<serde_json::Value>(&env[crate::vm_call::CALL_DEFAULTS_ENV])
+                .unwrap()[crate::vm_call::CALL_NAMESPACE]
+                .clone();
+        let build = &defaults["sandbox::build"];
+        assert_eq!(build["source"]["kind"], "bundle", "{build}");
+        assert_ne!(build["state_key"], "host-state");
+        assert!(!env.contains_key(crate::vm_call::WORKER_DIR_ENV), "{env:?}");
+
+        let env = plan("plain", &BTreeMap::new());
+        assert!(
+            !env.contains_key(crate::vm_call::CALL_DEFAULTS_ENV),
+            "{env:?}"
+        );
+        assert!(!env.contains_key(crate::vm_call::TOKEN_ENV), "{env:?}");
+    }
+
+    #[test]
+    fn f06_the_vm_guest_gets_the_project_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "sb",
+            "name: sandbox-libkrun\nscripts: {start: run}\n",
+        );
+        crate::sandbox::tests::manifest(
+            dir.path(),
+            "api",
+            "runtime: {base_image: python}\nscripts: {start: run}\n",
+        );
+        std::fs::create_dir_all(dir.path().join(".iii")).unwrap();
+        std::fs::write(
+            dir.path().join(".iii/project.ini"),
+            "[project]\ndevice_id=dev-123\n",
+        )
+        .unwrap();
+        let compose_path = |dir: &Path, text: &str| {
+            let path = dir.join("worker-compose.yaml");
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let path = compose_path(
+            dir.path(),
+            "containers:\n  sb: {worker: path://./sb}\n  api:\n    worker: path://./api\n    start_after: [sb]\n    scripts: {build: iii call sandbox::build, run: iii call sandbox::start}\n",
+        );
+        let file = crate::ComposeFile::load(&path).unwrap();
+        let mut user_env = file.containers["api"].resolve_user_env("api").unwrap();
+        crate::sandbox::layer_own_vm_env(
+            &file,
+            "api",
+            "token",
+            &dir.path().join("state"),
+            "default",
+            &mut user_env,
+        )
+        .unwrap();
+        let start = crate::manifest::StartSpec::Shell("iii call sandbox::start worker=api".into());
+        let worker_dir = dir.path().join("api");
+        let ctx = crate::spawn::SpawnCtx {
+            engine_url: "ws://127.0.0.1:1",
+            namespace: "default",
+            compose_namespace: "default",
+            compose_file: &path,
+            container_key: "api",
+            start: &start,
+            config_name: None,
+            working_dir: &worker_dir,
+            user_env: &user_env,
+        };
+
+        // 0.26: the guest's environment.
+        let old_guest = crate::spawn::guest_env(&ctx);
+        assert_eq!(
+            old_guest.get("III_HOST_USER_ID").map(String::as_str),
+            Some("dev-123")
+        );
+
+        // Now: `iii call sandbox::start` has the id, and hands the guest only the listed keys.
+        let host_env = spawn_plan_with_env(
+            &ctx,
+            env_of(&[
+                ("HOST_SECRET", "must-not-leak"),
+                ("III_HOST_USER_ID", "wrong-project"),
+            ]),
+        )
+        .env;
+        assert_eq!(
+            host_env.get("III_HOST_USER_ID").map(String::as_str),
+            Some("dev-123")
+        );
+        // The guest's environment is the `env` of the call's defaults.
+        let guest = |env: &BTreeMap<String, String>| -> serde_json::Value {
+            serde_json::from_str::<serde_json::Value>(&env[crate::vm_call::CALL_DEFAULTS_ENV])
+                .unwrap()[crate::vm_call::CALL_NAMESPACE]["sandbox::build"]["env"]
+                .clone()
+        };
+        assert_eq!(guest(&host_env)["III_HOST_USER_ID"], "dev-123");
+        assert!(guest(&host_env).get("HOST_SECRET").is_none());
+        let mut explicit = user_env.clone();
+        explicit.insert("III_HOST_USER_ID".into(), "explicit-device".into());
+        let mut override_ctx = ctx.clone();
+        override_ctx.user_env = &explicit;
+        let override_plan = spawn_plan(&override_ctx);
+        assert_eq!(
+            guest(&override_plan.env)["III_HOST_USER_ID"],
+            "explicit-device"
+        );
+        assert!(
+            !host_env.contains_key(crate::vm_call::WORKER_ENV_KEYS_ENV),
+            "III_CALL_DEFAULTS replaces the VM variables"
+        );
     }
 }
