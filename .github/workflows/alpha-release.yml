@@ -1,4 +1,4 @@
-name: Alpha Release (npm OIDC validation)
+name: Alpha Release (npm download verification)
 
 on:
   push:
@@ -7,46 +7,18 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
-    name: Publish 0.27.0-alpha.0.oidc.1 to npm
+  verify-download:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: https://registry.npmjs.org
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Node packages
-        run: >-
-          pnpm
-          --filter '@iii-dev/helpers'
-          --filter '@iii-dev/observability'
-          --filter iii-sdk
-          --filter iii-browser-sdk
-          build
-
-      - name: Publish alpha packages to npm
-        run: >-
-          pnpm
-          --filter '@iii-dev/helpers'
-          --filter '@iii-dev/observability'
-          --filter iii-sdk
-          --filter iii-browser-sdk
-          -r publish
-          --no-git-checks
-          --access public
-          --tag alpha
+      - name: Verify public Helpers tarball
+        env:
+          EXPECTED_INTEGRITY: 'sha512-rw71XkJxdBxRq0stZChaBaLWvpnozRl6iizuD/cfRhwmdgEHXnxt87KLa6n1o6zD7SXjqqm/VIz1ZqXiwBkiMA=='
+        run: |
+          url=https://registry.npmjs.org/@iii-dev/helpers/-/helpers-0.27.0-alpha.0.oidc.1.tgz
+          tarball="$RUNNER_TEMP/helpers.tgz"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors --max-time 15 --output "$tarball" "$url"
+          actual="sha512-$(openssl dgst -sha512 -binary "$tarball" | openssl base64 -A)"
+          test "$actual" = "$EXPECTED_INTEGRITY"
+          echo 'Public tarball integrity verified.'
