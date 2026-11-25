@@ -372,7 +372,11 @@ Publishes a Node.js package to the npm registry.
 | `build_filter` | pnpm filter for building the package |
 | `pre_build_filter` | pnpm filter for building dependencies first (optional) |
 
-Uses `pnpm publish` with `--no-git-checks` and `--access public`.
+Uses `pnpm publish` with npm Trusted Publishing (OIDC) and `--access public`.
+Register `release-iii.yml` and `alpha-release.yml` as GitHub Actions trusted publishers
+for each of `iii-sdk`, `iii-browser-sdk`, `@iii-dev/observability`, and
+`@iii-dev/helpers` under `iii-hq/iii`. Enable direct publishing for each
+connection and complete its first publish within two days of registering it.
 
 ### `_py.yml` — PyPI Publish
 
@@ -479,7 +483,6 @@ Publishes skill markdown for all workers with an `iii.worker.yaml` manifest and 
 | Secret | Used by |
 |--------|---------|
 | `III_CI_APP_ID` / `III_CI_APP_PRIVATE_KEY` | GitHub App token for pushing tags, creating releases, updating homebrew-tap |
-| `NPM_TOKEN` | npm registry authentication |
 | `PYPI_API_TOKEN` | PyPI publishing |
 | `CARGO_REGISTRY_TOKEN` | crates.io publishing |
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_PASSWORD` | DockerHub publishing |
