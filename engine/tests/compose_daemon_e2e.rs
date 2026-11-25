@@ -987,10 +987,14 @@ async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
         .await
         .expect("the followed logs printed the worker's line");
         let pid = child.id().expect("still running").to_string();
-        std::process::Command::new("kill")
-            .args(["-INT", &pid])
-            .status()
-            .expect("kill ran");
+        // Twice, a few milliseconds apart: one key press, as a terminal multiplexer on Windows
+        // delivers it. The copy is not a second Ctrl+C, which would end the call with 130.
+        for _ in 0..2 {
+            std::process::Command::new("kill")
+                .args(["-INT", &pid])
+                .status()
+                .expect("kill ran");
+        }
         let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
             .await
             .expect("a Ctrl+C ends a followed read")
@@ -1001,9 +1005,16 @@ async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
     let build = run(iii_call(port, &["compose::build", &file_arg, "worker=web"])).await;
     let stderr = String::from_utf8_lossy(&build.stderr);
     assert!(build.status.success(), "{stderr}");
+    let lines: Vec<&str> = stderr.lines().collect();
+    let printed = lines.iter().position(|line| *line == "web │ compiling web");
+    let finished = lines
+        .iter()
+        .position(|line| line.starts_with("web: scripts.build finished ("));
     assert!(
-        stderr.lines().any(|line| line == "web │ compiling web"),
-        "the build's own lines are printed: {stderr}"
+        printed
+            .zip(finished)
+            .is_some_and(|(printed, finished)| printed < finished),
+        "the build's own lines are printed before its row ends: {stderr}"
     );
     assert!(
         stderr

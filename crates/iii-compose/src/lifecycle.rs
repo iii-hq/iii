@@ -1728,12 +1728,13 @@ pub(crate) fn container_working_dir(
 }
 
 /// Runs container `key`'s `scripts.build` once for `compose::build` (spec 7.4), with the
-/// environment and working directory of its run. `cancel` stops it. A container without a
-/// non-empty `scripts.build` is `None`: skipped.
+/// environment and working directory of its run. `cancel` stops it, and `tap` also reads each
+/// line it logs. A container without a non-empty `scripts.build` is `None`: skipped.
 pub(crate) async fn build_one(
     ctx: &LifecycleCtx<'_>,
     key: &str,
     cancel: &crate::shutdown::ShutdownSignal,
+    tap: Option<crate::logs::LineTap>,
 ) -> Option<Result<crate::build_step::Outcome>> {
     let container = ctx.file.containers.get(key)?;
     container.scripts.build_command()?;
@@ -1762,7 +1763,7 @@ pub(crate) async fn build_one(
         Ok(crate::build_step::run(
             &spawn_ctx,
             container,
-            &ctx.logs.sink(key),
+            &ctx.logs.tapped_sink(key, tap),
             Some(cancel),
             adapter.as_ref(),
         )

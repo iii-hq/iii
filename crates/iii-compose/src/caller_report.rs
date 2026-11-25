@@ -31,7 +31,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    operation::{Operation, ProgressEvent},
+    operation::{Delivery, Operation, ProgressEvent},
     report::format_elapsed,
 };
 
@@ -125,7 +125,7 @@ fn failure(detail: &str) -> (String, Vec<String>) {
         .map(printable)
         .filter(|line| !line.trim().is_empty());
     let first = lines.next().unwrap_or_default();
-    match (first.split_once(": "), lines.last()) {
+    match (first.split_once(": "), lines.next_back()) {
         (Some((code, _)), Some(last)) if is_code(code) => {
             (format!("{code}: {}", last.trim()), Vec::new())
         }
@@ -166,7 +166,7 @@ struct Rows {
 impl Rows {
     /// Applies one container event. Returns the row when what it says changed.
     fn apply(&mut self, key: &str, phase: &str, raw: &str, now: Instant) -> Option<&Row> {
-        let detail = one_line(raw);
+        let detail = clause(&one_line(raw));
         let existing = self.rows.iter().position(|row| row.key == key);
         let mut said = Vec::new();
         let state = match phase {
@@ -305,6 +305,24 @@ fn plain_line(row: &Row) -> String {
     }
 }
 
+/// A detail as the other rows say theirs: no full stop, and lowercase unless its first word is an
+/// acronym. `Everything already up to date.` reads `everything already up to date`.
+fn clause(detail: &str) -> String {
+    let detail = detail.strip_suffix('.').unwrap_or(detail);
+    let mut chars = detail.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), second)
+            if first.is_uppercase() && !second.is_some_and(char::is_uppercase) =>
+        {
+            first
+                .to_lowercase()
+                .chain(detail[first.len_utf8()..].chars())
+                .collect()
+        }
+        _ => detail.to_string(),
+    }
+}
+
 /// `container │`, dim when `color`: how a line of output names the worker it comes from.
 pub fn label(container: &str, color: bool) -> String {
     Paint(color).dim(&format!("{container} │"))
@@ -370,24 +388,11 @@ impl CallerReport {
         self.left
     }
 
-    /// Draws the events of `operation` until its terminal one. Once the caller left, the
-    /// operation is cancelled, and the rest of its events are read without being drawn.
-    pub async fn follow(
-        &mut self,
-        operation: &Operation,
-        events: UnboundedReceiver<ProgressEvent>,
-    ) {
-        self.follow_with(operation, events, None).await;
-    }
-
-    /// [`Self::follow`], printing each `(container, line)` of `output` as it comes: above the
-    /// block on a terminal, as a line of its own in a pipe.
-    pub async fn follow_with(
-        &mut self,
-        operation: &Operation,
-        mut events: UnboundedReceiver<ProgressEvent>,
-        mut output: Option<&mut UnboundedReceiver<(String, String)>>,
-    ) {
+    /// Draws the events of `operation` until its terminal one, and prints each line a container
+    /// wrote (a build's) where it came: above the block on a terminal, as a line of its own in a
+    /// pipe. Once the caller left, the operation is cancelled, and the rest of what it sends is
+    /// read without being drawn.
+    pub async fn follow(&mut self, operation: &Operation, mut events: UnboundedReceiver<Delivery>) {
         let mut ticks = tokio::time::interval(if self.animated() {
             FRAME_INTERVAL
         } else {
@@ -397,22 +402,12 @@ impl CallerReport {
         let mut cancelled = false;
         loop {
             tokio::select! {
-                // Events first when a line is ready too: the ending is never held up by output,
-                // and what is left of it is printed after, by `print_rest`.
-                biased;
-                event = events.recv() => match event {
-                    Some(event) if !event.terminal => self.apply(event).await,
-                    _ => break,
-                },
-                line = async {
-                    match output.as_mut() {
-                        Some(output) => output.recv().await,
-                        None => std::future::pending().await,
+                delivery = events.recv() => match delivery {
+                    Some(Delivery::Event(event)) if !event.terminal => self.apply(event).await,
+                    Some(Delivery::Output { container, line }) => {
+                        self.print(&container, &line).await;
                     }
-                } => match line {
-                    Some((container, line)) => self.print(&container, &line).await,
-                    // Its source ended: nothing more comes from it.
-                    None => output = None,
+                    _ => break,
                 },
                 _ = ticks.tick() => self.tick().await,
             }
@@ -420,13 +415,6 @@ impl CallerReport {
                 operation.cancel();
                 cancelled = true;
             }
-        }
-    }
-
-    /// Prints what is left of `output`, once its source ended.
-    pub async fn print_rest(&mut self, output: &mut UnboundedReceiver<(String, String)>) {
-        while let Some((container, line)) = output.recv().await {
-            self.print(&container, &line).await;
         }
     }
 
@@ -483,7 +471,7 @@ impl CallerReport {
     async fn apply(&mut self, event: ProgressEvent) {
         match event.container.as_deref() {
             None => {
-                let detail = one_line(&event.detail);
+                let detail = clause(&one_line(&event.detail));
                 if detail.is_empty() || self.rows.phase.as_deref() == Some(detail.as_str()) {
                     return;
                 }
@@ -787,7 +775,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_lines_are_labelled_and_printed_above_the_progress() {
+    async fn output_lines_are_printed_in_order_with_the_rows() {
         let (client, operation) = operation().await;
         let events = operation.subscribe();
         let sink = Sink::default();
@@ -797,32 +785,23 @@ mod tests {
             "building web",
         )
         .await;
-        let (lines, mut output) = tokio::sync::mpsc::unbounded_channel();
         let emitted = async {
             operation
                 .emit(Some("web"), "building", "running scripts.build")
                 .await;
-            // Apart, so the report reads them in this order.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            lines
-                .send(("web".to_string(), "compiling \x1b[1mweb\x1b[0m".to_string()))
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            operation.output("web", "compiling \x1b[1mweb\x1b[0m");
+            // Written just before the build ended: still printed before the row that says so.
+            operation.output("web", "done");
             operation
                 .emit(Some("web"), "built", "scripts.build finished")
                 .await;
             operation
                 .finish(OperationStatus::Succeeded, "every requested build finished")
                 .await;
-            // Logged before the build ended, read after: still printed, before the last line.
-            lines.send(("web".to_string(), "done".to_string())).unwrap();
-            drop(lines);
+            // After the terminal event: not delivered.
+            operation.output("web", "late");
         };
-        tokio::join!(
-            report.follow_with(&operation, events, Some(&mut output)),
-            emitted
-        );
-        report.print_rest(&mut output).await;
+        tokio::join!(report.follow(&operation, events), emitted);
         report
             .finish(&Ending::Succeeded("every requested build finished".into()))
             .await;
@@ -831,23 +810,35 @@ mod tests {
         let text = sink.text();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
-            lines[..3],
+            lines[..4],
             [
                 "building web",
                 "web: running scripts.build",
-                "web │ compiling  [1mweb [0m"
+                "web │ compiling  [1mweb [0m",
+                "web │ done",
             ],
             "{text}"
         );
         assert!(
-            lines[3].starts_with("web: scripts.build finished ("),
+            lines[4].starts_with("web: scripts.build finished ("),
             "{text}"
         );
-        assert_eq!(lines[4], "web │ done", "{text}");
         assert!(
             lines[5].starts_with("✓ every requested build finished ("),
             "{text}"
         );
+        assert_eq!(lines.len(), 6, "{text}");
+    }
+
+    #[test]
+    fn a_detail_reads_like_the_other_rows() {
+        assert_eq!(
+            clause("Everything already up to date."),
+            "everything already up to date"
+        );
+        assert_eq!(clause("Package unchanged"), "package unchanged");
+        assert_eq!(clause("API key missing"), "API key missing");
+        assert_eq!(clause("starting worker"), "starting worker");
     }
 
     #[test]

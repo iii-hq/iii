@@ -523,7 +523,8 @@ fn record_unread(unread: &Mutex<Option<String>>, error: String) {
 }
 
 /// SIGINT and SIGTERM. While streams are carried, the first one is a stop request and a second one
-/// ends the process at once, with 128 plus its number. Before [`Interrupt::arm`], nothing can be
+/// ends the process at once, with 128 plus its number; one within [`REPEAT_WINDOW`] of the first is
+/// a copy of it. Before [`Interrupt::arm`], nothing can be
 /// stopped, and the first one already ends the process so. On Windows, Ctrl+C is SIGINT and
 /// Ctrl+Break is SIGTERM: the console event a process manager sends to stop a process group.
 pub struct Interrupt {
@@ -553,7 +554,7 @@ impl Interrupt {
         );
         let stops = Arc::clone(&armed);
         tokio::spawn(async move {
-            let mut first = true;
+            let mut first: Option<std::time::Instant> = None;
             loop {
                 let number = tokio::select! {
                     received = terminate.recv() => received.map(|()| 15),
@@ -562,11 +563,15 @@ impl Interrupt {
                 let Some(number) = number else {
                     return;
                 };
-                if ends_at_once(first, stops.load(Ordering::Acquire)) {
-                    std::process::exit(128 + number);
+                let now = std::time::Instant::now();
+                match on_signal(first, now, stops.load(Ordering::Acquire)) {
+                    Signal::Repeat => continue,
+                    Signal::Exit => std::process::exit(128 + number),
+                    Signal::Stop => {
+                        first = Some(now);
+                        sender.send_replace(Some(number));
+                    }
                 }
-                first = false;
-                sender.send_replace(Some(number));
             }
         });
         Ok(Self { received, armed })
@@ -596,10 +601,34 @@ impl Interrupt {
     }
 }
 
-/// Whether a signal ends the process at once: a second one always does, and a first one does when
-/// no stream is carried, since there is nothing to close to ask the function to stop.
-fn ends_at_once(first: bool, armed: bool) -> bool {
-    !first || !armed
+/// Signals closer than this to the first are the same request.
+///
+/// One key press can arrive as two signals: a terminal multiplexer on Windows (psmux) delivers two
+/// Ctrl+C events 6 ms apart, and a wrapper may forward the terminal's Ctrl+C that the process got
+/// already. Taken for a second press, the copy ended the call at once, before the function it
+/// asked to stop could answer. Compose's daemon counts its own signals the same way.
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// What one signal does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// The first one while streams are carried: close them, which asks the function to stop.
+    Stop,
+    /// End the process at once: a second signal, or a first one when no stream is carried, since
+    /// there is nothing to close to ask the function to stop.
+    Exit,
+    /// A copy of the first one, within [`REPEAT_WINDOW`] of it: nothing.
+    Repeat,
+}
+
+/// What a signal at `now` does, given when the first one came and whether streams are carried.
+fn on_signal(first: Option<std::time::Instant>, now: std::time::Instant, armed: bool) -> Signal {
+    match first {
+        Some(first) if now.saturating_duration_since(first) < REPEAT_WINDOW => Signal::Repeat,
+        Some(_) => Signal::Exit,
+        None if armed => Signal::Stop,
+        None => Signal::Exit,
+    }
 }
 
 #[cfg(test)]
@@ -868,16 +897,28 @@ mod tests {
     /// SIGINT and SIGTERM do on Unix, and as Ctrl+C and Ctrl+Break must on Windows.
     #[test]
     fn the_first_signal_ends_a_call_that_carries_no_stream() {
-        assert!(ends_at_once(true, false));
+        let now = std::time::Instant::now();
+        assert_eq!(on_signal(None, now, false), Signal::Exit);
     }
 
     #[test]
     fn the_first_signal_is_a_stop_once_streams_are_carried() {
-        assert!(!ends_at_once(true, true));
+        let now = std::time::Instant::now();
+        assert_eq!(on_signal(None, now, true), Signal::Stop);
     }
 
     #[test]
     fn the_second_signal_ends_the_call() {
-        assert!(ends_at_once(false, true));
+        let first = std::time::Instant::now();
+        let later = first + REPEAT_WINDOW;
+        assert_eq!(on_signal(Some(first), later, true), Signal::Exit);
+    }
+
+    /// psmux on Windows delivers one Ctrl+C as two events 6 ms apart.
+    #[test]
+    fn a_copy_of_the_first_signal_is_not_a_second_one() {
+        let first = std::time::Instant::now();
+        let copy = first + std::time::Duration::from_millis(6);
+        assert_eq!(on_signal(Some(first), copy, true), Signal::Repeat);
     }
 }

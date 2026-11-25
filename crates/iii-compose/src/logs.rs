@@ -111,7 +111,12 @@ struct LogMessage {
 pub(crate) struct LogSink {
     container: String,
     sender: tokio::sync::mpsc::Sender<LogMessage>,
+    /// Also handed each line [`Self::write_line`] writes, cleaned, before the log takes it.
+    tap: Option<LineTap>,
 }
+
+/// Something else that reads the lines a [`LogSink`] writes, such as the caller drawing a build.
+pub(crate) type LineTap = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 impl LogSink {
     /// One line of output Compose read itself, such as a build's, cleaned and split as
@@ -120,6 +125,9 @@ impl LogSink {
     pub(crate) async fn write_line(&self, stream: LogStream, line: &str) {
         let clean = TerminalSanitizer::default().sanitize(line.as_bytes());
         for line in clean.split(|byte| *byte == b'\n') {
+            if let Some(tap) = &self.tap {
+                tap(&String::from_utf8_lossy(line));
+            }
             let mut rest = line;
             loop {
                 let (chunk, tail) = rest.split_at(rest.len().min(MAX_LINE_BYTES));
@@ -236,6 +244,15 @@ impl LogStore {
         LogSink {
             container: container.to_string(),
             sender: self.sender.clone(),
+            tap: None,
+        }
+    }
+
+    /// [`Self::sink`], whose [`LogSink::write_line`] also hands each line to `tap`.
+    pub(crate) fn tapped_sink(&self, container: &str, tap: Option<LineTap>) -> LogSink {
+        LogSink {
+            tap,
+            ..self.sink(container)
         }
     }
 
@@ -665,6 +682,20 @@ fn tail_entries(
         entries.drain(..entries.len() - limit);
     }
     Ok(entries)
+}
+
+/// What one line of a log file says: the message of a record, without its `stdout`/`stderr` tag.
+/// `None` for the file's header, which says nothing the worker wrote. A line without a tag, from a
+/// log written before records had one, is its own message.
+pub(crate) fn message_of(line: &str) -> Option<&str> {
+    if line.starts_with(LOG_HEADER_PREFIX) {
+        return None;
+    }
+    Some(
+        line.strip_prefix("stdout\t")
+            .or_else(|| line.strip_prefix("stderr\t"))
+            .unwrap_or(line),
+    )
 }
 
 fn parse_entry(record: &[u8], filter: Option<LogStream>) -> Option<LogEntry> {

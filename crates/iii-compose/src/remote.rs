@@ -829,11 +829,11 @@ async fn dispatch(
                 .resolve_file(file.as_deref())
                 .await
                 .map_err(|err| compose_error(&err))?;
-            let targets = daemon
+            let requested = daemon
                 .build_targets(Some(&file), worker.as_deref())
                 .await
-                .map_err(|err| compose_error(&err))?;
-            let requested = targets.len();
+                .map_err(|err| compose_error(&err))?
+                .len();
             let title = match &worker {
                 Some(worker) => format!("building {worker}"),
                 None => format!("building {requested} workers"),
@@ -841,13 +841,6 @@ async fn dispatch(
             let (operation, accepted) =
                 admit_mutation(&daemon, request.operation_id, requested, title.clone()).await?;
             let events = drawing.as_ref().map(|_| operation.subscribe());
-            // Before the build starts, so none of its lines is taken for an earlier one's.
-            let lines = match drawing {
-                Some(_) => {
-                    Some(BuildLines::follow(Arc::clone(&daemon), file.clone(), targets).await)
-                }
-                None => None,
-            };
             let task_operation_id = accepted.operation_id.clone();
             let task_accepted = accepted.clone();
             let task_daemon = Arc::clone(&daemon);
@@ -863,16 +856,13 @@ async fn dispatch(
                 report_op("build", &build_report(&result), began.elapsed());
                 finish_build(&task_operation, result, task_accepted).await
             });
-            let Some(((drawing, events), mut lines)) = drawing.zip(events).zip(lines) else {
+            let Some((drawing, events)) = drawing.zip(events) else {
                 return Ok(to_value(&accepted));
             };
-            // The build's own lines go above the block, as they come.
+            // The build's own lines come with the operation's events, before the row that says
+            // how the build ended.
             let mut report = CallerReport::start(drawing.stderr, drawing.terminal, title).await;
-            report
-                .follow_with(&operation, events, Some(&mut lines.output))
-                .await;
-            lines.stop().await;
-            report.print_rest(&mut lines.output).await;
+            report.follow(&operation, events).await;
             let (ending, answer) = finished.await.unwrap_or_else(|error| {
                 let message = format!("the build operation stopped: {error}");
                 (
@@ -1289,7 +1279,7 @@ fn count(n: usize, noun: &str) -> String {
 async fn draw_mutation(
     drawing: Option<(
         Drawing,
-        tokio::sync::mpsc::UnboundedReceiver<crate::operation::ProgressEvent>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::operation::Delivery>,
     )>,
     title: String,
     operation: &crate::operation::Operation,
@@ -1352,7 +1342,7 @@ where
 async fn answer_drawn(
     mut report: CallerReport,
     operation: &crate::operation::Operation,
-    events: tokio::sync::mpsc::UnboundedReceiver<crate::operation::ProgressEvent>,
+    events: tokio::sync::mpsc::UnboundedReceiver<crate::operation::Delivery>,
     finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
     details: MutationDetails,
     answer: impl FnOnce(MutationOutcome) -> Value,
@@ -1520,107 +1510,6 @@ async fn finish_build(
                 Ending::Failed(error.to_string()),
                 Err(compose_error(&error)),
             )
-        }
-    }
-}
-
-/// How often a drawn build looks for new build lines.
-const BUILD_LINES_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// How long the last read after a build waits for lines still on their way into the log: the
-/// log is written by a task of its own, so the build's last lines can land after it ended.
-const BUILD_LINES_SETTLE_MS: u64 = 500;
-
-/// The `[build] ` lines its targets log while a drawn build runs, for the caller's report.
-struct BuildLines {
-    output: tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
-    stop: tokio::sync::watch::Sender<bool>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl BuildLines {
-    /// Starts following the build lines of `targets`. Called before the build starts: where
-    /// each log ends now is where its build lines begin.
-    async fn follow(daemon: Arc<Daemon>, file: PathBuf, targets: Vec<String>) -> Self {
-        let (sender, output) = tokio::sync::mpsc::unbounded_channel();
-        let (stop, mut stopping) = tokio::sync::watch::channel(false);
-        let mut cursors = BTreeMap::new();
-        for target in &targets {
-            read_build_lines(&daemon, &file, target, 0, 0, &mut cursors, None).await;
-        }
-        let task = tokio::spawn(async move {
-            loop {
-                // One last read after the stop, for what was logged before the build ended.
-                let last = *stopping.borrow_and_update();
-                for target in &targets {
-                    // After a cursor, the most lines one read returns; for a target without a
-                    // log before, all of it is this build's.
-                    let limit = crate::logs::MAX_TAIL_LINES;
-                    let wait_ms = if last { BUILD_LINES_SETTLE_MS } else { 0 };
-                    read_build_lines(
-                        &daemon,
-                        &file,
-                        target,
-                        limit,
-                        wait_ms,
-                        &mut cursors,
-                        Some(&sender),
-                    )
-                    .await;
-                }
-                if last {
-                    break;
-                }
-                tokio::select! {
-                    changed = stopping.changed() => if changed.is_err() { break },
-                    () = tokio::time::sleep(BUILD_LINES_INTERVAL) => {}
-                }
-            }
-        });
-        Self { output, stop, task }
-    }
-
-    /// Reads what is left, and ends the lines: [`Self::output`] closes once it is drained.
-    async fn stop(&mut self) {
-        let _ = self.stop.send(true);
-        let _ = (&mut self.task).await;
-    }
-}
-
-/// Reads up to `limit` lines of `target`'s log after its cursor, or its last `limit` lines
-/// without one, waiting up to `wait_ms` for a line when there is none, and sends each build line.
-async fn read_build_lines(
-    daemon: &Daemon,
-    file: &std::path::Path,
-    target: &str,
-    limit: usize,
-    wait_ms: u64,
-    cursors: &mut BTreeMap<String, LogCursor>,
-    sender: Option<&tokio::sync::mpsc::UnboundedSender<(String, String)>>,
-) {
-    let known = cursors
-        .get(target)
-        .map(|cursor| BTreeMap::from([(target.to_string(), cursor.clone())]))
-        .unwrap_or_default();
-    let Ok(outcome) = daemon
-        .logs(Some(file), Some(target), known, limit, None, wait_ms)
-        .await
-    else {
-        return;
-    };
-    for batch in outcome.containers {
-        if let Some(sender) = sender {
-            for entry in &batch.entries {
-                if let Some(line) = entry
-                    .message
-                    .strip_prefix(crate::build_step::BUILD_LOG_PREFIX)
-                {
-                    let _ = sender.send((batch.container.clone(), line.to_string()));
-                }
-            }
-        }
-        if let Some(cursor) = batch.cursor {
-            cursors.insert(batch.container, cursor);
         }
     }
 }

@@ -1685,7 +1685,17 @@ impl Project {
                 continue;
             }
             emit("building", "running scripts.build".to_string()).await;
-            let result = match lifecycle::build_one(&ctx, &key, cancel).await {
+            // The build's lines reach the operation's subscribers as the log takes them, so a
+            // caller prints them before the row that says how the build ended.
+            let tap = operation.clone().map(|operation| {
+                let key = key.clone();
+                std::sync::Arc::new(move |line: &str| {
+                    if let Some(line) = line.strip_prefix(crate::build_step::BUILD_LOG_PREFIX) {
+                        operation.output(&key, line);
+                    }
+                }) as crate::logs::LineTap
+            });
+            let result = match lifecycle::build_one(&ctx, &key, cancel, tap).await {
                 None => lifecycle::BuildResult::skipped(&key),
                 Some(Err(error)) => {
                     lifecycle::BuildResult::failed(&key, lifecycle::OpError::from(&error))
@@ -1838,7 +1848,7 @@ impl Project {
             if let Some(operation) = &operation {
                 operation.emit(Some(key), "building", detail).await;
             }
-            let error = match Box::pin(lifecycle::build_one(&ctx, key, cancel)).await {
+            let error = match Box::pin(lifecycle::build_one(&ctx, key, cancel, None)).await {
                 None | Some(Ok(crate::build_step::Outcome::Built { .. })) => {
                     // Until it starts again, a retried add or update restarts it.
                     crate::build_step::mark_rebuilt(&file.path, key);

@@ -47,6 +47,15 @@ pub struct ProgressEvent {
     pub results: Option<serde_json::Value>,
 }
 
+/// What a subscriber of an operation receives, in the order it happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// A progress event, as observers of [`PROGRESS_FUNCTION_ID`] see it.
+    Event(ProgressEvent),
+    /// A line a container wrote while the operation ran, such as a build's.
+    Output { container: String, line: String },
+}
+
 #[derive(Clone)]
 pub struct ProgressEmitter {
     client: IIIClient,
@@ -165,7 +174,7 @@ pub struct Operation {
     /// In-process readers of every event, such as the caller a `compose::add` draws for. Sent
     /// while the state lock is held, so each reader gets the events in sequence order, and
     /// dropped after the terminal event, which ends their streams.
-    subscribers: Mutex<Vec<mpsc::UnboundedSender<ProgressEvent>>>,
+    subscribers: Mutex<Vec<mpsc::UnboundedSender<Delivery>>>,
 }
 
 impl Operation {
@@ -193,9 +202,10 @@ impl Operation {
     pub fn id(&self) -> &str {
         &self.id
     }
-    /// Every event emitted from now on, in order, ending after the terminal one. An operation
-    /// that already finished yields nothing.
-    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<ProgressEvent> {
+    /// Every event emitted from now on, and every line of [`Self::output`], in the order they
+    /// happened, ending after the terminal event. An operation that already finished yields
+    /// nothing.
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<Delivery> {
         let (sender, events) = mpsc::unbounded_channel();
         self.subscribers
             .lock()
@@ -210,10 +220,27 @@ impl Operation {
             .subscribers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        subscribers.retain(|subscriber| subscriber.send(event.clone()).is_ok());
+        subscribers.retain(|subscriber| subscriber.send(Delivery::Event(event.clone())).is_ok());
         if event.terminal {
             subscribers.clear();
         }
+    }
+
+    /// One line a container of this operation wrote, such as a build's, for the subscribers that
+    /// draw it. Not an event: nothing outside this daemon sees it, and the logs keep it.
+    pub fn output(&self, container: &str, line: &str) {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribers.retain(|subscriber| {
+            subscriber
+                .send(Delivery::Output {
+                    container: container.to_string(),
+                    line: line.to_string(),
+                })
+                .is_ok()
+        });
     }
 
     pub fn cancellation(&self) -> watch::Receiver<bool> {
