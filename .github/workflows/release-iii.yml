@@ -164,7 +164,6 @@ jobs:
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: SDK Node (npm)
     secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
@@ -181,7 +180,6 @@ jobs:
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: SDK Browser (npm)
     secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
@@ -198,7 +196,6 @@ jobs:
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Observability Node (npm)
     secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
@@ -215,7 +212,6 @@ jobs:
       slack_thread_ts: ${{ needs.setup.outputs.slack_ts }}
       slack_label: Helpers Node (npm)
     secrets:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 

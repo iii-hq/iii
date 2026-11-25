@@ -136,7 +136,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -151,17 +152,10 @@ jobs:
           --filter iii-browser-sdk
           build
 
-      - name: Setup NPM authentication
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
-
       # Recursive publish: pnpm resolves topological order (observability
       # before iii / iii-browser) and rewrites `workspace:*` deps to the
       # concrete alpha version automatically — no manual ordering needed.
       - name: Publish node SDK packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >-
           pnpm
           --filter "@iii-dev/observability"

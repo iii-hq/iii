@@ -2,6 +2,11 @@
   "name": "@iii-dev/helpers",
   "version": "0.27.0",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iii-hq/iii.git",
+    "directory": "sdk/packages/node/helpers"
+  },
   "publishConfig": { "access": "public" },
   "type": "module",
   "author": "III",
