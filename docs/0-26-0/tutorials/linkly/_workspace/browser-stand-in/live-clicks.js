@@ -1,0 +1,71 @@
+// Stands in for the Chapter 7 live click counter. It connects through the
+// RBAC-gated listener in its own per-session namespace, observes
+// click-streamer::on-click with ui::on_click, reads the starting total with
+// link::click_summary, then follows a link and counts the clicks that arrive.
+// Same logic as the useEffect in the chapter's App.tsx.
+import { registerWorker } from "iii-browser-sdk";
+import { randomUUID } from "node:crypto";
+
+const TOKEN = process.env.LINKLY_BROWSER_TOKEN ?? "dev-token";
+const BROWSER_URL = process.env.BROWSER_URL ?? "ws://localhost:3110";
+const HTTP = process.env.HTTP ?? "http://127.0.0.1:3111";
+const CODE = process.env.LINKLY_CODE ?? "watchme";
+// The tutorial runs in `default`; run.sh may move the test project elsewhere.
+const PROJECT_NAMESPACE = process.env.III_NAMESPACE || "default";
+const SESSION = randomUUID();
+
+const worker = registerWorker(
+  `${BROWSER_URL}?token=${encodeURIComponent(TOKEN)}&session=${SESSION}`,
+  { namespace: `browser-${SESSION}` },
+);
+
+let lastId = 0; // clicks up to this id are already in the total that was read
+const counted = new Set(); // clicks above lastId already counted
+let count = 0;
+let received = 0;
+let ready = false;
+const early = [];
+
+function apply(click) {
+  // Already in the total, or counted before: clicks can arrive out of order.
+  if (click.id <= lastId || counted.has(click.id)) return;
+  counted.add(click.id);
+  count += 1;
+}
+
+async function sync() {
+  ready = false;
+  const summary = await worker.call({
+    function_id: "link::click_summary",
+    namespace: PROJECT_NAMESPACE,
+    payload: {},
+  });
+  lastId = summary.last_id;
+  count = summary.total;
+  ready = true;
+  early.splice(0).forEach(apply);
+}
+
+worker.registerFunction("ui::on_click", async ({ output: click }) => {
+  received += 1;
+  if (ready) apply(click);
+  else early.push(click);
+  return null;
+});
+const listener = worker.observe(
+  // App.tsx names `default`; run.sh may move the project elsewhere.
+  { function_id: "click-streamer::on-click", namespace: PROJECT_NAMESPACE, capture: ["output"] },
+  "ui::on_click",
+);
+
+await listener.ready();
+await sync();
+const initial = count;
+
+for (let i = 0; i < 3; i++) {
+  await fetch(`${HTTP}/s/${CODE}`, { redirect: "manual" });
+}
+await new Promise((resolve) => setTimeout(resolve, 8000));
+
+console.log(JSON.stringify({ initial, received, count }));
+await worker.shutdown();

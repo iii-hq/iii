@@ -57,12 +57,19 @@ All commands in this tutorial use the `default` namespace.
 iii call compose::add worker=./workers/math-worker
 ```
 
-The Compose daemon terminal reports the worker becoming ready:
+This first add also starts the sandbox adapter, `sandbox-libkrun`, that Compose adds to build and
+boot the worker. The first start builds the image, dependencies included, so it takes longer than
+the next ones. The Compose daemon terminal reports the adapter becoming ready, then the worker
+building its image and becoming ready:
 
 ```text
+→ sandbox-libkrun installing api.workers.iii.dev/sandbox-libkrun@0.4.0
+✓ sandbox-libkrun ready (1.2s)
 → math-worker starting
-✓ math-worker ready (2.1s)
-up: 1 of 1 changed in 2.1s
+[compose] math-worker: no build yet; running scripts.build
+→ math-worker building
+✓ math-worker ready (9.6s)
+up: 2 of 2 changed in 10.8s
 ```
 
 <Warning title="Linux: `KVM not accessible`">
@@ -83,8 +90,9 @@ other workers through the engine, regardless of where each one runs or what lang
 in.
 
 <Tip>
-  Workers need a moment to install their runtime dependencies after being added. If you see
-  `"message": "Function math::add not found"`, wait a few seconds and try again.
+  A worker registers its functions after its image is built and it starts, which the first add waits
+  for. If you see `"message": "Function math::add not found"`, wait until the daemon reports the
+  worker ready and try again.
 </Tip>
 
 ## 4. Start the TypeScript worker
@@ -97,8 +105,10 @@ The Compose daemon reports:
 
 ```text
 → caller-worker starting
-✓ caller-worker ready (2.1s)
-up: 2 of 2 changed in 2.1s
+[compose] caller-worker: no build yet; running scripts.build
+→ caller-worker building
+✓ caller-worker ready (10.3s)
+up: 1 of 3 changed in 10.3s
 ```
 
 This worker registered the function `math::add_two_numbers` with the engine.

@@ -150,7 +150,7 @@
   "navigation": {
     "versions": [
       {
-        "version": "0.27.x",
+        "version": "0.28.x",
         "tag": "Next",
         "tabs": [
           {
@@ -312,7 +312,7 @@
         ]
       },
       {
-        "version": "0.26.x",
+        "version": "0.27.x",
         "tag": "Latest",
         "default": true,
         "tabs": [
@@ -341,7 +341,8 @@
                   "using-iii/configuration",
                   "using-iii/ade",
                   "using-iii/cli",
-                  "using-iii/deployment"
+                  "using-iii/deployment",
+                  "using-iii/streaming"
                 ]
               },
               {
@@ -352,7 +353,7 @@
                   "understanding-iii/engine",
                   "understanding-iii/compose",
                   "understanding-iii/namespaces",
-                  "understanding-iii/channels"
+                  "understanding-iii/streaming"
                 ]
               },
               {
@@ -375,7 +376,7 @@
                   "creating-workers/functions",
                   "creating-workers/observable-functions",
                   "creating-workers/worker-manifest",
-                  "creating-workers/channels",
+                  "creating-workers/streaming",
                   {
                     "group": "Patterns",
                     "pages": [
@@ -388,10 +389,13 @@
               {
                 "group": "Upgrading",
                 "pages": [
+                  "upgrading/from-0-26-x",
+                  "upgrading/explicit-vm-workers",
                   "upgrading/from-0-25-x",
                   "upgrading/sandbox-worker",
                   "upgrading/from-0-24-x",
                   "upgrading/migrate-from-streams",
+                  "upgrading/migrate-from-http-functions",
                   "upgrading/workers-to-compose",
                   "upgrading/from-0-22-x"
                 ]
@@ -428,6 +432,12 @@
                 ]
               },
               {
+                "group": "Compose",
+                "pages": [
+                  "reference/vm-workers"
+                ]
+              },
+              {
                 "group": "Language SDKs",
                 "expanded": true,
                 "pages": [
@@ -452,6 +462,157 @@
                 "group": "CLI reference",
                 "pages": [
                   "cli-reference/index"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "pages": [
+              "changelog/index"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.26.x",
+        "tabs": [
+          {
+            "tab": "Docs",
+            "groups": [
+              {
+                "group": "Getting Started",
+                "pages": [
+                  "0-26-0/index",
+                  "0-26-0/install",
+                  "0-26-0/quickstart",
+                  "0-26-0/troubleshooting"
+                ]
+              },
+              {
+                "group": "Using iii",
+                "pages": [
+                  "0-26-0/using-iii/workers",
+                  "0-26-0/using-iii/functions",
+                  "0-26-0/using-iii/observers",
+                  "0-26-0/using-iii/workers-registry",
+                  "0-26-0/using-iii/namespaces",
+                  "0-26-0/using-iii/engine",
+                  "0-26-0/using-iii/compose",
+                  "0-26-0/using-iii/configuration",
+                  "0-26-0/using-iii/ade",
+                  "0-26-0/using-iii/cli",
+                  "0-26-0/using-iii/deployment"
+                ]
+              },
+              {
+                "group": "Understanding iii",
+                "expanded": false,
+                "pages": [
+                  "0-26-0/understanding-iii/index",
+                  "0-26-0/understanding-iii/engine",
+                  "0-26-0/understanding-iii/compose",
+                  "0-26-0/understanding-iii/namespaces",
+                  "0-26-0/understanding-iii/channels"
+                ]
+              },
+              {
+                "group": "Creating Workers",
+                "pages": [
+                  "0-26-0/creating-workers/index",
+                  {
+                    "group": "Common Workers",
+                    "pages": [
+                      "0-26-0/creating-workers/database",
+                      "0-26-0/creating-workers/http",
+                      "0-26-0/creating-workers/queues",
+                      "0-26-0/how-to/schedule-cron-task",
+                      "0-26-0/creating-workers/observability",
+                      "0-26-0/creating-workers/sandboxes",
+                      "0-26-0/creating-workers/worker-manager"
+                    ]
+                  },
+                  "0-26-0/creating-workers/workers",
+                  "0-26-0/creating-workers/functions",
+                  "0-26-0/creating-workers/observable-functions",
+                  "0-26-0/creating-workers/worker-manifest",
+                  "0-26-0/creating-workers/channels",
+                  {
+                    "group": "Patterns",
+                    "pages": [
+                      "0-26-0/patterns/reactive-state-pattern",
+                      "0-26-0/patterns/adapter-pattern"
+                    ]
+                  }
+                ]
+              },
+              {
+                "group": "Upgrading",
+                "pages": [
+                  "0-26-0/upgrading/from-0-25-x",
+                  "0-26-0/upgrading/sandbox-worker",
+                  "0-26-0/upgrading/from-0-24-x",
+                  "0-26-0/upgrading/migrate-from-streams",
+                  "0-26-0/upgrading/workers-to-compose",
+                  "0-26-0/upgrading/from-0-22-x"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Tutorials",
+            "groups": [
+              {
+                "group": "Linkly",
+                "pages": [
+                  "0-26-0/tutorials/linkly/overview",
+                  "0-26-0/tutorials/linkly/agentic",
+                  "0-26-0/tutorials/linkly/foundations",
+                  "0-26-0/tutorials/linkly/observability",
+                  "0-26-0/tutorials/linkly/persistence",
+                  "0-26-0/tutorials/linkly/durable-execution",
+                  "0-26-0/tutorials/linkly/streaming",
+                  "0-26-0/tutorials/linkly/channels",
+                  "0-26-0/tutorials/linkly/frontend"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "SDK & Engine Reference",
+            "groups": [
+              {
+                "group": "Engine protocol",
+                "pages": [
+                  "0-26-0/reference/engine-protocol",
+                  "0-26-0/reference/filters"
+                ]
+              },
+              {
+                "group": "Language SDKs",
+                "expanded": true,
+                "pages": [
+                  "0-26-0/reference/sdk-node",
+                  "0-26-0/reference/sdk-python",
+                  "0-26-0/reference/sdk-rust",
+                  "0-26-0/reference/sdk-go",
+                  "0-26-0/reference/sdk-browser"
+                ]
+              },
+              {
+                "group": "Helpers",
+                "expanded": true,
+                "pages": [
+                  "0-26-0/reference/helpers-node",
+                  "0-26-0/reference/helpers-python",
+                  "0-26-0/reference/helpers-rust",
+                  "0-26-0/reference/helpers-go"
+                ]
+              },
+              {
+                "group": "CLI reference",
+                "pages": [
+                  "0-26-0/cli-reference/index"
                 ]
               }
             ]

@@ -30,6 +30,10 @@ The `click-streamer` worker owns the live click feed. Uncomment the Ch. 5 block 
 ```yaml worker-compose.yaml
 click-streamer:
   worker: path://./click-streamer
+  start_after: [sandbox-libkrun]
+  scripts:
+    build: iii call sandbox::build worker=click-streamer
+    run: iii call sandbox::start worker=click-streamer
 ```
 
 ## Host the click feed in `click-streamer`
@@ -271,5 +275,5 @@ removes it once the grace period (30 seconds by default) ends without a reconnec
 Linkly now pushes every click to its listeners in real time: `click-streamer` observes
 `link::record_click` and runs its `click-streamer::on-click` feed once per click, and every listener
 observes the feed. The `clicks` table stays the source of truth behind `link::click_summary`. Next,
-in [Ch. 6: Move bulk data with channels](./channels), you bulk-load links from a CSV in a single
+in [Ch. 6: Move bulk data with a stream](./channels), you bulk-load links from a CSV in a single
 streamed upload.

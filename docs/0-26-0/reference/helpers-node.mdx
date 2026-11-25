@@ -1,0 +1,1045 @@
+---
+title: "Helpers (Node.js)"
+sidebarTitle: "Node.js"
+description: "API reference for the @iii-dev/helpers package (Node.js / TypeScript)."
+owner: "engineering"
+type: "reference"
+---
+
+{/* AUTO-GENERATED FILE. Do not edit. Regenerate with docs/next/scripts/generate-api-docs.mts. */}
+{/* AI: any skill-check (vale/AI) text fixes belong in the source doc-comments under sdk/packages/node/helpers/src (prose) or docs/next/scripts/ (structure/formatting), then regenerate. Never edit this file directly. */}
+
+## Installation
+
+```bash
+npm install @iii-dev/helpers
+```
+
+API reference for the @iii-dev/helpers package (Node.js / TypeScript).
+
+## http
+
+HTTP request/response types, auth config, and the `http` helper.
+
+**Import**
+
+```typescript
+import { ... } from '@iii-dev/helpers/http'
+```
+
+### Functions
+
+### http
+
+Helper that wraps an HTTP-style handler (with separate `req`/`res` arguments)
+into the function handler format expected by the SDK.
+
+**Signature**
+
+```typescript
+http(callback: (req: HttpStreamingRequest, res: HttpStreamingResponse) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>) => (req: HttpInternalRequest) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>
+```
+
+<Tabs>
+  <Tab title="Parameters">
+
+<ParamField body="callback" type="(req: HttpStreamingRequest, res: HttpStreamingResponse) => Promise<void | HttpResponse<number, string | Buffer<ArrayBufferLike> | Record<string, unknown>>>" required>
+  Async handler receiving a streaming request and response.
+</ParamField>
+
+
+  </Tab>
+  <Tab title="Example">
+
+```typescript
+import { http } from '@iii-dev/helpers/http'
+
+worker.registerFunction(
+  'my-api',
+  http(async (req, res) => {
+    res.status(200)
+    res.headers({ 'content-type': 'application/json' })
+    res.stream.end(JSON.stringify({ hello: 'world' }))
+    res.close()
+  }),
+)
+```
+
+
+  </Tab>
+</Tabs>
+
+### Types
+
+[`HttpAuthConfig`](#httpauthconfig) · [`HttpInvocationConfig`](#httpinvocationconfig) · [`HttpMethod`](#httpmethod) · [`HttpRequest`](#httprequest) · [`HttpResponse`](#httpresponse)
+
+### HttpAuthConfig
+
+Authentication configuration for HTTP-invoked functions.
+
+- `hmac`: HMAC signature verification using a shared secret.
+- `bearer`: Bearer token authentication.
+- `api_key`: API key sent via a custom header.
+
+```typescript
+type HttpAuthConfig = { secret_key: string; type: "hmac" } | { token_key: string; type: "bearer" } | { header: string; type: "api_key"; value_key: string }
+```
+
+---
+
+### HttpInvocationConfig
+
+Configuration for an HTTP-invoked function (Lambda, Cloudflare Workers, etc.).
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `auth` | [`HttpAuthConfig`](#httpauthconfig) | No | Authentication configuration. |
+| `headers` | `Record<string, string>` | No | Custom headers to send with the request. |
+| `method` | [`HttpMethod`](#httpmethod) | No | HTTP method. Defaults to `POST`. |
+| `timeout_ms` | `number` | No | Timeout in milliseconds. |
+| `url` | `string` | Yes | URL to invoke. |
+
+---
+
+### HttpMethod
+
+HTTP method accepted by HttpInvocationConfig. Distinct from the
+methods an `http::on-request` route takes, which also cover HEAD/OPTIONS.
+
+```typescript
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+```
+
+---
+
+### HttpRequest
+
+Incoming buffered HTTP request received by a function handler.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `TBody` | Yes | Parsed request body. |
+| `headers` | `Record<string, string \| string[]>` | Yes | Request headers. |
+| `method` | `string` | Yes | HTTP method of the request (e.g. `GET`, `POST`). |
+| `path_params` | `Record<string, string>` | Yes | Path parameters extracted from the matched route. |
+| `query_params` | `Record<string, string \| string[]>` | Yes | Query-string parameters from the request URL. |
+| `request_body` | `HttpStreamReader` | Yes | Streaming reader for the raw request body. |
+
+---
+
+### HttpResponse
+
+Structured buffered HTTP response returned from function handlers.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `body` | `TBody` | No | Response body. |
+| `headers` | `Record<string, string>` | No | Response headers. |
+| `status_code` | `TStatus` | Yes | HTTP status code. |
+
+## observability
+
+Logger, OpenTelemetry config, and span helpers.
+
+**Import**
+
+```typescript
+import { ... } from '@iii-dev/helpers/observability'
+```
+
+### Functions
+
+### currentSpanId
+
+Extract the current span ID from the active span context.
+
+**Signature**
+
+```typescript
+currentSpanId() => string | undefined
+```
+
+---
+
+### currentSpanIsRecording
+
+Returns `false` when there is no active span or the sampler dropped it.
+
+**Signature**
+
+```typescript
+currentSpanIsRecording() => boolean
+```
+
+---
+
+### currentTraceId
+
+Extract the current trace ID from the active span context.
+
+**Signature**
+
+```typescript
+currentTraceId() => string | undefined
+```
+
+---
+
+### executeTracedRequest
+
+Execute a fetch request inside an OTel CLIENT span.
+
+Mirrors the Rust execute_traced_request shape: injects W3C traceparent into
+outgoing headers, records HTTP semantic-convention attributes, and sets
+ERROR span status for HTTP responses with status >= 400 or network errors.
+
+**Signature**
+
+```typescript
+executeTracedRequest(input: RequestInfo | URL, init?: TracedFetchInit) => Promise<Response>
+```
+
+#### Parameters
+
+<ParamField body="input" type="RequestInfo | URL" required>
+  The resource to fetch: a URL string, `URL`, or `Request`.
+</ParamField>
+
+<ParamField body="init" type="TracedFetchInit">
+  Fetch options, plus an optional `tracer` to create the span.
+</ParamField>
+
+
+---
+
+### extractBaggage
+
+Extract baggage from a W3C baggage header string.
+
+**Signature**
+
+```typescript
+extractBaggage(baggage: string) => Context
+```
+
+#### Parameters
+
+<ParamField body="baggage" type="string" required>
+  W3C `baggage` header value to parse.
+</ParamField>
+
+
+---
+
+### extractContext
+
+Extract both trace context and baggage from their respective headers.
+
+**Signature**
+
+```typescript
+extractContext(traceparent?: string, baggage?: string) => Context
+```
+
+#### Parameters
+
+<ParamField body="traceparent" type="string">
+  W3C `traceparent` header value to parse.
+</ParamField>
+
+<ParamField body="baggage" type="string">
+  W3C `baggage` header value to parse.
+</ParamField>
+
+
+---
+
+### extractTraceparent
+
+Extract a trace context from a W3C traceparent header string.
+
+**Signature**
+
+```typescript
+extractTraceparent(traceparent: string) => Context
+```
+
+#### Parameters
+
+<ParamField body="traceparent" type="string" required>
+  W3C `traceparent` header value to parse.
+</ParamField>
+
+
+---
+
+### flushOtel
+
+Force-flush all OTel providers without tearing them down.
+
+Counterpart to shutdownOtel. Use before short-lived process exits
+where you want pending spans/metrics/logs delivered but plan to keep using
+OTel afterwards.
+
+**Signature**
+
+```typescript
+flushOtel() => Promise<void>
+```
+
+---
+
+### getAllBaggage
+
+Get all baggage entries from the current context.
+
+**Signature**
+
+```typescript
+getAllBaggage() => Record<string, string>
+```
+
+---
+
+### getBaggageEntry
+
+Get a baggage entry from the current context.
+
+**Signature**
+
+```typescript
+getBaggageEntry(key: string) => string | undefined
+```
+
+#### Parameters
+
+<ParamField body="key" type="string" required>
+  Baggage entry key to read.
+</ParamField>
+
+
+---
+
+### getLogger
+
+Get the OpenTelemetry logger instance.
+
+**Signature**
+
+```typescript
+getLogger() => Logger | null
+```
+
+---
+
+### initOtel
+
+Initialize OpenTelemetry with the given configuration.
+This should be called once at application startup.
+
+**Signature**
+
+```typescript
+initOtel(config: OtelConfig) => void
+```
+
+#### Parameters
+
+<ParamField body="config" type="OtelConfig" required>
+  OpenTelemetry configuration; env vars fill in unset fields.
+</ParamField>
+
+
+---
+
+### injectBaggage
+
+Inject the current baggage into a W3C baggage header string.
+
+**Signature**
+
+```typescript
+injectBaggage() => string | undefined
+```
+
+---
+
+### injectTraceparent
+
+Inject the current trace context into a W3C traceparent header string.
+
+**Signature**
+
+```typescript
+injectTraceparent() => string | undefined
+```
+
+---
+
+### patchGlobalFetch
+
+Patch globalThis.fetch to create OTel CLIENT spans for every HTTP request.
+
+**Signature**
+
+```typescript
+patchGlobalFetch(tracer: Tracer) => void
+```
+
+#### Parameters
+
+<ParamField body="tracer" type="Tracer" required>
+  Tracer used to create the client span for each request.
+</ParamField>
+
+
+---
+
+### recordSpanEvent
+
+No-op when the current span is not recording.
+
+**Signature**
+
+```typescript
+recordSpanEvent(name: string, attrs?: Attributes) => void
+```
+
+#### Parameters
+
+<ParamField body="name" type="string" required>
+  Name of the event to add to the active span.
+</ParamField>
+
+<ParamField body="attrs" type="Attributes">
+  Optional attributes to attach to the event.
+</ParamField>
+
+
+---
+
+### redact
+
+Recursively redact values of sensitive keys. Returns a new value.
+
+**Signature**
+
+```typescript
+redact(value: unknown) => unknown
+```
+
+#### Parameters
+
+<ParamField body="value" type="unknown" required>
+  The value to recursively redact.
+</ParamField>
+
+
+---
+
+### redactAndTruncate
+
+Redact then serialize to JSON, optionally capped at `maxBytes`.
+
+**Signature**
+
+```typescript
+redactAndTruncate(value: unknown, maxBytes: number | null) => { json: string; truncated: boolean }
+```
+
+#### Parameters
+
+<ParamField body="value" type="unknown" required>
+  The value to redact and serialize.
+</ParamField>
+
+<ParamField body="maxBytes" type="number | null" required>
+  Maximum serialized size in bytes; null leaves it uncapped.
+</ParamField>
+
+
+---
+
+### registerWorkerGauges
+
+Register OpenTelemetry observable gauges that report worker resource metrics
+(CPU, memory, event-loop) on each collection cycle.
+
+**Signature**
+
+```typescript
+registerWorkerGauges(meter: Meter, options: WorkerGaugesOptions) => void
+```
+
+#### Parameters
+
+<ParamField body="meter" type="Meter" required>
+</ParamField>
+
+<ParamField body="options" type="WorkerGaugesOptions" required>
+</ParamField>
+
+
+---
+
+### removeBaggageEntry
+
+Remove a baggage entry from the current context.
+
+**Signature**
+
+```typescript
+removeBaggageEntry(key: string) => Context
+```
+
+#### Parameters
+
+<ParamField body="key" type="string" required>
+  Baggage entry key to remove.
+</ParamField>
+
+
+---
+
+### resolveMaxBytesFromEnv
+
+Resolve the payload byte cap from the environment, returning undefined when
+unset.
+
+**Signature**
+
+```typescript
+resolveMaxBytesFromEnv() => number | null
+```
+
+---
+
+### safeStringify
+
+Safely stringify a value, handling circular references, BigInt, and other edge cases.
+Returns "[unserializable]" if serialization fails for any reason.
+
+**Signature**
+
+```typescript
+safeStringify(value: unknown) => string
+```
+
+#### Parameters
+
+<ParamField body="value" type="unknown" required>
+  The value to serialize to JSON.
+</ParamField>
+
+
+---
+
+### setBaggageEntry
+
+Set a baggage entry in the current context.
+
+**Signature**
+
+```typescript
+setBaggageEntry(key: string, value: string) => Context
+```
+
+#### Parameters
+
+<ParamField body="key" type="string" required>
+  Baggage entry key to set.
+</ParamField>
+
+<ParamField body="value" type="string" required>
+  Baggage entry value to set.
+</ParamField>
+
+
+---
+
+### setCurrentSpanAttribute
+
+No-op when the current span is not recording.
+
+**Signature**
+
+```typescript
+setCurrentSpanAttribute(key: string, value: AttributeValue) => void
+```
+
+#### Parameters
+
+<ParamField body="key" type="string" required>
+  Attribute key to set on the active span.
+</ParamField>
+
+<ParamField body="value" type="AttributeValue" required>
+  Attribute value to set.
+</ParamField>
+
+
+---
+
+### setCurrentSpanError
+
+No-op when there is no active span.
+
+**Signature**
+
+```typescript
+setCurrentSpanError(message: string) => void
+```
+
+#### Parameters
+
+<ParamField body="message" type="string" required>
+  Error message to set as the span's error status.
+</ParamField>
+
+
+---
+
+### shutdownOtel
+
+Shut down OpenTelemetry, best-effort flushing any pending data before
+teardown.
+
+**Signature**
+
+```typescript
+shutdownOtel() => Promise<void>
+```
+
+---
+
+### stopWorkerGauges
+
+Stop and unregister the worker resource gauges.
+
+**Signature**
+
+```typescript
+stopWorkerGauges() => void
+```
+
+---
+
+### unpatchGlobalFetch
+
+Restore globalThis.fetch to its original implementation.
+
+**Signature**
+
+```typescript
+unpatchGlobalFetch() => void
+```
+
+---
+
+### withSpan
+
+Start a new span with the given name and run the callback within it.
+
+**Signature**
+
+```typescript
+withSpan(name: string, options: { kind?: SpanKind; traceparent?: string }, fn: (span: Span) => Promise<T>) => Promise<T>
+```
+
+#### Parameters
+
+<ParamField body="name" type="string" required>
+  Name of the span to create.
+</ParamField>
+
+<ParamField body="options" type="{ kind?: SpanKind; traceparent?: string }" required>
+  Span options: `kind` sets the span kind, `traceparent` sets the parent context from a W3C traceparent header.
+</ParamField>
+
+<ParamField body="fn" type="(span: Span) => Promise<T>" required>
+  Callback run inside the active span; its result is returned.
+</ParamField>
+
+
+### Types
+
+[`BaggageSpanProcessor`](#baggagespanprocessor) · [`Logger`](#logger) · [`OtelConfig`](#otelconfig) · [`OtelLogEvent`](#otellogevent) · [`ReconnectionConfig`](#reconnectionconfig) · [`TracedFetchInit`](#tracedfetchinit) · [`WorkerGaugesOptions`](#workergaugesoptions) · [`WorkerMetricsCollector`](#workermetricscollector) · [`WorkerMetricsCollectorOptions`](#workermetricscollectoroptions)
+
+### BaggageSpanProcessor
+
+OpenTelemetry span processor that copies OTel baggage entries onto each
+started span as attributes.
+
+---
+
+### Logger
+
+Structured logger that emits logs as OpenTelemetry LogRecords.
+
+Every log call automatically captures the active trace and span context,
+correlating your logs with distributed traces without any manual wiring.
+When OTel is not initialized, Logger gracefully falls back to `console.*`.
+
+Pass structured data as the second argument to any log method. Using an
+object of key-value pairs (instead of string interpolation) lets you
+filter, aggregate, and build dashboards in your observability backend.
+
+---
+
+### OtelConfig
+
+Configuration for OpenTelemetry initialization.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | No | Whether OpenTelemetry export is enabled. Defaults to true. Set to false or OTEL_ENABLED=false/0/no/off to disable. |
+| `engineWsHeaders` | `Record<string, string>` | No | HTTP headers sent on the telemetry WebSocket handshake (e.g. `Authorization`). |
+| `engineWsUrl` | `string` | No | III Engine WebSocket URL. Defaults to III_URL or "ws://localhost:49134". |
+| `fetchInstrumentationEnabled` | `boolean` | No | Whether to auto-instrument globalThis.fetch calls. Defaults to true. Works on Node.js, Bun, and Deno. Set to false to disable. |
+| `instrumentations` | `Instrumentation<InstrumentationConfig>[]` | No | OpenTelemetry instrumentations to register (e.g., PrismaInstrumentation). |
+| `logsBatchSize` | `number` | No | Maximum number of log records exported per batch. Defaults to 1. |
+| `logsFlushIntervalMs` | `number` | No | Log processor flush delay in milliseconds. Defaults to 100ms. Env override: OTEL_LOGS_FLUSH_INTERVAL_MS. |
+| `metricsEnabled` | `boolean` | No | Whether OpenTelemetry metrics export is enabled. Defaults to true. Set to false or OTEL_METRICS_ENABLED=false/0/no/off to disable. |
+| `metricsExportIntervalMs` | `number` | No | Metrics export interval in milliseconds. Defaults to 60000 (60 seconds). |
+| `reconnectionConfig` | Partial&lt;[`ReconnectionConfig`](#reconnectionconfig)&gt; | No | Optional reconnection configuration for the WebSocket connection. |
+| `serviceInstanceId` | `string` | No | The service instance ID to report. Defaults to SERVICE_INSTANCE_ID env var or auto-generated UUID. |
+| `serviceName` | `string` | No | The service name to report. Defaults to OTEL_SERVICE_NAME or "iii-node". |
+| `serviceNamespace` | `string` | No | The service namespace to report. Defaults to SERVICE_NAMESPACE env var. |
+| `serviceVersion` | `string` | No | The service version to report. Defaults to SERVICE_VERSION env var or "unknown". |
+| `spansFlushIntervalMs` | `number` | No | Span processor flush delay in milliseconds. Defaults to 100ms. This is how<br />long an ended span waits in the batch buffer before it is flushed to the<br />engine, the OpenTelemetry default of 5000ms is what makes traces appear<br />seconds after the action. Env override: OTEL_SPANS_FLUSH_INTERVAL_MS. |
+
+---
+
+### OtelLogEvent
+
+OTEL Log Event from the engine
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `attributes` | `Record<string, unknown>` | Yes | Structured attributes |
+| `body` | `string` | Yes | Log message body |
+| `instrumentation_scope_name` | `string` | No | Instrumentation scope name (if available) |
+| `instrumentation_scope_version` | `string` | No | Instrumentation scope version (if available) |
+| `observed_timestamp_unix_nano` | `number` | Yes | Observed timestamp in Unix nanoseconds |
+| `resource` | `Record<string, string>` | Yes | Resource attributes from the emitting service |
+| `service_name` | `string` | Yes | Service name that emitted the log |
+| `severity_number` | `number` | Yes | OTEL severity number (1-24): TRACE=1-4, DEBUG=5-8, INFO=9-12, WARN=13-16, ERROR=17-20, FATAL=21-24 |
+| `severity_text` | `string` | Yes | Severity text (e.g., "INFO", "WARN", "ERROR") |
+| `span_id` | `string` | No | Span ID for correlation (if available) |
+| `timestamp_unix_nano` | `number` | Yes | Timestamp in Unix nanoseconds |
+| `trace_id` | `string` | No | Trace ID for correlation (if available) |
+
+---
+
+### ReconnectionConfig
+
+Configuration for WebSocket reconnection behavior
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `backoffMultiplier` | `number` | Yes | Exponential backoff multiplier (default: 2) |
+| `initialDelayMs` | `number` | Yes | Starting delay in milliseconds (default: 1000ms) |
+| `jitterFactor` | `number` | Yes | Random jitter factor 0-1 (default: 0.3) |
+| `maxDelayMs` | `number` | Yes | Maximum delay cap in milliseconds (default: 30000ms) |
+| `maxRetries` | `number` | Yes | Maximum retry attempts, -1 for infinite (default: -1) |
+
+---
+
+### TracedFetchInit
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tracer` | `Tracer` | No | Tracer used to create the client span for the outgoing request. |
+
+---
+
+### WorkerGaugesOptions
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `workerId` | `string` | Yes | Stable identifier of the worker the gauges are reported for. |
+| `workerName` | `string` | No | Human-readable name of the worker. |
+
+---
+
+### WorkerMetricsCollector
+
+Collects worker resource metrics including CPU, memory, and event loop lag.
+
+Uses the Node.js `monitorEventLoopDelay` API for high-precision event loop
+delay measurements instead of manual `setImmediate` timing.
+
+---
+
+### WorkerMetricsCollectorOptions
+
+Configuration options for the WorkerMetricsCollector.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `eventLoopResolutionMs` | `number` | No | Event loop delay histogram resolution in milliseconds.<br />Lower values provide more accurate measurements but use more resources. |
+
+## queue
+
+Queue enqueue result types.
+
+**Import**
+
+```typescript
+import { ... } from '@iii-dev/helpers/queue'
+```
+
+### Types
+
+[`EnqueueResult`](#enqueueresult)
+
+### EnqueueResult
+
+Result returned when a function is called with `CallAction.Enqueue`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `messageReceiptId` | `string` | Yes | Unique receipt ID for the enqueued message. |
+
+## stream
+
+Stream change events, IO inputs, and update operations.
+
+**Import**
+
+```typescript
+import { ... } from '@iii-dev/helpers/stream'
+```
+
+### Types
+
+[`MergePath`](#mergepath) · [`UpdateAppend`](#updateappend) · [`UpdateDecrement`](#updatedecrement) · [`UpdateIncrement`](#updateincrement) · [`UpdateMerge`](#updatemerge) · [`UpdateOp`](#updateop) · [`UpdateOpError`](#updateoperror) · [`UpdateRemove`](#updateremove) · [`UpdateSet`](#updateset)
+
+### MergePath
+
+Path target for a UpdateMerge op. Accepts:
+  - a single string (legacy / first-level field)
+  - an array of literal segments (nested path; each element is one
+    literal key, dots are NOT interpreted as separators)
+
+Omit `path`, pass `""`, or pass `[]` to target the root value.
+
+```typescript
+type MergePath = string | string[]
+```
+
+---
+
+### UpdateAppend
+
+Append an element to an array, concatenate a string, or push a new
+value at a nested path. The target is the root (when `path` is
+omitted, empty, or `[]`), a single first-level key (when `path` is
+a non-empty string), or an arbitrary nested location (when `path`
+is an array of literal segments).
+
+Engine semantics:
+  - Missing or non-object intermediates along a nested path are
+    auto-replaced with `{}` so a stray `null` or scalar never blocks
+    future appends.
+  - At the leaf:
+      - missing/null + nested path → `[value]` (always an array)
+      - missing/null + single-string path → string-as-string for the
+        string-concat tier, otherwise `[value]`
+      - existing array → push
+      - existing string + string value → concatenate
+      - existing object/scalar at the leaf → `append.type_mismatch`
+  - Each path segment is a literal key. `["a.b"]` targets a single
+    key named `"a.b"`, not `a → b`.
+
+Validation: invalid paths (depth > 32 segments, segment > 256
+bytes, or any `__proto__`/`constructor`/`prototype` segment) are
+rejected with a structured error in the `errors` field of the
+`state::update` / `stream::update` response. The append does not
+apply when an error is returned for that op.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | [`MergePath`](#mergepath) | No | Optional path to the append target. Accepts a single first-level<br />key (legacy `string`) or an array of literal segments for nested<br />append. See MergePath (the same shape is reused). |
+| `type` | `"append"` | Yes | - |
+| `value` | `any` | Yes | Value to append. String targets only accept string values. |
+
+---
+
+### UpdateDecrement
+
+Decrement a numeric field by a given amount.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `by` | `number` | Yes | Amount to decrement by. |
+| `path` | `string` | Yes | First-level field path. |
+| `type` | `"decrement"` | Yes | - |
+
+---
+
+### UpdateIncrement
+
+Increment a numeric field by a given amount.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `by` | `number` | Yes | Amount to increment by. |
+| `path` | `string` | Yes | First-level field path. |
+| `type` | `"increment"` | Yes | - |
+
+---
+
+### UpdateMerge
+
+Shallow-merge an object into the target. The target is the root
+(when `path` is omitted/empty) or an arbitrary nested location
+specified by an array of literal segments.
+
+Engine semantics:
+  - Missing or non-object intermediates along the path are
+    auto-replaced with `{}` so a stray `null` or scalar never
+    blocks future merges.
+  - The merge is shallow at the target, top-level keys of `value`
+    replace same-named keys; siblings are preserved.
+  - Each path segment is a literal key. `["a.b"]` writes a single
+    key named `"a.b"`, not `a → b`.
+
+Validation: invalid paths/values (depth > 32 segments, segment >
+256 bytes, value depth > 16, > 1024 top-level keys, or any
+`__proto__`/`constructor`/`prototype` segment or top-level key)
+are rejected with a structured error in the `errors` field of the
+`state::update` / `stream::update` response. The merge does not
+apply when an error is returned for that op.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | [`MergePath`](#mergepath) | No | Optional path to the merge target. See MergePath. |
+| `type` | `"merge"` | Yes | - |
+| `value` | `any` | Yes | Object to merge. Must be a JSON object. |
+
+---
+
+### UpdateOp
+
+Union of all atomic update operations supported by streams.
+
+```typescript
+type UpdateOp = UpdateSet | UpdateIncrement | UpdateDecrement | UpdateAppend | UpdateRemove | UpdateMerge
+```
+
+---
+
+### UpdateOpError
+
+Per-op error returned by `state::update` / `stream::update`.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | `string` | Yes | Stable error code, e.g. `"merge.path.too_deep"`. |
+| `doc_url` | `string` | No | Optional documentation URL. |
+| `message` | `string` | Yes | Human-readable description with concrete numbers when applicable. |
+| `op_index` | `number` | Yes | Index of the offending op within the original `ops` array. |
+
+---
+
+### UpdateRemove
+
+Remove a field at the given path.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | Yes | First-level field path. |
+| `type` | `"remove"` | Yes | - |
+
+---
+
+### UpdateSet
+
+Set a field at the given path to a value.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `string` | Yes | First-level field path. Use an empty string to target the root value. |
+| `type` | `"set"` | Yes | - |
+| `value` | `any` | Yes | Value to set. |
+
+## worker-connection-manager
+
+RBAC auth and registration callback types.
+
+**Import**
+
+```typescript
+import { ... } from '@iii-dev/helpers/worker-connection-manager'
+```
+
+### Types
+
+[`AuthInput`](#authinput) · [`AuthResult`](#authresult) · [`OnFunctionRegistrationInput`](#onfunctionregistrationinput) · [`OnFunctionRegistrationResult`](#onfunctionregistrationresult)
+
+### AuthInput
+
+Input passed to the RBAC auth function during WebSocket upgrade.
+Contains the HTTP headers, query parameters, and client IP from the
+connecting worker's upgrade request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `headers` | `Record<string, string>` | Yes | HTTP headers from the WebSocket upgrade request. |
+| `ip_address` | `string` | Yes | IP address of the connecting client. |
+| `query_params` | `Record<string, string[]>` | Yes | Query parameters from the upgrade URL. Each key maps to an array of values to support repeated keys. |
+
+---
+
+### AuthResult
+
+Return value from the RBAC auth function. Controls which functions the
+authenticated worker can invoke and what context is forwarded to the
+middleware.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allow_function_registration` | `boolean` | No | Whether the worker may register new functions. Defaults to `true` if omitted. |
+| `allowed_functions` | `string[]` | No | Additional function IDs to allow beyond the `expose_functions` config, in the `default` namespace only. Put per-namespace grants in `namespaces`. Defaults to `[]` if omitted. |
+| `context` | `Record<string, unknown>` | No | Arbitrary context forwarded to the middleware function on every invocation. Defaults to `{}` if omitted. |
+| `forbidden_functions` | `string[]` | No | Function IDs to deny even if they match `expose_functions`. Takes precedence over allowed. Defaults to `[]` if omitted. |
+| `function_registration_prefix` | `string` | No | Optional prefix applied to all function IDs registered by this worker. |
+| `namespaces` | `Record<string, string[]>` | No | Grants scoped to one namespace each: `{ orders: ['svc::*'] }`. A value is an<br />exact function ID or a wildcard, in either the bare (`svc::*`) or the<br />`match("svc::*")` spelling.<br /><br />The keys are also the namespaces the session may declare on<br />`engine::workers::register`. Omit this map to add no namespace-scoped<br />grants: the session may declare any namespace, and only<br />`allowed_functions` and `expose_functions` apply. |
+
+---
+
+### OnFunctionRegistrationInput
+
+Input passed to the `on_function_registration_function_id` hook
+when a worker attempts to register a function through the RBAC port.
+Return an OnFunctionRegistrationResult with the (possibly mapped)
+fields, or throw to deny the registration.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args_format` | `Record<string, unknown>` | No | JSON Schema of the args its observers pass; sent when the registration sets it. |
+| `context` | `Record<string, unknown>` | Yes | Auth context from `AuthResult.context` for this session. |
+| `description` | `string` | No | Human-readable description of the function. |
+| `function_id` | `string` | Yes | ID of the function being registered. |
+| `metadata` | `Record<string, unknown>` | No | Arbitrary metadata attached to the function. |
+| `namespace` | `string` | No | Namespace the function registers in. The same id can exist in several<br />namespaces, so the hook needs this to authorize per namespace. |
+| `observable` | `boolean` | Yes | `false`: nobody may observe the function; always sent. |
+| `private` | `boolean` | Yes | Only the registering worker may call the function; always sent. |
+
+---
+
+### OnFunctionRegistrationResult
+
+Result returned from the `on_function_registration_function_id` hook.
+All fields are optional; omitted fields keep the original value from the
+registration request.
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `args_format` | `Record<string, unknown>` | No | Replaces the registration's `args_format`. |
+| `description` | `string` | No | Mapped description. |
+| `function_id` | `string` | No | Mapped function ID. |
+| `metadata` | `Record<string, unknown>` | No | Mapped metadata. |
+| `observable` | `boolean` | No | Replaces the registration's `observable`. |
+| `private` | `boolean` | No | Replaces the registration's `private`. |
