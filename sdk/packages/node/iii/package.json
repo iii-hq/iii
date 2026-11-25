@@ -1,7 +1,12 @@
 {
   "name": "iii-sdk",
-  "version": "0.27.0-rc.3",
+  "version": "0.27.0-alpha.0.oidc.1",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iii-hq/iii.git",
+    "directory": "sdk/packages/node/iii"
+  },
   "publishConfig": {
     "access": "public"
   },
