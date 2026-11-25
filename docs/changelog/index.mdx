@@ -7,6 +7,32 @@ type: "reference"
 
 <Visibility for="humans">
 
+<Update label="Unreleased" description="Next release">
+  ## `compose::*` shows its progress in `iii call`
+
+  `iii call compose::up`, `down`, `restart`, `add`, `update`, `remove`, and `build` draw each worker
+  they move into the caller's standard error, as a spinner on a terminal and as one line per change
+  in a pipe, and answer once the operation finished. `compose::build` also prints its build lines.
+  See [Progress from `iii call`](/next/using-iii/compose#progress-from-iii-call).
+
+  - The call exits with `1` when a required worker failed or the operation was cancelled, and its
+    first `Ctrl+C` cancels the operation.
+  - With the stream, `add`, `update`, `remove`, and `build` answer `status: "succeeded"` with the
+    operation's `outcome` or `results`, which `--print-result` prints. A script that read
+    `operation_id` from the immediate answer of `iii call` adds `--no-follow`. Callers without a
+    `stderr` stream, such as the SDKs and the ADE, still get
+    `{ operation_id, status: "accepted", requested }` at once.
+  - `iii call compose::logs` writes the lines as text, labelled with their worker, and
+    `follow=true` keeps writing until `Ctrl+C`. `--no-follow` gives the JSON response.
+
+  ## `iii call` draws for its terminal
+
+  - When a stream is bound, a request field marked `x-iii-terminal` gets what `iii call` knows of
+    its terminal (`stdout`, `stderr`, `columns`, `rows`, `color`), so the function draws for it.
+  - A signal within 200 ms of the first is the same one. One `Ctrl+C` in some terminals, such as
+    psmux on Windows, arrives as two signals, and the copy ended the call at once with `130`.
+</Update>
+
 <Update label="0.27.0" description="November 2026">
   ## Streams in call payloads and results
 
@@ -145,25 +171,6 @@ type: "reference"
   - Without `--namespace`, `iii call` resolves in `default`, as its help says, also in a process
     whose `III_NAMESPACE` names another namespace. Before, a script Compose started reached its
     project's namespace instead.
-  - When a stream is bound, a request field marked `x-iii-terminal` gets what `iii call` knows of
-    its terminal (`stdout`, `stderr`, `columns`, `rows`, `color`), so the function draws for it.
-
-  ## `compose::*` shows its progress in `iii call`
-
-  `iii call compose::up`, `down`, `restart`, `add`, `update`, `remove`, and `build` draw each worker
-  they move into the caller's standard error, as a spinner on a terminal and as one line per change
-  in a pipe, and answer once the operation finished. `compose::build` also prints its build lines.
-  See [Progress from `iii call`](/next/using-iii/compose#progress-from-iii-call).
-
-  - The call exits with `1` when a required worker failed or the operation was cancelled, and its
-    first `Ctrl+C` cancels the operation.
-  - With the stream, `add`, `update`, `remove`, and `build` answer `status: "succeeded"` with the
-    operation's `outcome` or `results`, which `--print-result` prints. A script that read
-    `operation_id` from the immediate answer of `iii call` adds `--no-bind`. Callers without a
-    `stderr` stream, such as the SDKs and the ADE, still get
-    `{ operation_id, status: "accepted", requested }` at once.
-  - `iii call compose::logs` writes the lines as text, labelled with their worker, and
-    `follow=true` keeps writing until `Ctrl+C`. `--no-bind` gives the JSON response.
 
   ## Removed
 

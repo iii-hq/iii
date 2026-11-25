@@ -332,7 +332,8 @@ iii call reports::export report_id=r-42 --no-follow
 - While a stream runs, the result JSON is printed only with `--print-result`, after the streams
   end.
 - The first `Ctrl+C` or `SIGTERM` closes the streams. The function sees its next write fail, stops,
-  and answers, and `iii call` exits with that answer. A second one exits at once.
+  and answers, and `iii call` exits with that answer. A second one exits at once; one within 200 ms
+  of the first is the same one, as some terminals deliver one key press as two signals.
 - `--no-follow` connects no stream and leaves the streams of the result unread. The call only
   runs, and the result JSON is printed with each stream shown as a ref. A function that needs its
   stream answers with an error.

@@ -181,8 +181,8 @@ $ iii call compose::add worker=state worker=queue
   progress.
 - The first `Ctrl+C` cancels the operation, as `compose::cancel` does, and the call exits once the
   operation stopped.
-- Without a `stderr` stream, as from an SDK, the ADE, or `iii call --no-bind`, each function answers
-  as it always did. `add`, `update`, `remove`, and `build` answer
+- Without a `stderr` stream, as from an SDK, the ADE, or `iii call --no-follow`, each function
+  answers as it always did. `add`, `update`, `remove`, and `build` answer
   `{ operation_id, status: "accepted", requested }` at once and finish in the background: follow
   them with `compose::operation` or by observing `compose::on-operation-progress`.
 
