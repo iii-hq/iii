@@ -21,7 +21,11 @@
 //! fall back to `worker-compose.yaml` in the daemon's own directory, and say
 //! so when there is none.
 
-use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap, future::Future, panic::AssertUnwindSafe, path::PathBuf, sync::Arc,
+};
+
+use futures::FutureExt;
 
 use iii_sdk::{Error, OutputStream, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
@@ -333,6 +337,44 @@ struct OperationAcceptedOutcome {
     /// What the finished operation did, when the call waited for it.
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<MutationOutcome>,
+}
+
+/// What a `compose::build` that drew its progress into `stderr` answers once every build
+/// finished.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct BuildFinished {
+    operation_id: String,
+    /// `succeeded`.
+    status: String,
+    requested: usize,
+    /// One result per container, as the finished operation carries them.
+    results: Vec<crate::lifecycle::BuildResult>,
+}
+
+/// The answers of `compose::build`: accepted at once without a stream, finished with one.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum BuildAnswer {
+    Accepted(OperationAcceptedOutcome),
+    Finished(BuildFinished),
+}
+
+/// What `compose::logs` answers after writing the lines into the caller's streams.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct LogsStreamed {
+    /// Where each worker's log was read to, to resume from: only past lines that were written.
+    cursors: BTreeMap<String, LogCursor>,
+}
+
+/// The answers of `compose::logs`: the lines themselves without a stream, the cursors to resume
+/// from with one.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum LogsAnswer {
+    Read(LogsOutcome),
+    Streamed(LogsStreamed),
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -850,9 +892,20 @@ async fn dispatch(
                 #[cfg(test)]
                 tests::hold_build(&task_operation_id).await;
                 let began = std::time::Instant::now();
-                let result = task_daemon
-                    .build(Some(&task_file), worker.as_deref(), task_operation_id)
-                    .await;
+                let result = AssertUnwindSafe(task_daemon.build(
+                    Some(&task_file),
+                    worker.as_deref(),
+                    task_operation_id,
+                ))
+                .catch_unwind()
+                .await;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(panic) => {
+                        finish_stopped(&task_operation, "build").await;
+                        std::panic::resume_unwind(panic)
+                    }
+                };
                 report_op("build", &build_report(&result), began.elapsed());
                 finish_build(&task_operation, result, task_accepted).await
             });
@@ -1221,7 +1274,13 @@ where
             });
         }
 
-        let result = mutation.await;
+        let result = match AssertUnwindSafe(mutation).catch_unwind().await {
+            Ok(result) => result,
+            Err(panic) => {
+                finish_stopped(&operation, details.op).await;
+                std::panic::resume_unwind(panic)
+            }
+        };
         if telemetry {
             report_mutation(details.op, &result, began.elapsed());
         }
@@ -1277,10 +1336,7 @@ fn count(n: usize, noun: &str) -> String {
 /// Answers an accepted add, update, or remove: at once without a stream, and with how it ended
 /// once it finished when the caller bound one to draw it into.
 async fn draw_mutation(
-    drawing: Option<(
-        Drawing,
-        tokio::sync::mpsc::UnboundedReceiver<crate::operation::Delivery>,
-    )>,
+    drawing: Option<(Drawing, crate::operation::Subscription)>,
     title: String,
     operation: &crate::operation::Operation,
     finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
@@ -1342,7 +1398,7 @@ where
 async fn answer_drawn(
     mut report: CallerReport,
     operation: &crate::operation::Operation,
-    events: tokio::sync::mpsc::UnboundedReceiver<crate::operation::Delivery>,
+    events: crate::operation::Subscription,
     finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
     details: MutationDetails,
     answer: impl FnOnce(MutationOutcome) -> Value,
@@ -1486,11 +1542,12 @@ async fn finish_build(
             } else {
                 "every requested build finished"
             };
-            let mut answer = to_value(&OperationAcceptedOutcome {
+            let answer = to_value(&BuildFinished {
+                operation_id: accepted.operation_id,
                 status: "succeeded".to_string(),
-                ..accepted
+                requested: accepted.requested,
+                results,
             });
-            answer["results"] = value;
             (Ending::Succeeded(ending.to_string()), Ok(answer))
         }
         Err(error @ ComposeError::OperationCancelled { .. }) => {
@@ -1546,21 +1603,29 @@ async fn print_logs(
     streams: LogStreams,
 ) -> Result<Value, Error> {
     let labelled = query.container.is_none();
+    // The project the session reads, chosen once: another project loaded meanwhile must not
+    // change which log a cursor is read against.
+    let file = daemon
+        .resolve_file(query.file.as_deref())
+        .await
+        .map_err(|err| compose_error(&err))?;
     let mut wait_ms = query.wait_ms;
+    let mut tail = query.tail;
     let mut left = false;
     while !left {
         let outcome = daemon
             .logs(
-                query.file.as_deref(),
+                Some(&file),
                 query.container.as_deref(),
                 query.cursors.clone(),
-                query.tail,
+                tail,
                 query.stream,
                 wait_ms,
             )
             .await
             .map_err(|err| compose_error(&err))?;
         let (mut out, mut err) = (String::new(), String::new());
+        let mut cursors = query.cursors.clone();
         for batch in outcome.containers {
             for entry in &batch.entries {
                 let to_stderr = (entry.stream == LogStream::Stderr && streams.stderr.is_some())
@@ -1590,7 +1655,7 @@ async fn print_logs(
                 ));
             }
             if let Some(cursor) = batch.cursor {
-                query.cursors.insert(batch.container, cursor);
+                cursors.insert(batch.container, cursor);
             }
         }
         // An empty write sends nothing, and fails once the reader left.
@@ -1601,17 +1666,38 @@ async fn print_logs(
                 left = true;
             }
         }
+        // The cursors move past this batch only once all of it was written: a caller that
+        // resumes from them must not skip lines it never got.
+        if !left {
+            query.cursors = cursors;
+        }
         if !query.follow {
             break;
         }
         wait_ms = LOGS_FOLLOW_WAIT_MS;
+        // `tail` chose where reading began. From the cursors on, it is the most lines one read
+        // returns, so `tail=0` must not stay one: nothing would ever be read again.
+        tail = crate::logs::MAX_TAIL_LINES;
     }
     if !left {
         for stream in [&streams.stdout, &streams.stderr].into_iter().flatten() {
             let _ = stream.close().await;
         }
     }
-    Ok(json!({ "cursors": query.cursors }))
+    Ok(to_value(&LogsStreamed {
+        cursors: query.cursors,
+    }))
+}
+
+/// Ends an operation whose task panicked: its subscribers (the caller's report) get a terminal
+/// event instead of waiting for one forever, and the task's join error says the rest.
+async fn finish_stopped(operation: &crate::operation::Operation, op: &str) {
+    operation
+        .finish(
+            crate::operation::OperationStatus::Failed,
+            format!("the {op} operation stopped unexpectedly"),
+        )
+        .await;
 }
 
 /// Reports one mutation that ran in the background after it was accepted.
@@ -1995,7 +2081,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::logs",
                 logs_options_schema(),
-                schema_for_value::<LogsOutcome>(),
+                schema_for_value::<LogsAnswer>(),
             ),
             (
                 "compose::stop",
@@ -2030,7 +2116,7 @@ fn schema_table() -> &'static [SchemaTriple] {
             (
                 "compose::build",
                 with_progress(schema_for_value::<BuildOptions>()),
-                schema_for_value::<OperationAcceptedOutcome>(),
+                schema_for_value::<BuildAnswer>(),
             ),
             (
                 "compose::schema",

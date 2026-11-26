@@ -340,9 +340,9 @@ iii call reports::export report_id=r-42 --no-follow
 - When the call binds a stream, a request field whose schema has `"x-iii-terminal": true` is filled
   with what `iii call` knows of its terminal: `{ stdout, stderr, columns, rows, color }`. `stdout`
   and `stderr` say whether each is a terminal that redraws a line (not `TERM=dumb`), `columns` and
-  `rows` give its size when known, and `color` is `false` when `NO_COLOR` is set. A function uses
-  it to draw a spinner on a terminal and plain lines into a pipe. A payload that sets the field
-  keeps its own value.
+  `rows` give its size when known, and `color` is `false` when `NO_COLOR` is set to a non-empty
+  value. A function uses it to draw a spinner on a terminal and plain lines into a pipe. A payload
+  that sets the field keeps its own value.
 
 | Exit code | When                                                                   |
 | --------- | ---------------------------------------------------------------------- |

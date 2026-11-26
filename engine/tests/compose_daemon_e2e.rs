@@ -750,6 +750,7 @@ containers:
 
 /// A project whose `existing` worker starts with the first reconciliation, as a project an
 /// operator adds to does: its start marks `workers/existing/started`.
+#[cfg(unix)]
 fn drawn_compose(namespace: &str) -> String {
     format!(
         "namespace: {namespace}\nstartup_timeout: 5s\nstop_timeout: 100ms\ncontainers:\n  existing:\n    worker: path://./workers/existing\n    scripts:\n      run: \"echo started >> started && sleep 30\"\n"
@@ -758,6 +759,7 @@ fn drawn_compose(namespace: &str) -> String {
 
 /// `iii call` with `args`, as an operator runs it against the test engine. Its standard error is a
 /// pipe here, so `compose::add` draws one line per change.
+#[cfg(unix)]
 fn iii_call(port: u16, args: &[&str]) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_iii"));
     command
@@ -772,6 +774,8 @@ fn iii_call(port: u16, args: &[&str]) -> tokio::process::Command {
     command
 }
 
+// These run their workers' scripts through `sh`: `sleep` and `echo >>` are Unix shell.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn iii_call_draws_an_add_into_its_stderr_and_answers_once_it_finished() {
     isolate_state();
@@ -835,6 +839,7 @@ async fn iii_call_draws_an_add_into_its_stderr_and_answers_once_it_finished() {
     daemon.shutdown().await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn iii_call_exits_with_1_when_a_drawn_add_fails() {
     isolate_state();
@@ -903,6 +908,7 @@ async fn iii_call_exits_with_1_when_a_drawn_add_fails() {
 }
 
 /// Runs `iii call` and returns its output, within the time an e2e allows.
+#[cfg(unix)]
 async fn run(mut command: tokio::process::Command) -> std::process::Output {
     tokio::time::timeout(Duration::from_secs(60), command.output())
         .await
@@ -910,6 +916,7 @@ async fn run(mut command: tokio::process::Command) -> std::process::Output {
         .expect("iii call ran")
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
     isolate_state();
@@ -964,47 +971,53 @@ async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
         "{stdout}"
     );
 
-    // Followed: the lines come until the caller leaves, and its Ctrl+C ends the call cleanly.
-    if cfg!(unix) {
-        use tokio::io::AsyncBufReadExt;
-        let mut follow = iii_call(
-            port,
-            &["compose::logs", &file_arg, "worker=web", "follow=true"],
-        );
-        follow
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let mut child = follow.spawn().expect("iii call ran");
-        let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
-        tokio::time::timeout(Duration::from_secs(30), async {
-            while let Some(line) = lines.next_line().await.unwrap() {
-                if line == "hello from web" {
-                    return;
-                }
-            }
-            panic!("the followed logs ended");
-        })
-        .await
-        .expect("the followed logs printed the worker's line");
-        let pid = child.id().expect("still running").to_string();
-        // Twice, a few milliseconds apart: one key press, as a terminal multiplexer on Windows
-        // delivers it. The copy is not a second Ctrl+C, which would end the call with 130.
-        for _ in 0..2 {
-            std::process::Command::new("kill")
-                .args(["-INT", &pid])
-                .status()
-                .expect("kill ran");
-        }
-        let status = tokio::time::timeout(Duration::from_secs(15), child.wait())
-            .await
-            .expect("a Ctrl+C ends a followed read")
-            .expect("iii call ended");
-        assert!(status.success(), "{status:?}");
-    }
+    // Followed from the end of the log (`tail=0`): only what is written after it began, until the
+    // caller's Ctrl+C ends the call cleanly. The build below writes into web's log.
+    use tokio::io::AsyncBufReadExt;
+    let mut follow = iii_call(
+        port,
+        &[
+            "compose::logs",
+            &file_arg,
+            "worker=web",
+            "tail=0",
+            "follow=true",
+        ],
+    );
+    follow
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut following = follow.spawn().expect("iii call ran");
+    let mut followed = tokio::io::BufReader::new(following.stdout.take().unwrap()).lines();
+    // The follow reads the log's end before the build writes into it.
+    tokio::time::sleep(Duration::from_millis(500)).await;
 
     let build = run(iii_call(port, &["compose::build", &file_arg, "worker=web"])).await;
     let stderr = String::from_utf8_lossy(&build.stderr);
     assert!(build.status.success(), "{stderr}");
+
+    let first = tokio::time::timeout(Duration::from_secs(30), followed.next_line())
+        .await
+        .expect("the follow printed what was written after it began")
+        .unwrap();
+    assert_eq!(
+        first.as_deref(),
+        Some("[build] compiling web"),
+        "only lines written after the follow began"
+    );
+    let pid = following.id().expect("still running").to_string();
+    // One SIGINT, as one Ctrl+C sends: the classification of a repeated signal is covered by
+    // `on_signal`'s own tests, with times a subprocess cannot promise.
+    std::process::Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("kill ran");
+    let status = tokio::time::timeout(Duration::from_secs(15), following.wait())
+        .await
+        .expect("a Ctrl+C ends a followed read")
+        .expect("iii call ended");
+    assert!(status.success(), "{status:?}");
+
     let lines: Vec<&str> = stderr.lines().collect();
     let printed = lines.iter().position(|line| *line == "web │ compiling web");
     let finished = lines

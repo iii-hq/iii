@@ -28,10 +28,9 @@ use std::{
 use iii_sdk::OutputStream;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    operation::{Delivery, Operation, ProgressEvent},
+    operation::{Delivery, Operation, ProgressEvent, Subscription},
     report::format_elapsed,
 };
 
@@ -133,17 +132,11 @@ fn failure(detail: &str) -> (String, Vec<String>) {
     }
 }
 
-/// One line of a log tail, without the `stdout`/`stderr` record tag the log stores it with.
+/// One line of a log tail, printable. The tail holds the worker's messages already: their text is
+/// kept as it is, a word such as `stdout` at its start included.
 fn said_line(line: &str) -> Option<String> {
     let line = printable(line);
     let line = line.trim();
-    let line = ["stdout", "stderr"]
-        .iter()
-        .find_map(|tag| {
-            line.strip_prefix(tag)
-                .filter(|rest| rest.starts_with(char::is_whitespace))
-        })
-        .map_or(line, str::trim_start);
     (!line.is_empty()).then(|| line.to_string())
 }
 
@@ -194,7 +187,8 @@ impl Rows {
             self.rows.len() - 1
         });
         let row = &mut self.rows[index];
-        if row.state == state {
+        // The same state with the same diagnostic is no change; a new diagnostic is.
+        if row.state == state && row.said == said {
             return None;
         }
         row.said = said;
@@ -392,7 +386,7 @@ impl CallerReport {
     /// wrote (a build's) where it came: above the block on a terminal, as a line of its own in a
     /// pipe. Once the caller left, the operation is cancelled, and the rest of what it sends is
     /// read without being drawn.
-    pub async fn follow(&mut self, operation: &Operation, mut events: UnboundedReceiver<Delivery>) {
+    pub async fn follow(&mut self, operation: &Operation, mut events: Subscription) {
         let mut ticks = tokio::time::interval(if self.animated() {
             FRAME_INTERVAL
         } else {
@@ -406,6 +400,14 @@ impl CallerReport {
                     Some(Delivery::Event(event)) if !event.terminal => self.apply(event).await,
                     Some(Delivery::Output { container, line }) => {
                         self.print(&container, &line).await;
+                    }
+                    Some(Delivery::Omitted { lines }) => {
+                        let note = format!(
+                            "… {} not shown here; the logs keep them",
+                            if lines == 1 { "1 line".to_string() } else { format!("{lines} lines") }
+                        );
+                        let note = self.paint().dim(&note);
+                        self.say(&note).await;
                     }
                     _ => break,
                 },
@@ -848,19 +850,16 @@ mod tests {
 
     #[test]
     fn a_worker_that_died_shows_what_it_last_said_under_its_row() {
-        // As the log stores it, with the lines of an earlier run before this one's.
+        // As `log_tail` quotes it, with the lines of an earlier run before this one's.
         let detail = "container 'api' exited with 1 before it registered. It last said:\n  \
-                      stdout\tapi: loading settings\n  stderr\tapi: DATABASE_URL is not set\n  \
-                      stdout\tapi: loading settings\n  stderr\tapi: DATABASE_URL is not set";
+                      api: loading settings\n  stdout is not configured\n  \
+                      api: loading settings\n  stdout is not configured";
         let (headline, said) = failure(detail);
         assert_eq!(
             headline,
             "container 'api' exited with 1 before it registered"
         );
-        assert_eq!(
-            said,
-            ["api: loading settings", "api: DATABASE_URL is not set"]
-        );
+        assert_eq!(said, ["api: loading settings", "stdout is not configured"]);
 
         let now = Instant::now();
         let mut rows = Rows::default();
@@ -869,7 +868,20 @@ mod tests {
         assert_eq!(
             plain_line(failed),
             "api: failed: container 'api' exited with 1 before it registered\n    \
-             api: loading settings\n    api: DATABASE_URL is not set"
+             api: loading settings\n    stdout is not configured"
+        );
+
+        // The same headline with a new diagnostic is a change: the row shows the new one.
+        let again = "container 'api' exited with 1 before it registered. It last said:\n  \
+                     api: DATABASE_URL is not set";
+        let changed = rows.apply("api", "failed", again, now).cloned();
+        assert_eq!(
+            changed.map(|row| row.said),
+            Some(vec!["api: DATABASE_URL is not set".to_string()])
+        );
+        assert!(
+            rows.apply("api", "failed", again, now).is_none(),
+            "the same diagnostic again is no change"
         );
     }
 

@@ -22,8 +22,9 @@ type: "reference"
     `operation_id` from the immediate answer of `iii call` adds `--no-follow`. Callers without a
     `stderr` stream, such as the SDKs and the ADE, still get
     `{ operation_id, status: "accepted", requested }` at once.
-  - `iii call compose::logs` writes the lines as text, labelled with their worker, and
-    `follow=true` keeps writing until `Ctrl+C`. `--no-follow` gives the JSON response.
+  - `iii call compose::logs` writes the lines as text, each labelled with its worker when the call
+    names no worker and reads them all; `worker=api` writes them unlabelled. `follow=true` keeps
+    writing until `Ctrl+C`. `--no-follow` gives the JSON response.
 
   ## `iii call` draws for its terminal
 

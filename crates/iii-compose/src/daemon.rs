@@ -2635,10 +2635,31 @@ impl Daemon {
         let path = self.resolve_file(file).await?;
         let path = path.as_path();
         let gate = self.build_gate(path).await;
+        let scope = self.teardown_scope(path, container).await?;
         // Known resources must stop even if the operator's current YAML or lock is invalid.
         // Close admission before waiting for mutation: preparation may own a new adapter.
-        let _stopping = gate.stop(self.teardown_scope(path, container).await?).await;
-        let _mutation = self.lock_mutation(path).await;
+        let admitted = async {
+            let stopping = gate.stop(scope).await;
+            (stopping, self.lock_mutation(path).await)
+        };
+        // A `down` its caller follows (`iii call` with a stream) runs as an operation the caller
+        // can cancel: checked before any build is stopped, and while it waits for the mutation
+        // lock. Once it holds the lock, the teardown finishes, as every other `down` does.
+        let (_stopping, _mutation) = match crate::operation::active(&operation_id) {
+            Some(operation) => {
+                let cancelled = || ComposeError::OperationCancelled {
+                    operation_id: operation_id.clone(),
+                };
+                if operation.is_cancelled() {
+                    return Err(cancelled());
+                }
+                crate::shutdown::ShutdownSignal::from_receiver(operation.cancellation())
+                    .run(admitted)
+                    .await
+                    .ok_or_else(cancelled)?
+            }
+            None => admitted.await,
+        };
         // Re-read only the retained graph: a mutation ahead of down may have replaced it.
         let _current_stopping = gate.stop(self.teardown_scope(path, container).await?).await;
         crate::report::mutation_begin(path);
