@@ -1623,10 +1623,10 @@ async fn print_logs(
         .map_err(|err| compose_error(&err))?;
     let mut wait_ms = query.wait_ms;
     let mut tail = query.tail;
-    // A follow of every worker reads one declared after it began from where its log ended then,
-    // so a retained log is not replayed as new output. A worker with no log then has no end
-    // here, and all it writes is shown.
-    let mut ends = if query.follow && labelled {
+    // Where a followed worker without a cursor reads from. One declared after the follow began
+    // continues from where its log ended then, so a retained log is not replayed as new output;
+    // one with no log then reads the one it writes from its start, so none of it is skipped.
+    let mut later = if query.follow && labelled {
         daemon
             .log_ends(Some(&file))
             .await
@@ -1634,36 +1634,47 @@ async fn print_logs(
     } else {
         BTreeMap::new()
     };
-    let mut later: BTreeMap<String, LogCursor> = BTreeMap::new();
+    let mut first = true;
     let mut left = false;
     while !left {
         let mut reading = query.cursors.clone();
-        for (container, cursor) in &later {
-            reading
-                .entry(container.clone())
-                .or_insert_with(|| cursor.clone());
+        if !first {
+            for (container, cursor) in &later {
+                reading
+                    .entry(container.clone())
+                    .or_insert_with(|| cursor.clone());
+            }
         }
         let outcome = daemon
             .logs(
                 Some(&file),
                 query.container.as_deref(),
-                reading,
+                reading.clone(),
                 tail,
                 query.stream,
                 wait_ms,
             )
             .await
             .map_err(|err| compose_error(&err))?;
-        // The workers of the first read began where `tail` said; the ends are for the others.
-        if !ends.is_empty() {
+        if first && query.follow {
+            // These workers began where `tail` said, and one without a log yet starts its own.
             for batch in &outcome.containers {
-                ends.remove(&batch.container);
+                if batch.cursor.is_some() {
+                    later.remove(&batch.container);
+                } else {
+                    later.insert(batch.container.clone(), LogCursor::start());
+                }
             }
-            later = std::mem::take(&mut ends);
         }
         let (mut out, mut err) = (String::new(), String::new());
         let mut cursors = query.cursors.clone();
         for batch in outcome.containers {
+            // Declared since the last read, this worker was read by its tail: it is read again
+            // from its start, in bounded batches, so nothing it wrote before is skipped.
+            if !first && !reading.contains_key(&batch.container) {
+                later.insert(batch.container, LogCursor::start());
+                continue;
+            }
             for entry in &batch.entries {
                 let to_stderr = (entry.stream == LogStream::Stderr && streams.stderr.is_some())
                     || streams.stdout.is_none();
@@ -1711,6 +1722,7 @@ async fn print_logs(
         if !query.follow {
             break;
         }
+        first = false;
         wait_ms = LOGS_FOLLOW_WAIT_MS;
         // `tail` chose where reading began. From the cursors on, it is the most lines one read
         // returns, so `tail=0` must not stay one: nothing would ever be read again.

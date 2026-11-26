@@ -57,10 +57,22 @@ impl LogStream {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LogCursor {
-    /// Opaque identity of the active or archived log segment.
+    /// Opaque identity of the active or archived log segment. Empty: the start of the oldest
+    /// retained segment.
     pub generation: String,
     /// Byte offset after the last record returned from that segment.
     pub offset: u64,
+}
+
+impl LogCursor {
+    /// The start of a worker's oldest retained log: reading from it returns every retained line,
+    /// in bounded batches like any cursor. A segment's generation is never empty.
+    pub fn start() -> Self {
+        Self {
+            generation: String::new(),
+            offset: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -576,6 +588,14 @@ fn read_container_logs(
     }
 
     match cursor {
+        Some(cursor) if cursor.generation.is_empty() => {
+            let (path, generation) = &available[0];
+            let first = LogCursor {
+                generation: generation.clone(),
+                offset: header_end(path)?.unwrap_or_default(),
+            };
+            read_after_cursor(container, &available, &first, tail, stream)
+        }
         Some(cursor) => read_after_cursor(container, &available, cursor, tail, stream),
         None => read_tail(container, &available, tail, stream, false),
     }
@@ -1050,5 +1070,31 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(read, ["after"]);
+    }
+
+    #[test]
+    fn the_start_cursor_reads_from_the_oldest_retained_line_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.log");
+        let mut file = WorkerLogFile::open(path, 1_024, 1).unwrap();
+        for index in 0..5 {
+            write(&mut file, LogStream::Stdout, &format!("line-{index}"));
+        }
+        let messages = |logs: &ContainerLogs| {
+            logs.entries
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let start = LogCursor::start();
+        let first = read_container_logs(dir.path(), "queue", Some(&start), 2, None, 1).unwrap();
+        let next = first.cursor.as_ref().unwrap();
+        let second = read_container_logs(dir.path(), "queue", Some(next), 2, None, 1).unwrap();
+
+        assert_eq!(
+            [messages(&first), messages(&second)],
+            [["line-0", "line-1"], ["line-2", "line-3"]]
+        );
     }
 }
