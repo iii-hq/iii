@@ -972,7 +972,9 @@ async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
     );
 
     // Followed from the end of the log (`tail=0`): only what is written after it began, until the
-    // caller's Ctrl+C ends the call cleanly. The build below writes into web's log.
+    // caller's Ctrl+C ends the call cleanly. Nothing tells when the follow has read the log's end,
+    // so the build, which writes into web's log, runs until the follow prints a line: a build
+    // written before that first read costs one more build, never a wrong answer.
     use tokio::io::AsyncBufReadExt;
     let mut follow = iii_call(
         port,
@@ -989,17 +991,24 @@ async fn iii_call_draws_up_build_and_down_and_prints_logs_as_text() {
         .stderr(std::process::Stdio::piped());
     let mut following = follow.spawn().expect("iii call ran");
     let mut followed = tokio::io::BufReader::new(following.stdout.take().unwrap()).lines();
-    // The follow reads the log's end before the build writes into it.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let build = run(iii_call(port, &["compose::build", &file_arg, "worker=web"])).await;
+    let (first, build) = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let build = run(iii_call(port, &["compose::build", &file_arg, "worker=web"])).await;
+            assert!(
+                build.status.success(),
+                "{}",
+                String::from_utf8_lossy(&build.stderr)
+            );
+            // `next_line` is cancel safe: a line being read when the wait ends is kept.
+            let waited = Duration::from_secs(2);
+            if let Ok(line) = tokio::time::timeout(waited, followed.next_line()).await {
+                break (line.unwrap(), build);
+            }
+        }
+    })
+    .await
+    .expect("the follow printed what was written after it began");
     let stderr = String::from_utf8_lossy(&build.stderr);
-    assert!(build.status.success(), "{stderr}");
-
-    let first = tokio::time::timeout(Duration::from_secs(30), followed.next_line())
-        .await
-        .expect("the follow printed what was written after it began")
-        .unwrap();
     assert_eq!(
         first.as_deref(),
         Some("[build] compiling web"),

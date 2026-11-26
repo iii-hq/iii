@@ -165,6 +165,18 @@ struct ProjectOptions {
     file: Option<String>,
 }
 
+/// Request fields used by operation status and cancellation. No stream: both answer JSON.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct OperationOptions {
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
+    namespace: Option<String>,
+    /// The operation to read or cancel, as returned when it was accepted.
+    operation_id: Option<String>,
+    /// Same as `operation_id`, and read first when both are set.
+    progress_operation_id: Option<String>,
+}
+
 /// Request fields used by batch worker mutations.
 #[allow(dead_code)]
 #[derive(JsonSchema)]
@@ -2125,12 +2137,12 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::operation",
-                schema_for_value::<ComposeRequest>(),
+                schema_for_value::<OperationOptions>(),
                 schema_for_value::<crate::operation::OperationSnapshot>(),
             ),
             (
                 "compose::cancel",
-                schema_for_value::<ComposeRequest>(),
+                schema_for_value::<OperationOptions>(),
                 schema_for_value::<CancelOutcome>(),
             ),
             (
@@ -3313,6 +3325,8 @@ mod tests {
             "compose::validate",
             "compose::schema",
             "compose::stop",
+            "compose::operation",
+            "compose::cancel",
         ] {
             let schema = schema_entry(function_id).1.as_ref().unwrap();
             for field in ["stdout", "stderr", "terminal"] {
