@@ -12,7 +12,10 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 
@@ -21,7 +24,7 @@ use iii_sdk::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 
 /// The function every progress event is a call of. Observers filter on
 /// `input.operation_id` to follow one operation and on `input.terminal` for
@@ -45,6 +48,68 @@ pub struct ProgressEvent {
     /// What a finished operation reports per container, such as `compose::build`'s results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub results: Option<serde_json::Value>,
+}
+
+/// What a subscriber of an operation receives, in the order it happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// A progress event, as observers of [`PROGRESS_FUNCTION_ID`] see it.
+    Event(ProgressEvent),
+    /// A line a container wrote while the operation ran, such as a build's.
+    Output { container: String, line: String },
+    /// Lines of output the subscriber did not get, because it was [`OUTPUT_BACKLOG`] lines
+    /// behind. The logs keep them.
+    Omitted { lines: usize },
+}
+
+/// The most lines of output a subscriber may have unread. A reader that stalls (a caller that
+/// stopped reading its stream) must not make the daemon hold a verbose build's whole output.
+pub const OUTPUT_BACKLOG: usize = 1_000;
+
+/// The subscribers of one operation, and whether its terminal event was delivered.
+#[derive(Default)]
+struct Subscribers {
+    list: Vec<Subscriber>,
+    finished: bool,
+}
+
+struct Subscriber {
+    sender: mpsc::UnboundedSender<Delivery>,
+    /// Lines of output sent and not read yet.
+    backlog: Arc<AtomicUsize>,
+    /// Lines of output not sent, since the backlog was full.
+    omitted: usize,
+}
+
+impl Subscriber {
+    /// Sends `delivery`, after the count of the output it missed if it missed any. `false` once
+    /// the receiver is gone.
+    fn send(&mut self, delivery: Delivery) -> bool {
+        if self.omitted > 0 {
+            let lines = std::mem::take(&mut self.omitted);
+            if self.sender.send(Delivery::Omitted { lines }).is_err() {
+                return false;
+            }
+        }
+        self.sender.send(delivery).is_ok()
+    }
+}
+
+/// What [`Operation::subscribe`] returns: the deliveries, in order.
+pub struct Subscription {
+    receiver: mpsc::UnboundedReceiver<Delivery>,
+    backlog: Arc<AtomicUsize>,
+}
+
+impl Subscription {
+    /// The next delivery; `None` after the terminal event.
+    pub async fn recv(&mut self) -> Option<Delivery> {
+        let delivery = self.receiver.recv().await;
+        if matches!(delivery, Some(Delivery::Output { .. })) {
+            self.backlog.fetch_sub(1, Ordering::AcqRel);
+        }
+        delivery
+    }
 }
 
 #[derive(Clone)]
@@ -162,6 +227,10 @@ pub struct Operation {
     state: RwLock<State>,
     cancel: watch::Sender<bool>,
     emitter: ProgressEmitter,
+    /// In-process readers of every event, such as the caller a `compose::add` draws for. Sent
+    /// while the state lock is held, so each reader gets the events in sequence order, and
+    /// dropped after the terminal event, which ends their streams.
+    subscribers: Mutex<Subscribers>,
 }
 
 impl Operation {
@@ -183,11 +252,70 @@ impl Operation {
             }),
             cancel,
             emitter,
+            subscribers: Mutex::new(Subscribers::default()),
         })
     }
     pub fn id(&self) -> &str {
         &self.id
     }
+    /// Every event emitted from now on, and every line of [`Self::output`], in the order they
+    /// happened, ending after the terminal event. An operation that already finished yields
+    /// nothing: the subscription ends at once.
+    pub fn subscribe(&self) -> Subscription {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Dropped at once after the terminal event: nothing would ever end its channel.
+        if !subscribers.finished {
+            subscribers.list.push(Subscriber {
+                sender,
+                backlog: Arc::clone(&backlog),
+                omitted: 0,
+            });
+        }
+        Subscription { receiver, backlog }
+    }
+
+    /// Hands `event` to every subscriber still reading; the terminal event is the last.
+    fn deliver(&self, event: &ProgressEvent) {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribers
+            .list
+            .retain_mut(|subscriber| subscriber.send(Delivery::Event(event.clone())));
+        if event.terminal {
+            subscribers.finished = true;
+            subscribers.list.clear();
+        }
+    }
+
+    /// One line a container of this operation wrote, such as a build's, for the subscribers that
+    /// draw it. Not an event: nothing outside this daemon sees it, and the logs keep it. A
+    /// subscriber already [`OUTPUT_BACKLOG`] lines behind does not get it: it is counted, and the
+    /// subscriber learns how many lines it missed before what it gets next.
+    pub fn output(&self, container: &str, line: &str) {
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        subscribers.list.retain_mut(|subscriber| {
+            if subscriber.backlog.load(Ordering::Acquire) >= OUTPUT_BACKLOG {
+                subscriber.omitted += 1;
+                return true;
+            }
+            subscriber.backlog.fetch_add(1, Ordering::AcqRel);
+            subscriber.send(Delivery::Output {
+                container: container.to_string(),
+                line: line.to_string(),
+            })
+        });
+    }
+
     pub fn cancellation(&self) -> watch::Receiver<bool> {
         self.cancel.subscribe()
     }
@@ -236,6 +364,7 @@ impl Operation {
                 results: None,
             };
             state.last_event = Some(event.clone());
+            self.deliver(&event);
             event
         };
         self.emitter.publish(&event).await;
@@ -288,6 +417,7 @@ impl Operation {
                 results,
             };
             state.last_event = Some(event.clone());
+            self.deliver(&event);
             event
         };
         self.emitter.publish(&event).await;
@@ -383,6 +513,42 @@ impl OperationManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn a_subscriber_that_falls_behind_is_told_how_many_lines_it_missed() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let operation = OperationManager::new(&client).create(1).await;
+        let mut subscription = operation.subscribe();
+        for index in 0..OUTPUT_BACKLOG + 5 {
+            operation.output("web", &index.to_string());
+        }
+        operation.finish(OperationStatus::Succeeded, "done").await;
+
+        let mut lines = 0;
+        let mut omitted = 0;
+        let mut terminal = false;
+        while let Some(delivery) = subscription.recv().await {
+            match delivery {
+                Delivery::Output { .. } => lines += 1,
+                Delivery::Omitted { lines } => omitted += lines,
+                Delivery::Event(event) => terminal = event.terminal,
+            }
+        }
+        assert_eq!(lines, OUTPUT_BACKLOG, "the backlog bounds what is held");
+        assert_eq!(omitted, 5, "and says what it did not hold");
+        assert!(terminal, "the terminal event still arrives, last");
+        client.shutdown_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_subscription_after_the_terminal_event_ends_at_once() {
+        let client = IIIClient::new("ws://127.0.0.1:1/ws");
+        let operation = OperationManager::new(&client).create(1).await;
+        operation.finish(OperationStatus::Succeeded, "done").await;
+        let mut late = operation.subscribe();
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), late.recv()).await;
+        assert_eq!(ended, Ok(None));
+        client.shutdown_async().await;
+    }
 
     #[tokio::test]
     async fn cancellation_is_latched_before_a_receiver_subscribes() {

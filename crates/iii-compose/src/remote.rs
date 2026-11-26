@@ -21,14 +21,19 @@
 //! fall back to `worker-compose.yaml` in the daemon's own directory, and say
 //! so when there is none.
 
-use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap, future::Future, panic::AssertUnwindSafe, path::PathBuf, sync::Arc,
+};
 
-use iii_sdk::{Error, RegisterFunction};
+use futures::FutureExt;
+
+use iii_sdk::{Error, OutputStream, RegisterFunction};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{
+    caller_report::{CallerReport, CallerTerminal, Ending},
     daemon::{Daemon, MutationOutcome},
     edit::WorkerInput,
     error::ComposeError,
@@ -90,6 +95,23 @@ pub struct ComposeRequest {
     pub progress_operation_id: Option<String>,
     /// Function or file contract requested by `compose::schema`.
     pub function_id: Option<String>,
+    /// The stream a mutation draws its progress into. With it, the call answers once the
+    /// operation finished, and fails when it failed. `compose::logs` writes its stderr lines
+    /// into it.
+    pub stderr: Option<OutputStream>,
+    /// `compose::logs`: the stream its stdout lines, or all of them without `stderr`, are
+    /// written into.
+    pub stdout: Option<OutputStream>,
+    /// `compose::logs` with streams: keep reading until the caller leaves.
+    pub follow: Option<bool>,
+    /// What `iii call` says of its terminal, so the progress is drawn for it.
+    pub terminal: Option<CallerTerminal>,
+}
+
+/// The stream a call draws its progress into, and the terminal it reaches.
+struct Drawing {
+    stderr: OutputStream,
+    terminal: CallerTerminal,
 }
 
 /// Request fields used by daemon-wide operations.
@@ -141,6 +163,18 @@ struct ProjectOptions {
     /// Compose file on the daemon host. Defaults to the project this daemon
     /// serves, else `worker-compose.yaml` in the daemon working directory.
     file: Option<String>,
+}
+
+/// Request fields used by operation status and cancellation. No stream: both answer JSON.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct OperationOptions {
+    /// Optional daemon guard. Use the `iii call --namespace` flag to route.
+    namespace: Option<String>,
+    /// The operation to read or cancel, as returned when it was accepted.
+    operation_id: Option<String>,
+    /// Same as `operation_id`, and read first when both are set.
+    progress_operation_id: Option<String>,
 }
 
 /// Request fields used by batch worker mutations.
@@ -308,8 +342,51 @@ struct CancelOutcome {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 struct OperationAcceptedOutcome {
     operation_id: String,
+    /// `accepted`. A `compose::add` that drew its progress into `stderr` answers once it
+    /// finished: `succeeded`, with its `outcome`.
     status: String,
     requested: usize,
+    /// What the finished operation did, when the call waited for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<MutationOutcome>,
+}
+
+/// What a `compose::build` that drew its progress into `stderr` answers once every build
+/// finished.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct BuildFinished {
+    operation_id: String,
+    /// `succeeded`.
+    status: String,
+    requested: usize,
+    /// One result per container, as the finished operation carries them.
+    results: Vec<crate::lifecycle::BuildResult>,
+}
+
+/// The answers of `compose::build`: accepted at once without a stream, finished with one.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum BuildAnswer {
+    Accepted(OperationAcceptedOutcome),
+    Finished(BuildFinished),
+}
+
+/// What `compose::logs` answers after writing the lines into the caller's streams.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct LogsStreamed {
+    /// Where each worker's log was read to, to resume from: only past lines that were written.
+    cursors: BTreeMap<String, LogCursor>,
+}
+
+/// The answers of `compose::logs`: the lines themselves without a stream, the cursors to resume
+/// from with one.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum LogsAnswer {
+    Read(LogsOutcome),
+    Streamed(LogsStreamed),
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -530,7 +607,7 @@ async fn dispatch(
     daemon: Arc<Daemon>,
     operation: Operation,
     function: String,
-    request: ComposeRequest,
+    mut request: ComposeRequest,
 ) -> Result<Value, Error> {
     // Checked before anything runs. A caller who named a daemon and reached a
     // different one meant a different machine, and acting on this one would be
@@ -550,35 +627,77 @@ async fn dispatch(
     }
 
     let file = request.file.as_ref().map(std::path::PathBuf::from);
+    // The stream the progress is drawn into, when the caller bound one, as `iii call` does.
+    let drawing = request.stderr.take().map(|stderr| Drawing {
+        stderr,
+        terminal: request.terminal.unwrap_or_default(),
+    });
 
     match operation {
-        Operation::Up => match if request.frozen.unwrap_or(false) {
-            daemon
-                .up_frozen(
-                    file.as_deref(),
-                    request.container.as_deref(),
-                    operation_id(),
+        Operation::Up => {
+            if let Some(drawing) = drawing {
+                let frozen = request.frozen.unwrap_or(false);
+                let container = request.container.clone();
+                let title = match &container {
+                    Some(container) => format!("starting {container}"),
+                    None => "starting the project".to_string(),
+                };
+                let daemon_task = Arc::clone(&daemon);
+                return draw_lifecycle(
+                    &daemon,
+                    drawing,
+                    title,
+                    UP_DETAILS,
+                    move |operation_id| async move {
+                        let result = if frozen {
+                            daemon_task
+                                .up_frozen(file.as_deref(), container.as_deref(), operation_id)
+                                .await
+                        } else {
+                            daemon_task
+                                .up(file.as_deref(), container.as_deref(), operation_id)
+                                .await
+                        }?;
+                        Ok(MutationOutcome::from_operations(
+                            result.status,
+                            result.changed,
+                            container.as_deref(),
+                            None,
+                            None,
+                            std::iter::once(&result),
+                        ))
+                    },
                 )
-                .await
-        } else {
-            daemon
-                .up(
-                    file.as_deref(),
+                .await;
+            }
+            match if request.frozen.unwrap_or(false) {
+                daemon
+                    .up_frozen(
+                        file.as_deref(),
+                        request.container.as_deref(),
+                        operation_id(),
+                    )
+                    .await
+            } else {
+                daemon
+                    .up(
+                        file.as_deref(),
+                        request.container.as_deref(),
+                        operation_id(),
+                    )
+                    .await
+            } {
+                Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
+                    result.status,
+                    result.changed,
                     request.container.as_deref(),
-                    operation_id(),
-                )
-                .await
-        } {
-            Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
-                result.status,
-                result.changed,
-                request.container.as_deref(),
-                None,
-                None,
-                std::iter::once(&result),
-            ))),
-            Err(err) => Err(compose_error(&err)),
-        },
+                    None,
+                    None,
+                    std::iter::once(&result),
+                ))),
+                Err(err) => Err(compose_error(&err)),
+            }
+        }
         Operation::Add => {
             let workers = requested_workers(request.workers, request.worker);
             if workers.is_empty() {
@@ -597,6 +716,8 @@ async fn dispatch(
                 format!("adding {requested} requested workers"),
             )
             .await?;
+            // Subscribed before the mutation runs, so the caller's report misses none of it.
+            let events = drawing.as_ref().map(|_| operation.subscribe());
 
             let daemon_task = Arc::clone(&daemon);
             let task_operation_id = accepted.operation_id.clone();
@@ -609,8 +730,17 @@ async fn dispatch(
                     .add_configured(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(operation, mutation, ADD_DETAILS);
-            Ok(to_value(&accepted))
+            let finished = spawn_mutation(Arc::clone(&operation), mutation, ADD_DETAILS);
+            let title = format!("adding {}", count(requested, "worker"));
+            draw_mutation(
+                drawing.zip(events),
+                title,
+                &operation,
+                finished,
+                accepted,
+                ADD_DETAILS,
+            )
+            .await
         }
         Operation::Remove => {
             let prune = request.prune.unwrap_or(false);
@@ -630,33 +760,65 @@ async fn dispatch(
                 format!("removing {requested} requested workers"),
             )
             .await?;
+            let events = drawing.as_ref().map(|_| operation.subscribe());
 
             let daemon_task = Arc::clone(&daemon);
             let task_operation_id = accepted.operation_id.clone();
             let task_operation = Arc::clone(&operation);
             let mutation = async move {
                 task_operation
-                    .emit(None, "removing", format!("removing {requested} workers"))
+                    .emit(
+                        None,
+                        "removing",
+                        format!("removing {}", count(requested, "worker")),
+                    )
                     .await;
                 daemon_task
                     .remove(file.as_deref(), &workers, task_operation_id, prune)
                     .await
             };
-            spawn_mutation(operation, mutation, REMOVE_DETAILS);
-            Ok(to_value(&accepted))
-        }
-        Operation::Restart => match daemon
-            .restart(
-                file.as_deref(),
-                // Either spelling names the same thing here.
-                named_container(&request),
-                operation_id(),
+            let finished = spawn_mutation(Arc::clone(&operation), mutation, REMOVE_DETAILS);
+            let title = format!("removing {}", count(requested, "worker"));
+            draw_mutation(
+                drawing.zip(events),
+                title,
+                &operation,
+                finished,
+                accepted,
+                REMOVE_DETAILS,
             )
             .await
-        {
-            Ok(result) => Ok(to_value(&result)),
-            Err(err) => Err(compose_error(&err)),
-        },
+        }
+        Operation::Restart => {
+            // Either spelling names the same thing here.
+            let container = named_container(&request).map(str::to_string);
+            if let Some(drawing) = drawing {
+                let title = match &container {
+                    Some(container) => format!("restarting {container}"),
+                    None => "restarting the project".to_string(),
+                };
+                let daemon_task = Arc::clone(&daemon);
+                return draw_lifecycle(
+                    &daemon,
+                    drawing,
+                    title,
+                    RESTART_DETAILS,
+                    move |id| async move {
+                        daemon_task
+                            .restart(file.as_deref(), container.as_deref(), id)
+                            .await
+                    },
+                )
+                .await;
+            }
+            match daemon
+                .restart(file.as_deref(), container.as_deref(), operation_id())
+                .await
+            {
+                Ok(result) => Ok(to_value(&result)),
+                Err(err) => Err(compose_error(&err)),
+            }
+        }
         Operation::Update => {
             if request.workers.as_ref().is_some_and(Vec::is_empty) {
                 return Err(compose_error(&ComposeError::InvalidWorkerSpec {
@@ -680,6 +842,12 @@ async fn dispatch(
                 format!("updating {selection}"),
             )
             .await?;
+            let events = drawing.as_ref().map(|_| operation.subscribe());
+            let title = if workers.is_empty() {
+                "updating every package worker".to_string()
+            } else {
+                format!("updating {}", count(requested, "worker"))
+            };
 
             let daemon_task = Arc::clone(&daemon);
             let task_operation_id = accepted.operation_id.clone();
@@ -696,8 +864,16 @@ async fn dispatch(
                     .update(file.as_deref(), &workers, task_operation_id)
                     .await
             };
-            spawn_mutation(operation, mutation, UPDATE_DETAILS);
-            Ok(to_value(&accepted))
+            let finished = spawn_mutation(Arc::clone(&operation), mutation, UPDATE_DETAILS);
+            draw_mutation(
+                drawing.zip(events),
+                title,
+                &operation,
+                finished,
+                accepted,
+                UPDATE_DETAILS,
+            )
+            .await
         }
         Operation::Build => {
             let worker = build_target(&request).map(str::to_string);
@@ -712,89 +888,100 @@ async fn dispatch(
                 .await
                 .map_err(|err| compose_error(&err))?
                 .len();
-            let (operation, accepted) = admit_mutation(
-                &daemon,
-                request.operation_id,
-                requested,
-                match &worker {
-                    Some(worker) => format!("building {worker}"),
-                    None => format!("building {requested} workers"),
-                },
-            )
-            .await?;
+            let title = match &worker {
+                Some(worker) => format!("building {worker}"),
+                None => format!("building {requested} workers"),
+            };
+            let (operation, accepted) =
+                admit_mutation(&daemon, request.operation_id, requested, title.clone()).await?;
+            let events = drawing.as_ref().map(|_| operation.subscribe());
             let task_operation_id = accepted.operation_id.clone();
-            tokio::spawn(async move {
+            let task_accepted = accepted.clone();
+            let task_daemon = Arc::clone(&daemon);
+            let task_file = file.clone();
+            let task_operation = Arc::clone(&operation);
+            let finished = tokio::spawn(async move {
                 #[cfg(test)]
                 tests::hold_build(&task_operation_id).await;
                 let began = std::time::Instant::now();
-                let result = daemon
-                    .build(Some(&file), worker.as_deref(), task_operation_id)
-                    .await;
+                let result = AssertUnwindSafe(task_daemon.build(
+                    Some(&task_file),
+                    worker.as_deref(),
+                    task_operation_id,
+                ))
+                .catch_unwind()
+                .await;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(panic) => {
+                        finish_stopped(&task_operation, "build").await;
+                        std::panic::resume_unwind(panic)
+                    }
+                };
                 report_op("build", &build_report(&result), began.elapsed());
-                match result {
-                    Ok(crate::lifecycle::BuildRun { results, cancelled }) => {
-                        // The terminal event names each failure, with its own code.
-                        let failed: Vec<String> = results
-                            .iter()
-                            .filter_map(|result| {
-                                result.error.as_ref().map(|error| {
-                                    format!("{} ({}: {})", result.worker, error.code, error.message)
-                                })
-                            })
-                            .collect();
-                        // Stopped by compose::cancel or down, it is cancelled, whatever a build
-                        // its stop killed reported.
-                        let (status, detail) = if cancelled {
-                            (
-                                crate::operation::OperationStatus::Cancelled,
-                                "operation cancelled".to_string(),
-                            )
-                        } else if failed.is_empty() {
-                            (
-                                crate::operation::OperationStatus::Succeeded,
-                                "every requested build finished".to_string(),
-                            )
-                        } else {
-                            (
-                                crate::operation::OperationStatus::Failed,
-                                format!("builds failed: {}", failed.join("; ")),
-                            )
-                        };
-                        operation
-                            .finish_with_results(status, detail, Some(to_value(&results)))
-                            .await;
-                    }
-                    Err(ComposeError::OperationCancelled { .. }) => {
-                        operation
-                            .finish(
-                                crate::operation::OperationStatus::Cancelled,
-                                "operation cancelled",
-                            )
-                            .await;
-                    }
-                    Err(error) => {
-                        operation
-                            .finish(crate::operation::OperationStatus::Failed, error.to_string())
-                            .await;
-                    }
-                }
+                finish_build(&task_operation, result, task_accepted).await
             });
-            Ok(to_value(&accepted))
+            let Some((drawing, events)) = drawing.zip(events) else {
+                return Ok(to_value(&accepted));
+            };
+            // The build's own lines come with the operation's events, before the row that says
+            // how the build ended.
+            let mut report = CallerReport::start(drawing.stderr, drawing.terminal, title).await;
+            report.follow(&operation, events).await;
+            let (ending, answer) = finished.await.unwrap_or_else(|error| {
+                let message = format!("the build operation stopped: {error}");
+                (
+                    Ending::Failed(message.clone()),
+                    Err(Error::Handler(message)),
+                )
+            });
+            report.finish(&ending).await;
+            answer
         }
-        Operation::Down => match daemon
-            .down(file.as_deref(), named_container(&request), operation_id())
-            .await
-        {
-            Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
-                result.status,
-                result.changed,
-                named_container(&request),
-                None,
-                None,
-                std::iter::once(&result),
-            ))),
-            Err(err) => Err(compose_error(&err)),
-        },
+        Operation::Down => {
+            let container = named_container(&request).map(str::to_string);
+            if let Some(drawing) = drawing {
+                let title = match &container {
+                    Some(container) => format!("stopping {container}"),
+                    None => "stopping the project".to_string(),
+                };
+                let daemon_task = Arc::clone(&daemon);
+                return draw_lifecycle(
+                    &daemon,
+                    drawing,
+                    title,
+                    DOWN_DETAILS,
+                    move |id| async move {
+                        let result = daemon_task
+                            .down(file.as_deref(), container.as_deref(), id)
+                            .await?;
+                        Ok(MutationOutcome::from_operations(
+                            result.status,
+                            result.changed,
+                            container.as_deref(),
+                            None,
+                            None,
+                            std::iter::once(&result),
+                        ))
+                    },
+                )
+                .await;
+            }
+            match daemon
+                .down(file.as_deref(), container.as_deref(), operation_id())
+                .await
+            {
+                Ok(result) => Ok(to_value(&MutationOutcome::from_operations(
+                    result.status,
+                    result.changed,
+                    container.as_deref(),
+                    None,
+                    None,
+                    std::iter::once(&result),
+                ))),
+                Err(err) => Err(compose_error(&err)),
+            }
+        }
         // Every project this daemon holds. No id: this is the call an operator
         // makes when they have forgotten what is running.
         Operation::List => {
@@ -865,6 +1052,27 @@ async fn dispatch(
                     })
                     .collect();
             Ok(json!({ "daemon_pid": me, "processes": processes }))
+        }
+        Operation::Logs if drawing.is_some() || request.stdout.is_some() => {
+            let (stderr, terminal) = match drawing {
+                Some(drawing) => (Some(drawing.stderr), drawing.terminal),
+                None => (None, request.terminal.unwrap_or_default()),
+            };
+            let streams = LogStreams {
+                stdout: request.stdout.take(),
+                stderr,
+                terminal,
+            };
+            let query = LogsQuery {
+                file,
+                container: request.container.or(request.worker),
+                cursors: request.cursors.unwrap_or_default(),
+                tail: request.tail.unwrap_or(crate::logs::DEFAULT_TAIL_LINES),
+                stream: request.stream,
+                wait_ms: request.wait_ms.unwrap_or_default(),
+                follow: request.follow.unwrap_or(false),
+            };
+            print_logs(&daemon, query, streams).await
         }
         Operation::Logs => match daemon
             .logs(
@@ -947,6 +1155,7 @@ async fn admit_mutation(
         operation_id,
         status: "accepted".to_string(),
         requested,
+        outcome: None,
     };
     Ok((operation, accepted))
 }
@@ -988,6 +1197,8 @@ struct MutationDetails {
     partial: &'static str,
     /// A required container did not, so the operation failed.
     failed: &'static str,
+    /// It succeeded without changing anything: the file already said it.
+    unchanged: &'static str,
 }
 
 const ADD_DETAILS: MutationDetails = MutationDetails {
@@ -995,6 +1206,7 @@ const ADD_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers are ready",
     partial: "workers that did not start",
     failed: "one or more workers failed",
+    unchanged: "every requested worker was already declared; nothing changed",
 };
 
 const REMOVE_DETAILS: MutationDetails = MutationDetails {
@@ -1002,6 +1214,31 @@ const REMOVE_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers were removed",
     partial: "workers that could not be removed",
     failed: "one or more workers could not be removed",
+    unchanged: "no requested worker was declared; nothing changed",
+};
+
+const UP_DETAILS: MutationDetails = MutationDetails {
+    op: "up",
+    success: "every container is ready",
+    partial: "containers that did not start",
+    failed: "one or more containers failed",
+    unchanged: "everything was already running",
+};
+
+const DOWN_DETAILS: MutationDetails = MutationDetails {
+    op: "down",
+    success: "every container stopped",
+    partial: "containers that did not stop",
+    failed: "one or more containers could not be stopped",
+    unchanged: "nothing was running",
+};
+
+const RESTART_DETAILS: MutationDetails = MutationDetails {
+    op: "restart",
+    success: "every container restarted",
+    partial: "containers that did not start again",
+    failed: "one or more containers did not start again",
+    unchanged: "nothing to restart",
 };
 
 const UPDATE_DETAILS: MutationDetails = MutationDetails {
@@ -1009,13 +1246,30 @@ const UPDATE_DETAILS: MutationDetails = MutationDetails {
     success: "all requested workers were updated",
     partial: "workers that could not be updated",
     failed: "one or more workers could not be updated",
+    unchanged: "everything already up to date",
 };
 
 fn spawn_mutation<F>(
     operation: Arc<crate::operation::Operation>,
     mutation: F,
     details: MutationDetails,
-) where
+) -> tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>
+where
+    F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
+{
+    spawn_operation(operation, mutation, details, true)
+}
+
+/// Runs `mutation` as `operation` and finishes the operation with how it ended. `telemetry`
+/// reports it as its own `op`: a lifecycle call that is drawn is reported by
+/// [`register_matching`] already, like the same call answered without a stream.
+fn spawn_operation<F>(
+    operation: Arc<crate::operation::Operation>,
+    mutation: F,
+    details: MutationDetails,
+    telemetry: bool,
+) -> tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>
+where
     F: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
 {
     tokio::spawn(async move {
@@ -1027,12 +1281,22 @@ fn spawn_mutation<F>(
                     "operation cancelled",
                 )
                 .await;
-            return;
+            return Err(ComposeError::OperationCancelled {
+                operation_id: operation.id().to_string(),
+            });
         }
 
-        let result = mutation.await;
-        report_mutation(details.op, &result, began.elapsed());
-        match result {
+        let result = match AssertUnwindSafe(mutation).catch_unwind().await {
+            Ok(result) => result,
+            Err(panic) => {
+                finish_stopped(&operation, details.op).await;
+                std::panic::resume_unwind(panic)
+            }
+        };
+        if telemetry {
+            report_mutation(details.op, &result, began.elapsed());
+        }
+        match &result {
             Ok(outcome) => {
                 let failed = outcome.is_failed();
                 operation
@@ -1068,7 +1332,421 @@ fn spawn_mutation<F>(
                     .await;
             }
         }
-    });
+        result
+    })
+}
+
+/// `1 worker`, `2 workers`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// Answers an accepted add, update, or remove: at once without a stream, and with how it ended
+/// once it finished when the caller bound one to draw it into.
+async fn draw_mutation(
+    drawing: Option<(Drawing, crate::operation::Subscription)>,
+    title: String,
+    operation: &crate::operation::Operation,
+    finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
+    accepted: OperationAcceptedOutcome,
+    details: MutationDetails,
+) -> Result<Value, Error> {
+    let Some((drawing, events)) = drawing else {
+        return Ok(to_value(&accepted));
+    };
+    let report = CallerReport::start(drawing.stderr, drawing.terminal, title).await;
+    answer_drawn(
+        report,
+        operation,
+        events,
+        finished,
+        details,
+        move |outcome| {
+            to_value(&OperationAcceptedOutcome {
+                status: "succeeded".to_string(),
+                outcome: Some(outcome),
+                ..accepted
+            })
+        },
+    )
+    .await
+}
+
+/// Runs an `up`, `down`, or `restart` as an operation the caller's stream draws, and answers as
+/// the call does without one: with the outcome, or with its error when it failed.
+async fn draw_lifecycle<F, Fut>(
+    daemon: &Daemon,
+    drawing: Drawing,
+    title: String,
+    details: MutationDetails,
+    run: F,
+) -> Result<Value, Error>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: Future<Output = Result<MutationOutcome, ComposeError>> + Send + 'static,
+{
+    let operation = daemon.operations.create(0).await;
+    let events = operation.subscribe();
+    let finished = spawn_operation(
+        Arc::clone(&operation),
+        run(operation.id().to_string()),
+        details,
+        false,
+    );
+    let report = CallerReport::start(drawing.stderr, drawing.terminal, title).await;
+    answer_drawn(report, &operation, events, finished, details, |outcome| {
+        to_value(&outcome)
+    })
+    .await
+}
+
+/// Draws a mutation into the caller's `stderr` stream until it finished, and answers with how it
+/// ended: `answer` of its outcome when it succeeded, its error when it failed or was cancelled,
+/// so `iii call` exits non-zero.
+async fn answer_drawn(
+    mut report: CallerReport,
+    operation: &crate::operation::Operation,
+    events: crate::operation::Subscription,
+    finished: tokio::task::JoinHandle<Result<MutationOutcome, ComposeError>>,
+    details: MutationDetails,
+    answer: impl FnOnce(MutationOutcome) -> Value,
+) -> Result<Value, Error> {
+    report.follow(operation, events).await;
+    let (ending, answer) = match finished.await {
+        Ok(result) => drawn_answer(result, details, answer),
+        Err(error) => {
+            let message = format!("the {} operation stopped: {error}", details.op);
+            (
+                Ending::Failed(message.clone()),
+                Err(Error::Handler(message)),
+            )
+        }
+    };
+    report.finish(&ending).await;
+    answer
+}
+
+/// The last line a drawn mutation shows, and the answer of its call.
+fn drawn_answer(
+    result: Result<MutationOutcome, ComposeError>,
+    details: MutationDetails,
+    answer: impl FnOnce(MutationOutcome) -> Value,
+) -> (Ending, Result<Value, Error>) {
+    match result {
+        Ok(outcome) if outcome.is_failed() => {
+            let (code, message) = outcome.error().unwrap_or(("OPERATION_FAILED", ""));
+            let message = if message.is_empty() {
+                details.failed.to_string()
+            } else {
+                format!("{}: {message}", details.failed)
+            };
+            (
+                Ending::Failed(details.failed.to_string()),
+                Err(Error::Remote {
+                    code: code.to_string(),
+                    message,
+                    stacktrace: None,
+                }),
+            )
+        }
+        Ok(outcome) => {
+            let ending = match outcome.not_required_failures() {
+                [] if outcome.changed() => Ending::Succeeded(details.success.to_string()),
+                [] => Ending::Succeeded(details.unchanged.to_string()),
+                failures => {
+                    Ending::Partial(format!("{}: {}", details.partial, failures.join(", ")))
+                }
+            };
+            (ending, Ok(answer(outcome)))
+        }
+        Err(
+            error @ (ComposeError::OperationCancelled { .. }
+            | ComposeError::RebuildCancelled { .. }),
+        ) => (
+            Ending::Cancelled(error.to_string()),
+            Err(compose_error(&error)),
+        ),
+        Err(error) => (
+            Ending::Failed(error.to_string()),
+            Err(compose_error(&error)),
+        ),
+    }
+}
+
+/// Finishes a build operation with how it ended, and returns the last line a drawn build shows
+/// with the answer of its call: the results when every build finished, the first failure's code
+/// otherwise.
+async fn finish_build(
+    operation: &crate::operation::Operation,
+    result: crate::error::Result<crate::lifecycle::BuildRun>,
+    accepted: OperationAcceptedOutcome,
+) -> (Ending, Result<Value, Error>) {
+    use crate::operation::OperationStatus;
+    match result {
+        Ok(crate::lifecycle::BuildRun { results, cancelled }) => {
+            // The terminal event names each failure, with its own code.
+            let failed: Vec<String> = results
+                .iter()
+                .filter_map(|result| {
+                    result.error.as_ref().map(|error| {
+                        format!("{} ({}: {})", result.worker, error.code, error.message)
+                    })
+                })
+                .collect();
+            let first_code = results
+                .iter()
+                .find_map(|result| result.error.as_ref().map(|error| error.code.clone()));
+            let value = to_value(&results);
+            // Stopped by compose::cancel or down, it is cancelled, whatever a build its stop
+            // killed reported.
+            if cancelled {
+                operation
+                    .finish_with_results(
+                        OperationStatus::Cancelled,
+                        "operation cancelled",
+                        Some(value),
+                    )
+                    .await;
+                let error = ComposeError::OperationCancelled {
+                    operation_id: accepted.operation_id,
+                };
+                return (
+                    Ending::Cancelled(error.to_string()),
+                    Err(compose_error(&error)),
+                );
+            }
+            if let Some(code) = first_code {
+                let detail = format!("builds failed: {}", failed.join("; "));
+                operation
+                    .finish_with_results(OperationStatus::Failed, detail.clone(), Some(value))
+                    .await;
+                // The last line names each failure by its code: the build's own lines, printed
+                // above, say the rest, and the call's error carries all of it.
+                let named: Vec<String> = results
+                    .iter()
+                    .filter_map(|result| {
+                        let error = result.error.as_ref()?;
+                        Some(format!("{} ({})", result.worker, error.code))
+                    })
+                    .collect();
+                return (
+                    Ending::Failed(format!("builds failed: {}", named.join(", "))),
+                    Err(Error::Remote {
+                        code,
+                        message: detail,
+                        stacktrace: None,
+                    }),
+                );
+            }
+            operation
+                .finish_with_results(
+                    OperationStatus::Succeeded,
+                    "every requested build finished",
+                    Some(value.clone()),
+                )
+                .await;
+            let ending = if accepted.requested == 0 {
+                "nothing to build"
+            } else {
+                "every requested build finished"
+            };
+            let answer = to_value(&BuildFinished {
+                operation_id: accepted.operation_id,
+                status: "succeeded".to_string(),
+                requested: accepted.requested,
+                results,
+            });
+            (Ending::Succeeded(ending.to_string()), Ok(answer))
+        }
+        Err(error @ ComposeError::OperationCancelled { .. }) => {
+            operation
+                .finish(OperationStatus::Cancelled, "operation cancelled")
+                .await;
+            (
+                Ending::Cancelled(error.to_string()),
+                Err(compose_error(&error)),
+            )
+        }
+        Err(error) => {
+            operation
+                .finish(OperationStatus::Failed, error.to_string())
+                .await;
+            (
+                Ending::Failed(error.to_string()),
+                Err(compose_error(&error)),
+            )
+        }
+    }
+}
+
+/// How long a followed `compose::logs` waits for new lines before it checks the caller is still
+/// reading.
+const LOGS_FOLLOW_WAIT_MS: u64 = 1_000;
+
+/// What a `compose::logs` with streams reads.
+struct LogsQuery {
+    file: Option<PathBuf>,
+    container: Option<String>,
+    cursors: BTreeMap<String, LogCursor>,
+    tail: usize,
+    stream: Option<LogStream>,
+    wait_ms: u64,
+    follow: bool,
+}
+
+/// Where a `compose::logs` with streams writes.
+struct LogStreams {
+    stdout: Option<OutputStream>,
+    stderr: Option<OutputStream>,
+    terminal: CallerTerminal,
+}
+
+/// `compose::logs` into the caller's streams, as text: stdout's lines into `stdout` and
+/// stderr's into `stderr` (each into the one bound when only one is), labelled with their worker
+/// when every worker is read. With `follow`, it reads on until the caller leaves. Answers with
+/// the cursors to resume from.
+async fn print_logs(
+    daemon: &Daemon,
+    mut query: LogsQuery,
+    streams: LogStreams,
+) -> Result<Value, Error> {
+    let labelled = query.container.is_none();
+    // The project the session reads, chosen once: another project loaded meanwhile must not
+    // change which log a cursor is read against.
+    let file = daemon
+        .resolve_file(query.file.as_deref())
+        .await
+        .map_err(|err| compose_error(&err))?;
+    let mut wait_ms = query.wait_ms;
+    let mut tail = query.tail;
+    // Where a followed worker without a cursor reads from. One declared after the follow began
+    // continues from where its log ended then, so a retained log is not replayed as new output;
+    // one with no log then reads the one it writes from its start, so none of it is skipped.
+    let mut later = if query.follow && labelled {
+        daemon
+            .log_ends(Some(&file))
+            .await
+            .map_err(|err| compose_error(&err))?
+    } else {
+        BTreeMap::new()
+    };
+    let mut first = true;
+    let mut left = false;
+    while !left {
+        let mut reading = query.cursors.clone();
+        if !first {
+            for (container, cursor) in &later {
+                reading
+                    .entry(container.clone())
+                    .or_insert_with(|| cursor.clone());
+            }
+        }
+        let outcome = daemon
+            .logs(
+                Some(&file),
+                query.container.as_deref(),
+                reading.clone(),
+                tail,
+                query.stream,
+                wait_ms,
+            )
+            .await
+            .map_err(|err| compose_error(&err))?;
+        if first && query.follow {
+            // These workers began where `tail` said, and one without a log yet starts its own.
+            for batch in &outcome.containers {
+                if batch.cursor.is_some() {
+                    later.remove(&batch.container);
+                } else {
+                    later.insert(batch.container.clone(), LogCursor::start());
+                }
+            }
+        }
+        let (mut out, mut err) = (String::new(), String::new());
+        let mut cursors = query.cursors.clone();
+        for batch in outcome.containers {
+            // Declared since the last read, this worker was read by its tail: it is read again
+            // from its start, in bounded batches, so nothing it wrote before is skipped.
+            if !first && !reading.contains_key(&batch.container) {
+                later.insert(batch.container, LogCursor::start());
+                continue;
+            }
+            for entry in &batch.entries {
+                let to_stderr = (entry.stream == LogStream::Stderr && streams.stderr.is_some())
+                    || streams.stdout.is_none();
+                let (text, terminal) = if to_stderr {
+                    (&mut err, streams.terminal.stderr)
+                } else {
+                    (&mut out, streams.terminal.stdout)
+                };
+                if labelled {
+                    let color = terminal && streams.terminal.color;
+                    text.push_str(&crate::caller_report::label(&batch.container, color));
+                    text.push(' ');
+                }
+                text.push_str(&entry.message);
+                text.push('\n');
+            }
+            if batch.truncated {
+                let notes = if streams.stderr.is_some() {
+                    &mut err
+                } else {
+                    &mut out
+                };
+                notes.push_str(&format!(
+                    "{}: older output is no longer retained; showing the most recent lines\n",
+                    batch.container
+                ));
+            }
+            if let Some(cursor) = batch.cursor {
+                cursors.insert(batch.container, cursor);
+            }
+        }
+        // An empty write sends nothing, and fails once the reader left.
+        for (stream, text) in [(&streams.stdout, out), (&streams.stderr, err)] {
+            if let Some(stream) = stream
+                && stream.write(text.as_bytes()).await.is_err()
+            {
+                left = true;
+            }
+        }
+        // The cursors move past this batch only once all of it was written: a caller that
+        // resumes from them must not skip lines it never got.
+        if !left {
+            query.cursors = cursors;
+        }
+        if !query.follow {
+            break;
+        }
+        first = false;
+        wait_ms = LOGS_FOLLOW_WAIT_MS;
+        // `tail` chose where reading began. From the cursors on, it is the most lines one read
+        // returns, so `tail=0` must not stay one: nothing would ever be read again.
+        tail = crate::logs::MAX_TAIL_LINES;
+    }
+    if !left {
+        for stream in [&streams.stdout, &streams.stderr].into_iter().flatten() {
+            let _ = stream.close().await;
+        }
+    }
+    Ok(to_value(&LogsStreamed {
+        cursors: query.cursors,
+    }))
+}
+
+/// Ends an operation whose task panicked: its subscribers (the caller's report) get a terminal
+/// event instead of waiting for one forever, and the task's join error says the rest.
+async fn finish_stopped(operation: &crate::operation::Operation, op: &str) {
+    operation
+        .finish(
+            crate::operation::OperationStatus::Failed,
+            format!("the {op} operation stopped unexpectedly"),
+        )
+        .await;
 }
 
 /// Reports one mutation that ran in the background after it was accepted.
@@ -1211,6 +1889,94 @@ fn add_worker_options_schema() -> Option<Value> {
     Some(schema)
 }
 
+/// What a request schema says of the stream a call draws its progress into: `stderr`, which
+/// `iii call` binds to its own, and `terminal`, which it fills.
+const PROGRESS_STREAM: &str = "A stream the progress is drawn into. With it, the call answers \
+                               once the operation finished, and fails when it failed or was \
+                               cancelled; a reader that leaves cancels the operation. `iii call` \
+                               binds its own standard error to it.";
+
+/// Adds the `stderr` progress stream and the `terminal` it is drawn for to a request schema.
+fn with_progress(schema: Option<Value>) -> Option<Value> {
+    let mut schema = schema?;
+    let properties = schema.pointer_mut("/properties")?.as_object_mut()?;
+    properties.insert("stderr".to_string(), output_stream_schema(PROGRESS_STREAM));
+    properties.insert("terminal".to_string(), caller_terminal_schema());
+    Some(schema)
+}
+
+/// `compose::logs` takes streams to write its lines into, and `follow` to keep writing.
+fn logs_options_schema() -> Option<Value> {
+    let mut schema = schema_for_value::<LogsOptions>()?;
+    let properties = schema.pointer_mut("/properties")?.as_object_mut()?;
+    properties.insert(
+        "stdout".to_string(),
+        output_stream_schema(
+            "A stream the stdout lines are written into, as text, labelled with their worker when \
+             every worker is read; the stderr lines too without `stderr`. With it, the call \
+             answers with the cursors to resume from. `iii call` binds its own standard output \
+             to it.",
+        ),
+    );
+    properties.insert(
+        "stderr".to_string(),
+        output_stream_schema(
+            "A stream the stderr lines are written into, as text. `iii call` binds its own \
+             standard error to it.",
+        ),
+    );
+    properties.insert(
+        "follow".to_string(),
+        json!({
+            "description": "With a stream: keep writing new lines until the caller leaves.",
+            "type": ["boolean", "null"],
+        }),
+    );
+    properties.insert("terminal".to_string(), caller_terminal_schema());
+    Some(schema)
+}
+
+/// A stream the function writes: the write end of an engine pipe, as every SDK describes an
+/// `OutputStream`, so `iii call` binds its own output to a field named `stdout` or `stderr`.
+fn output_stream_schema(description: &str) -> Value {
+    json!({
+        "title": "OutputStream",
+        "description": description,
+        "type": "object",
+        "x-iii-stream": "write",
+        "required": ["access_key", "channel_id", "direction"],
+        "properties": {
+            "channel_id": { "type": "string" },
+            "access_key": { "type": "string" },
+            "direction": { "type": "string", "const": "write" },
+        },
+    })
+}
+
+/// The terminal the progress is drawn for. `iii call` fills a field marked `x-iii-terminal`.
+fn caller_terminal_schema() -> Value {
+    let size = |what: &str| {
+        json!({
+            "description": format!("{what} of the terminal, when known."),
+            "type": ["integer", "null"],
+            "minimum": 0,
+        })
+    };
+    json!({
+        "description": "The caller's terminal: a terminal gets a spinner redrawn in place, \
+                        anything else one line per change. `iii call` fills it.",
+        "type": ["object", "null"],
+        "x-iii-terminal": true,
+        "properties": {
+            "stdout": { "description": "Standard output is a terminal.", "type": "boolean" },
+            "stderr": { "description": "Standard error is a terminal.", "type": "boolean" },
+            "columns": size("Width in columns"),
+            "rows": size("Height in rows"),
+            "color": { "description": "Colour is wanted.", "type": "boolean" },
+        },
+    })
+}
+
 /// One source of truth for function registration and `compose::schema`.
 fn op_description(function_id: &str) -> &'static str {
     match function_id {
@@ -1220,11 +1986,11 @@ fn op_description(function_id: &str) -> &'static str {
              effective required value is false is named in \
              not_required_failures when it fails, and the operation still \
              returns ok. Frozen mode requires the selected compose file's lock to match and \
-             skips package resolution."
+             skips package resolution. With a `stderr` stream, draws the progress into it."
         }
         "compose::down" => {
             "Stop a compose project, or one container and its dependents, in \
-             reverse dependency order."
+             reverse dependency order. With a `stderr` stream, draws the progress into it."
         }
         "compose::list" => {
             "List every project loaded by this compose daemon, and the target \
@@ -1248,7 +2014,9 @@ fn op_description(function_id: &str) -> &'static str {
         }
         "compose::logs" => {
             "Read bounded worker stdout and stderr. A cursor continues from the last response; \
-             callers may long-poll for new output."
+             callers may long-poll for new output. With `stdout` or `stderr` streams, writes \
+             the lines into them as text, and with `follow` keeps writing until the caller \
+             leaves."
         }
         "compose::stop" => {
             "Ask this compose daemon to stop every project and exit after it \
@@ -1261,28 +2029,32 @@ fn op_description(function_id: &str) -> &'static str {
         "compose::add" => {
             "Accept an observable operation that declares one or more workers and their registry \
              dependencies in the compose file, locks resolved packages, then reconciles changed \
-             workers once. Explicit selectors remain in the compose file."
+             workers once. Explicit selectors remain in the compose file. With a `stderr` \
+             stream, draws the progress into it and answers once the operation finished."
         }
         "compose::remove" => {
             "Accept an observable operation that removes one or more declared workers and \
              dependency references to them, stops only those workers, then reconciles anything \
-             already missing."
+             already missing. With a `stderr` stream, draws the progress into it and answers \
+             once the operation finished."
         }
         "compose::restart" => {
             "Restart the whole project, or restart one named container without \
-             changing its dependency graph."
+             changing its dependency graph. With a `stderr` stream, draws the progress into it."
         }
         "compose::build" => {
             "Accept an observable operation that runs scripts.build for one container, or for \
              every container that declares one, under the project's mutation lock. It never \
              restarts a container; the finished operation carries one result per container. \
-             compose::cancel or compose::down stops it."
+             compose::cancel or compose::down stops it. With a `stderr` stream, draws the \
+             progress and the build lines into it and answers once the operation finished."
         }
         "compose::update" => {
             "Accept an observable operation that refreshes declared package selectors or moves \
              workers to requested versions, including their dependency graphs. Omit worker and \
              workers to move all declared packages to latest; path workers are skipped. The \
-             project restarts only when runtime content or topology changes."
+             project restarts only when runtime content or topology changes. With a `stderr` \
+             stream, draws the progress into it and answers once the operation finished."
         }
         "compose::schema" => {
             "Return request and response JSON Schemas for compose::* functions. \
@@ -1332,12 +2104,12 @@ fn schema_table() -> &'static [SchemaTriple] {
         vec![
             (
                 "compose::up",
-                schema_for_value::<UpOptions>(),
+                with_progress(schema_for_value::<UpOptions>()),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::down",
-                schema_for_value::<LifecycleOptions>(),
+                with_progress(schema_for_value::<LifecycleOptions>()),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
@@ -1357,8 +2129,8 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::logs",
-                schema_for_value::<LogsOptions>(),
-                schema_for_value::<LogsOutcome>(),
+                logs_options_schema(),
+                schema_for_value::<LogsAnswer>(),
             ),
             (
                 "compose::stop",
@@ -1372,28 +2144,28 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::add",
-                add_worker_options_schema(),
+                with_progress(add_worker_options_schema()),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::remove",
-                remove_worker_options_schema(),
+                with_progress(remove_worker_options_schema()),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::restart",
-                schema_for_value::<RestartOptions>(),
+                with_progress(schema_for_value::<RestartOptions>()),
                 schema_for_value::<MutationOutcome>(),
             ),
             (
                 "compose::update",
-                update_worker_options_schema(),
+                with_progress(update_worker_options_schema()),
                 schema_for_value::<OperationAcceptedOutcome>(),
             ),
             (
                 "compose::build",
-                schema_for_value::<BuildOptions>(),
-                schema_for_value::<OperationAcceptedOutcome>(),
+                with_progress(schema_for_value::<BuildOptions>()),
+                schema_for_value::<BuildAnswer>(),
             ),
             (
                 "compose::schema",
@@ -1402,12 +2174,12 @@ fn schema_table() -> &'static [SchemaTriple] {
             ),
             (
                 "compose::operation",
-                schema_for_value::<ComposeRequest>(),
+                schema_for_value::<OperationOptions>(),
                 schema_for_value::<crate::operation::OperationSnapshot>(),
             ),
             (
                 "compose::cancel",
-                schema_for_value::<ComposeRequest>(),
+                schema_for_value::<OperationOptions>(),
                 schema_for_value::<CancelOutcome>(),
             ),
             (
@@ -2542,6 +3314,171 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].1["outcome"], "ok");
         assert!(reports[0].1["error_kind"].is_null());
+    }
+
+    #[test]
+    fn mutations_take_a_progress_stream_and_the_terminal_it_reaches() {
+        for function_id in [
+            "compose::add",
+            "compose::update",
+            "compose::remove",
+            "compose::build",
+            "compose::up",
+            "compose::down",
+            "compose::restart",
+        ] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            let stderr = &schema["properties"]["stderr"];
+            assert_eq!(stderr["x-iii-stream"], "write", "{function_id}");
+            assert_eq!(
+                stderr["properties"]["direction"]["const"], "write",
+                "{function_id}"
+            );
+            assert_eq!(
+                schema["properties"]["terminal"]["x-iii-terminal"], true,
+                "{function_id}"
+            );
+            let mut fields: Vec<&str> = schema["properties"]["terminal"]["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            fields.sort_unstable();
+            assert_eq!(fields, ["color", "columns", "rows", "stderr", "stdout"]);
+        }
+        // The stream is optional: a caller without one gets the answer it got before.
+        let add = schema_entry("compose::add").1.as_ref().unwrap();
+        let validator = jsonschema::Validator::new(add).unwrap();
+        assert!(validator.is_valid(&json!({ "worker": "state" })));
+    }
+
+    #[test]
+    fn reads_take_no_stream_and_logs_takes_two() {
+        for function_id in [
+            "compose::status",
+            "compose::list",
+            "compose::ps",
+            "compose::validate",
+            "compose::schema",
+            "compose::stop",
+            "compose::operation",
+            "compose::cancel",
+        ] {
+            let schema = schema_entry(function_id).1.as_ref().unwrap();
+            for field in ["stdout", "stderr", "terminal"] {
+                assert!(
+                    schema["properties"].get(field).is_none(),
+                    "{function_id} {field}"
+                );
+            }
+        }
+        let logs = schema_entry("compose::logs").1.as_ref().unwrap();
+        for field in ["stdout", "stderr"] {
+            assert_eq!(
+                logs["properties"][field]["x-iii-stream"], "write",
+                "{field}"
+            );
+        }
+        assert_eq!(logs["properties"]["terminal"]["x-iii-terminal"], true);
+        assert!(logs["properties"]["follow"].is_object());
+    }
+
+    fn accepted() -> OperationAcceptedOutcome {
+        OperationAcceptedOutcome {
+            operation_id: "compose:test".into(),
+            status: "accepted".into(),
+            requested: 1,
+            outcome: None,
+        }
+    }
+
+    /// How a drawn add answers a success.
+    fn succeeded(outcome: MutationOutcome) -> Value {
+        to_value(&OperationAcceptedOutcome {
+            status: "succeeded".into(),
+            outcome: Some(outcome),
+            ..accepted()
+        })
+    }
+
+    fn outcome(status: crate::lifecycle::OpStatus, changed: bool) -> MutationOutcome {
+        MutationOutcome::from_operations(
+            status,
+            changed,
+            Some("state"),
+            None,
+            None,
+            std::iter::empty::<&crate::lifecycle::OpResult>(),
+        )
+    }
+
+    #[test]
+    fn a_drawn_add_that_succeeded_answers_with_its_outcome() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Ok, true)),
+            ADD_DETAILS,
+            succeeded,
+        );
+        assert_eq!(ending, Ending::Succeeded(ADD_DETAILS.success.into()));
+        let answer = answer.unwrap();
+        assert_eq!(answer["operation_id"], "compose:test");
+        assert_eq!(answer["status"], "succeeded");
+        assert_eq!(answer["outcome"]["worker"], "state");
+        assert_eq!(answer["outcome"]["changed"], true);
+    }
+
+    #[test]
+    fn a_drawn_up_answers_with_the_outcome_it_answers_without_a_stream() {
+        let up = outcome(crate::lifecycle::OpStatus::Ok, false);
+        let (ending, answer) =
+            drawn_answer(Ok(up.clone()), UP_DETAILS, |outcome| to_value(&outcome));
+        assert_eq!(ending, Ending::Succeeded(UP_DETAILS.unchanged.into()));
+        assert_eq!(answer.unwrap(), to_value(&up));
+    }
+
+    #[test]
+    fn a_drawn_add_that_changed_nothing_says_so() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Ok, false)),
+            ADD_DETAILS,
+            succeeded,
+        );
+        assert_eq!(ending, Ending::Succeeded(ADD_DETAILS.unchanged.into()));
+        assert!(answer.is_ok());
+    }
+
+    #[test]
+    fn a_drawn_add_that_failed_fails_the_call() {
+        let (ending, answer) = drawn_answer(
+            Ok(outcome(crate::lifecycle::OpStatus::Failed, true)),
+            ADD_DETAILS,
+            succeeded,
+        );
+        assert_eq!(ending, Ending::Failed(ADD_DETAILS.failed.into()));
+        match answer {
+            Err(Error::Remote { code, message, .. }) => {
+                assert_eq!(code, "OPERATION_FAILED");
+                assert_eq!(message, ADD_DETAILS.failed);
+            }
+            other => panic!("expected a remote error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_drawn_add_that_was_cancelled_fails_with_its_code() {
+        let (ending, answer) = drawn_answer(
+            Err(ComposeError::OperationCancelled {
+                operation_id: "compose:test".into(),
+            }),
+            ADD_DETAILS,
+            succeeded,
+        );
+        assert_eq!(ending, Ending::Cancelled("operation cancelled".into()));
+        match answer {
+            Err(Error::Remote { code, .. }) => assert_eq!(code, "OPERATION_CANCELLED"),
+            other => panic!("expected a remote error, got {other:?}"),
+        }
     }
 }
 

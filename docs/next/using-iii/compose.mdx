@@ -134,26 +134,57 @@ iii call compose::schema  --namespace dev function_id=compose::up
 iii call compose::stop    --namespace dev
 ```
 
-| Function            | Takes                                                       | Returns                                                                    |
-| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `compose::up`       | `file`, `container`, `frozen`                               | An operation result.                                                       |
-| `compose::down`     | `file`, `container`                                         | An operation result.                                                       |
-| `compose::status`   | `file`                                                      | Namespace, file, state directory, daemon pid, host targets, worker states. |
-| `compose::ps`       | `file`                                                      | The daemon pid and the operating-system processes of its projects.         |
-| `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms` | Bounded stdout/stderr entries and one cursor per worker.                   |
-| `compose::list`     | nothing                                                     | The daemon name, namespace, pid, host targets, and every project it holds. |
-| `compose::validate` | `file`                                                      | A validation report.                                                       |
-| `compose::add`      | `file`, `workers`                                           | What the edit did, changed workers restarted, and new workers started.     |
-| `compose::remove`   | `file`, `worker`                                            | The worker removed, its targeted stop, and the idempotent `up`.            |
-| `compose::restart`  | `file`, `container`                                         | The `down` and the `up`, or one worker's restart.                          |
-| `compose::update`   | `file`, `worker`                                            | The resolved version and a restart when the package content changed.       |
-| `compose::build`    | `file`, `worker`, `operation_id`                            | An accepted operation; per-container build results when it finishes.       |
-| `compose::stop`     | nothing                                                     | The daemon name, its pid, and the projects it is about to stop.            |
-| `compose::schema`   | `function_id`                                               | Request/response JSON Schemas, descriptions, timeouts, and retry safety.   |
+| Function            | Takes                                                                                     | Returns                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `compose::up`       | `file`, `container`, `frozen`, `stderr`                                                   | An operation result; with `stderr`, its progress first.                                   |
+| `compose::down`     | `file`, `container`, `stderr`                                                             | An operation result; with `stderr`, its progress first.                                   |
+| `compose::status`   | `file`                                                                                    | Namespace, file, state directory, daemon pid, host targets, worker states.                |
+| `compose::ps`       | `file`                                                                                    | The daemon pid and the operating-system processes of its projects.                        |
+| `compose::logs`     | `file`, `container`, `cursors`, `tail`, `stream`, `wait_ms`, `follow`, `stdout`, `stderr` | Bounded stdout/stderr entries and one cursor per worker; with streams, the lines as text. |
+| `compose::list`     | nothing                                                                                   | The daemon name, namespace, pid, host targets, and every project it holds.                |
+| `compose::validate` | `file`                                                                                    | A validation report.                                                                      |
+| `compose::add`      | `file`, `workers`, `stderr`                                                               | An accepted operation; with `stderr`, its progress, then its outcome.                     |
+| `compose::remove`   | `file`, `workers`, `prune`, `stderr`                                                      | An accepted operation; with `stderr`, its progress, then its outcome.                     |
+| `compose::restart`  | `file`, `container`, `stderr`                                                             | The `down` and the `up`, or one worker's restart; with `stderr`, its progress first.      |
+| `compose::update`   | `file`, `workers`, `stderr`                                                               | An accepted operation; with `stderr`, its progress, then its outcome.                     |
+| `compose::build`    | `file`, `worker`, `operation_id`, `stderr`                                                | An accepted operation; with `stderr`, its progress and build lines, then its results.     |
+| `compose::stop`     | nothing                                                                                   | The daemon name, its pid, and the projects it is about to stop.                           |
+| `compose::schema`   | `function_id`                                                                             | Request/response JSON Schemas, descriptions, timeouts, and retry safety.                  |
 
 `file` is optional when the daemon holds one project. A relative `file` is relative to the daemon's
 directory, not yours; an absolute path also works. See
 [Which project a call reaches](../understanding-iii/compose#which-project-a-call-reaches).
+
+### Progress from `iii call`
+
+From `iii call`, the functions that change a project (`compose::up`, `down`, `restart`, `add`,
+`update`, `remove`, and `build`) show their progress and answer once the operation finished.
+`iii call` binds its standard error to the `stderr` stream of the request and says what its terminal
+is in `terminal`, and Compose draws each worker the operation moves into the stream: a spinner per
+worker, redrawn in place, on a terminal, or one line per change when standard error is a pipe or a
+file. Workers the operation leaves as they are, such as those already running, are not listed.
+
+```text
+$ iii call compose::add worker=state worker=queue
+⠹ adding 2 workers (4.2s)
+  ✓ state ready (1.2s)
+  ⠼ queue waiting for engine registration (3.0s)
+```
+
+- The call exits with `0` once the operation succeeded, or when a worker that is not required did
+  not start, which the last line names. It exits with `1` when a required worker failed or the
+  operation was cancelled, and `iii call` prints the `Error:` with its code.
+- `--print-result` prints the answer. `up`, `down`, and `restart` answer as they do without a
+  stream. `add`, `update`, `remove`, and `build` answer `status: "succeeded"` with the operation's
+  `outcome`, or the build's `results`.
+- `compose::build` also prints each line its builds write, labelled `<worker> │`, above the
+  progress.
+- The first `Ctrl+C` cancels the operation, as `compose::cancel` does, and the call exits once the
+  operation stopped.
+- Without a `stderr` stream, as from an SDK, the ADE, or `iii call --no-follow`, each function
+  answers as it always did. `add`, `update`, `remove`, and `build` answer
+  `{ operation_id, status: "accepted", requested }` at once and finish in the background: follow
+  them with `compose::operation` or by observing `compose::on-operation-progress`.
 
 ### Starting a project
 
@@ -322,6 +353,9 @@ use `{}` or `[]` to clear it. A VM worker gets its `scripts` and `start_after` w
 [VM workers](#vm-workers)). See
 [How compose::add edits a project](../understanding-iii/compose#how-composeadd-edits-a-project).
 
+From `iii call`, `compose::add` shows each worker it starts and answers once the operation
+finished. See [Progress from `iii call`](#progress-from-iii-call).
+
 ### Package lock
 
 ```bash
@@ -436,7 +470,6 @@ is done:
 
 ```bash
 iii call compose::build worker=link
-iii compose logs link --follow
 iii call compose::restart worker=link
 ```
 
@@ -446,8 +479,11 @@ iii call compose::restart worker=link
 | `worker`       | A container key. Omitted, every container that declares `scripts.build`. |
 | `operation_id` | Optional, as for other mutations.                                        |
 
-- The call answers at once with an `operation_id`. The container's logs show the build, each line
-  with the `[build] ` prefix.
+- From `iii call`, each line of the build is printed as it comes, labelled `<container> │`, above
+  its progress, and the call exits with how the build ended. See
+  [Progress from `iii call`](#progress-from-iii-call).
+- Without a stream, as from an SDK or `iii call --no-follow`, the call answers at once with an
+  `operation_id`. The container's logs show the build, each line with the `[build] ` prefix.
 - A container whose `scripts.build` is `""` is reported as `skipped`.
 - `compose::cancel` with the operation id, or `compose::down`, stops the build.
 
@@ -528,7 +564,8 @@ Compose daemon supervises. For every iii process on the machine, use
 
 ```bash
 iii call compose::logs --namespace dev worker=api tail=200
-iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
+iii call compose::logs --namespace dev worker=api follow=true
+iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000 --no-follow
 ```
 
 | Field     | Description                                                                          |
@@ -539,10 +576,18 @@ iii call compose::logs --namespace dev worker=api stream=stderr wait_ms=5000
 | `cursors` | The `cursor` from the last response, keyed by worker. The call continues from there. |
 | `stream`  | `stdout` or `stderr`. Omit for both.                                                 |
 | `wait_ms` | Wait this many milliseconds for new output. Maximum 5000.                            |
+| `stdout`  | A stream to write the lines into as text instead. `iii call` binds its own.          |
+| `stderr`  | A stream to write the stderr lines into as text. `iii call` binds its own.           |
+| `follow`  | With a stream, keep writing new lines until the caller leaves.                       |
 
 The response holds one entry per worker with `container`, `entries` (each with `stream` and
 `message`), `cursor` (`generation` and `offset`), and `truncated`, which is `true` when the cursor
 sent is older than the retained archives.
+
+From `iii call`, `compose::logs` writes the lines as text rather than answering with them: stdout's
+lines to standard output and stderr's to standard error, each labelled `<worker> │` when every
+worker is read. With `follow=true` it keeps writing new lines until `Ctrl+C`. `--print-result`
+prints the cursors to resume from, and `--no-follow` gives the JSON response above.
 
 ### Listing projects
 
@@ -1103,7 +1148,6 @@ The running worker keeps its current image until it restarts. Build, then restar
 
 ```bash
 iii call compose::build worker=link
-iii compose logs link --follow
 iii call compose::restart worker=link
 ```
 

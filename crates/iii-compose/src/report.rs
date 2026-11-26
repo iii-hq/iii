@@ -1960,7 +1960,7 @@ pub fn summary_failed(action: &str, code: &str, elapsed: Duration) {
 }
 
 /// Sub-second work is reported in milliseconds; past that the decimal is noise.
-fn format_elapsed(elapsed: Duration) -> String {
+pub(crate) fn format_elapsed(elapsed: Duration) -> String {
     if elapsed.as_secs() == 0 {
         format!("{}ms", elapsed.as_millis())
     } else {

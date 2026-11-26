@@ -57,10 +57,22 @@ impl LogStream {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LogCursor {
-    /// Opaque identity of the active or archived log segment.
+    /// Opaque identity of the active or archived log segment. Empty: the start of the oldest
+    /// retained segment.
     pub generation: String,
     /// Byte offset after the last record returned from that segment.
     pub offset: u64,
+}
+
+impl LogCursor {
+    /// The start of a worker's oldest retained log: reading from it returns every retained line,
+    /// in bounded batches like any cursor. A segment's generation is never empty.
+    pub fn start() -> Self {
+        Self {
+            generation: String::new(),
+            offset: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -111,7 +123,12 @@ struct LogMessage {
 pub(crate) struct LogSink {
     container: String,
     sender: tokio::sync::mpsc::Sender<LogMessage>,
+    /// Also handed each line [`Self::write_line`] writes, cleaned, before the log takes it.
+    tap: Option<LineTap>,
 }
+
+/// Something else that reads the lines a [`LogSink`] writes, such as the caller drawing a build.
+pub(crate) type LineTap = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 impl LogSink {
     /// One line of output Compose read itself, such as a build's, cleaned and split as
@@ -120,6 +137,9 @@ impl LogSink {
     pub(crate) async fn write_line(&self, stream: LogStream, line: &str) {
         let clean = TerminalSanitizer::default().sanitize(line.as_bytes());
         for line in clean.split(|byte| *byte == b'\n') {
+            if let Some(tap) = &self.tap {
+                tap(&String::from_utf8_lossy(line));
+            }
             let mut rest = line;
             loop {
                 let (chunk, tail) = rest.split_at(rest.len().min(MAX_LINE_BYTES));
@@ -232,10 +252,52 @@ impl LogStore {
         &self.dir
     }
 
+    /// Where every log on disk ends now, by container, declared or not. A follow that began here
+    /// reads a container declared later from this point, so its retained history is not
+    /// replayed as new output.
+    pub async fn ends(&self) -> std::io::Result<BTreeMap<String, LogCursor>> {
+        let dir = self.dir.clone();
+        let io_lock = Arc::clone(&self.io_lock);
+        let archives = self.archives;
+        tokio::task::spawn_blocking(move || {
+            let _guard = io_lock
+                .lock()
+                .map_err(|_| std::io::Error::other("worker log lock is poisoned"))?;
+            let mut ends = BTreeMap::new();
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ends),
+                Err(error) => return Err(error),
+            };
+            for entry in entries {
+                let name = entry?.file_name();
+                let Some(container) = name.to_str().and_then(container_of) else {
+                    continue;
+                };
+                let read = read_container_logs(&dir, &container, None, 0, None, archives)?;
+                if let Some(cursor) = read.cursor {
+                    ends.insert(container, cursor);
+                }
+            }
+            Ok(ends)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
     pub(crate) fn sink(&self, container: &str) -> LogSink {
         LogSink {
             container: container.to_string(),
             sender: self.sender.clone(),
+            tap: None,
+        }
+    }
+
+    /// [`Self::sink`], whose [`LogSink::write_line`] also hands each line to `tap`.
+    pub(crate) fn tapped_sink(&self, container: &str, tap: Option<LineTap>) -> LogSink {
+        LogSink {
+            tap,
+            ..self.sink(container)
         }
     }
 
@@ -526,6 +588,14 @@ fn read_container_logs(
     }
 
     match cursor {
+        Some(cursor) if cursor.generation.is_empty() => {
+            let (path, generation) = &available[0];
+            let first = LogCursor {
+                generation: generation.clone(),
+                offset: header_end(path)?.unwrap_or_default(),
+            };
+            read_after_cursor(container, &available, &first, tail, stream)
+        }
         Some(cursor) => read_after_cursor(container, &available, cursor, tail, stream),
         None => read_tail(container, &available, tail, stream, false),
     }
@@ -667,6 +737,20 @@ fn tail_entries(
     Ok(entries)
 }
 
+/// What one line of a log file says: the message of a record, without its `stdout`/`stderr` tag.
+/// `None` for the file's header, which says nothing the worker wrote. A line without a tag, from a
+/// log written before records had one, is its own message.
+pub(crate) fn message_of(line: &str) -> Option<&str> {
+    if line.starts_with(LOG_HEADER_PREFIX) {
+        return None;
+    }
+    Some(
+        line.strip_prefix("stdout\t")
+            .or_else(|| line.strip_prefix("stderr\t"))
+            .unwrap_or(line),
+    )
+}
+
 fn parse_entry(record: &[u8], filter: Option<LogStream>) -> Option<LogEntry> {
     let record = record.strip_suffix(b"\n").unwrap_or(record);
     let separator = record.iter().position(|byte| *byte == b'\t')?;
@@ -738,6 +822,27 @@ fn log_path(dir: &Path, container: &str) -> PathBuf {
     }
     name.push_str(".log");
     dir.join(name)
+}
+
+/// The container a log file is for, the inverse of [`log_path`]: `None` for an archived segment
+/// or any other file.
+fn container_of(file_name: &str) -> Option<String> {
+    let encoded = file_name.strip_suffix(".log")?;
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut rest = encoded.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        if byte == b'%' {
+            let hex = std::str::from_utf8(after.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &after[2..];
+        } else {
+            bytes.push(byte);
+            rest = after;
+        }
+    }
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|name| !name.is_empty())
 }
 
 #[cfg(unix)]
@@ -919,6 +1024,77 @@ pub(crate) mod tests {
                     message: "stderr\tforged".into()
                 }
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn ends_name_each_retained_log_where_it_ends_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::open(dir.path().to_path_buf()).unwrap();
+        for container in ["web", "ns/api"] {
+            store
+                .sink(container)
+                .write_line(LogStream::Stdout, "before")
+                .await;
+            entries(&store, container, 1).await;
+        }
+        let ends = store.ends().await.unwrap();
+        assert_eq!(
+            ends.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["ns/api", "web"]
+        );
+
+        store
+            .sink("ns/api")
+            .write_line(LogStream::Stdout, "after")
+            .await;
+        let mut read = Vec::new();
+        for _ in 0..100 {
+            let logs = store
+                .query(
+                    vec!["ns/api".into()],
+                    ends.clone(),
+                    10,
+                    None,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+            read = logs.containers[0]
+                .entries
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect();
+            if !read.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(read, ["after"]);
+    }
+
+    #[test]
+    fn the_start_cursor_reads_from_the_oldest_retained_line_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.log");
+        let mut file = WorkerLogFile::open(path, 1_024, 1).unwrap();
+        for index in 0..5 {
+            write(&mut file, LogStream::Stdout, &format!("line-{index}"));
+        }
+        let messages = |logs: &ContainerLogs| {
+            logs.entries
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect::<Vec<_>>()
+        };
+
+        let start = LogCursor::start();
+        let first = read_container_logs(dir.path(), "queue", Some(&start), 2, None, 1).unwrap();
+        let next = first.cursor.as_ref().unwrap();
+        let second = read_container_logs(dir.path(), "queue", Some(next), 2, None, 1).unwrap();
+
+        assert_eq!(
+            [messages(&first), messages(&second)],
+            [["line-0", "line-1"], ["line-2", "line-3"]]
         );
     }
 }

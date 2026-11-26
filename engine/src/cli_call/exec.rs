@@ -14,7 +14,9 @@ use iii_sdk::{Error, IIIClient, InitOptions, WorkerIdentityMode, register_worker
 use serde_json::{Value, json};
 
 use super::CallCliError;
-use super::streams::{Bindings, Carried, CopyFailure, Interrupt, result_streams};
+use super::streams::{
+    Bindings, Carried, CopyFailure, Interrupt, result_streams, terminal_description, terminal_field,
+};
 
 /// The call's timeout when nothing else names one.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -184,12 +186,16 @@ async fn call(
     // has, and a script's `iii call sandbox::build` would look in its project's namespace.
     let namespace = options.namespace.unwrap_or(DEFAULT_NAMESPACE);
     let mut bindings = Bindings::default();
+    let mut schema = None;
     // Read with `--no-follow` too: a function that takes a stream runs as long as it does, and its
     // call keeps no default limit even when it carries none.
     if payload.is_object() {
         let lookup_timeout = budget.lookup_timeout();
         match request_schema(iii, function_path, namespace, lookup_timeout).await {
-            Ok(Some(schema)) => bindings.complete_from_schema(&schema, &payload),
+            Ok(Some(found)) => {
+                bindings.complete_from_schema(&found, &payload);
+                schema = Some(found);
+            }
             Ok(None) => {}
             Err(error) => {
                 if let Err(error) = after_failed_lookup(error) {
@@ -214,9 +220,16 @@ async fn call(
 
     let mut carried = Carried::default();
     if !bindings.is_empty() {
-        // A stream that cannot be
-        // opened now is the engine's failure, not the arguments'. Opening them spends the
-        // call's budget too: once it ran out, the streams already open are closed and the call
+        // A function that draws into the streams draws for the terminal they reach.
+        if let Some(field) = schema
+            .as_ref()
+            .and_then(|schema| terminal_field(schema, &payload))
+            && let Some(object) = payload.as_object_mut()
+        {
+            object.insert(field.to_string(), terminal_description());
+        }
+        // A stream that cannot be opened now is the engine's failure, not the arguments'.
+        // Opening them spends the call's budget too: once it ran out, the streams already open are closed and the call
         // is not sent.
         let bound = within(&budget, carried.bind(iii, &bindings, &mut payload)).await;
         let spent = budget.remaining().is_some_and(|left| left.is_zero());

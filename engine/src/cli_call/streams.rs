@@ -154,6 +154,83 @@ fn stream_direction(root: &Value, schema: &Value, depth: usize) -> Option<Channe
     }
 }
 
+/// The payload field a request schema marks `x-iii-terminal`: the function draws for the terminal
+/// its streams reach, and `iii call` says what that terminal is. `None` when no field is marked or
+/// the payload already sets the marked one. Follows local `$ref`s and the members of `anyOf`,
+/// `oneOf` and `allOf`, as an optional field has them.
+pub fn terminal_field<'a>(schema: &'a Value, payload: &Value) -> Option<&'a str> {
+    schema
+        .get("properties")?
+        .as_object()?
+        .iter()
+        .find(|(field, property)| {
+            payload.get(field.as_str()).is_none() && marks_terminal(schema, property, 0)
+        })
+        .map(|(field, _)| field.as_str())
+}
+
+fn marks_terminal(root: &Value, schema: &Value, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if schema.get("x-iii-terminal") == Some(&Value::Bool(true)) {
+        return true;
+    }
+    if let Some(target) = schema
+        .get("$ref")
+        .and_then(Value::as_str)
+        .and_then(|reference| reference.strip_prefix('#'))
+        .and_then(|pointer| root.pointer(pointer))
+    {
+        return marks_terminal(root, target, depth + 1);
+    }
+    ["anyOf", "oneOf", "allOf"].iter().any(|key| {
+        schema
+            .get(*key)
+            .and_then(Value::as_array)
+            .is_some_and(|members| {
+                members
+                    .iter()
+                    .any(|member| marks_terminal(root, member, depth + 1))
+            })
+    })
+}
+
+/// What this process's terminal is, for the field [`terminal_field`] names: whether stdout and
+/// stderr redraw a line, the terminal's size, and whether colour is wanted (`NO_COLOR` unset).
+pub fn terminal_description() -> Value {
+    let stderr = console::Term::stderr();
+    let stdout = console::Term::stdout();
+    describe_terminal(
+        redraws(&stdout),
+        redraws(&stderr),
+        stderr.size_checked().or_else(|| stdout.size_checked()),
+        std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
+    )
+}
+
+fn describe_terminal(stdout: bool, stderr: bool, size: Option<(u16, u16)>, color: bool) -> Value {
+    serde_json::json!({
+        "stdout": stdout,
+        "stderr": stderr,
+        "columns": size.map(|(_, columns)| columns),
+        "rows": size.map(|(rows, _)| rows),
+        "color": color,
+    })
+}
+
+/// Whether `term` redraws a line: a terminal, and not `TERM=dumb`. On Windows the console must also
+/// take escape sequences, which `console` turns on as it checks.
+fn redraws(term: &console::Term) -> bool {
+    if !term.is_term() || std::env::var_os("TERM").is_some_and(|name| name == "dumb") {
+        return false;
+    }
+    if cfg!(windows) {
+        return term.features().colors_supported();
+    }
+    true
+}
+
 /// The streams at `/stdout` and `/stderr` of a result, to follow: refs to read.
 pub fn result_streams(result: &Value) -> Vec<(Stdio, StreamChannelRef)> {
     [Stdio::Stdout, Stdio::Stderr]
@@ -446,7 +523,8 @@ fn record_unread(unread: &Mutex<Option<String>>, error: String) {
 }
 
 /// SIGINT and SIGTERM. While streams are carried, the first one is a stop request and a second one
-/// ends the process at once, with 128 plus its number. Before [`Interrupt::arm`], nothing can be
+/// ends the process at once, with 128 plus its number; one within [`REPEAT_WINDOW`] of the first is
+/// a copy of it. Before [`Interrupt::arm`], nothing can be
 /// stopped, and the first one already ends the process so. On Windows, Ctrl+C is SIGINT and
 /// Ctrl+Break is SIGTERM: the console event a process manager sends to stop a process group.
 pub struct Interrupt {
@@ -476,7 +554,7 @@ impl Interrupt {
         );
         let stops = Arc::clone(&armed);
         tokio::spawn(async move {
-            let mut first = true;
+            let mut first: Option<std::time::Instant> = None;
             loop {
                 let number = tokio::select! {
                     received = terminate.recv() => received.map(|()| 15),
@@ -485,11 +563,15 @@ impl Interrupt {
                 let Some(number) = number else {
                     return;
                 };
-                if ends_at_once(first, stops.load(Ordering::Acquire)) {
-                    std::process::exit(128 + number);
+                let now = std::time::Instant::now();
+                match on_signal(first, now, stops.load(Ordering::Acquire)) {
+                    Signal::Repeat => continue,
+                    Signal::Exit => std::process::exit(128 + number),
+                    Signal::Stop => {
+                        first = Some(now);
+                        sender.send_replace(Some(number));
+                    }
                 }
-                first = false;
-                sender.send_replace(Some(number));
             }
         });
         Ok(Self { received, armed })
@@ -519,16 +601,86 @@ impl Interrupt {
     }
 }
 
-/// Whether a signal ends the process at once: a second one always does, and a first one does when
-/// no stream is carried, since there is nothing to close to ask the function to stop.
-fn ends_at_once(first: bool, armed: bool) -> bool {
-    !first || !armed
+/// Signals closer than this to the first are the same request.
+///
+/// One key press can arrive as two signals: a terminal multiplexer on Windows (psmux) delivers two
+/// Ctrl+C events 6 ms apart, and a wrapper may forward the terminal's Ctrl+C that the process got
+/// already. Taken for a second press, the copy ended the call at once, before the function it
+/// asked to stop could answer. Compose's daemon counts its own signals the same way.
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// What one signal does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// The first one while streams are carried: close them, which asks the function to stop.
+    Stop,
+    /// End the process at once: a second signal, or a first one when no stream is carried, since
+    /// there is nothing to close to ask the function to stop.
+    Exit,
+    /// A copy of the first one, within [`REPEAT_WINDOW`] of it: nothing.
+    Repeat,
+}
+
+/// What a signal at `now` does, given when the first one came and whether streams are carried.
+fn on_signal(first: Option<std::time::Instant>, now: std::time::Instant, armed: bool) -> Signal {
+    match first {
+        Some(first) if now.saturating_duration_since(first) < REPEAT_WINDOW => Signal::Repeat,
+        Some(_) => Signal::Exit,
+        None if armed => Signal::Stop,
+        None => Signal::Exit,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn the_field_marked_x_iii_terminal_is_filled_unless_the_payload_sets_it() {
+        let marked = json!({ "type": ["object", "null"], "x-iii-terminal": true });
+        let schema = json!({
+            "properties": {
+                "worker": { "type": "string" },
+                "terminal": marked,
+            }
+        });
+        assert_eq!(terminal_field(&schema, &json!({})), Some("terminal"));
+        assert_eq!(
+            terminal_field(&schema, &json!({ "terminal": { "stderr": false } })),
+            None,
+            "the payload's own value is kept"
+        );
+
+        let behind_a_ref = json!({
+            "properties": { "tty": { "anyOf": [{ "$ref": "#/definitions/Tty" }, { "type": "null" }] } },
+            "definitions": { "Tty": marked },
+        });
+        assert_eq!(terminal_field(&behind_a_ref, &json!({})), Some("tty"));
+
+        let unmarked = json!({ "properties": { "terminal": { "type": "boolean" } } });
+        assert_eq!(terminal_field(&unmarked, &json!({})), None);
+    }
+
+    #[test]
+    fn the_terminal_description_is_what_compose_reads() {
+        let described = describe_terminal(false, true, Some((40, 120)), true);
+        let terminal: iii_compose::caller_report::CallerTerminal =
+            serde_json::from_value(described).expect("compose reads the description");
+        assert_eq!(
+            terminal,
+            iii_compose::caller_report::CallerTerminal {
+                stdout: false,
+                stderr: true,
+                columns: Some(120),
+                rows: Some(40),
+                color: true,
+            }
+        );
+        assert_eq!(
+            describe_terminal(false, false, None, false),
+            json!({ "stdout": false, "stderr": false, "columns": null, "rows": null, "color": false })
+        );
+    }
 
     /// A request schema as `schemars` writes it for an SDK struct with stream fields.
     fn schema() -> Value {
@@ -745,16 +897,28 @@ mod tests {
     /// SIGINT and SIGTERM do on Unix, and as Ctrl+C and Ctrl+Break must on Windows.
     #[test]
     fn the_first_signal_ends_a_call_that_carries_no_stream() {
-        assert!(ends_at_once(true, false));
+        let now = std::time::Instant::now();
+        assert_eq!(on_signal(None, now, false), Signal::Exit);
     }
 
     #[test]
     fn the_first_signal_is_a_stop_once_streams_are_carried() {
-        assert!(!ends_at_once(true, true));
+        let now = std::time::Instant::now();
+        assert_eq!(on_signal(None, now, true), Signal::Stop);
     }
 
     #[test]
     fn the_second_signal_ends_the_call() {
-        assert!(ends_at_once(false, true));
+        let first = std::time::Instant::now();
+        let later = first + REPEAT_WINDOW;
+        assert_eq!(on_signal(Some(first), later, true), Signal::Exit);
+    }
+
+    /// psmux on Windows delivers one Ctrl+C as two events 6 ms apart.
+    #[test]
+    fn a_copy_of_the_first_signal_is_not_a_second_one() {
+        let first = std::time::Instant::now();
+        let copy = first + std::time::Duration::from_millis(6);
+        assert_eq!(on_signal(Some(first), copy, true), Signal::Repeat);
     }
 }

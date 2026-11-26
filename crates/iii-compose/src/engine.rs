@@ -63,8 +63,10 @@ fn log_tail(log_dir: &std::path::Path, container: &str) -> Option<String> {
     const WIDTH: usize = 200;
 
     let text = std::fs::read_to_string(log_dir.join(format!("{container}.log"))).ok()?;
+    // What the container said: the file's header and each record's stream tag are the log's.
     let tail: Vec<&str> = text
         .lines()
+        .filter_map(crate::logs::message_of)
         .filter(|line| !line.trim().is_empty())
         .rev()
         .take(LINES)
@@ -640,6 +642,24 @@ fn first_misplaced(
 #[cfg(test)]
 mod tests {
     use super::first_misplaced;
+
+    /// A worker that died on its first run left a log of a header and a few records: the tail
+    /// quoted in its error is what it said, not the log's own lines.
+    #[test]
+    fn a_log_tail_quotes_the_messages_without_the_header_or_the_stream_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("api.log"),
+            "# iii-compose-worker-log-v1 56fdf68a-8871-46e8-87a4-0bf936788a29\n\
+             stdout\tapi: loading settings\n\
+             stderr\tapi: DATABASE_URL is not set\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::log_tail(dir.path(), "api").as_deref(),
+            Some("  api: loading settings\n  api: DATABASE_URL is not set")
+        );
+    }
 
     fn functions(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs
