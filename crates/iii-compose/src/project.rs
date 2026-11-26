@@ -2058,6 +2058,14 @@ impl Project {
             })
     }
 
+    /// Where every retained log ends now, by container, declared or not.
+    pub async fn log_ends(&self) -> Result<BTreeMap<String, LogCursor>> {
+        self.logs.ends().await.map_err(|source| ComposeError::Io {
+            path: self.logs.dir().to_path_buf(),
+            source,
+        })
+    }
+
     /// Leaves without touching what was not started here.
     ///
     /// Used when the engine refuses this identity: another daemon already holds

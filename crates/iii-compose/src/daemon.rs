@@ -2751,6 +2751,11 @@ impl Daemon {
             .await
     }
 
+    /// Where every retained log of a project ends now, by container, declared or not.
+    pub async fn log_ends(&self, file: Option<&Path>) -> Result<BTreeMap<String, LogCursor>> {
+        self.status(file).await?.log_ends().await
+    }
+
     fn validate_engine_policy_file(&self, path: &Path) -> Result<()> {
         if path.is_relative() && !path.exists() {
             return Err(ComposeError::RelativeFileMissing {

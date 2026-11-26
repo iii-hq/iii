@@ -240,6 +240,39 @@ impl LogStore {
         &self.dir
     }
 
+    /// Where every log on disk ends now, by container, declared or not. A follow that began here
+    /// reads a container declared later from this point, so its retained history is not
+    /// replayed as new output.
+    pub async fn ends(&self) -> std::io::Result<BTreeMap<String, LogCursor>> {
+        let dir = self.dir.clone();
+        let io_lock = Arc::clone(&self.io_lock);
+        let archives = self.archives;
+        tokio::task::spawn_blocking(move || {
+            let _guard = io_lock
+                .lock()
+                .map_err(|_| std::io::Error::other("worker log lock is poisoned"))?;
+            let mut ends = BTreeMap::new();
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ends),
+                Err(error) => return Err(error),
+            };
+            for entry in entries {
+                let name = entry?.file_name();
+                let Some(container) = name.to_str().and_then(container_of) else {
+                    continue;
+                };
+                let read = read_container_logs(&dir, &container, None, 0, None, archives)?;
+                if let Some(cursor) = read.cursor {
+                    ends.insert(container, cursor);
+                }
+            }
+            Ok(ends)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+    }
+
     pub(crate) fn sink(&self, container: &str) -> LogSink {
         LogSink {
             container: container.to_string(),
@@ -771,6 +804,27 @@ fn log_path(dir: &Path, container: &str) -> PathBuf {
     dir.join(name)
 }
 
+/// The container a log file is for, the inverse of [`log_path`]: `None` for an archived segment
+/// or any other file.
+fn container_of(file_name: &str) -> Option<String> {
+    let encoded = file_name.strip_suffix(".log")?;
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let mut rest = encoded.as_bytes();
+    while let Some((&byte, after)) = rest.split_first() {
+        if byte == b'%' {
+            let hex = std::str::from_utf8(after.get(..2)?).ok()?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            rest = &after[2..];
+        } else {
+            bytes.push(byte);
+            rest = after;
+        }
+    }
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
 #[cfg(unix)]
 fn owner_only(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -951,5 +1005,50 @@ pub(crate) mod tests {
                 }
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn ends_name_each_retained_log_where_it_ends_now() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LogStore::open(dir.path().to_path_buf()).unwrap();
+        for container in ["web", "ns/api"] {
+            store
+                .sink(container)
+                .write_line(LogStream::Stdout, "before")
+                .await;
+            entries(&store, container, 1).await;
+        }
+        let ends = store.ends().await.unwrap();
+        assert_eq!(
+            ends.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["ns/api", "web"]
+        );
+
+        store
+            .sink("ns/api")
+            .write_line(LogStream::Stdout, "after")
+            .await;
+        let mut read = Vec::new();
+        for _ in 0..100 {
+            let logs = store
+                .query(
+                    vec!["ns/api".into()],
+                    ends.clone(),
+                    10,
+                    None,
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+            read = logs.containers[0]
+                .entries
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect();
+            if !read.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(read, ["after"]);
     }
 }

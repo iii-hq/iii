@@ -1623,19 +1623,44 @@ async fn print_logs(
         .map_err(|err| compose_error(&err))?;
     let mut wait_ms = query.wait_ms;
     let mut tail = query.tail;
+    // A follow of every worker reads one declared after it began from where its log ended then,
+    // so a retained log is not replayed as new output. A worker with no log then has no end
+    // here, and all it writes is shown.
+    let mut ends = if query.follow && labelled {
+        daemon
+            .log_ends(Some(&file))
+            .await
+            .map_err(|err| compose_error(&err))?
+    } else {
+        BTreeMap::new()
+    };
+    let mut later: BTreeMap<String, LogCursor> = BTreeMap::new();
     let mut left = false;
     while !left {
+        let mut reading = query.cursors.clone();
+        for (container, cursor) in &later {
+            reading
+                .entry(container.clone())
+                .or_insert_with(|| cursor.clone());
+        }
         let outcome = daemon
             .logs(
                 Some(&file),
                 query.container.as_deref(),
-                query.cursors.clone(),
+                reading,
                 tail,
                 query.stream,
                 wait_ms,
             )
             .await
             .map_err(|err| compose_error(&err))?;
+        // The workers of the first read began where `tail` said; the ends are for the others.
+        if !ends.is_empty() {
+            for batch in &outcome.containers {
+                ends.remove(&batch.container);
+            }
+            later = std::mem::take(&mut ends);
+        }
         let (mut out, mut err) = (String::new(), String::new());
         let mut cursors = query.cursors.clone();
         for batch in outcome.containers {
