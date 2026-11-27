@@ -11,11 +11,13 @@ const RedactedPlaceholder = telemetry.RedactedPlaceholder
 // apikey, api-key, password, secret, credential, authorization, auth_token,
 // access_token, refresh_token, bearer, private_key or client_secret (any case), or is
 // "token" or ends with "_token" or "-token". A string value that is a URL (it starts
-// with scheme:// or /) loses its credentials too: the password of its userinfo (the
+// with scheme://, // or /) loses its credentials too: the password of its userinfo (the
 // whole userinfo when it has no password, as a token used as the user name) and the
-// value of every query parameter whose name is sensitive or is token, sig, signature,
-// policy, key-pair-id, awsaccesskeyid, x-amz-signature, x-amz-credential,
-// x-amz-security-token, x-goog-signature or x-goog-credential (any case) become
+// value of every query parameter whose name, stripped to ASCII letters and digits and
+// lowercased, ends in token or contains password, passwd, secret, credential,
+// authorization, apikey, privatekey, bearer, cookie, signature, accesstoken,
+// refreshtoken or authtoken (the engine's key rule), or is sig, policy, key-pair-id,
+// awsaccesskeyid or another signed-URL parameter (any case), become
 // [RedactedPlaceholder], so a presigned URL is recorded without its signature. A
 // map[string]any or []any is copied recursively and nil and other scalars are returned
 // as they are; any other value (a struct, a typed map, json.RawMessage) is serialized

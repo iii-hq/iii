@@ -44,9 +44,32 @@ function isSensitiveKey(key: string): boolean {
 }
 
 /**
+ * The engine's key rule (engine/src/workers/observability/redaction.rs), which
+ * every SDK applies to query parameter names: a name stripped to ASCII letters
+ * and digits and lowercased is sensitive when it ends in `token` or contains
+ * one of these. Object keys keep the rule of `isSensitiveKey`.
+ */
+const URL_PARAM_FRAGMENTS = [
+  'password',
+  'passwd',
+  'secret',
+  'credential',
+  'authorization',
+  'apikey',
+  'privatekey',
+  'bearer',
+  'cookie',
+  'signature',
+  'accesstoken',
+  'refreshtoken',
+  'authtoken',
+]
+
+/**
  * Query parameters that carry a credential in a signed URL (S3 and R2
  * SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
- * provider), lowercased. The engine and every SDK carry the same list.
+ * provider) that the rule above misses or may miss, lowercased. The engine and
+ * every SDK carry the same list.
  */
 const SENSITIVE_URL_PARAMS = new Set([
   'token',
@@ -63,14 +86,20 @@ const SENSITIVE_URL_PARAMS = new Set([
 ])
 
 function isSensitiveUrlParam(name: string): boolean {
-  return isSensitiveKey(name) || SENSITIVE_URL_PARAMS.has(name.toLowerCase())
+  const normalized = name.replace(/[^A-Za-z0-9]/g, '').toLowerCase()
+  return (
+    normalized.endsWith('token') ||
+    URL_PARAM_FRAGMENTS.some((fragment) => normalized.includes(fragment)) ||
+    SENSITIVE_URL_PARAMS.has(name.toLowerCase())
+  )
 }
 
 const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
 
 /**
  * Replaces the credentials in `text` with the placeholder when it is a URL:
- * one that starts with `scheme://` or `/`. The password of its userinfo goes,
+ * one that starts with `scheme://` or `//` (both with an authority) or with a
+ * single `/` (a path, without one). The password of its userinfo goes,
  * or the whole userinfo when it has no `:` (a token used as the user name);
  * the authority runs to the first `/`, `?` or `#`, the userinfo to the last
  * `@` in it. So does the value of every query parameter whose name is
@@ -79,7 +108,9 @@ const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
  */
 function redactUrl(text: string): string {
   let authorityStart = -1
-  if (!text.startsWith('/')) {
+  if (text.startsWith('//')) {
+    authorityStart = 2
+  } else if (!text.startsWith('/')) {
     const scheme = URL_SCHEME.exec(text)
     if (scheme === null) return text
     authorityStart = scheme[0].length

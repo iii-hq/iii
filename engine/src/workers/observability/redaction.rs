@@ -76,8 +76,9 @@ const FRAGMENT_FIRST_LETTERS: u32 = {
 /// Query parameters that carry a credential in a signed URL (S3 and R2
 /// SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
 /// provider), lowercased and matched in any case. [`is_sensitive_key`]
-/// already catches most of them; the list is the one every SDK carries, since
-/// their key rule is older and misses names such as `X-Amz-Signature`.
+/// already catches most of them (`X-Amz-Signature`, `token`) but not `sig`,
+/// `policy`, `key-pair-id` or `awsaccesskeyid`. Every SDK carries the same
+/// list and, for query parameter names, the same key rule.
 const SENSITIVE_URL_PARAMS: &[&str] = &[
     "token",
     "sig",
@@ -148,39 +149,77 @@ fn is_sensitive_url_param(name: &str) -> bool {
             .any(|param| name.eq_ignore_ascii_case(param))
 }
 
-/// Calls `found` with the byte range of each credential in `text` when it is
-/// a URL, in order: the password of its userinfo, or the whole userinfo when
-/// it has no `:` (a token used as the user name, as in a clone URL), and the
-/// value of every query parameter whose name is sensitive
-/// ([`is_sensitive_url_param`]). Empty values and values already [`REDACTED`]
-/// are skipped, so a redacted URL yields nothing.
-///
-/// `text` is a URL when it starts with `scheme://` (a letter, then letters,
-/// digits, `+`, `-` or `.`) or with `/`. The authority runs to the first `/`,
-/// `?` or `#` and its userinfo to the last `@` in it; only a `scheme://` URL
-/// has one. The query runs from the first `?` to the next `#`, in
-/// `&`-separated `name=value` pairs. Every range starts and ends next to an
-/// ASCII delimiter or at the end of `text`, so it falls on char boundaries.
-///
-/// It runs on every string value of every payload: anything that does not
-/// start like a URL is turned away after a few bytes.
-fn url_secrets(text: &str, mut found: impl FnMut(usize, usize)) {
-    let bytes = text.as_bytes();
-    let authority_start = match bytes.first() {
-        Some(b'/') => None,
-        Some(first) if first.is_ascii_alphabetic() => {
+/// How a string value reads as a URL ([`url_shape`]).
+#[derive(Clone, Copy)]
+enum UrlShape {
+    /// A path (`/a/b?c`): it may have a query, but no authority.
+    Path,
+    /// `scheme://…` or `//…`: its authority starts at this offset.
+    Authority(usize),
+}
+
+/// How `bytes` reads as a URL, or `None` when it is not one: `scheme://` (a
+/// letter, then letters, digits, `+`, `-` or `.`) or `//` start an authority,
+/// a single `/` starts a path. It runs on every string value of every
+/// payload, and anything that does not start like a URL is turned away after
+/// a few bytes.
+fn url_shape(bytes: &[u8]) -> Option<UrlShape> {
+    match bytes.first()? {
+        b'/' if bytes.get(1) == Some(&b'/') => Some(UrlShape::Authority(2)),
+        b'/' => Some(UrlShape::Path),
+        first if first.is_ascii_alphabetic() => {
             let scheme_end = bytes
                 .iter()
                 .position(|byte| {
                     !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
                 })
                 .unwrap_or(bytes.len());
-            if !bytes[scheme_end..].starts_with(b"://") {
-                return;
-            }
-            Some(scheme_end + 3)
+            bytes[scheme_end..]
+                .starts_with(b"://")
+                .then_some(UrlShape::Authority(scheme_end + 3))
         }
-        _ => return,
+        _ => None,
+    }
+}
+
+/// End of the authority that starts at `start`: its first `/`, `?` or `#`,
+/// or `None` when it runs to the end of `bytes`.
+fn authority_end(bytes: &[u8], start: usize) -> Option<usize> {
+    bytes[start..]
+        .iter()
+        .position(|byte| matches!(byte, b'/' | b'?' | b'#'))
+        .map(|offset| start + offset)
+}
+
+/// Whether `text` is a URL whose authority is not empty and runs to its end.
+/// When the text was cut short there, what is left may be a userinfo whose
+/// `@` was cut off (`https://deploy:hunter2`), which cannot be told apart
+/// from a host.
+fn authority_cut_short(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    matches!(
+        url_shape(bytes),
+        Some(UrlShape::Authority(start))
+            if start < bytes.len() && authority_end(bytes, start).is_none()
+    )
+}
+
+/// Calls `found` with the byte range of each credential in `text` when it is
+/// a URL ([`url_shape`]), in order: the password of its userinfo, or the
+/// whole userinfo when it has no `:` (a token used as the user name, as in a
+/// clone URL), and the value of every query parameter whose name is sensitive
+/// ([`is_sensitive_url_param`]). Empty values and values already
+/// [`REDACTED`] are skipped, so a redacted URL yields nothing.
+///
+/// The authority (after `scheme://` or `//`; a path that starts with a single
+/// `/` has none) runs to the first `/`, `?` or `#` and its userinfo to the
+/// last `@` in it. The query runs from the first `?` to the next `#`, in
+/// `&`-separated `name=value` pairs. Every range starts and ends next to an
+/// ASCII delimiter or at the end of `text`, so it falls on char boundaries.
+fn url_secrets(text: &str, mut found: impl FnMut(usize, usize)) {
+    let bytes = text.as_bytes();
+    let Some(shape) = url_shape(bytes) else {
+        return;
     };
     let mut secret = |start: usize, end: usize| {
         let value = &text[start..end];
@@ -188,11 +227,8 @@ fn url_secrets(text: &str, mut found: impl FnMut(usize, usize)) {
             found(start, end);
         }
     };
-    if let Some(start) = authority_start {
-        let end = bytes[start..]
-            .iter()
-            .position(|byte| matches!(byte, b'/' | b'?' | b'#'))
-            .map_or(bytes.len(), |offset| start + offset);
+    if let UrlShape::Authority(start) = shape {
+        let end = authority_end(bytes, start).unwrap_or(bytes.len());
         if let Some(at) = bytes[start..end].iter().rposition(|&byte| byte == b'@') {
             match bytes[start..start + at]
                 .iter()
@@ -396,13 +432,19 @@ fn redactions(json: &str) -> Option<Vec<Edit>> {
 /// opening quote is at `start`, when it is a URL ([`url_secrets`]).
 ///
 /// Text without escapes reads the same decoded, so each credential is
-/// replaced where it stands. Text with escapes (`\u0026` for `&`, `\/`) is
-/// decoded, and when it holds a credential the whole string is written back
-/// re-encoded. If its escapes do not decode, as when a truncated payload was
-/// cut inside one, the string is replaced as a whole (fail closed); escaped
-/// strings without a `?` or `@` are not decoded, since a URL credential needs
-/// one of them and no serializer escapes either. A string cut short stays
-/// open, so the truncation marker after it still reads as before.
+/// replaced where it stands. Any character may be escaped, `?`, `@` and `/`
+/// included (`\u003f`, `\u0040`, `\/`), so text with escapes is decoded
+/// first and read decoded. When it holds a credential the whole string is
+/// written back re-encoded; otherwise it keeps its encoding byte for byte.
+/// If its escapes do not decode (`\q`, a lone surrogate) and it may hold a
+/// URL credential ([`may_hold_url_credential`]), the string is replaced whole
+/// (fail closed).
+///
+/// A string cut short (a truncated payload) stays open, so the truncation
+/// marker after it still reads as before, and an escape cut at its end is
+/// left out of the decoding. When it was cut inside the authority of a URL
+/// ([`authority_cut_short`]) it is replaced whole, since the `@` that would
+/// mark a userinfo may be what was cut off.
 fn redact_url_value(json: &str, start: usize, string: ScannedString, edits: &mut Vec<Edit>) {
     let content_start = start + 1;
     let content_end = if string.closed {
@@ -412,6 +454,10 @@ fn redact_url_value(json: &str, start: usize, string: ScannedString, edits: &mut
     };
     let content = &json[content_start..content_end];
     if !string.escaped {
+        if !string.closed && authority_cut_short(content) {
+            edits.push(Edit::new(start, string.end, REDACTED_JSON));
+            return;
+        }
         url_secrets(content, |from, to| {
             edits.push(Edit::new(
                 content_start + from,
@@ -421,19 +467,22 @@ fn redact_url_value(json: &str, start: usize, string: ScannedString, edits: &mut
         });
         return;
     }
-    if !content.contains(['?', '@']) {
+    if !may_hold_url_credential(content, string.closed) {
         return;
     }
-    let quoted = &json[start..string.end];
     let decoded: Result<String, _> = if string.closed {
-        serde_json::from_str(quoted)
+        serde_json::from_str(&json[start..string.end])
     } else {
-        serde_json::from_str(&format!("{quoted}\""))
+        serde_json::from_str(&format!("\"{}\"", without_cut_escape(content)))
     };
     let Ok(text) = decoded else {
         edits.push(Edit::new(start, string.end, REDACTED_JSON));
         return;
     };
+    if !string.closed && authority_cut_short(&text) {
+        edits.push(Edit::new(start, string.end, REDACTED_JSON));
+        return;
+    }
     let mut redacted = String::new();
     let mut copied = 0;
     url_secrets(&text, |from, to| {
@@ -453,6 +502,60 @@ fn redact_url_value(json: &str, start: usize, string: ScannedString, edits: &mut
         encoded.pop();
     }
     edits.push(Edit::new(start, string.end, encoded));
+}
+
+/// Whether the escaped text of a string may decode to a URL that holds a
+/// credential: it starts with a letter, `/` or an escape, and it holds a `?`
+/// or an `@`, plain or escaped (`\u003f`, `\u0040`), or it was cut short
+/// (`closed` is false), which may have cut it inside an authority.
+fn may_hold_url_credential(escaped: &str, closed: bool) -> bool {
+    let bytes = escaped.as_bytes();
+    if !matches!(
+        bytes.first(),
+        Some(b'/' | b'\\' | b'a'..=b'z' | b'A'..=b'Z')
+    ) {
+        return false;
+    }
+    !closed
+        || escaped.contains(['?', '@'])
+        || escaped.match_indices("\\u00").any(|(at, _)| {
+            bytes
+                .get(at + 4..at + 6)
+                .is_some_and(|hex| hex.eq_ignore_ascii_case(b"3f") || hex == b"40")
+        })
+}
+
+/// `escaped` without an escape that the end of the text cut short: a lone
+/// `\`, a `\u` with fewer than four digits, or a high surrogate whose low
+/// half was cut off. Every cut falls on a backslash, so on a char boundary.
+fn without_cut_escape(escaped: &str) -> &str {
+    let bytes = escaped.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let escape = i;
+        match bytes.get(i + 1) {
+            None => return &escaped[..escape],
+            Some(b'u') => {
+                let Some(hex) = bytes.get(i + 2..i + 6) else {
+                    return &escaped[..escape];
+                };
+                let high_surrogate = matches!(
+                    hex,
+                    [b'd' | b'D', b'8' | b'9' | b'a' | b'b' | b'A' | b'B', ..]
+                );
+                i += 6;
+                if high_surrogate && i == bytes.len() {
+                    return &escaped[..escape];
+                }
+            }
+            Some(_) => i += 2,
+        }
+    }
+    escaped
 }
 
 /// Whether `token` is a JSON literal: `true`, `false`, `null` or a number,
@@ -1014,9 +1117,18 @@ mod tests {
                 cut(r#"{"remote":"https://ghp_x@github.com/acme/wor"#),
                 Some(cut(r#"{"remote":"https://[REDACTED]@github.com/acme/wor"#)),
             ),
+            // Cut inside a sensitive query value: what is left of it goes.
+            (
+                cut(r#"{"url":"https://h.example/k?page=1&token=ab"#),
+                Some(cut(
+                    r#"{"url":"https://h.example/k?page=1&token=[REDACTED]"#,
+                )),
+            ),
             // Cut before any value.
             (cut(r#"{"location":"https://h.example/k?X-Amz-Sig"#), None),
             (cut(r#"{"location":"https://h.example/k?token="#), None),
+            (cut(r#"{"location":"/v1/objects/download?tok"#), None),
+            (cut(r#"{"url":"https://"#), None),
         ];
         for (payload, expected) in cases {
             let redacted = redact_payload_json(&payload);
@@ -1029,6 +1141,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Cut inside the authority, what is left may be a userinfo whose `@` was
+    /// cut off: the string goes whole, host or not.
+    #[test]
+    fn drops_urls_cut_inside_the_authority() {
+        let cases = [
+            (
+                cut(r#"{"status_code":302,"url":"https://deploy:hunter2"#),
+                cut(r#"{"status_code":302,"url":"[REDACTED]""#),
+            ),
+            (
+                r#"{"url":"https://deploy:hunter2"#.to_string(),
+                r#"{"url":"[REDACTED]""#.to_string(),
+            ),
+            (
+                cut(r#"{"remote":"//ghp_tok"#),
+                cut(r#"{"remote":"[REDACTED]""#),
+            ),
+            (
+                cut(r#"{"remote":"https://user:p@ss@ho"#),
+                cut(r#"{"remote":"[REDACTED]""#),
+            ),
+            (
+                cut(r#"{"url":"https://h.exa"#),
+                cut(r#"{"url":"[REDACTED]""#),
+            ),
+            // Escaped, and cut inside an escape.
+            (
+                cut(r#"{"url":"https:\/\/deploy:hun"#),
+                cut(r#"{"url":"[REDACTED]""#),
+            ),
+            (
+                cut(r#"{"url":"https:\/\/deploy:hun\u00"#),
+                cut(r#"{"url":"[REDACTED]""#),
+            ),
+        ];
+        for (payload, expected) in cases {
+            let redacted = redact_payload_json(&payload);
+            assert_eq!(redacted.as_deref(), Some(expected.as_str()), "{payload}");
+            assert_eq!(
+                redact_payload_json(&expected),
+                None,
+                "idempotent: {expected}"
+            );
+        }
+        // A complete string keeps its rule: no `@`, no userinfo.
+        assert_eq!(redact_payload_json(r#"{"url":"https://h.example"}"#), None);
     }
 
     #[test]
@@ -1051,16 +1211,51 @@ mod tests {
                 cut(r#"{"location":"https:\/\/h.example\/k?page=1\u0026token=ab"#),
                 Some(cut(r#"{"location":"https://h.example/k?page=1&token=[REDACTED]"#)),
             ),
-            // Cut inside an escape, or an escape that does not decode: the
-            // string goes whole.
+            // Cut inside an escape: the escape is left out, the rest is read.
             (
                 cut(r#"{"location":"https:\/\/h.example\/k?token=ab\u00"#),
-                Some(cut(r#"{"location":"[REDACTED]""#)),
+                Some(cut(r#"{"location":"https://h.example/k?token=[REDACTED]"#)),
             ),
+            (
+                cut(r#"{"location":"https:\/\/h.example\/k?token=ab\ud83d"#),
+                Some(cut(r#"{"location":"https://h.example/k?token=[REDACTED]"#)),
+            ),
+            (cut(r#"{"note":"x\u00"#), None),
+            // Escapes that hide the delimiters.
+            (
+                r#"{"url":"https://h.example/\u003ftoken=abc"}"#.to_string(),
+                Some(r#"{"url":"https://h.example/?token=[REDACTED]"}"#.to_string()),
+            ),
+            (
+                r#"{"url":"https://h.example/\u003Ftoken=abc"}"#.to_string(),
+                Some(r#"{"url":"https://h.example/?token=[REDACTED]"}"#.to_string()),
+            ),
+            (
+                r#"{"url":"https://deploy:pw\u0040git.example.com/r"}"#.to_string(),
+                Some(r#"{"url":"https://deploy:[REDACTED]@git.example.com/r"}"#.to_string()),
+            ),
+            (
+                r#"{"url":"\/\/deploy:pw@h.example\/r"}"#.to_string(),
+                Some(r#"{"url":"//deploy:[REDACTED]@h.example/r"}"#.to_string()),
+            ),
+            (
+                r#"{"url":"\u0068ttps://h.example/?sig=abc"}"#.to_string(),
+                Some(r#"{"url":"https://h.example/?sig=[REDACTED]"}"#.to_string()),
+            ),
+            // An escape that does not decode, where a URL credential may
+            // hide: the string goes whole.
             (
                 r#"{"location":"https://h.example/k?token=ab\q"}"#.to_string(),
                 Some(r#"{"location":"[REDACTED]"}"#.to_string()),
             ),
+            (
+                r#"{"location":"https://h.example/k\u003ftoken=ab\ud800"}"#.to_string(),
+                Some(r#"{"location":"[REDACTED]"}"#.to_string()),
+            ),
+            // Where none can hide, the text stays as it is.
+            (r#"{"note":"bad \q escape"}"#.to_string(), None),
+            (r#"{"note":"emoji \ud83d"}"#.to_string(), None),
+            (r#"{"note":"1 \u003f 2 \ud83d"}"#.to_string(), None),
         ];
         for (payload, expected) in cases {
             let redacted = redact_payload_json(&payload);

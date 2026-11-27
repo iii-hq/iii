@@ -46,9 +46,30 @@ func IsSensitiveKey(key string) bool {
 	return lower == "token" || strings.HasSuffix(lower, "_token") || strings.HasSuffix(lower, "-token")
 }
 
+// urlParamFragments is the engine's key rule (engine/src/workers/observability/
+// redaction.rs), which every SDK applies to query parameter names: a name stripped to
+// ASCII letters and digits and lowercased is sensitive when it ends in "token" or
+// contains one of these. Object keys keep the rule of IsSensitiveKey.
+var urlParamFragments = []string{
+	"password",
+	"passwd",
+	"secret",
+	"credential",
+	"authorization",
+	"apikey",
+	"privatekey",
+	"bearer",
+	"cookie",
+	"signature",
+	"accesstoken",
+	"refreshtoken",
+	"authtoken",
+}
+
 // sensitiveURLParams are the query parameters that carry a credential in a signed URL
 // (S3 and R2 SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
-// provider), lowercased. The engine and every SDK carry the same list.
+// provider) that the rule above misses or may miss, lowercased. The engine and every SDK
+// carry the same list.
 var sensitiveURLParams = map[string]bool{
 	"token":                true,
 	"sig":                  true,
@@ -64,19 +85,39 @@ var sensitiveURLParams = map[string]bool{
 }
 
 func isSensitiveURLParam(name string) bool {
-	return IsSensitiveKey(name) || sensitiveURLParams[strings.ToLower(name)]
+	normalized := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		switch c := name[i]; {
+		case 'a' <= c && c <= 'z', '0' <= c && c <= '9':
+			normalized = append(normalized, c)
+		case 'A' <= c && c <= 'Z':
+			normalized = append(normalized, c+'a'-'A')
+		}
+	}
+	n := string(normalized)
+	if strings.HasSuffix(n, "token") {
+		return true
+	}
+	for _, fragment := range urlParamFragments {
+		if strings.Contains(n, fragment) {
+			return true
+		}
+	}
+	return sensitiveURLParams[strings.ToLower(name)]
 }
 
 // redactURLCredentials replaces the credentials in text with RedactedPlaceholder when it
-// is a URL: one that starts with scheme:// or /. The password of its userinfo goes, or
-// the whole userinfo when it has no ':' (a token used as the user name); the authority
-// runs to the first '/', '?' or '#', the userinfo to the last '@' in it. So does the
-// value of every query parameter whose name is sensitive (the query runs from the first
-// '?' to the next '#'). Everything else is kept as it is; empty and
-// already redacted values are skipped.
+// is a URL: one that starts with scheme:// or // (both with an authority) or with a
+// single / (a path, without one). The password of its userinfo goes, or the whole
+// userinfo when it has no ':' (a token used as the user name); the authority runs to the
+// first '/', '?' or '#', the userinfo to the last '@' in it. So does the value of every
+// query parameter whose name is sensitive (the query runs from the first '?' to the next
+// '#'). Everything else is kept as it is; empty and already redacted values are skipped.
 func redactURLCredentials(text string) string {
 	authorityStart := -1
-	if !strings.HasPrefix(text, "/") {
+	if strings.HasPrefix(text, "//") {
+		authorityStart = 2
+	} else if !strings.HasPrefix(text, "/") {
 		authorityStart = schemePrefixLen(text)
 		if authorityStart == 0 {
 			return text

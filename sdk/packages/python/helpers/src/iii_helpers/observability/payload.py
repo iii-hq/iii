@@ -51,9 +51,29 @@ def _is_sensitive_key(key: str) -> bool:
     return lower == "token" or lower.endswith("_token") or lower.endswith("-token")
 
 
+# The engine's key rule (engine/src/workers/observability/redaction.rs), which every SDK
+# applies to query parameter names: a name stripped to ASCII letters and digits and
+# lowercased is sensitive when it ends in ``token`` or contains one of these. Object keys
+# keep the rule of ``_is_sensitive_key``.
+_URL_PARAM_FRAGMENTS = (
+    "password",
+    "passwd",
+    "secret",
+    "credential",
+    "authorization",
+    "apikey",
+    "privatekey",
+    "bearer",
+    "cookie",
+    "signature",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+)
+
 # Query parameters that carry a credential in a signed URL (S3 and R2 SigV2/SigV4, GCS,
-# Azure SAS, CloudFront, the storage worker's local provider), lowercased. The engine and
-# every SDK carry the same list.
+# Azure SAS, CloudFront, the storage worker's local provider) that the rule above misses or
+# may miss, lowercased. The engine and every SDK carry the same list.
 _SENSITIVE_URL_PARAMS = frozenset(
     (
         "token",
@@ -74,20 +94,28 @@ _URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 def _is_sensitive_url_param(name: str) -> bool:
-    return _is_sensitive_key(name) or name.lower() in _SENSITIVE_URL_PARAMS
+    normalized = "".join(char for char in name if char.isascii() and char.isalnum()).lower()
+    return (
+        normalized.endswith("token")
+        or any(fragment in normalized for fragment in _URL_PARAM_FRAGMENTS)
+        or name.lower() in _SENSITIVE_URL_PARAMS
+    )
 
 
 def _redact_url(text: str) -> str:
     """Replace the credentials in ``text`` with the placeholder when it is a URL.
 
-    A URL starts with ``scheme://`` or ``/``. The password of its userinfo goes, or the
+    A URL starts with ``scheme://`` or ``//`` (both with an authority) or with a single
+    ``/`` (a path, without one). The password of its userinfo goes, or the
     whole userinfo when it has no ``:`` (a token used as the user name); the authority runs
     to the first ``/``, ``?`` or ``#``, the userinfo to the last ``@`` in it. So does the
     value of every query parameter whose name is sensitive (the query runs from the first
     ``?`` to the next ``#``). Everything else is kept as it is; empty
     and already redacted values are skipped.
     """
-    if text.startswith("/"):
+    if text.startswith("//"):
+        authority_start = 2
+    elif text.startswith("/"):
         authority_start = -1
     else:
         scheme = _URL_SCHEME.match(text)

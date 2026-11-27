@@ -182,13 +182,15 @@ the engine applies its own rule to every span, including spans from older SDKs.
   truncated payload is still redacted. A payload the engine cannot read as JSON is replaced as a
   whole.
 - In a captured payload, a string value that is a URL keeps everything but its credentials. A URL
-  starts with `scheme://` or `/`; the password of its userinfo (`https://user:[REDACTED]@host`), or
+  starts with `scheme://`, `//` or `/`; the password of its userinfo (`https://user:[REDACTED]@host`), or
   the whole userinfo when it has no password (`https://[REDACTED]@github.com/…`, where a token is
   the user name), and the value of every query parameter with a sensitive name become
   `[REDACTED]`, so the `Location` of a redirect to a presigned URL, or an upload URL in a response
-  body, is stored without its signature. The placeholder is not percent-encoded. A string whose
-  JSON escapes do not decode, as when a truncated payload was cut inside one, is replaced as a
-  whole if it holds a `?` or `@`.
+  body, is stored without its signature. The placeholder is not percent-encoded. A string with
+  JSON escapes is decoded before it is read (an escape may hide a `?`, `@` or `/`) and written back
+  re-encoded only when it held a credential; one whose escapes do not decode is replaced as a whole
+  if it may hold one. A URL that a truncated payload cut inside its authority is replaced as a
+  whole, since the `@` of a userinfo may be what was cut off.
 
 A key is sensitive when, lowercased and with every character that is not a letter or digit removed,
 it ends in `token` or contains `password`, `passwd`, `secret`, `credential`, `authorization`,

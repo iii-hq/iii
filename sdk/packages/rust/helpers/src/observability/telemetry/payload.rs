@@ -51,9 +51,30 @@ fn is_sensitive_key(key: &str) -> bool {
         || lower.ends_with("-token")
 }
 
+/// The engine's key rule (`engine/src/workers/observability/redaction.rs`),
+/// which every SDK applies to query parameter names: a name stripped to ASCII
+/// letters and digits and lowercased is sensitive when it ends in `token` or
+/// contains one of these. Object keys keep the rule of `is_sensitive_key`.
+const URL_PARAM_FRAGMENTS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "credential",
+    "authorization",
+    "apikey",
+    "privatekey",
+    "bearer",
+    "cookie",
+    "signature",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+];
+
 /// Query parameters that carry a credential in a signed URL (S3 and R2
 /// SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
-/// provider), lowercased. The engine and every SDK carry the same list.
+/// provider) that the rule above misses or may miss, lowercased. The engine
+/// and every SDK carry the same list.
 const SENSITIVE_URL_PARAMS: &[&str] = &[
     "token",
     "sig",
@@ -69,14 +90,23 @@ const SENSITIVE_URL_PARAMS: &[&str] = &[
 ];
 
 fn is_sensitive_url_param(name: &str) -> bool {
-    is_sensitive_key(name)
+    let normalized: String = name
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| char::from(byte.to_ascii_lowercase()))
+        .collect();
+    normalized.ends_with("token")
+        || URL_PARAM_FRAGMENTS
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
         || SENSITIVE_URL_PARAMS
             .iter()
             .any(|param| name.eq_ignore_ascii_case(param))
 }
 
 /// Replaces the credentials in `text` with the placeholder when it is a URL:
-/// one that starts with `scheme://` or `/`. The password of its userinfo goes,
+/// one that starts with `scheme://` or `//` (both with an authority) or with a
+/// single `/` (a path, without one). The password of its userinfo goes,
 /// or the whole userinfo when it has no `:` (a token used as the user name);
 /// the authority runs to the first `/`, `?` or `#`, the userinfo to the last
 /// `@` in it. So does the value of every query parameter whose name is
@@ -85,6 +115,7 @@ fn is_sensitive_url_param(name: &str) -> bool {
 fn redact_url(text: &str) -> Cow<'_, str> {
     let bytes = text.as_bytes();
     let authority_start = match bytes.first() {
+        Some(b'/') if bytes.get(1) == Some(&b'/') => Some(2),
         Some(b'/') => None,
         Some(first) if first.is_ascii_alphabetic() => {
             let scheme_end = bytes
@@ -128,10 +159,11 @@ fn redact_url(text: &str) -> Cow<'_, str> {
             .map_or(text.len(), |offset| question + 1 + offset);
         let mut param_start = question + 1;
         for param in text[question + 1..query_end].split('&') {
-            if let Some((name, _)) = param.split_once('=')
-                && is_sensitive_url_param(name)
-            {
-                secret(param_start + name.len() + 1, param_start + param.len());
+            // Nested rather than a let chain: the crate's MSRV is 1.85.
+            if let Some((name, _)) = param.split_once('=') {
+                if is_sensitive_url_param(name) {
+                    secret(param_start + name.len() + 1, param_start + param.len());
+                }
             }
             param_start += param.len() + 1;
         }
