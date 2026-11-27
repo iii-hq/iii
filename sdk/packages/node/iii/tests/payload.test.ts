@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
   redact,
@@ -5,6 +7,9 @@ import {
   REDACTED_PLACEHOLDER,
   resolveMaxBytesFromEnv,
 } from '@iii-dev/helpers/observability'
+
+/** Shared vectors the engine and every SDK run (`sdk/fixtures/redaction`). */
+const URL_VECTORS = resolve(__dirname, '../../../../fixtures/redaction/url-credentials.json')
 
 describe('redact', () => {
   it('redacts top-level sensitive keys', () => {
@@ -69,6 +74,49 @@ describe('redact', () => {
     expect(redact(42)).toBe(42)
     expect(redact('hello')).toBe('hello')
     expect(redact(true)).toBe(true)
+  })
+})
+
+describe('redact: credentials in URL values', () => {
+  const { cases } = JSON.parse(readFileSync(URL_VECTORS, 'utf8')) as {
+    cases: { note: string; value: string; expect: string }[]
+  }
+  const wrap = (value: string) => ({ headers: { location: value }, links: [value] })
+
+  it('loads the shared vectors', () => {
+    expect(cases.length).toBeGreaterThan(10)
+  })
+
+  it.each(cases.map((c) => [c.note, c] as const))('%s', (_note, { value, expect: expected }) => {
+    expect(redact(wrap(value))).toEqual(wrap(expected))
+    expect(redact(wrap(expected))).toEqual(wrap(expected))
+  })
+
+  it('redacts the location of an HTTP redirect to a presigned URL', () => {
+    const response = {
+      status_code: 302,
+      headers: {
+        location:
+          'https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AK%2F20261126&X-Amz-Signature=abc',
+      },
+      body: { upload: { url: 'http://localhost:49200/v1/objects/upload?token=eyJ.a.b' } },
+    }
+    const { json } = redactAndTruncate(response)
+    expect(json).toBe(
+      '{"status_code":302,"headers":{"location":"https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]"},"body":{"upload":{"url":"http://localhost:49200/v1/objects/upload?token=[REDACTED]"}}}',
+    )
+    expect(redact(JSON.parse(json))).toEqual(JSON.parse(json))
+  })
+
+  it('reads a payload that is a URL, and leaves other strings alone', () => {
+    expect(redact('/v1/objects/download?token=abc')).toBe('/v1/objects/download?token=[REDACTED]')
+    expect(redact('see https://h.example/?token=abc')).toBe('see https://h.example/?token=abc')
+    expect(redact('ana@example.com')).toBe('ana@example.com')
+    expect(redact({ 'https://h.example/?token=abc': 1 })).toEqual({ 'https://h.example/?token=abc': 1 })
+  })
+
+  it('replaces a URL under a sensitive key whole', () => {
+    expect(redact({ token: 'https://h.example/?sig=a' })).toEqual({ token: REDACTED_PLACEHOLDER })
   })
 })
 

@@ -10,6 +10,9 @@ repository = "https://github.com/iii-hq/iii"
 homepage = "https://github.com/iii-hq/iii"
 keywords = ["iii", "helpers"]
 categories = ["api-bindings", "asynchronous", "development-tools"]
+# This test reads the shared vectors in the repository (sdk/fixtures/redaction),
+# which are not part of the package.
+exclude = ["tests/url_redaction_vectors.rs"]
 
 [lib]
 name = "iii_helpers"

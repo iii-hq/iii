@@ -1,5 +1,6 @@
 //! Payload redaction + truncation for invocation event capture.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use serde::{
@@ -50,7 +51,142 @@ fn is_sensitive_key(key: &str) -> bool {
         || lower.ends_with("-token")
 }
 
-/// Recursively redact values of sensitive keys. Returns a new `Value`.
+/// The engine's key rule (`engine/src/workers/observability/redaction.rs`),
+/// which every SDK applies to query parameter names: a name stripped to ASCII
+/// letters and digits and lowercased is sensitive when it ends in `token` or
+/// contains one of these. Object keys keep the rule of `is_sensitive_key`.
+const URL_PARAM_FRAGMENTS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "credential",
+    "authorization",
+    "apikey",
+    "privatekey",
+    "bearer",
+    "cookie",
+    "signature",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+];
+
+/// Query parameters that carry a credential in a signed URL (S3 and R2
+/// SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
+/// provider) that the rule above misses or may miss, lowercased. The engine
+/// and every SDK carry the same list.
+const SENSITIVE_URL_PARAMS: &[&str] = &[
+    "token",
+    "sig",
+    "signature",
+    "policy",
+    "key-pair-id",
+    "awsaccesskeyid",
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "x-goog-signature",
+    "x-goog-credential",
+];
+
+fn is_sensitive_url_param(name: &str) -> bool {
+    let normalized: String = name
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| char::from(byte.to_ascii_lowercase()))
+        .collect();
+    normalized.ends_with("token")
+        || URL_PARAM_FRAGMENTS
+            .iter()
+            .any(|fragment| normalized.contains(fragment))
+        || SENSITIVE_URL_PARAMS
+            .iter()
+            .any(|param| name.eq_ignore_ascii_case(param))
+}
+
+/// Replaces the credentials in `text` with the placeholder when it is a URL:
+/// one that starts with `scheme://` or `//` (both with an authority) or with a
+/// single `/` (a path, without one). The password of its userinfo goes,
+/// or the whole userinfo when it has no `:` (a token used as the user name);
+/// the authority runs to the first `/`, `?` or `#`, the userinfo to the last
+/// `@` in it. So does the value of every query parameter whose name is
+/// sensitive (the query runs from the first `?` to the next `#`). Everything
+/// else is kept as it is; empty and already redacted values are skipped.
+fn redact_url(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let authority_start = match bytes.first() {
+        Some(b'/') if bytes.get(1) == Some(&b'/') => Some(2),
+        Some(b'/') => None,
+        Some(first) if first.is_ascii_alphabetic() => {
+            let scheme_end = bytes
+                .iter()
+                .position(|byte| {
+                    !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+                })
+                .unwrap_or(bytes.len());
+            if !bytes[scheme_end..].starts_with(b"://") {
+                return Cow::Borrowed(text);
+            }
+            Some(scheme_end + 3)
+        }
+        _ => return Cow::Borrowed(text),
+    };
+    let mut secrets = Vec::new();
+    let mut secret = |start: usize, end: usize| {
+        let value = &text[start..end];
+        if !value.is_empty() && value != REDACTED_PLACEHOLDER {
+            secrets.push((start, end));
+        }
+    };
+    if let Some(start) = authority_start {
+        let end = bytes[start..]
+            .iter()
+            .position(|byte| matches!(byte, b'/' | b'?' | b'#'))
+            .map_or(bytes.len(), |offset| start + offset);
+        if let Some(at) = bytes[start..end].iter().rposition(|&byte| byte == b'@') {
+            match bytes[start..start + at]
+                .iter()
+                .position(|&byte| byte == b':')
+            {
+                Some(colon) => secret(start + colon + 1, start + at),
+                None => secret(start, start + at),
+            }
+        }
+    }
+    if let Some(question) = text.find('?') {
+        let query_end = text[question + 1..]
+            .find('#')
+            .map_or(text.len(), |offset| question + 1 + offset);
+        let mut param_start = question + 1;
+        for param in text[question + 1..query_end].split('&') {
+            // Nested rather than a let chain: the crate's MSRV is 1.85.
+            if let Some((name, _)) = param.split_once('=') {
+                if is_sensitive_url_param(name) {
+                    secret(param_start + name.len() + 1, param_start + param.len());
+                }
+            }
+            param_start += param.len() + 1;
+        }
+    }
+    if secrets.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (start, end) in secrets {
+        out.push_str(&text[copied..start]);
+        out.push_str(REDACTED_PLACEHOLDER);
+        copied = end;
+    }
+    out.push_str(&text[copied..]);
+    Cow::Owned(out)
+}
+
+/// Recursively redact values of sensitive keys, and the credentials in string
+/// values that are URLs: the password of the userinfo (the whole userinfo when
+/// it has no password) and the values of query parameters with a sensitive
+/// name, such as the signature of a presigned URL.
+/// Returns a new `Value`.
 #[must_use]
 pub fn redact(value: &Value) -> Value {
     match value {
@@ -66,6 +202,7 @@ pub fn redact(value: &Value) -> Value {
             Value::Object(out)
         }
         Value::Array(items) => Value::Array(items.iter().map(redact).collect()),
+        Value::String(text) => Value::String(redact_url(text).into_owned()),
         _ => value.clone(),
     }
 }
@@ -94,6 +231,7 @@ impl Serialize for Redacted<'_> {
                 }
                 output.end()
             }
+            Value::String(text) => serializer.serialize_str(&redact_url(text)),
             value => value.serialize(serializer),
         }
     }
@@ -265,6 +403,62 @@ mod tests {
         assert_eq!(out["id_token"], json!("[REDACTED]"));
         assert_eq!(out["notification"], json!("ping"));
         assert_eq!(out["function_id"], json!("do_thing"));
+    }
+
+    #[test]
+    fn redacts_url_credentials_in_string_values() {
+        let input = json!({
+            "status_code": 302,
+            "headers": {
+                "location": "https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AK%2F20261126&X-Amz-Signature=abc",
+            },
+            "body": { "upload": { "url": "http://localhost:49200/v1/objects/upload?token=eyJ.a.b" } },
+            "next": "https://registry.example.com/workers?page=2&sort=name",
+        });
+        let expected = json!({
+            "status_code": 302,
+            "headers": {
+                "location": "https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]",
+            },
+            "body": { "upload": { "url": "http://localhost:49200/v1/objects/upload?token=[REDACTED]" } },
+            "next": "https://registry.example.com/workers?page=2&sort=name",
+        });
+        assert_eq!(redact(&input), expected);
+        // The serializer used by redact_and_truncate applies the same rule.
+        let (out, _) = redact_and_truncate(&input, None);
+        assert_eq!(serde_json::from_str::<Value>(&out).unwrap(), expected);
+        assert_eq!(redact(&expected), expected);
+    }
+
+    #[test]
+    fn url_rule_reads_only_urls() {
+        assert_eq!(
+            redact_url("/v1/objects/download?token=abc"),
+            "/v1/objects/download?token=[REDACTED]"
+        );
+        assert_eq!(
+            redact_url("https://u:pw@h.example/"),
+            "https://u:[REDACTED]@h.example/"
+        );
+        assert_eq!(
+            redact_url("https://ghp_x@github.com/o/r.git"),
+            "https://[REDACTED]@github.com/o/r.git"
+        );
+        for text in [
+            "see https://h.example/?token=abc",
+            "ana@example.com",
+            "a?token=b",
+            "https://h.example/?page=2",
+            "",
+        ] {
+            assert!(matches!(redact_url(text), Cow::Borrowed(_)), "{text}");
+        }
+        let input =
+            json!({ "https://h.example/?token=abc": 1, "token": "https://h.example/?sig=a" });
+        assert_eq!(
+            redact(&input),
+            json!({ "https://h.example/?token=abc": 1, "token": "[REDACTED]" })
+        );
     }
 
     #[test]

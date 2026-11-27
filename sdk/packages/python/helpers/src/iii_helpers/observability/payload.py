@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Optional
 
 REDACTED_PLACEHOLDER = "[REDACTED]"
@@ -50,12 +51,129 @@ def _is_sensitive_key(key: str) -> bool:
     return lower == "token" or lower.endswith("_token") or lower.endswith("-token")
 
 
+# The engine's key rule (engine/src/workers/observability/redaction.rs), which every SDK
+# applies to query parameter names: a name stripped to ASCII letters and digits and
+# lowercased is sensitive when it ends in ``token`` or contains one of these. Object keys
+# keep the rule of ``_is_sensitive_key``.
+_URL_PARAM_FRAGMENTS = (
+    "password",
+    "passwd",
+    "secret",
+    "credential",
+    "authorization",
+    "apikey",
+    "privatekey",
+    "bearer",
+    "cookie",
+    "signature",
+    "accesstoken",
+    "refreshtoken",
+    "authtoken",
+)
+
+# Query parameters that carry a credential in a signed URL (S3 and R2 SigV2/SigV4, GCS,
+# Azure SAS, CloudFront, the storage worker's local provider) that the rule above misses or
+# may miss, lowercased. The engine and every SDK carry the same list.
+_SENSITIVE_URL_PARAMS = frozenset(
+    (
+        "token",
+        "sig",
+        "signature",
+        "policy",
+        "key-pair-id",
+        "awsaccesskeyid",
+        "x-amz-signature",
+        "x-amz-credential",
+        "x-amz-security-token",
+        "x-goog-signature",
+        "x-goog-credential",
+    )
+)
+
+_URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _is_sensitive_url_param(name: str) -> bool:
+    normalized = "".join(char for char in name if char.isascii() and char.isalnum()).lower()
+    return (
+        normalized.endswith("token")
+        or any(fragment in normalized for fragment in _URL_PARAM_FRAGMENTS)
+        or name.lower() in _SENSITIVE_URL_PARAMS
+    )
+
+
+def _redact_url(text: str) -> str:
+    """Replace the credentials in ``text`` with the placeholder when it is a URL.
+
+    A URL starts with ``scheme://`` or ``//`` (both with an authority) or with a single
+    ``/`` (a path, without one). The password of its userinfo goes, or the
+    whole userinfo when it has no ``:`` (a token used as the user name); the authority runs
+    to the first ``/``, ``?`` or ``#``, the userinfo to the last ``@`` in it. So does the
+    value of every query parameter whose name is sensitive (the query runs from the first
+    ``?`` to the next ``#``). Everything else is kept as it is; empty
+    and already redacted values are skipped.
+    """
+    if text.startswith("//"):
+        authority_start = 2
+    elif text.startswith("/"):
+        authority_start = -1
+    else:
+        scheme = _URL_SCHEME.match(text)
+        if scheme is None:
+            return text
+        authority_start = scheme.end()
+    secrets: list[tuple[int, int]] = []
+
+    def secret(start: int, end: int) -> None:
+        value = text[start:end]
+        if value and value != REDACTED_PLACEHOLDER:
+            secrets.append((start, end))
+
+    if authority_start != -1:
+        authority_end = len(text)
+        for i in range(authority_start, len(text)):
+            if text[i] in "/?#":
+                authority_end = i
+                break
+        at = text.rfind("@", authority_start, authority_end)
+        if at != -1:
+            colon = text.find(":", authority_start, at)
+            secret(colon + 1 if colon != -1 else authority_start, at)
+    question = text.find("?")
+    if question != -1:
+        query_end = text.find("#", question + 1)
+        if query_end == -1:
+            query_end = len(text)
+        param_start = question + 1
+        for param in text[question + 1 : query_end].split("&"):
+            name, equals, _ = param.partition("=")
+            if equals and _is_sensitive_url_param(name):
+                secret(param_start + len(name) + 1, param_start + len(param))
+            param_start += len(param) + 1
+    if not secrets:
+        return text
+    out: list[str] = []
+    copied = 0
+    for start, end in secrets:
+        out.append(text[copied:start])
+        out.append(REDACTED_PLACEHOLDER)
+        copied = end
+    out.append(text[copied:])
+    return "".join(out)
+
+
 def redact(value: Any) -> Any:
     """Recursively redact values of sensitive keys. Returns a new value.
+
+    String values that are URLs lose their credentials too: the password of the
+    userinfo (the whole userinfo when it has no password) and the values of query
+    parameters with a sensitive name, such as the signature of a presigned URL.
 
     Args:
         value: Value to redact; dicts, lists, and tuples are traversed recursively.
     """
+    if isinstance(value, str):
+        return _redact_url(value)
     if isinstance(value, dict):
         return {
             k: REDACTED_PLACEHOLDER if _is_sensitive_key(k) else redact(v)
