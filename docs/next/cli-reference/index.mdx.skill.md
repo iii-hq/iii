@@ -236,7 +236,9 @@ iii registry logout [OPTIONS]
 
 #### `iii registry whoami`
 
-Show the organization, kind, access and expiry of the token for a worker registry
+Show the organization, kind, access and expiry of the token this shell selects for a worker registry.
+
+For the default registry, that is `III_REGISTRY_TOKEN` when it is set here, and the saved token otherwise. Compose selects its own the same way, from its own environment.
 
 ```text
 iii registry whoami [OPTIONS]

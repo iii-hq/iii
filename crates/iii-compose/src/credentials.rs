@@ -27,9 +27,10 @@
 //!
 //! [`RegistryToken`] never prints its secret: `Debug` and `Display` show at most its first 8
 //! characters (`wdt_AbCd…`), the prefix the registry shows to tell tokens apart. The file is
-//! written owner-only (`0600` in a `0700` directory) by an atomic replace, and never over a file
-//! that cannot be read: every error says where the problem is (path, line and column) and how to
-//! fix it, never quoting the file. On Windows the file inherits the ACL of the user's profile
+//! written owner-only (`0600` in a `0700` directory) by an atomic replace under a lock that
+//! `credentials.toml.lock` holds, and never over a file that cannot be read or a symbolic link:
+//! every error says where the problem is (path, line and column) and how to fix it, never quoting
+//! the file. On Windows the file inherits the ACL of the user's profile
 //! directory, which already limits it to that user and the administrators.
 
 use std::{
@@ -90,6 +91,17 @@ pub enum CredentialsError {
         message: String,
         owner: Option<Ownership>,
     },
+
+    /// A token could not be saved or removed because the file is a symbolic link: replacing it
+    /// would replace the link and leave `target`, the file it points to, as it was.
+    #[error(
+        "{} is a symbolic link to {}: iii reads through it, but never saves or removes a token \
+         through it, as replacing the link would leave {} as it was",
+        .path.display(),
+        .target.display(),
+        .target.display()
+    )]
+    LinkedFile { path: PathBuf, target: PathBuf },
 
     #[error("there is no home directory to keep ~/.iii/{CREDENTIALS_FILE} in (HOME is not set)")]
     NoHomeDirectory,
@@ -169,6 +181,8 @@ pub enum WriteStep {
     Write,
     /// Renaming it over the file.
     Replace,
+    /// Locking the file beside it that keeps two saves or removals from running at once.
+    Lock,
 }
 
 /// Which command met a credentials problem, so its fix says what to run once it is out of the
@@ -273,6 +287,10 @@ fn describe_write_failure(path: &Path, step: &WriteStep, message: &str) -> Strin
         WriteStep::Create => format!("cannot create a file in {path}: {message}"),
         WriteStep::Write => format!("cannot write the new {CREDENTIALS_FILE} in {path}: {message}"),
         WriteStep::Replace => format!("cannot replace {path}: {message}"),
+        WriteStep::Lock => format!(
+            "cannot lock {path}, which keeps two iii processes from saving or removing tokens at \
+             once: {message}"
+        ),
     }
 }
 
@@ -298,6 +316,7 @@ impl CredentialsError {
                 owner,
                 ..
             } => Some(write_fix(path, *step, *kind, owner)),
+            Self::LinkedFile { path, target } => Some(link_fix(path, target, recovery)),
             Self::NoHomeDirectory => Some(format!(
                 "Set HOME to your home directory, or give Compose a token through {TOKEN_ENV} in \
                  the environment of the process that runs it."
@@ -367,6 +386,24 @@ fn file_fix(path: &Path, problem: &FileProblem, recovery: Recovery<'_>) -> Strin
                 commands::edit(path, line)
             )
         }
+    }
+}
+
+fn link_fix(path: &Path, target: &Path, recovery: Recovery<'_>) -> String {
+    let edit = commands::edit(target, 1);
+    let remove = commands::remove(path);
+    match recovery {
+        Recovery::SignIn(command) | Recovery::LoginAgain(command) => format!(
+            "Save the token in {} itself (`{edit}`), or remove the link (what it points to is not \
+             touched) and run `{command}` again, for a file of this machine's own: \
+             `{remove} && {command}`.",
+            target.display()
+        ),
+        Recovery::SignOut(_) => format!(
+            "Remove the token from {} itself (`{edit}`), or remove the link (what it points to is \
+             not touched), which signs you out of every registry it holds: `{remove}`.",
+            target.display()
+        ),
     }
 }
 
@@ -797,10 +834,7 @@ impl Credentials {
     /// a typo into a 404.
     pub fn load() -> Self {
         let store = CredentialStore::default_location().ok();
-        Self::from_sources(
-            std::env::var_os(TOKEN_ENV).map(|value| value.to_string_lossy().into_owned()),
-            store.as_ref(),
-        )
+        Self::from_sources(environment_token(), store.as_ref())
     }
 
     /// [`Credentials::load`] from an explicit environment value and store.
@@ -921,6 +955,18 @@ impl Credentials {
     }
 }
 
+/// `III_REGISTRY_TOKEN` as this process has it, read the one way Compose, `iii registry login`
+/// and `iii registry logout` all read it: `None` when it is unset. A value that is not Unicode
+/// stays set, its bad bytes replaced, so that [`Credentials::from_sources`] refuses it rather
+/// than take it for unset.
+pub fn environment_token() -> Option<String> {
+    environment_text(std::env::var_os(TOKEN_ENV))
+}
+
+fn environment_text(value: Option<std::ffi::OsString>) -> Option<String> {
+    value.map(|value| value.to_string_lossy().into_owned())
+}
+
 // A unit test's own credentials. Without one a test has none: it never reads the
 // developer's `III_REGISTRY_TOKEN` or `~/.iii/credentials.toml`.
 #[cfg(test)]
@@ -981,7 +1027,8 @@ impl CredentialStore {
 
     /// Saves `token` for `origin`, replacing the one there. Other origins and any other content
     /// of the file stay as they were (comments are not kept: the file is machine-written). A
-    /// file that cannot be read is never overwritten: the error says how to fix it.
+    /// file that cannot be read, or a symbolic link, is never overwritten: the error says how to
+    /// fix it. The file is read and replaced under [`CredentialStore::lock`].
     ///
     /// `Some` when the directory had to be closed to other users first.
     pub fn save(
@@ -989,7 +1036,11 @@ impl CredentialStore {
         origin: &RegistryOrigin,
         token: &RegistryToken,
     ) -> Result<Option<Tightened>, CredentialsError> {
+        // The directory first: the lock lives in it.
+        let tightened = private_parent(&self.path)?;
+        let _lock = self.lock()?;
         let mut document = self.document()?.unwrap_or_default();
+        self.refuse_link()?;
         let registries = document
             .entry(REGISTRIES_TABLE)
             .or_insert_with(|| toml::Value::Table(toml::Table::new()))
@@ -1009,9 +1060,7 @@ impl CredentialStore {
             .collect();
         for key in spellings {
             if let Some(toml::Value::Table(fields)) = registries.remove(&key) {
-                for (name, value) in fields {
-                    entry.entry(name).or_insert(value);
-                }
+                merge_missing(&mut entry, fields);
             }
         }
         entry.insert(
@@ -1019,36 +1068,88 @@ impl CredentialStore {
             toml::Value::String(token.expose_secret().to_string()),
         );
         registries.insert(origin.as_str().to_string(), toml::Value::Table(entry));
-        self.write(&document)
+        Ok(tightened.or(self.write(&document)?))
     }
 
-    /// Removes the token saved for `origin`. Other origins stay. A file that cannot be read is
-    /// left as it is.
+    /// Removes the token saved for `origin`. Other origins stay. A file that cannot be read, or
+    /// a symbolic link, is left as it is. The file is read and replaced under
+    /// [`CredentialStore::lock`].
     pub fn remove(&self, origin: &RegistryOrigin) -> Result<Removed, CredentialsError> {
         let nothing = Removed {
             removed: false,
             tightened: None,
         };
+        // Nothing saved for it: nothing to lock or write, so a link or a directory iii may not
+        // write in is no obstacle.
         let Some(mut document) = self.document()? else {
             return Ok(nothing);
         };
-        let Some(registries) = document
-            .get_mut(REGISTRIES_TABLE)
-            .and_then(toml::Value::as_table_mut)
-        else {
+        if !without(&mut document, origin) {
+            return Ok(nothing);
+        }
+        self.refuse_link()?;
+        let _lock = self.lock()?;
+        // Again under the lock: another iii may have changed the file since.
+        let Some(mut document) = self.document()? else {
             return Ok(nothing);
         };
-        let before = registries.len();
-        registries.retain(|key, _| {
-            RegistryOrigin::parse(key).map_or(true, |existing| existing != *origin)
-        });
-        if registries.len() == before {
+        if !without(&mut document, origin) {
             return Ok(nothing);
         }
         Ok(Removed {
             removed: true,
             tightened: self.write(&document)?,
         })
+    }
+
+    /// The file `save` and `remove` lock: `credentials.toml.lock`, beside it.
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.as_os_str().to_os_string();
+        name.push(".lock");
+        PathBuf::from(name)
+    }
+
+    /// Holds [`CredentialStore::lock_path`] exclusively until the file returned is dropped, so
+    /// that a save or removal in another iii process waits instead of writing back a copy it
+    /// read before this one's rename, which would undo it. The directory must exist. `None` on
+    /// a file system without locks, where only the atomic rename is left.
+    fn lock(&self) -> Result<Option<std::fs::File>, CredentialsError> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let path = self.lock_path();
+        let file = options
+            .open(&path)
+            .map_err(|error| write_failed(WriteStep::Create, directory_of(&self.path), error))?;
+        match file.lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Ok(None),
+            Err(error) => Err(write_failed(WriteStep::Lock, &path, error)),
+        }
+    }
+
+    /// Refuses a file that is a symbolic link. Saving or removing replaces the file by a rename,
+    /// which would replace the link itself and leave the file it points to, maybe shared with
+    /// another installation, as it was. Reading through a link is fine.
+    fn refuse_link(&self) -> Result<(), CredentialsError> {
+        match std::fs::read_link(&self.path) {
+            Ok(target) => Err(CredentialsError::LinkedFile {
+                path: self.path.clone(),
+                target: directory_of(&self.path).join(target),
+            }),
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// What [`CredentialStore::save`] refuses before it is given a token: a file it cannot read,
+    /// or a symbolic link.
+    pub fn check_writable(&self) -> Result<(), CredentialsError> {
+        self.read()?;
+        self.refuse_link()
     }
 
     /// The file's text, `None` when there is no file. A directory, a named pipe or another
@@ -1114,6 +1215,34 @@ impl CredentialStore {
     fn write(&self, document: &toml::Table) -> Result<Option<Tightened>, CredentialsError> {
         let text = toml::to_string(document).expect("a table of strings serializes");
         write_private(&self.path, text.as_bytes())
+    }
+}
+
+/// Drops every entry of `document` for `origin`, in any spelling: whether there was one.
+fn without(document: &mut toml::Table, origin: &RegistryOrigin) -> bool {
+    let Some(registries) = document
+        .get_mut(REGISTRIES_TABLE)
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return false;
+    };
+    let before = registries.len();
+    registries
+        .retain(|key, _| RegistryOrigin::parse(key).map_or(true, |existing| existing != *origin));
+    registries.len() != before
+}
+
+/// Adds to `into` what `from` has and it lacks, table by table: `into` wins where both have a
+/// value.
+fn merge_missing(into: &mut toml::Table, from: toml::Table) {
+    for (name, value) in from {
+        match (into.get_mut(&name), value) {
+            (Some(toml::Value::Table(kept)), toml::Value::Table(more)) => merge_missing(kept, more),
+            (Some(_), _) => {}
+            (None, value) => {
+                into.insert(name, value);
+            }
+        }
     }
 }
 
@@ -1199,19 +1328,9 @@ fn position(text: &str, offset: usize) -> (usize, usize) {
 ///
 /// `Some` when the directory had to be closed to other users.
 fn write_private(path: &Path, contents: &[u8]) -> Result<Option<Tightened>, CredentialsError> {
-    let dir = path
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let failed =
-        |step: WriteStep, at: &Path, error: std::io::Error| CredentialsError::WriteFailed {
-            path: at.to_path_buf(),
-            step,
-            kind: error.kind(),
-            message: error.to_string(),
-            owner: ownership(at),
-        };
-    let tightened = private_directory(dir).map_err(|(step, error)| failed(step, dir, error))?;
+    let dir = directory_of(path);
+    let failed = write_failed;
+    let tightened = private_parent(path)?;
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -1243,7 +1362,32 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<Option<Tightened>, Cred
     if let Ok(directory) = std::fs::File::open(dir) {
         let _ = directory.sync_all();
     }
-    Ok(tightened.map(|from| Tightened {
+    Ok(tightened)
+}
+
+/// The directory `path` is in.
+fn directory_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+fn write_failed(step: WriteStep, at: &Path, error: std::io::Error) -> CredentialsError {
+    CredentialsError::WriteFailed {
+        path: at.to_path_buf(),
+        step,
+        kind: error.kind(),
+        message: error.to_string(),
+        owner: ownership(at),
+    }
+}
+
+/// Creates the directory `path` is in owner-only, or closes an existing one to other users
+/// ([`private_directory`]). `Some` when it had to be closed.
+fn private_parent(path: &Path) -> Result<Option<Tightened>, CredentialsError> {
+    let dir = directory_of(path);
+    let from = private_directory(dir).map_err(|(step, error)| write_failed(step, dir, error))?;
+    Ok(from.map(|from| Tightened {
         directory: dir.to_path_buf(),
         from,
     }))
@@ -1492,6 +1636,28 @@ mod tests {
         assert!(credentials.token_for(&origin).unwrap().is_none());
     }
 
+    /// A value that is not Unicode is set, and refused as Compose refuses it, never taken for
+    /// unset: `login` and `logout` read it the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_unicode_variable_is_refused_rather_than_taken_for_unset() {
+        use std::os::unix::ffi::OsStringExt;
+        assert_eq!(environment_text(None), None);
+        let value = environment_text(Some(std::ffi::OsString::from_vec(
+            b"wdt_\xffSecret".to_vec(),
+        )));
+        let credentials = Credentials::from_sources(value, None);
+        let default = RegistryOrigin::default_registry();
+        assert_eq!(
+            credentials.environment_problem(&default),
+            Some("holds a character that is not visible ASCII")
+        );
+        assert!(matches!(
+            credentials.token_for(&default),
+            Err(CredentialsError::InvalidEnvironmentToken { .. })
+        ));
+    }
+
     #[test]
     fn an_empty_environment_variable_is_no_token_and_a_bad_one_is_an_error() {
         let default = RegistryOrigin::default_registry();
@@ -1609,12 +1775,13 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("wdt_old"), "{text}");
         assert!(text.contains("keep = true"), "{text}");
-        // No temporary file is left beside it.
-        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        // No temporary file is left beside it, only the lock.
+        let mut names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, [CREDENTIALS_FILE]);
+        names.sort();
+        assert_eq!(names, [CREDENTIALS_FILE, "credentials.toml.lock"]);
     }
 
     #[test]
@@ -1648,6 +1815,90 @@ mod tests {
         assert_eq!(entry["label"].as_str(), Some("laptop"));
         assert_eq!(entry["note"].as_str(), Some("kept"));
         assert_eq!(entry.len(), 3);
+    }
+
+    /// Two spellings of one origin merge table by table: the canonical entry wins a conflict,
+    /// and what only the other one has is kept, however deep.
+    #[test]
+    fn merging_two_spellings_keeps_nested_fields_of_both() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".iii").join(CREDENTIALS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[registries.\"https://api.workers.iii.dev\"]\ntoken = \"wdt_old\"\nlabel = \"laptop\"\n\
+             [registries.\"https://api.workers.iii.dev\".metadata]\ndevice = \"mac\"\n\n\
+             [registries.\"https://API.workers.iii.dev/\"]\ntoken = \"wdt_older\"\nlabel = \"old\"\n\
+             [registries.\"https://API.workers.iii.dev/\".metadata]\ndevice = \"pc\"\nnote = \"kept\"\n",
+        )
+        .unwrap();
+        CredentialStore::at(&path)
+            .save(
+                &RegistryOrigin::default_registry(),
+                &RegistryToken::new("wdt_new").unwrap(),
+            )
+            .unwrap();
+        let document: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let registries = document[REGISTRIES_TABLE].as_table().unwrap();
+        assert_eq!(registries.len(), 1);
+        let entry = registries["https://api.workers.iii.dev"]
+            .as_table()
+            .unwrap();
+        assert_eq!(entry["token"].as_str(), Some("wdt_new"));
+        assert_eq!(entry["label"].as_str(), Some("laptop"));
+        let metadata = entry["metadata"].as_table().unwrap();
+        assert_eq!(metadata["device"].as_str(), Some("mac"));
+        assert_eq!(metadata["note"].as_str(), Some("kept"));
+    }
+
+    /// A save waits for the lock another iii holds, then reads the file as that one left it: a
+    /// token saved meanwhile is kept, not overwritten by a copy read before.
+    #[test]
+    fn a_save_waits_for_another_and_keeps_what_it_wrote() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".iii").join(CREDENTIALS_FILE);
+        let store = CredentialStore::at(&path);
+        let default = RegistryOrigin::default_registry();
+        store
+            .save(&default, &RegistryToken::new("wdt_first").unwrap())
+            .unwrap();
+
+        // Another process: it holds the lock while it writes a token of its own.
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .open(store.lock_path())
+            .unwrap();
+        held.lock().unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        let saving = store.clone();
+        let other = RegistryOrigin::parse("https://registry.example").unwrap();
+        let saved_origin = other.clone();
+        std::thread::spawn(move || {
+            let saved = saving.save(&saved_origin, &RegistryToken::new("wdt_mine").unwrap());
+            let _ = done.send(saved);
+        });
+        assert!(
+            finished
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "the save went ahead while another one held the lock"
+        );
+        std::fs::write(
+            &path,
+            "[registries.\"https://api.workers.iii.dev\"]\ntoken = \"wdt_theirs\"\n",
+        )
+        .unwrap();
+        held.unlock().unwrap();
+        finished
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the save goes ahead once the lock is free")
+            .unwrap();
+
+        let tokens = store.read().unwrap();
+        assert_eq!(tokens[&default].expose_secret(), "wdt_theirs");
+        assert_eq!(tokens[&other].expose_secret(), "wdt_mine");
+        #[cfg(unix)]
+        assert_eq!(mode(&store.lock_path()), 0o600);
     }
 
     #[test]
@@ -1997,6 +2248,83 @@ mod tests {
         assert_eq!(
             tokens[&RegistryOrigin::parse("https://registry.example").unwrap()].expose_secret(),
             "wdt_linked"
+        );
+    }
+
+    /// A file linked from elsewhere is read through the link, but a save or removal would
+    /// replace the link and leave the file it points to as it was: both refuse, and say how to
+    /// change that file or stop sharing it.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_file_is_read_but_never_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".iii");
+        std::fs::create_dir(&dir).unwrap();
+        let target = home.path().join("shared.toml");
+        let text = "[registries.\"https://registry.example\"]\ntoken = \"wdt_shared\"\n";
+        std::fs::write(&target, text).unwrap();
+        let path = dir.join(CREDENTIALS_FILE);
+        std::os::unix::fs::symlink("../shared.toml", &path).unwrap();
+        let store = CredentialStore::at(&path);
+        let shared = RegistryOrigin::parse("https://registry.example").unwrap();
+        assert_eq!(store.read().unwrap()[&shared].expose_secret(), "wdt_shared");
+
+        let error = store
+            .save(
+                &RegistryOrigin::default_registry(),
+                &RegistryToken::new("wdt_x").unwrap(),
+            )
+            .unwrap_err();
+        let shown = dir.join("../shared.toml");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{} is a symbolic link to {shown}: iii reads through it, but never saves or \
+                 removes a token through it, as replacing the link would leave {shown} as it was",
+                path.display(),
+                shown = shown.display()
+            )
+        );
+        assert_eq!(
+            error.fix(LOGIN).unwrap(),
+            format!(
+                "Save the token in {shown} itself (`nano +1 {shown}`), or remove the link (what \
+                 it points to is not touched) and run `iii registry login` again, for a file of \
+                 this machine's own: `rm {path} && iii registry login`.",
+                shown = shown.display(),
+                path = path.display()
+            )
+        );
+        assert_eq!(store.check_writable(), Err(error));
+
+        let error = store.remove(&shared).unwrap_err();
+        assert!(
+            matches!(error, CredentialsError::LinkedFile { .. }),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.fix(Recovery::SignOut("iii registry logout")).unwrap(),
+            format!(
+                "Remove the token from {shown} itself (`nano +1 {shown}`), or remove the link \
+                 (what it points to is not touched), which signs you out of every registry it \
+                 holds: `rm {path}`.",
+                shown = shown.display(),
+                path = path.display()
+            )
+        );
+        // Nothing to remove needs no write, so the link is no obstacle.
+        assert!(
+            !store
+                .remove(&RegistryOrigin::default_registry())
+                .unwrap()
+                .removed
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), text);
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 

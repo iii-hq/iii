@@ -3346,16 +3346,24 @@ pub(crate) fn expand_graph(
     // dependency-first order from the edges, preferring the requested root
     // only after other ready nodes so independent registry entries cannot put
     // it before a dependency that becomes ready in the same wave.
+    // The order follows the package edges between declarable nodes only: a local key in
+    // `needs` may spell a package name (`queue` standing in for `@acme/queue` while the
+    // package `queue` is requested), and is no edge between registry nodes.
     let mut pending: BTreeMap<String, usize> = BTreeMap::new();
     let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for name in &declarable {
-        let dependencies: Vec<String> = needs(name)
-            .into_iter()
-            .filter(|dependency| declarable.contains(dependency))
+        let dependencies: BTreeSet<&String> = graph
+            .edges
+            .iter()
+            .filter(|(from, to)| from == name && to != name && declarable.contains(to))
+            .map(|(_, to)| to)
             .collect();
         pending.insert(name.clone(), dependencies.len());
         for dependency in dependencies {
-            dependents.entry(dependency).or_default().push(name.clone());
+            dependents
+                .entry(dependency.clone())
+                .or_default()
+                .push(name.clone());
         }
     }
     for entries in dependents.values_mut() {

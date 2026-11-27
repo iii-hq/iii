@@ -44,10 +44,13 @@ The `iii cloud` command group manages hosted deployments. See
 ## Signing in to a worker registry
 
 `iii registry login` saves a download token for a registry, so Compose can install the private
-workers it has access to. `iii registry whoami` shows who the saved token belongs to, and
-`iii registry logout` removes it. Compose keeps the token to itself: workers never inherit it. On a
-shared or persistent CI runner, prefer `III_REGISTRY_TOKEN`, set for the job on the `iii compose` or
-`iii compose build` process, over a saved token. See
+workers it has access to. `iii registry whoami` shows the token this shell selects, where it came
+from, and who it belongs to: `III_REGISTRY_TOKEN` when it is set for the default registry, otherwise
+the saved token. `iii registry logout` removes the saved token. Compose keeps the token to itself:
+workers never inherit it. On a shared or persistent CI runner that installs from the default
+registry, `https://api.workers.iii.dev`, prefer `III_REGISTRY_TOKEN`, set for the job on the
+`iii compose` or `iii compose build` process, over a saved token. Another registry takes only a
+token saved with `iii registry login --registry <url>`. See
 [Private workers](./workers-registry#private-workers).
 
 ```bash

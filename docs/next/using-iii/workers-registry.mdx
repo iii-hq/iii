@@ -68,17 +68,20 @@ printf '%s' "$DOWNLOAD_TOKEN" | iii registry login --token-stdin
 ```
 
 Add `--registry <url>` to any of these commands for a registry other than
-`https://api.workers.iii.dev`. `iii registry whoami` prints the organization, the token's kind,
-prefix, access, and expiry, never the token itself.
+`https://api.workers.iii.dev`. `iii registry whoami` checks the token this shell selects:
+`III_REGISTRY_TOKEN` when it is set for the default registry, otherwise the saved token. It prints
+where that token came from, the organization, the token's kind, prefix, access, and expiry, never
+the token itself. Compose may select another token, from the environment of its own process.
 
 `iii registry login` saves the token in `~/.iii/credentials.toml` under the registry's origin. The
 file is readable only by you. Compose reads it again for each operation, so a running daemon uses a
 new login without a restart.
 
 Workers and hooks that run on the host run as your user, so they can read that file like any other
-file you own. On a shared or persistent CI runner, prefer `III_REGISTRY_TOKEN`, set for the job on
-the `iii` process that installs the workers (see below), over `iii registry login`, which leaves the
-token on disk for later jobs.
+file you own. On a shared or persistent CI runner that installs from the default registry, prefer
+`III_REGISTRY_TOKEN`, set for the job on the `iii` process that installs the workers (see below),
+over `iii registry login`, which leaves the token on disk for later jobs. Another registry takes
+only a saved token.
 
 ### Setting `III_REGISTRY_TOKEN`
 
@@ -131,8 +134,11 @@ iii registry login
 ```
 
 `iii registry login` and `iii registry logout` never overwrite a credentials file they cannot read.
-When other users can open `~/.iii`, they change its mode to `0700` before saving and print the old
-mode and the new one.
+Compose reads a `~/.iii/credentials.toml` that is a symbolic link, but `login` and `logout` refuse
+to change it: replacing the link would leave the file it points to as it was. Edit that file
+yourself, or remove the link to keep a file of this machine's own. When other users can open
+`~/.iii`, `login` and `logout` change its mode to `0700` before saving and print the old mode and
+the new one.
 
 ## Artifact types
 

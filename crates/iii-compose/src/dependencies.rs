@@ -1979,6 +1979,43 @@ mod tests {
         assert!(!plan.selected_versions.contains_key("broker"));
     }
 
+    /// A local container keyed like the requested package's own name stands in for a scoped
+    /// dependency of it without making the request wait on itself: `queue` under the key
+    /// `remote-queue` starts after the local `queue` that stands in for `@acme/queue`.
+    #[tokio::test]
+    async fn a_local_container_named_like_the_requested_package_is_no_cycle() {
+        let file = ComposeFile::parse(
+            "containers:\n  queue:\n    worker: path://./queue\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let mut asked = crate::edit::parse_worker("queue").unwrap();
+        asked.key = "remote-queue".into();
+        let asked = vec![asked];
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Add,
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        selections: BTreeMap::new(),
+                        root: Some("queue".into()),
+                        nodes: vec![node("queue", "1.0.0"), node("@acme/queue", "2.0.0")],
+                        edges: vec![("queue".into(), "@acme/queue".into())],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keys(&plan), vec!["remote-queue"]);
+        assert_eq!(container(&plan, "remote-queue").start_after, vec!["queue"]);
+    }
+
     fn plan_update(
         existing: &BTreeMap<String, Package>,
         scope: &UpdateScope,

@@ -53,7 +53,11 @@ pub enum RegistrySubcommand {
     Login(LoginCli),
     /// Remove the token saved for a worker registry.
     Logout(RegistryTarget),
-    /// Show the organization, kind, access and expiry of the token for a worker registry.
+    /// Show the organization, kind, access and expiry of the token this shell selects for a
+    /// worker registry.
+    ///
+    /// For the default registry, that is `III_REGISTRY_TOKEN` when it is set here, and the saved
+    /// token otherwise. Compose selects its own the same way, from its own environment.
     Whoami(RegistryTarget),
 }
 
@@ -109,6 +113,8 @@ impl TokenIdentity {
         scrub(&mut self.org.handle);
         self.org.name.iter_mut().for_each(scrub);
         match &mut self.access {
+            // The registry's word for every worker, whatever the token's own text.
+            TokenAccess::Named(all) if all == "all" => {}
             TokenAccess::Named(name) => scrub(name),
             TokenAccess::Workers { workers } => workers.iter_mut().for_each(scrub),
         }
@@ -314,7 +320,8 @@ impl LoginError {
 /// Checks `token` with `registry` and, only once it is confirmed, saves it in `store`.
 ///
 /// A credentials file that cannot be read stops it before the token is sent anywhere: it is
-/// never overwritten, as that would drop the tokens of other registries it may hold.
+/// never overwritten, as that would drop the tokens of other registries it may hold. Nor is a
+/// symbolic link, which a save would replace rather than update.
 pub(crate) async fn login(
     registry: &str,
     token: RegistryToken,
@@ -327,7 +334,7 @@ pub(crate) async fn login(
             &origin, "login",
         )));
     }
-    store.read()?;
+    store.check_writable()?;
     let identity = token_identity(&origin, &token, TokenSource::Given, Reader::Login).await?;
     let tightened = store.save(&origin, &token)?;
     let environment = Credentials::from_sources(environment, None);
@@ -347,7 +354,8 @@ pub(crate) fn logout(registry: &str, store: &CredentialStore) -> Result<Removed,
     Ok(store.remove(&origin)?)
 }
 
-/// Who the token Compose would use for `registry` belongs to, and where it came from.
+/// Who the token this shell selects for `registry` belongs to, and where it came from. Compose
+/// uses the same token only when its own environment selects it too.
 pub(crate) async fn whoami(
     registry: &str,
     credentials: &Credentials,
@@ -417,15 +425,18 @@ async fn run_login(args: LoginCli) -> i32 {
         return fail(&explained.what, Some(explained.fix));
     }
     // Before the token is asked for: a file login would refuse to rewrite makes typing it moot.
-    if let Err(error) = store.read() {
-        return fail(
-            &format!(
+    if let Err(error) = store.check_writable() {
+        let message = match error {
+            CredentialsError::LinkedFile { .. } => {
+                format!("{error}. `iii registry login` stopped before asking for the token.")
+            }
+            _ => format!(
                 "{error}. `iii registry login` never overwrites a credentials file it cannot \
                  read, as that would drop the tokens it holds for other registries: it stopped \
                  before asking for the token."
             ),
-            error.fix(Recovery::LoginAgain(&command)),
-        );
+        };
+        return fail(&message, error.fix(Recovery::LoginAgain(&command)));
     }
     let token = match read_token(&args) {
         Ok(token) => token,
@@ -438,7 +449,7 @@ async fn run_login(args: LoginCli) -> i32 {
         &args.target.registry,
         token,
         &store,
-        std::env::var(TOKEN_ENV).ok(),
+        crate::credentials::environment_token(),
     )
     .await
     {
@@ -527,15 +538,29 @@ fn run_logout(target: RegistryTarget) -> i32 {
             );
         }
     }
-    if std::env::var(TOKEN_ENV).is_ok_and(|value| !value.trim().is_empty())
-        && origin == RegistryOrigin::default_registry()
-    {
-        println!(
-            "{TOKEN_ENV} is still set in this shell, and still applies wherever it is set (on \
-             the `iii compose` daemon process, for instance). Unset it there to stop using it."
-        );
+    let environment = Credentials::from_sources(crate::credentials::environment_token(), None);
+    if let Some(note) = logout_note(&origin, &environment) {
+        println!("{note}");
     }
     0
+}
+
+/// What `logout` says about `III_REGISTRY_TOKEN`, read as Compose reads it: that it still
+/// applies to `origin`, or that it is set but no token.
+fn logout_note(origin: &RegistryOrigin, environment: &Credentials) -> Option<String> {
+    if let Some(reason) = environment.environment_problem(origin) {
+        return Some(format!(
+            "{TOKEN_ENV} is still set in this shell, but it {reason}. Wherever Compose reads the \
+             same value, it sends no request to {origin} at all: set it to the whole token, or \
+             unset it, {WHERE_COMPOSE_RUNS}."
+        ));
+    }
+    environment.environment_applies_to(origin).then(|| {
+        format!(
+            "{TOKEN_ENV} is still set in this shell, and still applies wherever it is set (on \
+             the `iii compose` daemon process, for instance). Unset it there to stop using it."
+        )
+    })
 }
 
 async fn run_whoami(target: RegistryTarget) -> i32 {
@@ -940,6 +965,36 @@ mod tests {
         assert!(!format!("{error} {fix}").contains("otherSecret"));
     }
 
+    /// A linked credentials file stops `login` before the token is sent: the save would
+    /// replace the link and leave the file it points to as it was.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn login_refuses_a_linked_file_before_sending_the_token() {
+        let server = registry(200, identity_body()).await;
+        let (home, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        let target = home.path().join("shared.toml");
+        std::fs::write(&target, "").unwrap();
+        std::os::unix::fs::symlink(&target, store.path()).unwrap();
+        let error = login(
+            &server.uri(),
+            RegistryToken::new("wdt_new").unwrap(),
+            &store,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                LoginError::Credentials(CredentialsError::LinkedFile { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "");
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn login_says_when_it_closes_the_directory() {
@@ -1201,6 +1256,66 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("eyJ")),
             "{identity:?}"
+        );
+    }
+
+    /// `all` is the registry's word for every worker, not an echo of a token that happens to
+    /// read `all`.
+    #[tokio::test]
+    async fn the_all_access_survives_a_token_that_reads_all() {
+        let server = registry(
+            200,
+            serde_json::json!({
+                "kind": "download",
+                "org": {"handle": "acme"},
+                "access": "all"
+            }),
+        )
+        .await;
+        let (_home, store) = store();
+        let done = login(
+            &server.uri(),
+            RegistryToken::new("all").unwrap(),
+            &store,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.identity.access, TokenAccess::Named("all".into()));
+        assert!(
+            identity_lines(&done.identity).contains(&"Access: every worker of @acme".to_string()),
+            "{:?}",
+            done.identity
+        );
+    }
+
+    /// `logout` reads `III_REGISTRY_TOKEN` as Compose does: a value that is no token is named
+    /// as such, and only the default registry is concerned.
+    #[test]
+    fn logout_names_a_variable_that_still_applies_or_is_no_token() {
+        let default = RegistryOrigin::default_registry();
+        let other = RegistryOrigin::parse("https://registry.example").unwrap();
+        let invalid = Credentials::from_sources(Some("wdt_half pasted".into()), None);
+        assert_eq!(
+            logout_note(&default, &invalid).unwrap(),
+            "III_REGISTRY_TOKEN is still set in this shell, but it holds a character that is not \
+             visible ASCII. Wherever Compose reads the same value, it sends no request to \
+             https://api.workers.iii.dev at all: set it to the whole token, or unset it, where \
+             Compose runs (on the `iii compose` daemon process, then restarted, or in the shell \
+             that runs `iii compose build`)."
+        );
+        let valid = Credentials::from_sources(Some("wdt_environment".into()), None);
+        assert!(
+            logout_note(&default, &valid)
+                .unwrap()
+                .starts_with("III_REGISTRY_TOKEN is still set in this shell, and still applies")
+        );
+        for credentials in [&invalid, &valid, &Credentials::from_sources(None, None)] {
+            assert_eq!(logout_note(&other, credentials), None);
+        }
+        assert_eq!(
+            logout_note(&default, &Credentials::from_sources(None, None)),
+            None
         );
     }
 

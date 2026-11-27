@@ -297,7 +297,7 @@ pub(crate) fn auth_failure(
              same {TOKEN_ENV}, every install from {origin} fails, public workers included."
         ),
         (Reader::Whoami, _) => format!(
-            " Compose sends this same token, so every install from {origin} fails, public \
+            " If Compose uses this same saved token, every install from {origin} fails, public \
              workers included."
         ),
         (Reader::Login, _) => String::new(),
@@ -445,8 +445,9 @@ pub(crate) fn insecure(origin: &RegistryOrigin, subcommand: &str) -> Explained {
 }
 
 /// Why a request got no final answer. The message never holds a header, and never a URL's
-/// query: [`SendError::Http`] holds the error without its URL, and [`SendError::Redirect`]
-/// describes a hop with [`display_url`], or not at all once it left the first URL's origin.
+/// path or query: [`SendError::Http`] holds the error without its URL, and
+/// [`SendError::Redirect`] describes a hop by its origin, or not at all once it left the first
+/// URL's origin.
 #[derive(Debug)]
 pub(crate) enum SendError {
     Http(reqwest::Error),
@@ -474,11 +475,12 @@ pub(crate) fn display_url(url: &str) -> String {
     }
 }
 
-/// A hop of [`send`] for a message: [`display_url`] while it is on the first URL's origin, and
-/// nothing about it past a redirect to another one, where a presigned URL lives.
+/// A hop of [`send`] for a message: its origin while it is on the first URL's origin, never its
+/// path, which a redirect may fill with a token or a signature; and nothing about it past a
+/// redirect to another one, where a presigned URL lives.
 fn describe_hop(url: &url::Url, first: &url::Url) -> String {
     if url.origin() == first.origin() {
-        display_url(url.as_str())
+        url.origin().ascii_serialization()
     } else {
         "the location it was redirected to".to_string()
     }
@@ -896,7 +898,7 @@ mod tests {
         );
         assert!(
             unknown.what.contains(
-                "it was refused (account_locked). Compose sends this same token, so every \
+                "it was refused (account_locked). If Compose uses this same saved token, every \
                  install from https://api.workers.iii.dev fails, public workers included."
             ),
             "{unknown:?}"
@@ -1065,6 +1067,37 @@ mod tests {
         for text in [error.to_string(), format!("{error:?}")] {
             assert!(!text.contains("secret"), "{text}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_bad_redirect_within_the_registry_names_only_its_origin() {
+        let registry = MockServer::start().await;
+        Mock::given(matchers::path("/download"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "/signed/s3cr3t-value/x"),
+            )
+            .mount(&registry)
+            .await;
+        Mock::given(matchers::path("/signed/s3cr3t-value/x"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "file:///etc/passwd"),
+            )
+            .mount(&registry)
+            .await;
+        let client = client_builder().build().unwrap();
+        let error = send(
+            &client,
+            Method::GET,
+            &format!("{}/download", registry.uri()),
+            None,
+            &auth_for(&registry.uri()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("{} redirected to an unsupported scheme", registry.uri())
+        );
     }
 
     #[tokio::test]
