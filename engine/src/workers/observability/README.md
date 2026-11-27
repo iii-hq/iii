@@ -181,12 +181,29 @@ the engine applies its own rule to every span, including spans from older SDKs.
   `"[REDACTED]"`. The JSON text is rewritten in place, so key order and formatting are kept and a
   truncated payload is still redacted. A payload the engine cannot read as JSON is replaced as a
   whole.
+- In a captured payload, a string value that is a URL keeps everything but its credentials. A URL
+  starts with `scheme://` or `/`; the password of its userinfo (`https://user:[REDACTED]@host`), or
+  the whole userinfo when it has no password (`https://[REDACTED]@github.com/…`, where a token is
+  the user name), and the value of every query parameter with a sensitive name become
+  `[REDACTED]`, so the `Location` of a redirect to a presigned URL, or an upload URL in a response
+  body, is stored without its signature. The placeholder is not percent-encoded. A string whose
+  JSON escapes do not decode, as when a truncated payload was cut inside one, is replaced as a
+  whole if it holds a `?` or `@`.
 
 A key is sensitive when, lowercased and with every character that is not a letter or digit removed,
 it ends in `token` or contains `password`, `passwd`, `secret`, `credential`, `authorization`,
 `apikey`, `privatekey`, `bearer`, `cookie`, `signature`, `accesstoken`, `refreshtoken` or
 `authtoken`. So `Cookie`, `set-cookie`, `http.request.header.set-cookie`, `idToken`, `X-CSRF-Token`
 and `x-hub-signature-256` are redacted, while counts such as `max_tokens` or `token_count` are kept.
+
+A query parameter name is sensitive when it is a sensitive key or, in any case, one of the names
+signed URLs carry their credential in: `token`, `sig` (Azure SAS), `signature`, `policy` and
+`key-pair-id` (CloudFront), `awsaccesskeyid`, `x-amz-signature`, `x-amz-credential` and
+`x-amz-security-token` (S3, R2), `x-goog-signature` and `x-goog-credential` (GCS). So
+`?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=…&X-Amz-Signature=…` keeps its algorithm, date
+and expiry but loses its credential and signature, and `?page=2&sort=name` is left alone. The SDKs
+apply the same URL rule before they export; the shared vectors in `sdk/fixtures/redaction` keep
+them in step.
 
 ### Alert Rule Fields
 

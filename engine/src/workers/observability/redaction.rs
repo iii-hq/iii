@@ -17,10 +17,17 @@
 //! Both passes are idempotent:
 //! - an attribute whose key is sensitive has its whole value replaced;
 //! - in the JSON text of `iii.payload.json`, the value of every sensitive key
-//!   at any depth is replaced. The text is rewritten in place instead of
-//!   parsed and re-serialized, so key order and formatting survive and a
-//!   truncated payload is still redacted. A text that is not JSON is replaced
-//!   as a whole (fail closed).
+//!   at any depth is replaced, and so is every credential inside a string
+//!   value that is a URL: the password of its userinfo (the whole userinfo
+//!   when it has no password, as a token used as the user name) and the value
+//!   of each query parameter with a sensitive name, such as the signature of a
+//!   presigned URL. The text is rewritten in place instead of parsed and
+//!   re-serialized, so key order and formatting survive and a truncated
+//!   payload is still redacted. A text that is not JSON is replaced as a whole
+//!   (fail closed).
+//!
+//! The SDKs run the same URL rule; the shared vectors in
+//! `sdk/fixtures/redaction` keep them in step.
 
 use std::borrow::Cow;
 
@@ -65,6 +72,25 @@ const FRAGMENT_FIRST_LETTERS: u32 = {
     }
     mask
 };
+
+/// Query parameters that carry a credential in a signed URL (S3 and R2
+/// SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
+/// provider), lowercased and matched in any case. [`is_sensitive_key`]
+/// already catches most of them; the list is the one every SDK carries, since
+/// their key rule is older and misses names such as `X-Amz-Signature`.
+const SENSITIVE_URL_PARAMS: &[&str] = &[
+    "token",
+    "sig",
+    "signature",
+    "policy",
+    "key-pair-id",
+    "awsaccesskeyid",
+    "x-amz-signature",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "x-goog-signature",
+    "x-goog-credential",
+];
 
 /// Longest normalized key kept on the stack; longer keys go to the heap.
 const STACK_KEY_BYTES: usize = 64;
@@ -113,6 +139,87 @@ fn is_sensitive_normalized(key: &[u8]) -> bool {
         })
 }
 
+/// Whether the value of the query parameter `name` must not leave the engine:
+/// its name is a sensitive key or one of [`SENSITIVE_URL_PARAMS`].
+fn is_sensitive_url_param(name: &str) -> bool {
+    is_sensitive_key(name)
+        || SENSITIVE_URL_PARAMS
+            .iter()
+            .any(|param| name.eq_ignore_ascii_case(param))
+}
+
+/// Calls `found` with the byte range of each credential in `text` when it is
+/// a URL, in order: the password of its userinfo, or the whole userinfo when
+/// it has no `:` (a token used as the user name, as in a clone URL), and the
+/// value of every query parameter whose name is sensitive
+/// ([`is_sensitive_url_param`]). Empty values and values already [`REDACTED`]
+/// are skipped, so a redacted URL yields nothing.
+///
+/// `text` is a URL when it starts with `scheme://` (a letter, then letters,
+/// digits, `+`, `-` or `.`) or with `/`. The authority runs to the first `/`,
+/// `?` or `#` and its userinfo to the last `@` in it; only a `scheme://` URL
+/// has one. The query runs from the first `?` to the next `#`, in
+/// `&`-separated `name=value` pairs. Every range starts and ends next to an
+/// ASCII delimiter or at the end of `text`, so it falls on char boundaries.
+///
+/// It runs on every string value of every payload: anything that does not
+/// start like a URL is turned away after a few bytes.
+fn url_secrets(text: &str, mut found: impl FnMut(usize, usize)) {
+    let bytes = text.as_bytes();
+    let authority_start = match bytes.first() {
+        Some(b'/') => None,
+        Some(first) if first.is_ascii_alphabetic() => {
+            let scheme_end = bytes
+                .iter()
+                .position(|byte| {
+                    !(byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+                })
+                .unwrap_or(bytes.len());
+            if !bytes[scheme_end..].starts_with(b"://") {
+                return;
+            }
+            Some(scheme_end + 3)
+        }
+        _ => return,
+    };
+    let mut secret = |start: usize, end: usize| {
+        let value = &text[start..end];
+        if !value.is_empty() && value != REDACTED {
+            found(start, end);
+        }
+    };
+    if let Some(start) = authority_start {
+        let end = bytes[start..]
+            .iter()
+            .position(|byte| matches!(byte, b'/' | b'?' | b'#'))
+            .map_or(bytes.len(), |offset| start + offset);
+        if let Some(at) = bytes[start..end].iter().rposition(|&byte| byte == b'@') {
+            match bytes[start..start + at]
+                .iter()
+                .position(|&byte| byte == b':')
+            {
+                Some(colon) => secret(start + colon + 1, start + at),
+                None => secret(start, start + at),
+            }
+        }
+    }
+    let Some(question) = text.find('?') else {
+        return;
+    };
+    let query_end = text[question + 1..]
+        .find('#')
+        .map_or(text.len(), |offset| question + 1 + offset);
+    let mut param_start = question + 1;
+    for param in text[question + 1..query_end].split('&') {
+        if let Some((name, _)) = param.split_once('=')
+            && is_sensitive_url_param(name)
+        {
+            secret(param_start + name.len() + 1, param_start + param.len());
+        }
+        param_start += param.len() + 1;
+    }
+}
+
 /// Redacts one span, event or link attribute in place: the whole value when
 /// the key is sensitive, the sensitive values inside it when it is the
 /// captured payload.
@@ -136,41 +243,62 @@ pub(crate) fn redact_payload_json(json: &str) -> Option<String> {
         Some(body) => (body, SDK_TRUNCATION_MARKER),
         None => (json, ""),
     };
-    let Some(ranges) = sensitive_values(body) else {
+    let Some(edits) = redactions(body) else {
         // The scanner lost the structure, so a sensitive key may hide in what
         // it could not read: drop the payload rather than guess.
         return Some(REDACTED_JSON.to_string());
     };
-    if ranges.is_empty() {
+    if edits.is_empty() {
         return None;
     }
     // Exact size, so a short placeholder replacing a large value does not
     // leave the stored payload holding an allocation sized for the original.
-    let removed: usize = ranges.iter().map(|(start, end)| end - start).sum();
-    let mut out = String::with_capacity(json.len() - removed + ranges.len() * REDACTED_JSON.len());
+    let removed: usize = edits.iter().map(|edit| edit.end - edit.start).sum();
+    let added: usize = edits.iter().map(|edit| edit.with.len()).sum();
+    let mut out = String::with_capacity(json.len() - removed + added);
     let mut copied = 0;
-    for (start, end) in ranges {
-        out.push_str(&body[copied..start]);
-        out.push_str(REDACTED_JSON);
-        copied = end;
+    for edit in &edits {
+        out.push_str(&body[copied..edit.start]);
+        out.push_str(&edit.with);
+        copied = edit.end;
     }
     out.push_str(&body[copied..]);
     out.push_str(marker);
     Some(out)
 }
 
-/// Byte ranges of the values under sensitive keys in `json`, in order, or
-/// `None` when the text is not JSON: a non-string key, a literal that is not
-/// one, or a value followed by anything but a delimiter. That last check
-/// keeps text from slipping past unread, such as `abc` in
-/// `{"authorization":Bearer abc}`. A text that just ends (a truncated
-/// payload) is fine: a value cut short runs to the end.
+/// A stretch of the payload text, by byte offsets, and what replaces it.
+struct Edit {
+    start: usize,
+    end: usize,
+    with: Cow<'static, str>,
+}
+
+impl Edit {
+    fn new(start: usize, end: usize, with: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            start,
+            end,
+            with: with.into(),
+        }
+    }
+}
+
+/// The edits that redact `json`, in order, or `None` when the text is not
+/// JSON: a non-string key, a literal that is not one, or a value followed by
+/// anything but a delimiter. That last check keeps text from slipping past
+/// unread, such as `abc` in `{"authorization":Bearer abc}`. A text that just
+/// ends (a truncated payload) is fine: a value cut short runs to the end.
+///
+/// The value under a sensitive key becomes `"[REDACTED]"`; the credentials in
+/// any other string value that is a URL become `[REDACTED]` inside it
+/// ([`redact_url_value`]).
 ///
 /// Every position the scanner stops at is an ASCII byte or the end of the
-/// text, so each range falls on char boundaries.
-fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
+/// text, so each edit falls on char boundaries.
+fn redactions(json: &str) -> Option<Vec<Edit>> {
     let bytes = json.as_bytes();
-    let mut ranges = Vec::new();
+    let mut edits = Vec::new();
     // Open containers, innermost last: `b'{'` or `b'['`.
     let mut open: Vec<u8> = Vec::new();
     // At the start of an object or after a comma in one: a key comes next.
@@ -235,7 +363,7 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
                     // Replaced whatever it is, so it need not be valid JSON.
                     let end = value_end(bytes, i);
                     if &json[i..end] != REDACTED_JSON {
-                        ranges.push((i, end));
+                        edits.push(Edit::new(i, end, REDACTED_JSON));
                     }
                     i = end;
                     value_done = true;
@@ -244,7 +372,9 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
             // An object key that is not a string (`{password: 1}`) is not JSON.
             _ if key_next => return None,
             b'"' => {
-                i = string_end(bytes, i);
+                let string = scan_string(bytes, i);
+                redact_url_value(json, i, string, &mut edits);
+                i = string.end;
                 value_done = true;
             }
             // A colon only ever follows a key, consumed above.
@@ -259,7 +389,70 @@ fn sensitive_values(json: &str) -> Option<Vec<(usize, usize)>> {
             }
         }
     }
-    Some(ranges)
+    Some(edits)
+}
+
+/// Queues the edits that redact the credentials in the string value whose
+/// opening quote is at `start`, when it is a URL ([`url_secrets`]).
+///
+/// Text without escapes reads the same decoded, so each credential is
+/// replaced where it stands. Text with escapes (`\u0026` for `&`, `\/`) is
+/// decoded, and when it holds a credential the whole string is written back
+/// re-encoded. If its escapes do not decode, as when a truncated payload was
+/// cut inside one, the string is replaced as a whole (fail closed); escaped
+/// strings without a `?` or `@` are not decoded, since a URL credential needs
+/// one of them and no serializer escapes either. A string cut short stays
+/// open, so the truncation marker after it still reads as before.
+fn redact_url_value(json: &str, start: usize, string: ScannedString, edits: &mut Vec<Edit>) {
+    let content_start = start + 1;
+    let content_end = if string.closed {
+        string.end - 1
+    } else {
+        string.end
+    };
+    let content = &json[content_start..content_end];
+    if !string.escaped {
+        url_secrets(content, |from, to| {
+            edits.push(Edit::new(
+                content_start + from,
+                content_start + to,
+                REDACTED,
+            ));
+        });
+        return;
+    }
+    if !content.contains(['?', '@']) {
+        return;
+    }
+    let quoted = &json[start..string.end];
+    let decoded: Result<String, _> = if string.closed {
+        serde_json::from_str(quoted)
+    } else {
+        serde_json::from_str(&format!("{quoted}\""))
+    };
+    let Ok(text) = decoded else {
+        edits.push(Edit::new(start, string.end, REDACTED_JSON));
+        return;
+    };
+    let mut redacted = String::new();
+    let mut copied = 0;
+    url_secrets(&text, |from, to| {
+        redacted.push_str(&text[copied..from]);
+        redacted.push_str(REDACTED);
+        copied = to;
+    });
+    if redacted.is_empty() {
+        return;
+    }
+    redacted.push_str(&text[copied..]);
+    let Ok(mut encoded) = serde_json::to_string(&redacted) else {
+        edits.push(Edit::new(start, string.end, REDACTED_JSON));
+        return;
+    };
+    if !string.closed {
+        encoded.pop();
+    }
+    edits.push(Edit::new(start, string.end, encoded));
 }
 
 /// Whether `token` is a JSON literal: `true`, `false`, `null` or a number,
@@ -367,17 +560,47 @@ fn value_end(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-/// Position past the string whose opening quote is at `start`.
-fn string_end(bytes: &[u8], start: usize) -> usize {
+/// What [`scan_string`] learned about a string.
+#[derive(Clone, Copy)]
+struct ScannedString {
+    /// Position past its closing quote, or the end of the text.
+    end: usize,
+    /// Whether it has its closing quote: false when the text ends first.
+    closed: bool,
+    /// Whether it holds an escape.
+    escaped: bool,
+}
+
+/// Reads the string whose opening quote is at `start`.
+fn scan_string(bytes: &[u8], start: usize) -> ScannedString {
+    let mut escaped = false;
     let mut i = start + 1;
     while i < bytes.len() {
         match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return i + 1,
+            b'\\' => {
+                escaped = true;
+                i += 2;
+            }
+            b'"' => {
+                return ScannedString {
+                    end: i + 1,
+                    closed: true,
+                    escaped,
+                };
+            }
             _ => i += 1,
         }
     }
-    bytes.len()
+    ScannedString {
+        end: bytes.len(),
+        closed: false,
+        escaped,
+    }
+}
+
+/// Position past the string whose opening quote is at `start`.
+fn string_end(bytes: &[u8], start: usize) -> usize {
+    scan_string(bytes, start).end
 }
 
 /// Position of the delimiter that ends the literal (number, `true`, ...) at
@@ -562,6 +785,11 @@ mod tests {
             redact_payload_json(r#"{"nome":"José ç 🙂","cookie":"ação"}"#).as_deref(),
             Some(r#"{"nome":"José ç 🙂","cookie":"[REDACTED]"}"#),
         );
+        assert_eq!(
+            redact_payload_json(r#"{"url":"https://exemplo.com/ação?token=ç🙂&q=José"}"#)
+                .as_deref(),
+            Some(r#"{"url":"https://exemplo.com/ação?token=[REDACTED]&q=José"}"#),
+        );
     }
 
     #[test]
@@ -648,6 +876,203 @@ mod tests {
         redact_attribute("cookie", &mut header);
         assert_eq!(header, REDACTED);
         assert!(header.capacity() < 1024, "{} bytes kept", header.capacity());
+    }
+
+    /// The vectors every SDK runs too (`sdk/fixtures/redaction`).
+    #[test]
+    fn redacts_url_credentials_from_the_shared_vectors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../sdk/fixtures/redaction/url-credentials.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let vectors: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let cases = vectors["cases"].as_array().unwrap();
+        assert!(
+            cases.len() > 10,
+            "{} cases in {}",
+            cases.len(),
+            path.display()
+        );
+        let wrap = |value: &serde_json::Value| {
+            serde_json::json!({ "headers": { "location": value }, "links": [value] }).to_string()
+        };
+        for case in cases {
+            let note = case["note"].as_str().unwrap();
+            let payload = wrap(&case["value"]);
+            let expected = wrap(&case["expect"]);
+            let redacted = redact_payload_json(&payload);
+            assert_eq!(redacted.as_deref().unwrap_or(&payload), expected, "{note}");
+            assert_eq!(
+                redacted.is_none(),
+                case["value"] == case["expect"],
+                "{note}: None only when nothing changes"
+            );
+            assert_eq!(redact_payload_json(&expected), None, "{note}: idempotent");
+        }
+    }
+
+    #[test]
+    fn presigned_url_parameter_names() {
+        for name in SENSITIVE_URL_PARAMS.iter().copied().chain([
+            "X-Amz-Signature",
+            "X-Goog-Credential",
+            "Key-Pair-Id",
+            "SIG",
+        ]) {
+            assert!(is_sensitive_url_param(name), "{name} must be redacted");
+        }
+        for name in [
+            "X-Amz-Algorithm",
+            "X-Amz-Date",
+            "X-Amz-Expires",
+            "X-Amz-SignedHeaders",
+            "X-Amz-Content-Sha256",
+            "X-Goog-SignedHeaders",
+            "x-id",
+            "Expires",
+            "sv",
+            "se",
+            "sp",
+            "sr",
+            "page",
+            "sort",
+            "max_tokens",
+            "",
+        ] {
+            assert!(!is_sensitive_url_param(name), "{name} must stay visible");
+        }
+    }
+
+    #[test]
+    fn redacts_url_credentials_at_any_depth_among_key_redactions() {
+        let payload = r#"{"status_code":302,"headers":{"set-cookie":"sid=1","location":"/v1/objects/download?token=eyJ.a.b"},"body":{"items":[{"url":"https://u:pw@h.example/x?sig=s&page=2"},"https://h.example/?Signature=s"]},"authorization":"Bearer x","next":"https://h.example/?page=3"}"#;
+        assert_eq!(
+            redact_payload_json(payload).as_deref(),
+            Some(
+                r#"{"status_code":302,"headers":{"set-cookie":"[REDACTED]","location":"/v1/objects/download?token=[REDACTED]"},"body":{"items":[{"url":"https://u:[REDACTED]@h.example/x?sig=[REDACTED]&page=2"},"https://h.example/?Signature=[REDACTED]"]},"authorization":"[REDACTED]","next":"https://h.example/?page=3"}"#
+            ),
+        );
+    }
+
+    #[test]
+    fn redacts_a_payload_that_is_a_url() {
+        assert_eq!(
+            redact_payload_json(r#""http://localhost:49200/v1/objects/download?token=eyJ.a.b""#)
+                .as_deref(),
+            Some(r#""http://localhost:49200/v1/objects/download?token=[REDACTED]""#),
+        );
+    }
+
+    #[test]
+    fn a_url_under_a_sensitive_key_is_replaced_whole() {
+        assert_eq!(
+            redact_payload_json(r#"{"token":"https://h.example/?sig=a&page=2"}"#).as_deref(),
+            Some(r#"{"token":"[REDACTED]"}"#),
+        );
+    }
+
+    #[test]
+    fn leaves_ordinary_urls_and_url_keys_alone() {
+        for payload in [
+            r#"{"next":"https://registry.example.com/workers?page=2&sort=name"}"#,
+            r#""/workers/acme?tab=versions""#,
+            r#"{"https://h.example/?token=abc":1}"#,
+            r#"{"note":"see https://h.example/?token=abc"}"#,
+            r#"{"email":"ana@example.com","q":"a?b=c"}"#,
+        ] {
+            assert_eq!(redact_payload_json(payload), None, "{payload}");
+        }
+    }
+
+    #[test]
+    fn redacts_urls_in_payloads_cut_short() {
+        let cases = [
+            // Cut inside the signature: what is left of it goes.
+            (
+                cut(
+                    r#"{"status_code":302,"headers":{"location":"https://h.example/k?X-Amz-Credential=AK%2F1&X-Amz-Date=1&X-Amz-Signature=9b1c6d"#,
+                ),
+                Some(cut(
+                    r#"{"status_code":302,"headers":{"location":"https://h.example/k?X-Amz-Credential=[REDACTED]&X-Amz-Date=1&X-Amz-Signature=[REDACTED]"#,
+                )),
+            ),
+            // Cut after the URL.
+            (
+                cut(
+                    r#"{"location":"http://localhost:49200/v1/objects/download?token=eyJ.a.b","body":"xx"#,
+                ),
+                Some(cut(
+                    r#"{"location":"http://localhost:49200/v1/objects/download?token=[REDACTED]","body":"xx"#,
+                )),
+            ),
+            // Cut without a marker, inside a userinfo password that is complete.
+            (
+                r#"{"url":"https://deploy:hunter2@git.example.com/ac"#.to_string(),
+                Some(r#"{"url":"https://deploy:[REDACTED]@git.example.com/ac"#.to_string()),
+            ),
+            // A token used as the user name, cut later.
+            (
+                cut(r#"{"remote":"https://ghp_x@github.com/acme/wor"#),
+                Some(cut(r#"{"remote":"https://[REDACTED]@github.com/acme/wor"#)),
+            ),
+            // Cut before any value.
+            (cut(r#"{"location":"https://h.example/k?X-Amz-Sig"#), None),
+            (cut(r#"{"location":"https://h.example/k?token="#), None),
+        ];
+        for (payload, expected) in cases {
+            let redacted = redact_payload_json(&payload);
+            assert_eq!(redacted, expected, "{payload}");
+            if let Some(redacted) = redacted {
+                assert_eq!(
+                    redact_payload_json(&redacted),
+                    None,
+                    "idempotent: {redacted}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn redacts_escaped_urls() {
+        let cases = [
+            // `\u0026` for `&` and `\/` for `/`: the string is written back
+            // decoded.
+            (
+                r#"{"location":"https:\/\/h.example\/k?X-Amz-Date=1\u0026X-Amz-Signature=abc\u0026x-id=GetObject","n":1}"#.to_string(),
+                Some(r#"{"location":"https://h.example/k?X-Amz-Date=1&X-Amz-Signature=[REDACTED]&x-id=GetObject","n":1}"#.to_string()),
+            ),
+            // Nothing to redact: the escapes stay.
+            (
+                r#"{"location":"https:\/\/h.example\/k?page=2\u0026sort=name"}"#.to_string(),
+                None,
+            ),
+            (r#"{"text":"line\none ?"}"#.to_string(), None),
+            // Cut short after a whole escape: decoded, redacted, left open.
+            (
+                cut(r#"{"location":"https:\/\/h.example\/k?page=1\u0026token=ab"#),
+                Some(cut(r#"{"location":"https://h.example/k?page=1&token=[REDACTED]"#)),
+            ),
+            // Cut inside an escape, or an escape that does not decode: the
+            // string goes whole.
+            (
+                cut(r#"{"location":"https:\/\/h.example\/k?token=ab\u00"#),
+                Some(cut(r#"{"location":"[REDACTED]""#)),
+            ),
+            (
+                r#"{"location":"https://h.example/k?token=ab\q"}"#.to_string(),
+                Some(r#"{"location":"[REDACTED]"}"#.to_string()),
+            ),
+        ];
+        for (payload, expected) in cases {
+            let redacted = redact_payload_json(&payload);
+            assert_eq!(redacted, expected, "{payload}");
+            if let Some(redacted) = redacted {
+                assert_eq!(
+                    redact_payload_json(&redacted),
+                    None,
+                    "idempotent: {redacted}"
+                );
+            }
+        }
     }
 
     #[test]

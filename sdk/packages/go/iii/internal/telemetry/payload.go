@@ -46,6 +46,110 @@ func IsSensitiveKey(key string) bool {
 	return lower == "token" || strings.HasSuffix(lower, "_token") || strings.HasSuffix(lower, "-token")
 }
 
+// sensitiveURLParams are the query parameters that carry a credential in a signed URL
+// (S3 and R2 SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
+// provider), lowercased. The engine and every SDK carry the same list.
+var sensitiveURLParams = map[string]bool{
+	"token":                true,
+	"sig":                  true,
+	"signature":            true,
+	"policy":               true,
+	"key-pair-id":          true,
+	"awsaccesskeyid":       true,
+	"x-amz-signature":      true,
+	"x-amz-credential":     true,
+	"x-amz-security-token": true,
+	"x-goog-signature":     true,
+	"x-goog-credential":    true,
+}
+
+func isSensitiveURLParam(name string) bool {
+	return IsSensitiveKey(name) || sensitiveURLParams[strings.ToLower(name)]
+}
+
+// redactURLCredentials replaces the credentials in text with RedactedPlaceholder when it
+// is a URL: one that starts with scheme:// or /. The password of its userinfo goes, or
+// the whole userinfo when it has no ':' (a token used as the user name); the authority
+// runs to the first '/', '?' or '#', the userinfo to the last '@' in it. So does the
+// value of every query parameter whose name is sensitive (the query runs from the first
+// '?' to the next '#'). Everything else is kept as it is; empty and
+// already redacted values are skipped.
+func redactURLCredentials(text string) string {
+	authorityStart := -1
+	if !strings.HasPrefix(text, "/") {
+		authorityStart = schemePrefixLen(text)
+		if authorityStart == 0 {
+			return text
+		}
+	}
+	var secrets [][2]int
+	secret := func(start, end int) {
+		if value := text[start:end]; value != "" && value != RedactedPlaceholder {
+			secrets = append(secrets, [2]int{start, end})
+		}
+	}
+	if authorityStart > 0 {
+		authorityEnd := len(text)
+		if i := strings.IndexAny(text[authorityStart:], "/?#"); i >= 0 {
+			authorityEnd = authorityStart + i
+		}
+		if at := strings.LastIndexByte(text[authorityStart:authorityEnd], '@'); at >= 0 {
+			if colon := strings.IndexByte(text[authorityStart:authorityStart+at], ':'); colon >= 0 {
+				secret(authorityStart+colon+1, authorityStart+at)
+			} else {
+				secret(authorityStart, authorityStart+at)
+			}
+		}
+	}
+	if question := strings.IndexByte(text, '?'); question >= 0 {
+		queryEnd := len(text)
+		if i := strings.IndexByte(text[question+1:], '#'); i >= 0 {
+			queryEnd = question + 1 + i
+		}
+		paramStart := question + 1
+		for _, param := range strings.Split(text[question+1:queryEnd], "&") {
+			if name, _, ok := strings.Cut(param, "="); ok && isSensitiveURLParam(name) {
+				secret(paramStart+len(name)+1, paramStart+len(param))
+			}
+			paramStart += len(param) + 1
+		}
+	}
+	if len(secrets) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	copied := 0
+	for _, s := range secrets {
+		b.WriteString(text[copied:s[0]])
+		b.WriteString(RedactedPlaceholder)
+		copied = s[1]
+	}
+	b.WriteString(text[copied:])
+	return b.String()
+}
+
+// schemePrefixLen returns the length of the "scheme://" that starts text (a letter, then
+// letters, digits, '+', '-' or '.'), or 0 when it does not start with one.
+func schemePrefixLen(text string) int {
+	isLetter := func(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
+	if text == "" || !isLetter(text[0]) {
+		return 0
+	}
+	i := 1
+	for i < len(text) {
+		c := text[i]
+		if !isLetter(c) && !('0' <= c && c <= '9') && c != '+' && c != '-' && c != '.' {
+			break
+		}
+		i++
+	}
+	if !strings.HasPrefix(text[i:], "://") {
+		return 0
+	}
+	return i + 3
+}
+
 // TracePayloadsEnabled reports whether invocation payloads are recorded as span events:
 // false when III_DISABLE_TRACE_PAYLOADS is "1" or "true" (any case), like the Node SDK.
 // It is read on every invocation.
@@ -83,13 +187,17 @@ func resolveMaxBytes(env LookupEnv) int {
 }
 
 // Redact returns v with the values of sensitive keys replaced by RedactedPlaceholder
-// (Node redact). Maps of type map[string]any and slices of type []any are copied
-// recursively and nil and scalars are returned as they are; any other value (a struct,
-// a typed map, json.RawMessage) is serialized to JSON and returned redacted as a
-// json.RawMessage, keeping its field order.
+// (Node redact), and the credentials in string values that are URLs too: the password
+// of the userinfo (the whole userinfo when it has no password) and the values of query
+// parameters with a sensitive name, such as the signature of a presigned URL. Maps of type map[string]any and slices of type []any
+// are copied recursively and nil and other scalars are returned as they are; any other
+// value (a struct, a typed map, json.RawMessage) is serialized to JSON and returned
+// redacted as a json.RawMessage, keeping its field order.
 func Redact(v any) any {
 	switch x := v.(type) {
-	case nil, string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+	case string:
+		return redactURLCredentials(x)
+	case nil, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
 		return x
 	case map[string]any:
 		out := make(map[string]any, len(x))
@@ -121,7 +229,8 @@ func Redact(v any) any {
 }
 
 // RedactJSON rewrites a JSON document with the values of sensitive keys replaced by
-// RedactedPlaceholder, at any depth, keeping key order and number literals.
+// RedactedPlaceholder, at any depth, and the credentials in string values that are URLs
+// too (Redact), keeping key order and number literals.
 func RedactJSON(raw []byte) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -190,7 +299,7 @@ func writeRedacted(dec *json.Decoder, buf *bytes.Buffer) error {
 			return errors.New("telemetry: unexpected JSON delimiter")
 		}
 	case string:
-		writeJSONString(buf, t)
+		writeJSONString(buf, redactURLCredentials(t))
 	case json.Number:
 		buf.WriteString(t.String())
 	case bool:

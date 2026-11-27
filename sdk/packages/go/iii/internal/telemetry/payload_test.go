@@ -2,6 +2,9 @@ package telemetry
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -156,5 +159,91 @@ func TestSafeStringify(t *testing.T) {
 	}
 	if got := SafeStringify(map[string]int{"a": 1}); got != `{"a":1}` {
 		t.Errorf("map -> %q", got)
+	}
+}
+
+// urlVectorsPath is sdk/fixtures/redaction/url-credentials.json, relative to this
+// package: the vectors the engine and every SDK run.
+var urlVectorsPath = filepath.Join("..", "..", "..", "..", "..", "fixtures", "redaction", "url-credentials.json")
+
+func wrapURL(value string) map[string]any {
+	return map[string]any{"headers": map[string]any{"location": value}, "links": []any{value}}
+}
+
+func TestRedactURLCredentialsVectors(t *testing.T) {
+	raw, err := os.ReadFile(urlVectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Cases []struct {
+			Note   string `json:"note"`
+			Value  string `json:"value"`
+			Expect string `json:"expect"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors.Cases) <= 10 {
+		t.Fatalf("found %d cases in %s, expected the full set", len(vectors.Cases), urlVectorsPath)
+	}
+	for _, c := range vectors.Cases {
+		t.Run(c.Note, func(t *testing.T) {
+			want := wrapURL(c.Expect)
+			if got := Redact(wrapURL(c.Value)); !reflect.DeepEqual(got, want) {
+				t.Errorf("Redact = %v, want %v", got, want)
+			}
+			// RedactAndTruncate goes through RedactJSON.
+			if got := redactedMap(t, wrapURL(c.Value)); !reflect.DeepEqual(got, want) {
+				t.Errorf("RedactAndTruncate = %v, want %v", got, want)
+			}
+			if got := Redact(want); !reflect.DeepEqual(got, want) {
+				t.Errorf("not idempotent: %v", got)
+			}
+		})
+	}
+}
+
+func TestRedactURLCredentials(t *testing.T) {
+	response := map[string]any{
+		"status_code": 302,
+		"headers": map[string]any{
+			"location": "https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AK%2F20261126&X-Amz-Signature=abc",
+		},
+		"body": map[string]any{"upload": map[string]any{"url": "http://localhost:49200/v1/objects/upload?token=eyJ.a.b"}},
+	}
+	got, _ := RedactAndTruncate(response, 0)
+	want := `{"body":{"upload":{"url":"http://localhost:49200/v1/objects/upload?token=[REDACTED]"}},"headers":{"location":"https://acct.r2.cloudflarestorage.com/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=[REDACTED]&X-Amz-Signature=[REDACTED]"},"status_code":302}`
+	if got != want {
+		t.Errorf("RedactAndTruncate =\n%s\nwant\n%s", got, want)
+	}
+
+	// A struct goes through RedactJSON and keeps its field order.
+	type upload struct {
+		URL  string `json:"url"`
+		Note string `json:"note"`
+	}
+	if raw := Redact(upload{URL: "/v1/objects/upload?token=abc", Note: "see https://h.example/?token=abc"}).(json.RawMessage); string(raw) != `{"url":"/v1/objects/upload?token=[REDACTED]","note":"see https://h.example/?token=abc"}` {
+		t.Errorf("struct: %s", raw)
+	}
+
+	for in, want := range map[string]string{
+		"/v1/objects/download?token=abc":   "/v1/objects/download?token=[REDACTED]",
+		"https://u:pw@h.example/":          "https://u:[REDACTED]@h.example/",
+		"https://ghp_x@github.com/o/r.git": "https://[REDACTED]@github.com/o/r.git",
+		"see https://h.example/?token=abc": "see https://h.example/?token=abc",
+		"ana@example.com":                  "ana@example.com",
+		"a?token=b":                        "a?token=b",
+		"":                                 "",
+	} {
+		if got := Redact(in); got != want {
+			t.Errorf("Redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	out := redactedMap(t, map[string]any{"https://h.example/?token=abc": 1, "token": "https://h.example/?sig=a"})
+	if out["https://h.example/?token=abc"] != float64(1) || out["token"] != RedactedPlaceholder {
+		t.Errorf("keys are not URLs; a sensitive key replaces a URL whole: %v", out)
 	}
 }

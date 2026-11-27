@@ -44,12 +44,102 @@ function isSensitiveKey(key: string): boolean {
 }
 
 /**
- * Recursively redact values of sensitive keys. Returns a new value.
+ * Query parameters that carry a credential in a signed URL (S3 and R2
+ * SigV2/SigV4, GCS, Azure SAS, CloudFront, the storage worker's local
+ * provider), lowercased. The engine and every SDK carry the same list.
+ */
+const SENSITIVE_URL_PARAMS = new Set([
+  'token',
+  'sig',
+  'signature',
+  'policy',
+  'key-pair-id',
+  'awsaccesskeyid',
+  'x-amz-signature',
+  'x-amz-credential',
+  'x-amz-security-token',
+  'x-goog-signature',
+  'x-goog-credential',
+])
+
+function isSensitiveUrlParam(name: string): boolean {
+  return isSensitiveKey(name) || SENSITIVE_URL_PARAMS.has(name.toLowerCase())
+}
+
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i
+
+/**
+ * Replaces the credentials in `text` with the placeholder when it is a URL:
+ * one that starts with `scheme://` or `/`. The password of its userinfo goes,
+ * or the whole userinfo when it has no `:` (a token used as the user name);
+ * the authority runs to the first `/`, `?` or `#`, the userinfo to the last
+ * `@` in it. So does the value of every query parameter whose name is
+ * sensitive (the query runs from the first `?` to the next `#`). Everything
+ * else is kept as it is; empty and already redacted values are skipped.
+ */
+function redactUrl(text: string): string {
+  let authorityStart = -1
+  if (!text.startsWith('/')) {
+    const scheme = URL_SCHEME.exec(text)
+    if (scheme === null) return text
+    authorityStart = scheme[0].length
+  }
+  const secrets: Array<[number, number]> = []
+  const secret = (start: number, end: number) => {
+    const value = text.slice(start, end)
+    if (value !== '' && value !== REDACTED_PLACEHOLDER) secrets.push([start, end])
+  }
+  if (authorityStart !== -1) {
+    let authorityEnd = text.length
+    for (let i = authorityStart; i < text.length; i++) {
+      const char = text[i]
+      if (char === '/' || char === '?' || char === '#') {
+        authorityEnd = i
+        break
+      }
+    }
+    const at = text.lastIndexOf('@', authorityEnd - 1)
+    if (at >= authorityStart) {
+      const colon = text.indexOf(':', authorityStart)
+      if (colon !== -1 && colon < at) secret(colon + 1, at)
+      else secret(authorityStart, at)
+    }
+  }
+  const question = text.indexOf('?')
+  if (question !== -1) {
+    const hash = text.indexOf('#', question + 1)
+    const queryEnd = hash === -1 ? text.length : hash
+    let paramStart = question + 1
+    for (const param of text.slice(question + 1, queryEnd).split('&')) {
+      const equals = param.indexOf('=')
+      if (equals !== -1 && isSensitiveUrlParam(param.slice(0, equals))) {
+        secret(paramStart + equals + 1, paramStart + param.length)
+      }
+      paramStart += param.length + 1
+    }
+  }
+  if (secrets.length === 0) return text
+  let out = ''
+  let copied = 0
+  for (const [start, end] of secrets) {
+    out += text.slice(copied, start) + REDACTED_PLACEHOLDER
+    copied = end
+  }
+  return out + text.slice(copied)
+}
+
+/**
+ * Recursively redact values of sensitive keys, and the credentials in string
+ * values that are URLs: the password of the userinfo (the whole userinfo when
+ * it has no password) and the values of query parameters with a sensitive
+ * name, such as the signature of a presigned URL.
+ * Returns a new value.
  *
  * @param value - The value to recursively redact.
  */
 export function redact(value: unknown): unknown {
   if (value === null || value === undefined) return value
+  if (typeof value === 'string') return redactUrl(value)
   if (Array.isArray(value)) return value.map(redact)
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {}
