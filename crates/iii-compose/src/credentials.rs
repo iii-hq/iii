@@ -20,9 +20,10 @@
 //!
 //! The environment variable wins over the file. Both are read again for every registry
 //! operation, so a login takes effect without restarting the Compose daemon. The variable has to
-//! be set on the process that runs Compose (the engine's daemon), not the shell that types
-//! `iii call`. Compose keeps it to itself: no process it starts inherits it from the machine
-//! ([`CREDENTIAL_ENV`], filtered in `spawn` and `managed_engine`).
+//! be set on the process that runs Compose (the `iii compose` daemon, or `iii compose build`),
+//! not on the engine nor the shell that types `iii call`. Compose keeps it to itself: no process
+//! it starts inherits it from the machine ([`CREDENTIAL_ENV`], filtered in `spawn` and
+//! `managed_engine`).
 //!
 //! [`RegistryToken`] never prints its secret: `Debug` and `Display` show at most its first 8
 //! characters (`wdt_AbCd…`), the prefix the registry shows to tell tokens apart. The file is
@@ -62,8 +63,13 @@ const MAX_TOKEN_LEN: usize = 8 * 1024;
 /// file's content; [`CredentialsError::fix`] says how to fix it, with commands to copy.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialsError {
-    #[error("'{value}' is not a registry URL: {reason}")]
-    InvalidOrigin { value: String, reason: String },
+    /// `shown` is the value without its credentials, query and fragment, `None` when it is not
+    /// a URL at all: the value itself may hold a password (`https://user:pass@host`).
+    #[error("{}", describe_invalid_origin(.shown, .reason))]
+    InvalidOrigin {
+        shown: Option<String>,
+        reason: String,
+    },
 
     #[error("the registry token {reason}")]
     InvalidToken { reason: &'static str },
@@ -109,6 +115,9 @@ pub enum FileProblem {
     BadToken { line: usize, reason: &'static str },
     /// The path is a directory.
     Directory,
+    /// The path is neither a file nor a directory, such as a named pipe, which a read would
+    /// wait on forever: `kind` says what it is.
+    NotAFile { kind: &'static str },
     /// The path is a symbolic link to nothing.
     BrokenSymlink { target: PathBuf },
     /// Reading it failed.
@@ -130,7 +139,10 @@ impl FileProblem {
             | Self::NoToken { line }
             | Self::TokenNotAString { line }
             | Self::BadToken { line, .. } => Some(*line),
-            Self::Directory | Self::BrokenSymlink { .. } | Self::Unreadable { .. } => None,
+            Self::Directory
+            | Self::NotAFile { .. }
+            | Self::BrokenSymlink { .. }
+            | Self::Unreadable { .. } => None,
         }
     }
 }
@@ -201,6 +213,13 @@ pub struct Removed {
     pub tightened: Option<Tightened>,
 }
 
+fn describe_invalid_origin(shown: &Option<String>, reason: &str) -> String {
+    match shown {
+        Some(shown) => format!("'{shown}' is not a registry URL: {reason}"),
+        None => format!("the registry is not a valid URL: {reason}"),
+    }
+}
+
 fn describe_file_problem(path: &Path, problem: &FileProblem) -> String {
     let path = path.display();
     let invalid = format!("{path} is not a valid credentials file");
@@ -228,6 +247,7 @@ fn describe_file_problem(path: &Path, problem: &FileProblem) -> String {
             format!("{invalid}: the `token` on line {line} {reason}")
         }
         FileProblem::Directory => format!("{path} is a directory, not a credentials file"),
+        FileProblem::NotAFile { kind } => format!("{path} is {kind}, not a credentials file"),
         FileProblem::BrokenSymlink { target } => format!(
             "{path} is a symbolic link to {}, which does not exist",
             target.display()
@@ -307,7 +327,9 @@ fn file_fix(path: &Path, problem: &FileProblem, recovery: Recovery<'_>) -> Strin
         }
     };
     match problem {
-        FileProblem::Directory => format!("{}.", capitalize(&start_over)),
+        FileProblem::Directory | FileProblem::NotAFile { .. } => {
+            format!("{}.", capitalize(&start_over))
+        }
         FileProblem::BrokenSymlink { target } => {
             let remove = commands::remove(path);
             match recovery {
@@ -511,6 +533,28 @@ pub(crate) mod commands {
     }
 }
 
+/// What a path that is neither a file nor a directory is, for a message.
+fn special_file_kind(file_type: &std::fs::FileType) -> &'static str {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if file_type.is_fifo() {
+            return "a named pipe";
+        }
+        if file_type.is_socket() {
+            return "a socket";
+        }
+        if file_type.is_char_device() {
+            return "a character device";
+        }
+        if file_type.is_block_device() {
+            return "a block device";
+        }
+    }
+    let _ = file_type;
+    "a special file"
+}
+
 /// Who owns `path`, and who iii runs as. `None` off unix, or when `path` cannot be examined.
 fn ownership(path: &Path) -> Option<Ownership> {
     #[cfg(unix)]
@@ -545,11 +589,23 @@ impl RegistryOrigin {
     /// else. Credentials (`user@`), a path, a query or a fragment are refused rather than
     /// dropped, so a typo never silently names another registry.
     pub fn parse(value: &str) -> Result<Self, CredentialsError> {
-        let invalid = |reason: &str| CredentialsError::InvalidOrigin {
-            value: value.to_string(),
-            reason: reason.to_string(),
+        let url =
+            url::Url::parse(value.trim()).map_err(|error| CredentialsError::InvalidOrigin {
+                shown: None,
+                reason: error.to_string(),
+            })?;
+        // The value as an error may show it: never its credentials, query or fragment.
+        let invalid = |reason: &str| {
+            let mut shown = url.clone();
+            let _ = shown.set_username("");
+            let _ = shown.set_password(None);
+            shown.set_query(None);
+            shown.set_fragment(None);
+            CredentialsError::InvalidOrigin {
+                shown: Some(shown.to_string()),
+                reason: reason.to_string(),
+            }
         };
-        let url = url::Url::parse(value.trim()).map_err(|error| invalid(&error.to_string()))?;
         if !url.username().is_empty() || url.password().is_some() {
             return Err(invalid("it carries credentials"));
         }
@@ -850,6 +906,19 @@ impl Credentials {
     pub fn environment_applies_to(&self, origin: &RegistryOrigin) -> bool {
         self.environment.is_some() && self.default_origin.as_ref() == Some(origin)
     }
+
+    /// Why `III_REGISTRY_TOKEN` is no token, when it is set and would apply to `origin`: a
+    /// registry operation on `origin` then fails before any saved token is read.
+    pub fn environment_problem(&self, origin: &RegistryOrigin) -> Option<&'static str> {
+        match &self.environment_error {
+            Some(CredentialsError::InvalidEnvironmentToken { reason })
+                if self.default_origin.as_ref() == Some(origin) =>
+            {
+                Some(reason)
+            }
+            _ => None,
+        }
+    }
 }
 
 // A unit test's own credentials. Without one a test has none: it never reads the
@@ -926,11 +995,25 @@ impl CredentialStore {
             .or_insert_with(|| toml::Value::Table(toml::Table::new()))
             .as_table_mut()
             .expect("read() checked that `registries` is a table");
-        // An entry written for the same origin in another spelling is the same registry.
-        registries.retain(|key, _| {
-            RegistryOrigin::parse(key).map_or(true, |existing| existing != *origin)
-        });
-        let mut entry = toml::Table::new();
+        // The entry keeps its other fields. One written for the same origin in another
+        // spelling is the same registry: it moves under the canonical key, whose own fields
+        // win where both have one.
+        let mut entry = match registries.remove(origin.as_str()) {
+            Some(toml::Value::Table(entry)) => entry,
+            _ => toml::Table::new(),
+        };
+        let spellings: Vec<String> = registries
+            .keys()
+            .filter(|key| RegistryOrigin::parse(key).is_ok_and(|existing| existing == *origin))
+            .cloned()
+            .collect();
+        for key in spellings {
+            if let Some(toml::Value::Table(fields)) = registries.remove(&key) {
+                for (name, value) in fields {
+                    entry.entry(name).or_insert(value);
+                }
+            }
+        }
         entry.insert(
             "token".to_string(),
             toml::Value::String(token.expose_secret().to_string()),
@@ -968,8 +1051,8 @@ impl CredentialStore {
         })
     }
 
-    /// The file's text, `None` when there is no file. A directory, a link to nothing or a file
-    /// that cannot be read is an error saying which.
+    /// The file's text, `None` when there is no file. A directory, a named pipe or another
+    /// special file, a link to nothing or a file that cannot be read is an error saying which.
     fn text(&self) -> Result<Option<String>, CredentialsError> {
         let invalid = |problem| CredentialsError::InvalidFile {
             path: self.path.clone(),
@@ -986,6 +1069,13 @@ impl CredentialStore {
         };
         match std::fs::metadata(&self.path) {
             Ok(metadata) if metadata.is_dir() => return Err(invalid(FileProblem::Directory)),
+            // Before it is opened: opening a named pipe waits for a writer, which stalls every
+            // registry operation, even one `III_REGISTRY_TOKEN` covers. A link to a file is read.
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(invalid(FileProblem::NotAFile {
+                    kind: special_file_kind(&metadata.file_type()),
+                }));
+            }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // A link whose target is gone is not "no file": a login would replace the link.
@@ -1240,6 +1330,44 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_registry_url_never_prints_its_credentials_or_query() {
+        for (input, expected) in [
+            (
+                "https://user:s3cr3t@registry.example",
+                "'https://registry.example/' is not a registry URL: it carries credentials",
+            ),
+            (
+                "https://registry.example/?token=s3cr3t#s3cr3t",
+                "'https://registry.example/' is not a registry URL: it has a path, query or \
+                 fragment; give only scheme, host and port",
+            ),
+            (
+                "https://user:s3cr3t@registry.example/api?token=s3cr3t",
+                "'https://registry.example/api' is not a registry URL: it carries credentials",
+            ),
+            // Not a URL at all, so nothing of it can be told apart from a password.
+            (
+                "https://user:s3cr3t@[::1",
+                "the registry is not a valid URL: invalid IPv6 address",
+            ),
+        ] {
+            let error = RegistryOrigin::parse(input).unwrap_err();
+            let printed = format!("{error} {error:?}");
+            assert!(!printed.contains("s3cr3t"), "{printed}");
+            assert!(!printed.contains("user"), "{printed}");
+            assert_eq!(error.to_string(), expected, "{input}");
+        }
+        // A path alone is shown, so the operator sees what to drop.
+        assert_eq!(
+            RegistryOrigin::parse("https://registry.example/api")
+                .unwrap_err()
+                .to_string(),
+            "'https://registry.example/api' is not a registry URL: it has a path, query or \
+             fragment; give only scheme, host and port"
+        );
+    }
+
+    #[test]
     fn only_https_or_loopback_http_may_carry_a_token() {
         for (origin, allowed) in [
             ("https://registry.example", true),
@@ -1487,6 +1615,39 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, [CREDENTIALS_FILE]);
+    }
+
+    #[test]
+    fn saving_keeps_the_other_fields_of_the_entry_it_replaces() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".iii").join(CREDENTIALS_FILE);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // The same origin in two spellings, each with a field of its own.
+        std::fs::write(
+            &path,
+            "[registries.\"https://API.workers.iii.dev/\"]\ntoken = \"wdt_older\"\nlabel = \"old \
+             spelling\"\nnote = \"kept\"\n\n[registries.\"https://api.workers.iii.dev\"]\ntoken = \
+             \"wdt_old\"\nlabel = \"laptop\"\n",
+        )
+        .unwrap();
+        let store = CredentialStore::at(&path);
+        let default = RegistryOrigin::default_registry();
+        store
+            .save(&default, &RegistryToken::new("wdt_new").unwrap())
+            .unwrap();
+        let document: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        let registries = document[REGISTRIES_TABLE].as_table().unwrap();
+        assert_eq!(
+            registries.keys().collect::<Vec<_>>(),
+            ["https://api.workers.iii.dev"]
+        );
+        let entry = registries["https://api.workers.iii.dev"]
+            .as_table()
+            .unwrap();
+        assert_eq!(entry["token"].as_str(), Some("wdt_new"));
+        assert_eq!(entry["label"].as_str(), Some("laptop"));
+        assert_eq!(entry["note"].as_str(), Some("kept"));
+        assert_eq!(entry.len(), 3);
     }
 
     #[test]
@@ -1746,6 +1907,96 @@ mod tests {
                  other registry (sign in to those again too): `{} && iii registry login`.",
                 commands::move_aside(&path)
             )
+        );
+    }
+
+    /// A named pipe in place of the file is refused before it is opened: opening it would wait
+    /// for a writer forever, stalling even an operation `III_REGISTRY_TOKEN` covers. A link to a
+    /// regular file is still read.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_pipe_in_place_of_the_file_is_refused_without_waiting_on_it() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(CREDENTIALS_FILE);
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let store = CredentialStore::at(&path);
+        let (done, waited) = std::sync::mpsc::channel();
+        let reading = store.clone();
+        std::thread::spawn(move || {
+            let credentials =
+                Credentials::from_sources(Some("wdt_environment".into()), Some(&reading));
+            let _ = done.send((reading.read(), credentials));
+        });
+        let (read, credentials) = waited
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading a named pipe must not wait for a writer");
+        let error = read.unwrap_err();
+        assert_eq!(
+            error,
+            CredentialsError::InvalidFile {
+                path: path.clone(),
+                problem: FileProblem::NotAFile {
+                    kind: "a named pipe"
+                },
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("{} is a named pipe, not a credentials file", path.display())
+        );
+        assert_eq!(
+            error.fix(LOGIN).unwrap(),
+            format!(
+                "Move the file aside and sign in again, which drops the tokens saved for every \
+                 other registry (sign in to those again too): `{} && iii registry login`.",
+                commands::move_aside(&path)
+            )
+        );
+        // The variable still covers the default registry; another one gets the error.
+        let (token, source) = credentials
+            .token_for(&RegistryOrigin::default_registry())
+            .unwrap()
+            .unwrap();
+        assert_eq!(token.expose_secret(), "wdt_environment");
+        assert_eq!(source, TokenSource::Environment);
+        assert!(matches!(
+            credentials.token_for(&RegistryOrigin::parse("https://registry.example").unwrap()),
+            Err(CredentialsError::InvalidFile { .. })
+        ));
+        // Saving refuses too, and leaves the pipe where it is.
+        assert!(
+            store
+                .save(
+                    &RegistryOrigin::default_registry(),
+                    &RegistryToken::new("wdt_x").unwrap()
+                )
+                .is_err()
+        );
+        use std::os::unix::fs::FileTypeExt;
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_fifo()
+        );
+
+        // A link to a regular file reads as that file.
+        let target = home.path().join("dotfiles.toml");
+        std::fs::write(
+            &target,
+            "[registries.\"https://registry.example\"]\ntoken = \"wdt_linked\"\n",
+        )
+        .unwrap();
+        let linked = home.path().join("linked.toml");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        let tokens = CredentialStore::at(&linked).read().unwrap();
+        assert_eq!(
+            tokens[&RegistryOrigin::parse("https://registry.example").unwrap()].expose_secret(),
+            "wdt_linked"
         );
     }
 

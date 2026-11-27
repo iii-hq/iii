@@ -96,6 +96,13 @@ impl RegistryAuth {
         self.endpoint.is_some() && RegistryOrigin::of(url).as_ref() == self.endpoint.as_ref()
     }
 
+    /// Whether `text` holds the token.
+    pub(crate) fn echoes_token(&self, text: &str) -> bool {
+        self.token
+            .as_ref()
+            .is_some_and(|(token, _)| text.contains(token.expose_secret()))
+    }
+
     /// `text` with the token, should it hold it, shown only by its prefix.
     pub(crate) fn scrub(&self, text: &str) -> String {
         match &self.token {
@@ -126,7 +133,8 @@ const MAX_UNTRUSTED_TEXT: usize = 300;
 
 /// The registry's code and message from a `401` body. `/resolve` answers
 /// `{error: {code, message, …}}`; the other endpoints `{error, code}`. `unauthorized` when it
-/// names no code. The message is untrusted text for an error: see [`RegistryAuth::untrusted`].
+/// names no code, or one that is not a plain identifier or echoes the token. The message is
+/// untrusted text for an error: see [`RegistryAuth::untrusted`].
 pub(crate) fn auth_refusal(body: &str, auth: &RegistryAuth) -> (String, Option<String>) {
     let parsed = serde_json::from_str::<serde_json::Value>(body).unwrap_or_default();
     let text = |value: Option<&serde_json::Value>| {
@@ -145,6 +153,7 @@ pub(crate) fn auth_refusal(body: &str, auth: &RegistryAuth) -> (String, Option<S
                 && code
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                && !auth.echoes_token(code)
         })
         .unwrap_or_else(|| "unauthorized".to_string());
     let message = text(nested.and_then(|error| error.get("message")))
@@ -180,11 +189,12 @@ pub(crate) fn registry_command(subcommand: &str, registry: &str) -> String {
 /// failure stops, and how to fix it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reader {
-    /// A Compose operation, in the engine process: its own environment and file.
+    /// A Compose operation, in the Compose process (the `iii compose` daemon, or
+    /// `iii compose build`): its own environment and file.
     Compose,
     /// `iii registry login`, checking a token before it saves it.
     Login,
-    /// `iii registry whoami`, in a shell whose environment may differ from the engine's.
+    /// `iii registry whoami`, in a shell whose environment may differ from Compose's.
     Whoami,
 }
 
@@ -202,10 +212,13 @@ impl Explained {
     }
 }
 
-/// Where Compose reads `III_REGISTRY_TOKEN`: in its own process, which is the engine for the
-/// `compose::*` functions and `iii compose build` itself for a build.
-const WHERE_COMPOSE_RUNS: &str = "where Compose runs (on the engine process, then restarted, or \
-                                  in the shell that runs `iii compose build`)";
+/// Where Compose reads `III_REGISTRY_TOKEN`: in its own process, which is the Compose daemon
+/// (`iii compose`, with or without `--up`) for the `compose::*` functions and `iii compose build`
+/// itself for a build. Never the engine: the daemon may run beside an engine started on its own,
+/// and the engine it starts with `--up` does not even inherit the variable.
+pub(crate) const WHERE_COMPOSE_RUNS: &str = "where Compose runs (on the `iii compose` daemon \
+                                             process, then restarted, or in the shell that runs \
+                                             `iii compose build`)";
 
 /// "the token wdt_AbCd… from III_REGISTRY_TOKEN": the token by its prefix and where it came from,
 /// never the token.
@@ -280,8 +293,8 @@ pub(crate) fn auth_failure(
             " Every request to {origin} fails while this token is sent, public workers included."
         ),
         (Reader::Whoami, TokenSource::Environment) => format!(
-            " If the engine process that runs Compose has this same {TOKEN_ENV}, every install \
-             from {origin} fails, public workers included."
+            " If the Compose process (the `iii compose` daemon, or `iii compose build`) has this \
+             same {TOKEN_ENV}, every install from {origin} fails, public workers included."
         ),
         (Reader::Whoami, _) => format!(
             " Compose sends this same token, so every install from {origin} fails, public \
@@ -315,8 +328,8 @@ pub(crate) fn auth_failure(
              Compose then uses the token `{login}` saves, if any, and public workers need none."
         ),
         (TokenSource::Environment, _) => format!(
-            "{replace}, then set {TOKEN_ENV} to it, here and on the engine process that runs \
-             Compose if it has the same value. Or unset it: public workers need no token."
+            "{replace}, then set {TOKEN_ENV} to it, here and {WHERE_COMPOSE_RUNS} if it has the \
+             same value. Or unset it: public workers need no token."
         ),
     };
     Explained { what, fix }
@@ -346,7 +359,7 @@ pub(crate) fn private_worker_hint(
     }
     let Some((token, source)) = sent else {
         return format!(
-            "If '{name}' is a private worker, the engine needs a token with access to it, and \
+            "If '{name}' is a private worker, Compose needs a token with access to it, and \
              none was sent. {}",
             no_token_fix(registry)
         );
@@ -790,6 +803,22 @@ mod tests {
         assert_eq!(message.chars().count(), MAX_UNTRUSTED_TEXT + 1);
     }
 
+    /// A registry that echoes the token as its refusal code gets `unauthorized` printed instead;
+    /// a code that does not hold it, such as `token_expired`, is kept.
+    #[test]
+    fn a_refusal_code_that_echoes_the_token_is_never_printed() {
+        let auth = auth_for("https://registry.example");
+        for body in [
+            format!(r#"{{"error": "Token is not valid", "code": "{TOKEN}"}}"#),
+            format!(r#"{{"error": {{"code": "bad_{TOKEN}", "message": "x"}}}}"#),
+        ] {
+            let (code, _) = auth_refusal(&body, &auth);
+            assert_eq!(code, "unauthorized", "{body}");
+        }
+        let kept = r#"{"error": "Token expired", "code": "token_expired"}"#;
+        assert_eq!(auth_refusal(kept, &auth).0, "token_expired");
+    }
+
     /// A token as the registry issues them: long enough for its 8-character prefix to show.
     const LONG_TOKEN: &str = "wdt_AbCdSecretSecretSecretSecretSecret";
 
@@ -813,10 +842,10 @@ mod tests {
         assert_eq!(
             explained.fix,
             "Create a new one on the Download tokens tab of the organization on workers.iii.dev, \
-             then set III_REGISTRY_TOKEN to it where Compose runs (on the engine process, then \
-             restarted, or in the shell that runs `iii compose build`). Or unset it there: \
-             Compose then uses the token `iii registry login` saves, if any, and public workers \
-             need none."
+             then set III_REGISTRY_TOKEN to it where Compose runs (on the `iii compose` daemon \
+             process, then restarted, or in the shell that runs `iii compose build`). Or unset it \
+             there: Compose then uses the token `iii registry login` saves, if any, and public \
+             workers need none."
         );
 
         let saved = TokenSource::File(PathBuf::from("/home/ana/.iii/credentials.toml"));
@@ -943,8 +972,9 @@ mod tests {
              Compose resolves and downloads nothing from https://api.workers.iii.dev until it is \
              fixed, public workers included: without the file it cannot tell which token belongs \
              to which registry, so it sends none rather than guess. Setting III_REGISTRY_TOKEN \
-             where Compose runs (on the engine process, then restarted, or in the shell that runs \
-             `iii compose build`) gets around it for https://api.workers.iii.dev only."
+             where Compose runs (on the `iii compose` daemon process, then restarted, or in the \
+             shell that runs `iii compose build`) gets around it for https://api.workers.iii.dev \
+             only."
         );
         #[cfg(unix)]
         assert_eq!(
@@ -982,8 +1012,8 @@ mod tests {
              ASCII. Compose sends no request to https://api.workers.iii.dev while it is so, \
              public workers included, rather than fall back on another token. Set it to the \
              whole token, with nothing before or after it, or unset it where Compose runs (on \
-             the engine process, then restarted, or in the shell that runs `iii compose \
-             build`)."
+             the `iii compose` daemon process, then restarted, or in the shell that runs `iii \
+             compose build`)."
         );
     }
 

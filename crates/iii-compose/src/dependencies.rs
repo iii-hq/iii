@@ -1928,6 +1928,57 @@ mod tests {
         assert_eq!(plan.selected_versions["queue"], "2.0.0");
     }
 
+    /// A local container is the operator's implementation of the dependency that would take its
+    /// key: `queue` stands in for `@acme/queue` exactly as it does for an unscoped `queue`, and
+    /// what only the published `@acme/queue` needed is not installed.
+    #[tokio::test]
+    async fn a_local_container_stands_in_for_a_scoped_dependency_with_its_key() {
+        let file = ComposeFile::parse(
+            "containers:\n  queue:\n    worker: path://./queue\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked = vec![crate::edit::parse_worker("@acme/api").unwrap()];
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Add,
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        selections: BTreeMap::new(),
+                        root: Some("@acme/api".into()),
+                        nodes: vec![
+                            node("@acme/api", "1.0.0"),
+                            node("@acme/queue", "2.0.0"),
+                            node("@acme/broker", "3.0.0"),
+                        ],
+                        edges: vec![
+                            ("@acme/api".into(), "@acme/queue".into()),
+                            ("@acme/queue".into(), "@acme/broker".into()),
+                        ],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keys(&plan), vec!["api"]);
+        let api = container(&plan, "api");
+        assert_eq!(api.start_after, vec!["queue"]);
+        assert_eq!(
+            api.source,
+            Source::Package {
+                reference: "api.workers.iii.dev/@acme/api".into(),
+                version: Some("1.0.0".into()),
+            }
+        );
+        assert!(!plan.selected_versions.contains_key("broker"));
+    }
+
     fn plan_update(
         existing: &BTreeMap<String, Package>,
         scope: &UpdateScope,

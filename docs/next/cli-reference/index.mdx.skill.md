@@ -201,7 +201,7 @@ iii ps [OPTIONS]
 
 Sign in to a worker registry, so Compose can install its private workers
 
-`login` saves a token for a registry in `~/.iii/credentials.toml` once the registry confirms it, `whoami` shows who the token belongs to, and `logout` removes it. Compose reads the saved tokens on every operation, so a running daemon needs no restart. `III_REGISTRY_TOKEN`, set on the engine process that runs Compose, wins over the saved token for the default registry.
+`login` saves a token for a registry in `~/.iii/credentials.toml` once the registry confirms it, `whoami` shows who the token belongs to, and `logout` removes it. Compose reads the saved tokens on every operation, so a running daemon needs no restart. `III_REGISTRY_TOKEN`, set on the process that runs Compose (the `iii compose` daemon, or `iii compose build`), wins over the saved token for the default registry.
 
 ```text
 iii registry <COMMAND>
@@ -211,7 +211,7 @@ iii registry <COMMAND>
 
 Save a token for a worker registry on this machine, after the registry confirms it.
 
-The token is read from a hidden prompt, or from standard input with `--token-stdin`; it is never taken as an argument. It is saved in `~/.iii/credentials.toml`, readable only by you, and a running Compose daemon uses it from its next operation on. The `III_REGISTRY_TOKEN` environment variable, when it is set on the engine process, wins over the saved token for the default registry.
+The token is read from a hidden prompt, or from standard input with `--token-stdin`; it is never taken as an argument. It is saved in `~/.iii/credentials.toml`, readable only by you, and a running Compose daemon uses it from its next operation on. The `III_REGISTRY_TOKEN` environment variable, when it is set on the process that runs Compose (the `iii compose` daemon, or `iii compose build`), wins over the saved token for the default registry.
 
 ```text
 iii registry login [OPTIONS]

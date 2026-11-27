@@ -24,7 +24,7 @@ use crate::{
         Removed, TOKEN_ENV, Tightened, TokenSource,
     },
     registry::DEFAULT_REGISTRY,
-    registry_http::{self, Explained, Reader, RegistryAuth},
+    registry_http::{self, Explained, Reader, RegistryAuth, WHERE_COMPOSE_RUNS},
 };
 
 /// How long one `/tokens/self` request may take.
@@ -47,8 +47,9 @@ pub enum RegistrySubcommand {
     /// The token is read from a hidden prompt, or from standard input with `--token-stdin`;
     /// it is never taken as an argument. It is saved in `~/.iii/credentials.toml`, readable
     /// only by you, and a running Compose daemon uses it from its next operation on. The
-    /// `III_REGISTRY_TOKEN` environment variable, when it is set on the engine process, wins
-    /// over the saved token for the default registry.
+    /// `III_REGISTRY_TOKEN` environment variable, when it is set on the process that runs
+    /// Compose (the `iii compose` daemon, or `iii compose build`), wins over the saved token for
+    /// the default registry.
     Login(LoginCli),
     /// Remove the token saved for a worker registry.
     Logout(RegistryTarget),
@@ -81,7 +82,9 @@ pub struct TokenIdentity {
     /// `download`, `member`, or the kind of an iii cloud token.
     pub kind: String,
     pub org: TokenOrg,
-    /// The token's first characters, as the registry shows them to identify it.
+    /// The token by its first characters (`wdt_AbCd…`), as [`RegistryToken::redacted`] shows
+    /// it. [`token_identity`] puts it here in place of the prefix the registry sent, which could
+    /// be the whole token; `None` for a token whose first characters tell it apart from no other.
     #[serde(default)]
     pub prefix: Option<String>,
     pub access: TokenAccess,
@@ -95,6 +98,24 @@ pub struct TokenOrg {
     pub handle: String,
     #[serde(default)]
     pub name: Option<String>,
+}
+
+impl TokenIdentity {
+    /// The identity as it may be printed: the token shown by its prefix computed here, never by
+    /// what the registry sent, and, should another field echo the token, by its prefix there too.
+    fn redacted(mut self, token: &RegistryToken, auth: &RegistryAuth) -> Self {
+        let scrub = |text: &mut String| *text = auth.scrub(text);
+        scrub(&mut self.kind);
+        scrub(&mut self.org.handle);
+        self.org.name.iter_mut().for_each(scrub);
+        match &mut self.access {
+            TokenAccess::Named(name) => scrub(name),
+            TokenAccess::Workers { workers } => workers.iter_mut().for_each(scrub),
+        }
+        self.expires_at.iter_mut().for_each(scrub);
+        self.prefix = Some(token.redacted()).filter(|shown| shown != "…");
+        self
+    }
 }
 
 /// `"all"`, or the workers the token is limited to.
@@ -118,6 +139,12 @@ pub(crate) enum IdentityError {
         status: u16,
         token: String,
     },
+    /// The request was redirected to another origin, whose answer says nothing of the token.
+    #[error(
+        "the registry at {registry} redirected the request about {token} to another origin, so \
+         its answer cannot confirm the token"
+    )]
+    Redirected { registry: String, token: String },
     #[error("cannot reach the registry at {registry} to check {token}: {message}")]
     Unreachable {
         registry: String,
@@ -153,6 +180,10 @@ impl IdentityError {
             Self::Status { .. } => format!(
                 "Check --registry (the default is {DEFAULT_REGISTRY}), then run `{again}` again."
             ),
+            Self::Redirected { .. } => format!(
+                "Give --registry the origin that answers /tokens/self itself (the default is \
+                 {DEFAULT_REGISTRY}), then run `{again}` again."
+            ),
             Self::Unreachable { .. } => format!(
                 "Check the address and this machine's network (DNS, a proxy, a firewall), then \
                  run `{again}` again."
@@ -166,7 +197,8 @@ impl IdentityError {
 }
 
 /// Asks `origin` who `token` belongs to. The token goes to that origin only, never past a
-/// redirect to another one. `reader` says which command asks, for the messages.
+/// redirect to another one, and only that origin's answer counts: a redirect elsewhere is an
+/// error. `reader` says which command asks, for the messages.
 pub(crate) async fn token_identity(
     origin: &RegistryOrigin,
     token: &RegistryToken,
@@ -194,8 +226,16 @@ pub(crate) async fn token_identity(
     )
     .await
     .map_err(|error| unreachable(error.to_string()))?;
+    // Only the registry itself can confirm the token: an answer from wherever a redirect led
+    // says nothing of it, whatever its status and body.
+    if !auth.is_registry(response.url()) {
+        return Err(IdentityError::Redirected {
+            registry,
+            token: described,
+        });
+    }
     let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED && auth.is_registry(response.url()) {
+    if status == reqwest::StatusCode::UNAUTHORIZED {
         let body = response.text().await.unwrap_or_default();
         let (code, detail) = registry_http::auth_refusal(&body, &auth);
         return Err(IdentityError::Refused {
@@ -219,6 +259,7 @@ pub(crate) async fn token_identity(
     response
         .json::<TokenIdentity>()
         .await
+        .map(|identity| identity.redacted(token, &auth))
         .map_err(|error| IdentityError::Body {
             registry,
             token: described,
@@ -235,6 +276,10 @@ pub(crate) struct LoggedIn {
     /// `III_REGISTRY_TOKEN` is set and applies to this registry, so it still wins over the
     /// token just saved wherever it is set.
     pub environment_wins: bool,
+    /// Why `III_REGISTRY_TOKEN`, set in this shell for this registry, is no token: wherever
+    /// Compose reads the same value, it refuses the registry before it reads the token just
+    /// saved.
+    pub environment_invalid: Option<&'static str>,
     /// The credentials directory had to be closed to other users first.
     pub tightened: Option<Tightened>,
 }
@@ -285,13 +330,13 @@ pub(crate) async fn login(
     store.read()?;
     let identity = token_identity(&origin, &token, TokenSource::Given, Reader::Login).await?;
     let tightened = store.save(&origin, &token)?;
-    let environment_wins =
-        Credentials::from_sources(environment, None).environment_applies_to(&origin);
+    let environment = Credentials::from_sources(environment, None);
     Ok(LoggedIn {
+        environment_wins: environment.environment_applies_to(&origin),
+        environment_invalid: environment.environment_problem(&origin),
         origin,
         identity,
         path: store.path().to_path_buf(),
-        environment_wins,
         tightened,
     })
 }
@@ -302,7 +347,7 @@ pub(crate) fn logout(registry: &str, store: &CredentialStore) -> Result<Removed,
     Ok(store.remove(&origin)?)
 }
 
-/// Who the token the engine would use for `registry` belongs to, and where it came from.
+/// Who the token Compose would use for `registry` belongs to, and where it came from.
 pub(crate) async fn whoami(
     registry: &str,
     credentials: &Credentials,
@@ -411,11 +456,8 @@ async fn run_login(args: LoginCli) -> i32 {
             println!(
                 "A running Compose daemon uses it from its next operation; nothing needs a restart."
             );
-            if done.environment_wins {
-                println!(
-                    "Note: {TOKEN_ENV} is set in this shell. Where it is set (on the engine \
-                     process, for instance), it wins over the saved token."
-                );
+            if let Some(note) = environment_note(&done) {
+                println!("{note}");
             }
             0
         }
@@ -490,7 +532,7 @@ fn run_logout(target: RegistryTarget) -> i32 {
     {
         println!(
             "{TOKEN_ENV} is still set in this shell, and still applies wherever it is set (on \
-             the engine process, for instance). Unset it there to stop using it."
+             the `iii compose` daemon process, for instance). Unset it there to stop using it."
         );
     }
     0
@@ -536,6 +578,25 @@ async fn run_whoami(target: RegistryTarget) -> i32 {
     }
 }
 
+/// What `login` says about `III_REGISTRY_TOKEN` once the token is saved: that the variable wins
+/// over it, or that an invalid one keeps Compose from reaching the registry at all.
+fn environment_note(done: &LoggedIn) -> Option<String> {
+    if let Some(reason) = done.environment_invalid {
+        return Some(format!(
+            "Warning: {TOKEN_ENV} is set in this shell, but it {reason}. Wherever Compose reads \
+             the same value, it sends no request to {} at all rather than use the token just \
+             saved: set it to the whole token, or unset it, {WHERE_COMPOSE_RUNS}.",
+            done.origin
+        ));
+    }
+    done.environment_wins.then(|| {
+        format!(
+            "Note: {TOKEN_ENV} is set in this shell. Where it is set (on the `iii compose` daemon \
+             process, for instance), it wins over the saved token."
+        )
+    })
+}
+
 /// `whoami` found no token for `origin`: where it looked, what that means, and how to add one.
 fn no_token(origin: &RegistryOrigin, file: Option<&std::path::Path>) -> Explained {
     let default = *origin == RegistryOrigin::default_registry();
@@ -553,8 +614,7 @@ fn no_token(origin: &RegistryOrigin, file: Option<&std::path::Path>) -> Explaine
     let fix = if default {
         format!(
             "Run `{login}`, or set {TOKEN_ENV}. `iii registry whoami` reads {TOKEN_ENV} from \
-             this shell, while the Compose daemon reads it from the environment of the engine \
-             process: set it there for Compose."
+             this shell, while Compose reads it from its own process: set it {WHERE_COMPOSE_RUNS}."
         )
     } else {
         format!("Run `{login}`.")
@@ -569,9 +629,14 @@ fn no_token(origin: &RegistryOrigin, file: Option<&std::path::Path>) -> Explaine
 }
 
 fn print_identity(identity: &TokenIdentity) {
-    println!("Kind: {}", printable(&identity.kind));
+    println!("{}", identity_lines(identity).join("\n"));
+}
+
+/// The identity of a token, one field per line, from what [`token_identity`] returns.
+fn identity_lines(identity: &TokenIdentity) -> Vec<String> {
+    let mut lines = vec![format!("Kind: {}", printable(&identity.kind))];
     if let Some(prefix) = &identity.prefix {
-        println!("Token: {}…", printable(prefix));
+        lines.push(format!("Token: {}", printable(prefix)));
     }
     let access = match &identity.access {
         TokenAccess::Named(all) if all == "all" => {
@@ -585,15 +650,16 @@ fn print_identity(identity: &TokenIdentity) {
             .collect::<Vec<_>>()
             .join(", "),
     };
-    println!("Access: {access}");
-    println!(
+    lines.push(format!("Access: {access}"));
+    lines.push(format!(
         "Expires: {}",
         identity
             .expires_at
             .as_deref()
             .map(printable)
             .unwrap_or_else(|| "never".to_string())
-    );
+    ));
+    lines
 }
 
 /// Prints an error and, when there is one, the hint that fixes it, as the rest of the CLI does.
@@ -896,6 +962,79 @@ mod tests {
         assert_eq!(tightened.from, 0o755);
     }
 
+    /// Only the registry can confirm a token: a `200` from wherever a redirect led saves nothing,
+    /// while a redirect within the registry is followed.
+    #[tokio::test]
+    async fn an_answer_from_another_origin_saves_nothing() {
+        let elsewhere = registry(200, identity_body()).await;
+        let server = MockServer::start().await;
+        Mock::given(matchers::path("/tokens/self"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/tokens/self", elsewhere.uri())),
+            )
+            .mount(&server)
+            .await;
+        let (_home, store) = store();
+        let error = login(
+            &server.uri(),
+            RegistryToken::new(EXPIRED).unwrap(),
+            &store,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                LoginError::Identity(IdentityError::Redirected { .. })
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "the registry at {} redirected the request about the token wdt_ExpZ… given to \
+                 `iii registry login` to another origin, so its answer cannot confirm the token",
+                server.uri()
+            )
+        );
+        assert!(
+            error
+                .fix(Recovery::LoginAgain("iii registry login"))
+                .unwrap()
+                .starts_with("Give --registry the origin that answers /tokens/self itself"),
+            "{error:?}"
+        );
+        assert!(!store.path().exists());
+        let followed = elsewhere.received_requests().await.unwrap();
+        assert_eq!(followed.len(), 1);
+        assert!(followed[0].headers.get("authorization").is_none());
+
+        let moved = MockServer::start().await;
+        Mock::given(matchers::path("/tokens/self"))
+            .respond_with(ResponseTemplate::new(308).insert_header("location", "/v2/tokens/self"))
+            .mount(&moved)
+            .await;
+        Mock::given(matchers::path("/v2/tokens/self"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(identity_body()))
+            .mount(&moved)
+            .await;
+        let done = login(
+            &moved.uri(),
+            RegistryToken::new("wdt_valid").unwrap(),
+            &store,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.identity.org.handle, "acme");
+        assert_eq!(
+            store.read().unwrap()[&RegistryOrigin::parse(&moved.uri()).unwrap()].expose_secret(),
+            "wdt_valid"
+        );
+    }
+
     #[tokio::test]
     async fn an_existing_token_survives_a_refused_login() {
         let server = registry(
@@ -945,6 +1084,124 @@ mod tests {
         assert!(!done.environment_wins);
         let origin = RegistryOrigin::parse(&server.uri()).unwrap();
         assert_eq!(store.read().unwrap()[&origin].expose_secret(), "wdt_valid");
+    }
+
+    /// An invalid `III_REGISTRY_TOKEN` does not stop the login, but Compose refuses the default
+    /// registry before it reads the saved token, so the login says so and where to fix it.
+    #[tokio::test]
+    async fn a_saved_token_an_invalid_variable_blocks_is_named_after_login() {
+        let server = registry(200, identity_body()).await;
+        let (_home, store) = store();
+        let done = login(
+            &server.uri(),
+            RegistryToken::new("wdt_valid").unwrap(),
+            &store,
+            Some("wdt_half pasted".into()),
+        )
+        .await
+        .unwrap();
+        let origin = RegistryOrigin::parse(&server.uri()).unwrap();
+        assert_eq!(store.read().unwrap()[&origin].expose_secret(), "wdt_valid");
+        // The variable concerns the default registry only.
+        assert_eq!(done.environment_invalid, None);
+        assert_eq!(environment_note(&done), None);
+
+        // What `login` finds for the default registry, which no test may reach.
+        let default = RegistryOrigin::default_registry();
+        let for_default = |environment: &str, done: LoggedIn| {
+            let credentials = Credentials::from_sources(Some(environment.into()), None);
+            LoggedIn {
+                origin: default.clone(),
+                environment_wins: credentials.environment_applies_to(&default),
+                environment_invalid: credentials.environment_problem(&default),
+                ..done
+            }
+        };
+        let done = for_default("wdt_half pasted", done);
+        assert!(!done.environment_wins);
+        let note = environment_note(&done).unwrap();
+        assert_eq!(
+            note,
+            "Warning: III_REGISTRY_TOKEN is set in this shell, but it holds a character that is \
+             not visible ASCII. Wherever Compose reads the same value, it sends no request to \
+             https://api.workers.iii.dev at all rather than use the token just saved: set it to \
+             the whole token, or unset it, where Compose runs (on the `iii compose` daemon \
+             process, then restarted, or in the shell that runs `iii compose build`)."
+        );
+        assert!(!note.contains("half"), "{note}");
+
+        let done = for_default("wdt_environment", done);
+        assert_eq!(
+            environment_note(&done).unwrap(),
+            "Note: III_REGISTRY_TOKEN is set in this shell. Where it is set (on the `iii compose` \
+             daemon process, for instance), it wins over the saved token."
+        );
+    }
+
+    /// The token shows by the prefix computed here: a registry that echoes the whole token, as
+    /// its prefix or in any other field, never gets it printed.
+    #[tokio::test]
+    async fn a_registry_echoing_the_token_never_gets_it_printed() {
+        let server = registry(
+            200,
+            serde_json::json!({
+                "kind": "download",
+                "org": {"handle": "acme", "name": format!("Acme {EXPIRED}")},
+                "prefix": EXPIRED,
+                "access": {"workers": ["@acme/ade", EXPIRED]},
+                "expires_at": EXPIRED
+            }),
+        )
+        .await;
+        let (_home, store) = store();
+        let done = login(
+            &server.uri(),
+            RegistryToken::new(EXPIRED).unwrap(),
+            &store,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(done.identity.prefix.as_deref(), Some("wdt_ExpZ…"));
+        let lines = identity_lines(&done.identity);
+        assert_eq!(
+            lines,
+            [
+                "Kind: download",
+                "Token: wdt_ExpZ…",
+                "Access: @acme/ade, wdt_ExpZ…",
+                "Expires: wdt_ExpZ…"
+            ]
+        );
+        assert_eq!(done.identity.org.name.as_deref(), Some("Acme wdt_ExpZ…"));
+        assert!(!format!("{:?}", done.identity).contains("expiredSecret"));
+
+        // A token whose first characters tell it from no other shows no prefix at all, rather
+        // than the one the registry sent.
+        let jwt = "eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ0ZWFtIn0.c2ln";
+        let server = registry(
+            200,
+            serde_json::json!({
+                "kind": "cloud",
+                "org": {"handle": "acme"},
+                "prefix": jwt,
+                "access": "all"
+            }),
+        )
+        .await;
+        let credentials = Credentials::for_tests(
+            "https://api.workers.iii.dev",
+            None,
+            &[(server.uri().as_str(), jwt)],
+        );
+        let (identity, _) = whoami(&server.uri(), &credentials).await.unwrap().unwrap();
+        assert_eq!(identity.prefix, None);
+        assert!(
+            !identity_lines(&identity)
+                .iter()
+                .any(|line| line.contains("eyJ")),
+            "{identity:?}"
+        );
     }
 
     #[tokio::test]

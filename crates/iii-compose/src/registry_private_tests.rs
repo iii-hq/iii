@@ -542,8 +542,8 @@ async fn a_refused_token_on_resolve_says_why_and_how_to_replace_it() {
         "Every request to https://api.workers.iii.dev fails while this token is sent, public \
          workers included.",
         "Create a new one on the Download tokens tab of the organization on workers.iii.dev",
-        "then set III_REGISTRY_TOKEN to it where Compose runs (on the engine process, then \
-         restarted, or in the shell that runs `iii compose build`).",
+        "then set III_REGISTRY_TOKEN to it where Compose runs (on the `iii compose` daemon \
+         process, then restarted, or in the shell that runs `iii compose build`).",
     ] {
         assert!(text.contains(expected), "{expected}: {text}");
     }
@@ -640,7 +640,7 @@ async fn not_found_for_a_scoped_name_hints_at_access_without_claiming_it_exists(
         "If '@acme/ade' is a private worker",
         "iii registry login",
         "III_REGISTRY_TOKEN",
-        "engine process",
+        "`iii compose` daemon process",
         "setting it in the shell that runs `iii call` has no effect",
     ] {
         assert!(anonymous.contains(expected), "{expected}: {anonymous}");
@@ -746,9 +746,9 @@ async fn a_broken_credentials_file_stops_the_operation_and_says_how_to_fix_it() 
              fixed, public workers included: without the file it cannot tell which token \
              belongs to which registry"
                 .to_string(),
-            "Setting III_REGISTRY_TOKEN where Compose runs (on the engine process, then \
-             restarted, or in the shell that runs `iii compose build`) gets around it for \
-             https://api.workers.iii.dev only."
+            "Setting III_REGISTRY_TOKEN where Compose runs (on the `iii compose` daemon \
+             process, then restarted, or in the shell that runs `iii compose build`) gets around \
+             it for https://api.workers.iii.dev only."
                 .to_string(),
             format!(
                 "Fix line 2 of the file: `{}`.",
@@ -820,8 +820,9 @@ async fn an_unusable_environment_token_stops_the_default_registry_without_quotin
         "container 'ade': III_REGISTRY_TOKEN, as Compose reads it, holds a character that is not \
          visible ASCII. Compose sends no request to https://api.workers.iii.dev while it is so, \
          public workers included, rather than fall back on another token. Set it to the whole \
-         token, with nothing before or after it, or unset it where Compose runs (on the engine \
-         process, then restarted, or in the shell that runs `iii compose build`)."
+         token, with nothing before or after it, or unset it where Compose runs (on the `iii \
+         compose` daemon process, then restarted, or in the shell that runs `iii compose \
+         build`)."
     );
     assert!(registry.received_requests().await.unwrap().is_empty());
 }

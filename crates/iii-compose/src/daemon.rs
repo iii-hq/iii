@@ -3263,11 +3263,14 @@ pub(crate) fn expand_graph(
     // A local declaration is an operator-owned implementation of that worker.
     // Keep it as the dependency boundary instead of replacing it with the
     // registry package or inheriting the published package's dependency tree.
+    // `path_workers` holds container keys while the graph holds package names:
+    // a local container stands in for the dependency that would be declared
+    // under its key, so `queue` for `@acme/queue` as for `queue`.
     let mut reachable = BTreeSet::new();
     let mut satisfied_by_path = BTreeSet::new();
     let mut visit = vec![asked.key.clone()];
     while let Some(name) = visit.pop() {
-        if name != asked.key && path_workers.contains(&name) {
+        if name != asked.key && path_workers.contains(crate::registry::container_key(&name)) {
             satisfied_by_path.insert(name);
             continue;
         }
@@ -3301,6 +3304,8 @@ pub(crate) fn expand_graph(
     };
     declarable.insert(asked.key.clone());
 
+    // A registry dependency is named by its package name, retargeted to its container
+    // key later; a local one by the key of the container that stands in for it.
     let needs = |name: &str| -> Vec<String> {
         let mut needed: Vec<String> = graph
             .edges
@@ -3310,7 +3315,13 @@ pub(crate) fn expand_graph(
                     && to != name
                     && (declarable.contains(to) || satisfied_by_path.contains(to))
             })
-            .map(|(_, to)| to.clone())
+            .map(|(_, to)| {
+                if declarable.contains(to) {
+                    to.clone()
+                } else {
+                    crate::registry::container_key(to).to_string()
+                }
+            })
             .collect();
         needed.sort();
         needed.dedup();

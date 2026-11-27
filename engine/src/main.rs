@@ -186,8 +186,8 @@ enum Commands {
     /// the registry confirms it, `whoami` shows who the token belongs to, and
     /// `logout` removes it. Compose reads the saved tokens on every operation,
     /// so a running daemon needs no restart. `III_REGISTRY_TOKEN`, set on the
-    /// engine process that runs Compose, wins over the saved token for the
-    /// default registry.
+    /// process that runs Compose (the `iii compose` daemon, or `iii compose
+    /// build`), wins over the saved token for the default registry.
     Registry(iii_compose::registry_cli::RegistryCli),
 
     /// List iii processes on this machine: engines, compose daemons and

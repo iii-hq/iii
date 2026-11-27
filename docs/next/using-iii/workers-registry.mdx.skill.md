@@ -74,8 +74,9 @@ file is readable only by you. Compose reads it again for each operation, so a ru
 new login without a restart.
 
 Workers and hooks that run on the host run as your user, so they can read that file like any other
-file you own. On a shared or persistent CI runner, prefer `III_REGISTRY_TOKEN` on the engine process
-for the job over `iii registry login`, which leaves the token on disk for later jobs.
+file you own. On a shared or persistent CI runner, prefer `III_REGISTRY_TOKEN`, set for the job on
+the `iii` process that installs the workers (see below), over `iii registry login`, which leaves the
+token on disk for later jobs.
 
 ### Setting `III_REGISTRY_TOKEN`
 
@@ -107,11 +108,11 @@ Each error names the registry, the token by its first 8 characters (as the **Dow
 shows them), and where it came from: `III_REGISTRY_TOKEN` or the path of the credentials file. It
 says what the failure stops and ends with the commands that fix it.
 
-| Code                           | Meaning                                                                                                                                                                                                                                                                                       |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `REGISTRY_AUTH_FAILED`         | The registry refused the token as invalid, expired, or revoked. While it is sent, every request to that registry fails, public workers included. Replace it with `iii registry login` or in `III_REGISTRY_TOKEN`, or stop sending it with `iii registry logout` or by unsetting the variable. |
-| `PACKAGE_NOT_RESOLVED`         | For a scoped name, the worker does not exist or the token has no access to it. The registry answers both cases the same way. `iii registry whoami` lists the workers a token reaches.                                                                                                         |
-| `REGISTRY_CREDENTIALS_INVALID` | `III_REGISTRY_TOKEN` or `~/.iii/credentials.toml` cannot be used.                                                                                                                                                                                                                             |
+| Code                           | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_AUTH_FAILED`         | The registry refused the token as invalid, expired, or revoked. While it is sent, every request to that registry fails, public workers included. The error names where the token came from. For a token saved in `~/.iii/credentials.toml`, replace it with `iii registry login`, or stop sending it with `iii registry logout`. For `III_REGISTRY_TOKEN`, which those commands do not change, set it to a new token or unset it where Compose reads it (see above); a running Compose daemon needs a restart to see the change. |
+| `PACKAGE_NOT_RESOLVED`         | For a scoped name, the worker does not exist or the token has no access to it. The registry answers both cases the same way. `iii registry whoami` lists the workers a token reaches.                                                                                                                                                                                                                                                                                                                                            |
+| `REGISTRY_CREDENTIALS_INVALID` | `III_REGISTRY_TOKEN` or `~/.iii/credentials.toml` cannot be used.                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 When `~/.iii/credentials.toml` is not valid TOML, has an entry that is not an origin with a `token`,
 or cannot be read, Compose stops every registry operation, public workers included: without the file
