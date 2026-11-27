@@ -306,6 +306,26 @@ pub enum ComposeError {
         message: String,
     },
 
+    /// The registry refused the token sent with a request (`401`): invalid, expired or revoked.
+    /// `message` names the registry, the token by its prefix and where it came from, says what
+    /// the refusal stops, and how to replace the token.
+    #[error("container '{container}': {message}")]
+    RegistryAuthFailed {
+        container: String,
+        registry: String,
+        /// The registry's code: `invalid_token`, `token_expired` or `token_revoked`, or
+        /// `unauthorized` when it named none.
+        code: String,
+        message: String,
+    },
+
+    /// `III_REGISTRY_TOKEN` or `~/.iii/credentials.toml` cannot be used. The message says where
+    /// and what is wrong (for the file, its path, line and column), that it stops every request
+    /// to the registry, whether the variable gets around it, and the commands that fix it. It
+    /// never quotes a token or the file's content.
+    #[error("container '{container}': {message}")]
+    RegistryCredentialsInvalid { container: String, message: String },
+
     #[error("container '{container}': no version of '{name}' satisfies '{range}'. {message}")]
     PackageNotResolved {
         container: String,
@@ -319,7 +339,8 @@ pub enum ComposeError {
     /// value carrying a separator or `..` writes outside the cache.
     #[error(
         "container '{container}': the registry at {registry} answered with an unusable {field} \
-         '{value}'. A package {field} may hold only letters, digits, '.', '_' and '-'"
+         '{value}'. A package {field} may hold only letters, digits, '.', '_' and '-', or be a \
+         scoped name '@<scope>/<name>'"
     )]
     RegistryNameRefused {
         container: String,
@@ -816,6 +837,8 @@ impl ComposeError {
             Self::RegistryUnreachable { .. } => "REGISTRY_UNREACHABLE",
             Self::PackageNotResolved { .. } => "PACKAGE_NOT_RESOLVED",
             Self::RegistryNameRefused { .. } => "REGISTRY_NAME_REFUSED",
+            Self::RegistryAuthFailed { .. } => "REGISTRY_AUTH_FAILED",
+            Self::RegistryCredentialsInvalid { .. } => "REGISTRY_CREDENTIALS_INVALID",
             Self::UnsupportedPackageKind { .. } => "UNSUPPORTED_PACKAGE_KIND",
             Self::EngineWorkerIsBuiltin { .. } => "ENGINE_WORKER_IS_BUILTIN",
             Self::BundleNeedsAVm { .. } => "BUNDLE_NEEDS_A_VM",

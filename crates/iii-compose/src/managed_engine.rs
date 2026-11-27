@@ -140,26 +140,7 @@ impl ManagedEngine {
             source,
         })?;
 
-        let mut command = tokio::process::Command::new(executable);
-        command
-            .arg("--config")
-            .arg(config_path)
-            .env(ENGINE_LIFELINE_STDIN_ENV, "1")
-            .stdin(Stdio::piped());
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt;
-
-            command
-                .as_std_mut()
-                .arg0(crate::process_title::command_name(
-                    crate::process_title::Role::Engine,
-                    namespace,
-                ));
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = namespace;
-
+        let command = engine_command(executable, config_path, namespace);
         let (process, output, lifeline) =
             spawn_managed_engine(command).map_err(|err| ComposeError::EngineSpawnFailed {
                 message: format!("could not start {}: {err}", executable.display()),
@@ -240,6 +221,39 @@ impl ManagedEngine {
 /// The Compose-owned endpoint whose lifetime governs only the managed engine.
 struct EngineLifeline {
     _stdin: tokio::process::ChildStdin,
+}
+
+/// The command that starts the managed engine. It inherits Compose's environment, except a
+/// registry credential ([`crate::credentials::CREDENTIAL_ENV`]): Compose installs packages
+/// itself, and the engine has no use for the token.
+fn engine_command(
+    executable: &Path,
+    config_path: &Path,
+    namespace: &str,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .arg("--config")
+        .arg(config_path)
+        .env(ENGINE_LIFELINE_STDIN_ENV, "1")
+        .stdin(Stdio::piped());
+    for name in crate::credentials::CREDENTIAL_ENV {
+        command.env_remove(name);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+
+        command
+            .as_std_mut()
+            .arg0(crate::process_title::command_name(
+                crate::process_title::Role::Engine,
+                namespace,
+            ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = namespace;
+    command
 }
 
 fn spawn_managed_engine(
@@ -942,6 +956,24 @@ mod tests {
     use std::{path::Path, time::Duration};
 
     use super::*;
+
+    #[test]
+    fn the_managed_engine_never_inherits_a_registry_token() {
+        let command = engine_command(
+            Path::new("/usr/bin/iii"),
+            Path::new("/tmp/engine-config.yaml"),
+            "dev",
+        );
+        let removed: Vec<_> = command
+            .as_std()
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        for name in crate::credentials::CREDENTIAL_ENV {
+            assert!(removed.iter().any(|removed| removed == name), "{name}");
+        }
+    }
 
     fn engine_spec() -> crate::config::EngineSpec {
         crate::ComposeFile::parse(

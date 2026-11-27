@@ -33,6 +33,7 @@ iii [OPTIONS] [COMMAND]
 | [`kill`](#iii-kill) | Stop iii processes by engine port, by compose project, or every orphaned worker |
 | [`project`](#iii-project) | Manage iii projects (init, generate-docker) |
 | [`ps`](#iii-ps) | List iii processes on this machine: engines, compose daemons and workers, with the compose project each belongs to |
+| [`registry`](#iii-registry) | Sign in to a worker registry, so Compose can install its private workers |
 | [`update`](#iii-update) | Update iii and managed binaries to their latest versions |
 
 ### `iii call`
@@ -197,6 +198,55 @@ iii ps [OPTIONS]
 | Option | Description |
 | ------ | ----------- |
 | `--json` | Print JSON instead of a table |
+
+### `iii registry`
+
+Sign in to a worker registry, so Compose can install its private workers
+
+`login` saves a token for a registry in `~/.iii/credentials.toml` once the registry confirms it, `whoami` shows who the token belongs to, and `logout` removes it. Compose reads the saved tokens on every operation, so a running daemon needs no restart. `III_REGISTRY_TOKEN`, set on the engine process that runs Compose, wins over the saved token for the default registry.
+
+```text
+iii registry <COMMAND>
+```
+
+#### `iii registry login`
+
+Save a token for a worker registry on this machine, after the registry confirms it.
+
+The token is read from a hidden prompt, or from standard input with `--token-stdin`; it is never taken as an argument. It is saved in `~/.iii/credentials.toml`, readable only by you, and a running Compose daemon uses it from its next operation on. The `III_REGISTRY_TOKEN` environment variable, when it is set on the engine process, wins over the saved token for the default registry.
+
+```text
+iii registry login [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--registry <URL>` | The registry: scheme, host and port, such as `https://api.workers.iii.dev`. A bare host means https [default: https://api.workers.iii.dev] |
+| `--token-stdin` | Read the token from standard input instead of prompting for it, for scripts: `printf '%s' "$TOKEN" \| iii registry login --token-stdin` |
+
+#### `iii registry logout`
+
+Remove the token saved for a worker registry
+
+```text
+iii registry logout [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--registry <URL>` | The registry: scheme, host and port, such as `https://api.workers.iii.dev`. A bare host means https [default: https://api.workers.iii.dev] |
+
+#### `iii registry whoami`
+
+Show the organization, kind, access and expiry of the token for a worker registry
+
+```text
+iii registry whoami [OPTIONS]
+```
+
+| Option | Description |
+| ------ | ----------- |
+| `--registry <URL>` | The registry: scheme, host and port, such as `https://api.workers.iii.dev`. A bare host means https [default: https://api.workers.iii.dev] |
 
 ### `iii update`
 

@@ -31,6 +31,106 @@ iii call -n dev compose::add worker=./workers/my_worker
   and removal by editing the file, see [Workers](./workers) and [Compose](./compose).
 </Note>
 
+## Private workers
+
+A private worker belongs to an organization and has a scoped name, `@<organization>/<name>`, such as
+`@acme/ade`. Its container key is the part after the slash, `ade`. Every form that names a public
+worker also takes a scoped name:
+
+```bash
+iii call -n dev compose::add worker=@acme/ade
+iii call -n dev compose::add worker=@acme/ade@^0.4
+iii call -n dev compose::add worker=api.workers.iii.dev/@acme/ade
+```
+
+In `worker-compose.yaml`, the same worker is `package://@acme/ade`, or
+`package://api.workers.iii.dev/@acme/ade` with its registry named.
+
+### Signing in to the registry
+
+Compose installs a private worker only with a download token that has access to it. Save one with
+`iii registry login`. It asks for the token without echoing it, checks it with the registry, and
+saves it only when the registry accepts it:
+
+```bash
+iii registry login
+iii registry whoami
+iii registry logout
+```
+
+In a script or CI job, pipe the token in with `--token-stdin`. The token is never accepted as an
+argument:
+
+```bash
+printf '%s' "$DOWNLOAD_TOKEN" | iii registry login --token-stdin
+```
+
+Add `--registry <url>` to any of these commands for a registry other than
+`https://api.workers.iii.dev`. `iii registry whoami` prints the organization, the token's kind,
+prefix, access, and expiry, never the token itself.
+
+`iii registry login` saves the token in `~/.iii/credentials.toml` under the registry's origin. The
+file is readable only by you. Compose reads it again for each operation, so a running daemon uses a
+new login without a restart.
+
+Workers and hooks that run on the host run as your user, so they can read that file like any other
+file you own. On a shared or persistent CI runner, prefer `III_REGISTRY_TOKEN` on the engine process
+for the job over `iii registry login`, which leaves the token on disk for later jobs.
+
+### Setting `III_REGISTRY_TOKEN`
+
+`III_REGISTRY_TOKEN` gives a token for the default registry, `https://api.workers.iii.dev`, and
+takes precedence over a token saved for it. It never applies to another registry, including one that
+a compose file or lockfile names.
+
+Set it in the environment of the `iii` process that installs the worker:
+
+- `iii compose build` installs in its own process, so set the variable in the shell that runs it.
+- `compose::*` functions run in the Compose daemon, so set the variable where the daemon starts
+  (`iii compose` or `iii compose --up`) and restart the daemon after changing it. Setting it in the
+  shell that runs `iii call` has no effect.
+
+Compose keeps the token to itself. It reads the variable to install private workers and never passes
+it to a worker, a hook, a build step, or the managed engine. A container that needs a registry token
+declares it in its own `environment` or `env_file`.
+
+### Where the token goes
+
+The token is sent only to the registry's own origin (scheme, host, and port), and only over HTTPS or
+to a loopback address. A download that redirects to a storage host follows the redirect without the
+token. Lockfiles, compose files, reports, and error messages never contain it; an error shows at
+most its first 8 characters.
+
+### Troubleshooting private workers
+
+Each error names the registry, the token by its first 8 characters (as the **Download tokens** tab
+shows them), and where it came from: `III_REGISTRY_TOKEN` or the path of the credentials file. It
+says what the failure stops and ends with the commands that fix it.
+
+| Code                           | Meaning                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_AUTH_FAILED`         | The registry refused the token as invalid, expired, or revoked. While it is sent, every request to that registry fails, public workers included. Replace it with `iii registry login` or in `III_REGISTRY_TOKEN`, or stop sending it with `iii registry logout` or by unsetting the variable. |
+| `PACKAGE_NOT_RESOLVED`         | For a scoped name, the worker does not exist or the token has no access to it. The registry answers both cases the same way. `iii registry whoami` lists the workers a token reaches.                                                                                                         |
+| `REGISTRY_CREDENTIALS_INVALID` | `III_REGISTRY_TOKEN` or `~/.iii/credentials.toml` cannot be used.                                                                                                                                                                                                                             |
+
+When `~/.iii/credentials.toml` is not valid TOML, has an entry that is not an origin with a `token`,
+or cannot be read, Compose stops every registry operation, public workers included: without the file
+it cannot tell which token belongs to which registry. The error gives the file's path and the line
+and column of the problem, never the file's content. `III_REGISTRY_TOKEN`, set where Compose reads
+it (see above), gets around it for `https://api.workers.iii.dev` only.
+
+Fix the line the error names, or move the file aside and sign in again. Moving it drops the tokens
+saved for other registries, so sign in to those again too:
+
+```bash
+mv ~/.iii/credentials.toml ~/.iii/credentials.toml.bak
+iii registry login
+```
+
+`iii registry login` and `iii registry logout` never overwrite a credentials file they cannot read.
+When other users can open `~/.iii`, they change its mode to `0700` before saving and print the old
+mode and the new one.
+
 ## Artifact types
 
 Compose currently runs registry workers published as native binaries or bundles. A bundle runs in a

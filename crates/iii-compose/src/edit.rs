@@ -171,6 +171,10 @@ pub enum Outcome {
 /// `.` or `/`, and everything else is a registry reference — which may carry a
 /// host (`api.workers.iii.dev/state`) or a scope, so "contains a slash" would
 /// misread those as directories.
+///
+/// A scoped name (`@acme/ade`, `@acme/ade@^0.4`, `registry.example/@acme/ade`)
+/// keys its container by its last part, `ade`, as a hosted name does. Its
+/// leading `@` is part of the name, never the version separator.
 pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     let spec = spec.trim();
     let explicit_path = spec.starts_with("path://");
@@ -201,28 +205,34 @@ pub fn parse_worker(spec: &str) -> Result<NewContainer> {
     }
 
     // `name@version`, and the version is optional. Split from the right so a
-    // scoped name keeps any `@` of its own.
-    let (name, version) = match spec.rsplit_once('@') {
-        Some((name, version)) if !name.is_empty() && !version.is_empty() => {
+    // scoped name keeps any `@` of its own: the `@` that opens a scope, at the
+    // start or right after the host, is never the separator.
+    let (name, version) = match spec.rfind('@') {
+        Some(at) if at == 0 || spec[..at].ends_with('/') => (spec, None),
+        Some(at) => {
+            let (name, version) = (&spec[..at], &spec[at + 1..]);
+            if name.is_empty() || version.is_empty() {
+                return Err(invalid(
+                    spec,
+                    "it has an empty name or version around the '@'",
+                ));
+            }
             (name, Some(version.to_string()))
-        }
-        Some(_) => {
-            return Err(invalid(
-                spec,
-                "it has an empty name or version around the '@'",
-            ));
         }
         None => (spec, None),
     };
+    if let Some(reason) = crate::registry::scoped_reference_problem(name) {
+        return Err(invalid(spec, &reason));
+    }
 
     let key = name.rsplit('/').next().unwrap_or(name);
     if key.is_empty() {
         return Err(invalid(spec, "it names no worker"));
     }
-    let reference = if name.contains('/') {
-        name.to_string()
-    } else {
+    let reference = if name.starts_with('@') || !name.contains('/') {
         format!("{DEFAULT_REGISTRY_HOST}/{name}")
+    } else {
+        name.to_string()
     };
 
     Ok(NewContainer {
@@ -2277,6 +2287,79 @@ mod tests {
                 };
                 assert_eq!((from.as_str(), to.as_str()), ("package", "path"));
             }
+        }
+    }
+
+    #[test]
+    fn a_scoped_worker_is_keyed_by_its_name_and_keeps_its_scope() {
+        for (spec, reference, version) in [
+            ("@acme/ade", "api.workers.iii.dev/@acme/ade", None),
+            (
+                "@acme/ade@^0.4",
+                "api.workers.iii.dev/@acme/ade",
+                Some("^0.4"),
+            ),
+            (
+                "package://@acme/ade@1.2.3",
+                "api.workers.iii.dev/@acme/ade",
+                Some("1.2.3"),
+            ),
+            (
+                "registry.example/@acme/ade",
+                "registry.example/@acme/ade",
+                None,
+            ),
+            (
+                "package://registry.example/@acme/my_ade@next",
+                "registry.example/@acme/my_ade",
+                Some("next"),
+            ),
+            // The forms before scopes read as they always did.
+            ("tool", "api.workers.iii.dev/tool", None),
+            ("tool@1.2.3", "api.workers.iii.dev/tool", Some("1.2.3")),
+            (
+                "registry.example/team/tool@1.2.3",
+                "registry.example/team/tool",
+                Some("1.2.3"),
+            ),
+        ] {
+            let declared = parse_worker(spec).unwrap();
+            let Source::Package {
+                reference: got,
+                version: got_version,
+            } = &declared.source
+            else {
+                panic!("{spec} is not a package")
+            };
+            assert_eq!(got, reference, "{spec}");
+            assert_eq!(got_version.as_deref(), version, "{spec}");
+            assert_eq!(
+                declared.key,
+                reference.rsplit('/').next().unwrap(),
+                "{spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_scoped_worker_is_refused() {
+        let too_long = format!("@acme/{}", "a".repeat(80));
+        for spec in [
+            "@/x",
+            "@ACME/x",
+            "@acme/../x",
+            "@acme/",
+            "@acme/@1.0.0",
+            "@acme",
+            "@acme@1.0.0",
+            "@acme/ade@",
+            "@acme/a/b",
+            "registry.example/@ACME/x",
+            "package://@acme/..",
+            too_long.as_str(),
+        ] {
+            let error = parse_worker(spec).unwrap_err();
+            assert_eq!(error.code(), "INVALID_WORKER_SPEC", "{spec}: {error}");
         }
     }
 

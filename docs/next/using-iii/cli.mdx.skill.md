@@ -19,6 +19,7 @@ The generated [CLI reference](../cli-reference/index) publishes the same surface
 | `iii compose`                               | Run the Compose daemon, prepare registry packages with `build`, or supervise a project with `--up`. |
 | `iii call` (aliases `iii trigger`, `iii t`) | Call a registered function on a running engine.                                                     |
 | `iii project`                               | Scaffold projects and generate Docker assets.                                                       |
+| `iii registry`                              | Sign in to a worker registry, so Compose can install private workers.                               |
 | `iii cloud`                                 | Manage hosted iii deployments.                                                                      |
 | `iii update`                                | Update iii and the `iii-cloud` binary.                                                              |
 
@@ -39,6 +40,19 @@ The `iii cloud` command group manages hosted deployments. See
 [Deployment](./deployment#iii-cloud-deployments).
 
 <Note>iii Cloud availability may vary by account and release.</Note>
+
+## Signing in to a worker registry
+
+`iii registry login` saves a download token for a registry, so Compose can install the private
+workers it has access to. `iii registry whoami` shows who the saved token belongs to, and
+`iii registry logout` removes it. Compose keeps the token to itself: workers never inherit it. On a
+shared or persistent CI runner, prefer `III_REGISTRY_TOKEN` on the engine process for the job. See
+[Private workers](./workers-registry#private-workers).
+
+```bash
+iii registry login
+iii registry whoami
+```
 
 ## Updating iii
 

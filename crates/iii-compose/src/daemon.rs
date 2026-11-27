@@ -3249,10 +3249,10 @@ pub(crate) fn expand_graph(
         });
     }
 
-    let host = reference
-        .rsplit_once('/')
-        .map(|(host, _)| host)
-        .unwrap_or("");
+    // What the reference puts before its worker name, shared by the graph's
+    // other workers. A scoped name keeps its own slash: `registry.example/@acme/ade`
+    // has the host `registry.example`, and `@acme/ade` none.
+    let host = crate::registry::reference_prefix(reference);
 
     let nodes: BTreeMap<&str, &crate::registry::Node> = graph
         .nodes

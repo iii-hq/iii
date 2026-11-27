@@ -28,6 +28,8 @@ iii-sandbox-contract = { path = "../iii-sandbox-contract" }
 # Registry resolution and artefact download.
 reqwest = { workspace = true }
 url = { workspace = true }
+# `~/.iii/credentials.toml`, the registry tokens `iii registry login` saves.
+toml = "1"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2"] }
@@ -59,7 +61,8 @@ sysinfo = "0.38"
 
 # Teardown signals whole process groups, which std cannot express.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["signal", "process"] }
+# `user`: the uid a refused credentials file or directory is compared with.
+nix = { version = "0.31", features = ["signal", "process", "user"] }
 
 # Job Objects are the windows equivalent; console control events deliver the
 # graceful stop that unix gets from SIGTERM.

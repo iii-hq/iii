@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     error::{ComposeError, Result},
     lockfile::PreparedLock,
+    registry_http::{RegistryAuth, SendError},
 };
 
 /// Registry used when a `package://` reference names no host.
@@ -566,11 +567,88 @@ pub(crate) fn selected_artifact<'a>(
 
 /// Splits `workers.iii.dev/state` into its registry base and worker name. A
 /// reference with no host uses [`DEFAULT_REGISTRY`].
+///
+/// A scoped name (`@acme/ade`) is one name, slash included: `@acme/ade` names
+/// it on the default registry and `registry.example/@acme/ade` on another one.
+/// A host never starts with `@`, so the leading `@` is what tells them apart.
 pub(crate) fn split_reference(reference: &str) -> (String, String) {
+    if reference.starts_with('@') {
+        return (DEFAULT_REGISTRY.to_string(), reference.to_string());
+    }
     match reference.split_once('/') {
         Some((host, name)) => (format!("https://{host}"), name.to_string()),
         None => (DEFAULT_REGISTRY.to_string(), reference.to_string()),
     }
+}
+
+/// What `reference` puts before its worker name: `registry.example` for
+/// `registry.example/state` and `registry.example/@acme/ade`, empty for `state` and
+/// `@acme/ade`. A legacy multi-segment name keeps all but its last segment
+/// (`registry.example/team` for `registry.example/team/tool`), as before scopes.
+pub(crate) fn reference_prefix(reference: &str) -> &str {
+    if reference.starts_with('@') {
+        return "";
+    }
+    match reference.split_once('/') {
+        Some((host, name)) if name.starts_with('@') => host,
+        _ => reference
+            .rsplit_once('/')
+            .map(|(host, _)| host)
+            .unwrap_or(""),
+    }
+}
+
+/// The longest scoped name the registry accepts, `@` and `/` included.
+pub const MAX_SCOPED_NAME_LEN: usize = 80;
+
+/// The scope and name of a scoped worker name, `@<scope>/<name>`, or `None` when `name` is not
+/// one. The scope is an organization's handle (`^[a-z0-9][a-z0-9-]{0,38}$`), the name follows
+/// the worker rule (`^[a-z0-9][a-z0-9_-]*$`), and the whole is at most
+/// [`MAX_SCOPED_NAME_LEN`] characters. Neither part can be `.` or `..` or hold a separator, so
+/// both are safe directory names.
+pub fn scoped_name(name: &str) -> Option<(&str, &str)> {
+    let (scope, package) = name.strip_prefix('@')?.split_once('/')?;
+    let scope_ok = (1..=39).contains(&scope.len())
+        && scope
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !scope.starts_with('-');
+    let package_ok = !package.is_empty()
+        && package.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+        && package
+            .bytes()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit());
+    (name.len() <= MAX_SCOPED_NAME_LEN && scope_ok && package_ok).then_some((scope, package))
+}
+
+/// The container key a worker gets when nothing else names it: its name, or the last part of a
+/// scoped name (`@acme/ade` is `ade`), since a key is also a directory name.
+pub fn container_key(name: &str) -> &str {
+    scoped_name(name).map_or(name, |(_, package)| package)
+}
+
+/// Whether `name` is a package name compose accepts from a registry or a lock: an unscoped name
+/// ([`is_path_safe`]) or a scoped one ([`scoped_name`]).
+pub fn is_package_name(name: &str) -> bool {
+    is_path_safe(name) || scoped_name(name).is_some()
+}
+
+/// Why the name in `reference` (as [`split_reference`] reads it) cannot be a scoped worker name,
+/// or `None` when it is one or is not scoped at all. A name that starts with `@` is always meant
+/// as scoped, so a malformed one is refused before it is sent anywhere.
+pub(crate) fn scoped_reference_problem(reference: &str) -> Option<String> {
+    let (_, name) = split_reference(reference);
+    if !name.starts_with('@') || scoped_name(&name).is_some() {
+        return None;
+    }
+    Some(format!(
+        "'{name}' is not a scoped worker name: use @<scope>/<name>, with a lowercase scope of \
+         letters, digits and '-' (at most 39), a lowercase name of letters, digits, '-' and '_', \
+         and at most {MAX_SCOPED_NAME_LEN} characters in all"
+    ))
 }
 
 /// Resolves a package reference and makes sure its binary is on disk.
@@ -649,15 +727,9 @@ pub(crate) async fn resolve_selection_on(
     platform: Platform,
 ) -> Result<Selection> {
     let (registry, name) = split_reference(reference);
-    #[cfg(test)]
-    let endpoint = TEST_REGISTRY
-        .try_with(Clone::clone)
-        .unwrap_or_else(|_| registry.clone());
-    #[cfg(not(test))]
-    let endpoint = registry.clone();
     let worker = resolve(
         container,
-        &endpoint,
+        &registry,
         &name,
         version_range,
         platform.targets(),
@@ -1121,12 +1193,13 @@ async fn copy_package(
     let target = artifact_target(resolved, platform);
     let artifact = artifact_for_target(container, resolved, target)?;
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
-    let source = cache_install_dir(
+    let source = cache_entry(
+        container,
         &registry_cache_root(cache_root, resolved),
         resolved,
         target,
         &digest,
-    );
+    )?;
     // Held while copying: an install repairing this entry waits for the copy to finish.
     let lock = lock_artifact(&source).await?;
     let held = std::sync::Arc::clone(guard);
@@ -1370,8 +1443,6 @@ pub(crate) async fn resolve_node_on(
     platform: Platform,
 ) -> Result<Node> {
     let (registry, name) = split_reference(reference);
-    #[cfg(test)]
-    let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
     resolve(container, &registry, &name, range, platform.targets())
         .await
         .map(Node::from)
@@ -1394,6 +1465,36 @@ pub struct Graph {
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static TEST_REGISTRY: String;
+}
+
+/// Where `registry` is reached: the registry itself, or in a test the mock server
+/// [`TEST_REGISTRY`] stands in for every registry with.
+pub(crate) fn registry_endpoint(registry: &str) -> String {
+    #[cfg(test)]
+    if let Ok(endpoint) = TEST_REGISTRY.try_with(Clone::clone) {
+        return endpoint;
+    }
+    registry.to_string()
+}
+
+/// The token one request to `registry` carries, sent only to `endpoint`. The credentials are
+/// read now, so a login applies without a restart.
+///
+/// An unusable `III_REGISTRY_TOKEN` or `credentials.toml` fails the operation, public workers
+/// included: without them Compose cannot tell which token belongs to which registry. The error
+/// says where the problem is, whether the variable gets around it, and how to fix it.
+fn registry_auth(container: &str, registry: &str, endpoint: &str) -> Result<RegistryAuth> {
+    RegistryAuth::new(&crate::credentials::current(), registry, endpoint).map_err(|error| {
+        ComposeError::RegistryCredentialsInvalid {
+            container: container.to_string(),
+            message: crate::registry_http::credentials_failure(
+                &error,
+                registry,
+                crate::registry_http::Reader::Compose,
+            )
+            .sentence(),
+        }
+    })
 }
 
 tokio::task_local! {
@@ -1439,11 +1540,10 @@ pub async fn resolve_graph_on(
     platform: Platform,
 ) -> Result<Graph> {
     let (registry, name) = split_reference(reference);
-    #[cfg(test)]
-    let registry = TEST_REGISTRY.try_with(Clone::clone).unwrap_or(registry);
     let response = resolve_response(
         container,
         &registry,
+        &registry_endpoint(&registry),
         &name,
         version_range,
         platform.targets(),
@@ -1490,22 +1590,54 @@ fn registry_cache_root(cache_root: &Path, resolved: &ResolvedPackage) -> PathBuf
 /// package, version, target and digest: `<name>-<version>-<target>-<digest>`. A bundle has one
 /// archive for every platform, so `bundle` stands in for the target. An alias shares the entry of
 /// the package it stands for.
+///
+/// A scoped package nests under its scope, as npm does: `@acme/ade` is
+/// `@acme/ade-<version>-<target>-<digest>`. An unscoped name never starts with `@`
+/// ([`is_path_safe`]) and a registry's own directory is a hex digest, so no two packages share an
+/// entry. Every part is checked again here, whatever validated it before: this is where a name
+/// becomes a path.
+fn cache_entry(
+    container: &str,
+    cache_root: &Path,
+    resolved: &ResolvedPackage,
+    target: &str,
+    digest: &str,
+) -> Result<PathBuf> {
+    let refuse = |field: &str, value: &str| ComposeError::RegistryNameRefused {
+        container: container.to_string(),
+        registry: resolved.registry.clone(),
+        field: field.to_string(),
+        value: value.to_string(),
+    };
+    let platform = if resolved.kind == "bundle" {
+        "bundle"
+    } else {
+        target
+    };
+    let name = package_name(resolved);
+    let (parent, base) = match scoped_name(name) {
+        Some((scope, package)) => (cache_root.join(format!("@{scope}")), package),
+        None if is_path_safe(name) => (cache_root.to_path_buf(), name),
+        None => return Err(refuse("name", name)),
+    };
+    if !is_path_safe(&resolved.version) {
+        return Err(refuse("version", &resolved.version));
+    }
+    let entry = format!("{base}-{}-{platform}-{digest}", resolved.version);
+    if !is_path_safe(&entry) {
+        return Err(refuse("cache entry", &entry));
+    }
+    Ok(parent.join(entry))
+}
+
+#[cfg(test)]
 fn cache_install_dir(
     cache_root: &Path,
     resolved: &ResolvedPackage,
     target: &str,
     digest: &str,
 ) -> PathBuf {
-    let platform = if resolved.kind == "bundle" {
-        "bundle"
-    } else {
-        target
-    };
-    cache_root.join(format!(
-        "{}-{}-{platform}-{digest}",
-        package_name(resolved),
-        resolved.version
-    ))
+    cache_entry("test", cache_root, resolved, target, digest).unwrap()
 }
 
 /// The package `resolved` installs: for an alias, the package it stands for.
@@ -1523,13 +1655,13 @@ async fn install_binary(
     let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
-    let install_dir = cache_install_dir(cache_root, resolved, target, &digest);
+    let install_dir = cache_entry(container, cache_root, resolved, target, &digest)?;
     let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     if cached && let Some(existing) = installed_binary(&install_dir) {
         return Ok((existing, InstallStatus::Cached));
     }
     crate::report::download_version(container, &resolved.version);
-    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
+    download_and_extract(container, resolved, artifact, &install_dir, &digest, lock).await?;
     let program =
         installed_binary(&install_dir).ok_or_else(|| ComposeError::PackageArtifactEmpty {
             container: container.to_string(),
@@ -1593,7 +1725,7 @@ async fn install_bundle(
     let artifact = artifact_for_target(container, resolved, target)?;
 
     let digest = validated_cache_digest(container, resolved, &artifact.sha256)?;
-    let install_dir = cache_install_dir(cache_root, resolved, target, &digest);
+    let install_dir = cache_entry(container, cache_root, resolved, target, &digest)?;
     let (lock, cached) = checked_cache(&install_dir, &digest).await?;
     // The manifest is the bundle's entry point, so its presence is what makes
     // an install dir a cache hit — not the first executable, which a bundle
@@ -1602,7 +1734,7 @@ async fn install_bundle(
         return Ok((install_dir, InstallStatus::Cached));
     }
     crate::report::download_version(container, &resolved.version);
-    download_and_extract(container, artifact, &install_dir, &digest, lock).await?;
+    download_and_extract(container, resolved, artifact, &install_dir, &digest, lock).await?;
 
     if !install_dir.join(BUNDLE_MANIFEST).is_file() {
         return Err(ComposeError::PackageArtifactEmpty {
@@ -1835,22 +1967,24 @@ fn write_integrity_marker(
 /// Resolves for the first of `candidates` (normally [`host_targets`]), moving
 /// on to a later one only when the registry says the worker has no build for
 /// the platform asked.
+///
+/// `registry` is the registry the reference names, whose token (if any) the request carries;
+/// `endpoint` is where it is reached, the same URL outside tests.
 async fn resolve_response(
     container: &str,
     registry: &str,
+    endpoint: &str,
     name: &str,
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ValidatedResolution> {
-    let mut builder = reqwest::Client::builder().timeout(RESOLVE_ATTEMPT_TIMEOUT);
-    if let Some(version) = crate::host_version() {
-        builder = builder.user_agent(format!("iii/{version}"));
-    }
-    let client = builder
+    let auth = registry_auth(container, registry, endpoint)?;
+    let client = crate::registry_http::client_builder()
+        .timeout(RESOLVE_ATTEMPT_TIMEOUT)
         .build()
-        .map_err(|err| registry_error(container, registry, &err.to_string()))?;
+        .map_err(|err| registry_error(container, endpoint, &err.to_string()))?;
 
-    let endpoint = format!("{registry}/resolve");
+    let resolve_url = format!("{endpoint}/resolve");
     let mut index = 0;
     let response = loop {
         let mut request = serde_json::json!({
@@ -1861,14 +1995,19 @@ async fn resolve_response(
         if let Some(version) = crate::host_version() {
             request["iii_version"] = version.into();
         }
-        let response = send_resolve_request(&client, &endpoint, &request)
+        let response = send_resolve_request(&client, &resolve_url, &request, &auth)
             .await
-            .map_err(|err| registry_error(container, registry, &err.to_string()))?;
+            .map_err(|err| registry_error(container, endpoint, &err.to_string()))?;
         if response.status().is_success() {
             break response;
         }
         let status = response.status();
+        // Only the registry's own `401` is about its token: a host a redirect led to never saw it.
+        let from_registry = auth.is_registry(response.url());
         let body = response.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::UNAUTHORIZED && from_registry {
+            return Err(auth_failed(container, registry, &auth, &body));
+        }
         if let Some(next) = fallback_index(&body, candidates, index) {
             index = next;
             continue;
@@ -1882,20 +2021,24 @@ async fn resolve_response(
                 available: available.join(", "),
             });
         }
+        let mut message = auth.scrub(&registry_message(status.as_u16(), &body));
+        if status == reqwest::StatusCode::NOT_FOUND {
+            push_private_hint(&mut message, name, registry, &auth);
+        }
         return Err(ComposeError::PackageNotResolved {
             container: container.to_string(),
             name: name.to_string(),
             range: version_range.to_string(),
-            message: registry_message(status.as_u16(), &body),
+            message,
         });
     };
 
     let resolved: ResolveResponse = response
         .json()
         .await
-        .map_err(|err| registry_error(container, registry, &err.to_string()))?;
+        .map_err(|err| registry_error(container, endpoint, &err.without_url().to_string()))?;
 
-    validate_resolution(container, registry, name, version_range, resolved)
+    validate_resolution(container, endpoint, name, version_range, resolved)
 }
 
 /// The index of the next of `candidates` after `tried` to resolve for: only
@@ -1931,11 +2074,15 @@ async fn send_resolve_request(
     client: &reqwest::Client,
     endpoint: &str,
     request: &serde_json::Value,
-) -> std::result::Result<reqwest::Response, reqwest::Error> {
+    auth: &RegistryAuth,
+) -> std::result::Result<reqwest::Response, SendError> {
+    let send =
+        || crate::registry_http::send(client, reqwest::Method::POST, endpoint, Some(request), auth);
     for attempt in 1..RESOLVE_ATTEMPTS {
-        let result = client.post(endpoint).json(request).send().await;
+        let result = send().await;
         let should_retry = match &result {
-            Err(_) => true,
+            Err(SendError::Http(_)) => true,
+            Err(SendError::Redirect(_)) => false,
             Ok(response) => {
                 let status = response.status();
                 status.is_server_error()
@@ -1951,7 +2098,7 @@ async fn send_resolve_request(
         tokio::time::sleep(RESOLVE_RETRY_DELAY * attempt as u32).await;
     }
 
-    client.post(endpoint).json(request).send().await
+    send().await
 }
 
 /// Whether a value from the registry may be used to build a path.
@@ -1982,14 +2129,14 @@ fn check_names(container: &str, registry: &str, resolved: &ResolveResponse) -> R
         value: value.to_string(),
     };
     for worker in &resolved.graph {
-        if !is_path_safe(&worker.name) {
+        if !is_package_name(&worker.name) {
             return Err(refuse("name", &worker.name));
         }
         if !is_path_safe(&worker.version) {
             return Err(refuse("version", &worker.version));
         }
         if let Some(alias_of) = &worker.alias_of
-            && !is_path_safe(alias_of)
+            && !is_package_name(alias_of)
         {
             return Err(refuse("alias_of", alias_of));
         }
@@ -2153,9 +2300,10 @@ async fn resolve(
     version_range: &str,
     candidates: &[&str],
 ) -> Result<ResolvedWorker> {
+    let endpoint = registry_endpoint(registry);
     let key = |range: &str| -> ResolvedKey {
         (
-            registry.to_string(),
+            endpoint.clone(),
             name.to_string(),
             range.to_string(),
             candidates.iter().map(|target| target.to_string()).collect(),
@@ -2183,8 +2331,15 @@ async fn resolve(
         // not turn an earlier selector's echo into provenance for a new request.
         return Ok(worker);
     }
-    let mut resolved =
-        resolve_response(container, registry, name, version_range, candidates).await?;
+    let mut resolved = resolve_response(
+        container,
+        registry,
+        &endpoint,
+        name,
+        version_range,
+        candidates,
+    )
+    .await?;
     let mut worker = resolved.response.graph.swap_remove(resolved.root);
     if resolved
         .response
@@ -2255,26 +2410,48 @@ fn registry_message(status: u16, body: &str) -> String {
 
 /// Downloads, verifies, then extracts — in that order, and never into the final
 /// directory until the digest matches.
+///
+/// The URL may come from a lock, which is untrusted: it carries the token of `resolved`'s
+/// registry only when it is on that registry's own origin, and never past a redirect to another
+/// one (a private artefact's presigned URL is on the storage host).
 async fn download_and_extract(
     container: &str,
+    resolved: &ResolvedPackage,
     artifact: &RegistryArtifact,
     install_dir: &Path,
     archive_sha256: &str,
     lock: fslock::LockFile,
 ) -> Result<()> {
+    let auth = registry_auth(
+        container,
+        &resolved.registry,
+        &registry_endpoint(&resolved.registry),
+    )?;
     let client = artifact_client(crate::ci::is_ci_environment())
         .map_err(|err| download_error(container, &artifact.url, &err.to_string()))?;
 
     let mut attempt = 1;
     let (bytes, digest, downloaded) = loop {
-        match fetch_artifact(&client, container, &artifact.url).await {
+        match fetch_artifact(&client, container, &artifact.url, &auth).await {
             Ok(fetched) => break fetched,
-            Err((true, _)) if attempt < DOWNLOAD_ATTEMPTS => {
+            Err(failure) if failure.retry && attempt < DOWNLOAD_ATTEMPTS => {
                 attempt += 1;
                 tokio::time::sleep(DOWNLOAD_RETRY_DELAY).await;
             }
-            Err((_, message)) => {
+            Err(failure) => {
                 crate::report::download_failed(container);
+                if let Some(body) = &failure.registry_unauthorized {
+                    return Err(auth_failed(container, &resolved.registry, &auth, body));
+                }
+                let mut message = failure.message;
+                if failure.not_found {
+                    push_private_hint(
+                        &mut message,
+                        package_name(resolved),
+                        &resolved.registry,
+                        &auth,
+                    );
+                }
                 return Err(download_error(container, &artifact.url, &message));
             }
         }
@@ -2283,7 +2460,7 @@ async fn download_and_extract(
         crate::report::download_failed(container);
         return Err(ComposeError::PackageDigestMismatch {
             container: container.to_string(),
-            url: artifact.url.clone(),
+            url: crate::registry_http::display_url(&artifact.url),
             expected: artifact.sha256.clone(),
             actual: digest,
         });
@@ -2300,18 +2477,39 @@ async fn download_and_extract(
 }
 
 /// The client artefact fetches go through: the same `iii/<version>` user agent
-/// as `/resolve`, and [`CI_HEADER`] on every request when `ci`.
+/// as `/resolve`, and [`CI_HEADER`] on every request when `ci`. It follows no
+/// redirect itself: [`crate::registry_http::send`] does, deciding at each hop
+/// whether the token may go along.
 fn artifact_client(ci: bool) -> reqwest::Result<reqwest::Client> {
-    let mut builder = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT);
-    if let Some(version) = crate::host_version() {
-        builder = builder.user_agent(format!("iii/{version}"));
-    }
+    let mut builder = crate::registry_http::client_builder().timeout(DOWNLOAD_TIMEOUT);
     if ci {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CI_HEADER, reqwest::header::HeaderValue::from_static("true"));
         builder = builder.default_headers(headers);
     }
     builder.build()
+}
+
+/// Why one artefact fetch failed, and whether fetching it again may help.
+#[derive(Debug)]
+struct FetchFailure {
+    retry: bool,
+    message: String,
+    /// The registry itself answered `401`, with this body.
+    registry_unauthorized: Option<String>,
+    /// The answer was `404`.
+    not_found: bool,
+}
+
+impl FetchFailure {
+    fn new(retry: bool, message: impl Into<String>) -> Self {
+        Self {
+            retry,
+            message: message.into(),
+            registry_unauthorized: None,
+            not_found: false,
+        }
+    }
 }
 
 /// One GET of an artefact, hashed as it arrives: the bytes, their digest and
@@ -2323,18 +2521,42 @@ async fn fetch_artifact(
     client: &reqwest::Client,
     container: &str,
     url: &str,
-) -> std::result::Result<(Vec<u8>, String, u64), (bool, String)> {
-    let mut response = tokio::time::timeout(DOWNLOAD_HEADERS_TIMEOUT, client.get(url).send())
-        .await
-        .map_err(|_| {
-            (
-                true,
-                format!("no response for {}s", DOWNLOAD_HEADERS_TIMEOUT.as_secs()),
-            )
-        })?
-        .map_err(|err| (!err.is_timeout(), err.to_string()))?;
+    auth: &RegistryAuth,
+) -> std::result::Result<(Vec<u8>, String, u64), FetchFailure> {
+    let mut response = tokio::time::timeout(
+        DOWNLOAD_HEADERS_TIMEOUT,
+        crate::registry_http::send(client, reqwest::Method::GET, url, None, auth),
+    )
+    .await
+    .map_err(|_| {
+        FetchFailure::new(
+            true,
+            format!("no response for {}s", DOWNLOAD_HEADERS_TIMEOUT.as_secs()),
+        )
+    })?
+    .map_err(|err| {
+        let retry = matches!(err, SendError::Http(_)) && !err.is_timeout();
+        FetchFailure::new(retry, err.to_string())
+    })?;
     if let Err(err) = response.error_for_status_ref() {
-        return Err((response.status().is_server_error(), err.to_string()));
+        let status = response.status();
+        // Never the URL: past the registry's redirect it is a presigned one, signature and all.
+        let mut message = err.without_url().to_string();
+        if url::Url::parse(url).is_ok_and(|first| first.origin() != response.url().origin()) {
+            message.push_str(" from the location it was redirected to");
+        }
+        let mut failure = FetchFailure::new(status.is_server_error(), message);
+        failure.not_found = status == reqwest::StatusCode::NOT_FOUND;
+        if status == reqwest::StatusCode::UNAUTHORIZED && auth.is_registry(response.url()) {
+            failure.registry_unauthorized = Some(response.text().await.unwrap_or_default());
+        }
+        return Err(failure);
+    }
+    if response.status().is_redirection() {
+        return Err(FetchFailure::new(
+            false,
+            format!("HTTP {} without a usable Location", response.status()),
+        ));
     }
     crate::report::download_started(container, response.content_length());
 
@@ -2349,12 +2571,12 @@ async fn fetch_artifact(
     while let Some(chunk) = tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, response.chunk())
         .await
         .map_err(|_| {
-            (
+            FetchFailure::new(
                 true,
                 format!("no data for {}s", DOWNLOAD_STALL_TIMEOUT.as_secs()),
             )
         })?
-        .map_err(|err| (!err.is_timeout(), err.to_string()))?
+        .map_err(|err| FetchFailure::new(!err.is_timeout(), err.without_url().to_string()))?
     {
         downloaded = downloaded.saturating_add(chunk.len() as u64);
         hasher.update(&chunk);
@@ -2636,6 +2858,39 @@ fn is_executable(path: &Path, _: &std::fs::Metadata) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
 }
 
+/// The registry refused the token a request carried (`401`): which token (by its prefix) and
+/// from where, why, what that stops, and how to replace it. `body` is the registry's answer,
+/// whose code says why.
+fn auth_failed(container: &str, registry: &str, auth: &RegistryAuth, body: &str) -> ComposeError {
+    let (code, detail) = crate::registry_http::auth_refusal(body, auth);
+    ComposeError::RegistryAuthFailed {
+        container: container.to_string(),
+        registry: registry.to_string(),
+        message: crate::registry_http::auth_failure(
+            &code,
+            detail.as_deref(),
+            registry,
+            auth.sent(),
+            crate::registry_http::Reader::Compose,
+        )
+        .sentence(),
+        code,
+    }
+}
+
+/// Adds to a not-found answer for a scoped name that a private worker needs a token with access
+/// to it. It never says the worker exists: the registry answers the same for both on purpose.
+fn push_private_hint(message: &mut String, name: &str, registry: &str, auth: &RegistryAuth) {
+    if name.starts_with('@') {
+        message.push(' ');
+        message.push_str(&crate::registry_http::private_worker_hint(
+            name,
+            registry,
+            auth.sent(),
+        ));
+    }
+}
+
 fn registry_error(container: &str, registry: &str, message: &str) -> ComposeError {
     ComposeError::RegistryUnreachable {
         container: container.to_string(),
@@ -2647,7 +2902,7 @@ fn registry_error(container: &str, registry: &str, message: &str) -> ComposeErro
 fn download_error(container: &str, url: &str, message: &str) -> ComposeError {
     ComposeError::PackageDownloadFailed {
         container: container.to_string(),
-        url: url.to_string(),
+        url: crate::registry_http::display_url(url),
         message: message.to_string(),
     }
 }
@@ -2797,7 +3052,9 @@ mod tests {
 
         for ci in [true, false] {
             let client = artifact_client(ci).unwrap();
-            fetch_artifact(&client, "shell", &url).await.unwrap();
+            fetch_artifact(&client, "shell", &url, &RegistryAuth::default())
+                .await
+                .unwrap();
         }
 
         let requests = server.received_requests().await.unwrap();
@@ -3191,6 +3448,7 @@ mod tests {
         let resolved = resolve_response(
             "state",
             &server.uri(),
+            &server.uri(),
             "state",
             "1.0.0",
             &["x86_64-unknown-linux-gnu"],
@@ -3215,6 +3473,7 @@ mod tests {
 
         let error = resolve_response(
             "state",
+            &server.uri(),
             &server.uri(),
             "state",
             "99.0.0",
@@ -3251,6 +3510,7 @@ mod tests {
         resolve_response(
             "state",
             &server.uri(),
+            &server.uri(),
             "state",
             "1.0.0",
             &["x86_64-unknown-linux-gnu"],
@@ -3278,6 +3538,7 @@ mod tests {
 
         let error = resolve_response(
             "state",
+            &server.uri(),
             &server.uri(),
             "state",
             "1.0.0",
@@ -3685,15 +3946,22 @@ mod tests {
             .await;
 
         let candidates = ["x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"];
-        let resolved =
-            resolve_response("judge-laya", &server.uri(), "judge-laya", "*", &candidates)
-                .await
-                .unwrap();
+        let resolved = resolve_response(
+            "judge-laya",
+            &server.uri(),
+            &server.uri(),
+            "judge-laya",
+            "*",
+            &candidates,
+        )
+        .await
+        .unwrap();
         assert_eq!(resolved.response.graph[0].version, "0.2.0");
 
         // Without the glibc candidate the registry's refusal is the answer.
         let error = resolve_response(
             "judge-laya",
+            &server.uri(),
             &server.uri(),
             "judge-laya",
             "*",
@@ -5219,3 +5487,7 @@ mod tests {
 #[cfg(test)]
 #[path = "registry_root_tests.rs"]
 mod root_tests;
+
+#[cfg(test)]
+#[path = "registry_private_tests.rs"]
+mod private_tests;

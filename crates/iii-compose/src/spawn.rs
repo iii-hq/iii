@@ -96,6 +96,21 @@ pub(crate) fn is_reserved_env(name: &str) -> bool {
     }
 }
 
+/// Whether `name` carries a registry credential ([`crate::credentials::CREDENTIAL_ENV`]) under
+/// the host OS's rules.
+pub(crate) fn is_credential_env(name: &str) -> bool {
+    #[cfg(windows)]
+    {
+        crate::credentials::CREDENTIAL_ENV
+            .iter()
+            .any(|key| windows_env_key_eq(name, key))
+    }
+    #[cfg(not(windows))]
+    {
+        crate::credentials::CREDENTIAL_ENV.contains(&name)
+    }
+}
+
 /// Retired snapshot key, matched using native environment name semantics.
 pub(crate) fn is_retired_config_env(name: &str) -> bool {
     #[cfg(windows)]
@@ -185,7 +200,9 @@ pub(crate) fn inherited_utf8_environment(
 ///
 /// Precedence, lowest to highest: machine environment, then the container's
 /// `env_file`/`environment`, then the reserved contract. A user value can never
-/// win over a reserved key: those are rejected before the plan is built.
+/// win over a reserved key: those are rejected before the plan is built. The
+/// machine environment never supplies a registry credential
+/// ([`crate::credentials::CREDENTIAL_ENV`]); only the container's own values can.
 pub fn spawn_plan(ctx: &SpawnCtx<'_>) -> SpawnPlan {
     // Plans also carry environment values into VMs, whose protocol uses UTF-8.
     // Ignore non-Unicode entries instead of panicking as std::env::vars would.
@@ -239,6 +256,11 @@ fn spawn_plan_with_env(ctx: &SpawnCtx<'_>, mut env: BTreeMap<String, String>) ->
     env.retain(|name, _| !is_reserved_env(name));
     // Nor does it supply what Compose hands a VM's `iii call`, which would route it elsewhere.
     env.retain(|name, _| !crate::vm_call::is_vm_input(name));
+    // Nor a registry token: Compose reads `III_REGISTRY_TOKEN` in its own process, and any worker
+    // or hook of the project, public packages included, could otherwise read it and send it
+    // anywhere. A container that needs it declares it in `environment` or `env_file`, applied
+    // below like any explicit value.
+    env.retain(|name, _| !is_credential_env(name));
     // Windows environment names are case-insensitive. Remove host spellings
     // before overlaying explicit values, rather than relying on map sort order.
     #[cfg(windows)]
@@ -452,6 +474,63 @@ mod tests {
                 "{name} differs from the host plan"
             );
         }
+    }
+
+    /// `III_REGISTRY_TOKEN` on the daemon is for Compose alone: no worker, hook or build step, on
+    /// the host or in a VM, receives it from the machine.
+    #[test]
+    fn the_machine_registry_token_never_reaches_a_spawned_process() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = BTreeMap::new();
+        let context = ctx(&start, None, &user_env);
+        let mut machine = env_of(&[
+            (crate::credentials::TOKEN_ENV, "wdt_machineSecret"),
+            ("PATH", "/host/bin"),
+        ]);
+        #[cfg(windows)]
+        machine.insert("iii_registry_token".into(), "wdt_machineSecret".into());
+        #[cfg(not(windows))]
+        machine.insert("KEEP".into(), "yes".into());
+
+        let plan = spawn_plan_with_env(&context, machine);
+        assert_eq!(plan.env["PATH"], "/host/bin");
+        for (name, value) in &plan.env {
+            assert!(!is_credential_env(name), "{name} reached the plan");
+            assert!(!value.contains("machineSecret"), "{name} holds the token");
+        }
+        // The command is the plan and nothing else: the daemon's own variable cannot slip in.
+        let command = plan.command().unwrap();
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .all(|(name, value)| !is_credential_env(&name.to_string_lossy())
+                    && !value
+                        .is_some_and(|value| value.to_string_lossy().contains("machineSecret")))
+        );
+        assert!(
+            !guest_env(&context)
+                .keys()
+                .any(|name| is_credential_env(name))
+        );
+    }
+
+    /// A container that needs a registry token says so in its own `environment` or `env_file`,
+    /// and gets exactly the value it declared, on the host and in a VM.
+    #[test]
+    fn a_container_may_declare_a_registry_token_of_its_own() {
+        let start = StartSpec::Shell("cargo run".to_string());
+        let user_env = env_of(&[(crate::credentials::TOKEN_ENV, "wdt_declared")]);
+        let context = ctx(&start, None, &user_env);
+        let plan = spawn_plan_with_env(
+            &context,
+            env_of(&[(crate::credentials::TOKEN_ENV, "wdt_machineSecret")]),
+        );
+        assert_eq!(plan.env[crate::credentials::TOKEN_ENV], "wdt_declared");
+        assert_eq!(
+            guest_env(&context)[crate::credentials::TOKEN_ENV],
+            "wdt_declared"
+        );
     }
 
     #[test]

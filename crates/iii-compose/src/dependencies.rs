@@ -565,11 +565,12 @@ fn plan_resolved(
                     .values()
                     .any(|package| package.node.alias_of.is_some())
             });
+        let default_key = registry::container_key(&release.name);
         if !aliases_used
-            && let Some(declared) = existing.get(&release.name)
+            && let Some(declared) = existing.get(default_key)
             && declared.identity() == *identity
         {
-            selected.insert(identity.clone(), release.name.clone());
+            selected.insert(identity.clone(), default_key.to_string());
             continue;
         }
         let compatible: Vec<&str> = choices
@@ -604,7 +605,9 @@ fn plan_resolved(
                 ));
             }
             [] => {
-                let key = identity.1.clone();
+                // A scoped dependency (`@acme/queue`) is keyed by its last part, as
+                // `compose::add` keys a scoped request; a clash is refused below.
+                let key = registry::container_key(&identity.1).to_string();
                 if existing_keys.contains(&key) || requested.contains_key(key.as_str()) {
                     return Err(conflict(
                         &key,
@@ -738,8 +741,9 @@ fn plan_resolved(
                         unreachable!("declared registry dependency changed source kind");
                     };
                     let (_, requested_name) = registry::split_reference(reference);
-                    (requested_name == current.node.name && registry::is_path_safe(&requested_name))
-                        .then(|| (current.node.name.clone(), current.node.alias_of.clone()))
+                    (requested_name == current.node.name
+                        && registry::is_package_name(&requested_name))
+                    .then(|| (current.node.name.clone(), current.node.alias_of.clone()))
                 } else {
                     None
                 };

@@ -799,13 +799,16 @@ pub(crate) fn locked_packages(
 }
 
 /// Whether an entry without a root binding names the package its reference names. A 0.26 lock
-/// of a scoped reference (`registry.example/team/tool`) recorded the last segment, `tool`, and
-/// stays valid; a bound entry is checked against its binding instead.
+/// of a multi-segment reference (`registry.example/team/tool`) recorded the last segment,
+/// `tool`, and stays valid; a bound entry is checked against its binding instead. A scoped name
+/// (`@acme/ade`) is the registry's own full name and has no such older form: it must match
+/// whole, so a lock can never move it onto the unscoped `ade`.
 fn names_unbound(expected: &str, resolved: &str) -> bool {
     resolved == expected
-        || expected
-            .rsplit_once('/')
-            .is_some_and(|(_, last)| resolved == last)
+        || (!expected.starts_with('@')
+            && expected
+                .rsplit_once('/')
+                .is_some_and(|(_, last)| resolved == last))
 }
 
 /// Validates all untrusted lock fields before they reach the cache or runtime.
@@ -855,7 +858,7 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
                 entry.resolved.registry
             )));
         }
-        if !crate::registry::is_path_safe(&entry.resolved.name) {
+        if !crate::registry::is_package_name(&entry.resolved.name) {
             return Err(invalid(format!(
                 "container '{container}' has an unsafe resolved package name"
             )));
@@ -864,7 +867,7 @@ fn validate(path: &Path, lock: &ComposeLock) -> Result<()> {
             .resolved
             .alias_of
             .as_deref()
-            .is_some_and(|alias| !crate::registry::is_path_safe(alias))
+            .is_some_and(|alias| !crate::registry::is_package_name(alias))
         {
             return Err(invalid(format!(
                 "container '{container}' has an unsafe resolved canonical package name"
@@ -1029,6 +1032,46 @@ mod tests {
         entry.resolved.registry = "https://registry.example.test".into();
         entry.resolved.name = "tool".into();
         lock
+    }
+
+    /// A lock of the private `@acme/ade`, kept as container `ade`.
+    fn private_lock(worker: &str, name: &str) -> ComposeLock {
+        let mut lock = lock();
+        let mut entry = lock.containers.remove("state").unwrap();
+        entry.worker = worker.into();
+        entry.resolved.name = name.into();
+        lock.containers.insert("ade".into(), entry);
+        lock.graphs = BTreeMap::from([("ade".to_string(), BTreeSet::from(["ade".to_string()]))]);
+        lock
+    }
+
+    #[test]
+    fn a_lock_of_a_scoped_package_names_it_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("worker-compose.lock");
+        for worker in [
+            "package://@acme/ade",
+            "package://api.workers.iii.dev/@acme/ade",
+        ] {
+            let lock = private_lock(worker, "@acme/ade");
+            validate(&path, &lock).unwrap();
+            let text = serde_yaml::to_string(&lock).unwrap();
+            write_atomically(&path, &text).unwrap();
+            assert_eq!(load(&path).unwrap(), Some(lock));
+
+            // A lock is untrusted: it cannot swap the scoped package for another name, nor
+            // carry one that would leave the cache.
+            for name in ["ade", "@other/ade", "@acme/../ade", "@ACME/ade", "../ade"] {
+                let lock = private_lock(worker, name);
+                assert!(
+                    matches!(
+                        validate(&path, &lock),
+                        Err(ComposeError::InvalidLock { .. })
+                    ),
+                    "{worker} locked as {name}"
+                );
+            }
+        }
     }
 
     #[test]
