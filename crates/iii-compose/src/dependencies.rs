@@ -565,11 +565,12 @@ fn plan_resolved(
                     .values()
                     .any(|package| package.node.alias_of.is_some())
             });
+        let default_key = registry::container_key(&release.name);
         if !aliases_used
-            && let Some(declared) = existing.get(&release.name)
+            && let Some(declared) = existing.get(default_key)
             && declared.identity() == *identity
         {
-            selected.insert(identity.clone(), release.name.clone());
+            selected.insert(identity.clone(), default_key.to_string());
             continue;
         }
         let compatible: Vec<&str> = choices
@@ -604,7 +605,9 @@ fn plan_resolved(
                 ));
             }
             [] => {
-                let key = identity.1.clone();
+                // A scoped dependency (`@acme/queue`) is keyed by its last part, as
+                // `compose::add` keys a scoped request; a clash is refused below.
+                let key = registry::container_key(&identity.1).to_string();
                 if existing_keys.contains(&key) || requested.contains_key(key.as_str()) {
                     return Err(conflict(
                         &key,
@@ -738,8 +741,9 @@ fn plan_resolved(
                         unreachable!("declared registry dependency changed source kind");
                     };
                     let (_, requested_name) = registry::split_reference(reference);
-                    (requested_name == current.node.name && registry::is_path_safe(&requested_name))
-                        .then(|| (current.node.name.clone(), current.node.alias_of.clone()))
+                    (requested_name == current.node.name
+                        && registry::is_package_name(&requested_name))
+                    .then(|| (current.node.name.clone(), current.node.alias_of.clone()))
                 } else {
                     None
                 };
@@ -1922,6 +1926,94 @@ mod tests {
         assert_eq!(database.start_after, vec!["queue"]);
         assert_eq!(plan.selected_versions["database"], "1.1.0");
         assert_eq!(plan.selected_versions["queue"], "2.0.0");
+    }
+
+    /// A local container is the operator's implementation of the dependency that would take its
+    /// key: `queue` stands in for `@acme/queue` exactly as it does for an unscoped `queue`, and
+    /// what only the published `@acme/queue` needed is not installed.
+    #[tokio::test]
+    async fn a_local_container_stands_in_for_a_scoped_dependency_with_its_key() {
+        let file = ComposeFile::parse(
+            "containers:\n  queue:\n    worker: path://./queue\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let asked = vec![crate::edit::parse_worker("@acme/api").unwrap()];
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Add,
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        selections: BTreeMap::new(),
+                        root: Some("@acme/api".into()),
+                        nodes: vec![
+                            node("@acme/api", "1.0.0"),
+                            node("@acme/queue", "2.0.0"),
+                            node("@acme/broker", "3.0.0"),
+                        ],
+                        edges: vec![
+                            ("@acme/api".into(), "@acme/queue".into()),
+                            ("@acme/queue".into(), "@acme/broker".into()),
+                        ],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keys(&plan), vec!["api"]);
+        let api = container(&plan, "api");
+        assert_eq!(api.start_after, vec!["queue"]);
+        assert_eq!(
+            api.source,
+            Source::Package {
+                reference: "api.workers.iii.dev/@acme/api".into(),
+                version: Some("1.0.0".into()),
+            }
+        );
+        assert!(!plan.selected_versions.contains_key("broker"));
+    }
+
+    /// A local container keyed like the requested package's own name stands in for a scoped
+    /// dependency of it without making the request wait on itself: `queue` under the key
+    /// `remote-queue` starts after the local `queue` that stands in for `@acme/queue`.
+    #[tokio::test]
+    async fn a_local_container_named_like_the_requested_package_is_no_cycle() {
+        let file = ComposeFile::parse(
+            "containers:\n  queue:\n    worker: path://./queue\n",
+            "/tmp/worker-compose.yaml",
+        )
+        .unwrap();
+        let mut asked = crate::edit::parse_worker("queue").unwrap();
+        asked.key = "remote-queue".into();
+        let asked = vec![asked];
+        let plan =
+            plan_with(
+                &file,
+                &asked,
+                &Policy::Add,
+                |_, _, _, _| async {
+                    Ok::<_, ComposeError>(registry::Graph {
+                        selections: BTreeMap::new(),
+                        root: Some("queue".into()),
+                        nodes: vec![node("queue", "1.0.0"), node("@acme/queue", "2.0.0")],
+                        edges: vec![("queue".into(), "@acme/queue".into())],
+                    })
+                },
+                |key, _, _, _| async move {
+                    Err::<Node, _>(conflict(&key, "this test has no registry"))
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(keys(&plan), vec!["remote-queue"]);
+        assert_eq!(container(&plan, "remote-queue").start_after, vec!["queue"]);
     }
 
     fn plan_update(

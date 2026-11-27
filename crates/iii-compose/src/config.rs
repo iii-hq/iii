@@ -89,7 +89,8 @@ const INJECTED_ENGINE_WORKERS: &[&str] =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkerSource {
-    /// `package://<registry-host>/<name>`
+    /// `package://<registry-host>/<name>`. The name may be scoped, `@<scope>/<name>`, with or
+    /// without a host: `package://@acme/ade` is on the default registry.
     Package { reference: String },
     /// `path://<dir>`, resolved against the compose file's directory.
     Path { dir: PathBuf, declared: String },
@@ -1213,6 +1214,12 @@ fn parse_worker_source(key: &str, value: &str, base_dir: &Path) -> Result<Worker
             return Err(ComposeError::UnsupportedWorkerSource {
                 container: key.to_string(),
                 source_uri: value.to_string(),
+            });
+        }
+        if let Some(reason) = crate::registry::scoped_reference_problem(rest) {
+            return Err(ComposeError::InvalidWorkerSpec {
+                spec: value.to_string(),
+                reason,
             });
         }
         return Ok(WorkerSource::Package {

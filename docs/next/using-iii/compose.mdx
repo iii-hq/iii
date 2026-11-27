@@ -316,10 +316,11 @@ A container object accepts these fields:
 | `env_file`        | List of environment file paths, relative to the compose file.                                                                 |
 | `startup_timeout` | Maximum wait for worker registration, such as `30s`.                                                                          |
 
-The container key is the last part of the worker name or path. A selector such as `state@next`
-stays as written in the file. For an existing container, a supplied field replaces that whole field;
-use `{}` or `[]` to clear it. A VM worker gets its `scripts` and `start_after` written for it (see
-[VM workers](#vm-workers)). See
+The container key is the last part of the worker name or path: `ade` for the private worker
+`@acme/ade` (see [Private workers](./workers-registry#private-workers)). A selector such as
+`state@next` stays as written in the file. For an existing container, a supplied field replaces that
+whole field; use `{}` or `[]` to clear it. A VM worker gets its `scripts` and `start_after` written
+for it (see [VM workers](#vm-workers)). See
 [How compose::add edits a project](../understanding-iii/compose#how-composeadd-edits-a-project).
 
 ### Package lock
@@ -757,6 +758,10 @@ key that is empty, holds `/` or `\`, starts with `.`, or holds a NUL fails with
 | `scripts`         | mapping        | absent               | See below.                                                                                                 |
 | `runtime`         | mapping        | absent               | `base_image`: the image of the worker's VM. See [Binary packages in a VM](../reference/vm-workers#binary-packages).       |
 
+A private package has a scoped name, `package://@acme/ade` or
+`package://api.workers.iii.dev/@acme/ade`, and needs a registry token. See
+[Private workers](./workers-registry#private-workers).
+
 `path://` directories resolve against the compose file's directory. A missing directory fails with
 `MISSING_WORKER_DIRECTORY`, and a missing `env_file` fails with `MISSING_ENV_FILE` during
 validation.
@@ -923,7 +928,8 @@ containers:
 
 From lowest to highest precedence, a worker gets:
 
-1. The machine environment of the Compose daemon. Non-Unicode names and values are skipped.
+1. The machine environment of the Compose daemon, except `III_REGISTRY_TOKEN`. Non-Unicode names and
+   values are skipped.
 2. The worker's `env_file` entries, in declaration order. Later files override earlier files.
 3. The worker's `environment` map. Nonempty values override env files; an empty string preserves an
    existing env-file value, or supplies an empty value when no env file defines the key.
@@ -1145,6 +1151,11 @@ iii compose --up --file worker-compose.yaml --frozen
 [`compose::build`](#building-workers) does. If it fails with `BUILD_PLAN_STALE`, run it again. See
 [How iii compose build prepares packages](../understanding-iii/compose#how-iii-compose-build-prepares-packages).
 
+A private worker needs a registry token: `III_REGISTRY_TOKEN`, or the token `iii registry login`
+saved. `iii compose build` reads the variable from its own environment, while `compose::*` functions
+read it from the environment the daemon started with. Compose keeps the token to itself: workers,
+hooks, and build steps never inherit it. See [Private workers](./workers-registry#private-workers).
+
 ## Readiness
 
 ```bash
@@ -1232,7 +1243,7 @@ Compose can output the following error codes:
 | Compose file        | `COMPOSE_FILE_UNREADABLE`, `INVALID_COMPOSE_FILE`, `EMPTY_CONTAINERS`, `INVALID_DURATION`, `UNKNOWN_DEPENDENCY`, `SELF_DEPENDENCY`, `DEPENDENCY_CYCLE`, `UNSUPPORTED_WORKER_SOURCE`, `UNDEFINED_VARIABLE`, `INVALID_REFERENCE`, `UNTERMINATED_REFERENCE`, `INVALID_CONTAINER_KEY`                                                                                                                                                                                                                                          |
 | Worker declaration  | `MISSING_VERSION_FOR_PACKAGE`, `INVALID_BASE_IMAGE`, `BASE_IMAGE_WITHOUT_VM`, `NOT_A_PACKAGE_CONTAINER`, `PRE_RUN_TIMEOUT_WITHOUT_PRE_RUN`, `RESERVED_ENV_OVERRIDE`, `MISSING_ENV_FILE`                                                                                                                                                                                                                                                                                                                                    |
 | Worker resolution   | `MISSING_WORKER_DIRECTORY`, `MISSING_START_COMMAND`, `INVALID_MANIFEST`, `INVALID_WORKER_SPEC`, `WORKER_SOURCE_CHANGED`, `ENGINE_WORKER_IS_BUILTIN`, `INCOMPATIBLE_ENGINE`                                                                                                                                                                                                                                                                                                                                                 |
-| Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                                                                                                                                                                                  |
+| Packages            | `REGISTRY_UNREACHABLE`, `PACKAGE_NOT_RESOLVED`, `PACKAGE_NOT_INSTALLED`, `PACKAGE_DOWNLOAD_FAILED`, `PACKAGE_DIGEST_MISMATCH`, `PACKAGE_ARTIFACT_EMPTY`, `REGISTRY_NAME_REFUSED`, `REGISTRY_AUTH_FAILED`, `REGISTRY_CREDENTIALS_INVALID`, `UNSUPPORTED_PACKAGE_KIND`, `UNSUPPORTED_PLATFORM`, `BUNDLE_NEEDS_A_VM`                                                                                                                                                                                                          |
 | Start and readiness | `SPAWN_FAILED`, `HOOK_SPAWN_FAILED`, `HOOK_FAILED`, `HOOK_TIMEOUT`, `STARTUP_TIMEOUT`, `CHILD_EXITED_BEFORE_REGISTRATION`, `WORKER_IGNORED_NAMESPACE`, `WORKER_NAME_MISMATCH`, `FUNCTIONS_IN_WRONG_NAMESPACE`, `CONTAINER_NAME_TAKEN`, `CONFIG_FETCH_FAILED`, `CONFIG_PUBLISH_FAILED`, `ENGINE_CALL_FAILED`, `PROJECT_DID_NOT_START`                                                                                                                                                                                       |
 | Managed engine      | `ENGINE_SECTION_REQUIRES_MANAGED_START`, `ENGINE_ALREADY_OWNED`, `ENGINE_RESTART_REQUIRED`, `ENGINE_WORKER_IS_INJECTED`, `UNSUPPORTED_ENGINE_WORKER`, `INVALID_ENGINE_WORKER_CONFIG`, `INVALID_MANAGED_ENGINE_URL`, `MANAGED_ENGINE_ENDPOINT_MISMATCH`, `MANAGED_ENGINE_LISTENER_UNAVAILABLE`, `ENGINE_SPAWN_FAILED`, `ENGINE_STARTUP_TIMEOUT`, `ENGINE_EXITED`                                                                                                                                                            |
 | Daemon and project  | `NO_COMPOSE_FILE`, `COMPOSE_FILE_AMBIGUOUS`, `WRONG_DAEMON`, `INVALID_NAMESPACE`, `UNKNOWN_CONTAINER`, `UNKNOWN_PROJECT`, `INVALID_STATE_FILE`, `STATE_DIR_UNAVAILABLE`, `DAEMON_ALREADY_SERVING`, `DAEMON_NAMESPACE_TAKEN`, `IO_ERROR`                                                                                                                                                                                                                                                                                    |

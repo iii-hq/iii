@@ -180,6 +180,16 @@ enum Commands {
     /// `build` downloads packages without starting an engine or worker.
     Compose(iii_compose::ComposeCli),
 
+    /// Sign in to a worker registry, so Compose can install its private workers
+    ///
+    /// `login` saves a token for a registry in `~/.iii/credentials.toml` once
+    /// the registry confirms it, `whoami` shows who the token belongs to, and
+    /// `logout` removes it. Compose reads the saved tokens on every operation,
+    /// so a running daemon needs no restart. `III_REGISTRY_TOKEN`, set on the
+    /// process that runs Compose (the `iii compose` daemon, or `iii compose
+    /// build`), wins over the saved token for the default registry.
+    Registry(iii_compose::registry_cli::RegistryCli),
+
     /// List iii processes on this machine: engines, compose daemons and
     /// workers, with the compose project each belongs to
     Ps {
@@ -247,6 +257,12 @@ fn cli_usage_command_path(cli: &Cli) -> String {
             Some(iii_compose::ComposeSubcommand::Logs(_)) => "compose logs".to_string(),
             None => "compose".to_string(),
         },
+        Some(Commands::Registry(args)) => match &args.command {
+            iii_compose::registry_cli::RegistrySubcommand::Login(_) => "registry login",
+            iii_compose::registry_cli::RegistrySubcommand::Logout(_) => "registry logout",
+            iii_compose::registry_cli::RegistrySubcommand::Whoami(_) => "registry whoami",
+        }
+        .to_string(),
         Some(Commands::GenDocs { .. }) => "gen-cli-docs".to_string(),
         Some(Commands::Ps { .. }) => "ps".to_string(),
         Some(Commands::Kill(_)) => "kill".to_string(),
@@ -554,6 +570,11 @@ async fn run(cli_args: Cli) -> anyhow::Result<()> {
             let exit_code = iii_compose::run(args.clone()).await;
             std::process::exit(exit_code);
         }
+        Some(Commands::Registry(args)) => {
+            iii_compose::set_host_version(env!("CARGO_PKG_VERSION"));
+            let exit_code = iii_compose::registry_cli::run(args.clone()).await;
+            std::process::exit(exit_code);
+        }
         Some(Commands::Ps { json }) => cli::ps::ps(*json),
         Some(Commands::Kill(args)) => std::process::exit(cli::ps::kill(args).await?),
         // Handled before telemetry above.
@@ -740,6 +761,38 @@ mod tests {
         let cli = Cli::try_parse_from(["iii", "cloud", "deploy", "--config", "prod.yaml"])
             .expect("should parse cloud deploy passthrough");
         assert_eq!(cli_usage_command_path(&cli), "cloud deploy");
+    }
+
+    #[test]
+    fn cli_usage_command_path_covers_registry_commands() {
+        for (command, path) in [
+            ("login", "registry login"),
+            ("logout", "registry logout"),
+            ("whoami", "registry whoami"),
+        ] {
+            let cli = Cli::try_parse_from(["iii", "registry", command])
+                .expect("should parse registry subcommand");
+            assert_eq!(cli_usage_command_path(&cli), path);
+        }
+    }
+
+    #[test]
+    fn registry_login_never_takes_the_token_as_an_argument() {
+        for argv in [
+            &["iii", "registry", "login", "wdt_secret"][..],
+            &["iii", "registry", "login", "--token", "wdt_secret"],
+            &[
+                "iii",
+                "registry",
+                "login",
+                "--registry",
+                "https://r.example",
+                "wdt_secret",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(argv).is_err(), "{argv:?}");
+        }
+        assert!(Cli::try_parse_from(["iii", "registry", "login", "--token-stdin"]).is_ok());
     }
 
     #[test]

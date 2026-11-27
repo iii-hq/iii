@@ -190,6 +190,11 @@ project identity exception below.
 `.iii/project.ini`, or is absent when the project has no device ID. An explicit `env_file` or
 `environment` value can still override it, including an empty value.
 
+`III_REGISTRY_TOKEN` is not inherited either. Compose reads it to install private workers and never
+passes it to a worker, a hook, a build step, or the managed engine. A container that needs a
+registry token declares it in its own `env_file` or `environment`. See
+[Private workers](../using-iii/workers-registry#private-workers).
+
 ## Why state belongs to the project
 
 A project's process records, resolved configuration and worker output are stored in

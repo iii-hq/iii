@@ -3249,10 +3249,10 @@ pub(crate) fn expand_graph(
         });
     }
 
-    let host = reference
-        .rsplit_once('/')
-        .map(|(host, _)| host)
-        .unwrap_or("");
+    // What the reference puts before its worker name, shared by the graph's
+    // other workers. A scoped name keeps its own slash: `registry.example/@acme/ade`
+    // has the host `registry.example`, and `@acme/ade` none.
+    let host = crate::registry::reference_prefix(reference);
 
     let nodes: BTreeMap<&str, &crate::registry::Node> = graph
         .nodes
@@ -3263,11 +3263,14 @@ pub(crate) fn expand_graph(
     // A local declaration is an operator-owned implementation of that worker.
     // Keep it as the dependency boundary instead of replacing it with the
     // registry package or inheriting the published package's dependency tree.
+    // `path_workers` holds container keys while the graph holds package names:
+    // a local container stands in for the dependency that would be declared
+    // under its key, so `queue` for `@acme/queue` as for `queue`.
     let mut reachable = BTreeSet::new();
     let mut satisfied_by_path = BTreeSet::new();
     let mut visit = vec![asked.key.clone()];
     while let Some(name) = visit.pop() {
-        if name != asked.key && path_workers.contains(&name) {
+        if name != asked.key && path_workers.contains(crate::registry::container_key(&name)) {
             satisfied_by_path.insert(name);
             continue;
         }
@@ -3301,6 +3304,8 @@ pub(crate) fn expand_graph(
     };
     declarable.insert(asked.key.clone());
 
+    // A registry dependency is named by its package name, retargeted to its container
+    // key later; a local one by the key of the container that stands in for it.
     let needs = |name: &str| -> Vec<String> {
         let mut needed: Vec<String> = graph
             .edges
@@ -3310,7 +3315,13 @@ pub(crate) fn expand_graph(
                     && to != name
                     && (declarable.contains(to) || satisfied_by_path.contains(to))
             })
-            .map(|(_, to)| to.clone())
+            .map(|(_, to)| {
+                if declarable.contains(to) {
+                    to.clone()
+                } else {
+                    crate::registry::container_key(to).to_string()
+                }
+            })
             .collect();
         needed.sort();
         needed.dedup();
@@ -3335,16 +3346,24 @@ pub(crate) fn expand_graph(
     // dependency-first order from the edges, preferring the requested root
     // only after other ready nodes so independent registry entries cannot put
     // it before a dependency that becomes ready in the same wave.
+    // The order follows the package edges between declarable nodes only: a local key in
+    // `needs` may spell a package name (`queue` standing in for `@acme/queue` while the
+    // package `queue` is requested), and is no edge between registry nodes.
     let mut pending: BTreeMap<String, usize> = BTreeMap::new();
     let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for name in &declarable {
-        let dependencies: Vec<String> = needs(name)
-            .into_iter()
-            .filter(|dependency| declarable.contains(dependency))
+        let dependencies: BTreeSet<&String> = graph
+            .edges
+            .iter()
+            .filter(|(from, to)| from == name && to != name && declarable.contains(to))
+            .map(|(_, to)| to)
             .collect();
         pending.insert(name.clone(), dependencies.len());
         for dependency in dependencies {
-            dependents.entry(dependency).or_default().push(name.clone());
+            dependents
+                .entry(dependency.clone())
+                .or_default()
+                .push(name.clone());
         }
     }
     for entries in dependents.values_mut() {
