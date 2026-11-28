@@ -777,7 +777,7 @@ impl Engine {
         use crate::workers::worker::worker_socket::{feed_encoded, feed_json};
         match outbound {
             Outbound::Protocol(msg) => {
-                let serialized = match serde_json::to_string(&msg) {
+                let serialized = match msg.to_frame() {
                     Ok(payload) => payload,
                     Err(err) => {
                         tracing::error!(peer = %peer, error = ?err, "serialize error");
@@ -859,7 +859,7 @@ impl Engine {
                     matched: None,
                     delivered: false,
                 };
-                let fallback_payload = serde_json::to_string(&fallback).ok()?;
+                let fallback_payload = fallback.to_frame().ok()?;
                 (fallback_payload.len() <= limit).then_some((fallback, fallback_payload))
             }
             Message::InvokeFunction {

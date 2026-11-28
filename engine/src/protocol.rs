@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 use crate::invocation::{auth::HttpAuthConfig, method::HttpMethod};
 
+#[path = "protocol/sonic.rs"]
+mod sonic;
+
 /// Namespace used when a message carries no explicit `namespace`.
 pub const DEFAULT_NAMESPACE: &str = "default";
 
@@ -1363,6 +1366,23 @@ impl<'de> Deserialize<'de> for RawItems {
 }
 
 impl Message {
+    /// Encodes a worker frame, keeping captured payloads as their original JSON text.
+    ///
+    /// The Sonic view adapts `RawJson` to its borrowed raw-value type. Serde JSON
+    /// remains the fallback for raw JSON or numeric dependency features that Sonic
+    /// cannot represent, and supplies the error when neither encoder accepts the
+    /// message.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message cannot be serialized as JSON.
+    pub fn to_frame(&self) -> serde_json::Result<String> {
+        if !sonic::supports_serde_json_numbers() {
+            return serde_json::to_string(self);
+        }
+        sonic::to_string(self).or_else(|_| serde_json::to_string(self))
+    }
+
     /// Decodes a frame a worker sent, as `serde_json::from_str::<Message>`
     /// does. An `invocationsobserved` frame written as the SDKs write it
     /// (`type` first) is read in one pass instead, its items' payloads kept as

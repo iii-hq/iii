@@ -43,7 +43,7 @@ use std::{
 use futures_util::FutureExt;
 use iii_filter::{Doc, Roots};
 use iii_helpers::observability::opentelemetry::Context as OtelContext;
-use serde_json::{Value, json, value::to_raw_value};
+use serde_json::{Value, json};
 
 use crate::{
     context::{Frame, InvocationCtx, local_depth, scope_frame, with_current},
@@ -555,8 +555,8 @@ fn item(
     // A local stream's placeholder must not reach the wire: a report carries
     // it as a `StreamInfo`.
     let raw = |value: &Value| match crate::streams::report_form(value) {
-        Some(value) => to_raw_value(&value).ok(),
-        None => to_raw_value(value).ok(),
+        Some(value) => crate::reporter::CapturedJson::new(&value).ok(),
+        None => crate::reporter::CapturedJson::new(value).ok(),
     };
     let input = view.input.filter(|_| mask.input);
     let output = view.output.filter(|_| mask.output);
@@ -576,7 +576,7 @@ fn item(
         error: view
             .error
             .filter(|_| mask.error)
-            .and_then(|error| to_raw_value(error).ok()),
+            .and_then(|error| crate::reporter::CapturedJson::new(error).ok()),
         caller: view.caller.filter(|_| mask.caller).and_then(report_caller),
         metadata: view.metadata.filter(|_| mask.metadata).and_then(raw),
         started_at_ms: report.started_at_ms,
