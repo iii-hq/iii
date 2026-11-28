@@ -135,10 +135,57 @@ fn protocol_roundtrip_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+fn protocol_frame_serialize_benchmark(c: &mut Criterion) {
+    let mut messages = build_messages();
+    for (label, size) in [("RawReport1kb", 1024), ("RawReport100kb", 100 * 1024)] {
+        let payload = serde_json::to_string(&common::sized_payload(size)).expect("encode payload");
+        let frame = format!(
+            r#"{{"type":"invocationsobserved","items":[{{"function_id":"bench::echo","invocation_id":"i-1","matched":["o-1"],"status":"success","input":{payload},"output":null,"metadata":{{"n":9007199254740993}},"started_at_ms":1,"duration_ms":0.5}}]}}"#
+        );
+        messages.push((
+            label,
+            Message::from_frame(&frame).expect("decode raw report"),
+        ));
+    }
+
+    let structured = json!({
+        "items": (0..500).map(|index| json!({
+            "id": index, "name": "example order", "total": 123.45,
+            "active": true, "labels": ["alpha", "beta"],
+        })).collect::<Vec<_>>()
+    });
+    let frame = format!(
+        r#"{{"type":"invocationsobserved","items":[{{"function_id":"bench::echo","invocation_id":"i-1","status":"success","input":{structured},"started_at_ms":1,"duration_ms":0.5}}]}}"#
+    );
+    messages.push((
+        "RawReportStructured",
+        Message::from_frame(&frame).expect("decode raw report"),
+    ));
+
+    let mut group = c.benchmark_group("protocol_frame_serialize");
+    for (label, message) in messages {
+        let baseline = serde_json::to_string(&message).expect("serialize baseline");
+        let encoded = message.to_frame().expect("serialize frame");
+        assert_eq!(
+            baseline, encoded,
+            "the {label} frame must keep its wire text"
+        );
+        group.throughput(Throughput::Bytes(encoded.len() as u64));
+        group.bench_with_input(BenchmarkId::new("serde_json", label), &message, |b, msg| {
+            b.iter(|| serde_json::to_string(msg).expect("serialize baseline"));
+        });
+        group.bench_with_input(BenchmarkId::new("to_frame", label), &message, |b, msg| {
+            b.iter(|| msg.to_frame().expect("serialize frame"));
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     protocol_serialize_benchmark,
     protocol_deserialize_benchmark,
     protocol_roundtrip_benchmark,
+    protocol_frame_serialize_benchmark,
 );
 criterion_main!(benches);

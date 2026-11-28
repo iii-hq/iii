@@ -15,15 +15,17 @@
 //!
 use std::{
     collections::{HashMap, VecDeque},
+    io::{self, Write},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use serde::Serialize;
+use serde::{Serialize, ser::Error as _};
 use serde_json::value::RawValue;
+use sonic_rs::{OwnedLazyValue, writer::BufferedWriter};
 use tokio::sync::Notify;
 
 use crate::protocol::{Caller, InvocationStatus, observe_codes};
@@ -67,6 +69,73 @@ impl CaptureMask {
     }
 }
 
+/// JSON encoded once at capture. The cached wire length keeps buffer accounting
+/// independent of the size or structure of the captured value.
+#[derive(Debug)]
+pub(crate) enum CapturedJson {
+    Sonic { raw: OwnedLazyValue, bytes: usize },
+    Serde(Box<RawValue>),
+}
+
+fn supports_sonic_numbers() -> bool {
+    // Downstream features can change Number's Serialize implementation. A
+    // process-wide probe preserves that representation without private tokens.
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        sonic_rs::to_string(&serde_json::Number::from(0)).is_ok_and(|encoded| encoded == "0")
+    })
+}
+
+impl Serialize for CapturedJson {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Sonic { raw, .. } => raw.serialize(serializer),
+            Self::Serde(raw) => raw.serialize(serializer),
+        }
+    }
+}
+
+impl CapturedJson {
+    pub(crate) fn new(value: &impl Serialize) -> sonic_rs::Result<Self> {
+        if !supports_sonic_numbers() {
+            return serde_json::value::to_raw_value(value)
+                .map(Self::Serde)
+                .map_err(sonic_rs::Error::custom);
+        }
+        Self::from_raw(sonic_rs::to_lazyvalue(value)?)
+    }
+
+    fn from_raw(raw: OwnedLazyValue) -> sonic_rs::Result<Self> {
+        // OwnedLazyValue has no public raw-length accessor. Its serialization
+        // lends the encoded bytes directly to this writer; it neither parses
+        // the JSON nor copies its payload into another buffer.
+        struct Count(usize);
+        impl Write for Count {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0 += bytes.len();
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Count(0);
+        sonic_rs::to_writer(BufferedWriter::new(&mut count), &raw)?;
+        Ok(Self::Sonic {
+            raw,
+            bytes: count.0,
+        })
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Sonic { bytes, .. } => *bytes,
+            Self::Serde(raw) => raw.get().len(),
+        }
+    }
+}
+
 /// One item waiting in the buffer. Its parts are already serialized, so a
 /// flush only concatenates.
 #[derive(Debug)]
@@ -76,11 +145,11 @@ pub(crate) struct PendingItem {
     pub invocation_id: String,
     pub matched: Vec<String>,
     pub status: InvocationStatus,
-    pub input: Option<Box<RawValue>>,
-    pub output: Option<Box<RawValue>>,
-    pub error: Option<Box<RawValue>>,
+    pub input: Option<CapturedJson>,
+    pub output: Option<CapturedJson>,
+    pub error: Option<CapturedJson>,
     pub caller: Option<Caller>,
-    pub metadata: Option<Box<RawValue>>,
+    pub metadata: Option<CapturedJson>,
     pub started_at_ms: u64,
     pub duration_ms: f64,
     pub observe_depth: u32,
@@ -127,8 +196,8 @@ impl PendingItem {
 impl PendingItem {
     /// An estimate of the encoded size, used for the byte bound.
     pub(crate) fn estimated_size(&self) -> usize {
-        fn raw(value: &Option<Box<RawValue>>) -> usize {
-            value.as_ref().map_or(0, |v| v.get().len())
+        fn raw(value: &Option<CapturedJson>) -> usize {
+            value.as_ref().map_or(0, CapturedJson::len)
         }
         fn text(value: &Option<String>) -> usize {
             value.as_ref().map_or(0, String::len)
@@ -174,15 +243,15 @@ impl PendingItem {
             matched: &'a [String],
             status: &'a InvocationStatus,
             #[serde(skip_serializing_if = "Option::is_none")]
-            input: Option<&'a RawValue>,
+            input: Option<&'a CapturedJson>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            output: Option<&'a RawValue>,
+            output: Option<&'a CapturedJson>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            error: Option<&'a RawValue>,
+            error: Option<&'a CapturedJson>,
             #[serde(skip_serializing_if = "Option::is_none")]
             caller: Option<&'a Caller>,
             #[serde(skip_serializing_if = "Option::is_none")]
-            metadata: Option<&'a RawValue>,
+            metadata: Option<&'a CapturedJson>,
             started_at_ms: u64,
             duration_ms: f64,
             observe_depth: u32,
@@ -195,9 +264,9 @@ impl PendingItem {
         }
         let mask = self.mask;
         let output = if self.output_is_input && !v2 {
-            self.input.as_deref()
+            self.input.as_ref()
         } else {
-            self.output.as_deref()
+            self.output.as_ref()
         };
         let wire = Wire {
             function_id: &self.function_id,
@@ -205,11 +274,11 @@ impl PendingItem {
             invocation_id: &self.invocation_id,
             matched: &self.matched,
             status: &self.status,
-            input: self.input.as_deref().filter(|_| mask.input),
+            input: self.input.as_ref().filter(|_| mask.input),
             output: output.filter(|_| mask.output),
-            error: self.error.as_deref().filter(|_| mask.error),
+            error: self.error.as_ref().filter(|_| mask.error),
             caller: self.caller.as_ref().filter(|_| mask.caller),
-            metadata: self.metadata.as_deref().filter(|_| mask.metadata),
+            metadata: self.metadata.as_ref().filter(|_| mask.metadata),
             started_at_ms: self.started_at_ms,
             duration_ms: self.duration_ms,
             observe_depth: self.observe_depth,
@@ -217,8 +286,13 @@ impl PendingItem {
             baggage: self.baggage.as_deref(),
             output_is_input: self.output_is_input && v2 && mask.output,
         };
-        // Every part is either a plain value or already valid JSON.
-        serde_json::to_string(&wire).expect("report item serializes")
+        // Every part is either a plain value or already encoded JSON. Flushing
+        // does not validate or materialize captured payloads again.
+        if supports_sonic_numbers() {
+            sonic_rs::to_string(&wire).expect("report item serializes")
+        } else {
+            serde_json::to_string(&wire).expect("report item serializes")
+        }
     }
 }
 
@@ -231,9 +305,7 @@ struct FrameIn {
 impl PendingItem {
     /// An item of a frame read back, with every part it carries.
     fn from_observed(item: crate::protocol::ObservedItem) -> Self {
-        let raw = |value: Option<serde_json::Value>| {
-            value.and_then(|v| serde_json::value::to_raw_value(&v).ok())
-        };
+        let raw = |value: Option<serde_json::Value>| value.and_then(|v| CapturedJson::new(&v).ok());
         PendingItem {
             function_id: item.function_id,
             namespace: item.namespace,
@@ -950,12 +1022,107 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json, value::to_raw_value};
+    use serde_json::{Value, json};
 
     use super::*;
 
-    fn raw(value: Value) -> Option<Box<RawValue>> {
-        Some(to_raw_value(&value).unwrap())
+    fn raw(value: Value) -> Option<CapturedJson> {
+        Some(CapturedJson::new(&value).unwrap())
+    }
+
+    fn raw_text(value: &str) -> CapturedJson {
+        if supports_sonic_numbers() {
+            CapturedJson::from_raw(sonic_rs::from_str(value).unwrap()).unwrap()
+        } else {
+            CapturedJson::Serde(serde_json::from_str(value).unwrap())
+        }
+    }
+
+    #[test]
+    fn captured_length_counts_encoded_bytes_including_escapes_and_utf8() {
+        for value in [
+            json!(null),
+            json!("é🚀\n\"\\".repeat(1000)),
+            json!({"nested": [true, 123.45, {"text": "linha\n🚀"}]}),
+        ] {
+            let captured = CapturedJson::new(&value).unwrap();
+            let encoded = if supports_sonic_numbers() {
+                sonic_rs::to_string(&captured).unwrap()
+            } else {
+                serde_json::to_string(&captured).unwrap()
+            };
+            assert_eq!(captured.len(), encoded.len());
+            assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn captured_numbers_keep_their_json_wire_representation() {
+        for text in [
+            r#"{"integer":9007199254740993,"decimal":0.125}"#,
+            r#"{"integer":184467440737095516160000000000000000000,"decimal":1e10000}"#,
+        ] {
+            // The second value is available when a downstream crate enables
+            // serde_json/arbitrary_precision. It must keep working there too.
+            let Ok(value) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            let expected = serde_json::to_string(&value).unwrap();
+            let pending = item("bench::numbers", &["o"], value);
+            let encoded = pending.to_json(true);
+            assert!(encoded.contains(&format!(r#""input":{expected},"#)));
+        }
+    }
+
+    #[test]
+    fn raw_report_fields_keep_their_original_json_text() {
+        let input = r#"{"z": 1, "z":2, "decimal":1.5000,"escaped":"\u00e9"}"#;
+        let error = r#"{"code": "E", "message":"erro 🚀"}"#;
+        let metadata = r#"{"number":184467440737095516160000000000000000000,"$serde_json::private::RawValue":"literal"}"#;
+        let pending = PendingItem {
+            input: Some(raw_text(input)),
+            output: Some(raw_text("null")),
+            error: Some(raw_text(error)),
+            metadata: Some(raw_text(metadata)),
+            mask: CaptureMask {
+                input: true,
+                output: true,
+                error: true,
+                metadata: true,
+                ..CaptureMask::default()
+            },
+            ..PendingItem::test("bench::raw")
+        };
+        let expected = format!(
+            r#"{{"function_id":"bench::raw","namespace":"default","invocation_id":"inv","matched":["o"],"status":"success","input":{input},"output":null,"error":{error},"metadata":{metadata},"started_at_ms":1,"duration_ms":0.5,"observe_depth":0}}"#
+        );
+        assert_eq!(pending.to_json(true), expected);
+        assert_eq!(pending.to_json(false), expected);
+    }
+
+    #[test]
+    fn v1_output_alias_keeps_raw_text_and_v2_omits_the_duplicate() {
+        let input = r#"{"same":1, "same":2, "value":1e10000}"#;
+        let pending = PendingItem {
+            input: Some(raw_text(input)),
+            output_is_input: true,
+            mask: CaptureMask {
+                input: true,
+                output: true,
+                ..CaptureMask::default()
+            },
+            ..PendingItem::test("bench::raw")
+        };
+        let head = r#""function_id":"bench::raw","namespace":"default","invocation_id":"inv","matched":["o"],"status":"success""#;
+        let tail = r#""started_at_ms":1,"duration_ms":0.5,"observe_depth":0"#;
+        assert_eq!(
+            pending.to_json(false),
+            format!(r#"{{{head},"input":{input},"output":{input},{tail}}}"#)
+        );
+        assert_eq!(
+            pending.to_json(true),
+            format!(r#"{{{head},"input":{input},{tail},"output_is_input":true}}"#)
+        );
     }
 
     fn item(function_id: &str, matched: &[&str], input: Value) -> PendingItem {
@@ -1130,7 +1297,7 @@ mod tests {
         };
         let once = source();
         let size = once.estimated_size();
-        assert!(size < 2 * once.input.as_ref().unwrap().get().len() + ITEM_OVERHEAD);
+        assert!(size < 2 * once.input.as_ref().unwrap().len() + ITEM_OVERHEAD);
         let v2: Value = serde_json::from_str(&once.to_json(true)).unwrap();
         assert_eq!(v2["input"], event);
         assert_eq!(v2["output_is_input"], true);
@@ -1585,11 +1752,14 @@ mod tests {
                 invocation_id: typed.invocation_id.clone(),
                 matched: typed.matched.clone(),
                 status: typed.status.clone(),
-                input: typed.input.as_ref().map(|v| to_raw_value(v).unwrap()),
-                output: typed.output.as_ref().map(|v| to_raw_value(v).unwrap()),
-                error: typed.error.as_ref().map(|v| to_raw_value(v).unwrap()),
+                input: typed.input.as_ref().map(|v| CapturedJson::new(v).unwrap()),
+                output: typed.output.as_ref().map(|v| CapturedJson::new(v).unwrap()),
+                error: typed.error.as_ref().map(|v| CapturedJson::new(v).unwrap()),
                 caller: typed.caller.clone(),
-                metadata: typed.metadata.as_ref().map(|v| to_raw_value(v).unwrap()),
+                metadata: typed
+                    .metadata
+                    .as_ref()
+                    .map(|v| CapturedJson::new(v).unwrap()),
                 started_at_ms: typed.started_at_ms,
                 duration_ms: typed.duration_ms,
                 observe_depth: typed.observe_depth,

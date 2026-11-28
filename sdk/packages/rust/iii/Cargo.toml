@@ -23,6 +23,7 @@ futures-util = "0.3"
 hostname = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["unbounded_depth", "raw_value"] }
+sonic-rs = { workspace = true }
 schemars = "0.8"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "net", "io-util"] }
